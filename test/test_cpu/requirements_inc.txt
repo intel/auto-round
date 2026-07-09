@@ -1,2 +1,2 @@
-neural_compressor_pt @ git+https://github.com/intel/neural-compressor.git@v3.8.1rc
+neural_compressor_pt
 compressed-tensors

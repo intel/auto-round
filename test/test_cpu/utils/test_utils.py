@@ -39,6 +39,23 @@ def test_revert_checkpoint_conversion_mapping_handles_comma_separated_block_name
     assert converted == "model.visual.blocks,model.layers"
 
 
+def test_revert_checkpoint_conversion_mapping_does_not_rewrite_quantized_tensor_suffixes():
+    mapping = {"weight": [".weight_packed", ".weight_scale", ".weight_shape"]}
+
+    assert (
+        revert_checkpoint_conversion_mapping("model.layers.0.mlp.down_proj.weight", mapping)
+        == "model.layers.0.mlp.down_proj.weight_packed"
+    )
+    assert (
+        revert_checkpoint_conversion_mapping("model.layers.0.mlp.down_proj.weight_packed", mapping)
+        == "model.layers.0.mlp.down_proj.weight_packed"
+    )
+    assert (
+        revert_checkpoint_conversion_mapping("model.layers.0.mlp.down_proj.weight_scale", mapping)
+        == "model.layers.0.mlp.down_proj.weight_scale"
+    )
+
+
 def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"

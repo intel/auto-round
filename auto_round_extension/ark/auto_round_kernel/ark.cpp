@@ -25,6 +25,8 @@ typedef uintptr_t torch_ptr;
 // Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
 #include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_decode.hpp"
+#include "sycl_tla_moe_mixed.hpp"
 #include "sycl_tla_sdpa.hpp"
 #include "sycl_tla_dense_gemm.hpp"
 #endif
@@ -512,6 +514,52 @@ static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr 
                 (void*)outputs, (BTLA_DTYPE)(dtype), N, K, (int*)num_tokens_per_expert, num_experts);
 }
 
+static void moe_gemm_decode_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
+                                    torch_ptr zeros, torch_ptr outputs, torch_ptr expert_id_per_token_buf,
+                                    int act_dtype, int weight_dtype, int N, int K, int group_size,
+                                    torch_ptr num_tokens_per_expert, int num_experts, int total_tokens, bool asym) {
+  ark::moe_gemm_decode((sycl::queue*)stream, (void*)activations, (void*)weights, scales ? (void*)scales : nullptr,
+                       zeros ? (void*)zeros : nullptr, (void*)outputs, (int*)expert_id_per_token_buf,
+                       (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K, group_size,
+                       (int*)num_tokens_per_expert, num_experts, total_tokens, asym);
+}
+
+static void moe_gemm_prefill_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
+                                     torch_ptr zeros, torch_ptr outputs, torch_ptr dequant_workspace, int act_dtype,
+                                     int weight_dtype, int N, int K, int group_size, torch_ptr num_tokens_per_expert,
+                                     int num_experts, int total_tokens, bool asym) {
+  ark::moe_gemm_prefill((sycl::queue*)stream, (void*)activations, (void*)weights, scales ? (void*)scales : nullptr,
+                        zeros ? (void*)zeros : nullptr, (void*)outputs,
+                        dequant_workspace ? (void*)dequant_workspace : nullptr, (BTLA_DTYPE)(act_dtype),
+                        (BTLA_DTYPE)(weight_dtype), N, K, group_size, (int*)num_tokens_per_expert, num_experts,
+                        total_tokens, asym);
+}
+
+// Variant A: FP8 per-tensor DPAS grouped GEMM (mirrors vllm-xpu-kernels'
+// `cutlass_grouped_gemm_xe2_impl` FP8 branch). `scales` is [E] FP32.
+// Weights are [E, K, N] row-major uint8. STATUS: NEEDS-HARDWARE-VALIDATION.
+static void moe_gemm_prefill_fp8_dpas_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights,
+                                              torch_ptr scales, torch_ptr outputs, int act_dtype, int weight_dtype,
+                                              int N, int K, torch_ptr num_tokens_per_expert, int num_experts,
+                                              int total_tokens) {
+  ark::moe_gemm_prefill_fp8_dpas((sycl::queue*)stream, (void*)activations, (void*)weights, (void*)scales,
+                                 (void*)outputs, (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K,
+                                 (int*)num_tokens_per_expert, num_experts, total_tokens);
+}
+
+// INT8 sibling of `moe_gemm_prefill_fp8_dpas`: `scales` is [E] FP32,
+// weights are [E, K, N] row-major int8. Storage-only INT8 (DPAS still
+// runs on activation dtype after in-register upcast). STATUS:
+// NEEDS-HARDWARE-VALIDATION.
+static void moe_gemm_prefill_int_dpas_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights,
+                                              torch_ptr scales, torch_ptr outputs, int act_dtype, int weight_dtype,
+                                              int N, int K, torch_ptr num_tokens_per_expert, int num_experts,
+                                              int total_tokens) {
+  ark::moe_gemm_prefill_int_dpas((sycl::queue*)stream, (void*)activations, (void*)weights, (void*)scales,
+                                 (void*)outputs, (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K,
+                                 (int*)num_tokens_per_expert, num_experts, total_tokens);
+}
+
 static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
                                int num_rows, int head_dim, int block_size) {
   auto* q = (sycl::queue*)stream;
@@ -783,6 +831,10 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
+  m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
+  m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
+  m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
+  m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif
 }

@@ -1607,6 +1607,241 @@ def sage_dynquant(
     return out
 
 
+def moe_gemm_decode(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+) -> torch.Tensor:
+    """MoE GEMV optimized for the decode phase.
+
+    Each expert typically processes only 1-2 tokens (top-k routing with
+    small batch). Activations must already be gathered/sorted by expert
+    (same convention as ``moe_gemm``).
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: 3-D tensor ``[E, N, K_packed]``. The accepted layouts are:
+
+            * Unquantized (``weight_bits=16``): ``torch.float16`` / ``torch.bfloat16``
+              matching the activations dtype, ``K_packed == K``.
+            * Int8 (``weight_bits=8``): ``torch.uint8``, ``K_packed == K``.
+              Sym (``asym=False``) reinterprets each byte as signed int8;
+              asym (``asym=True``) treats each byte as ``uint8`` with a
+              per-group zero-point.
+            * Int4 (``weight_bits=4``): ``torch.uint8`` packed,
+              ``K_packed == K // 2`` (two 4-bit values per byte; low nibble
+              at the lower K index).
+            * Int2 (``weight_bits=2``): ``torch.uint8`` packed,
+              ``K_packed == K // 4`` (four 2-bit values per byte; field j at
+              K index ``4*i + j`` occupies bits 2j and 2j+1 of byte i).
+            * FP8 (``torch.float8_e4m3fn`` / ``torch.float8_e5m2``):
+              ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
+              be ``False`` (no zero-points for FP8).
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``.
+        scales: ``[E, N, K // group_size]`` in activations dtype. Required
+            for all quantized paths (int8/int4/int2/fp8); must be ``None``
+            for unquantized weights.
+        zeros: ``[E, N, K // group_size]`` in activations dtype. Required
+            when ``asym=True`` (int8/int4/int2 only); otherwise ``None``.
+        weight_bits: 2, 4, 8, or 16. Ignored when ``weights`` is an FP8
+            tensor (the FP8 sub-format is taken from ``weights.dtype``).
+        group_size: group along K for quantized weights (default 128).
+        asym: if ``True``, weights use unsigned encoding and ``zeros`` must
+            be provided. Not supported for FP8.
+
+    Returns:
+        outputs: ``[total_tokens, N]`` in the same dtype as activations.
+    """
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+            api_name="moe_gemm_decode",
+        )
+    )
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+    # Scratch buffer mapping each token to its expert id; filled on-device
+    # inside the kernel wrapper so we avoid host-device sync.
+    expert_id_per_token = torch.empty((total_tokens,), device=activations.device, dtype=torch.int32)
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_decode(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales_ptr,
+        zeros_ptr,
+        outputs.data_ptr(),
+        expert_id_per_token.data_ptr(),
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(asym),
+    )
+    return outputs
+
+
+def _validate_moe_quant_args(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor],
+    zeros: Optional[torch.Tensor],
+    weight_bits: int,
+    group_size: int,
+    asym: bool,
+    api_name: str,
+):
+    """Shared validation/normalisation for quantized MoE entry points.
+
+    Returns a tuple of normalised tensors and dtype/shape metadata used by the
+    kernel-call site:
+        ``(activations, weights, scales, zeros, num_tokens_per_expert,
+           weight_dtype, total_tokens, N, K, num_experts)``.
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError(f"{api_name} is only supported on XPU")
+
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights.ndim != 3:
+        raise ValueError("weights must be 3D [E, N, K_packed]")
+
+    if not activations.is_contiguous():
+        activations = activations.contiguous()
+    if not weights.is_contiguous():
+        weights = weights.contiguous()
+
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts = weights.shape[0]
+    N = weights.shape[1]
+
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+
+    # Detect FP8 weight dtype first (overrides weight_bits).
+    is_fp8 = weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+
+    if is_fp8:
+        if asym:
+            raise ValueError("FP8 weights do not support asym=True")
+        if weights.shape[2] != K:
+            raise ValueError(f"FP8 weights K dim {weights.shape[2]} != activations K {K}")
+        if scales is None:
+            raise ValueError("scales is required for FP8 weights")
+        if scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if zeros is not None:
+            raise ValueError("zeros must be None for FP8 weights")
+        weight_dtype = ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+    elif weight_bits == 16:
+        if weights.dtype != activations.dtype:
+            raise ValueError("Unquantized weights must match activations dtype")
+        if weights.shape[2] != K:
+            raise ValueError(f"Unquantized weights K dim {weights.shape[2]} != activations K {K}")
+        weight_dtype = cvt_dtype(activations.dtype)
+        if scales is not None or zeros is not None:
+            raise ValueError("scales/zeros must be None when weight_bits=16")
+    elif weight_bits in (8, 4, 2):
+        if weights.dtype != torch.uint8:
+            raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
+        if weight_bits == 8:
+            k_packed_expected = K
+            k_div = 1
+        elif weight_bits == 4:
+            k_packed_expected = K // 2
+            k_div = 2
+        else:  # weight_bits == 2
+            k_packed_expected = K // 4
+            k_div = 4
+        if K % k_div != 0:
+            raise ValueError(f"K must be a multiple of {k_div} for weight_bits={weight_bits}")
+        if weights.shape[2] != k_packed_expected:
+            raise ValueError(
+                f"Int{weight_bits} packed weights last dim {weights.shape[2]} must equal K/{k_div} "
+                f"({k_packed_expected})"
+            )
+        if scales is None:
+            raise ValueError(f"scales is required for int{weight_bits} weights")
+        if scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        # Group_size constraints per dtype.
+        if weight_bits == 4 and (group_size & 1) != 0:
+            raise ValueError("group_size must be even for int4 weights")
+        if weight_bits == 2 and (group_size & 3) != 0:
+            raise ValueError("group_size must be a multiple of 4 for int2 weights")
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if asym:
+            if zeros is None:
+                raise ValueError("zeros is required when asym=True")
+            if zeros.dtype != activations.dtype:
+                raise ValueError("zeros dtype must match activations dtype")
+            if tuple(zeros.shape) != expected_scale_shape:
+                raise ValueError(f"zeros shape {tuple(zeros.shape)} != expected {expected_scale_shape}")
+        else:
+            if zeros is not None:
+                raise ValueError("zeros must be None when asym=False")
+        weight_dtype = {8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits]
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+        if asym and not zeros.is_contiguous():
+            zeros = zeros.contiguous()
+    else:
+        raise ValueError(f"Unsupported weight_bits={weight_bits} (supported: 2, 4, 8, 16)")
+
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+
+    expected_total = int(num_tokens_per_expert.sum().item())
+    if expected_total != total_tokens:
+        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+
+    return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
+
+
 def moe_gemm(
     activations: torch.Tensor,
     weights: torch.Tensor,
@@ -1681,6 +1916,563 @@ def moe_gemm(
         num_experts,
     )
     return outputs
+
+
+def _dpas_fp8_prefill_enabled() -> bool:
+    """Return True unless ``ARK_MOE_PREFILL_DPAS_FP8`` is explicitly falsy.
+
+    Mirrors the C++-side default used by the Variant B dispatcher in
+    `sycl_tla_moe_mixed.hpp` (default ON). This helper is exposed so
+    Python callers/tests can query the effective state.
+
+    Falsy values (case-insensitive): "0", "false", "off", "no".
+    Any other value (including unset) is treated as enabled.
+    """
+    env = os.environ.get("ARK_MOE_PREFILL_DPAS_FP8")
+    if env is None:
+        return True
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _moe_gemm_prefill_fp8_pertensor(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor,
+) -> torch.Tensor:
+    """Variant A per-tensor FP8 DPAS grouped GEMM.
+
+    Weights: ``[E, K, N]`` row-major FP8 (``float8_e4m3fn`` / ``float8_e5m2``).
+    Scales:  ``[E]`` FP32, one per-tensor scale per expert.
+    Activations / outputs: ``[total_tokens, K]`` / ``[total_tokens, N]`` in
+    F16 or BF16.
+
+    STATUS: NEEDS-HARDWARE-VALIDATION.
+    """
+    if scales is None:
+        raise ValueError("moe_gemm_prefill(scale_scheme='per_tensor'): scales is required")
+    if weights.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be FP8 "
+            f"(float8_e4m3fn or float8_e5m2), got {weights.dtype}"
+        )
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, " f"got {activations.dtype}"
+        )
+    if weights.ndim != 3:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be 3-D [E, K, N], "
+            f"got shape {tuple(weights.shape)}"
+        )
+    num_experts, K, N = weights.shape
+    if activations.ndim != 2 or activations.shape[1] != K:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be [total_tokens, K] "
+            f"with K={K}, got shape {tuple(activations.shape)}"
+        )
+    if num_tokens_per_expert.ndim != 1 or int(num_tokens_per_expert.shape[0]) != num_experts:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): num_tokens_per_expert must be [E] "
+            f"with E={num_experts}, got shape {tuple(num_tokens_per_expert.shape)}"
+        )
+    if scales.dtype != torch.float32 or scales.shape != (num_experts,):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): scales must be FP32 with shape [E] "
+            f"(E={num_experts}), got dtype={scales.dtype} shape={tuple(scales.shape)}"
+        )
+
+    total_tokens = int(activations.shape[0])
+    lib = get_lib(activations)
+    if not hasattr(lib, "moe_gemm_prefill_fp8_dpas"):
+        raise RuntimeError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): the C++ backend was built without the "
+            "`moe_gemm_prefill_fp8_dpas` symbol. Rebuild auto_round_extension with sycl-tla "
+            "support (needs Intel BMG/PVC + cutlass-sycl)."
+        )
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    lib.moe_gemm_prefill_fp8_dpas(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales.data_ptr(),
+        outputs.data_ptr(),
+        cvt_dtype(activations.dtype),
+        cvt_dtype(weights.dtype),
+        N,
+        K,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+    )
+    return outputs
+
+
+def _moe_gemm_prefill_int_pertensor(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor,
+) -> torch.Tensor:
+    """Variant A per-tensor INT8 DPAS grouped GEMM.
+
+    Storage-only INT8 sibling of :func:`_moe_gemm_prefill_fp8_pertensor`:
+    weights are held as one signed byte per element and the DPAS atom
+    still runs on the activation dtype after an in-register
+    ``int8 -> ElementA`` upcast in the kernel mainloop. Numerically this
+    is equivalent to dequantizing to bf16/fp16 and calling the W16A16
+    grouped GEMM, but the mainloop avoids materialising the
+    ``[E, K, N]`` bf16/fp16 workspace.
+
+    Weights: ``[E, K, N]`` row-major ``torch.int8`` (sym per-tensor,
+    matches the vllm-xpu-kernels FP8 layout modulo dtype).
+    Scales:  ``[E]`` FP32, one per-tensor scale per expert.
+    Activations / outputs: ``[total_tokens, K]`` / ``[total_tokens, N]`` in
+    F16 or BF16.
+
+    STATUS: NEEDS-HARDWARE-VALIDATION.
+    """
+    if scales is None:
+        raise ValueError("moe_gemm_prefill(scale_scheme='per_tensor'): scales is required")
+    if weights.dtype != torch.int8:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be torch.int8, " f"got {weights.dtype}"
+        )
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, " f"got {activations.dtype}"
+        )
+    if weights.ndim != 3:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be 3-D [E, K, N], "
+            f"got shape {tuple(weights.shape)}"
+        )
+    num_experts, K, N = weights.shape
+    if activations.ndim != 2 or activations.shape[1] != K:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be [total_tokens, K] "
+            f"with K={K}, got shape {tuple(activations.shape)}"
+        )
+    if num_tokens_per_expert.ndim != 1 or int(num_tokens_per_expert.shape[0]) != num_experts:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): num_tokens_per_expert must be [E] "
+            f"with E={num_experts}, got shape {tuple(num_tokens_per_expert.shape)}"
+        )
+    if scales.dtype != torch.float32 or scales.shape != (num_experts,):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): scales must be FP32 with shape [E] "
+            f"(E={num_experts}), got dtype={scales.dtype} shape={tuple(scales.shape)}"
+        )
+
+    total_tokens = int(activations.shape[0])
+    lib = get_lib(activations)
+    if not hasattr(lib, "moe_gemm_prefill_int_dpas"):
+        raise RuntimeError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): the C++ backend was built without the "
+            "`moe_gemm_prefill_int_dpas` symbol. Rebuild auto_round_extension with sycl-tla "
+            "support (needs Intel BMG/PVC + cutlass-sycl)."
+        )
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    lib.moe_gemm_prefill_int_dpas(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales.data_ptr(),
+        outputs.data_ptr(),
+        cvt_dtype(activations.dtype),
+        cvt_dtype(weights.dtype),
+        N,
+        K,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+    )
+    return outputs
+
+
+def moe_gemm_prefill(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+    scale_scheme: Optional[str] = None,
+) -> torch.Tensor:
+    """MoE Grouped GEMM optimized for the prefill phase, supporting all weight
+    encodings of ``moe_gemm_decode`` (FP16/BF16, INT8 sym/asym, INT4 sym/asym,
+    INT2 sym/asym, FP8 E4M3/E5M2).
+
+    The argument shapes/dtypes match :func:`moe_gemm_decode` exactly so the same
+    quantized weights/scales/zeros tensors can be re-used between prefill and
+    decode without reshaping. Internally, for the quantized paths the kernel
+    materialises a ``[E, K, N]`` ``act_dtype`` temporary via an on-device
+    dequantization kernel and then dispatches to the existing CUTLASS-SYCL
+    Grouped GEMM (``moe_gemm``). Numerical results are bit-identical to
+    ``moe_gemm`` applied to the same dequantized weights.
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: 3-D tensor; same layout/dtype contract as
+            :func:`moe_gemm_decode`. Quantized layouts are ``[E, N, K_packed]``;
+            the unquantized fast path (``weight_bits=16``) accepts
+            ``[E, N, K]`` -- callers providing already-``[E, K, N]`` weights
+            (as ``moe_gemm`` requires) should call ``moe_gemm`` directly.
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``.
+        scales: ``[E, N, K // group_size]`` in activations dtype. Required for
+            quantized paths; ignored (must be ``None``) for unquantized.
+        zeros: ``[E, N, K // group_size]`` in activations dtype, required when
+            ``asym=True`` (int8/int4/int2 only).
+        weight_bits: 2, 4, 8, or 16. Ignored for FP8 weights.
+        group_size: group along K for quantized weights (default 128).
+        asym: if ``True``, weights use unsigned encoding; ``zeros`` required.
+        scale_scheme: optional string selecting the per-tensor scale layout.
+            Default (``None``) uses the standard ``[E, N, K // group_size]``
+            per-K-group act-dtype scales -- the drop-in scheme that
+            auto-round's calibration pipeline produces. When set to
+            ``"per_tensor"``, routes to the Variant A per-tensor DPAS
+            entry point. In this mode ``weights`` must be ``[E, K, N]``
+            row-major (either FP8 -- ``float8_e4m3fn`` / ``float8_e5m2`` --
+            or ``torch.int8`` sym) and ``scales`` must be ``[E]`` FP32
+            (one per-expert scalar). No dequant workspace is allocated
+            on this path.
+
+    Returns:
+        outputs: ``[total_tokens, N]`` in the same dtype as activations.
+    """
+    # ------------------------------------------------------------------
+    # Variant A: FP8 / INT8 per-tensor DPAS grouped GEMM.
+    #
+    # Distinct entry point (not multiplexed through the C++ dispatcher).
+    # Weights are `[E, K, N]` row-major (vllm-xpu-kernels convention);
+    # scales are `[E]` FP32 (one per-tensor scale per expert). No workspace
+    # is allocated -- the fused kernel writes only the final output row.
+    #
+    # Weight dtype selects the backend:
+    #   * FP8  (float8_e4m3fn / float8_e5m2)  -> `moe_gemm_prefill_fp8_dpas`
+    #   * INT8 (torch.int8, sym per-tensor)   -> `moe_gemm_prefill_int_dpas`
+    #
+    # STATUS: NEEDS-HARDWARE-VALIDATION. See
+    # `sycl_tla_moe_prefill_{fp8,int}_dpas.hpp` for the ports' provenance
+    # & the on-hardware TODOs.
+    # ------------------------------------------------------------------
+    if scale_scheme is not None:
+        if scale_scheme != "per_tensor":
+            raise ValueError(f"moe_gemm_prefill: unknown scale_scheme={scale_scheme!r}; expected 'per_tensor' or None")
+        if weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            return _moe_gemm_prefill_fp8_pertensor(activations, weights, num_tokens_per_expert, scales=scales)
+        if weights.dtype == torch.int8:
+            return _moe_gemm_prefill_int_pertensor(activations, weights, num_tokens_per_expert, scales=scales)
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be FP8 "
+            "(float8_e4m3fn / float8_e5m2) or INT8 (torch.int8), "
+            f"got {weights.dtype}"
+        )
+
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+            api_name="moe_gemm_prefill",
+        )
+    )
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    # Native FP8 fused GEMM (Variant A): fp8 weight is upcast to bf16/fp16
+    # in registers inside the GEMM kernel and the per-K-group scale is
+    # folded into the accumulator. Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`;
+    # dispatch is decided entirely inside the C++ `moe_gemm_prefill`
+    # dispatcher (which additionally enforces shape preconditions:
+    # N % 16 == 0, K % 32 == 0, K % group_size == 0, group_size % 32 == 0).
+    # If any precondition fails, or the C++-side env cache disagrees with
+    # the Python-side view, the dispatcher silently falls through to the
+    # generic dequant path -- which requires the `[E, K, N]` workspace we
+    # allocate below. See the `else` branch for details.
+
+    # Quantized paths need an [E, K, N] act-dtype scratch buffer that the
+    # on-device dequant kernel fills before the inner Grouped GEMM consumes
+    # it. The unquantized fast path forwards directly through `moe_gemm` and
+    # doesn't need scratch (passing 0 is safe -- the C++ wrapper short-circuits
+    # before touching the workspace pointer in that case). We allocate the
+    # workspace from PyTorch's caching allocator so repeated calls reuse the
+    # same memory.
+    is_unquantized = (weight_bits == 16) and (weights.dtype == activations.dtype)
+    if is_unquantized:
+        # `moe_gemm` requires `[E, K, N]` row-major weights; the decode-style
+        # `[E, N, K]` weight shape coming through this validator can be
+        # transposed into a temporary contiguous `[E, K, N]` view. The
+        # workspace serves the same role as the dequant scratch so the
+        # on-device path stays uniform.
+        dequant_workspace = weights.transpose(1, 2).contiguous()
+        weights_ptr = dequant_workspace.data_ptr()
+        workspace_ptr = dequant_workspace.data_ptr()
+    else:
+        # Reuse a persistent `[E, K, N]` workspace across calls with the same
+        # (device, dtype, E, K, N). For real MoE prefill workloads the same
+        # shape is dispatched on every iteration; allocating a fresh
+        # `E*K*N*sizeof(act)` tensor each call adds non-trivial caching-
+        # allocator overhead (and, on the small shapes, dominates the
+        # quantized GEMM cost). The workspace is kept alive by the cache so
+        # we hand the data_ptr() to the kernel without taking a new ref.
+        #
+        # We allocate the workspace unconditionally for all quantized paths,
+        # including native FP8. The native FP8 launcher fuses GEMM+scale and
+        # never reads the workspace, so the allocation is pure insurance: the
+        # C++ dispatcher may silently fall through to the generic dequant
+        # path if any of its own preconditions disagree with the caller's
+        # opt-in -- e.g. `moe_prefill_native_fp8_enabled()` on
+        # the C++ side caches its env value on first call (so runtime env
+        # toggling won't propagate), the shape preconditions
+        # (`N % 16`, `K % 32`, `K % group_size`, `group_size % 32`) may not
+        # hold, or the act dtype may not be F16/BF16. Without a workspace the
+        # fall-through would hit the generic null-pointer check in
+        # `sycl_tla_moe_mixed.hpp` and raise. Since the workspace lives in
+        # the module-level cache, allocation happens once per shape and adds
+        # no per-call overhead when the native path is taken.
+        dequant_workspace = _get_moe_prefill_workspace(activations.device, activations.dtype, num_experts, K, N)
+        weights_ptr = weights.data_ptr()
+        workspace_ptr = dequant_workspace.data_ptr()
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_prefill(
+        stream,
+        activations.data_ptr(),
+        weights_ptr,
+        scales_ptr,
+        zeros_ptr,
+        outputs.data_ptr(),
+        workspace_ptr,
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(asym),
+    )
+    # The inner CUTLASS-SYCL `moe_gemm` calls `event.wait()` before returning
+    # (see `moe_detail::moe_gemm_launcher` in `sycl_tla_moe.hpp`), so by the
+    # time `lib.moe_gemm_prefill` returns the device has already consumed the
+    # workspace. For the unquantized fast path the workspace is a per-call
+    # transposed copy of `weights` -- drop it now. For the quantized paths
+    # the workspace lives in the module-level cache (`_get_moe_prefill_workspace`)
+    # and is intentionally retained for reuse on the next call. The native
+    # fp8 path allocates no workspace at all, so there is nothing to drop.
+    if is_unquantized:
+        del dequant_workspace
+    return outputs
+
+
+# ---------------------------------------------------------------------------
+# `moe_gemm_prefill` dequant-workspace cache.
+#
+# The Stage-1 quantized prefill kernel dequantises weights into an
+# `[E, K, N]` act-dtype scratch buffer before dispatching to the existing
+# CUTLASS-SYCL grouped GEMM. In real model usage the same `(E, K, N, dtype)`
+# tuple is hit on every prefill step, so allocating a fresh
+# `E * K * N * sizeof(act_dtype)` tensor per call adds caching-allocator
+# overhead that is significant on the small/medium shapes.
+#
+# We cache one tensor per `(device, dtype, E, K, N)` key. The cache holds
+# references that keep the tensors alive across calls; callers can clear it
+# explicitly via `clear_moe_prefill_workspace_cache()` if they need to
+# release the memory (e.g., before allocating large buffers for a different
+# subsystem).
+# ---------------------------------------------------------------------------
+
+_MOE_PREFILL_WORKSPACE_CACHE: "dict[tuple, torch.Tensor]" = {}
+
+
+def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int, K: int, N: int) -> torch.Tensor:
+    """Return a persistent `[E, K, N]` workspace tensor for the prefill kernel.
+
+    The tensor is allocated lazily on first use and retained in a module-level
+    cache so subsequent calls with the same `(device, dtype, E, K, N)` reuse
+    the same memory. Returned tensors are contiguous and uninitialised; the
+    kernel writes every element before reading.
+    """
+    # `device` may be a `torch.device` or a string; normalise so the cache key
+    # is hashable and identifies the exact device (including ordinal).
+    if not isinstance(device, torch.device):
+        device = torch.device(device)
+    key = (device.type, device.index, dtype, int(E), int(K), int(N))
+    ws = _MOE_PREFILL_WORKSPACE_CACHE.get(key)
+    if ws is None:
+        ws = torch.empty((E, K, N), device=device, dtype=dtype)
+        _MOE_PREFILL_WORKSPACE_CACHE[key] = ws
+    return ws
+
+
+def clear_moe_prefill_workspace_cache() -> None:
+    """Release all cached `moe_gemm_prefill` dequant-workspace tensors."""
+    _MOE_PREFILL_WORKSPACE_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# Native FP8 prefill opt-in.
+#
+# When `ARK_MOE_PREFILL_NATIVE_FP8` is truthy, `moe_gemm_prefill` skips the
+# `[E, K, N]` bf16/fp16 workspace and dispatches to the fused native-fp8
+# kernel in `sycl_tla_moe_prefill_fp8_native.hpp`. The kernel loads fp8
+# weight bytes and the per-K-group scale directly, upcasts to
+# ``act_dtype`` in registers, folds the scale into the accumulator, and
+# writes only the final output row -- no `[E, K, N]` global-memory round-
+# trip.
+#
+# The C++ dispatcher performs an additional shape check
+# (``N % 16 == 0`` and ``K % 32 == 0`` and ``K % group_size == 0`` and
+# ``group_size % 32 == 0``) and silently falls back to the dequant path
+# for shapes the native tile can't cover, so it is safe to leave this
+# flag enabled globally.
+#
+# Truthy values (case-insensitive): "1", "true", "on", "yes".
+# ---------------------------------------------------------------------------
+
+
+def _native_fp8_prefill_enabled() -> bool:
+    """Return True iff ``ARK_MOE_PREFILL_NATIVE_FP8`` is truthy."""
+    env = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+    if env is None:
+        return False
+    return env.strip().lower() in ("1", "true", "on", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Unified MoE entry point
+#
+# `moe_gemm_decode` and `moe_gemm_prefill` accept identical argument shapes
+# and dtypes -- the only difference is which underlying SYCL kernel is
+# launched (a GEMV variant tuned for 1-2 tokens/expert vs. a Grouped GEMM
+# variant tuned for many tokens/expert). Model code that runs through both
+# regimes (prefill of a prompt, then autoregressive decode) traditionally
+# has to keep two call sites and branch on phase. `moe(...)` collapses that
+# into a single API and auto-selects the right kernel from the token
+# distribution.
+#
+# Callers that already know the phase (e.g., a model's generation loop knows
+# whether it's in prefill or decode) should pass it via the `phase` argument
+# to avoid the small host-device sync that `phase="auto"` needs to inspect
+# `num_tokens_per_expert.max()`.
+# ---------------------------------------------------------------------------
+
+# Default tokens-per-expert threshold used by `phase="auto"`. The decode
+# GEMV kernel is faster when every expert sees only a handful of tokens
+# (TopK >= 1 with batch size 1-4); above that the GEMM-tuned prefill kernel
+# wins. The crossover is hardware-dependent but `4` is a conservative default
+# that matches the regime `moe_gemm_decode`'s docstring describes
+# ("typically only 1-2 tokens", up to top-k * small batch).
+_MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT = 4
+
+_MOE_VALID_PHASES = ("auto", "decode", "prefill")
+
+
+def moe(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    zeros: Optional[torch.Tensor] = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+    phase: str = "auto",
+    decode_threshold: int = _MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT,
+) -> torch.Tensor:
+    """Unified MoE GEMM entry point that dispatches to decode or prefill.
+
+    This is a thin Python-side dispatcher over :func:`moe_gemm_decode` and
+    :func:`moe_gemm_prefill`. The two underlying kernels accept the same
+    argument shapes/dtypes (see :func:`moe_gemm_decode` for the full layout
+    contract); ``moe`` simply picks the one that is faster for the current
+    token distribution so model code can have a single call site for both
+    prefill and decode phases.
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: ``[E, N, K_packed]`` -- see :func:`moe_gemm_decode` for the
+            quant-specific layout/dtype contract.
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``.
+        scales, zeros, weight_bits, group_size, asym: forwarded to the
+            underlying kernel; see :func:`moe_gemm_decode`.
+        phase: dispatch mode.
+
+            * ``"auto"`` (default): inspect ``num_tokens_per_expert.max()``
+              and pick decode if every expert sees ``<= decode_threshold``
+              tokens, otherwise prefill. This incurs one small host-device
+              sync per call.
+            * ``"decode"``: always dispatch to :func:`moe_gemm_decode`. Use
+              when the model's generation loop already knows it is in the
+              decode phase; avoids the sync.
+            * ``"prefill"``: always dispatch to :func:`moe_gemm_prefill`.
+              Use when the model knows it is in the prefill phase.
+        decode_threshold: ``"auto"`` mode dispatches to decode when
+            ``num_tokens_per_expert.max() <= decode_threshold``. Defaults to
+            4 (the regime the decode GEMV kernel is tuned for).
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype. Bit-identical to the
+        underlying kernel that was dispatched.
+    """
+    if phase not in _MOE_VALID_PHASES:
+        raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+
+    if phase == "auto":
+        # `.max().item()` triggers a host-device sync; callers in tight
+        # decode loops should pass `phase="decode"` explicitly to skip this.
+        # We tolerate a non-int32 / non-contiguous tensor here because the
+        # downstream kernel wrappers will normalise it anyway.
+        if num_tokens_per_expert.numel() == 0:
+            raise ValueError("num_tokens_per_expert must be non-empty")
+        max_tpe = int(num_tokens_per_expert.max().item())
+        phase = "decode" if max_tpe <= int(decode_threshold) else "prefill"
+
+    if phase == "decode":
+        return moe_gemm_decode(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+        )
+    # phase == "prefill"
+    return moe_gemm_prefill(
+        activations,
+        weights,
+        num_tokens_per_expert,
+        scales=scales,
+        zeros=zeros,
+        weight_bits=weight_bits,
+        group_size=group_size,
+        asym=asym,
+    )
 
 
 def patch_torch_sdpa(*args, **kwargs):
