@@ -323,6 +323,12 @@ silently falls back to precedence 2 (then 3) whenever any of these fail:
 - `group_size ∈ {32, 64, 128, 256}`
 - `asym == false` (asym S2 is out of scope for the DPAS path)
 
+Accuracy parity is covered by
+`test_moe_prefill_accuracy.py::test_accuracy_int2_dpas_per_group`, which
+forces `ARK_MOE_PREFILL_DPAS_S2=1` + `ARK_MOE_PREFILL_DPAS_INT8=0` so the
+single-pass mainloop is exclusively exercised, at the same production
+shapes as `test_accuracy_int2`, with tolerance `rtol=atol=1.5e-1`.
+
 ## Decode weight-reuse (multi-token, opt-in)
 
 The packed INT4/INT2 **decode** (GEMV) kernels already fuse dequant inline

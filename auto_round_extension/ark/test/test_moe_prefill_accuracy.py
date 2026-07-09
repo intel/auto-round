@@ -687,6 +687,67 @@ class TestMoEGemmPrefillAccuracy:
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_int8
 
+    @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_accuracy_int2_dpas_per_group(self, dtype):
+        """Parity of the S2-sym single-pass DPAS mixed-input mainloop.
+
+        Sibling of :meth:`test_accuracy_int4_dpas_per_group` -- uses the
+        standard ``moe_gemm_prefill`` call path with
+        ``ARK_MOE_PREFILL_DPAS_S2=1`` (default ON) and
+        ``ARK_MOE_PREFILL_DPAS_INT8=0`` so the two-pass S2->S8 upcast
+        fallback is disabled and we exercise the single-pass mainloop
+        exclusively. The C++ dispatcher should pick the S2 DPAS branch
+        for shapes that satisfy ``N%64==0 && K%32==0 && K%4==0 &&
+        K%group_size==0 && group_size%4==0 && group_size in
+        {32,64,128,256}`` and silently fall back to the dequant path
+        otherwise, so this test is checking parity, not that the DPAS
+        branch is exercised.
+
+        STATUS: NEEDS-HARDWARE-VALIDATION.
+        """
+        group_size = 128
+        prev_s2 = os.environ.get("ARK_MOE_PREFILL_DPAS_S2")
+        prev_int8 = os.environ.get("ARK_MOE_PREFILL_DPAS_INT8")
+        os.environ["ARK_MOE_PREFILL_DPAS_S2"] = "1"
+        os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = "0"
+        try:
+            for label, E, tpe, N, K in PREFILL_SHAPES:
+                if K % group_size != 0 or K % 4 != 0:
+                    continue
+                total_tokens = sum(tpe)
+                activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+                w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+                scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+                packed = _pack_int2_sym(w_float, scales, group_size)
+                dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
+                ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+                out = ark.moe_gemm_prefill(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    weight_bits=2,
+                    group_size=group_size,
+                    asym=False,
+                )
+
+                ref = _reference_moe_prefill(activations, dequant, ntpe)
+                assert out.shape == (total_tokens, N), f"{label}: bad shape {out.shape}"
+                torch.testing.assert_close(
+                    out, ref, msg=lambda m, lbl=label: f"[{lbl}] {m}", **_tol_for_dtype(_TOL_INT2, dtype)
+                )
+        finally:
+            if prev_s2 is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_S2", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_S2"] = prev_s2
+            if prev_int8 is None:
+                os.environ.pop("ARK_MOE_PREFILL_DPAS_INT8", None)
+            else:
+                os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_int8
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])

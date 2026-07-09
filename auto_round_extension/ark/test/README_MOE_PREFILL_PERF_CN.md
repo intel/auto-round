@@ -252,6 +252,12 @@ DPAS 流水线,从而消除独立的 dequant 遍。asym S2 始终回退到 dequa
 - `group_size ∈ {32, 64, 128, 256}`
 - `asym == false`(asym S2 不在 DPAS 路径的支持范围内)
 
+精度对齐由
+`test_moe_prefill_accuracy.py::test_accuracy_int2_dpas_per_group`
+覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S2=1` +
+`ARK_MOE_PREFILL_DPAS_INT8=0`,专门验证单遍 mainloop 路径,形状矩阵与
+`test_accuracy_int2` 一致,容差 `rtol=atol=1.5e-1`。
+
 ## Decode 权重复用(multi-token,opt-in)
 
 打包的 INT4/INT2 **decode**(GEMV)kernel 已经在寄存器中内联融合了
