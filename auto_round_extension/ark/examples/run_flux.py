@@ -1,22 +1,24 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import contextlib
-from dataclasses import dataclass
 import gzip
 import json
 import os
-from pathlib import Path
 import statistics
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
 from diffusers import FluxPipeline
 from diffusers.pipelines.flux.pipeline_flux import calculate_shift, retrieve_timesteps
-
 from flux_sparse_patch import patch_flux_sparse_attention_from_env
-
 
 dtype = torch.bfloat16
 device = "xpu"
+
 
 def env_flag(name, default="0"):
     return os.getenv(name, default).lower() not in {"0", "false", "no", "off"}

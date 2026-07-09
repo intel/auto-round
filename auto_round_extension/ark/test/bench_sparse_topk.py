@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import argparse
 import csv
 import importlib.util
@@ -12,7 +15,6 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LOCAL_ARK_PARENT = REPO_ROOT / "auto_round_extension" / "ark"
 if str(LOCAL_ARK_PARENT) not in sys.path:
@@ -21,20 +23,12 @@ if str(LOCAL_ARK_PARENT) not in sys.path:
 import auto_round_kernel as ark
 
 
-def ensure_sparse_binding() -> None:
-    local_kernel_dir = REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel"
-    current_file = getattr(getattr(ark, "xpu_lib", None), "__file__", None)
-    if current_file is not None and hasattr(ark.xpu_lib, "sage_sparse"):
-        try:
-            if Path(current_file).resolve().is_relative_to(local_kernel_dir.resolve()):
-                return
-        except Exception:
-            pass
-    candidates = sorted((local_kernel_dir / "xbuild").glob("auto_round_kernel_xpu*.so"))
-    if not candidates:
-        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in xbuild/")
-    ext_path = candidates[-1]
+def _load_sparse_binding(ext_path: Path) -> None:
+    ext_path = ext_path.resolve()
+    if not ext_path.is_file():
+        raise RuntimeError(f"Unable to locate XPU extension: {ext_path}")
     module_name = "auto_round_kernel._bench.auto_round_kernel_xpu"
+    print(f"Loading XPU extension from {ext_path} as {module_name}")
     spec = importlib.util.spec_from_file_location(module_name, ext_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load extension spec from {ext_path}")
@@ -45,6 +39,36 @@ def ensure_sparse_binding() -> None:
     if not hasattr(module, "sage_sparse"):
         raise RuntimeError(f"Loaded extension does not expose sage_sparse: {ext_path}")
     ark.xpu_lib = module
+
+
+def _resolve_sparse_binding(args: argparse.Namespace) -> Path | None:
+    local_kernel_dir = REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel"
+    current_file = getattr(getattr(ark, "xpu_lib", None), "__file__", None)
+    if args.xpu_so is not None:
+        return args.xpu_so.resolve()
+    if args.xbuild_dir is not None:
+        candidates = sorted(args.xbuild_dir.resolve().glob("auto_round_kernel_xpu*.so"))
+        if not candidates:
+            raise RuntimeError(f"Unable to locate built XPU extension with sage_sparse in {args.xbuild_dir}")
+        return candidates[-1]
+    if current_file is not None and hasattr(ark.xpu_lib, "sage_sparse"):
+        try:
+            current_path = Path(current_file).resolve()
+            if current_path.is_relative_to(local_kernel_dir.resolve()):
+                print(f"Using already-loaded local XPU extension from {current_path}")
+                return None
+        except Exception:
+            pass
+    candidates = sorted((local_kernel_dir / "xbuild").glob("auto_round_kernel_xpu*.so"))
+    if not candidates:
+        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in auto_round_kernel/xbuild")
+    return candidates[-1]
+
+
+def ensure_sparse_binding(args: argparse.Namespace) -> None:
+    ext_path = _resolve_sparse_binding(args)
+    if ext_path is not None:
+        _load_sparse_binding(ext_path)
 
 
 def is_xpu_available() -> bool:
@@ -93,7 +117,15 @@ def empty_xpu_cache() -> None:
         torch.xpu.empty_cache()
 
 
-def build_inputs(batch: int, num_heads_q: int, num_heads_kv: int, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device):
+def build_inputs(
+    batch: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    seq_len: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    device: torch.device,
+):
     torch.manual_seed(20260611)
     q = torch.randn((batch, num_heads_q, seq_len, head_dim), dtype=dtype, device=device)
     k = torch.randn((batch, num_heads_kv, seq_len, head_dim), dtype=dtype, device=device)
@@ -148,9 +180,23 @@ def make_row(
     }
 
 
-def try_benchmark(mode: str, fn, *, batch: int, num_heads_q: int, num_heads_kv: int, seq_len: int, head_dim: int,
-                  dtype: torch.dtype, is_causal: bool, warmup: int, iters: int, requested_topk: float | None = None,
-                  selected_ratio: float | None = None, selected_blocks_per_row: float | None = None) -> dict[str, object]:
+def try_benchmark(
+    mode: str,
+    fn,
+    *,
+    batch: int,
+    num_heads_q: int,
+    num_heads_kv: int,
+    seq_len: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    is_causal: bool,
+    warmup: int,
+    iters: int,
+    requested_topk: float | None = None,
+    selected_ratio: float | None = None,
+    selected_blocks_per_row: float | None = None,
+) -> dict[str, object]:
     try:
         latency_ms = bench(fn, warmup, iters)
         return make_row(
@@ -208,8 +254,8 @@ def benchmark_preprocess_stages(
         _block_map_lut_triton,
         _fill_block_map_triton,
         _get_pool_sim_triton_simmean_fuse_quant,
-        _safe_softmax as _triton_safe_softmax,
     )
+    from auto_round_kernel.sparge_preprocess_triton import _safe_softmax as _triton_safe_softmax
 
     stage_names = [
         "key_mean",
@@ -310,7 +356,7 @@ def benchmark_preprocess_stages(
                 pooled_q_for_routing.to(torch.float32),
                 pooled_k_for_q.transpose(-1, -2).to(torch.float32),
             )
-            pooled_score *= ctx.head_dim ** -0.5
+            pooled_score *= ctx.head_dim**-0.5
             pooled_score = pooled_score.masked_fill(~sim_k_expand, -torch.inf)
             if ctx.is_causal:
                 causal_mask = ark._build_block_causal_mask(
@@ -332,7 +378,9 @@ def benchmark_preprocess_stages(
             sim_k_expand,
             sim_q_expand,
             causal_mask,
-        ), stage_ms["pooled_score_softmax_sort"] = bench_with_output(routing_stage, warmup=0, iters=1)
+        ), stage_ms[
+            "pooled_score_softmax_sort"
+        ] = bench_with_output(routing_stage, warmup=0, iters=1)
 
         _, _, _, num_k_blocks = pooled_prob.shape
         num_to_select = (
@@ -448,7 +496,9 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
 
 
 def print_summary(rows: list[dict[str, object]]) -> None:
-    print("| mode | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |")
+    print(
+        "| mode | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |"
+    )
     print("|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         topk = "-" if row["requested_topk"] is None else f"{float(row['requested_topk']):.3f}"
@@ -478,7 +528,7 @@ def write_csv(rows: list[dict[str, object]], output_csv: Path) -> None:
 
 
 def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
-    ensure_sparse_binding()
+    ensure_sparse_binding(args)
     if not is_xpu_available():
         raise RuntimeError("XPU device is required")
 
@@ -591,7 +641,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                 attention_sink=False,
                 quant_block_size=args.quant_block_size,
                 tensor_layout=args.tensor_layout,
-                query_tile_tokens=args.q_tile_override if args.q_tile_override else None,
+                query_tile_tokens=args.q_tile_override or None,
                 sparse_q_block_tokens=args.sparse_q_block_tokens,
                 sparse_k_block_tokens=args.sparse_k_block_tokens,
             )
@@ -857,7 +907,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tensor-layout", choices=("HND", "NHD"), default="HND")
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=3)
-    parser.add_argument("--causal", action="store_true", help="Run causal attention instead of the default non-causal mode.")
+    parser.add_argument(
+        "--causal", action="store_true", help="Run causal attention instead of the default non-causal mode."
+    )
+    parser.add_argument(
+        "--xbuild-dir",
+        type=Path,
+        default=None,
+        help="Directory containing the benchmarked auto_round_kernel_xpu*.so build artifact.",
+    )
+    parser.add_argument(
+        "--xpu-so",
+        type=Path,
+        default=None,
+        help="Explicit path to the auto_round_kernel_xpu*.so artifact to benchmark.",
+    )
     parser.add_argument(
         "--output-csv",
         type=Path,

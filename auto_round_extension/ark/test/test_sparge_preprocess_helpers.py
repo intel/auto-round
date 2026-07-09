@@ -9,12 +9,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from auto_round_kernel.sparge_preprocess_triton import _fill_block_map_triton
 from auto_round_kernel.sparse_attention import (
     _build_block_causal_mask,
     _build_sparge_preprocess_context,
     _fill_block_map_torch,
 )
-from auto_round_kernel.sparge_preprocess_triton import _fill_block_map_triton
 
 
 def test_fill_block_map_torch_skips_preselected_entries():

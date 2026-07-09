@@ -240,6 +240,7 @@ def _prefer_local_xpu_lib(lib):
     local_lib = _load_local_xpu_lib()
     return local_lib if local_lib is not None else lib
 
+
 try:
     from . import auto_round_kernel_cpu as _cpu_lib_mod
 
@@ -1313,6 +1314,7 @@ def sageattn(
         **kwargs,
     )
 
+
 from .sparse_attention import (
     _block_map_lut_torch,
     _build_block_causal_mask,
@@ -1328,6 +1330,7 @@ from .sparse_attention import (
     sparge_preprocess_topk,
     sparge_sage2_attn_meansim_topk_xpu,
 )
+
 
 def sageattn_varlen(
     q: torch.Tensor,

@@ -33,6 +33,7 @@
 #include "stla/xe_sage_fwd_kernel.hpp"
 #endif
 #if defined(ARK_SDPA_ENABLE_SPARSE)
+#include "stla/xe_sparse_fmha_fwd_epilogue.hpp"
 #include "stla/xe_sparse_sagev1_fwd_mainloop.hpp"
 #include "stla/xe_sparse_sage_fwd_kernel.hpp"
 #endif
@@ -485,8 +486,8 @@ struct FMHAConfig {
                                                      GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
 
       // Epilogue
-      using CollectiveEpilogue =
-          cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
+      using CollectiveEpilogue = cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput,
+                                                                                   TensorO, GmemTiledCopyO>;
 
       static_assert(!(persistent & Causal), "persistent SDPA kernel not support Causal yet");
       using FMHAKernel = conditional_t<
@@ -508,8 +509,8 @@ struct FMHAConfig {
                                                        GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
 
         // Epilogue
-        using CollectiveEpilogue =
-            cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
+        using CollectiveEpilogue = cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput,
+                                                                                     TensorO, GmemTiledCopyO>;
 
         static_assert(!(persistent & Causal), "persistent SDPA kernel not support Causal yet");
         using FMHAKernel =
@@ -531,8 +532,8 @@ struct FMHAConfig {
                                                        GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
 
         // Epilogue
-        using CollectiveEpilogue =
-            cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
+        using CollectiveEpilogue = cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput,
+                                                                                     TensorO, GmemTiledCopyO>;
 
         static_assert(!(persistent & Causal), "persistent SDPA kernel not support Causal yet");
         using FMHAKernel =
@@ -975,7 +976,8 @@ struct SparseSageConfig {
                                                              TensorK_cache, TensorV_cache, GmemTiledCopyQ, GmemTiledCopyK,
                                                              GmemTiledCopyV, GmemTiledCopyK_cache, GmemTiledCopyV_cache>;
       using CollectiveEpilogue =
-          cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
+          cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                           GmemTiledCopyO>;
       using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
                                                                       CollectiveEpilogue, Scheduler>;
       SageKernelRunner<FMHAKernel, isVarLen> runner;
@@ -990,7 +992,8 @@ struct SparseSageConfig {
                                                                GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
                                                                GmemTiledCopyV_cache>;
         using CollectiveEpilogue =
-            cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
+            cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                             GmemTiledCopyO>;
         using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
                                                                         CollectiveEpilogue, Scheduler>;
         SageKernelRunner<FMHAKernel, isVarLen> runner;
@@ -1004,7 +1007,8 @@ struct SparseSageConfig {
                                                                GmemTiledCopyK, GmemTiledCopyV, GmemTiledCopyK_cache,
                                                                GmemTiledCopyV_cache>;
         using CollectiveEpilogue =
-            cutlass::fmha::collective::FMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO, GmemTiledCopyO>;
+            cutlass::fmha::collective::SparseFMHAFwdEpilogue<CollectiveMainloop, TileShapeOutput, TensorO,
+                                                             GmemTiledCopyO>;
         using FMHAKernel = cutlass::fmha::kernel::XeSparseSageFwdKernel<ProblemShapeType, CollectiveMainloop,
                                                                         CollectiveEpilogue, Scheduler>;
         SageKernelRunner<FMHAKernel, isVarLen> runner;
