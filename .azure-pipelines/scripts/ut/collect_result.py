@@ -266,7 +266,6 @@ class FailureContextWriter:
         content = self._read_file(log_path)
         lines = content.splitlines()
         excerpt = self._extract_excerpt(lines)
-        tail = "\n".join(lines[-self.max_lines :]) if lines else ""
 
         return {
             "test_name": result.name,
@@ -274,7 +273,6 @@ class FailureContextWriter:
             "log_file": result.filename,
             "duration": result.duration,
             "excerpt": excerpt,
-            "tail": tail,
         }
 
     def _read_file(self, path: Path) -> str:
@@ -302,7 +300,7 @@ class FailureContextWriter:
                                 break
                         end = min(max_end, failed_end) if failed_end is not None else max_end
                     else:
-                        start = max(0, idx - 10)
+                        start = max(0, idx)
                         end = min(len(lines), idx + 80)
                     selected = lines[start:end]
                     break
