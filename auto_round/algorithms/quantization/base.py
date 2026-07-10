@@ -261,7 +261,6 @@ class BaseQuantizer(BasePipelineMember):
     def attention_mask(self, value: list) -> None:
         self._calibration_state.attention_mask = value if value is not None else []
 
-
     @property
     def gradient_accumulate_steps(self) -> int:
         return self._calibration_state.gradient_accumulate_steps
@@ -269,8 +268,6 @@ class BaseQuantizer(BasePipelineMember):
     @gradient_accumulate_steps.setter
     def gradient_accumulate_steps(self, value: int) -> None:
         self._calibration_state.gradient_accumulate_steps = value
-
-
 
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
