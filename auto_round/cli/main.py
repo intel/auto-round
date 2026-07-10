@@ -56,6 +56,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
         "batch_size": args.batch_size,
+        "gradient_accumulate_steps": getattr(args, "gradient_accumulate_steps", 1),
         "low_gpu_mem_usage": args.low_gpu_mem_usage,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
@@ -484,3 +485,4 @@ def run_opt_rtn():
 
 def run_mllm():
     run()
+
