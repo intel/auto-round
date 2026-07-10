@@ -208,7 +208,7 @@ S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 
 | 优先级       | Env 开关                                                                        | Kernel                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1 (最高)     | `ARK_MOE_PREFILL_DPAS_S4` 未设置或为真值(**默认开启**)                        | **S4-sym 单遍 DPAS 混合输入 mainloop**。直接读取 packed `[E, N, K/2]` `uint8_t` nibble,通过 CuTe `reorder(tBrB, tCrB)`(依赖 `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`)在寄存器中把 S4 上转到 `act_dtype`。B 侧 global 带宽正好是 S8 路径的一半。Per-K-group scale 使用与 INT8 相同的组边界延迟折叠。实现于 `sycl_tla_moe_prefill_s4_dpas.hpp`。**状态:NEEDS-HARDWARE-VALIDATION**(未经测试的移植)。 |
+| 1 (最高)     | `ARK_MOE_PREFILL_DPAS_S4` 为真值(**默认关闭**)                        | **S4-sym 单遍 DPAS 混合输入 mainloop**。直接读取 packed `[E, N, K/2]` `uint8_t` nibble,通过 CuTe `reorder(tBrB, tCrB)`(依赖 `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`)在寄存器中把 S4 上转到 `act_dtype`。B 侧 global 带宽正好是 S8 路径的一半。Per-K-group scale 使用与 INT8 相同的组边界延迟折叠。实现于 `sycl_tla_moe_prefill_s4_dpas.hpp`。**状态:NEEDS-HARDWARE-VALIDATION** — 在生产规模 prefill 形状(`test_accuracy_int4`,`medium E=8`)上目前会算错一小部分输出,因此**默认关闭**;仅在硬件验证时把该 env 开关设为真值。 |
 | 2 (回退)     | `ARK_MOE_PREFILL_DPAS_S4=0` 且 `ARK_MOE_PREFILL_DPAS_INT8` 为真值(**默认开启**) | **S4→S8 上转 + 共享 INT8 DPAS mainloop**。两遍:`launch_upcast_int4_sym_to_int8` 把权重写成 `[E, N, K]` `int8_t`(复用 dequant workspace),再由标准 INT8 per-group DPAS mainloop 消费。相较路径 1 需要付出 ~E·N·K 字节的 workspace 往返。实现于 `sycl_tla_moe_mixed.hpp` + `sycl_tla_moe_prefill_int_dpas.hpp`。 |
 | 3 (默认回退) | `ARK_MOE_PREFILL_DPAS_S4=0` 且 `ARK_MOE_PREFILL_DPAS_INT8=0`                    | v1 dequant kernel(`sycl_tla_moe_mixed.hpp::launch_dequant_int4`)后接标准 bf16/fp16 grouped GEMM。同时支持 sym 与 asym。                                                                                                                                                                                                                                                                                                                                              |
 
@@ -226,7 +226,9 @@ S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0`,专门验证单遍 mainloop 路径,形状矩阵与
-`test_accuracy_int4` 一致,容差 `rtol=atol=1e-1`。
+`test_accuracy_int4` 一致,容差 `rtol=atol=1e-1`。该用例目前标记为
+`xfail`(单遍路径默认关闭,且在硬件验证前仍会算错一部分输出);默认的
+`test_accuracy_int4` 改为验证已通过校验的 S4→S8 上转 + INT8 DPAS 回退路径。
 
 ## FP8 per-expert (per-tensor) 性能测试
 

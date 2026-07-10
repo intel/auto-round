@@ -670,10 +670,11 @@ class TestMoEGemmPrefillPerf:
 
             # Default ARK path (dequant + GEMM). INT4-sym is DPAS-accelerated
             # via TWO independent branches inside `moe_gemm_prefill`:
-            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default ON) -- single-pass
+            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default OFF) -- single-pass
             #      mainloop reading packed nibbles directly via CuTe's
             #      `NumericArrayConverter<ElementA, int4b_t, N>` in
-            #      `reorder(tBrB, tCrB)`. Preferred; the new hot path.
+            #      `reorder(tBrB, tCrB)`. Preferred once hardware-validated;
+            #      currently disabled by default (miscomputes on some shapes).
             #   2. `ARK_MOE_PREFILL_DPAS_INT8=1` (default ON) -- two-pass
             #      S4->S8 upcast into workspace + shared INT8 DPAS
             #      mainloop. Fallback for when (1) is disabled.

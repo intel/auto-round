@@ -1,10 +1,15 @@
 // SYCL MoE Prefill — S4 (sym) mixed-input DPAS Grouped GEMM (Variant B)
 // (Fork of `sycl_tla_moe_prefill_int_dpas.hpp` per-group mainloop)
 //
-// STATUS: NEEDS-HARDWARE-VALIDATION -- untested single-pass port. Precedence
-// and gating in `sycl_tla_moe_mixed.hpp` fall back to the S4->S8 upcast +
-// INT8 DPAS path when this header's env gate is off, so a regression can
-// be neutralised at runtime without a rebuild.
+// STATUS: NEEDS-HARDWARE-VALIDATION -- untested single-pass port. The env
+// gate `ARK_MOE_PREFILL_DPAS_S4` defaults OFF (see
+// `moe_prefill_dpas_s4_enabled()` below): the packed-nibble mainloop
+// currently miscomputes a small fraction of outputs on production-scale
+// prefill shapes (`test_moe_prefill_accuracy.py::test_accuracy_int4`,
+// `medium E=8`), so the precedence and gating in `sycl_tla_moe_mixed.hpp`
+// fall back to the S4->S8 upcast + INT8 DPAS path unless the gate is
+// explicitly enabled -- keeping this path available for hardware validation
+// without regressing the default int4-sym prefill result.
 // ---------------------------------------------------------------------------
 // Design rationale
 // ----------------
@@ -668,24 +673,32 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 }
 
 // ---------------------------------------------------------------------------
-// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default ON, semantics
-// identical to `moe_prefill_dpas_int_enabled` / `moe_prefill_dpas_fp8
-// _enabled`). Decoupled from `ARK_MOE_PREFILL_DPAS_INT8` so this new
-// single-pass path can be disabled in isolation if it regresses --
-// switching S4 off falls back to the S4->S8 upcast + INT8 DPAS path
-// which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`.
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default OFF). Decoupled from
+// `ARK_MOE_PREFILL_DPAS_INT8` so this single-pass path can be toggled in
+// isolation -- switching S4 off (the default) falls back to the S4->S8 upcast
+// + INT8 DPAS path which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`.
 //
-// Truthy values (case-insensitive): "1", "true", "on", "yes".
-// Explicit "0" / "false" / "off" / "no" disable. Re-read on every
+// This path defaults OFF because the single-pass packed-nibble mainloop is
+// still NEEDS-HARDWARE-VALIDATION and currently miscomputes a small fraction
+// of outputs on the production-scale prefill shapes (see
+// `test_moe_prefill_accuracy.py::test_accuracy_int4`, `medium E=8`: a handful
+// of ~70x outliers on the fp16 int4-sym path). The header preamble documents
+// the env gate as the intended neutralisation mechanism for exactly this kind
+// of regression, so we default it OFF and route int4-sym through the validated
+// INT4->INT8 upcast + INT8 DPAS fallback until the packed-nibble path is
+// re-verified on hardware. Flip the env var on to opt back into the
+// single-pass path for that validation work.
+//
+// Truthy values (case-insensitive) enable: "1", "true", "on", "yes".
+// Anything else (including unset) leaves the path disabled. Re-read on every
 // call so benchmarks / tests can toggle the path in-process.
 // ---------------------------------------------------------------------------
 inline bool moe_prefill_dpas_s4_enabled() {
   const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
-  if (env == nullptr) return true;  // default ON
+  if (env == nullptr) return false;  // default OFF (see rationale above)
   std::string s(env);
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return true;
+  return s == "1" || s == "true" || s == "on" || s == "yes";
 }
 
 // ---------------------------------------------------------------------------

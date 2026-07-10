@@ -276,7 +276,7 @@ falls through to the dequant path.
 
 | Precedence  | Env flag                                                              | Kernel                                                                                                                                                                                                                                                                                                                                                                       |
 | ----------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 (highest) | `ARK_MOE_PREFILL_DPAS_S4` unset or truthy (**default ON**)            | **S4-sym single-pass DPAS mixed-input mainloop.** Reads packed `[E, N, K/2]` `uint8_t` nibbles directly and folds the S4→`act_dtype` upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)` (which relies on `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`). B-side global traffic is exactly half of the S8 path. Per-K-group scale is applied through the same deferred group-boundary fold as INT8. Implemented in `sycl_tla_moe_prefill_s4_dpas.hpp`. **Status: NEEDS-HARDWARE-VALIDATION** (untested port). |
+| 1 (highest) | `ARK_MOE_PREFILL_DPAS_S4` truthy (**default OFF**)            | **S4-sym single-pass DPAS mixed-input mainloop.** Reads packed `[E, N, K/2]` `uint8_t` nibbles directly and folds the S4→`act_dtype` upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)` (which relies on `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`). B-side global traffic is exactly half of the S8 path. Per-K-group scale is applied through the same deferred group-boundary fold as INT8. Implemented in `sycl_tla_moe_prefill_s4_dpas.hpp`. **Status: NEEDS-HARDWARE-VALIDATION** — currently miscomputes a small fraction of outputs on production-scale prefill shapes (`test_accuracy_int4`, `medium E=8`), so it is **disabled by default**; set the env flag truthy only for hardware-validation runs. |
 | 2 (fallback)| `ARK_MOE_PREFILL_DPAS_S4=0` and `ARK_MOE_PREFILL_DPAS_INT8` truthy (**default ON**) | **S4→S8 upcast + shared INT8 DPAS mainloop.** Two-pass: `launch_upcast_int4_sym_to_int8` writes an `[E, N, K]` `int8_t` view of the dequant workspace, then the standard INT8 per-group DPAS mainloop consumes it. Robust but pays the ~E·N·K byte round-trip vs. path 1. Implemented in `sycl_tla_moe_mixed.hpp` + `sycl_tla_moe_prefill_int_dpas.hpp`. |
 | 3 (default) | `ARK_MOE_PREFILL_DPAS_S4=0` and `ARK_MOE_PREFILL_DPAS_INT8=0`         | v1 dequant kernel (`sycl_tla_moe_mixed.hpp::launch_dequant_int4`) followed by the stock bf16/fp16 grouped GEMM. Handles both sym and asym.                                                                                                                                                                                                                                                                                                                     |
 
@@ -296,7 +296,11 @@ Accuracy parity is covered by
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0` so the single-pass mainloop is
 exclusively exercised, at the same production shapes as
-`test_accuracy_int4`, with tolerance `rtol=atol=1e-1`.
+`test_accuracy_int4`, with tolerance `rtol=atol=1e-1`. That test is
+currently marked `xfail` (the single-pass path is disabled by default
+and still miscomputes a fraction of outputs pending hardware
+validation); the default `test_accuracy_int4` exercises the validated
+S4→S8 upcast + INT8 DPAS fallback instead.
 
 ## FP8 per-expert (per-tensor) perf tests
 
