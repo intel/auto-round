@@ -16,35 +16,29 @@ import gc
 import time
 from contextlib import ExitStack
 from functools import partial
-from typing import Any, Callable, Optional, Union
+from typing import Any, Optional, Union
 
 import accelerate
 import torch
-from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_balanced_memory, get_max_memory
+from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
-from auto_round import envs
+
 from auto_round.calibration.utils import (
-    _infer_last_cache_name,
-    _split_inputs_diffusion,
     _update_inputs,
 )
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
-    check_skippable_keywords,
     immediate_pack,
-    init_cache,
     is_nv_fp,
     is_static_wfp8afp8,
-    reset_params,
 )
+
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
-    check_seqlen_compatible,
     check_to_quantized,
     clear_memory,
     compress_layer_names,
@@ -52,16 +46,13 @@ from auto_round.utils import (
     flatten_list,
     get_block_names,
     get_module,
-    hook_ngram_embeddings_on_cpu,
     is_auto_device_mapping,
-    is_quantized_input_module,
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     to_device,
-    to_dtype,
-    wrap_block_forward_positional_to_kwargs,
 )
+
 from auto_round.utils.device import (
     _force_trim_malloc,
 )
@@ -174,40 +165,6 @@ class DataDrivenCompressor(BaseCompressor):
             self.post_init()
         return self.calibration.calib(nsamples, bs)
 
-    # @torch.no_grad()
-    # def _get_block_forward_func(self, name: str) -> Callable:
-    #     """Build the block-forward replacement, then let the calibrator wrap it.
-    #
-    #     ``Calibrator.wrap_block_forward`` defaults to passthrough; the
-    #     Diffusion calibrator overrides it to convert positional → kwargs.
-    #     """
-    #     from auto_round.calibration.hooks import make_block_forward_func
-    #
-    #     fn = make_block_forward_func(self, name)
-    #     if self.calibration is not None:
-    #         fn = self.calibration.wrap_block_forward(fn)
-    #     return fn
-
-    # @torch.no_grad()
-    # def _get_cache_data_hook_for_layer(self, name):
-    #     """Thin wrapper around ``auto_round.calibration.hooks.make_layer_cache_hook``."""
-    #     from auto_round.calibration.hooks import make_layer_cache_hook
-    #
-    #     return make_layer_cache_hook(self, name)
-    #
-    # def _replace_forward(self):
-    #     """Delegate forward-hook installation to the active calibrator."""
-    #     if self.calibration is None:
-    #         self.post_init()
-    #     self.calibration._replace_forward()
-    #
-    # def _should_stop_cache_forward(self, name: str) -> bool:
-    #     """Delegate cache early-stop checks to the active calibrator."""
-    #     if self.calibration is not None:
-    #         return self.calibration._should_stop_cache_forward(name)
-    #     from auto_round.calibration.hooks import should_stop_cache_forward
-    #
-    #     return should_stop_cache_forward(self, name)
 
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         # Thin wrapper around auto_round.calibration.inputs.preprocess_block_inputs.
@@ -355,7 +312,7 @@ class DataDrivenCompressor(BaseCompressor):
             materialize_model_(block)
             convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
 
-            if auto_offload:  # TODO move to signround wenhuach
+            if auto_offload:
                 if (
                     is_auto_device_mapping(device_manager.device_map)
                     and len(device_manager.device_list) > 1
