@@ -37,7 +37,7 @@ class Calibrator(ABC):
 
     def __init__(self, compressor: "BaseCompressor") -> None:
         self.compressor = compressor
-        self.is_only_supported_bs1=False
+        self.is_only_supported_bs1 = False
 
     # ── Public API ──────────────────────────────────────────────────────────
 

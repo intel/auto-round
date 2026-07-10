@@ -262,7 +262,7 @@ def get_mllm_dataloader(
             dataset_kwargs["cache_size"] = int(os.getenv("AR_MLLM_DATASET_CACHE_SIZE", "0"))
         dataset = dataset_cls(template, model, tokenizer, dataset, extra_data_dir, **dataset_kwargs)
         if check_mllm_only_support_bs1(model):
-            bs =1
+            bs = 1
         set_seed(seed)
         dataloader_params = {"batch_size": bs, "shuffle": True, "collate_fn": dataset.template.processor.data_collator}
 

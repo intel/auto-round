@@ -282,7 +282,7 @@ class BlockIO:
             self._block,
             self._quantizer,
             source=InputSource.FP_CACHE,
-            batch_size=8,# TODO change to calib wenhuach
+            batch_size=8,  # TODO change to calib wenhuach
         )
         self._reference_outputs = outputs
         if self._active_source == InputSource.QUANTIZED_INPUT:

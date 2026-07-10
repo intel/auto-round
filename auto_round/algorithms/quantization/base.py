@@ -420,8 +420,8 @@ class BaseQuantizer(BasePipelineMember):
             _input_others=input_others,
             _quantized_inputs=quantized_input,
             _active_source=active_source,
-            batch_dim=0, # TODO change to calib wenhuach
-            seqlen=2048, #TODO  change to calib wenhuach
+            batch_dim=0,  # TODO change to calib wenhuach
+            seqlen=2048,  # TODO  change to calib wenhuach
             shared_cache_keys=self.model_context.shared_cache_keys,
             _quantizer=self,
             _block=block,

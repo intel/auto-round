@@ -941,7 +941,7 @@ def _qwen3_tts_forward(
     )
 
 
-def check_mllm_only_support_bs1(model:torch.nn.Module):
+def check_mllm_only_support_bs1(model: torch.nn.Module):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
