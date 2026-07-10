@@ -23,7 +23,6 @@ import torch
 from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
-
 from auto_round.calibration.utils import (
     _update_inputs,
 )
@@ -34,7 +33,6 @@ from auto_round.compressors.utils import (
     is_nv_fp,
     is_static_wfp8afp8,
 )
-
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.utils import (
@@ -52,7 +50,6 @@ from auto_round.utils import (
     set_amax_for_all_moe_layers,
     to_device,
 )
-
 from auto_round.utils.device import (
     _force_trim_malloc,
 )
@@ -164,7 +161,6 @@ class DataDrivenCompressor(BaseCompressor):
         if self.calibration is None:
             self.post_init()
         return self.calibration.calib(nsamples, bs)
-
 
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         # Thin wrapper around auto_round.calibration.inputs.preprocess_block_inputs.

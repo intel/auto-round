@@ -64,10 +64,10 @@ class BaseQuantizer(BasePipelineMember):
     # Class-level attribute declarations for convenient access in quantization methods.
     # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
     # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
-    dataset = None # TODO delete wenhuach
+    dataset = None  # TODO delete wenhuach
     supported_types = SUPPORTED_LAYER_TYPES
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-    enable_alg_ext = False #TODO delete wenhuach
+    enable_alg_ext = False  # TODO delete wenhuach
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
@@ -92,7 +92,7 @@ class BaseQuantizer(BasePipelineMember):
 
     # ── Shared CalibrationState forwarders ───────────────────────────────────────
     @property
-    def calibration_state(self) -> Any: # TODO this one could be deleted?
+    def calibration_state(self) -> Any:  # TODO this one could be deleted?
         return self._calibration_state
 
     @calibration_state.setter
@@ -120,7 +120,7 @@ class BaseQuantizer(BasePipelineMember):
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = compressor.scheme_context
-        self.scale_dtype = compressor.scale_dtype # TODO better move to scheme?
+        self.scale_dtype = compressor.scale_dtype  # TODO better move to scheme?
         # Share the compressor's CalibrationState instance.
         self._calibration_state = compressor._calibration_state
 
@@ -416,7 +416,7 @@ class BaseQuantizer(BasePipelineMember):
             except Exception:
                 raise
         set_module(self.model, layer_name, layer)
-        self._immediate_pack_and_save_module(layer_name) #TODO wenhuach should not handle it here
+        self._immediate_pack_and_save_module(layer_name)  # TODO wenhuach should not handle it here
 
     def _immediate_pack_and_save_module(self, module_name):
         from auto_round.compressors.shard_writer import ShardWriter
@@ -447,7 +447,7 @@ class BaseQuantizer(BasePipelineMember):
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
         block = block.to(device_manager.device)
-        return block, False, device_manager.device # This should
+        return block, False, device_manager.device  # This should
 
     def _resolve_block_forward(self):
         """Resolve and cache the block forward function once.
