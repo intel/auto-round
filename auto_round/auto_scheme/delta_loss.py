@@ -238,6 +238,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         self._act_hproxy_trace = 0.0
         self._act_diff_norm2 = 0.0
         self._act_elem_cnt = 0
+        self._gguf_hproxy_trace = 0.0
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
 
@@ -253,6 +254,16 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         accumulates the original activation score from ``|grad * (x - qdq_x)|``.
         """
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
+            # GGUF-style schemes are typically weight-only (act_bits > 8).
+            # Capture an activation curvature proxy here so the GGUF weight hook
+            # can still accumulate a second-order proxy term.
+            if (
+                self.grad_mode
+                and self.enable_act_hessian2
+                and hasattr(self.orig_layer, "super_group_size")
+                and self.orig_layer.super_group_size is not None
+            ):
+                self._gguf_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
             return x, 1.0, None
 
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
@@ -398,6 +409,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self._act_hproxy_trace = 0.0
         self._act_diff_norm2 = 0.0
         self._act_elem_cnt = 0
+        self._gguf_hproxy_trace = 0.0
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
         self.weight_search_quant_func, _ = get_quant_func(
@@ -455,6 +467,13 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         accumulates the original activation score from ``|grad * (x - qdq_x)|``.
         """
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
+            if (
+                self.grad_mode
+                and self.enable_act_hessian2
+                and hasattr(self.orig_layer, "super_group_size")
+                and self.orig_layer.super_group_size is not None
+            ):
+                self._gguf_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
             return x, 1.0, None
 
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
@@ -555,6 +574,19 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
             self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
+            if self.enable_act_hessian2:
+                proxy_trace = max(min(self._gguf_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP), -_ACT_HESSIAN2_TRACE_CLAMP)
+                delta_h2 = (
+                    0.5
+                    * float(self.act_hessian2_lambda)
+                    * proxy_trace
+                    * torch.pow(w_diff.to(torch.float32), 2).sum().item()
+                )
+                if math.isfinite(delta_h2):
+                    self.h_trace_acc += proxy_trace
+                    self.h_trace_cnt += 1
+                    self.act_h2_score += float(delta_h2)
+                self._gguf_hproxy_trace = 0.0
             self._update_mix_score()
             return None
 
@@ -610,6 +642,19 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
+            if self.enable_act_hessian2:
+                proxy_trace = max(min(self._gguf_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP), -_ACT_HESSIAN2_TRACE_CLAMP)
+                delta_h2 = (
+                    0.5
+                    * float(self.act_hessian2_lambda)
+                    * proxy_trace
+                    * torch.pow(w_diff.to(torch.float32), 2).sum().item()
+                )
+                if math.isfinite(delta_h2):
+                    self.h_trace_acc += proxy_trace
+                    self.h_trace_cnt += 1
+                    self.act_h2_score += float(delta_h2)
+                self._gguf_hproxy_trace = 0.0
             self._update_mix_score()
             return None
 
@@ -1504,6 +1549,8 @@ def get_score_for_scheme(
                 m._act_diff_norm2 = 0.0
             if hasattr(m, "_act_elem_cnt"):
                 m._act_elem_cnt = 0
+            if hasattr(m, "_gguf_hproxy_trace"):
+                m._gguf_hproxy_trace = 0.0
             if hasattr(m, "super_qdq_func"):
                 m.super_qdq_func = None
             if hasattr(m, "act_qdq_func"):
