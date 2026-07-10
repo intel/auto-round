@@ -21,7 +21,7 @@ import accelerate
 import torch
 from torch import autocast
 
-from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
+from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 
 @register_pipeline_member(SignRoundConfig)
-class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
+class SignRoundQuantizer(BaseQuantizer):
 
     def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)

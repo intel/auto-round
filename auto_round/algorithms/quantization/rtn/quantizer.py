@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional, Union
 import accelerate
 import torch
 
-from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
+from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.registry import register_pipeline_member
@@ -44,7 +44,7 @@ from auto_round.utils import (
 
 
 @register_pipeline_member(RTNConfig)
-class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
+class RTNQuantizer(BaseQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)

@@ -405,18 +405,18 @@ class DataDrivenCompressor(BaseCompressor):
                 # First: reference forward with FP inputs and preprocessor hooks only.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    ref_output = self.block_forward.forward(block, input_ids, input_others)
+                    ref_output = self.block_forward(block, input_ids, input_others)
                     reference_output = self.block_forward.split_outputs(ref_output)
                 # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
                 with ExitStack() as fwd_stack:
                     quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
                     if quantizer_hooks:
-                        self.block_forward.forward(block, q_input, input_others)
+                        self.block_forward(block, q_input, input_others)
             else:
                 # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    ref_output = self.block_forward.forward(block, input_ids, input_others)
+                    ref_output = self.block_forward(block, input_ids, input_others)
                     reference_output = self.block_forward.split_outputs(ref_output)
 
             if q_input is not None:
@@ -443,7 +443,7 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Collect quantized-block outputs ───────────────────────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_out = self.block_forward.forward(block, input_ids, input_others)
+                q_out = self.block_forward(block, input_ids, input_others)
                 q_outputs = self.block_forward.split_outputs(q_out)
             else:
                 q_outputs = None
@@ -550,18 +550,18 @@ class DataDrivenCompressor(BaseCompressor):
                 # First: reference forward with FP inputs and preprocessor hooks only.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    ref_output = self.block_forward.forward(m, input_ids, input_others)
+                    ref_output = self.block_forward(m, input_ids, input_others)
                     reference_output = self.block_forward.split_outputs(ref_output)
                 # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
                 with ExitStack() as fwd_stack:
                     quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
                     if quantizer_hooks:
-                        self.block_forward.forward(m, q_input, input_others)
+                        self.block_forward(m, q_input, input_others)
             else:
                 # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    ref_output = self.block_forward.forward(m, input_ids, input_others)
+                    ref_output = self.block_forward(m, input_ids, input_others)
                     reference_output = self.block_forward.split_outputs(ref_output)
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
@@ -589,7 +589,7 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_out = self.block_forward.forward(m, input_ids, input_others)
+                q_out = self.block_forward(m, input_ids, input_others)
                 q_input = self.block_forward.split_outputs(q_out)
             else:
                 q_input = None

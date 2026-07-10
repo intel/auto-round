@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from auto_round.algorithms.base import BasePipelineMember
-from auto_round.algorithms.quantization.base import BaseQuantizer, DiffusionMixin, RTNLayerFallbackMixin
+from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.pipeline import (
     ActCalibPolicy,

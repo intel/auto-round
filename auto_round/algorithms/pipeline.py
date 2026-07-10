@@ -33,7 +33,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Callable, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
 
 import torch
 
@@ -167,7 +167,7 @@ def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
 
 # TODO better to follow heng's imp to decouple llm/diffusion
 @dataclass
-class BlockForward:
+class BlockForward: # TODO override forward with
     """Stateless block-forward execution engine shared across quantizer & compressor.
 
     Created **once** by the compressor at init time. Quantizer accesses via
@@ -179,7 +179,7 @@ class BlockForward:
         self.block_forward = BlockForward.from_compressor(self)
 
         # Quantizer (after bind):
-        output = self.compressor.block_forward.forward(block, inputs, others, indices)
+        output = self.compressor.block_forward(block, inputs, others, indices)
     """
 
     batch_dim: int = 0
@@ -191,6 +191,18 @@ class BlockForward:
     is_diffusion: bool = False
     shared_cache_keys: tuple = ()
     output_config: list[str] | None = None
+
+    # Map block class name → list of output tensor keys returned by that block.
+    # The order of keys must match the order of tensors in the block's return tuple.
+    # Extend this dict to register new diffusion architectures.
+    DIFFUSION_OUTPUT_CONFIGS: ClassVar[dict] = {
+        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
+        "StableAudioDiTBlock": ["hidden_states"],
+        "WanTransformerBlock": ["hidden_states"],
+    }
 
     def __post_init__(self) -> None:
         if self.output_config is None:
@@ -218,6 +230,9 @@ class BlockForward:
         )
 
     # ── Core forward ─────────────────────────────────────────────────────────
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        return self.forward(*args, **kwargs)
 
     def forward(
         self,
@@ -250,7 +265,7 @@ class BlockForward:
             batch_indices = indices[i : i + self.batch_size]
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
             raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
-            output = self._normalize_output(raw_output)
+            output = self._normalize_output(raw_output, block)
             outputs.append(output)
 
         if not outputs:
@@ -305,7 +320,7 @@ class BlockForward:
                 0,
             )
 
-    def _normalize_output(self, output: Any) -> torch.Tensor:
+    def _normalize_output(self, output: Any, block: "torch.nn.Module" = None) -> torch.Tensor:
         """Normalize block output to a single tensor."""
         if isinstance(output, torch.Tensor):
             return output
@@ -317,7 +332,10 @@ class BlockForward:
             raise ValueError("Block output is an empty tuple/list.")
 
         if self.is_diffusion:
-            idx = self.output_config.index("hidden_states")
+            # Look up per-block-type output config; fall back to instance-level config.
+            block_cls_name = block.__class__.__name__ if block is not None else None
+            oc = self.DIFFUSION_OUTPUT_CONFIGS.get(block_cls_name, self.output_config) if block_cls_name else self.output_config
+            idx = oc.index("hidden_states")
             if idx >= len(output):
                 raise ValueError(f"Diffusion output has {len(output)} elements, but hidden_states index is {idx}.")
             hs = output[idx]
@@ -483,19 +501,15 @@ class QuantizationPipeline:
         Resolution rules:
         1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in *configs*,
            a default :class:`RTNConfig` is appended automatically.
-        2. If ``compressor`` indicates a diffusion model, :class:`DiffusionMixin` is
-           dynamically prepended to each algorithm class's MRO before instantiation,
-           activating diffusion-aware method overrides without touching the class definitions.
-        3. Instances of ``BaseWeightTransformer`` go into ``preprocessors`` (in order).
-        4. Exactly one ``BaseQuantizer`` becomes ``block_quantizer``.
-        5. Multiple block-quantization configs raise ``ValueError``.
-        6. If ``compressor`` is provided, every member is bound to it.
+        2. Instances of ``BaseWeightTransformer`` go into ``preprocessors`` (in order).
+        3. Exactly one ``BaseQuantizer`` becomes ``block_quantizer``.
+        4. Multiple block-quantization configs raise ``ValueError``.
+        5. If ``compressor`` is provided, every member is bound to it.
         """
-        from auto_round.algorithms.quantization.base import BaseQuantizer, DiffusionMixin
+        from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.quantization.config import QuantizationConfig
         from auto_round.algorithms.transforms.base import BaseWeightTransformer
 
-        is_diffusion = compressor is not None and getattr(compressor.model_context, "is_diffusion", False)
         configs = list(configs)
 
         # Ensure at least one terminal block quantizer is present; fall back to RTN.
@@ -512,8 +526,6 @@ class QuantizationPipeline:
             alg_cls = get_algorithm_class(cfg)
             if alg_cls is None:
                 raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
-            if is_diffusion and not issubclass(alg_cls, DiffusionMixin):
-                alg_cls = type(alg_cls.__name__, (DiffusionMixin, alg_cls), {})
             return alg_cls
 
         preprocessors = []

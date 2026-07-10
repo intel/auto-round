@@ -26,7 +26,7 @@ class BasePipelineMember:
     model_context = None
     compress_context = None
     _scheme_context_fields = set(QuantizationScheme.get_attributes())
-    bits: int | None
+    bits: int | None #TODO deleted wenhuach
     group_size: int | tuple | None
     sym: bool | None
     data_type: str | None
@@ -63,7 +63,7 @@ class BasePipelineMember:
         """Model-level preparation called once before block iteration starts."""
         return
 
-    def get_act_calib_policy(self, ctx: Any) -> Any:
+    def get_act_calib_policy(self, ctx: Any) -> Any: #TODO refine
         """Return the activation calibration policy for this block."""
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
