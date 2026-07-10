@@ -217,7 +217,7 @@ class BaseCompressor(object):
         # the rest of ``__init__`` only ever interacts with the state object
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
-        from auto_round.calibration.state import CalibrationState
+        from auto_round.calibration.state import CalibrationState #TODO delete wenhuach
         self._calibration_state = CalibrationState(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,

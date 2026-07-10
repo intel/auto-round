@@ -142,7 +142,7 @@ def make_block_forward_func(state, name: str) -> Callable:
                     )
         reset_params(state.inputs[name])
 
-        if state._should_stop_cache_forward(name):
+        if state.calibration._should_stop_cache_forward(name):
             raise NotImplementedError
         else:
             if hidden_states is not None:
@@ -176,7 +176,7 @@ def make_layer_cache_hook(state, name: str) -> Callable:
         else:
             state.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
 
-        if state._should_stop_cache_forward(name):
+        if state.calibration._should_stop_cache_forward(name):
             raise NotImplementedError
 
     return cache_input_hook

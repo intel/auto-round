@@ -82,7 +82,6 @@ class DataDrivenCompressor(BaseCompressor):
         platform: str = "hf",
         format: Union[str, list, None] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200, #TODO delete wenhuach
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
@@ -90,9 +89,6 @@ class DataDrivenCompressor(BaseCompressor):
         low_cpu_mem_usage: bool = True,
         **kwargs,
     ) -> None:
-        if iters is None:
-            iters = 200
-        self.iters = iters
         super().__init__(
             config=config,
             model=model,
@@ -109,9 +105,7 @@ class DataDrivenCompressor(BaseCompressor):
         # Routed to ``self._calibration_state.dataset`` via @property.
         # Set after ``super().__init__()`` because the state object is created there.
         self.dataset = dataset
-        if iters == 0:
-            self.lr = 5e-3
-
+        
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
 
@@ -196,6 +190,7 @@ class DataDrivenCompressor(BaseCompressor):
             fn = self.calibration.wrap_block_forward(fn)
         return fn
 
+
     # @torch.no_grad()
     # def _get_cache_data_hook_for_layer(self, name):
     #     """Thin wrapper around ``auto_round.calibration.hooks.make_layer_cache_hook``."""
@@ -203,23 +198,19 @@ class DataDrivenCompressor(BaseCompressor):
     #
     #     return make_layer_cache_hook(self, name)
     #
-    def _replace_forward(self):
-        """Thin wrapper around ``auto_round.calibration.hooks.replace_forward_with_hooks``."""
-        from auto_round.calibration.hooks import replace_forward_with_hooks
-
-        replace_forward_with_hooks(self)
+    # def _replace_forward(self):
+    #     """Delegate forward-hook installation to the active calibrator."""
+    #     if self.calibration is None:
+    #         self.post_init()
+    #     self.calibration._replace_forward()
     #
-    def _should_stop_cache_forward(self, name: str) -> bool:
-        """Delegate the early-stop policy to the active calibrator.
-
-        Falls back to the default helper when the calibrator has not been
-        constructed yet (very early init code paths).
-        """
-        if self.calibration is not None:
-            return self.calibration.should_stop(name)
-        from auto_round.calibration.hooks import should_stop_cache_forward
-
-        return should_stop_cache_forward(self, name)
+    # def _should_stop_cache_forward(self, name: str) -> bool:
+    #     """Delegate cache early-stop checks to the active calibrator."""
+    #     if self.calibration is not None:
+    #         return self.calibration._should_stop_cache_forward(name)
+    #     from auto_round.calibration.hooks import should_stop_cache_forward
+    #
+    #     return should_stop_cache_forward(self, name)
 
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         # Thin wrapper around auto_round.calibration.inputs.preprocess_block_inputs.

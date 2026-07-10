@@ -59,7 +59,7 @@ class Calibrator(ABC):
 
     def is_only_supported_bs1(self):
         return self.is_only_supported_bs1
-    
+
     # ── Optional hooks (sane defaults) ─────────────────────────────────────
 
     def should_stop(self, name: str) -> bool:
@@ -79,6 +79,16 @@ class Calibrator(ABC):
         positional → kwargs so diffusion blocks can be captured uniformly.
         """
         return forward_fn
+
+    def _replace_forward(self) -> None:
+        """Install calibration forward hooks through the shared hook helper."""
+        from auto_round.calibration.hooks import replace_forward_with_hooks
+
+        replace_forward_with_hooks(self.compressor)
+
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Bridge hook stop checks to the calibrator's stop policy."""
+        return self.should_stop(name)
 
     def __getattr__(self, name: str) -> Any:
         # Anything not defined on the calibrator is read off the compressor.

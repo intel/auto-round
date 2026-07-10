@@ -232,7 +232,7 @@ class LLMCalibrator(Calibrator):
         c._cache_seen_targets = set()
         calib_bs = c._calibration_state.batch_size
         c.hook_handles = []
-        c._replace_forward()
+        self._replace_forward()
         try:
             # Dispatch via the Compressor so that MLLMMixin / DiffusionMixin overrides
             # of ``calib`` are honoured; if neither override applies, the Compressor's
