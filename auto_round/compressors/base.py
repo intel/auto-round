@@ -866,6 +866,7 @@ class BaseCompressor(object):
 
         # Create the shared block-forward engine (used by both compressor and quantizer).
         from auto_round.algorithms.pipeline import BlockForward
+
         self.block_forward = BlockForward.from_compressor(self)
 
         # Final trim after all init phases.

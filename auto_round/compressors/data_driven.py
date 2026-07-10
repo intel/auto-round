@@ -355,7 +355,7 @@ class DataDrivenCompressor(BaseCompressor):
             materialize_model_(block)
             convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
 
-            if auto_offload: #TODO move to signround wenhuach
+            if auto_offload:  # TODO move to signround wenhuach
                 if (
                     is_auto_device_mapping(device_manager.device_map)
                     and len(device_manager.device_list) > 1
@@ -477,9 +477,7 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.pre_quantize_block(ctx)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
-            self.pipeline.block_quantizer.quantize_block(
-                block, input_ids, input_others, reference_output, q_input, ctx
-            )
+            self.pipeline.block_quantizer.quantize_block(block, input_ids, input_others, reference_output, q_input, ctx)
 
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────────
             for pre in self.pipeline.preprocessors:
@@ -653,9 +651,7 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.pre_quantize_block(ctx)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
-            self.pipeline.block_quantizer.quantize_block(
-                m, input_ids, input_others, reference_output, q_input, ctx
-            )
+            self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others, reference_output, q_input, ctx)
 
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────
             for pre in self.pipeline.preprocessors:
@@ -1178,9 +1174,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     self.compress_context.clear_memory()
 
                 # ── Pure algorithm ────────────────────────────────────────────
-                self.quantizer.quantize_block(
-                    block, block_input_ids, input_others, input_ids, None, ctx
-                )
+                self.quantizer.quantize_block(block, block_input_ids, input_others, input_ids, None, ctx)
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)

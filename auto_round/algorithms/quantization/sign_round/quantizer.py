@@ -136,7 +136,11 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
         # Use quantized inputs if available and enabled
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
-        nsamples = len(active_inputs) if isinstance(active_inputs, list) else self.compressor.block_forward._count_samples(active_inputs)
+        nsamples = (
+            len(active_inputs)
+            if isinstance(active_inputs, list)
+            else self.compressor.block_forward._count_samples(active_inputs)
+        )
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,

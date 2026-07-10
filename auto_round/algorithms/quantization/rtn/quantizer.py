@@ -92,7 +92,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
-
     def is_support_compile_block(self):
         return False
 

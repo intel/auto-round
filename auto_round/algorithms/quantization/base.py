@@ -233,13 +233,12 @@ class BaseQuantizer(BasePipelineMember):
         from auto_round.calibration.state import CalibrationState
 
         self._calibration_state = CalibrationState()
-        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1) # move to block io
+        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)  # move to block io
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
-
 
     def is_support_compile_block(self):
         True
@@ -399,7 +398,7 @@ class BaseQuantizer(BasePipelineMember):
 
         # if ctx.has_quantized_inputs() and self.enable_quanted_input:
         #     return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
-        if self.enable_quanted_input: #TODO wenhuach check whether need has_quantized_inputs
+        if self.enable_quanted_input:  # TODO wenhuach check whether need has_quantized_inputs
             return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
         return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
 

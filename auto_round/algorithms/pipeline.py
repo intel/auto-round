@@ -33,7 +33,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Union, Callable
+from typing import TYPE_CHECKING, Any, Callable, Union
 
 import torch
 
@@ -163,7 +163,8 @@ def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
 # Context dataclasses
 # ---------------------------------------------------------------------------
 
-#TODO better to follow heng's imp to decouple llm/diffusion
+
+# TODO better to follow heng's imp to decouple llm/diffusion
 @dataclass
 class BlockForward:
     """Stateless block-forward execution engine shared across quantizer & compressor.
@@ -246,9 +247,7 @@ class BlockForward:
 
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i : i + self.batch_size]
-            batch_inputs, batch_others = self._select_batch(
-                inputs, input_others, batch_indices
-            )
+            batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
             raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
             output = self._normalize_output(raw_output)
             outputs.append(output)
@@ -286,13 +285,23 @@ class BlockForward:
             hidden_states = batch_inputs.pop("hidden_states")
             batch_others.update(batch_inputs)
             return block_forward(
-                block, hidden_states, batch_others,
-                self.amp, self.amp_dtype, self.device, None,
+                block,
+                hidden_states,
+                batch_others,
+                self.amp,
+                self.amp_dtype,
+                self.device,
+                None,
             )
         else:
-            return block_forward( # TODO torch compile wenhuach
-                block, batch_inputs, batch_others,
-                self.amp, self.amp_dtype, self.device, 0,
+            return block_forward(  # TODO torch compile wenhuach
+                block,
+                batch_inputs,
+                batch_others,
+                self.amp,
+                self.amp_dtype,
+                self.device,
+                0,
             )
 
     def _normalize_output(self, output: Any) -> torch.Tensor:
@@ -309,9 +318,7 @@ class BlockForward:
         if self.is_diffusion:
             idx = self.output_config.index("hidden_states")
             if idx >= len(output):
-                raise ValueError(
-                    f"Diffusion output has {len(output)} elements, but hidden_states index is {idx}."
-                )
+                raise ValueError(f"Diffusion output has {len(output)} elements, but hidden_states index is {idx}.")
             hs = output[idx]
             if not isinstance(hs, torch.Tensor):
                 raise TypeError(f"Expected hidden_states tensor, got {type(hs).__name__}.")
@@ -424,7 +431,6 @@ class BlockContext:
     def mark_modified_fp_params(self, param_names: list[str]) -> None:
         """Called by preprocessors to declare which FP params were modified in-place."""
         self.modified_fp_params.extend(param_names)
-
 
 
 # ---------------------------------------------------------------------------
