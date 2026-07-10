@@ -105,11 +105,11 @@ class MLLMCalibrator(LLMCalibrator):
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
+            orig_bs = c.bs
             (
                 c.dataloader,
                 c.batch_size,
                 c.seqlen,
-                c.gradient_accumulate_steps,
             ) = get_mllm_dataloader(
                 template=c.template_obj,
                 model=mc.model,
@@ -122,9 +122,10 @@ class MLLMCalibrator(LLMCalibrator):
                 bs=bs,
                 seed=c.seed,
                 nsamples=nsamples,
-                gradient_accumulate_steps=c.gradient_accumulate_steps,
                 quant_nontext_module=c.quant_nontext_module,
             )
+            if orig_bs != 1 and c.batch_size == 1:
+                self.is_only_supported_bs1 = True
         else:
             c.dataloader = c.dataset
 

@@ -41,7 +41,6 @@ from auto_round.special_model_handler import (
     _get_qwen3_tts_multimodal_block,
     _handle_special_model,
     _qwen3_tts_forward,
-    check_mllm_model_batch,
     mllms_with_limited_bs,
     resolve_model_type,
 )

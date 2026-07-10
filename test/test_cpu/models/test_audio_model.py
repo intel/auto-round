@@ -39,8 +39,6 @@ from auto_round.special_model_handler import (
     SUPPORT_ONLY_TEXT_MODELS,
     _get_mimo_audio_multimodal_block,
     _handle_special_model,
-    check_mllm_model_batch,
-    mllms_with_limited_bs,
     resolve_model_type,
 )
 

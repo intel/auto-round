@@ -282,7 +282,7 @@ class BlockIO:
             self._block,
             self._quantizer,
             source=InputSource.FP_CACHE,
-            batch_size=self._quantizer.batch_size,
+            batch_size=8,# TODO change to calib wenhuach
         )
         self._reference_outputs = outputs
         if self._active_source == InputSource.QUANTIZED_INPUT:
@@ -362,10 +362,10 @@ class BlockIO:
         return []
 
     def _append_output(self, outputs, output, quantizer) -> None:
-        if quantizer.batch_size == 1:
-            outputs.append(output)
-        else:
-            outputs.extend(list(torch.split(output, 1, dim=self.batch_dim)))
+        # if quantizer.batch_size == 1: # TODO recover wenhuach
+        #     outputs.append(output)
+        # else:
+        outputs.extend(list(torch.split(output, 1, dim=self.batch_dim)))
 
     def _select_inputs(self, input_ids, input_others: dict, indices):
         if isinstance(input_ids, list):

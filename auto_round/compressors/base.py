@@ -218,12 +218,10 @@ class BaseCompressor(object):
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationState
-
         self._calibration_state = CalibrationState(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
-            batch_size=kwargs.pop("batch_size", 8),
-            gradient_accumulate_steps=kwargs.pop("gradient_accumulate_steps", 1),
+            batch_size=kwargs.pop("batch_size", 8)
         )
 
         # ``dataset`` is not a named __init__ parameter – it arrives via

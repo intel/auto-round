@@ -230,7 +230,7 @@ class LLMCalibrator(Calibrator):
         c.last_cache_name = _infer_last_cache_name(block_names, layer_names, last_cache_name)
         c._cache_target_set = set(c.to_cached_layers)
         c._cache_seen_targets = set()
-        calib_bs = c.quantizer.batch_size
+        calib_bs = c._calibration_state.batch_size
         c.hook_handles = []
         c._replace_forward()
         try:

@@ -255,29 +255,29 @@ class BaseQuantizer(BasePipelineMember):
     def attention_mask(self, value: list) -> None:
         self._calibration_state.attention_mask = value if value is not None else []
 
-    @property
-    def batch_dim(self) -> int:
-        return self._calibration_state.batch_dim
-
-    @batch_dim.setter
-    def batch_dim(self, value: int) -> None:
-        self._calibration_state.batch_dim = value
-
-    @property
-    def batch_size(self) -> int:
-        return self._calibration_state.batch_size
-
-    @batch_size.setter
-    def batch_size(self, value: int) -> None:
-        self._calibration_state.batch_size = value
-
-    @property
-    def nsamples(self) -> int:
-        return self._calibration_state.nsamples
-
-    @property
-    def seqlen(self) -> int:
-        return self._calibration_state.seqlen
+    # @property
+    # def batch_dim(self) -> int:
+    #     return self._calibration_state.batch_dim
+    #
+    # @batch_dim.setter
+    # def batch_dim(self, value: int) -> None:
+    #     self._calibration_state.batch_dim = value
+    #
+    # @property
+    # def batch_size(self) -> int:
+    #     return self._calibration_state.batch_size
+    #
+    # @batch_size.setter
+    # def batch_size(self, value: int) -> None:
+    #     self._calibration_state.batch_size = value
+    #
+    # @property
+    # def nsamples(self) -> int:
+    #     return self._calibration_state.nsamples
+    #
+    # @property
+    # def seqlen(self) -> int:
+    #     return self._calibration_state.seqlen
 
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
@@ -298,9 +298,9 @@ class BaseQuantizer(BasePipelineMember):
     def model(self) -> torch.nn.Module | None:
         return self.model_context.model if self.model_context is not None else None
 
-    @property
-    def formats(self) -> Any:
-        return getattr(self.compress_context, "formats", None)
+    # @property
+    # def formats(self) -> Any:
+    #     return getattr(self.compress_context, "formats", None)
 
     @property
     def amp(self) -> bool:
@@ -420,8 +420,8 @@ class BaseQuantizer(BasePipelineMember):
             _input_others=input_others,
             _quantized_inputs=quantized_input,
             _active_source=active_source,
-            batch_dim=self.batch_dim,
-            seqlen=self.seqlen,
+            batch_dim=0, # TODO change to calib wenhuach
+            seqlen=2048, #TODO  change to calib wenhuach
             shared_cache_keys=self.model_context.shared_cache_keys,
             _quantizer=self,
             _block=block,

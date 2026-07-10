@@ -76,13 +76,13 @@ class DataDrivenCompressor(BaseCompressor):
 
     def __init__(
         self,
-        config: Union[object, list[object]],
+        config: Union[object, list[object]],#TODO rename wenhuach
         model: Union[torch.nn.Module, str],
         tokenizer: Any = None,
         platform: str = "hf",
         format: Union[str, list, None] = None,
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200,
+        iters: int = 200, #TODO delete wenhuach
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: bool = False,
@@ -137,7 +137,7 @@ class DataDrivenCompressor(BaseCompressor):
         return "llm"
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(
+    def try_cache_inter_data_gpucpu( #TODO the following two should have some differences wenhuach
         self,
         block_names: list,
         nsamples: int,
@@ -196,19 +196,19 @@ class DataDrivenCompressor(BaseCompressor):
             fn = self.calibration.wrap_block_forward(fn)
         return fn
 
-    @torch.no_grad()
-    def _get_cache_data_hook_for_layer(self, name):
-        """Thin wrapper around ``auto_round.calibration.hooks.make_layer_cache_hook``."""
-        from auto_round.calibration.hooks import make_layer_cache_hook
-
-        return make_layer_cache_hook(self, name)
-
+    # @torch.no_grad()
+    # def _get_cache_data_hook_for_layer(self, name):
+    #     """Thin wrapper around ``auto_round.calibration.hooks.make_layer_cache_hook``."""
+    #     from auto_round.calibration.hooks import make_layer_cache_hook
+    #
+    #     return make_layer_cache_hook(self, name)
+    #
     def _replace_forward(self):
         """Thin wrapper around ``auto_round.calibration.hooks.replace_forward_with_hooks``."""
         from auto_round.calibration.hooks import replace_forward_with_hooks
 
         replace_forward_with_hooks(self)
-
+    #
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Delegate the early-stop policy to the active calibrator.
 
@@ -279,7 +279,7 @@ class DataDrivenCompressor(BaseCompressor):
         block: torch.nn.Module,
         inputs: Any,
         q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",
+        device: Union[str, torch.device] = "cpu", # TODO Delete wenhuach
         auto_offload: bool = True,
     ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
@@ -603,7 +603,8 @@ class DataDrivenCompressor(BaseCompressor):
                 block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
-            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+            #bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
+            bs = 8
             mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
             ctx = BlockContext(
@@ -830,9 +831,14 @@ class DataDrivenCompressor(BaseCompressor):
 
                 if "input_ids" in inputs.keys():
                     total_samples = len(inputs["input_ids"])
-                    if total_samples < self.quantizer.batch_size:
-                        self.quantizer.batch_size = total_samples
-                        logger.warning(f"force the train batch size to {total_samples}")
+                    if getattr(self.quantizer,"batch_size", None):
+                        if total_samples < self.quantizer.batch_size:
+                            self.quantizer.batch_size = total_samples
+                            logger.warning(f"force the train batch size to {total_samples}")
+                    else:
+                        if total_samples < self._calibration_state.batch_size:
+                            self.quantizer.batch_size = total_samples
+                            logger.warning(f"force the train batch size to {total_samples}")
 
                 self._quantize_blocks(
                     self.model_context.model,

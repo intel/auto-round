@@ -941,20 +941,20 @@ def _qwen3_tts_forward(
     )
 
 
-def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
+def check_mllm_only_support_bs1(model:torch.nn.Module):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
     effective_type = resolve_model_type(model) or ""
     for key in mllms_with_limited_bs:
-        if key in effective_type and batch_size != 1:
-            accumulate_steps = batch_size * gradient_accumulate_steps
+        if key in effective_type:
+            return True
             logger.warning(
                 "To avoid the tensor concat mismatch problem, modified parameters to "
                 f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}"
             )
             return 1, accumulate_steps
-    return batch_size, gradient_accumulate_steps
+    return False
 
 
 class ModelNameMatcher:

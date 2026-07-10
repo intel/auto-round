@@ -37,6 +37,7 @@ class Calibrator(ABC):
 
     def __init__(self, compressor: "BaseCompressor") -> None:
         self.compressor = compressor
+        self.is_only_supported_bs1=False
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -56,6 +57,9 @@ class Calibrator(ABC):
         loading and forward driver here.
         """
 
+    def is_only_supported_bs1(self):
+        return self.is_only_supported_bs1
+    
     # ── Optional hooks (sane defaults) ─────────────────────────────────────
 
     def should_stop(self, name: str) -> bool:

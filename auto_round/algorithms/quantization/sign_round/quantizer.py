@@ -27,24 +27,18 @@ from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
-    block_forward,
     check_need_act_calibration,
     collect_best_params,
-    immediate_pack,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_fused_layer_global_scales
+from auto_round.data_type.utils import update_fused_layer_global_scales
 from auto_round.logger import logger
 from auto_round.utils import (
-    check_to_quantized,
-    compile_func,
-    convert_module_to_hp_if_necessary,
     get_module,
     htcore,
     is_hpex_available,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
     set_module,
-    to_device,
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
@@ -69,6 +63,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         self.enable_minmax_tuning = config.enable_minmax_tuning
         self.enable_norm_bias_tuning = config.enable_norm_bias_tuning
         self.gradient_accumulate_steps = config.gradient_accumulate_steps
+        from auto_round.special_model_handler import  check_mllm_only_support_bs1
         self.enable_alg_ext = config.enable_alg_ext
         self.not_use_best_mse = config.not_use_best_mse
         self.enable_quanted_input = config.enable_quanted_input
@@ -204,6 +199,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         init_loss = None
         best_params = {}
         total_loss = 0
+        self.batch_size = 8 # TODO delete wenhuach
         global_batch_size = self.batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same

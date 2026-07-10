@@ -64,12 +64,12 @@ def make_block_forward_func(state, name: str) -> Callable:
             state.inputs[name] = {}
             init_cache(positional_inputs, state.inputs[name])
 
-        if state.quantizer.batch_dim is None:
-            state.quantizer.batch_dim = 0
-            if hidden_states is not None and state.quantizer.batch_size > 1:
-                if hidden_states.shape[0] > state.quantizer.batch_size:
-                    state.quantizer.batch_dim = 1
-                    if len(hidden_states.shape) > 1 and hidden_states.shape[1] > state.quantizer.batch_size:
+        if state._calibration_state.batch_dim is None:
+            state._calibration_state.batch_dim = 0
+            if hidden_states is not None and state._calibration_state.batch_size > 1:
+                if hidden_states.shape[0] > state._calibration_state.batch_size:
+                    state._calibration_state.batch_dim = 1
+                    if len(hidden_states.shape) > 1 and hidden_states.shape[1] > state._calibration_state.batch_dim.batch_size:
                         logger.error(
                             "this model has not been supported, "
                             "please raise an issue in https://github.com/intel/auto-round/issues"
@@ -94,16 +94,16 @@ def make_block_forward_func(state, name: str) -> Callable:
                     if data is None or key in state.model_context.shared_cache_keys:
                         state.inputs[name][key] = data
                         continue
-                    if state.quantizer.batch_size <= 1:
+                    if state._calibration_state.batch_size <= 1:
                         state.inputs[name][key] = [data]
                     else:
-                        data = post_process_cache_data(state.quantizer.batch_size, data, key)
+                        data = post_process_cache_data(state._calibration_state.batch_size, data, key)
                         if isinstance(data, torch.Tensor):
-                            state.inputs[name][key] = list(torch.split(data, 1, dim=state.quantizer.batch_dim))
+                            state.inputs[name][key] = list(torch.split(data, 1, dim=state._calibration_state.batch_dim))
                         else:
                             state.inputs[name][key] = [data]
                 else:  # append cache inputs
-                    new_data = post_process_cache_data(state.quantizer.batch_size, kwargs[key], key)
+                    new_data = post_process_cache_data(state._calibration_state.batch_size, kwargs[key], key)
                     if new_data is None:  # shareable args or NoneType
                         if key in state.model_context.shared_cache_keys:
                             # Shared keys are normally the same across samples.  However
@@ -122,12 +122,12 @@ def make_block_forward_func(state, name: str) -> Callable:
                     # Guard against None-initialized kwargs that arrive as tensors on later samples (#1950).
                     if state.inputs[name][key] is None:
                         state.inputs[name][key] = []
-                    if state.quantizer.batch_size <= 1:
+                    if state._calibration_state.batch_size <= 1:
                         state.inputs[name][key].append(new_data)
                     else:
                         if isinstance(new_data, torch.Tensor):
                             state.inputs[name][key].extend(
-                                list(torch.split(new_data, 1, dim=state.quantizer.batch_dim))
+                                list(torch.split(new_data, 1, dim=state._calibration_state.batch_dim))
                             )
                         else:
                             state.inputs[name][key].append(new_data)

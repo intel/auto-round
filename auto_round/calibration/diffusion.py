@@ -70,12 +70,11 @@ class DiffusionCalibrator(LLMCalibrator):
         )
         if isinstance(c.dataset, str):
             dataset = c.dataset.replace(" ", "")
-            c.dataloader, c.batch_size, c.gradient_accumulate_steps = get_diffusion_dataloader(
+            c.dataloader, c.batch_size = get_diffusion_dataloader(
                 dataset=dataset,
                 bs=c.batch_size,
                 seed=c.seed,
-                nsamples=c.nsamples,
-                gradient_accumulate_steps=c.gradient_accumulate_steps,
+                nsamples=c.nsamples
             )
         else:
             c.dataloader = c.dataset
