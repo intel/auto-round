@@ -783,6 +783,7 @@ class GGUFFormat(OutputFormat):
     format_name = "gguf"
 
     def __init__(self, format: str, ar: BaseCompressor):
+        self.is_auto_scheme = bool(getattr(ar, "is_auto_scheme", False))
         if format.startswith("gguf:"):
             self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
             self.output_format = "gguf"
@@ -875,6 +876,7 @@ class GGUFFormat(OutputFormat):
             model_type,
             device,
             quant_nontext_module,
+            is_auto_scheme=self.is_auto_scheme,
         )
 
     def save_quantized(
@@ -899,6 +901,7 @@ class GGUFFormat(OutputFormat):
             mllm=self.mllm,
             device=device,
             serialization_dict=serialization_dict,
+            is_auto_scheme=self.is_auto_scheme,
             **kwargs,
         )
 

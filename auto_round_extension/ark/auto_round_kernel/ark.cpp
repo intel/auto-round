@@ -25,7 +25,10 @@ typedef uintptr_t torch_ptr;
 // Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
 #include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_decode.hpp"
+#include "sycl_tla_moe_mixed.hpp"
 #include "sycl_tla_sdpa.hpp"
+#include "sycl_tla_dense_gemm.hpp"
 #endif
 #else
 #include "cpu_wrapper.hpp"
@@ -100,6 +103,12 @@ static size_t packed_weight_size(torch_ptr stream, int n, int k, int blocksize, 
 }
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+
+static void matmul_sycl_tla(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, torch_ptr B,
+                                       int Bdt, torch_ptr C, int Cdt, torch_ptr bias, bool BT) {
+  ark::sycl_tla_dense_gemm((sycl::queue*)stream, m, n, k, (void*)A, (BTLA_DTYPE)Adt, (void*)B,
+                                      (BTLA_DTYPE)Bdt, (void*)C, (BTLA_DTYPE)Cdt, (void*)bias, BT);
+}
 
 // Tensor layout codes passed from Python (tensor_layout argument).
 constexpr int TENSOR_LAYOUT_HND = 0;  // [B, H, S, D]
@@ -200,7 +209,7 @@ static void sagev1_varlen(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr 
                           int total_seqlen_q, int total_seqlen_kv, int max_seqlen_q, int max_seqlen_kv,
                           int head_dim, float softmax_scale, bool is_causal,
                           torch_ptr cu_seqlens_q, torch_ptr cu_seqlens_k,
-                          int use_int8_pv, torch_ptr lse = 0) {
+                          int use_int8_pv, bool use_mean_bias, torch_ptr lse = 0) {
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sagev1_varlen: mask and is_causal cannot both be set");
   }
@@ -233,6 +242,7 @@ static void sagev1_varlen(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr 
         batch, num_heads_q, num_heads_kv,
         total_seqlen_q, total_seqlen_kv, max_seqlen_q, max_seqlen_kv,
         head_dim, softmax_scale, is_causal, bool(use_int8_pv),
+        bool(use_mean_bias),
         (const int*)cu_seqlens_q, (const int*)cu_seqlens_k,
         (float*)lse);
   } else {
@@ -245,6 +255,7 @@ static void sagev1_varlen(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr 
         batch, num_heads_q, num_heads_kv,
         total_seqlen_q, total_seqlen_kv, max_seqlen_q, max_seqlen_kv,
         head_dim, softmax_scale, is_causal, bool(use_int8_pv),
+        bool(use_mean_bias),
         (const int*)cu_seqlens_q, (const int*)cu_seqlens_k,
         (float*)lse);
   }
@@ -254,7 +265,7 @@ static void sagev1_impl(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
                         int scale_block_size, int q_dtype, int k_dtype, int v_dtype, int o_dtype,
                         int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
                         float softmax_scale, bool is_causal, bool use_int8_pv,
-                        int tensor_layout, torch_ptr lse = 0) {
+                        int tensor_layout, bool use_mean_bias, torch_ptr lse = 0) {
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sagev1: mask and is_causal cannot both be set");
   }
@@ -296,7 +307,7 @@ static void sagev1_impl(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
                        q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
                        k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                        o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                       softmax_scale, is_causal, (BTLA_DTYPE)q_dtype, (float*)lse);
+                       softmax_scale, is_causal, (BTLA_DTYPE)q_dtype, (float*)lse, use_mean_bias);
   }
 #else
   throw std::runtime_error("ark::sagev1 is only supported on XPU");
@@ -307,20 +318,20 @@ static void sagev1(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torc
                    int scale_block_size,
                    int q_dtype, int k_dtype, int v_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv,
                    int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                   int tensor_layout, torch_ptr lse = 0) {
+                   int tensor_layout, bool use_mean_bias, torch_ptr lse = 0) {
   sagev1_impl(stream, Q, K, V, O, mask, scale_block_size, q_dtype, k_dtype, v_dtype, o_dtype, batch,
               num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, false,
-              tensor_layout, lse);
+              tensor_layout, use_mean_bias, lse);
 }
 
 static void sagev1_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
                         int scale_block_size,
                         int q_dtype, int k_dtype, int v_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv,
                         int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                        int tensor_layout, torch_ptr lse = 0) {
+                        int tensor_layout, bool use_mean_bias, torch_ptr lse = 0) {
   sagev1_impl(stream, Q, K, V, O, mask, scale_block_size, q_dtype, k_dtype, v_dtype, o_dtype, batch,
               num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal, true,
-              tensor_layout, lse);
+              tensor_layout, use_mean_bias, lse);
 }
 
 static void sage(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
@@ -398,6 +409,52 @@ static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr 
                              int num_experts) {
   ark::moe_gemm((sycl::queue*)stream, (void*)activations, (void*)weights, scales ? (void*)scales : nullptr,
                 (void*)outputs, (BTLA_DTYPE)(dtype), N, K, (int*)num_tokens_per_expert, num_experts);
+}
+
+static void moe_gemm_decode_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
+                                    torch_ptr zeros, torch_ptr outputs, torch_ptr expert_id_per_token_buf,
+                                    int act_dtype, int weight_dtype, int N, int K, int group_size,
+                                    torch_ptr num_tokens_per_expert, int num_experts, int total_tokens, bool asym) {
+  ark::moe_gemm_decode((sycl::queue*)stream, (void*)activations, (void*)weights, scales ? (void*)scales : nullptr,
+                       zeros ? (void*)zeros : nullptr, (void*)outputs, (int*)expert_id_per_token_buf,
+                       (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K, group_size,
+                       (int*)num_tokens_per_expert, num_experts, total_tokens, asym);
+}
+
+static void moe_gemm_prefill_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
+                                     torch_ptr zeros, torch_ptr outputs, torch_ptr dequant_workspace, int act_dtype,
+                                     int weight_dtype, int N, int K, int group_size, torch_ptr num_tokens_per_expert,
+                                     int num_experts, int total_tokens, bool asym) {
+  ark::moe_gemm_prefill((sycl::queue*)stream, (void*)activations, (void*)weights, scales ? (void*)scales : nullptr,
+                        zeros ? (void*)zeros : nullptr, (void*)outputs,
+                        dequant_workspace ? (void*)dequant_workspace : nullptr, (BTLA_DTYPE)(act_dtype),
+                        (BTLA_DTYPE)(weight_dtype), N, K, group_size, (int*)num_tokens_per_expert, num_experts,
+                        total_tokens, asym);
+}
+
+// Variant A: FP8 per-tensor DPAS grouped GEMM (mirrors vllm-xpu-kernels'
+// `cutlass_grouped_gemm_xe2_impl` FP8 branch). `scales` is [E] FP32.
+// Weights are [E, K, N] row-major uint8. STATUS: NEEDS-HARDWARE-VALIDATION.
+static void moe_gemm_prefill_fp8_dpas_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights,
+                                              torch_ptr scales, torch_ptr outputs, int act_dtype, int weight_dtype,
+                                              int N, int K, torch_ptr num_tokens_per_expert, int num_experts,
+                                              int total_tokens) {
+  ark::moe_gemm_prefill_fp8_dpas((sycl::queue*)stream, (void*)activations, (void*)weights, (void*)scales,
+                                 (void*)outputs, (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K,
+                                 (int*)num_tokens_per_expert, num_experts, total_tokens);
+}
+
+// INT8 sibling of `moe_gemm_prefill_fp8_dpas`: `scales` is [E] FP32,
+// weights are [E, K, N] row-major int8. Storage-only INT8 (DPAS still
+// runs on activation dtype after in-register upcast). STATUS:
+// NEEDS-HARDWARE-VALIDATION.
+static void moe_gemm_prefill_int_dpas_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights,
+                                              torch_ptr scales, torch_ptr outputs, int act_dtype, int weight_dtype,
+                                              int N, int K, torch_ptr num_tokens_per_expert, int num_experts,
+                                              int total_tokens) {
+  ark::moe_gemm_prefill_int_dpas((sycl::queue*)stream, (void*)activations, (void*)weights, (void*)scales,
+                                 (void*)outputs, (BTLA_DTYPE)(act_dtype), (BTLA_DTYPE)(weight_dtype), N, K,
+                                 (int*)num_tokens_per_expert, num_experts, total_tokens);
 }
 
 static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
@@ -625,10 +682,24 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("max_seqlen_q"), pybind11::arg("max_seqlen_kv"),
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("cu_seqlens_q"), pybind11::arg("cu_seqlens_k"),
-        pybind11::arg("use_int8_pv"), pybind11::arg("lse") = 0);
-  m.def("sagev1", &ark::sagev1);
+        pybind11::arg("use_int8_pv"), pybind11::arg("use_mean_bias"), pybind11::arg("lse") = 0);
+  m.def("sagev1", &ark::sagev1, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("v_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("use_mean_bias"), pybind11::arg("lse") = 0);
   // High-level SAGEV1 PVi8 API: input Q/K/V are FP16 and quantized internally.
-  m.def("sagev1_pvi8", &ark::sagev1_pvi8);
+  m.def("sagev1_pvi8", &ark::sagev1_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("v_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("use_mean_bias"), pybind11::arg("lse") = 0);
   m.def("sage", &ark::sage, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
         pybind11::arg("scale_block_size"),
@@ -653,5 +724,10 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
+  m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
+  m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
+  m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
+  m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
+  m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif
 }
