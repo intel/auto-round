@@ -302,7 +302,7 @@ class FailureContextWriter:
                         end = min(max_end, failed_end) if failed_end is not None else max_end
                     else:
                         start = max(0, idx)
-                        end = min(len(lines)-1, idx + 80)
+                        end = min(len(lines) - 1, idx + 80)
                     selected = lines[start:end]
                     break
             if selected:
