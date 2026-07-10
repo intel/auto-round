@@ -558,9 +558,7 @@ class TestCosmos3DiffusionLoadModel:
 
         tmpdir = self._write_model_index("Cosmos3OmniDiffusersPipeline")
         try:
-            with patch(
-                "auto_round.special_model_handler.load_cosmos3_diffusion"
-            ) as mock_load:
+            with patch("auto_round.special_model_handler.load_cosmos3_diffusion") as mock_load:
                 mock_load.return_value = (MagicMock(), MagicMock())
                 result = diffusion_load_model(tmpdir)
 
@@ -574,9 +572,7 @@ class TestCosmos3DiffusionLoadModel:
 
         tmpdir = self._write_model_index("Cosmos3OmniPipeline")
         try:
-            with patch(
-                "auto_round.special_model_handler.load_cosmos3_diffusion"
-            ) as mock_load:
+            with patch("auto_round.special_model_handler.load_cosmos3_diffusion") as mock_load:
                 mock_load.return_value = (MagicMock(), MagicMock())
                 result = diffusion_load_model(tmpdir)
 
@@ -595,12 +591,8 @@ class TestCosmos3DiffusionLoadModel:
 
         tmpdir = self._write_model_index("DDPMScheduler")
         try:
-            with patch(
-                "auto_round.special_model_handler.load_cosmos3_diffusion"
-            ) as mock_cosmos:
-                with patch(
-                    "auto_round.utils.common.LazyImport", return_value=MagicMock()
-                ):
+            with patch("auto_round.special_model_handler.load_cosmos3_diffusion") as mock_cosmos:
+                with patch("auto_round.utils.common.LazyImport", return_value=MagicMock()):
                     try:
                         diffusion_load_model(tmpdir)
                     except Exception:

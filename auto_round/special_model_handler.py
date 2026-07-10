@@ -1272,6 +1272,7 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
 
 _PRE_DEFINED_FIXED_ATTR = {"gemma4_unified": {"has_variable_block_shape": True}}
 
+
 def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
     """Return fixed compressor attributes for models that need special caching.
 
@@ -1288,6 +1289,7 @@ def get_predefined_fixed_attr(model: torch.nn.Module) -> dict | None:
         return None
     attrs = _PRE_DEFINED_FIXED_ATTR.get(config.model_type)
     return attrs
+
 
 # Cosmos3 world-model handler.
 def _set_quantizable_bits(module, bits=4):
@@ -1312,6 +1314,7 @@ import contextlib
 import threading
 
 _cosmos3_forward_state = threading.local()
+
 
 @contextlib.contextmanager
 def _cosmos3_forward_mode():
@@ -1432,9 +1435,7 @@ def load_cosmos3_diffusion(pretrained_model_name_or_path, device_str):
 
     _bypass_cosmos3_safety_checker()
 
-    diffusers_pipe = Cosmos3OmniPipeline.from_pretrained(
-        pretrained_model_name_or_path, torch_dtype=torch.bfloat16
-    )
+    diffusers_pipe = Cosmos3OmniPipeline.from_pretrained(pretrained_model_name_or_path, torch_dtype=torch.bfloat16)
     torch.set_grad_enabled(True)
     fused_model = diffusers_pipe.transformer
 
@@ -1529,7 +1530,11 @@ def load_cosmos3_diffusion(pretrained_model_name_or_path, device_str):
             model_index["_class_name"] = "Cosmos3OmniDiffusersPipeline"
             model_index["_name_or_path"] = pretrained_model_name_or_path
             for component_name, component_spec in model_index.items():
-                if component_name.startswith("_") or component_name == "transformer" or not isinstance(component_spec, list):
+                if (
+                    component_name.startswith("_")
+                    or component_name == "transformer"
+                    or not isinstance(component_spec, list)
+                ):
                     continue
                 source = os.path.join(pretrained_model_name_or_path, component_name)
                 target = os.path.join(save_directory, component_name)
