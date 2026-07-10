@@ -290,14 +290,25 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
   // per-group path.
   float sg_scale[sg_n_strides];
 
-  // Scratch int8 fragment, same layout as the packed int4 copy fragment
-  // `tBrB`. Each mainloop iteration decodes the just-loaded packed nibbles
-  // into this buffer (sign-extended [-8, 7]) and then hands it to the SAME
-  // validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group path
+  // Scratch int8 fragment, same subgroup TV-layout as the packed int4 copy
+  // fragment `tBrB`. Each mainloop iteration decodes the just-loaded packed
+  // nibbles into this buffer (sign-extended [-8, 7]) and then hands it to the
+  // SAME validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group path
   // uses. See the reorder site below for the rationale -- this avoids the
   // `NumericArrayConverter<ElementA, cutlass::int4b_t, N>` fast path, whose
   // interleaved-B-layout assumption miscomputed a fraction of outputs.
-  auto tBrB_i8 = make_fragment_like<int8_t>(tBrB);
+  //
+  // NOTE: `make_fragment_like<int8_t>(tBrB)` cannot be used directly. `tBrB`
+  // is a `SubgroupTensor` of the subbyte `cutlass::int4b_t` copy fragment, and
+  // its work-item layout is not fully static for subbyte types -- feeding it to
+  // `make_fragment_like` builds a *dynamic owning* tensor, which CuTe rejects
+  // (`static_assert(is_static ...)` in `cute/tensor_impl.hpp`). Mirror the
+  // validated SAGE mainloop instead: allocate a like-fragment of the underlying
+  // register tensor (`tBrB.tensor()`, static) and re-wrap it as a subgroup
+  // tensor carrying `tBrB`'s TV-layout so the `reorder(tBrB_i8, tCrB)` below
+  // resolves to the subgroup-cooperative overload.
+  auto tBrB_i8 = make_subgroup_tensor(
+      make_fragment_like<int8_t>(tBrB.tensor()), tBrB.tv_layout());
 
   CUTE_UNROLL
   for (; k_tile_prefetch < prefetch_dist; k_tile_prefetch++) {
