@@ -89,7 +89,8 @@ stages:
                   docker run --rm \
                     --user "$(id -u):$(id -g)" \
                     -e HOME=/tmp \
-                    -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} \
+                    --cpuset-cpus="${NUMA_CPUSET:-0-15}" \
+                    --cpuset-mems="${NUMA_NODE:-0}" \
                     -v $(Build.SourcesDirectory):/auto-round \
                     -v /opt/intel/oneapi:/opt/intel/oneapi \
                     -w /auto-round/auto_round_extension/ark \
@@ -98,9 +99,8 @@ stages:
                     && source venv/bin/activate \
                     && source /opt/intel/oneapi/setvars.sh \
                     && pip install -U pip build cmake setuptools \
-                    && apt-get update && apt-get install -y numactl\
                     && export BUILD_MODE=${{ parameters.buildMode }} \
-                    && numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" python -m build --wheel --no-isolation \
+                    && python -m build --wheel --no-isolation \
                     && auditwheel repair dist/*.whl --exclude lib* -w wheelhouse/ \
                     && ls -lah wheelhouse \
                     && if [[ "$python_version_fix" == "312" ]] && [[ "\$BUILD_MODE" == "release" ]]; then \
