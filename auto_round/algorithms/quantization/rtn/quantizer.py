@@ -50,22 +50,12 @@ class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
-    def quantize_block(self, ctx) -> dict:
+    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx) -> dict:
         """Apply zero-shot RTN quantization to a block.
-
-        Pure-algorithm entry point.  Infrastructure (materialize, shard writing,
-        device cleanup) is handled by the Compressor before/after this call.
-
-        Args:
-            block: Module already materialized and placed on the correct device.
-            input_ids: Unused for zero-shot RTN (accepted for interface consistency).
-            input_others: Unused for zero-shot RTN.
-            reference_output: Unused for zero-shot RTN.
 
         Returns:
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
-        block = ctx.block
         if (
             self.config.is_act_nv_fp
             or self.config.is_static_afp8
@@ -102,6 +92,10 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         self.enable_alg_ext = True
 
+
+    def is_support_compile_block(self):
+        return False
+
     @contextmanager
     def block_forward_hooks(self, ctx):
         with super().block_forward_hooks(ctx) as hook_handles:
@@ -131,21 +125,8 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         return handles
 
     @torch.no_grad()
-    def quantize_block(self, ctx):
-        """Apply imatrix-informed RTN quantization to a block.
-
-        Pure-algorithm entry point.  Device placement and cleanup are handled
-        by the Compressor; act-max and imatrix hook registration are owned by
-        the quantizer hook helpers before this method is called.
-
-        Args:
-            block: Module already placed on the correct device(s) with act_max
-                attributes populated by the Compressor's hook pass.
-            input_ids: Unused for optimized RTN; accepted for interface consistency.
-            input_others: Unused for optimized RTN.
-            reference_output: Unused for optimized RTN.
-        """
-        block = ctx.block
+    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx):
+        """Apply imatrix-informed RTN quantization to a block."""
         update_block_global_scale_if_needed(block, self.data_type, self.group_size)
         if (
             self.config.is_act_nv_fp

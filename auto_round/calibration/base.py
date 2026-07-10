@@ -24,9 +24,11 @@ Extension points for new calibration strategies:
 - :meth:`should_stop` — early-stop policy (e.g. diffusion never stops).
 - :meth:`wrap_block_forward` — block-forward wrapping (e.g. positional → kwargs).
 """
-
+import torch
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
+from auto_round.calibration.hooks import make_block_forward_func
+from auto_round.calibration.hooks import should_stop_cache_forward
 
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
@@ -68,8 +70,6 @@ class Calibrator(ABC):
         Subclasses (e.g. ``DiffusionCalibrator``) may override to always
         return ``False`` so the pipeline runs every denoising step.
         """
-        from auto_round.calibration.hooks import should_stop_cache_forward
-
         return should_stop_cache_forward(self.compressor, name)
 
     def wrap_block_forward(self, forward_fn):
@@ -85,6 +85,18 @@ class Calibrator(ABC):
         from auto_round.calibration.hooks import replace_forward_with_hooks
 
         replace_forward_with_hooks(self.compressor)
+
+    @torch.no_grad()
+    def _get_block_forward_func(self, name: str) -> Callable:
+        """Build the block-forward replacement, then let the calibrator wrap it.
+
+        ``Calibrator.wrap_block_forward`` defaults to passthrough; the
+        Diffusion calibrator overrides it to convert positional → kwargs.
+        """
+        fn = make_block_forward_func(self, name) #TODO have a double check wenhuach
+
+        fn = self.calibration.wrap_block_forward(fn)
+        return fn
 
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Bridge hook stop checks to the calibrator's stop policy."""

@@ -107,16 +107,14 @@ class ZeroShotCompressor(BaseCompressor):
             block_names=[getattr(block, "global_name", "")],
             block_name=getattr(block, "global_name", ""),
             block_index=0,
-            io=self.quantizer.create_block_io(None, {}, None, block),
             device=device,
         )
-        self.quantizer.quantize_block(ctx)
+        self.quantizer.quantize_block(block, None, {}, None, None, ctx)
 
         # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
         if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
             set_amax_for_all_moe_layers(block, attr_name="act_max")
 
-        ctx.finish()
         mv_module_from_gpu(block)
         return None, None
 
@@ -181,11 +179,9 @@ class ZeroShotCompressor(BaseCompressor):
                         block_names=[block_name],
                         block_name=block_name,
                         block_index=0,
-                        io=self.quantizer.create_block_io(None, {}, None, block),
                         device=device_manager.device,
                     )
-                    self.quantizer.quantize_block(ctx)
-                    ctx.finish()
+                    self.quantizer.quantize_block(block, None, {}, None, None, ctx)
 
                     # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                     if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):

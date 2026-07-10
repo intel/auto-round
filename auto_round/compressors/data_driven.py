@@ -65,7 +65,6 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
-    parse_available_devices,
 )
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
@@ -105,7 +104,7 @@ class DataDrivenCompressor(BaseCompressor):
         # Routed to ``self._calibration_state.dataset`` via @property.
         # Set after ``super().__init__()`` because the state object is created there.
         self.dataset = dataset
-        
+
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
 
@@ -176,19 +175,19 @@ class DataDrivenCompressor(BaseCompressor):
             self.post_init()
         return self.calibration.calib(nsamples, bs)
 
-    @torch.no_grad()
-    def _get_block_forward_func(self, name: str) -> Callable:
-        """Build the block-forward replacement, then let the calibrator wrap it.
-
-        ``Calibrator.wrap_block_forward`` defaults to passthrough; the
-        Diffusion calibrator overrides it to convert positional → kwargs.
-        """
-        from auto_round.calibration.hooks import make_block_forward_func
-
-        fn = make_block_forward_func(self, name)
-        if self.calibration is not None:
-            fn = self.calibration.wrap_block_forward(fn)
-        return fn
+    # @torch.no_grad()
+    # def _get_block_forward_func(self, name: str) -> Callable:
+    #     """Build the block-forward replacement, then let the calibrator wrap it.
+    #
+    #     ``Calibrator.wrap_block_forward`` defaults to passthrough; the
+    #     Diffusion calibrator overrides it to convert positional → kwargs.
+    #     """
+    #     from auto_round.calibration.hooks import make_block_forward_func
+    #
+    #     fn = make_block_forward_func(self, name)
+    #     if self.calibration is not None:
+    #         fn = self.calibration.wrap_block_forward(fn)
+    #     return fn
 
 
     # @torch.no_grad()
@@ -257,7 +256,7 @@ class DataDrivenCompressor(BaseCompressor):
         fake_layer = _FakeDecodingLayer()
         fake_layer.orig_forward = fake_layer.forward
         fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
-        fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
+        fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
 
         self.inputs = {}
         self.last_cache_name = None
@@ -357,7 +356,7 @@ class DataDrivenCompressor(BaseCompressor):
             materialize_model_(block)
             convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
 
-            if auto_offload:
+            if auto_offload: #TODO move to signround wenhuach
                 if (
                     is_auto_device_mapping(device_manager.device_map)
                     and len(device_manager.device_list) > 1
@@ -415,8 +414,8 @@ class DataDrivenCompressor(BaseCompressor):
                     input_ids,
                     input_others,
                     reference_output,
-                    loss_device=loss_device,
-                    mid_iter_mem_check=mid_iter_mem_check,
+                    q_input,
+                    block_ctx=None,  # legacy path: no BlockContext
                 )
 
                 if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
@@ -440,7 +439,6 @@ class DataDrivenCompressor(BaseCompressor):
                 block_names=[blk_name],
                 block_name=blk_name,
                 block_index=0,
-                io=self.quantizer.create_block_io(input_ids, input_others, q_input, block),
                 bs=bs,
                 loss_device=loss_device,
                 device=device,
@@ -451,17 +449,22 @@ class DataDrivenCompressor(BaseCompressor):
             policy = self.pipeline.get_merged_policy(ctx)
 
             if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
+                # First: reference forward with FP inputs and preprocessor hooks only.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    reference_output = ctx.collect_reference(fwd_stack)
+                    ref_output = self.block_forward.forward(block, input_ids, input_others)
+                    reference_output = self.block_forward.split_outputs(ref_output)
+                # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
                 with ExitStack() as fwd_stack:
                     quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
                     if quantizer_hooks:
-                        ctx.collect_quantized_stats(fwd_stack)
+                        self.block_forward.forward(block, q_input, input_others)
             else:
+                # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    reference_output = ctx.collect_reference(fwd_stack)
+                    ref_output = self.block_forward.forward(block, input_ids, input_others)
+                    reference_output = self.block_forward.split_outputs(ref_output)
 
             if q_input is not None:
                 if input_ids is not q_input:
@@ -475,7 +478,9 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.pre_quantize_block(ctx)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
-            self.pipeline.block_quantizer.quantize_block(ctx)
+            self.pipeline.block_quantizer.quantize_block(
+                block, input_ids, input_others, reference_output, q_input, ctx
+            )
 
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────────
             for pre in self.pipeline.preprocessors:
@@ -487,14 +492,14 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Collect quantized-block outputs ───────────────────────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_outputs = ctx.collect_next_inputs()
+                q_out = self.block_forward.forward(block, input_ids, input_others)
+                q_outputs = self.block_forward.split_outputs(q_out)
             else:
                 q_outputs = None
 
             # ── Cleanup ───────────────────────────────────────────────────────────
             if len(device_manager.device_list) > 1:
                 accelerate.hooks.remove_hook_from_submodules(block)
-            ctx.finish()
             mv_module_from_gpu(block)
             return q_outputs, reference_output
         finally:
@@ -604,7 +609,6 @@ class DataDrivenCompressor(BaseCompressor):
                 block_names=current_block_names,
                 block_name=current_block_name,
                 block_index=i,
-                io=self.quantizer.create_block_io(input_ids, input_others, q_input, m),
                 bs=bs,
                 loss_device=loss_device,
                 device=device_manager.device,
@@ -623,17 +627,19 @@ class DataDrivenCompressor(BaseCompressor):
                 # First: reference forward with FP inputs and preprocessor hooks only.
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    reference_output = ctx.collect_reference(fwd_stack)
-                # Second: quantizer stats forward with q_input.
+                    ref_output = self.block_forward.forward(m, input_ids, input_others)
+                    reference_output = self.block_forward.split_outputs(ref_output)
+                # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
                 with ExitStack() as fwd_stack:
                     quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
                     if quantizer_hooks:
-                        ctx.collect_quantized_stats(fwd_stack)
+                        self.block_forward.forward(m, q_input, input_others)
             else:
                 # Unified: reference forward with all hooks active (or no hooks).
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    reference_output = ctx.collect_reference(fwd_stack)
+                    ref_output = self.block_forward.forward(m, input_ids, input_others)
+                    reference_output = self.block_forward.split_outputs(ref_output)
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
@@ -648,7 +654,9 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.pre_quantize_block(ctx)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
-            self.pipeline.block_quantizer.quantize_block(ctx)
+            self.pipeline.block_quantizer.quantize_block(
+                m, input_ids, input_others, reference_output, q_input, ctx
+            )
 
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────
             for pre in self.pipeline.preprocessors:
@@ -660,7 +668,8 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_input = ctx.collect_next_inputs()
+                q_out = self.block_forward.forward(m, input_ids, input_others)
+                q_input = self.block_forward.split_outputs(q_out)
             else:
                 q_input = None
 
@@ -676,7 +685,6 @@ class DataDrivenCompressor(BaseCompressor):
             # enabled) is only used as the quantized-input companion for the
             # next block.
             next_input_ids = reference_output
-            ctx.finish()
             clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
@@ -1153,7 +1161,6 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     block_names=[block_name],
                     block_name=block_name,
                     block_index=0,
-                    io=self.quantizer.create_block_io(input_ids, input_others, None, block),
                     bs=bs,
                     device=device_manager.device,
                     is_mllm=self.model_context.is_mllm,
@@ -1161,7 +1168,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 )
                 with ExitStack() as fwd_stack:
                     self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    input_ids = ctx.collect_reference(fwd_stack)
+                    ref_output = self.block_forward.forward(block, input_ids, input_others)
+                    input_ids = self.block_forward.split_outputs(ref_output)
 
                 if len(device_manager.device_list) > 1:
                     accelerate.hooks.remove_hook_from_submodules(block)
@@ -1171,9 +1179,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     self.compress_context.clear_memory()
 
                 # ── Pure algorithm ────────────────────────────────────────────
-                ctx.io.seed_reference(fp_inputs=block_input_ids, reference_outputs=input_ids)
-                self.quantizer.quantize_block(ctx)
-                ctx.finish()
+                self.quantizer.quantize_block(
+                    block, block_input_ids, input_others, input_ids, None, ctx
+                )
 
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)

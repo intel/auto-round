@@ -13,9 +13,12 @@
 # limitations under the License.
 import traceback
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.pipeline import BlockContext
 
 from auto_round.algorithms.base import BasePipelineMember
 from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -230,12 +233,16 @@ class BaseQuantizer(BasePipelineMember):
         from auto_round.calibration.state import CalibrationState
 
         self._calibration_state = CalibrationState()
-        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)
+        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1) # move to block io
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+
+
+    def is_support_compile_block(self):
+        True
 
     # ── Shared CalibrationState forwarders ───────────────────────────────────────
     @property
@@ -287,6 +294,7 @@ class BaseQuantizer(BasePipelineMember):
         ``scale_dtype`` (string → torch dtype).  All quantizer fields that
         merely mirror the compressor are pulled from here in one place.
         """
+        self.compressor = compressor
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = compressor.scheme_context
@@ -371,17 +379,9 @@ class BaseQuantizer(BasePipelineMember):
     def block_forward_hooks(self, ctx: Any) -> Any:
         """Register act-calib forward hooks for the reference forward.
 
-        Implements the :meth:`BasePipelineMember.block_forward_hooks` interface for
-        terminal quantizers.  Yields the list of hook handles so the caller can
-        determine whether any act-calib hooks were registered (used to decide
-        whether a second forward with quantized inputs is needed).
+        Yields the list of hook handles so the caller can determine whether
+        any act-calib hooks were registered.
         """
-        from auto_round.algorithms.pipeline import CalibTiming
-
-        policy = self.get_act_calib_policy(ctx)
-        if policy.when == CalibTiming.SKIP:
-            yield []
-            return
         handles = self._register_act_max_hooks(ctx.block)
         try:
             yield handles
@@ -397,37 +397,11 @@ class BaseQuantizer(BasePipelineMember):
         """
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
-        if ctx.has_quantized_inputs() and self.enable_quanted_input:
+        # if ctx.has_quantized_inputs() and self.enable_quanted_input:
+        #     return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
+        if self.enable_quanted_input: #TODO wenhuach check whether need has_quantized_inputs
             return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
         return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
-
-    def create_block_io(
-        self,
-        input_ids: Any,
-        input_others: dict,
-        quantized_input: Any = None,
-        block: torch.nn.Module | None = None,
-    ) -> Any:
-        from auto_round.algorithms.pipeline import BlockIO, InputSource
-
-        active_source = (
-            InputSource.QUANTIZED_INPUT
-            if quantized_input is not None and self.enable_quanted_input
-            else InputSource.FP_CACHE
-        )
-        io = BlockIO(
-            _fp_inputs=input_ids,
-            _input_others=input_others,
-            _quantized_inputs=quantized_input,
-            _active_source=active_source,
-            batch_dim=0, # TODO change to calib wenhuach
-            seqlen=2048, #TODO  change to calib wenhuach
-            shared_cache_keys=self.model_context.shared_cache_keys,
-            _quantizer=self,
-            _block=block,
-        )
-        io._fp_inputs, io._input_others = io._preprocess_block_inputs(io._fp_inputs, io._input_others, block)
-        return io
 
     # ── Embedding quantization ────────────────────────────────────────────────────
 
@@ -516,20 +490,28 @@ class BaseQuantizer(BasePipelineMember):
 
     # ── Abstract quantization interface ──────────────────────────────────────────
 
-    def quantize_block(self, ctx: Any) -> dict:
+    def quantize_block(
+        self,
+        block: "torch.nn.Module",
+        fp_inputs: list[torch.Tensor] | dict,
+        input_others: dict,
+        fp_outputs: list[torch.Tensor],
+        q_inputs: list[torch.Tensor] | None,
+        block_ctx: "BlockContext",
+    ) -> dict:
         """Apply the quantization algorithm to a prepared block.
 
         This is the **pure-algorithm** entry point called by the Compressor after
         all infrastructure work (device placement, data collection, act-max hook
         registration, DDP setup) has been completed.
 
-        Implementations should:
-        - Perform the algorithm-specific weight/activation quantization on ``ctx.block``.
-        - Return a dict of best parameters (may be empty for zero-shot algorithms).
-
         Args:
-            ctx: Per-block pipeline context. ``ctx.io`` owns calibration inputs,
-                quantized inputs, and reference outputs.
+            block:        The transformer block module.
+            fp_inputs:    FP calibration inputs for this block (list[Tensor] or dict for diffusion).
+            input_others: Auxiliary kwargs (attention_mask, position_ids, etc.).
+            fp_outputs:   FP reference outputs for this block (list[Tensor]).
+            q_inputs:     Quantized inputs from previous block (list[Tensor] or None).
+            block_ctx:    Per-block pipeline context (BlockContext).
 
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.

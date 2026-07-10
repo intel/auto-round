@@ -20,10 +20,6 @@ from auto_round.algorithms.registry import resolve_pipeline_member
 from auto_round.schemes import QuantizationScheme
 
 
-class BaseAlgorithm:
-    pass
-
-
 class BasePipelineMember:
     """Shared interface for all members of a quantization pipeline."""
 
@@ -58,6 +54,7 @@ class BasePipelineMember:
 
     def bind(self, compressor: Any) -> None:
         """Wire shared context from the owning compressor."""
+        self.compressor = compressor
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = getattr(compressor, "scheme_context", None)

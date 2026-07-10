@@ -110,26 +110,32 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
         return loss
 
-    def quantize_block(self, ctx: "BlockContext") -> dict:
+    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
         This is the pure-algorithm entry point.  All infrastructure concerns
-        (device placement, act-max hook collection, reference-output caching,
-        DDP setup, memory cleanup, logging) are handled by the Compressor
-        before and after this call.
+        (device placement, act-max hook collection, DDP setup, memory cleanup,
+        logging) are handled by the Compressor before and after this call.
 
         Args:
-            ctx: Per-block pipeline context. ``ctx.io`` owns calibration inputs,
-                reference outputs, and mini-batch block forwards.
+            block:        The transformer block module.
+            fp_inputs:    FP calibration inputs (list[Tensor] or dict).
+            input_others: Auxiliary kwargs (attention_mask, position_ids, etc.).
+            fp_outputs:   FP reference outputs (list[Tensor]).
+            q_inputs:     Quantized inputs from previous block (or None).
+            block_ctx:    Per-block pipeline context.
 
         Returns:
             best_params: Best quantization parameters found during optimization.
                 Empty dict if no trainable parameters were found.
         """
-        block = ctx.block
         device = device_manager.device
-        loss_device = ctx.loss_device
-        mid_iter_mem_check = ctx.mid_iter_mem_check
+        loss_device = block_ctx.loss_device
+        mid_iter_mem_check = block_ctx.mid_iter_mem_check
+
+        # Use quantized inputs if available and enabled
+        active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
+        nsamples = len(active_inputs) if isinstance(active_inputs, list) else self.compressor.block_forward._count_samples(active_inputs)
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -187,7 +193,6 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        nsamples = ctx.num_samples
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -205,10 +210,11 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = ctx.count_batch_elements(whole_indices)
+            num_elm = sum(active_inputs[i].numel() for i in whole_indices)
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         batch_size = self.batch_size
+        block_fwd = self.compressor.block_forward
         for i in range(self.iters):
             if self.enable_alg_ext and self.data_type.endswith("dq"):
                 for n, m in block.named_modules():
@@ -220,10 +226,10 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                ref_output = ctx.get_reference_outputs(indices, device=loss_device)
-                # BlockIO centralizes batch input selection, reference caching,
-                # and forwarding for the currently scheduled block (ctx.block).
-                pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
+                ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                pred_output = block_fwd.forward(block, active_inputs, input_others, indices)
+                if loss_device is not None:
+                    pred_output = pred_output.to(loss_device)
                 loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm

@@ -1121,7 +1121,17 @@ def _clear_memory_for_cpu_and_cuda(
 class ClearMemory:
 
     def __init__(self, device_list: Union[list, tuple, None] = None):
-        self.device_list = device_list
+        self._device_list = device_list
+
+    @property
+    def device_list(self):
+        if self._device_list is None:
+            return device_manager.device_list
+        return self._device_list
+
+    @device_list.setter
+    def device_list(self, value):
+        self._device_list = value
 
     def __call__(
         self,
@@ -1149,4 +1159,4 @@ class ClearMemory:
             _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
 
 
-clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
+clear_memory = torch._dynamo.disable()(ClearMemory(device_list=None))
