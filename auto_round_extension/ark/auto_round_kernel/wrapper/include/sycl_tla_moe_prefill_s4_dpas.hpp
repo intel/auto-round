@@ -423,13 +423,12 @@ CUTE_DEVICE void MoEGEMM_s4(const ElementA* Activations,
   int group_range = item.get_group_range(1);
   int local_id = item.get_local_linear_id();
 
-  if (group_id == 0 && local_id == 0) {
-    auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
-        atomic_buffer[0]);
-    atm.store(0);
-  }
+  // NOTE: `atomic_buffer[0]` is zero-initialized on the host (via a queued
+  // `memset` that the kernel depends on) before launch. It must NOT be reset
+  // here: an in-kernel `store(0)` by a single work-group has no grid-level
+  // synchronization, so other work-groups could read an uninitialized/stale
+  // value or have this late store clobber an already-advanced counter, both of
+  // which corrupt tile scheduling.
 
   int pre_rows = 0;
   int pre_tiles = 0;
@@ -572,7 +571,14 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyB = typename policy::GmemTiledCopyB;
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
+  // Zero-init the persistent-scheduler tile counter on the host before launch.
+  // Doing it here (rather than inside the kernel) removes the cross-work-group
+  // race: the kernel below is made to depend on this memset event, so every
+  // work-group observes a fully initialized counter.
+  auto init_event = stream.memset(atomic_buffer, 0, sizeof(int32_t));
+
   auto event = stream.submit([&](sycl::handler& cgh) {
+    cgh.depends_on(init_event);
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmS4Name<ElementA, ElementB, ElementS, ElementD,
                                     layoutA, layoutB, policy>>(
