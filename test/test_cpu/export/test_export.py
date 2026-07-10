@@ -224,11 +224,21 @@ class TestAutoRound:
         )
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
-        assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
-        assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
+            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
+            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+            if static_kv_dtype == "fp8":
+                assert "model.decoder.layers.8.self_attn.k_scale" in f.keys()
+                assert "model.decoder.layers.8.self_attn.v_scale" in f.keys()
+                assert f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape == torch.Size([1])
+                assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape == torch.Size([1])
+                assert (
+                    f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.float32
+                    or f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.bfloat16
+                )
+
         if static_kv_dtype is None:
             with torch.no_grad():
                 import transformers
@@ -243,7 +253,10 @@ class TestAutoRound:
                 assert (
                     model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__
                     == "WeightFP8ActFP8StaticQuantLinear"
-                ), f"Expected WeightFP8ActFP8StaticQuantLinear, got {model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__}"
+                ), (
+                    "Expected WeightFP8ActFP8StaticQuantLinear, "
+                    f"got {model.model.decoder.layers[0].self_attn.k_proj.__class__.__name__}"
+                )
                 tokenizer = transformers.AutoTokenizer.from_pretrained(quantized_model_path)
                 prompt = "AI is "
                 encode = tokenizer.encode(prompt, return_tensors="pt")
@@ -256,16 +269,6 @@ class TestAutoRound:
                     print(f"Prompt: {prompt}")
                     print(f"Output: {output}")
                     assert output is not None, "Output should not be None"
-
-        if static_kv_dtype == "fp8":
-            assert "model.decoder.layers.8.self_attn.k_scale" in f.keys()
-            assert "model.decoder.layers.8.self_attn.v_scale" in f.keys()
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape == torch.Size([1])
-            assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape == torch.Size([1])
-            assert (
-                f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.float32
-                or f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.bfloat16
-            )
 
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
         autoround = AutoRound(
@@ -285,11 +288,45 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
+            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
+            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+
+    def test_static_afp8_per_head_export(self):
+        import os
+
+        from safetensors import safe_open
+
+        model_name = self.model_name
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            bits=8,
+            group_size=-1,
+            iters=0,
+            scheme="fp8_static",
+            nsamples=2,
+            seqlen=2,
+            static_kv_dtype="fp8",
+            static_kv_granularity="head",
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
-        assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
-        assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+        assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape == torch.Size(
+            [model.config.num_attention_heads]
+        )
+        assert f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape == torch.Size(
+            [model.config.num_attention_heads]
+        )
+
+        with open(os.path.join(quantized_model_path, "config.json")) as config_file:
+            config = json.load(config_file)
+        quantization_config = config["quantization_config"]
+        assert quantization_config["static_kv_dtype"] == "fp8"
+        assert quantization_config["static_kv_granularity"] == "head"
 
     def test_static_fp8_attn(self):
         import os
@@ -320,6 +357,36 @@ class TestAutoRound:
             assert weight_name in f.keys()
             assert f.get_tensor(weight_name).shape == torch.Size([1])
             assert f.get_tensor(weight_name).dtype == torch.float32 or f.get_tensor(weight_name).dtype == torch.bfloat16
+
+    def test_static_fp8_per_head_attn(self):
+        import os
+
+        from safetensors import safe_open
+
+        model_name = self.model_name
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            self.tokenizer,
+            iters=0,
+            nsamples=2,
+            seqlen=2,
+            scheme="FP8_STATIC",
+            static_attention_dtype="fp8",
+            static_attention_granularity="head",
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
+        for attr in ("k_scale", "v_scale", "q_scale"):
+            weight_name = f"model.decoder.layers.5.self_attn.{attr}"
+            assert weight_name in f.keys()
+            assert f.get_tensor(weight_name).shape == torch.Size([model.config.num_attention_heads])
+
+        with open(os.path.join(quantized_model_path, "config.json")) as config_file:
+            config = json.load(config_file)
+        quantization_config = config["quantization_config"]
+        assert quantization_config["static_attention_dtype"] == "fp8"
+        assert quantization_config["static_attention_granularity"] == "head"
 
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128

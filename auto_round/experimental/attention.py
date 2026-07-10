@@ -32,8 +32,9 @@ from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from auto_round.experimental.kv_cache import kvcache_quant_context
 from auto_round.experimental.utils import (
     clean_model_parameters_and_buffers_,
+    fp8_qdq,
     is_attention_module,
-    per_tensor_fp8_qdq,
+    normalize_fp8_granularity,
     update_parameter_data,
 )
 from auto_round.utils import logger
@@ -69,9 +70,10 @@ class QuantizedAttentionImpl(torch.nn.Module):
 
     _original_impl = "sdpa"
 
-    def __init__(self, config: PretrainedConfig, attn_module: Module):
+    def __init__(self, config: PretrainedConfig, attn_module: Module, granularity: str = "tensor"):
         super().__init__()
         self.config = config
+        self.granularity = normalize_fp8_granularity(granularity)
         self.attn_module = ref(attn_module)  # avoid circular references
         # register query max
         device = next(attn_module.parameters()).device
@@ -89,14 +91,17 @@ class QuantizedAttentionImpl(torch.nn.Module):
         *args,
         **kwargs,
     ):
-        cur_query_max = query.abs().max()
+        if self.granularity == "head":
+            cur_query_max = query.abs().amax(dim=(0, 2, 3))
+        else:
+            cur_query_max = query.abs().max()
         query_max = torch.max(
             getattr(module, QUERY_MAX_NAME).data,
             cur_query_max.detach().to(getattr(module, QUERY_MAX_NAME).data.device),
         )
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
-        _, query_scale = per_tensor_fp8_qdq(query, tensor_max=query_max)
-        update_parameter_data(module, query_scale.squeeze(0).detach(), QUERY_SCALE_NAME)
+        _, query_scale = fp8_qdq(query, tensor_max=query_max, granularity=self.granularity)
+        update_parameter_data(module, query_scale.reshape(-1).detach(), QUERY_SCALE_NAME)
         # original attention
         return ALL_ATTENTION_FUNCTIONS[self._original_impl](
             module,
@@ -118,7 +123,7 @@ def _ct_hooked_attention(module: Module, *args, **kwargs):
         return ALL_ATTENTION_FUNCTIONS[_original_impl](module, *args, **kwargs)  # pylint: disable=E0601
 
 
-def init_hooked_attention(module: Module, config):
+def init_hooked_attention(module: Module, config, granularity: str = "tensor"):
     """
     Initialize `QuantizedAttentionImpl` and `QuantizedKVCache` instances
     attached to attention
@@ -127,7 +132,7 @@ def init_hooked_attention(module: Module, config):
     :param module: attention module to initialize with
     """
     if not hasattr(module, ATTN_IMPL_ATTR_NAME):
-        module.register_module(ATTN_IMPL_ATTR_NAME, QuantizedAttentionImpl(config, module))
+        module.register_module(ATTN_IMPL_ATTR_NAME, QuantizedAttentionImpl(config, module, granularity=granularity))
         if config._attn_implementation != HOOKED_ATTENTION_NAME:
             # assumes only one model at a time
             global _original_impl
@@ -139,10 +144,10 @@ def init_hooked_attention(module: Module, config):
     # initialize_hooked_kv_cache(model, module)
 
 
-def prep_attention_module_for_calibration(module: torch.nn.Module, config):
+def prep_attention_module_for_calibration(module: torch.nn.Module, config, granularity: str = "tensor"):
     if is_attention_module(module):
         logger.trace(f"Preparing attention module {module.__class__.__name__} for calibration")
-        init_hooked_attention(module, config)
+        init_hooked_attention(module, config, granularity=granularity)
 
 
 def clean_up_hooked_attention(module, model):
@@ -155,12 +160,25 @@ def clean_up_hooked_attention(module, model):
 
 
 @contextlib.contextmanager
-def attention_quant_ctx(model: PreTrainedModel, static_attention_dtype=torch.float8_e4m3fn):
+def attention_quant_ctx(
+    model: PreTrainedModel,
+    static_attention_dtype=torch.float8_e4m3fn,
+    static_attention_granularity: str = "tensor",
+):
     try:
         # Setup phase: Initialize hooked attention
-        prepare_fn = partial(prep_attention_module_for_calibration, config=model.config)
+        static_attention_granularity = normalize_fp8_granularity(static_attention_granularity)
+        prepare_fn = partial(
+            prep_attention_module_for_calibration,
+            config=model.config,
+            granularity=static_attention_granularity,
+        )
         model.apply(prepare_fn)
-        with kvcache_quant_context(model, static_kv_dtype=static_attention_dtype):
+        with kvcache_quant_context(
+            model,
+            static_kv_dtype=static_attention_dtype,
+            static_kv_granularity=static_attention_granularity,
+        ):
             yield model
     finally:
         clean_fn = partial(clean_up_hooked_attention, model=model)
