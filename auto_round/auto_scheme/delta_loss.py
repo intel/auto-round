@@ -78,6 +78,107 @@ from auto_round.wrapper import WrapperLinear
 __all__ = ["gen_layer_config"]
 
 
+# Activation-only second-order (Hessian proxy) defaults.
+# These are intentionally constants (not API arguments) per current design:
+# users only toggle the feature via AR_ENABLE_ACT_HESSIAN2 environment variable.
+_ACT_HESSIAN2_LAMBDA = 1.0
+_ACT_HESSIAN2_TRACE_SAMPLES = 1
+_ACT_HESSIAN2_TRACE_INTERVAL = 1
+_ACT_HESSIAN2_TRACE_DIST = "rademacher"
+_ACT_HESSIAN2_TRACE_CLAMP = 1e8
+
+
+def _is_act_hessian2_enabled() -> bool:
+    """Whether activation-only second-order scoring is enabled via environment variable.
+
+    Env var:
+        AR_ENABLE_ACT_HESSIAN2:
+            - true/1/yes: enable
+            - false/0/no/unset: disable
+    """
+    from auto_round import envs as _envs
+
+    return bool(_envs.AR_ENABLE_ACT_HESSIAN2)
+
+
+def _disable_act_score_when_h2_enabled() -> bool:
+    """Whether to disable first-order activation score when act-h2 proxy is enabled."""
+    from auto_round import envs as _envs
+
+    return bool(_envs.AR_DISABLE_ACT_SCORE_WHEN_H2)
+
+
+def _estimate_gptq_hessian_proxy_trace(act: torch.Tensor) -> float:
+    """Estimate a GPTQ-style Hessian proxy trace from activation statistics.
+
+    This is a low-cost proxy (no second-order autograd):
+
+    - GPTQ-style intuition: Hessian-like curvature for quantization can be
+      approximated from activation second moments.
+    - We use ``mean(act^2)`` as a normalized trace-like scalar proxy.
+
+    Returns:
+        A finite float scalar. Invalid values are mapped to 0.0.
+    """
+    if act is None or not isinstance(act, torch.Tensor):
+        return 0.0
+    with torch.no_grad():
+        val = torch.pow(act.to(torch.float32), 2).mean()
+        if not torch.isfinite(val):
+            return 0.0
+        return float(val.item())
+
+
+def _log_hessian2_contrib_summary(model, batch_idx: int, total_batches=None, scheme_tag: Optional[str] = None):
+    """Log the current activation second-order contribution in AutoScheme scoring.
+
+    This summary helps verify whether the GPTQ-style activation Hessian proxy term is effectively
+    contributing to the final mix score:
+
+    - weight_total: sum of first-order weight terms across wrapped layers
+    - act_total: sum of first-order activation terms across wrapped layers
+    - act_h2_total: sum of second-order activation terms across wrapped layers
+    - mix_total: sum of final per-layer mix scores
+    - h2_in_mix_ratio: act_h2_total / mix_total (when mix_total != 0)
+    """
+    weight_total = 0.0
+    act_total = 0.0
+    act_h2_total = 0.0
+    mix_total = 0.0
+    layer_cnt = 0
+
+    for _, module in model.named_modules():
+        if not hasattr(module, "mix_score"):
+            continue
+        w = float(getattr(module, "weight_score", 0.0) or 0.0)
+        a = float(getattr(module, "act_score", 0.0) or 0.0)
+        a2 = float(getattr(module, "act_h2_score", 0.0) or 0.0)
+        m = float(getattr(module, "mix_score", 0.0) or 0.0)
+        if not (math.isfinite(w) and math.isfinite(a) and math.isfinite(a2) and math.isfinite(m)):
+            continue
+        weight_total += w
+        act_total += a
+        act_h2_total += a2
+        mix_total += m
+        layer_cnt += 1
+
+    batch_str = f"{batch_idx}/{total_batches}" if total_batches is not None else str(batch_idx)
+    tag = f"[{scheme_tag}] " if scheme_tag else ""
+    h2_ratio = 0.0 if abs(mix_total) < 1e-12 else act_h2_total / mix_total
+    logger.info(
+        "AutoScheme %sGPTQ-proxy act-hessian2 contribution batch %s | "
+        "weight=%.6f act=%.6f act_h2=%.6f mix=%.6f h2_in_mix_ratio=%.6f layers=%d",
+        tag,
+        batch_str,
+        weight_total,
+        act_total,
+        act_h2_total,
+        mix_total,
+        h2_ratio,
+        layer_cnt,
+    )
+
+
 class AutoSchemeWrapperLinear(WrapperLinear):
 
     def __init__(
@@ -94,6 +195,11 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         """Wrap ``orig_layer`` to accumulate a ``mix_score`` (weight + activation loss) during
         forward/backward, used by Delta Loss to rank candidate quantization schemes.
         """
+        enable_act_hessian2 = kwargs.pop("enable_act_hessian2", False)
+        act_hessian2_lambda = kwargs.pop("act_hessian2_lambda", _ACT_HESSIAN2_LAMBDA)
+        act_hessian_trace_samples = kwargs.pop("act_hessian_trace_samples", _ACT_HESSIAN2_TRACE_SAMPLES)
+        act_hessian_trace_interval = kwargs.pop("act_hessian_trace_interval", _ACT_HESSIAN2_TRACE_INTERVAL)
+        act_hessian_trace_dist = kwargs.pop("act_hessian_trace_dist", _ACT_HESSIAN2_TRACE_DIST)
         super().__init__(
             orig_layer,
             enable_minmax_tuning,
@@ -113,12 +219,38 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         self.max_act_value = 0
         self.need_weight_grad = need_weight_grad
         self.grad_mode = False
+        # Activation-only second-order score (Hessian proxy based) settings.
+        # Meanings:
+        #   enable_act_hessian2: feature toggle.
+        #   act_hessian2_lambda: weight of activation second-order term.
+        #   act_hessian_trace_samples: reserved for API compatibility; unused in proxy mode.
+        #   act_hessian_trace_interval: log every N batches.
+        #   act_hessian_trace_dist: reserved for API compatibility; unused in proxy mode.
+        self.enable_act_hessian2 = enable_act_hessian2
+        self.disable_act_score = kwargs.pop("disable_act_score", False)
+        self.act_hessian2_lambda = act_hessian2_lambda
+        self.act_hessian_trace_samples = act_hessian_trace_samples
+        self.act_hessian_trace_interval = act_hessian_trace_interval
+        self.act_hessian_trace_dist = act_hessian_trace_dist
+        self.act_h2_score = 0.0
+        self.h_trace_acc = 0.0
+        self.h_trace_cnt = 0
+        self._act_hproxy_trace = 0.0
+        self._act_diff_norm2 = 0.0
+        self._act_elem_cnt = 0
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
 
+    def _update_mix_score(self):
+        """Update combined score used by DP search.
+
+        mix_score = weight_score + act_score + act_h2_score
+        """
+        self.mix_score = self.weight_score + self.act_score + self.act_h2_score
+
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
-        accumulates ``act_score`` from ``|grad * (x - qdq_x)|``.
+        accumulates the original activation score from ``|grad * (x - qdq_x)|``.
         """
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
@@ -131,6 +263,28 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     self.act_cnt += 1
                 x_diff = x - qdq_x
                 self.x_diff = x_diff.to("cpu")
+                if self.enable_act_hessian2:
+                    # GPTQ-style Hessian proxy: use activation second moment as
+                    # a trace-like curvature estimator (no 2nd-order autograd).
+                    self._act_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
+                    # Cache local perturbation energy for second-order term.
+                    self._act_diff_norm2 = float(torch.pow(x_diff.to(torch.float32), 2).sum().item())
+                    self._act_elem_cnt = int(x_diff.numel())
+                    # In proxy mode, the activation second-order term depends only on
+                    # the forward activations and quantization perturbation.
+                    proxy_trace = max(
+                        min(self._act_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP),
+                        -_ACT_HESSIAN2_TRACE_CLAMP,
+                    )
+                    delta_h2 = 0.5 * float(self.act_hessian2_lambda) * proxy_trace * self._act_diff_norm2
+                    if math.isfinite(delta_h2):
+                        self.h_trace_acc += proxy_trace
+                        self.h_trace_cnt += 1
+                        self.act_h2_score += float(delta_h2)
+                        self._update_mix_score()
+
+                if self.disable_act_score:
+                    return qdq_x, scale, zp
 
             def save_grad(grad):
                 """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
@@ -148,8 +302,11 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     return None
 
                 self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.mix_score = self.weight_score + self.act_score
+                self._update_mix_score()
                 self.x_diff = None
+                self._act_hproxy_trace = 0.0
+                self._act_diff_norm2 = 0.0
+                self._act_elem_cnt = 0
                 return None
 
             qdq_x.register_hook(save_grad)
@@ -182,7 +339,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 )
                 w_diff = self.orig_layer.weight - qdq_w.to(self.orig_layer.weight.device)
                 self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
-                self.mix_score = self.weight_score + self.act_score
+                self._update_mix_score()
                 return None
 
             qdq_w.register_hook(save_grad)
@@ -204,6 +361,11 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         **kwargs,
     ):
         """Wrap ``orig_layer`` and eagerly run the imatrix-aware quant search to build ``qdq_w``."""
+        enable_act_hessian2 = kwargs.pop("enable_act_hessian2", False)
+        act_hessian2_lambda = kwargs.pop("act_hessian2_lambda", _ACT_HESSIAN2_LAMBDA)
+        act_hessian_trace_samples = kwargs.pop("act_hessian_trace_samples", _ACT_HESSIAN2_TRACE_SAMPLES)
+        act_hessian_trace_interval = kwargs.pop("act_hessian_trace_interval", _ACT_HESSIAN2_TRACE_INTERVAL)
+        act_hessian_trace_dist = kwargs.pop("act_hessian_trace_dist", _ACT_HESSIAN2_TRACE_DIST)
         super().__init__(
             orig_layer,
             enable_minmax_tuning,
@@ -223,6 +385,19 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.max_act_value = 0
         self.need_weight_grad = need_weight_grad
         self.grad_mode = False
+        # Keep parameter semantics aligned with AutoSchemeWrapperLinear.
+        self.enable_act_hessian2 = enable_act_hessian2
+        self.disable_act_score = kwargs.pop("disable_act_score", False)
+        self.act_hessian2_lambda = act_hessian2_lambda
+        self.act_hessian_trace_samples = act_hessian_trace_samples
+        self.act_hessian_trace_interval = act_hessian_trace_interval
+        self.act_hessian_trace_dist = act_hessian_trace_dist
+        self.act_h2_score = 0.0
+        self.h_trace_acc = 0.0
+        self.h_trace_cnt = 0
+        self._act_hproxy_trace = 0.0
+        self._act_diff_norm2 = 0.0
+        self._act_elem_cnt = 0
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
         self.weight_search_quant_func, _ = get_quant_func(
@@ -234,6 +409,13 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
             iters=0,
         )
         self.post_init_qdqw(device)
+
+    def _update_mix_score(self):
+        """Update combined score used by DP search.
+
+        mix_score = weight_score + act_score + act_h2_score
+        """
+        self.mix_score = self.weight_score + self.act_score + self.act_h2_score
 
     @torch.no_grad()
     def post_init_qdqw(self, device):
@@ -260,7 +442,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
-            self.mix_score = self.weight_score + self.act_score
+            self._update_mix_score()
             return None
 
         self.qdq_w.requires_grad_(True)
@@ -270,7 +452,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
 
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
-        accumulates ``act_score`` from ``|grad * (x - qdq_x)|``.
+        accumulates the original activation score from ``|grad * (x - qdq_x)|``.
         """
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             return x, 1.0, None
@@ -283,6 +465,24 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     self.act_cnt += 1
                 x_diff = x - qdq_x
                 self.x_diff = x_diff.to("cpu")
+                if self.enable_act_hessian2:
+                    # GPTQ-style Hessian proxy from activation energy.
+                    self._act_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
+                    self._act_diff_norm2 = float(torch.pow(x_diff.to(torch.float32), 2).sum().item())
+                    self._act_elem_cnt = int(x_diff.numel())
+                    proxy_trace = max(
+                        min(self._act_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP),
+                        -_ACT_HESSIAN2_TRACE_CLAMP,
+                    )
+                    delta_h2 = 0.5 * float(self.act_hessian2_lambda) * proxy_trace * self._act_diff_norm2
+                    if math.isfinite(delta_h2):
+                        self.h_trace_acc += proxy_trace
+                        self.h_trace_cnt += 1
+                        self.act_h2_score += float(delta_h2)
+                        self._update_mix_score()
+
+                if self.disable_act_score:
+                    return qdq_x, scale, zp
 
             def save_grad(grad):
                 """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
@@ -300,8 +500,11 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     return None
 
                 self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.mix_score = self.weight_score + self.act_score
+                self._update_mix_score()
                 self.x_diff = None
+                self._act_hproxy_trace = 0.0
+                self._act_diff_norm2 = 0.0
+                self._act_elem_cnt = 0
                 return None
 
             qdq_x.register_hook(save_grad)
@@ -352,7 +555,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
             self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
-            self.mix_score = self.weight_score + self.act_score
+            self._update_mix_score()
             return None
 
         self.qdq_w.requires_grad_(True)
@@ -407,7 +610,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
-            self.mix_score = self.weight_score + self.act_score
+            self._update_mix_score()
             return None
 
         self.qdq_w.requires_grad_(True)
@@ -671,7 +874,15 @@ def model_forward(model, data, **forward_kwargs):
     return model(**prepared, **forward_kwargs), prepared
 
 
-def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None):
+def model_forward_low_gpu(
+    model,
+    dataloader,
+    major_device="cuda",
+    pbar=None,
+    scheme_tag=None,
+    enable_act_hessian2: bool = False,
+    need_backward: bool = True,
+):
     """Run one full scoring pass (all calibration batches) in low-GPU-memory mode.
 
     For each batch: capture per-block inputs via ``prepare_model_low_gpu``, run a forward
@@ -697,6 +908,11 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
 
     for batch_idx, data in enumerate(dataloader, start=1):
         prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar)
+
+        if not need_backward:
+            for _, module in model.named_modules():
+                if hasattr(module, "grad_mode"):
+                    module.grad_mode = True
 
         # lm_head sits outside every decoder block, so it never gets `grad_mode=True`
         # in the manual block-by-block backward below. Scope the fix narrowly to
@@ -732,6 +948,29 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
         output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
         clear_memory(device_list=major_device)
         memory_monitor.log_summary()
+
+        if not need_backward:
+            del output, data
+            for name in block_names:
+                module = get_module(model, name)
+                module.forward = module.orig_forward
+            if enable_act_hessian2 and batch_idx % _ACT_HESSIAN2_TRACE_INTERVAL == 0:
+                # Logs activation-only second-order contribution summary.
+                _log_hessian2_contrib_summary(
+                    model,
+                    batch_idx=batch_idx,
+                    total_batches=total_batches,
+                    scheme_tag=scheme_tag,
+                )
+            _log_batch_avg_loss(
+                model,
+                batch_idx,
+                pbar=pbar,
+                block_names=block_names,
+                total_batches=total_batches,
+                scheme_tag=scheme_tag,
+            )
+            continue
 
         try:
             # Backward pass (will be interrupted by the hook)
@@ -802,6 +1041,15 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
 
             pbar.update(1)
 
+        if enable_act_hessian2 and batch_idx % _ACT_HESSIAN2_TRACE_INTERVAL == 0:
+            # Logs activation-only second-order contribution summary.
+            _log_hessian2_contrib_summary(
+                model,
+                batch_idx=batch_idx,
+                total_batches=total_batches,
+                scheme_tag=scheme_tag,
+            )
+
         _log_batch_avg_loss(
             model,
             batch_idx,
@@ -840,6 +1088,16 @@ def get_score_for_scheme(
     ``dataset``/``dataloader``, then unwrap and return each layer's ``[bits, loss]``.
     """
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
+    enable_act_hessian2 = _is_act_hessian2_enabled()
+    disable_act_score = enable_act_hessian2 and _disable_act_score_when_h2_enabled()
+    need_backward = need_weight_grad or not disable_act_score
+    if enable_act_hessian2 and low_gpu_mem_usage:
+        logger.info(
+            "AutoScheme: AR_ENABLE_ACT_HESSIAN2 is set with low_gpu_mem_usage=True; "
+            "using GPTQ-style activation Hessian proxy (no second-order autograd)."
+        )
+    if disable_act_score:
+        logger.info("AutoScheme: AR_DISABLE_ACT_SCORE_WHEN_H2 is set; disabling first-order activation score.")
     # Include the visual block(s) when scoring VLMs with ``--quant_nontext_module``
     # (``force_mllm=True``) so vision-tower layer losses match a block below instead
     # of silently falling through to "non_block" in the logging/inactive-expert-fill
@@ -905,6 +1163,8 @@ def get_score_for_scheme(
                 enable_round_tuning=False,
                 need_weight_grad=need_weight_grad,
                 enable_torch_compile=enable_torch_compile,
+                enable_act_hessian2=enable_act_hessian2,
+                disable_act_score=disable_act_score,
             )
             set_module(model, name, new_m)
     if offload_context is not None:
@@ -1052,11 +1312,27 @@ def get_score_for_scheme(
                     "AutoScheme(force_mllm): cannot build mllm dataloader. "
                     "Provide a `processor` and a multimodal `dataset`."
                 )
-            model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
+            model_forward_low_gpu(
+                model,
+                mllm_loader,
+                major_device=major_device,
+                pbar=pbar,
+                scheme_tag=scheme_tag,
+                enable_act_hessian2=enable_act_hessian2,
+                need_backward=need_backward,
+            )
         else:
             try:
                 dataloader = _build_calib_dataloader()
-                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
+                model_forward_low_gpu(
+                    model,
+                    dataloader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
+                    enable_act_hessian2=enable_act_hessian2,
+                    need_backward=need_backward,
+                )
             except Exception as exc:  # noqa: BLE001
                 if not is_vlm:
                     raise
@@ -1068,7 +1344,15 @@ def get_score_for_scheme(
                 batch_size = 1
                 if mllm_loader is None:
                     raise
-                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
+                model_forward_low_gpu(
+                    model,
+                    mllm_loader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
+                    enable_act_hessian2=enable_act_hessian2,
+                    need_backward=need_backward,
+                )
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
@@ -1109,7 +1393,18 @@ def get_score_for_scheme(
                 # model.dtype, handles dict-with-text/str/tuple paths the same
                 # way AutoRoundMLLM.calib does).
                 output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
-                output.loss.backward()
+                # GPTQ-style activation Hessian proxy does not require second-order autograd.
+                # Skip backward entirely when no first-order activation score and no weight grad are needed.
+                if need_backward:
+                    output.loss.backward()
+                if enable_act_hessian2 and batch_idx % _ACT_HESSIAN2_TRACE_INTERVAL == 0:
+                    # Logs activation-only second-order contribution summary.
+                    _log_hessian2_contrib_summary(
+                        model,
+                        batch_idx=batch_idx,
+                        total_batches=total_batches,
+                        scheme_tag=scheme_tag,
+                    )
 
                 # One-shot sanity check: when scoring vision layers, the batch
                 # MUST carry image data, otherwise the vision tower is bypassed
@@ -1126,8 +1421,9 @@ def get_score_for_scheme(
                             f"liuhaotian/llava_conv_58k) and pass a processor."
                         )
 
-                for _, m in model.named_parameters():  # zero grads to keep VRAM low
-                    m.grad = None
+                if need_backward:
+                    for _, m in model.named_parameters():  # zero grads to keep VRAM low
+                        m.grad = None
                 if pbar is not None:
                     pbar.update(1)
                 _log_batch_avg_loss(
@@ -1162,8 +1458,9 @@ def get_score_for_scheme(
                     raise
                 _run_forward_loop(mllm_loader)
 
-        for n, m in model.named_parameters():
-            m.grad = None
+        if need_backward:
+            for n, m in model.named_parameters():
+                m.grad = None
 
     for n, m in model.named_modules():
         if hasattr(m, "mix_score"):
@@ -1201,6 +1498,12 @@ def get_score_for_scheme(
                 m.qdq_w = None
             if hasattr(m, "x_diff"):
                 m.x_diff = None
+            if hasattr(m, "_act_hproxy_trace"):
+                m._act_hproxy_trace = 0.0
+            if hasattr(m, "_act_diff_norm2"):
+                m._act_diff_norm2 = 0.0
+            if hasattr(m, "_act_elem_cnt"):
+                m._act_elem_cnt = 0
             if hasattr(m, "super_qdq_func"):
                 m.super_qdq_func = None
             if hasattr(m, "act_qdq_func"):
@@ -1587,6 +1890,8 @@ def _gen_layer_config(
     need_imatrix = False  # only trigger it for gguf q-k quant
     effective_scheme_num = 0
     block_num = len(block_name)
+    enable_act_hessian2 = _is_act_hessian2_enabled()
+    disable_act_score = enable_act_hessian2 and _disable_act_score_when_h2_enabled()
     for index, scheme in enumerate(schemes):
         if check_bf16_scheme(scheme):
             continue
@@ -1597,14 +1902,18 @@ def _gen_layer_config(
             scheme = asdict(scheme)
         bits = scheme.get("bits", 16)
         act_bits = scheme.get("act_bits", 16)
+        scheme_need_weight_grad = bits <= 8 < act_bits
         if scheme.get("super_group_size"):
             need_imatrix = True
-        if bits <= 8 < act_bits:
+        if scheme_need_weight_grad:
             need_weight_grad = True
         if not auto_scheme.low_gpu_mem_usage:
             pbar_cnt += nsamples
         if auto_scheme.low_gpu_mem_usage:
-            pbar_cnt += len(block_name) * 2 * ((nsamples + batch_size - 1) // batch_size)  # forward backward
+            replay_factor = 2
+            if disable_act_score and not scheme_need_weight_grad:
+                replay_factor = 1
+            pbar_cnt += len(block_name) * replay_factor * ((nsamples + batch_size - 1) // batch_size)
 
     # Formula-style step log for paper/debug readability.
     # In low_gpu mode, one calibration mini-batch uses block-wise forward+backward replay.
@@ -1624,10 +1933,15 @@ def _gen_layer_config(
     )
     if auto_scheme.low_gpu_mem_usage:
         n_batches = (nsamples + batch_size - 1) // batch_size
+        replay_factor_desc = "mixed"
+        if disable_act_score and not need_weight_grad:
+            replay_factor_desc = "1(forward only)"
+        elif not disable_act_score or need_weight_grad:
+            replay_factor_desc = "2(forward+backward)"
         logger.info(
             "AutoScheme steps expanded(low_gpu): "
-            "total_steps = scheme_num * block_num * 2(forward+backward) * n_batches = "
-            f"{effective_scheme_num} * {block_num} * 2 * {n_batches} = {pbar_cnt}"
+            f"total_steps = scheme_num * block_num * replay_factor({replay_factor_desc}) * n_batches = "
+            f"{effective_scheme_num} * {block_num} * {n_batches} => {pbar_cnt}"
         )
     else:
         logger.info(
@@ -1892,9 +2206,11 @@ def _gen_layer_config(
             layer_bits, _ = compute_layer_bits(embedding_layer, auto_scheme.ignore_scale_zp_bits)
             target_params_cnt -= layer_bits
 
-    head_name = get_lm_head_name(model)
-    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
-        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+    # Temporarily disable lm_head option restriction trick.
+    # Keep the implementation above for future reuse, but do not apply it in DP.
+    # head_name = get_lm_head_name(model)
+    # if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+    #     _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")

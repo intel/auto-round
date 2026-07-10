@@ -24,8 +24,10 @@ if TYPE_CHECKING:
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     LLAMA_CPP_ROOT: Optional[str] = None
-    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
-    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = 8
+    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = 8
+    AR_ENABLE_ACT_HESSIAN2: bool = True
+    AR_DISABLE_ACT_SCORE_WHEN_H2: bool = True
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -85,6 +87,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Enable activation second-order score in AutoScheme (Hessian trace term).
+    # Only used by AutoScheme scoring, disabled by default.
+    "AR_ENABLE_ACT_HESSIAN2": lambda: os.getenv("AR_ENABLE_ACT_HESSIAN2", "0").lower() in ("1", "true", "yes"),
+    # When activation Hessian proxy is enabled, optionally disable the
+    # first-order activation score term to save backward memory and runtime.
+    "AR_DISABLE_ACT_SCORE_WHEN_H2": lambda: os.getenv("AR_DISABLE_ACT_SCORE_WHEN_H2", "0").lower()
+    in ("1", "true", "yes"),
 }
 
 
