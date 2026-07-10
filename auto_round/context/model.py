@@ -145,17 +145,17 @@ class ModelContext(BaseContext):
         device_manager.device = value
 
     def _load_model(self):
-        if is_mllm_model(self.model, platform=self.platform):
+        if is_diffusion_model(self.model):
+            self.is_diffusion = True
+            self.pipe, self.model = diffusion_load_model(
+                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+            )
+        elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
                 self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
                     self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
                 )
-        elif is_diffusion_model(self.model):
-            self.is_diffusion = True
-            self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
-            )
         elif isinstance(self.model, str):
             config = self.config
             try:

@@ -855,6 +855,20 @@ def diffusion_load_model(
         pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
+    # A special case for Cosmos3: model_index.json _class_name may not match
+    # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    _model_index = None
+    if isinstance(pretrained_model_name_or_path, str):
+        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(_mi_path):
+            with open(_mi_path, "r", encoding="utf-8") as f:
+                _model_index = json.load(f)
+    _pipe_class = (_model_index or {}).get("_class_name", "")
+    if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
+        from auto_round.special_model_handler import load_cosmos3_diffusion
+
+        return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
