@@ -381,11 +381,12 @@ def quant_tensor_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
-def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int):
+def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int, group_size: Union[int, None] = None):
     if not isinstance(imatrix, torch.Tensor):
         return imatrix
 
-    group_size = 16 if bits == 2 else 32
+    if group_size is None:
+        group_size = 16 if bits == 2 else 32
     imatrix = imatrix.reshape(-1, imatrix.shape[-1])
     if torch.min(imatrix) == 0:
         logger.warning_once(
@@ -396,9 +397,9 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
         replace_index = zero_cnt > group_size // 2
         if torch.sum(replace_index) > 0:
             ## fallback to no imatrix
-            if bits == 2:
+            if bits <= 3:
                 tmp_quant_weights = torch.abs(weight)
-            elif bits == 4 or bits == 5:
+            else:
                 sigma2 = torch.sum(torch.pow(weight, 2), dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
                 av_x = torch.sqrt(sigma2)
                 tmp_quant_weights = torch.abs(weight) + av_x

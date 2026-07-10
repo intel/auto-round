@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+    from auto_round.compressors.data_driven import DataDrivenCompressor
     from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
     from auto_round.compressors.model_free import ModelFreeCompressor
     from auto_round.compressors.zero_shot import ZeroShotCompressor
@@ -27,7 +27,6 @@ __all__ = [
     "AutoRound",
     "BaseCompressor",
     "DataDrivenCompressor",
-    "CalibratedRTNCompressor",
     "ZeroShotCompressor",
     "AutoRoundCompatible",
     "ModelFreeCompressor",
@@ -46,13 +45,10 @@ def __getattr__(name):
         from auto_round.compressors.base import BaseCompressor
 
         return BaseCompressor
-    elif name in ("DataDrivenCompressor", "CalibratedRTNCompressor"):
-        from auto_round.compressors.data_driven import DataDrivenCompressor, CalibratedRTNCompressor
+    elif name == "DataDrivenCompressor":
+        from auto_round.compressors.data_driven import DataDrivenCompressor
 
-        return {
-            "DataDrivenCompressor": DataDrivenCompressor,
-            "CalibratedRTNCompressor": CalibratedRTNCompressor,
-        }[name]
+        return DataDrivenCompressor
     elif name == "ZeroShotCompressor":
         from auto_round.compressors.zero_shot import ZeroShotCompressor
 

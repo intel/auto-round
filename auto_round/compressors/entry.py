@@ -16,7 +16,7 @@ from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
@@ -300,7 +300,7 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     if enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme):
         if not isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = OptimizedRTNConfig
-        return CalibratedRTNCompressor
+        return DataDrivenCompressor
 
     if isinstance(quant_config, OptimizedRTNConfig):
         quant_config.__class__ = RTNConfig
@@ -416,7 +416,7 @@ class AutoRound(object):
         # Preprocessor algorithms (AWQ, …) require a data-driven host so that
         # the per-block preprocessor lifecycle (prepare_block_group ->
         # block_forward_hooks -> pre_quantize_block -> pre_quantize_block ->
-        # post_quantize_block) actually runs.  CalibratedRTNCompressor's
+        # post_quantize_block) actually runs.
         # Preprocessor algorithms require DataDrivenCompressor for per-block lifecycle hooks.
         # The pipeline auto-appends RTN when no block_quantizer is supplied.
         if preprocessor_configs:

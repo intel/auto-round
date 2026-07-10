@@ -587,7 +587,7 @@ class QuantizationPipeline:
         if overriders:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
-
+    #TODO I have deleted skip calibation
     def get_merged_policy(self, ctx: "BlockContext") -> ActCalibPolicy:
         """Compute the merged act-calib policy for the current block."""
         policies = [q.get_act_calib_policy(ctx) for q in self.all()]
