@@ -292,23 +292,24 @@ class FailureContextWriter:
                 if marker in line:
                     if marker == "Traceback":
                         start = max(0, idx - 10)
-                        max_end = min(len(lines), idx + 80)
+                        max_end = min(len(lines) - 1, idx + 80)
+                        scan_end = min(len(lines), idx + 80)
                         failed_end = None
-                        for j in range(idx, max_end):
+                        for j in range(idx, scan_end):
                             if "FAILED" in lines[j]:
                                 failed_end = j + 1
                                 break
                         end = min(max_end, failed_end) if failed_end is not None else max_end
                     else:
                         start = max(0, idx)
-                        end = min(len(lines), idx + 80)
+                        end = min(len(lines)-1, idx + 80)
                     selected = lines[start:end]
                     break
             if selected:
                 break
 
         if not selected:
-            selected = lines[-self.max_lines :]
+            selected = lines[-self.max_lines : -1]
 
         return "\n".join(selected[: self.max_lines])
 
