@@ -606,4 +606,3 @@ class BaseQuantizer(BasePipelineMember):
         Must be idempotent – the Compressor calls this inside a ``try/finally``.
         """
         return
-

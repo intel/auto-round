@@ -51,4 +51,3 @@ def test_argparse_check(tiny_opt_model_path):
     assert ar.quantizer.gradient_accumulate_steps == steps
     # Compressor and quantizer must share exactly the same CalibrationState instance.
     assert ar.quantizer._calibration_state is ar._calibration_state
-
