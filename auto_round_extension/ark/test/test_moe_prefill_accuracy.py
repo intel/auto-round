@@ -657,20 +657,6 @@ class TestMoEGemmPrefillAccuracy:
             else:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev
 
-    @pytest.mark.xfail(
-        reason=(
-            "S4-sym single-pass packed-nibble DPAS mainloop is "
-            "NEEDS-HARDWARE-VALIDATION and currently miscomputes a small "
-            "fraction of outputs on the production-scale prefill shapes "
-            "(e.g. `medium E=8`, K=14336 fp16: a handful of ~70x outliers). "
-            "The path is now default OFF (see `moe_prefill_dpas_s4_enabled()`); "
-            "this test forces it ON to keep the single-pass mainloop under "
-            "test, so it is expected to fail until the packed-nibble path is "
-            "re-verified on hardware. strict=False so a future kernel fix "
-            "surfaces as an xpass instead of an unexpected CI break."
-        ),
-        strict=False,
-    )
     @pytest.mark.skipif(bool(_QUANT_PREFILL_SKIP), reason=_QUANT_PREFILL_SKIP or "ok")
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_accuracy_int4_dpas_per_group(self, dtype):
@@ -678,8 +664,8 @@ class TestMoEGemmPrefillAccuracy:
 
         Sibling of :meth:`test_accuracy_int8_dpas_per_group` -- uses the
         standard ``moe_gemm_prefill`` call path with
-        ``ARK_MOE_PREFILL_DPAS_S4=1`` (path is default OFF, forced ON here)
-        and ``ARK_MOE_PREFILL_DPAS_INT8=0`` so the two-pass S4->S8 upcast
+        ``ARK_MOE_PREFILL_DPAS_S4=1`` (default ON) and
+        ``ARK_MOE_PREFILL_DPAS_INT8=0`` so the two-pass S4->S8 upcast
         fallback is disabled and we exercise the single-pass mainloop
         exclusively. The C++ dispatcher should pick the S4 DPAS branch
         for shapes that satisfy ``N%64==0 && K%32==0 && K%group_size==0
@@ -687,9 +673,7 @@ class TestMoEGemmPrefillAccuracy:
         silently fall back to the dequant path otherwise, so this test
         is checking parity, not that the DPAS branch is exercised.
 
-        STATUS: NEEDS-HARDWARE-VALIDATION -- marked ``xfail`` (see the
-        class-level marker) because the single-pass mainloop is a known
-        broken, hardware-unvalidated path that is disabled by default.
+        STATUS: NEEDS-HARDWARE-VALIDATION.
         """
         group_size = 128
         prev_s4 = os.environ.get("ARK_MOE_PREFILL_DPAS_S4")

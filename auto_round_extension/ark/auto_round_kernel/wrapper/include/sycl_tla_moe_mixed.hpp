@@ -876,23 +876,21 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // reads packed `[E, N, K/2]` uint8_t nibbles directly and folds the
   // upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)`, so
   // the B-side global traffic is halved vs. the S4->S8 upcast branch
-  // below. Opt-in via `ARK_MOE_PREFILL_DPAS_S4` (default OFF); when off
-  // (the default) int4-sym silently falls back to the S4->S8 upcast branch
-  // (which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`) or to the generic
-  // dequant path if the shape gate rejects the tile geometry.
+  // below. Opt-in default via `ARK_MOE_PREFILL_DPAS_S4` (default ON);
+  // silent fallback to the S4->S8 upcast branch (which is itself gated
+  // by `ARK_MOE_PREFILL_DPAS_INT8`) or to the generic dequant path if
+  // the shape gate rejects the tile geometry.
   //
-  // Defaulted OFF because the single-pass packed-nibble mainloop is still
-  // NEEDS-HARDWARE-VALIDATION and currently miscomputes a small fraction of
-  // outputs on production-scale prefill shapes (see
-  // `test_moe_prefill_accuracy.py::test_accuracy_int4`). The validated
-  // fallback below produces correct results, so int4-sym is routed there by
-  // default until the single-pass path is re-verified on hardware.
+  // The single-pass mainloop decodes each packed `int4b_t` fragment into
+  // an `int8_t` staging fragment in registers and reuses the validated
+  // `int8_t -> ElementA` reorder (see `xe_gemm_s4_pergroup`), so it no
+  // longer routes through the interleaved
+  // `NumericArrayConverter<ElementA, int4b_t, N>` that previously
+  // miscomputed a fraction of outputs. int4-sym is routed here by default.
   //
   // STATUS: NEEDS-HARDWARE-VALIDATION. See
   // `sycl_tla_moe_prefill_s4_dpas.hpp` for the port's provenance & the
-  // on-hardware TODOs (chief among them: `NumericArrayConverter
-  // <ElementA, cutlass::int4b_t, N>` availability in the pinned
-  // cutlass-sycl).
+  // remaining on-hardware TODOs.
   if (weight_dtype == BTLA_DTYPE::S4_CLIP && !asym &&
       moe_dpas_s4::moe_prefill_dpas_s4_enabled() &&
       moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size) &&
