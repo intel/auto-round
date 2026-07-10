@@ -261,29 +261,13 @@ class BaseQuantizer(BasePipelineMember):
     def attention_mask(self, value: list) -> None:
         self._calibration_state.attention_mask = value if value is not None else []
 
-    # @property
-    # def batch_dim(self) -> int:
-    #     return self._calibration_state.batch_dim
-    #
-    # @batch_dim.setter
-    # def batch_dim(self, value: int) -> None:
-    #     self._calibration_state.batch_dim = value
-    #
-    # @property
-    # def batch_size(self) -> int:
-    #     return self._calibration_state.batch_size
-    #
-    # @batch_size.setter
-    # def batch_size(self, value: int) -> None:
-    #     self._calibration_state.batch_size = value
-    #
-    # @property
-    # def nsamples(self) -> int:
-    #     return self._calibration_state.nsamples
-    #
-    # @property
-    # def seqlen(self) -> int:
-    #     return self._calibration_state.seqlen
+    @property
+    def gradient_accumulate_steps(self) -> int:
+        return self._calibration_state.gradient_accumulate_steps
+
+    @gradient_accumulate_steps.setter
+    def gradient_accumulate_steps(self, value: int) -> None:
+        self._calibration_state.gradient_accumulate_steps = value
 
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.

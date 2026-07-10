@@ -922,5 +922,3 @@ class DataDrivenCompressor(BaseCompressor):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
-
-

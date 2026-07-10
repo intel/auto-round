@@ -381,7 +381,9 @@ def quant_tensor_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
-def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int, group_size: Union[int, None] = None):
+def _imatrix_handle_zero(
+    imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int, group_size: Union[int, None] = None
+):
     if not isinstance(imatrix, torch.Tensor):
         return imatrix
 
