@@ -1428,7 +1428,7 @@ def load_cosmos3_diffusion(pretrained_model_name_or_path, device_str):
     import os
     import shutil
 
-    from diffusers import Cosmos3OmniPipeline
+    from diffusers import Cosmos3OmniPipeline  # pylint: disable=import-error,no-name-in-module
 
     _bypass_cosmos3_safety_checker()
 
