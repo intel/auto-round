@@ -69,7 +69,10 @@ def make_block_forward_func(state, name: str) -> Callable:
             if hidden_states is not None and state._calibration_state.batch_size > 1:
                 if hidden_states.shape[0] > state._calibration_state.batch_size:
                     state._calibration_state.batch_dim = 1
-                    if len(hidden_states.shape) > 1 and hidden_states.shape[1] > state._calibration_state.batch_dim.batch_size:
+                    if (
+                        len(hidden_states.shape) > 1
+                        and hidden_states.shape[1] > state._calibration_state.batch_dim.batch_size
+                    ):
                         logger.error(
                             "this model has not been supported, "
                             "please raise an issue in https://github.com/intel/auto-round/issues"

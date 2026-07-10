@@ -75,7 +75,7 @@ class DataDrivenCompressor(BaseCompressor):
 
     def __init__(
         self,
-        config: Union[object, list[object]],#TODO rename wenhuach
+        config: Union[object, list[object]],  # TODO rename wenhuach
         model: Union[torch.nn.Module, str],
         tokenizer: Any = None,
         platform: str = "hf",
@@ -130,7 +130,7 @@ class DataDrivenCompressor(BaseCompressor):
         return "llm"
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu( #TODO the following two should have some differences wenhuach
+    def try_cache_inter_data_gpucpu(  # TODO the following two should have some differences wenhuach
         self,
         block_names: list,
         nsamples: int,
@@ -188,7 +188,6 @@ class DataDrivenCompressor(BaseCompressor):
     #     if self.calibration is not None:
     #         fn = self.calibration.wrap_block_forward(fn)
     #     return fn
-
 
     # @torch.no_grad()
     # def _get_cache_data_hook_for_layer(self, name):
@@ -269,7 +268,7 @@ class DataDrivenCompressor(BaseCompressor):
         block: torch.nn.Module,
         inputs: Any,
         q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu", # TODO Delete wenhuach
+        device: Union[str, torch.device] = "cpu",  # TODO Delete wenhuach
         auto_offload: bool = True,
     ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
@@ -599,7 +598,7 @@ class DataDrivenCompressor(BaseCompressor):
                 block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
-            #bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
+            # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
             bs = 8
             mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
@@ -830,7 +829,7 @@ class DataDrivenCompressor(BaseCompressor):
 
                 if "input_ids" in inputs.keys():
                     total_samples = len(inputs["input_ids"])
-                    if getattr(self.quantizer,"batch_size", None):
+                    if getattr(self.quantizer, "batch_size", None):
                         if total_samples < self.quantizer.batch_size:
                             self.quantizer.batch_size = total_samples
                             logger.warning(f"force the train batch size to {total_samples}")

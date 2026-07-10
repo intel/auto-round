@@ -63,7 +63,8 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         self.enable_minmax_tuning = config.enable_minmax_tuning
         self.enable_norm_bias_tuning = config.enable_norm_bias_tuning
         self.gradient_accumulate_steps = config.gradient_accumulate_steps
-        from auto_round.special_model_handler import  check_mllm_only_support_bs1
+        from auto_round.special_model_handler import check_mllm_only_support_bs1
+
         self.enable_alg_ext = config.enable_alg_ext
         self.not_use_best_mse = config.not_use_best_mse
         self.enable_quanted_input = config.enable_quanted_input
@@ -204,7 +205,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         init_loss = None
         best_params = {}
         total_loss = 0
-        self.batch_size = 8 # TODO delete wenhuach
+        self.batch_size = 8  # TODO delete wenhuach
         global_batch_size = self.batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
