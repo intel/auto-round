@@ -160,11 +160,25 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Static KV-cache quantization data type.",
     )
     rt.add_argument(
+        "--static_kv_granularity",
+        default="tensor",
+        type=str,
+        choices=["tensor", "head"],
+        help="Static KV-cache FP8 calibration granularity.",
+    )
+    rt.add_argument(
         "--static_attention_dtype",
         default=None,
         type=str,
         choices=["fp8", "float8_e4m3fn"],
         help="Static attention quantization data type.",
+    )
+    rt.add_argument(
+        "--static_attention_granularity",
+        default="tensor",
+        type=str,
+        choices=["tensor", "head"],
+        help="Static attention FP8 calibration granularity.",
     )
 
     # ---- Evaluation ----

@@ -40,6 +40,8 @@ class CompressContext(BaseContext):
         output_dir: str = "./compressed_models",
         static_kv_dtype: Optional[torch.dtype] = None,
         static_attention_dtype: Optional[torch.dtype] = None,
+        static_kv_granularity: str = "tensor",
+        static_attention_granularity: str = "tensor",
         **kwargs,
     ) -> None:
         super().__init__()
@@ -58,6 +60,8 @@ class CompressContext(BaseContext):
         self.is_immediate_saving = is_immediate_saving
         self.static_kv_dtype = static_kv_dtype
         self.static_attention_dtype = static_attention_dtype
+        self.static_kv_granularity = static_kv_granularity
+        self.static_attention_granularity = static_attention_granularity
 
     def clear_memory(self, tensor=None):
         """Clear GPU/CPU memory only when ``low_gpu_mem_usage`` is enabled."""

@@ -59,6 +59,8 @@ _COMPAT_KWARGS = {
     "enable_deterministic_algorithms",
     "static_kv_dtype",
     "static_attention_dtype",
+    "static_kv_granularity",
+    "static_attention_granularity",
     "rotation_config",
     "processor",
     "image_processor",
