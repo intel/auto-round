@@ -43,6 +43,7 @@ from auto_round.algorithms.config_resolver import (
     split_quantization_configs,
 )
 from auto_round.compressors.utils import block_forward
+from auto_round.logger import logger
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
@@ -420,9 +421,7 @@ class BlockContext:
     block_name: str  # = block_names[0] for single-block; descriptive label for multi
     block_index: int  # 0-based index within the current all_blocks group
     bs: int = 1
-    loss_device: Union[str, "torch.device", None] = None
     device: Union[str, "torch.device", None] = None
-    mid_iter_mem_check: bool = False
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
@@ -560,6 +559,34 @@ class QuantizationPipeline:
         return cls(preprocessors=preprocessors, block_quantizer=block_quantizers[0])
 
     # ── Convenience act-calib helpers ────────────────────────────────────────
+
+    def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
+        """Dispatch block to device(s) via the pipeline's algorithms.
+
+        Iterates all members; if exactly one overrides the default dispatch_block,
+        it is called. If multiple override, warns and uses the first one only.
+        If none override, uses the block_quantizer's default (simple .to(device)).
+        """
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+
+        overriders = []
+        for member in self.all():
+            if not hasattr(member, "dispatch_block"):
+                continue
+            # Check if the member overrides the base default
+            if type(member).dispatch_block is not BaseQuantizer.dispatch_block:
+                overriders.append(member)
+
+        if len(overriders) > 1:
+            names = [type(m).__name__ for m in overriders]
+            logger.warning(
+                f"Multiple pipeline members override dispatch_block: {names}. "
+                f"Only {names[0]} will be used; others are ignored."
+            )
+
+        if overriders:
+            return overriders[0].dispatch_block(block, input_ids, input_others)
+        return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
     def get_merged_policy(self, ctx: "BlockContext") -> ActCalibPolicy:
         """Compute the merged act-calib policy for the current block."""

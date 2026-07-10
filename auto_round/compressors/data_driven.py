@@ -263,6 +263,7 @@ class DataDrivenCompressor(BaseCompressor):
             args, kwargs = step_input[0]
             fake_layer(*args, **kwargs)
 
+    # This is the API for llm-compressor, not used in AutoRound
     def quantize_block(
         self,
         block: torch.nn.Module,
@@ -387,7 +388,6 @@ class DataDrivenCompressor(BaseCompressor):
 
             blk_name = self.quant_block_list[0][0]
             bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
             if not hasattr(self.quantizer, "create_block_io"):
                 if q_input is None:
@@ -439,9 +439,7 @@ class DataDrivenCompressor(BaseCompressor):
                 block_name=blk_name,
                 block_index=0,
                 bs=bs,
-                loss_device=loss_device,
                 device=device,
-                mid_iter_mem_check=mid_iter_mem_check,
                 is_mllm=False,
                 is_diffusion=False,
             )
@@ -562,32 +560,7 @@ class DataDrivenCompressor(BaseCompressor):
             materialize_model_(m)
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
 
-            if (
-                is_auto_device_mapping(device_manager.device_map)
-                and len(device_manager.device_list) > 1
-                and not self.model_context.is_diffusion
-            ):
-                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                    m,
-                    device_manager.device_list,
-                    input_ids,
-                    self.compress_context.low_gpu_mem_usage,
-                    self.quantizer.batch_size,
-                    device_manager.device,
-                )
-            else:
-                m = m.to(device_manager.device)
-                card_0_in_high_risk, loss_device = False, device_manager.device
-
-            if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                for _n, _mod in m.named_modules():
-                    if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
-                        continue
-                    add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
+            m, _, _ = self.pipeline.dispatch_block(m, input_ids, input_others)
 
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.pipeline import BlockContext, InputSource
@@ -598,7 +571,6 @@ class DataDrivenCompressor(BaseCompressor):
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
             bs = 8
-            mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
             ctx = BlockContext(
                 model=model,
@@ -607,9 +579,7 @@ class DataDrivenCompressor(BaseCompressor):
                 block_name=current_block_name,
                 block_index=i,
                 bs=bs,
-                loss_device=loss_device,
                 device=device_manager.device,
-                mid_iter_mem_check=mid_iter_mem_check,
                 is_mllm=self.model_context.is_mllm,
                 is_diffusion=self.model_context.is_diffusion,
                 pbar=pbar,
@@ -1120,30 +1090,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 block = convert_module_to_hp_if_necessary(
                     block, dtype=self.model_context.amp_dtype, device=device_manager.device
                 )
-                if (
-                    is_auto_device_mapping(device_manager.device_map)
-                    and len(device_manager.device_list) > 1
-                    and not self.model_context.is_diffusion
-                ):
-                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-                    set_auto_device_map_for_block_with_tuning(
-                        block,
-                        device_manager.device_list,
-                        input_ids,
-                        self.compress_context.low_gpu_mem_usage,
-                        self.quantizer.batch_size,
-                        device_manager.device,
-                    )
-                    if len(device_manager.device_list) > 1:
-                        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                        for _, _mod in block.named_modules():
-                            if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
-                                continue
-                            add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
-                else:
-                    block = block.to(device_manager.device)
+                block, _, _ = self.pipeline.dispatch_block(block, input_ids, input_others)
 
                 # ── Infrastructure: collect block outputs and hook stats ──
                 from auto_round.algorithms.pipeline import BlockContext

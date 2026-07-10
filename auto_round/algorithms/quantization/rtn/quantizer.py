@@ -126,7 +126,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     @torch.no_grad()
     def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx):
         """Apply imatrix-informed RTN quantization to a block."""
-        update_block_global_scale_if_needed(block, self.data_type, self.group_size)
+        update_block_global_scale_if_needed(block, self.data_type, self.group_size) # TODO move this to compressor, wenhuach
         if (
             self.config.is_act_nv_fp
             or self.config.is_static_afp8

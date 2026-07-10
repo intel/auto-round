@@ -73,6 +73,43 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
 
+    def dispatch_block(self, block, input_ids, input_others):
+        """Multi-GPU aware block dispatch for SignRound tuning.
+
+        Stores card_0_in_high_risk and loss_device on self for use in quantize_block.
+        """
+        from auto_round.utils import is_auto_device_mapping
+
+        if (
+            is_auto_device_mapping(device_manager.device_map)
+            and len(device_manager.device_list) > 1
+            and not self.model_context.is_diffusion
+        ):
+            from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                block,
+                device_manager.device_list,
+                input_ids,
+                self.compress_context.low_gpu_mem_usage,
+                self._calibration_state.batch_size,
+                device_manager.device,
+            )
+            if len(device_manager.device_list) > 1:
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                for _n, _mod in block.named_modules():
+                    if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
+                        continue
+                    add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
+        else:
+            block = block.to(device_manager.device)
+            card_0_in_high_risk, loss_device = False, device_manager.device
+
+        self._card_0_in_high_risk = card_0_in_high_risk
+        self._loss_device = loss_device
+        return block, card_0_in_high_risk, loss_device
+
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
         non_zero_cnt = 0
@@ -131,8 +168,9 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
                 Empty dict if no trainable parameters were found.
         """
         device = device_manager.device
-        loss_device = block_ctx.loss_device
-        mid_iter_mem_check = block_ctx.mid_iter_mem_check
+        loss_device = getattr(self, "_loss_device", device)
+        card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
+        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
         # Use quantized inputs if available and enabled
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
