@@ -152,6 +152,38 @@ using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
 
 // ---------------------------------------------------------------------------
+// Large-M policy for the S4 packed-nibble path -- `tile_k = 32`.
+//
+// The re-exported `dpas_w8a16_policy` (the INT8/FP8 large-M policy) uses a
+// `WGTile` of `<128, 128, 16>`, i.e. `tile_k = 16`. For the INT8 path that is
+// fine: `int8_t` B is one byte per element, so a `tile_k = 16` k-tile is a
+// contiguous 16-byte B load whose 2D-block-copy fragment layout matches the
+// `int8_t -> ElementA` `reorder(...)`.
+//
+// For the S4 path B is `cutlass::int4b_t` (packed nibbles, 4 bits/element), so
+// `tile_k = 16` is only 8 contiguous bytes per k-tile. At that sub-byte width
+// the block-2d copy atom derives a B fragment TV-layout that does NOT line up
+// with the `int8_t` staging fragment we decode into and hand to
+// `reorder(tBrB_i8, tCrB)`. A fraction of B lanes then decode from the wrong
+// nibble and whole output tiles come out grossly wrong (observed: max abs diff
+// ~70 on the `medium E=8`, K=14336 prefill shape, which routes here because
+// `A_avg_M = 66 > 32`). The packed-nibble decode + reorder is only validated at
+// `tile_k = 32` (the width the `m_16` / `m_32` policies already use and which
+// every passing S4 shape exercises).
+//
+// This policy keeps the large `<128, 128>` WG tile (so large-M throughput is
+// preserved) but pins `tile_k = 32` so the packed-nibble copy fragment matches
+// the staging layout. `SGLayout` and the D-store copy atom are unchanged from
+// `dpas_w8a16_policy`.
+class dpas_w8a16_policy_s4_large : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_128, _128, _32>;
+  using SGLayout = Layout<Shape<_4, _2, _1>, Stride<_2, _1, _0>>;
+
+  using GmemTiledCopyD = XE_STORE_2D<16, 8, 32>;
+};
+
+// ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
 //
 // Adapted from `moe_dpas_int::xe_gemm_int_pergroup<>`. Structural
@@ -720,7 +752,13 @@ void moe_prefill_s4_dpas_per_group_dispatch(
   } else if (A_avg_M <= 32) {
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
   } else {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    // Large-M: use the S4-specific `tile_k = 32` policy rather than the
+    // re-exported `dpas_w8a16_policy` (`tile_k = 16`). The packed-nibble B
+    // copy fragment only lines up with the `int8_t` staging + reorder at
+    // `tile_k = 32`; at `tile_k = 16` a fraction of B lanes decode from the
+    // wrong nibble and whole output tiles come out grossly wrong. See
+    // `dpas_w8a16_policy_s4_large` above for the full rationale.
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_s4_large);
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
 
