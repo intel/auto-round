@@ -395,7 +395,7 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
     // narrower source dtype.
     reorder(tArA, tCrA);
     CUTLASS_PRAGMA_UNROLL
-    for (int i = 0; i < size(tBrB); ++i) {
+    for (int i = 0; i < tBrB.size(); ++i) {
       cutlass::int4b_t packed_nibble = tBrB(i);
       tBrB_i8(i) = static_cast<int8_t>(static_cast<int>(packed_nibble));
     }
