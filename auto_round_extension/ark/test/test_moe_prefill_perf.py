@@ -670,13 +670,13 @@ class TestMoEGemmPrefillPerf:
 
             # Default ARK path (dequant + GEMM). INT4-sym is DPAS-accelerated
             # via TWO independent branches inside `moe_gemm_prefill`:
-            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default ON) -- single-pass
+            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default OFF) -- single-pass
             #      mainloop reading packed nibbles directly, decoding each
             #      `int4b_t` fragment to `int8_t` in registers and reusing
-            #      the validated `int8_t -> act` reorder. Preferred; hot path.
+            #      the validated `int8_t -> act` reorder. Opt-in for debugging.
             #   2. `ARK_MOE_PREFILL_DPAS_INT8=1` (default ON) -- two-pass
             #      S4->S8 upcast into workspace + shared INT8 DPAS
-            #      mainloop. Fallback for when (1) is disabled.
+            #      mainloop. Default S4-sym acceleration path.
             # Force BOTH off for this measurement so the `ark(ms)` column
             # reflects the legacy dequant + BF16 GEMM path independently
             # of the `dpas(ms)` column below.

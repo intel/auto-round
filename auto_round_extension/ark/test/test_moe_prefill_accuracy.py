@@ -664,11 +664,11 @@ class TestMoEGemmPrefillAccuracy:
 
         Sibling of :meth:`test_accuracy_int8_dpas_per_group` -- uses the
         standard ``moe_gemm_prefill`` call path with
-        ``ARK_MOE_PREFILL_DPAS_S4=1`` (default ON) and
-        ``ARK_MOE_PREFILL_DPAS_INT8=0`` so the two-pass S4->S8 upcast
-        fallback is disabled and we exercise the single-pass mainloop
-        exclusively. The C++ dispatcher should pick the S4 DPAS branch
-        for shapes that satisfy ``N%64==0 && K%32==0 && K%group_size==0
+        ``ARK_MOE_PREFILL_DPAS_S4=1`` (explicitly opting in; the path is
+        default OFF) and ``ARK_MOE_PREFILL_DPAS_INT8=0`` so the two-pass
+        S4->S8 upcast fallback is disabled and we exercise the single-pass
+        mainloop exclusively. The C++ dispatcher should pick the S4 DPAS
+        branch for shapes that satisfy ``N%64==0 && K%32==0 && K%group_size==0
         && group_size%2==0 && group_size in {32,64,128,256}`` and
         silently fall back to the dequant path otherwise, so this test
         is checking parity, not that the DPAS branch is exercised.

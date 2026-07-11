@@ -876,7 +876,7 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // reads packed `[E, N, K/2]` uint8_t nibbles directly and folds the
   // upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)`, so
   // the B-side global traffic is halved vs. the S4->S8 upcast branch
-  // below. Opt-in default via `ARK_MOE_PREFILL_DPAS_S4` (default ON);
+  // below. Opt-in via `ARK_MOE_PREFILL_DPAS_S4=1` (default OFF);
   // silent fallback to the S4->S8 upcast branch (which is itself gated
   // by `ARK_MOE_PREFILL_DPAS_INT8`) or to the generic dequant path if
   // the shape gate rejects the tile geometry.
@@ -886,7 +886,9 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // `int8_t -> ElementA` reorder (see `xe_gemm_s4_pergroup`), so it no
   // longer routes through the interleaved
   // `NumericArrayConverter<ElementA, int4b_t, N>` that previously
-  // miscomputed a fraction of outputs. int4-sym is routed here by default.
+  // miscomputed a fraction of outputs. int4-sym is routed here only when
+  // `ARK_MOE_PREFILL_DPAS_S4=1` is set (default OFF); otherwise it falls
+  // through to the S4->S8 upcast + INT8 DPAS branch below.
   //
   // STATUS: NEEDS-HARDWARE-VALIDATION. See
   // `sycl_tla_moe_prefill_s4_dpas.hpp` for the port's provenance & the

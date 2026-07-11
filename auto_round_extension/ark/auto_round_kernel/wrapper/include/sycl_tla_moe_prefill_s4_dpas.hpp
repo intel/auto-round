@@ -2,16 +2,18 @@
 // (Fork of `sycl_tla_moe_prefill_int_dpas.hpp` per-group mainloop)
 //
 // STATUS: NEEDS-HARDWARE-VALIDATION -- single-pass port. The env gate
-// `ARK_MOE_PREFILL_DPAS_S4` defaults ON (see `moe_prefill_dpas_s4_enabled()`
-// below). The packed-nibble mainloop decodes each `int4b_t` B fragment into
-// an `int8_t` staging fragment in registers and then reuses the SAME
-// validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group path uses
-// (see `xe_gemm_s4_pergroup`). This avoids the interleaved
+// `ARK_MOE_PREFILL_DPAS_S4` defaults OFF (see `moe_prefill_dpas_s4_enabled()`
+// below) because the mainloop still intermittently miscomputes a fraction of
+// outputs on production-scale prefill shapes; set `ARK_MOE_PREFILL_DPAS_S4=1`
+// to opt in for debugging. The packed-nibble mainloop decodes each `int4b_t`
+// B fragment into an `int8_t` staging fragment in registers and then reuses
+// the SAME validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group
+// path uses (see `xe_gemm_s4_pergroup`). This avoids the interleaved
 // `NumericArrayConverter<ElementA, cutlass::int4b_t, N>` fast path, whose
 // pre-shuffled-B-layout assumption previously miscomputed a fraction of
 // outputs on production-scale prefill shapes. Precedence and gating in
-// `sycl_tla_moe_mixed.hpp` still fall back to the S4->S8 upcast + INT8 DPAS
-// path when the gate is explicitly disabled.
+// `sycl_tla_moe_mixed.hpp` fall back to the S4->S8 upcast + INT8 DPAS
+// path whenever the gate is not explicitly enabled (the default).
 // ---------------------------------------------------------------------------
 // Design rationale
 // ----------------
@@ -766,32 +768,31 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 }
 
 // ---------------------------------------------------------------------------
-// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default ON, semantics
-// identical to `moe_prefill_dpas_int_enabled` / `moe_prefill_dpas_fp8
-// _enabled`). Decoupled from `ARK_MOE_PREFILL_DPAS_INT8` so this
-// single-pass path can be disabled in isolation if it regresses --
-// switching S4 off falls back to the S4->S8 upcast + INT8 DPAS path
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default OFF). Decoupled
+// from `ARK_MOE_PREFILL_DPAS_INT8` so this single-pass path can be
+// enabled in isolation for A/B validation -- with S4 off (the default)
+// int4-sym falls back to the validated S4->S8 upcast + INT8 DPAS path
 // which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`.
 //
-// The single-pass packed-nibble mainloop now decodes each `int4b_t`
-// fragment into an `int8_t` staging fragment and reuses the validated
-// `int8_t -> ElementA` reorder (see `xe_gemm_s4_pergroup`), so it no
-// longer depends on the interleaved
-// `NumericArrayConverter<ElementA, int4b_t, N>` that previously
-// miscomputed a fraction of outputs. Defaulted ON accordingly; the
-// fallback remains available via the env var for A/B validation.
+// STATUS: default OFF. The single-pass packed-nibble mainloop still
+// intermittently miscomputes a fraction of outputs on production-scale
+// prefill shapes (observed: max abs diff ~70 on the `medium E=8`,
+// K=14336 int4-sym + fp16 accuracy case). Until that kernel defect is
+// root-caused and fixed on hardware, callers get the validated S4->S8
+// upcast + INT8 DPAS path by default; the single-pass path stays
+// available behind `ARK_MOE_PREFILL_DPAS_S4=1` for continued debugging.
 //
-// Truthy values (case-insensitive): "1", "true", "on", "yes".
-// Explicit "0" / "false" / "off" / "no" disable. Re-read on every
-// call so benchmarks / tests can toggle the path in-process.
+// Truthy values (case-insensitive): "1", "true", "on", "yes" enable.
+// Anything else (including unset) leaves the path disabled. Re-read on
+// every call so benchmarks / tests can toggle the path in-process.
 // ---------------------------------------------------------------------------
 inline bool moe_prefill_dpas_s4_enabled() {
   const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
-  if (env == nullptr) return true;  // default ON
+  if (env == nullptr) return false;  // default OFF
   std::string s(env);
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return true;
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
