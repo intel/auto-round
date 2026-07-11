@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = 8
     AR_ENABLE_ACT_HESSIAN2: bool = True
     AR_DISABLE_ACT_SCORE_WHEN_H2: bool = True
+    AR_ENABLE_WEIGHT_HESSIAN2: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -94,6 +95,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # first-order activation score term to save backward memory and runtime.
     "AR_DISABLE_ACT_SCORE_WHEN_H2": lambda: os.getenv("AR_DISABLE_ACT_SCORE_WHEN_H2", "0").lower()
     in ("1", "true", "yes"),
+    # Enable weight second-order proxy score in AutoScheme.
+    "AR_ENABLE_WEIGHT_HESSIAN2": lambda: os.getenv("AR_ENABLE_WEIGHT_HESSIAN2", "0").lower() in ("1", "true", "yes"),
 }
 
 

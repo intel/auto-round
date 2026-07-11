@@ -86,6 +86,9 @@ _ACT_HESSIAN2_TRACE_SAMPLES = 1
 _ACT_HESSIAN2_TRACE_INTERVAL = 1
 _ACT_HESSIAN2_TRACE_DIST = "rademacher"
 _ACT_HESSIAN2_TRACE_CLAMP = 1e8
+_WEIGHT_HESSIAN2_LAMBDA = 1.0
+_HESSIAN2_SCORE_CLIP_MAX = 1e6
+_HESSIAN2_SCORE_LOG_TAU = 1.0
 
 
 def _is_act_hessian2_enabled() -> bool:
@@ -106,6 +109,13 @@ def _disable_act_score_when_h2_enabled() -> bool:
     from auto_round import envs as _envs
 
     return bool(_envs.AR_DISABLE_ACT_SCORE_WHEN_H2)
+
+
+def _is_weight_hessian2_enabled() -> bool:
+    """Whether weight second-order scoring is enabled via environment variable."""
+    from auto_round import envs as _envs
+
+    return bool(_envs.AR_ENABLE_WEIGHT_HESSIAN2)
 
 
 def _estimate_gptq_hessian_proxy_trace(act: torch.Tensor) -> float:
@@ -129,6 +139,28 @@ def _estimate_gptq_hessian_proxy_trace(act: torch.Tensor) -> float:
         return float(val.item())
 
 
+def _regularize_hessian2_score(raw_score: float) -> float:
+    """Robustify second-order score via clipping + log smoothing.
+
+    Raw proxy-based second-order terms can produce extreme spikes on giant
+    activations. We always apply:
+
+    1) Magnitude clipping: ``|x| <- min(|x|, clip_max)``
+    2) Log smoothing: ``|x| <- tau * log1p(|x| / tau)``
+
+    This preserves global curvature trend while suppressing outliers.
+    """
+    if not math.isfinite(raw_score):
+        return 0.0
+
+    sign = -1.0 if raw_score < 0.0 else 1.0
+    magnitude = abs(float(raw_score))
+    magnitude = min(magnitude, _HESSIAN2_SCORE_CLIP_MAX)
+    tau = max(float(_HESSIAN2_SCORE_LOG_TAU), 1e-12)
+    smoothed = tau * math.log1p(magnitude / tau)
+    return sign * smoothed
+
+
 def _log_hessian2_contrib_summary(model, batch_idx: int, total_batches=None, scheme_tag: Optional[str] = None):
     """Log the current activation second-order contribution in AutoScheme scoring.
 
@@ -138,12 +170,14 @@ def _log_hessian2_contrib_summary(model, batch_idx: int, total_batches=None, sch
     - weight_total: sum of first-order weight terms across wrapped layers
     - act_total: sum of first-order activation terms across wrapped layers
     - act_h2_total: sum of second-order activation terms across wrapped layers
+    - weight_h2_total: sum of second-order weight terms across wrapped layers
     - mix_total: sum of final per-layer mix scores
-    - h2_in_mix_ratio: act_h2_total / mix_total (when mix_total != 0)
+    - h2_in_mix_ratio: (act_h2_total + weight_h2_total) / mix_total (when mix_total != 0)
     """
     weight_total = 0.0
     act_total = 0.0
     act_h2_total = 0.0
+    weight_h2_total = 0.0
     mix_total = 0.0
     layer_cnt = 0
 
@@ -153,26 +187,29 @@ def _log_hessian2_contrib_summary(model, batch_idx: int, total_batches=None, sch
         w = float(getattr(module, "weight_score", 0.0) or 0.0)
         a = float(getattr(module, "act_score", 0.0) or 0.0)
         a2 = float(getattr(module, "act_h2_score", 0.0) or 0.0)
+        w2 = float(getattr(module, "weight_h2_score", 0.0) or 0.0)
         m = float(getattr(module, "mix_score", 0.0) or 0.0)
-        if not (math.isfinite(w) and math.isfinite(a) and math.isfinite(a2) and math.isfinite(m)):
+        if not (math.isfinite(w) and math.isfinite(a) and math.isfinite(a2) and math.isfinite(w2) and math.isfinite(m)):
             continue
         weight_total += w
         act_total += a
         act_h2_total += a2
+        weight_h2_total += w2
         mix_total += m
         layer_cnt += 1
 
     batch_str = f"{batch_idx}/{total_batches}" if total_batches is not None else str(batch_idx)
     tag = f"[{scheme_tag}] " if scheme_tag else ""
-    h2_ratio = 0.0 if abs(mix_total) < 1e-12 else act_h2_total / mix_total
+    h2_ratio = 0.0 if abs(mix_total) < 1e-12 else (act_h2_total + weight_h2_total) / mix_total
     logger.info(
         "AutoScheme %sGPTQ-proxy act-hessian2 contribution batch %s | "
-        "weight=%.6f act=%.6f act_h2=%.6f mix=%.6f h2_in_mix_ratio=%.6f layers=%d",
+        "weight=%.6f act=%.6f act_h2=%.6f weight_h2=%.6f mix=%.6f h2_in_mix_ratio=%.6f layers=%d",
         tag,
         batch_str,
         weight_total,
         act_total,
         act_h2_total,
+        weight_h2_total,
         mix_total,
         h2_ratio,
         layer_cnt,
@@ -196,7 +233,9 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         forward/backward, used by Delta Loss to rank candidate quantization schemes.
         """
         enable_act_hessian2 = kwargs.pop("enable_act_hessian2", False)
+        enable_weight_hessian2 = kwargs.pop("enable_weight_hessian2", False)
         act_hessian2_lambda = kwargs.pop("act_hessian2_lambda", _ACT_HESSIAN2_LAMBDA)
+        weight_hessian2_lambda = kwargs.pop("weight_hessian2_lambda", _WEIGHT_HESSIAN2_LAMBDA)
         act_hessian_trace_samples = kwargs.pop("act_hessian_trace_samples", _ACT_HESSIAN2_TRACE_SAMPLES)
         act_hessian_trace_interval = kwargs.pop("act_hessian_trace_interval", _ACT_HESSIAN2_TRACE_INTERVAL)
         act_hessian_trace_dist = kwargs.pop("act_hessian_trace_dist", _ACT_HESSIAN2_TRACE_DIST)
@@ -227,27 +266,31 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         #   act_hessian_trace_interval: log every N batches.
         #   act_hessian_trace_dist: reserved for API compatibility; unused in proxy mode.
         self.enable_act_hessian2 = enable_act_hessian2
+        self.enable_weight_hessian2 = enable_weight_hessian2
         self.disable_act_score = kwargs.pop("disable_act_score", False)
         self.act_hessian2_lambda = act_hessian2_lambda
+        self.weight_hessian2_lambda = weight_hessian2_lambda
         self.act_hessian_trace_samples = act_hessian_trace_samples
         self.act_hessian_trace_interval = act_hessian_trace_interval
         self.act_hessian_trace_dist = act_hessian_trace_dist
         self.act_h2_score = 0.0
+        self.weight_h2_score = 0.0
         self.h_trace_acc = 0.0
         self.h_trace_cnt = 0
         self._act_hproxy_trace = 0.0
         self._act_diff_norm2 = 0.0
         self._act_elem_cnt = 0
         self._gguf_hproxy_trace = 0.0
+        self._weight_hproxy_trace = 0.0
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
 
     def _update_mix_score(self):
         """Update combined score used by DP search.
 
-        mix_score = weight_score + act_score + act_h2_score
+        mix_score = weight_score + act_score + act_h2_score + weight_h2_score
         """
-        self.mix_score = self.weight_score + self.act_score + self.act_h2_score
+        self.mix_score = self.weight_score + self.act_score + self.act_h2_score + self.weight_h2_score
 
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
@@ -259,11 +302,13 @@ class AutoSchemeWrapperLinear(WrapperLinear):
             # can still accumulate a second-order proxy term.
             if (
                 self.grad_mode
-                and self.enable_act_hessian2
+                and (self.enable_act_hessian2 or self.enable_weight_hessian2)
                 and hasattr(self.orig_layer, "super_group_size")
                 and self.orig_layer.super_group_size is not None
             ):
-                self._gguf_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
+                proxy = _estimate_gptq_hessian_proxy_trace(x)
+                self._gguf_hproxy_trace = proxy
+                self._weight_hproxy_trace = proxy
             return x, 1.0, None
 
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
@@ -274,10 +319,12 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     self.act_cnt += 1
                 x_diff = x - qdq_x
                 self.x_diff = x_diff.to("cpu")
-                if self.enable_act_hessian2:
+                if self.enable_act_hessian2 or self.enable_weight_hessian2:
                     # GPTQ-style Hessian proxy: use activation second moment as
                     # a trace-like curvature estimator (no 2nd-order autograd).
                     self._act_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
+                    self._weight_hproxy_trace = self._act_hproxy_trace
+                if self.enable_act_hessian2:
                     # Cache local perturbation energy for second-order term.
                     self._act_diff_norm2 = float(torch.pow(x_diff.to(torch.float32), 2).sum().item())
                     self._act_elem_cnt = int(x_diff.numel())
@@ -287,8 +334,9 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                         min(self._act_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP),
                         -_ACT_HESSIAN2_TRACE_CLAMP,
                     )
-                    delta_h2 = 0.5 * float(self.act_hessian2_lambda) * proxy_trace * self._act_diff_norm2
-                    if math.isfinite(delta_h2):
+                    raw_delta_h2 = 0.5 * float(self.act_hessian2_lambda) * proxy_trace * self._act_diff_norm2
+                    delta_h2 = _regularize_hessian2_score(raw_delta_h2)
+                    if math.isfinite(delta_h2) and delta_h2 != 0.0:
                         self.h_trace_acc += proxy_trace
                         self.h_trace_cnt += 1
                         self.act_h2_score += float(delta_h2)
@@ -350,6 +398,23 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 )
                 w_diff = self.orig_layer.weight - qdq_w.to(self.orig_layer.weight.device)
                 self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
+                if self.enable_weight_hessian2:
+                    proxy_trace = max(
+                        min(self._weight_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP),
+                        -_ACT_HESSIAN2_TRACE_CLAMP,
+                    )
+                    raw_delta_w_h2 = (
+                        0.5
+                        * float(self.weight_hessian2_lambda)
+                        * proxy_trace
+                        * torch.pow(w_diff.to(torch.float32), 2).sum().item()
+                    )
+                    delta_w_h2 = _regularize_hessian2_score(raw_delta_w_h2)
+                    if math.isfinite(delta_w_h2) and delta_w_h2 != 0.0:
+                        self.h_trace_acc += proxy_trace
+                        self.h_trace_cnt += 1
+                        self.weight_h2_score += float(delta_w_h2)
+                    self._weight_hproxy_trace = 0.0
                 self._update_mix_score()
                 return None
 
@@ -373,7 +438,9 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
     ):
         """Wrap ``orig_layer`` and eagerly run the imatrix-aware quant search to build ``qdq_w``."""
         enable_act_hessian2 = kwargs.pop("enable_act_hessian2", False)
+        enable_weight_hessian2 = kwargs.pop("enable_weight_hessian2", False)
         act_hessian2_lambda = kwargs.pop("act_hessian2_lambda", _ACT_HESSIAN2_LAMBDA)
+        weight_hessian2_lambda = kwargs.pop("weight_hessian2_lambda", _WEIGHT_HESSIAN2_LAMBDA)
         act_hessian_trace_samples = kwargs.pop("act_hessian_trace_samples", _ACT_HESSIAN2_TRACE_SAMPLES)
         act_hessian_trace_interval = kwargs.pop("act_hessian_trace_interval", _ACT_HESSIAN2_TRACE_INTERVAL)
         act_hessian_trace_dist = kwargs.pop("act_hessian_trace_dist", _ACT_HESSIAN2_TRACE_DIST)
@@ -398,18 +465,22 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.grad_mode = False
         # Keep parameter semantics aligned with AutoSchemeWrapperLinear.
         self.enable_act_hessian2 = enable_act_hessian2
+        self.enable_weight_hessian2 = enable_weight_hessian2
         self.disable_act_score = kwargs.pop("disable_act_score", False)
         self.act_hessian2_lambda = act_hessian2_lambda
+        self.weight_hessian2_lambda = weight_hessian2_lambda
         self.act_hessian_trace_samples = act_hessian_trace_samples
         self.act_hessian_trace_interval = act_hessian_trace_interval
         self.act_hessian_trace_dist = act_hessian_trace_dist
         self.act_h2_score = 0.0
+        self.weight_h2_score = 0.0
         self.h_trace_acc = 0.0
         self.h_trace_cnt = 0
         self._act_hproxy_trace = 0.0
         self._act_diff_norm2 = 0.0
         self._act_elem_cnt = 0
         self._gguf_hproxy_trace = 0.0
+        self._weight_hproxy_trace = 0.0
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
         self.weight_search_quant_func, _ = get_quant_func(
@@ -469,11 +540,13 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
             if (
                 self.grad_mode
-                and self.enable_act_hessian2
+                and (self.enable_act_hessian2 or self.enable_weight_hessian2)
                 and hasattr(self.orig_layer, "super_group_size")
                 and self.orig_layer.super_group_size is not None
             ):
-                self._gguf_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
+                proxy = _estimate_gptq_hessian_proxy_trace(x)
+                self._gguf_hproxy_trace = proxy
+                self._weight_hproxy_trace = proxy
             return x, 1.0, None
 
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
@@ -484,17 +557,20 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     self.act_cnt += 1
                 x_diff = x - qdq_x
                 self.x_diff = x_diff.to("cpu")
-                if self.enable_act_hessian2:
+                if self.enable_act_hessian2 or self.enable_weight_hessian2:
                     # GPTQ-style Hessian proxy from activation energy.
                     self._act_hproxy_trace = _estimate_gptq_hessian_proxy_trace(x)
+                    self._weight_hproxy_trace = self._act_hproxy_trace
+                if self.enable_act_hessian2:
                     self._act_diff_norm2 = float(torch.pow(x_diff.to(torch.float32), 2).sum().item())
                     self._act_elem_cnt = int(x_diff.numel())
                     proxy_trace = max(
                         min(self._act_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP),
                         -_ACT_HESSIAN2_TRACE_CLAMP,
                     )
-                    delta_h2 = 0.5 * float(self.act_hessian2_lambda) * proxy_trace * self._act_diff_norm2
-                    if math.isfinite(delta_h2):
+                    raw_delta_h2 = 0.5 * float(self.act_hessian2_lambda) * proxy_trace * self._act_diff_norm2
+                    delta_h2 = _regularize_hessian2_score(raw_delta_h2)
+                    if math.isfinite(delta_h2) and delta_h2 != 0.0:
                         self.h_trace_acc += proxy_trace
                         self.h_trace_cnt += 1
                         self.act_h2_score += float(delta_h2)
@@ -574,19 +650,21 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
             self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
-            if self.enable_act_hessian2:
+            if self.enable_weight_hessian2:
                 proxy_trace = max(min(self._gguf_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP), -_ACT_HESSIAN2_TRACE_CLAMP)
-                delta_h2 = (
+                raw_delta_w_h2 = (
                     0.5
-                    * float(self.act_hessian2_lambda)
+                    * float(self.weight_hessian2_lambda)
                     * proxy_trace
                     * torch.pow(w_diff.to(torch.float32), 2).sum().item()
                 )
-                if math.isfinite(delta_h2):
+                delta_w_h2 = _regularize_hessian2_score(raw_delta_w_h2)
+                if math.isfinite(delta_w_h2) and delta_w_h2 != 0.0:
                     self.h_trace_acc += proxy_trace
                     self.h_trace_cnt += 1
-                    self.act_h2_score += float(delta_h2)
+                    self.weight_h2_score += float(delta_w_h2)
                 self._gguf_hproxy_trace = 0.0
+                self._weight_hproxy_trace = 0.0
             self._update_mix_score()
             return None
 
@@ -642,19 +720,21 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
-            if self.enable_act_hessian2:
+            if self.enable_weight_hessian2:
                 proxy_trace = max(min(self._gguf_hproxy_trace, _ACT_HESSIAN2_TRACE_CLAMP), -_ACT_HESSIAN2_TRACE_CLAMP)
-                delta_h2 = (
+                raw_delta_w_h2 = (
                     0.5
-                    * float(self.act_hessian2_lambda)
+                    * float(self.weight_hessian2_lambda)
                     * proxy_trace
                     * torch.pow(w_diff.to(torch.float32), 2).sum().item()
                 )
-                if math.isfinite(delta_h2):
+                delta_w_h2 = _regularize_hessian2_score(raw_delta_w_h2)
+                if math.isfinite(delta_w_h2) and delta_w_h2 != 0.0:
                     self.h_trace_acc += proxy_trace
                     self.h_trace_cnt += 1
-                    self.act_h2_score += float(delta_h2)
+                    self.weight_h2_score += float(delta_w_h2)
                 self._gguf_hproxy_trace = 0.0
+                self._weight_hproxy_trace = 0.0
             self._update_mix_score()
             return None
 
@@ -1134,8 +1214,9 @@ def get_score_for_scheme(
     """
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     enable_act_hessian2 = _is_act_hessian2_enabled()
+    enable_weight_hessian2 = _is_weight_hessian2_enabled()
     disable_act_score = enable_act_hessian2 and _disable_act_score_when_h2_enabled()
-    need_backward = need_weight_grad or not disable_act_score
+    need_backward = need_weight_grad or not disable_act_score or enable_weight_hessian2
     if enable_act_hessian2 and low_gpu_mem_usage:
         logger.info(
             "AutoScheme: AR_ENABLE_ACT_HESSIAN2 is set with low_gpu_mem_usage=True; "
@@ -1143,6 +1224,8 @@ def get_score_for_scheme(
         )
     if disable_act_score:
         logger.info("AutoScheme: AR_DISABLE_ACT_SCORE_WHEN_H2 is set; disabling first-order activation score.")
+    if enable_weight_hessian2:
+        logger.info("AutoScheme: AR_ENABLE_WEIGHT_HESSIAN2 is set; enabling weight second-order proxy score.")
     # Include the visual block(s) when scoring VLMs with ``--quant_nontext_module``
     # (``force_mllm=True``) so vision-tower layer losses match a block below instead
     # of silently falling through to "non_block" in the logging/inactive-expert-fill
@@ -1209,6 +1292,7 @@ def get_score_for_scheme(
                 need_weight_grad=need_weight_grad,
                 enable_torch_compile=enable_torch_compile,
                 enable_act_hessian2=enable_act_hessian2,
+                enable_weight_hessian2=enable_weight_hessian2,
                 disable_act_score=disable_act_score,
             )
             set_module(model, name, new_m)
@@ -1551,6 +1635,8 @@ def get_score_for_scheme(
                 m._act_elem_cnt = 0
             if hasattr(m, "_gguf_hproxy_trace"):
                 m._gguf_hproxy_trace = 0.0
+            if hasattr(m, "_weight_hproxy_trace"):
+                m._weight_hproxy_trace = 0.0
             if hasattr(m, "super_qdq_func"):
                 m.super_qdq_func = None
             if hasattr(m, "act_qdq_func"):
