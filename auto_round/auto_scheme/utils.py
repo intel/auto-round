@@ -536,20 +536,31 @@ def _log_score_summary_by_block_and_nonblock(
 
     tag = f"[{scheme_tag}] " if scheme_tag else ""
     stage_str = f" ({summary_stage})" if summary_stage else ""
-    logger.debug("AutoScheme %sblock loss summary%s:", tag, stage_str)
-    logger.debug("AutoScheme | block | avg_loss |")
-
+    rows_for_rank: list[tuple[str, float]] = []
     for block_name in block_names:
         total_loss, cnt = block_stats.get(block_name, [0.0, 0.0])
         avg_loss = 0.0 if cnt <= 0 else total_loss / cnt
-        logger.debug("AutoScheme | %s | %.6f |", _short_summary_name(block_name), avg_loss)
+        if math.isfinite(avg_loss):
+            rows_for_rank.append((_short_summary_name(block_name), avg_loss))
 
-    if head_name is not None:
-        head_loss = None
-        if head_name in scores_dict:
-            head_loss = float(scores_dict[head_name][1])
-        head_avg = "N/A" if head_loss is None or not math.isfinite(head_loss) else f"{head_loss:.6f}"
-        logger.debug("AutoScheme | %s | %s |", head_name, head_avg)
+    # lm_head participates in the same ranking as block averages when present.
+    if head_name is not None and head_name in scores_dict:
+        head_loss = float(scores_dict[head_name][1])
+        if math.isfinite(head_loss):
+            rows_for_rank.append((head_name, head_loss))
+
+    rows_for_rank.sort(key=lambda item: item[1], reverse=True)
+
+    max_avg_loss = rows_for_rank[0][1] if rows_for_rank else 0.0
+
+    logger.debug("AutoScheme %sblock loss summary%s:", tag, stage_str)
+    logger.debug("AutoScheme | rank | block | avg_loss | ratio(%%max) |")
+    for idx, (name, avg_loss) in enumerate(rows_for_rank, start=1):
+        ratio_pct = 0.0 if abs(max_avg_loss) < _ZERO_EPS else (avg_loss / max_avg_loss) * 100.0
+        logger.debug("AutoScheme | %d | %s | %.6f | %.2f%% |", idx, name, avg_loss, ratio_pct)
+
+    if head_name is not None and head_name not in scores_dict:
+        logger.debug("AutoScheme | - | %s | N/A | N/A |", head_name)
 
     if non_block_items:
         non_block_items.sort(key=lambda x: x[0])
