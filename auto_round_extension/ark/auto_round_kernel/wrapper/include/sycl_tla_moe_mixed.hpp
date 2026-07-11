@@ -924,15 +924,23 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // and the DPAS mainloop then folds the per-K-group scale exactly the
   // same way as the S8-sym path -- reusing the packed scale tensor
   // unmodified. Silent fallback to the generic dequant path if the shape
-  // predicate rejects the tile geometry, if `asym=true`, or if the caller
-  // opted out via `ARK_MOE_PREFILL_DPAS_INT8=0`.
+  // predicate rejects the tile geometry, if `asym=true`, if the caller
+  // opted out via `ARK_MOE_PREFILL_DPAS_INT8=0`, or (the default) unless
+  // the caller opts in via `ARK_MOE_PREFILL_DPAS_LOWBIT=1`.
   //
   // For S4-sym specifically this branch is the *fallback* for the
   // single-pass S4 DPAS path above -- callers who disable
-  // `ARK_MOE_PREFILL_DPAS_S4` land here instead of on the generic
-  // dequant path, so the two-pass INT4->INT8 pipeline stays available
-  // as a runtime kill-switch until the single-pass mainloop is
-  // hardware-validated.
+  // `ARK_MOE_PREFILL_DPAS_S4` land here only when they *also* opt into
+  // `ARK_MOE_PREFILL_DPAS_LOWBIT=1`; otherwise int4-sym / int2-sym fall
+  // through to the generic bit-exact dequant path below. The two-pass
+  // INT4/INT2->INT8 pipeline stays available as a runtime opt-in until the
+  // low-bit DPAS numerics are hardware-validated.
+  //
+  // STATUS: default OFF (`ARK_MOE_PREFILL_DPAS_LOWBIT`). The upcast +
+  // INT8 DPAS pipeline still miscomputes a fraction of outputs on
+  // production-scale prefill shapes (observed: max abs diff ~70 on the
+  // `medium E=8`, K=14336 int4-sym + fp16 accuracy case), so it is not
+  // taken by default. See `moe_prefill_dpas_lowbit_enabled()`.
   //
   // The dequant workspace pointer we reinterpret as `int8_t*` is the same
   // caller-owned buffer used by the bf16/fp16 dequant fallback: since it
@@ -941,6 +949,7 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // safe and does not require a separate allocation.
   if ((weight_dtype == BTLA_DTYPE::S4_CLIP || weight_dtype == BTLA_DTYPE::S2_CLIP) && !asym &&
       moe_dpas_int::moe_prefill_dpas_int_enabled() &&
+      moe_dpas_int::moe_prefill_dpas_lowbit_enabled() &&
       moe_dpas_int::moe_prefill_dpas_int_pergroup_shape_ok(N, K, group_size) &&
       dequant_workspace != nullptr &&
       (act_dtype == BTLA_DTYPE::F16 || act_dtype == BTLA_DTYPE::BF16)) {

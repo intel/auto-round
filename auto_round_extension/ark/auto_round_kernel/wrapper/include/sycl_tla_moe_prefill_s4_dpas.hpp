@@ -771,16 +771,17 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 // Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default OFF). Decoupled
 // from `ARK_MOE_PREFILL_DPAS_INT8` so this single-pass path can be
 // enabled in isolation for A/B validation -- with S4 off (the default)
-// int4-sym falls back to the validated S4->S8 upcast + INT8 DPAS path
-// which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`.
+// int4-sym falls back to the bit-exact generic dequant path (the two-pass
+// S4->S8 upcast + INT8 DPAS path is itself default OFF behind
+// `ARK_MOE_PREFILL_DPAS_LOWBIT`, since it exhibits the same numeric defect).
 //
 // STATUS: default OFF. The single-pass packed-nibble mainloop still
 // intermittently miscomputes a fraction of outputs on production-scale
 // prefill shapes (observed: max abs diff ~70 on the `medium E=8`,
 // K=14336 int4-sym + fp16 accuracy case). Until that kernel defect is
-// root-caused and fixed on hardware, callers get the validated S4->S8
-// upcast + INT8 DPAS path by default; the single-pass path stays
-// available behind `ARK_MOE_PREFILL_DPAS_S4=1` for continued debugging.
+// root-caused and fixed on hardware, callers get the bit-exact generic
+// dequant path by default; the single-pass path stays available behind
+// `ARK_MOE_PREFILL_DPAS_S4=1` for continued debugging.
 //
 // Truthy values (case-insensitive): "1", "true", "on", "yes" enable.
 // Anything else (including unset) leaves the path disabled. Re-read on

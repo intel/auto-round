@@ -668,15 +668,16 @@ class TestMoEGemmPrefillPerf:
                 deq_ms = _xpu_time_ms(lambda: _dequant_int4_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
-            # Default ARK path (dequant + GEMM). INT4-sym is DPAS-accelerated
-            # via TWO independent branches inside `moe_gemm_prefill`:
+            # Default ARK path (dequant + GEMM). INT4-sym has TWO opt-in DPAS
+            # branches inside `moe_gemm_prefill`, both default OFF (int4-sym
+            # prefill defaults to the bit-exact dequant + GEMM path):
             #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default OFF) -- single-pass
             #      mainloop reading packed nibbles directly, decoding each
             #      `int4b_t` fragment to `int8_t` in registers and reusing
             #      the validated `int8_t -> act` reorder. Opt-in for debugging.
-            #   2. `ARK_MOE_PREFILL_DPAS_INT8=1` (default ON) -- two-pass
-            #      S4->S8 upcast into workspace + shared INT8 DPAS
-            #      mainloop. Default S4-sym acceleration path.
+            #   2. `ARK_MOE_PREFILL_DPAS_LOWBIT=1` (default OFF) -- two-pass
+            #      S4->S8 upcast into workspace + shared INT8 DPAS mainloop.
+            #      Opt-in for debugging.
             # Force BOTH off for this measurement so the `ark(ms)` column
             # reflects the legacy dequant + BF16 GEMM path independently
             # of the `dpas(ms)` column below.

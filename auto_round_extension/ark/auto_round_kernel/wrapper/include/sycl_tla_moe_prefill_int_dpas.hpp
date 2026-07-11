@@ -891,6 +891,37 @@ inline bool moe_prefill_dpas_int_enabled() {
 }
 
 // ---------------------------------------------------------------------------
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_LOWBIT` (default OFF).
+//
+// Gates the low-bit (S4-sym / S2-sym) -> INT8 upcast two-pass path that
+// reuses this INT8 DPAS mainloop (see `sycl_tla_moe_mixed.hpp`). Decoupled
+// from `ARK_MOE_PREFILL_DPAS_INT8` (which gates the *genuine* INT8-weight
+// DPAS path) so the low-bit two-pass can be toggled without disturbing the
+// validated INT8 path.
+//
+// STATUS: default OFF. The two-pass S4->S8 upcast + INT8 DPAS path still
+// miscomputes a fraction of outputs on production-scale prefill shapes
+// (observed: max abs diff ~70 on the `medium E=8`, K=14336 int4-sym + fp16
+// accuracy case) -- the same defect that led `ARK_MOE_PREFILL_DPAS_S4` to be
+// defaulted OFF. Until the low-bit DPAS pipeline is root-caused and fixed on
+// hardware, int4-sym / int2-sym prefill falls through to the bit-exact
+// generic dequant path by default; the two-pass path stays available behind
+// `ARK_MOE_PREFILL_DPAS_LOWBIT=1` for continued debugging.
+//
+// Truthy values (case-insensitive): "1", "true", "on", "yes" enable.
+// Anything else (including unset) leaves the path disabled. Re-read on every
+// call so benchmarks / tests can toggle the path in-process.
+// ---------------------------------------------------------------------------
+inline bool moe_prefill_dpas_lowbit_enabled() {
+  const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_LOWBIT");
+  if (env == nullptr) return false;  // default OFF
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Shape preconditions for the per-K-group INT8 dispatcher branch. Matches
 // the FP8 per-group predicate exactly (same policy tiles, same group_size
 // specialisations).
