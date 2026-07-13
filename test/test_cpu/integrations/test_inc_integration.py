@@ -163,7 +163,6 @@ class TestAutoRoundCPU:
             truncation=False,
             seed=42,
             nsamples=1,
-            gradient_accumulate_steps=1,
             quant_nontext_module=True,
         )
         quant_config = AutoRoundConfig(
@@ -175,7 +174,7 @@ class TestAutoRoundCPU:
             seqlen=seqlen,
             quant_nontext_module=True,
             truncation=truncation,
-            gradient_accumulate_steps=gradient_accumulate_steps,
+            gradient_accumulate_steps=1,
             device_map="cpu",
             tokenizer=tokenizer,
             processor=processor,

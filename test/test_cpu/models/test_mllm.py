@@ -293,6 +293,7 @@ class TestAutoRound:
         )
 
         call_log = []
+        autoround.post_init()
         original_should_stop = autoround.calibration._should_stop_cache_forward
 
         def tracked_should_stop(name):
@@ -305,8 +306,6 @@ class TestAutoRound:
                 }
             )
             return result
-
-        autoround.post_init()
 
         autoround.calibration._should_stop_cache_forward = tracked_should_stop
 

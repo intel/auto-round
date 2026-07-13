@@ -52,7 +52,8 @@ def test_llmc_quantize_block_allows_mllm(monkeypatch):
     monkeypatch.setattr("auto_round.compressors.data_driven.mv_module_from_gpu", lambda block: None)
     monkeypatch.setattr("auto_round.compressors.data_driven.clear_memory", lambda *args, **kwargs: None)
     monkeypatch.setattr("auto_round.compressors.data_driven.is_nv_fp", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr("auto_round.compressors.data_driven.is_static_wfp8afp8", lambda *_args, **_kwargs: False)
+    #TODO verify wenhuach
+    # monkeypatch.setattr("auto_round.compressors.data_driven.is_static_wfp8afp8", lambda *_args, **_kwargs: False)
 
     block = torch.nn.Linear(1, 1)
     q_outputs, reference_output = compressor.quantize_block(block, inputs=[((torch.ones(1, 1), {}),)])

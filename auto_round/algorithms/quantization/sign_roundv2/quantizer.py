@@ -318,22 +318,22 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         logger.info("using algorithm extension for quantization.")
 
         if (
-            self.sym
-            and self.super_group_size is None
-            and (self.data_type.startswith("int") or self.data_type.startswith("mx") or self.data_type.startswith("nv"))
+            self.scheme.sym
+            and self.scheme.super_group_size is None
+            and (self.scheme.data_type.startswith("int") or self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv"))
         ):
-            if self.bits > 2 and not (self.data_type.startswith("mx") or self.data_type.startswith("nv")):
+            if self.scheme.bits > 2 and not (self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv")):
                 logger.warning_once(
                     "algorithm extension has only undergone limited validation on "
                     "W2A16,INT4, MXFP4 and NVFP4; use with caution."
                 )
-            if self.act_bits <= 4 or self.bits < 4:
+            if self.scheme.act_bits <= 4 or self.scheme.bits < 4:
                 self._use_outlier_suppressed_loss = True
             else:
                 self._use_outlier_suppressed_loss = False
             self.wrapper_block = _named_wrapper_block(SignRoundOptimizedWrapperLinear, "wrapper_block")
 
-        if self.data_type.endswith("dq"):
+        if self.scheme.data_type.endswith("dq"):
             self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def is_support_compile_block(self):
@@ -385,8 +385,8 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             yield hook_handles
 
     def _is_wint4aint4(self):
-        return ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
-            "int4" in self.data_type or ("int" in self.data_type and self.bits == 4)
+        return ("int4" in self.scheme.act_data_type or ("int" in self.scheme.act_data_type and self.scheme.act_bits == 4)) and (
+            "int4" in self.scheme.data_type or ("int" in self.scheme.data_type and self.scheme.bits == 4)
         )
 
     def _register_imatrix_hooks(self, model):

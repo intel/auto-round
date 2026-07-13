@@ -259,7 +259,7 @@ class SignRoundQuantizer(BaseQuantizer):
         batch_size = self.batch_size
         block_fwd = self.compressor.block_forward
         for i in range(self.iters):
-            if self.enable_alg_ext and self.data_type.endswith("dq"):
+            if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0

@@ -508,12 +508,12 @@ class DataDrivenCompressor(BaseCompressor):
                 if "input_ids" in inputs.keys():
                     total_samples = len(inputs["input_ids"])
                     if getattr(self.quantizer, "batch_size", None):
-                        if total_samples < self.quantizer.batch_size:
-                            self.quantizer.batch_size = total_samples
+                        if total_samples < self.batch_size:
+                            self.batch_size = total_samples
                             logger.warning(f"force the train batch size to {total_samples}")
                     else:
                         if total_samples < self._calibration_state.batch_size:
-                            self.quantizer.batch_size = total_samples
+                            self.batch_size = total_samples
                             logger.warning(f"force the train batch size to {total_samples}")
 
                 self._quantize_blocks(
@@ -670,14 +670,14 @@ class DataDrivenCompressor(BaseCompressor):
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
 
-        if (
-            self.bits <= 2
-            and (self.iters < 1000 or not getattr(self.quantize_config, "enable_alg_ext", False))
-            and self.super_group_size is None
-        ):
-            logger.warning(
-                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
-            )
+        # if ( # TODO wenhuach add this log
+        #     self.bits <= 2
+        #     and (self.iters < 1000 or not getattr(self.quantize_config, "enable_alg_ext", False))
+        #     and self.super_group_size is None
+        # ):
+        #     logger.warning(
+        #         "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
+        #     )
 
     # This is the API for llm-compressor, not used in AutoRound
     def quantize_block(
@@ -785,7 +785,7 @@ class DataDrivenCompressor(BaseCompressor):
                         device_manager.device_list,
                         input_ids,
                         self.compress_context.low_gpu_mem_usage,
-                        self.quantizer.batch_size,
+                        self.batch_size,
                         device,
                     )
                 else:
@@ -803,7 +803,8 @@ class DataDrivenCompressor(BaseCompressor):
                     add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
 
             blk_name = self.quant_block_list[0][0]
-            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+            # bs = self.batch_size * self.quantizer.infer_bs_coeff
+            bs = self.batch_size #TODO wenhuach add infer_bs_coeff
 
             if not hasattr(self.quantizer, "create_block_io"):
                 if q_input is None:
