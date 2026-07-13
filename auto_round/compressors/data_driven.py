@@ -804,7 +804,7 @@ class DataDrivenCompressor(BaseCompressor):
 
             blk_name = self.quant_block_list[0][0]
             # bs = self.batch_size * self.quantizer.infer_bs_coeff
-            bs = self.batch_size #TODO wenhuach add infer_bs_coeff
+            bs = self.batch_size  # TODO wenhuach add infer_bs_coeff
 
             if not hasattr(self.quantizer, "create_block_io"):
                 if q_input is None:
