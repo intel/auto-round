@@ -25,7 +25,7 @@ from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.export.svdquant_mxfp4 import NunchakuMXFP4Packer, pack_lowrank_weight
 
 
-_DEPLOYABLE_E2M1_ALIASES = frozenset({"mx_fp4", "mx_fp4e2m1"})
+_DEPLOYABLE_E2M1_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
 
 
 class ResidualTensorProvider(Protocol):
@@ -89,6 +89,10 @@ class SVDQuantModelAdapter(Protocol):
 
     def metadata(self, model: torch.nn.Module, rank: int) -> Mapping[str, str]: ...
 
+    def validate_records(
+        self, sources: tuple[SourceLinearRecord, ...], records: tuple[SVDQuantExportRecord, ...]
+    ) -> None: ...
+
     def validate(self, tensors: Mapping[str, torch.Tensor], metadata: Mapping[str, str]) -> None: ...
 
 
@@ -100,7 +104,7 @@ class IdentitySVDQuantModelAdapter:
     ) -> Iterable[SVDQuantExportRecord]:
         return (
             SVDQuantExportRecord(
-                prefix=record.name,
+                prefix=record.name or "model",
                 residual_weight=record.residual_weight,
                 lora_down=record.lora_down,
                 lora_up=record.lora_up,
@@ -115,6 +119,11 @@ class IdentitySVDQuantModelAdapter:
 
     def metadata(self, model: torch.nn.Module, rank: int) -> Mapping[str, str]:
         return {"artifact_type": "generic_intermediate"}
+
+    def validate_records(
+        self, sources: tuple[SourceLinearRecord, ...], records: tuple[SVDQuantExportRecord, ...]
+    ) -> None:
+        return
 
     def validate(self, tensors: Mapping[str, torch.Tensor], metadata: Mapping[str, str]) -> None:
         if metadata.get("artifact_type") != "generic_intermediate":
@@ -222,14 +231,14 @@ def _source_records(model: torch.nn.Module) -> tuple[SourceLinearRecord, ...]:
         records.append(
             SourceLinearRecord(
                 name=name,
-                residual_weight=module.residual_linear.weight.detach().cpu().contiguous(),
-                lora_down=module.lora_down.weight.detach().cpu().contiguous(),
-                lora_up=module.lora_up.weight.detach().cpu().contiguous(),
-                smooth=module.smooth.detach().cpu().contiguous(),
-                smooth_orig=getattr(module, "smooth_orig", module.smooth).detach().cpu().contiguous(),
+                residual_weight=module.residual_linear.weight.detach(),
+                lora_down=module.lora_down.weight.detach(),
+                lora_up=module.lora_up.weight.detach(),
+                smooth=module.smooth.detach(),
+                smooth_orig=getattr(module, "smooth_orig", module.smooth).detach(),
                 bias=None
                 if module.residual_linear.bias is None
-                else module.residual_linear.bias.detach().cpu().contiguous(),
+                else module.residual_linear.bias.detach(),
                 scheme=SVDQuantLinearScheme(
                     data_type=getattr(module.residual_linear, "data_type", None),
                     bits=getattr(module.residual_linear, "bits", None),
@@ -369,12 +378,31 @@ def _validate_packed_residual(payload: Mapping[str, torch.Tensor], record: SVDQu
         raise ValueError(f"{prefix} wscales shape must be {expected_scale_shape}")
 
 
-def _collect_svdquant_export(
+def _validate_adapter_provenance(
+    sources: tuple[SourceLinearRecord, ...], records: tuple[SVDQuantExportRecord, ...]
+) -> None:
+    source_ids = {id(source) for source in sources}
+    referenced_ids: set[int] = set()
+    for record in records:
+        output_rank = record.lora_down.shape[0]
+        for source in record.sources:
+            if id(source) not in source_ids:
+                raise ValueError(f"{record.prefix} adapter record references a foreign logical source")
+            if source.lora_down.shape[0] != output_rank:
+                raise ValueError(
+                    f"{record.prefix} source rank={source.lora_down.shape[0]} must equal output rank={output_rank}"
+                )
+            referenced_ids.add(id(source))
+    missing = [source.name or "<root>" for source in sources if id(source) not in referenced_ids]
+    if missing:
+        raise ValueError(f"model adapter dropped logical sources: {missing}")
+
+
+def _prepare_export_records(
     model: torch.nn.Module,
     config: SVDQuantExportConfig,
-    residual_provider: ResidualTensorProvider,
     adapter: SVDQuantModelAdapter,
-) -> tuple[dict[str, torch.Tensor], int]:
+) -> tuple[tuple[SourceLinearRecord, ...], tuple[SVDQuantExportRecord, ...], int]:
     source_records = _source_records(model)
     for source in source_records:
         _validate_selected_scheme(source.scheme, source.name or "<root>")
@@ -384,6 +412,18 @@ def _collect_svdquant_export(
     ranks = {_validate_export_record(record, config) for record in records}
     if len(ranks) != 1:
         raise ValueError(f"mixed SVDQuant ranks are not supported: {sorted(ranks)}")
+    _validate_adapter_provenance(source_records, records)
+    validate_records = getattr(adapter, "validate_records", None)
+    if validate_records is not None:
+        validate_records(source_records, records)
+    return source_records, records, ranks.pop()
+
+
+def _serialize_export_records(
+    records: tuple[SVDQuantExportRecord, ...],
+    config: SVDQuantExportConfig,
+    residual_provider: ResidualTensorProvider,
+) -> dict[str, torch.Tensor]:
     tensors: dict[str, torch.Tensor] = {}
     for record in records:
         high_precision = {
@@ -392,7 +432,11 @@ def _collect_svdquant_export(
             "lora_down": pack_lowrank_weight(record.lora_down.to(config.low_rank_dtype), down=True),
             "lora_up": pack_lowrank_weight(record.lora_up.to(config.low_rank_dtype), down=False),
             "bias": pack_nunchaku_16bit_vector(
-                torch.zeros(record.residual_weight.shape[0], dtype=config.low_rank_dtype)
+                torch.zeros(
+                    record.residual_weight.shape[0],
+                    dtype=config.low_rank_dtype,
+                    device=record.residual_weight.device,
+                )
                 if record.bias is None
                 else record.bias.to(config.low_rank_dtype)
             ),
@@ -407,7 +451,7 @@ def _collect_svdquant_export(
             if key in tensors:
                 raise ValueError(f"model adapter produced duplicate tensor key {key!r}")
             tensors[key] = tensor.detach().cpu().contiguous()
-    return tensors, ranks.pop()
+    return tensors
 
 
 def collect_svdquant_tensors(
@@ -422,8 +466,10 @@ def collect_svdquant_tensors(
     config = config or SVDQuantExportConfig()
     residual_provider = residual_provider or MXFP4ResidualTensorProvider(config.group_size)
     adapter = adapter or IdentitySVDQuantModelAdapter()
-    tensors, _ = _collect_svdquant_export(model, config, residual_provider, adapter)
-    return tensors
+    _, records, rank = _prepare_export_records(model, config, adapter)
+    if config.runtime_loadable:
+        build_svdquant_metadata(model, config=config, adapter=adapter, rank=rank)
+    return _serialize_export_records(records, config, residual_provider)
 
 
 def build_svdquant_metadata(
@@ -438,10 +484,7 @@ def build_svdquant_metadata(
     config = config or SVDQuantExportConfig()
     adapter = adapter or IdentitySVDQuantModelAdapter()
     if rank is None:
-        source_ranks = {record.lora_down.shape[0] for record in _source_records(model)}
-        if len(source_ranks) != 1:
-            raise ValueError(f"mixed SVDQuant ranks are not supported: {sorted(source_ranks)}")
-        rank = source_ranks.pop()
+        _, _, rank = _prepare_export_records(model, config, adapter)
     quantization_config = config.to_quantization_config()
     quantization_config["rank"] = rank
     metadata = dict(adapter.metadata(model, rank))
@@ -481,8 +524,9 @@ def save_svdquant_nunchaku_safetensors(
     config = config or SVDQuantExportConfig()
     adapter = adapter or IdentitySVDQuantModelAdapter()
     residual_provider = residual_provider or MXFP4ResidualTensorProvider(config.group_size)
-    tensors, rank = _collect_svdquant_export(model, config, residual_provider, adapter)
+    _, records, rank = _prepare_export_records(model, config, adapter)
     metadata = build_svdquant_metadata(model, config=config, adapter=adapter, rank=rank)
+    tensors = _serialize_export_records(records, config, residual_provider)
     adapter.validate(tensors, metadata)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)

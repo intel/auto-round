@@ -1,5 +1,6 @@
 import inspect
 import json
+from dataclasses import replace
 
 import pytest
 import torch
@@ -91,12 +92,17 @@ def test_adapter_maps_all_logical_source_records_with_model_level_visibility():
             self.records = records
             return super().map_modules(received_model, records)
 
+        def validate_records(self, sources, records):
+            self.validated_records = (sources, records)
+
     adapter = CapturingAdapter()
 
     tensors = collect_svdquant_tensors(model, adapter=adapter)
 
     assert set(key.split(".", 1)[0] for key in tensors) == {"0", "1"}
     assert len(adapter.records) == 2
+    assert adapter.validated_records[0] is adapter.records
+    assert [record.prefix for record in adapter.validated_records[1]] == ["0", "1"]
 
 
 def test_bias_and_smooth_vectors_match_layout_fixture_and_identity_padding():
@@ -188,14 +194,14 @@ def test_mxfp4_residual_provider_requires_non_bool_integer_group_size(group_size
 @pytest.mark.parametrize(
     "field,value,message",
     [
-        ("data_type", "mx_fp", "data_type"),
+        ("data_type", "int", "data_type"),
         ("bits", 8, "bits=4"),
         ("bits", 4.0, "bits=4"),
         ("group_size", (32, 32), "scalar group_size=32"),
         ("group_size", 64, "scalar group_size=32"),
         ("group_size", 32.0, "scalar group_size=32"),
         ("sym", False, "sym=True"),
-        ("act_data_type", "mx_fp", "activation data_type"),
+        ("act_data_type", "int", "activation data_type"),
         ("act_bits", 16, "activation bits=4"),
         ("act_bits", 4.0, "activation bits=4"),
         ("act_group_size", 64, "activation scalar group_size=32"),
@@ -225,6 +231,16 @@ def test_collection_rejects_missing_selected_weight_or_activation_scheme():
         collect_svdquant_tensors(missing_activation)
 
 
+def test_collection_accepts_normal_autoround_mxfp4_preset_values():
+    model = _toy_model()
+    model[0].residual_linear.data_type = "mx_fp"
+    model[0].residual_linear.act_data_type = "mx_fp"
+
+    tensors = collect_svdquant_tensors(model)
+
+    assert "0.qweight" in tensors
+
+
 def test_collection_rejects_nonfinite_values_and_mixed_ranks():
     nonfinite = _toy_model()
     nonfinite[0].smooth[0] = torch.nan
@@ -248,6 +264,58 @@ def test_save_rejects_empty_model_and_missing_runtime_metadata_before_writing(tm
             _toy_model(), runtime_path, config=SVDQuantExportConfig(runtime_loadable=True)
         )
     assert not runtime_path.exists()
+
+
+def test_runtime_metadata_validation_precedes_source_cpu_copy_and_packing(monkeypatch, tmp_path):
+    class Provider:
+        def tensors_for(self, record):
+            pytest.fail("residual packing must not run before runtime metadata validation")
+
+    def reject_cpu_copy(self, *args, **kwargs):
+        pytest.fail("source tensors must remain on their original device before serialization")
+
+    monkeypatch.setattr(torch.Tensor, "cpu", reject_cpu_copy)
+
+    with pytest.raises(ValueError, match="model_class.*serialized 'config'"):
+        save_svdquant_nunchaku_safetensors(
+            _toy_model(),
+            tmp_path / "runtime.safetensors",
+            config=SVDQuantExportConfig(runtime_loadable=True),
+            residual_provider=Provider(),
+        )
+
+
+def test_collection_retains_source_device_storage_until_after_packing(monkeypatch):
+    model = _toy_model()
+    events = []
+    original_cpu = torch.Tensor.cpu
+
+    class Adapter(IdentitySVDQuantModelAdapter):
+        def map_modules(self, received_model, records):
+            records = tuple(records)
+            events.append("map")
+            assert records[0].residual_weight.device == model[0].residual_linear.weight.device
+            assert records[0].residual_weight.data_ptr() == model[0].residual_linear.weight.data_ptr()
+            return super().map_modules(received_model, records)
+
+    class Provider:
+        def __init__(self):
+            self.delegate = MXFP4ResidualTensorProvider()
+
+        def tensors_for(self, record):
+            events.append("pack")
+            return self.delegate.tensors_for(record)
+
+    def tracked_cpu(self, *args, **kwargs):
+        events.append("cpu")
+        return original_cpu(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "cpu", tracked_cpu)
+
+    collect_svdquant_tensors(model, adapter=Adapter(), residual_provider=Provider())
+
+    assert events[0] == "map"
+    assert events.index("pack") < events.index("cpu")
 
 
 def test_runtime_adapter_metadata_and_validation_receive_resolved_rank(tmp_path):
@@ -301,6 +369,9 @@ def test_adapter_can_fuse_sources_with_compatible_e2m1_aliases():
     model = torch.nn.Sequential(_toy_model()[0], _toy_model()[0])
     model[0].residual_linear.data_type = "mx_fp4"
     model[0].residual_linear.act_data_type = "mx_fp4"
+    with torch.no_grad():
+        model[1].lora_down.weight.copy_(model[0].lora_down.weight)
+        model[1].smooth.copy_(model[0].smooth)
 
     class FusionAdapter(IdentitySVDQuantModelAdapter):
         def map_modules(self, model, records):
@@ -308,12 +379,12 @@ def test_adapter_can_fuse_sources_with_compatible_e2m1_aliases():
             return (
                 SVDQuantExportRecord(
                     prefix="fused",
-                    residual_weight=left.residual_weight,
+                    residual_weight=torch.cat((left.residual_weight, right.residual_weight), dim=0),
                     lora_down=left.lora_down,
-                    lora_up=left.lora_up,
+                    lora_up=torch.cat((left.lora_up, right.lora_up), dim=0),
                     smooth=left.smooth,
                     smooth_orig=left.smooth_orig,
-                    bias=left.bias,
+                    bias=torch.cat((left.bias, right.bias), dim=0),
                     scheme=left.scheme,
                     sources=(left, right),
                 ),
@@ -322,6 +393,53 @@ def test_adapter_can_fuse_sources_with_compatible_e2m1_aliases():
     tensors = collect_svdquant_tensors(model, adapter=FusionAdapter())
 
     assert "fused.qweight" in tensors
+    assert tensors["fused.qweight"].shape == (128, 64)
+
+
+def test_adapter_provenance_rejects_dropped_and_foreign_sources():
+    model = torch.nn.Sequential(_toy_model()[0], _toy_model()[0])
+
+    class DroppingAdapter(IdentitySVDQuantModelAdapter):
+        def map_modules(self, model, records):
+            return super().map_modules(model, tuple(records)[:1])
+
+    with pytest.raises(ValueError, match="dropped logical sources.*1"):
+        collect_svdquant_tensors(model, adapter=DroppingAdapter())
+
+    class ForeignAdapter(IdentitySVDQuantModelAdapter):
+        def map_modules(self, model, records):
+            source = tuple(records)[0]
+            record = tuple(super().map_modules(model, (source,)))[0]
+            return (replace(record, sources=(replace(source, name="foreign"),)),)
+
+    with pytest.raises(ValueError, match="foreign logical source"):
+        collect_svdquant_tensors(_toy_model(), adapter=ForeignAdapter())
+
+
+def test_adapter_provenance_requires_source_rank_to_equal_output_rank():
+    class RankChangingAdapter(IdentitySVDQuantModelAdapter):
+        def map_modules(self, model, records):
+            source = tuple(records)[0]
+            record = tuple(super().map_modules(model, (source,)))[0]
+            return (
+                replace(
+                    record,
+                    lora_down=record.lora_down[:2],
+                    lora_up=record.lora_up[:, :2],
+                ),
+            )
+
+    with pytest.raises(ValueError, match="source rank=3.*output rank=2"):
+        collect_svdquant_tensors(_toy_model(), adapter=RankChangingAdapter())
+
+
+def test_identity_adapter_uses_stable_model_prefix_for_root_svdquant_linear():
+    root = _toy_model()[0]
+
+    tensors = collect_svdquant_tensors(root)
+
+    assert "model.qweight" in tensors
+    assert not any(key.startswith(".") for key in tensors)
 
 
 @pytest.mark.parametrize(
