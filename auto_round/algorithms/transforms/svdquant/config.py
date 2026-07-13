@@ -34,15 +34,26 @@ class SVDQuantConfig(QuantizationConfig):
         exclude_modules: list[str] | tuple[str, ...] | str | None = None,
         low_rank_dtype: str = "bf16",
         smooth_eps: float = 1e-6,
+        residual_iters: int = 1,
+        residual_early_stop: bool = False,
+        residual_quant_method: str = "rtn",
         **kwargs,
     ):
         super().__init__(**kwargs)
+        residual_quant_method = residual_quant_method.lower()
         if rank < 0:
             raise ValueError(f"`rank` must be non-negative, got {rank!r}")
         if not 0.0 <= smooth_alpha <= 1.0:
             raise ValueError(f"`smooth_alpha` must be in [0, 1], got {smooth_alpha!r}")
         if smooth_eps <= 0:
             raise ValueError(f"`smooth_eps` must be positive, got {smooth_eps!r}")
+        if residual_iters < 1:
+            raise ValueError(f"`residual_iters` must be at least 1, got {residual_iters!r}")
+        if residual_iters > 1 and residual_quant_method != "rtn":
+            raise ValueError(
+                "`residual_quant_method` must be 'rtn' when `residual_iters` is greater than 1, "
+                f"got {residual_quant_method!r}"
+            )
 
         self.rank = rank
         self.smooth_alpha = smooth_alpha
@@ -50,12 +61,17 @@ class SVDQuantConfig(QuantizationConfig):
         self.exclude_modules = _normalize_patterns(exclude_modules)
         self.low_rank_dtype = low_rank_dtype
         self.smooth_eps = smooth_eps
+        self.residual_iters = residual_iters
+        self.residual_early_stop = residual_early_stop
+        self.residual_quant_method = residual_quant_method
 
     def __repr__(self) -> str:
         return (
             f"SVDQuantConfig(rank={self.rank}, smooth_alpha={self.smooth_alpha}, "
             f"low_rank_dtype={self.low_rank_dtype!r}, "
-            f"target_modules={self.target_modules}, exclude_modules={self.exclude_modules})"
+            f"target_modules={self.target_modules}, exclude_modules={self.exclude_modules}, "
+            f"residual_iters={self.residual_iters}, residual_early_stop={self.residual_early_stop!r}, "
+            f"residual_quant_method={self.residual_quant_method!r})"
         )
 
 

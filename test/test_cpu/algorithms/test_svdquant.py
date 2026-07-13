@@ -1,9 +1,51 @@
 import types
 
+import pytest
 import torch
 
 from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+
+def test_svdquant_config_residual_iteration_defaults():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    config = SVDQuantConfig()
+
+    assert config.residual_iters == 1
+    assert config.residual_early_stop is False
+    assert config.residual_quant_method == "rtn"
+    assert "residual_iters=1" in repr(config)
+    assert "residual_early_stop=False" in repr(config)
+    assert "residual_quant_method='rtn'" in repr(config)
+
+
+def test_svdquant_config_rejects_invalid_residual_iteration_count():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    with pytest.raises(ValueError, match="residual_iters"):
+        SVDQuantConfig(residual_iters=0)
+
+
+def test_svdquant_config_rejects_non_rtn_multi_round_method():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    with pytest.raises(ValueError, match="residual_quant_method"):
+        SVDQuantConfig(residual_iters=2, residual_quant_method="signround")
+
+
+def test_svdquant_config_accepts_one_round_signround_and_normalizes_method():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    config = SVDQuantConfig(
+        residual_iters=1,
+        residual_early_stop=True,
+        residual_quant_method="SignRound",
+    )
+
+    assert config.residual_iters == 1
+    assert config.residual_early_stop is True
+    assert config.residual_quant_method == "signround"
 
 
 def test_svdquant_config_is_pipeline_preprocessor():
