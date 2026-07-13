@@ -201,7 +201,7 @@ class MXFP4ResidualTensorProvider:
     """Quantize and physically pack residual weights as E2M1 with UE8M0 scales."""
 
     def __init__(self, group_size: int = 32) -> None:
-        if group_size != 32:
+        if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size != 32:
             raise ValueError("group_size must be 32")
         self.group_size = group_size
         self.packer = NunchakuMXFP4Packer()

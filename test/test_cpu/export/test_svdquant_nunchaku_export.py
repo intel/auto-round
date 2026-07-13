@@ -179,6 +179,12 @@ def test_config_rejects_non_nunchaku_formats(field, value, message):
         SVDQuantExportConfig(**{field: value})
 
 
+@pytest.mark.parametrize("group_size", [32.0, True])
+def test_mxfp4_residual_provider_requires_non_bool_integer_group_size(group_size):
+    with pytest.raises(ValueError, match="group_size must be 32"):
+        MXFP4ResidualTensorProvider(group_size=group_size)
+
+
 @pytest.mark.parametrize(
     "field,value,message",
     [
