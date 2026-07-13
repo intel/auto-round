@@ -100,6 +100,8 @@ class SVDQuantModelAdapter(Protocol):
 
     def metadata(self, model: torch.nn.Module, rank: int) -> Mapping[str, str]: ...
 
+    def extra_tensors(self, model: torch.nn.Module) -> Mapping[str, torch.Tensor]: ...
+
     def validate_records(
         self, sources: tuple[SourceLinearRecord, ...], records: tuple[SVDQuantExportRecord, ...]
     ) -> None: ...
@@ -130,6 +132,9 @@ class IdentitySVDQuantModelAdapter:
 
     def metadata(self, model: torch.nn.Module, rank: int) -> Mapping[str, str]:
         return {"artifact_type": "generic_intermediate"}
+
+    def extra_tensors(self, model: torch.nn.Module) -> Mapping[str, torch.Tensor]:
+        return {}
 
     def validate_records(
         self, sources: tuple[SourceLinearRecord, ...], records: tuple[SVDQuantExportRecord, ...]
@@ -469,6 +474,30 @@ def _serialize_export_records(
     return tensors
 
 
+def _merge_adapter_tensors(
+    tensors: dict[str, torch.Tensor], adapter: SVDQuantModelAdapter, model: torch.nn.Module
+) -> dict[str, torch.Tensor]:
+    extra_tensors = getattr(adapter, "extra_tensors", None)
+    extras = {} if extra_tensors is None else extra_tensors(model)
+    if not isinstance(extras, Mapping):
+        raise ValueError("model adapter extra_tensors must return a mapping")
+    for key, tensor in extras.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("model adapter extra tensor keys must be non-empty strings")
+        if key in tensors:
+            raise ValueError(f"model adapter produced duplicate tensor key {key!r}")
+        if not isinstance(tensor, torch.Tensor):
+            raise ValueError(f"model adapter extra tensor {key!r} must be a torch.Tensor")
+        if tensor.layout != torch.strided or tensor.is_quantized:
+            raise ValueError(f"model adapter extra tensor {key!r} must be a dense strided tensor")
+        if tensor.is_complex() or tensor.dtype == torch.bool:
+            raise ValueError(f"model adapter extra tensor {key!r} has unsupported dtype {tensor.dtype}")
+        if (tensor.is_floating_point() or tensor.is_complex()) and not bool(torch.isfinite(tensor).all()):
+            raise ValueError(f"model adapter extra tensor {key!r} must contain only finite values")
+        tensors[key] = tensor.detach().cpu().contiguous()
+    return tensors
+
+
 def collect_svdquant_tensors(
     model: torch.nn.Module,
     *,
@@ -484,7 +513,8 @@ def collect_svdquant_tensors(
     _, records, rank = _prepare_export_records(model, config, adapter)
     if config.runtime_loadable:
         build_svdquant_metadata(model, config=config, adapter=adapter, rank=rank)
-    return _serialize_export_records(records, config, residual_provider)
+    tensors = _serialize_export_records(records, config, residual_provider)
+    return _merge_adapter_tensors(tensors, adapter, model)
 
 
 def build_svdquant_metadata(
@@ -542,6 +572,7 @@ def save_svdquant_nunchaku_safetensors(
     _, records, rank = _prepare_export_records(model, config, adapter)
     metadata = build_svdquant_metadata(model, config=config, adapter=adapter, rank=rank)
     tensors = _serialize_export_records(records, config, residual_provider)
+    tensors = _merge_adapter_tensors(tensors, adapter, model)
     adapter.validate(tensors, metadata)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
