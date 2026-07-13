@@ -324,12 +324,21 @@ class TestAutoRound:
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-4")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        if model.config.tie_word_embeddings:
+            model.config.tie_word_embeddings = False
+            model._tied_weights_keys = []
+            model.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.clone())
+
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
             "layer": {"bits": 16},
         }
+
         autoround = AutoRound(
-            model=model_name,
+            model=model,
+            tokenizer=tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,
@@ -350,12 +359,20 @@ class TestAutoRound:
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
         model_name = get_model_path("microsoft/phi-4")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        if model.config.tie_word_embeddings:
+            model.config.tie_word_embeddings = False
+            model._tied_weights_keys = []
+            model.lm_head.weight = torch.nn.Parameter(model.lm_head.weight.clone())
+
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
             "layer": {"bits": 16},
         }
         autoround = AutoRound(
-            model=model_name,
+            model=model,
+            tokenizer=tokenizer,
             bits=bits,
             group_size=group_size,
             sym=sym,

@@ -42,37 +42,37 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.transforms.quarot.config import (
+from auto_round.algorithms.transforms.hadamard.config import (
     RotationConfig,
     normalize_rotation_config,
     to_dict_rotation_config,
     dump_group_size_to_rotation_config,
 )
-from auto_round.algorithms.transforms.quarot.transforms import (
+from auto_round.algorithms.transforms.hadamard.transforms import (
     HadamardTransform,
     RandomHadamardTransform,
     build_hadamard_transform,
     HADAMARDS,
 )
-from auto_round.algorithms.transforms.quarot.utils.math import (
+from auto_round.algorithms.transforms.hadamard.utils.math import (
     deterministic_hadamard_matrix,
     random_hadamard_matrix,
     is_pow2,
     _fetch_hadamard_divisor,
     _matmul_hadU,
 )
-from auto_round.algorithms.transforms.quarot.utils.matrix import (
+from auto_round.algorithms.transforms.hadamard.utils.matrix import (
     apply_transform_weight,
     multihead_matmul,
 )
-from auto_round.algorithms.transforms.quarot.dispatcher import (
+from auto_round.algorithms.transforms.hadamard.dispatcher import (
     resolve_hadamard_backend,
     apply_hadamard_rotation,
 )
-from auto_round.algorithms.transforms.quarot.apply import (
+from auto_round.algorithms.transforms.hadamard.apply import (
     HadamardRotation,
 )
-from auto_round.algorithms.transforms.quarot.inplace.model_config import (
+from auto_round.algorithms.transforms.hadamard.inplace.model_config import (
     RotationMapping,
     MAPPING_REGISTRY,
     register_mapping,
@@ -80,7 +80,7 @@ from auto_round.algorithms.transforms.quarot.inplace.model_config import (
     infer_mapping_from_model,
     _resolve,
 )
-from auto_round.algorithms.transforms.quarot.inplace.hooks import (
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
     matmul_hadU,
     matmul_hadUt,
     get_hadK,
@@ -97,7 +97,7 @@ from auto_round.algorithms.transforms.quarot.inplace.hooks import (
     deterministic_hadamard_matrix as inplace_det_hadamard,
     random_hadamard_matrix as inplace_rand_hadamard,
 )
-from auto_round.algorithms.transforms.quarot.patch import (
+from auto_round.algorithms.transforms.hadamard.patch import (
     patch_wrapperlinear_to_apply_transform,
     patch_wrapperwalayer_forward_to_apply_transform,
 )
