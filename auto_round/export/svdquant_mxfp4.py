@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Logical MXFP4 E2M1 and UE8M0 reference codecs.
-
-This module describes logical values only. It intentionally does not implement
-the tile reordering required by Nunchaku kernels.
+"""Logical MXFP4 codecs and Nunchaku-compatible residual packing.
 
 E2M1 scales use an explicit rank contract: scalars are global, scales with one
 fewer dimension than values are group-aligned along a new trailing singleton,
@@ -24,13 +21,185 @@ and scales with the same rank use ordinary PyTorch broadcasting.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
-from auto_round.data_type.mxfp import quant_element
+from auto_round.data_type.mxfp import quant_element, quant_mx
 
 
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _SUPPORTED_DECODE_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+
+
+@dataclass(frozen=True)
+class PackedMXFP4:
+    """Physical MXFP4 residual tensors and their logical/padded dimensions."""
+
+    qweight: torch.Tensor
+    wscales: torch.Tensor
+    logical_shape: tuple[int, int]
+    padded_shape: tuple[int, int]
+
+
+class NunchakuMXFP4Packer:
+    """Pack MXFP4 residuals into the Nunchaku 4-bit MMA memory layout.
+
+    The reshape/permutation constants follow the Nunchaku weight and MXFP4
+    micro-scale packers at reference source commit 0abaaf0.
+    """
+
+    comp_n = 16
+    comp_k = mem_k = 64
+    num_n_lanes = 8
+    num_k_lanes = 4
+    n_pack_size = 2
+    k_pack_size = 2
+    reg_n = 1
+    reg_k = 8
+    num_k_unrolls = 2
+
+    def __init__(self, warp_n: int = 128) -> None:
+        if warp_n != 128:
+            raise ValueError("warp_n must be 128")
+        self.warp_n = warp_n
+        self.mem_n = warp_n
+
+    @staticmethod
+    def _ceil_to(value: int, divisor: int) -> int:
+        return (value + divisor - 1) // divisor * divisor
+
+    def _pack_weight_codes(self, codes: torch.Tensor) -> torch.Tensor:
+        n, k = codes.shape
+        weight = codes.to(torch.int32).reshape(
+            n // self.mem_n,
+            self.mem_n // (self.n_pack_size * self.num_n_lanes * self.reg_n),
+            self.n_pack_size,
+            self.num_n_lanes,
+            self.reg_n,
+            k // self.mem_k,
+            1,
+            self.k_pack_size,
+            self.num_k_lanes,
+            self.reg_k,
+        )
+        weight = weight.permute(0, 5, 6, 1, 3, 8, 2, 7, 4, 9).contiguous()
+        shifts = torch.arange(0, 32, 4, dtype=torch.int32, device=codes.device)
+        packed = ((weight & 0xF) << shifts).sum(dim=-1, dtype=torch.int32)
+        return packed.view(torch.int8).view(n, k // 2)
+
+    def _pack_scale_codes(self, scales: torch.Tensor) -> torch.Tensor:
+        n, num_groups = scales.shape
+        scale = scales.view(n // self.warp_n, 1, 4, 4, 8, num_groups // 2, 2)
+        return scale.permute(0, 5, 1, 4, 3, 2, 6).contiguous().view(num_groups, n)
+
+    def _unpack_weight_codes(self, qweight: torch.Tensor) -> torch.Tensor:
+        n, packed_k = qweight.shape
+        k = packed_k * 2
+        packed = qweight.contiguous().view(torch.int32).reshape(
+            n // self.mem_n,
+            k // self.mem_k,
+            1,
+            self.mem_n // (self.n_pack_size * self.num_n_lanes * self.reg_n),
+            self.num_n_lanes,
+            self.num_k_lanes,
+            self.n_pack_size,
+            self.k_pack_size,
+            self.reg_n,
+        )
+        shifts = torch.arange(0, 32, 4, dtype=torch.int32, device=qweight.device)
+        weight = (packed.unsqueeze(-1) >> shifts) & 0xF
+        return weight.permute(0, 3, 6, 4, 8, 1, 2, 7, 5, 9).contiguous().view(n, k).to(torch.uint8)
+
+    def _unpack_scale_codes(self, wscales: torch.Tensor) -> torch.Tensor:
+        num_groups, n = wscales.shape
+        scale = wscales.reshape(n // self.warp_n, num_groups // 2, 1, 8, 4, 4, 2)
+        return scale.permute(0, 2, 5, 4, 3, 1, 6).contiguous().view(n, num_groups)
+
+    def pack_residual(self, weight: torch.Tensor, group_size: int = 32) -> PackedMXFP4:
+        """Quantize and physically pack a logical ``[N, K]`` residual."""
+
+        if not isinstance(weight, torch.Tensor) or weight.ndim != 2 or not weight.is_floating_point():
+            raise ValueError("weight must be a 2D floating-point torch.Tensor")
+        if not bool(torch.isfinite(weight).all()):
+            raise ValueError("weight must contain only finite values")
+        if group_size != 32:
+            raise ValueError("group_size must be 32")
+
+        n, k = weight.shape
+        if n == 0 or k == 0:
+            raise ValueError("weight dimensions must be non-empty")
+        n_padded = self._ceil_to(n, self.mem_n)
+        k_group_padded = self._ceil_to(k, group_size)
+        k_padded = self._ceil_to(k_group_padded, self.mem_k * self.num_k_unrolls)
+
+        qdq, shared_exponent, _ = quant_mx(
+            weight, bits=4, group_size=group_size, data_type="mx_fp4e2m1"
+        )
+        num_logical_groups = k_group_padded // group_size
+        scales = torch.exp2(shared_exponent.reshape(n, num_logical_groups).to(torch.float32))
+
+        grouped_qdq = torch.zeros((n, k_group_padded), dtype=qdq.dtype, device=qdq.device)
+        grouped_qdq[:, :k] = qdq
+        logical_codes = encode_e2m1(grouped_qdq.reshape(n, num_logical_groups, group_size), scales)
+
+        padded_codes = torch.zeros((n_padded, k_padded), dtype=torch.uint8, device=weight.device)
+        padded_codes[:n, :k_group_padded] = logical_codes.reshape(n, k_group_padded)
+        padded_scales = torch.full(
+            (n_padded, k_padded // group_size), 127, dtype=torch.uint8, device=weight.device
+        )
+        padded_scales[:n, :num_logical_groups] = encode_ue8m0(scales)
+
+        return PackedMXFP4(
+            qweight=self._pack_weight_codes(padded_codes),
+            wscales=self._pack_scale_codes(padded_scales),
+            logical_shape=(n, k),
+            padded_shape=(n_padded, k_padded),
+        )
+
+    def unpack_residual(
+        self,
+        qweight: torch.Tensor,
+        wscales: torch.Tensor,
+        logical_shape: tuple[int, int],
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        """Inverse the physical layout and dequantize the logical residual."""
+
+        if not isinstance(qweight, torch.Tensor) or qweight.dtype != torch.int8:
+            raise ValueError("qweight must be a torch.int8 tensor")
+        if qweight.ndim != 2 or qweight.shape[0] == 0 or qweight.shape[0] % self.mem_n:
+            raise ValueError("qweight shape must be [Npad, Kpad/2] with Npad divisible by 128")
+        if qweight.shape[1] == 0 or (qweight.shape[1] * 2) % (self.mem_k * self.num_k_unrolls):
+            raise ValueError("qweight shape must have Kpad divisible by 128")
+        n_padded, packed_k = qweight.shape
+        k_padded = packed_k * 2
+        expected_scale_shape = (k_padded // 32, n_padded)
+        if not isinstance(wscales, torch.Tensor) or wscales.dtype != torch.uint8:
+            raise ValueError("wscales must be a torch.uint8 tensor")
+        if tuple(wscales.shape) != expected_scale_shape:
+            raise ValueError(f"wscales shape must be {expected_scale_shape}")
+        if wscales.device != qweight.device:
+            raise ValueError("qweight and wscales must be on the same device")
+        if (
+            not isinstance(logical_shape, tuple)
+            or len(logical_shape) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in logical_shape)
+            or any(value <= 0 for value in logical_shape)
+            or logical_shape[0] > n_padded
+            or logical_shape[1] > k_padded
+        ):
+            raise ValueError("logical_shape must be a positive (N, K) tuple within the padded shape")
+        if dtype not in _SUPPORTED_DECODE_DTYPES:
+            raise ValueError("dtype must be one of torch.float16, torch.bfloat16, torch.float32, or torch.float64")
+        weight_codes = self._unpack_weight_codes(qweight)
+        scale_codes = self._unpack_scale_codes(wscales)
+        scales = decode_ue8m0(scale_codes)
+        dequantized = decode_e2m1(
+            weight_codes.reshape(n_padded, k_padded // 32, 32), scales, dtype=dtype
+        ).reshape(n_padded, k_padded)
+        n, k = logical_shape
+        return dequantized[:n, :k].contiguous()
 
 
 def _broadcast_scales(scales: torch.Tensor, shape: torch.Size, *, device: torch.device) -> torch.Tensor:

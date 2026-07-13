@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import inspect
 
 import pytest
@@ -7,6 +8,8 @@ import torch
 import auto_round.export.svdquant_mxfp4 as codec_module
 from auto_round.data_type.mxfp import quant_element, quant_mx
 from auto_round.export.svdquant_mxfp4 import (
+    NunchakuMXFP4Packer,
+    PackedMXFP4,
     decode_e2m1,
     decode_ue8m0,
     encode_e2m1,
@@ -19,6 +22,129 @@ from auto_round.export.svdquant_mxfp4 import (
 E2M1_CODEBOOK = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
 )
+
+
+def test_pack_residual_returns_immutable_aligned_physical_tensors():
+    weight = torch.linspace(-8.0, 8.0, steps=128 * 128).reshape(128, 128)
+
+    packed = NunchakuMXFP4Packer().pack_residual(weight)
+
+    assert isinstance(packed, PackedMXFP4)
+    assert packed.logical_shape == (128, 128)
+    assert packed.padded_shape == (128, 128)
+    assert packed.qweight.shape == (128, 64)
+    assert packed.qweight.dtype == torch.int8
+    assert packed.wscales.shape == (4, 128)
+    assert packed.wscales.dtype == torch.uint8
+    with pytest.raises(AttributeError):
+        packed.logical_shape = (1, 1)
+
+
+@pytest.mark.parametrize("shape", [(128, 128), (7, 65)])
+def test_pack_unpack_residual_matches_autoround_rtn_qdq(shape):
+    generator = torch.Generator().manual_seed(20260713)
+    weight = torch.randn(shape, generator=generator, dtype=torch.float32) * 3
+    expected, _, _ = quant_mx(weight, bits=4, group_size=32, data_type="mx_fp4e2m1")
+    packer = NunchakuMXFP4Packer()
+
+    packed = packer.pack_residual(weight)
+    actual = packer.unpack_residual(
+        packed.qweight, packed.wscales, packed.logical_shape, dtype=torch.float32
+    )
+
+    assert actual.shape == shape
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected)
+
+
+def test_physical_reorders_roundtrip_exact_codes_and_match_reference_fixture():
+    """Fixture generated from the reference packers at source commit 0abaaf0.
+
+    The logical patterns exercise every E2M1 nibble and nontrivial UE8M0 byte;
+    constants lock the documented MMA tile permutation and little-endian nibble
+    placement without importing the reference package in the test suite.
+    """
+
+    packer = NunchakuMXFP4Packer()
+    n = torch.arange(128).reshape(128, 1)
+    k = torch.arange(128).reshape(1, 128)
+    logical_codes = ((n * 3 + k * 5 + n // 7 + k // 11) % 16).to(torch.uint8)
+    groups = torch.arange(4).reshape(1, 4)
+    logical_scales = ((127 + n * 7 + groups * 11) % 255).to(torch.uint8)
+
+    qweight = packer._pack_weight_codes(logical_codes)
+    wscales = packer._pack_scale_codes(logical_scales)
+
+    assert hashlib.sha256(bytes(qweight.view(torch.uint8).flatten().tolist())).hexdigest() == (
+        "9ea940ceb244d16f7de4b1daf9e39f6403de13aaf7d8ec17635600d8531f0e61"
+    )
+    assert hashlib.sha256(bytes(wscales.flatten().tolist())).hexdigest() == (
+        "13ec93403839f512d4300d813bd160f63940363868fba69034c01142595d7340"
+    )
+    assert qweight.view(torch.uint8).flatten()[:16].tolist() == [
+        80, 250, 148, 62, 130, 45, 199, 97, 233, 131, 45, 199, 27, 182, 80, 250
+    ]
+    assert wscales.flatten()[:16].tolist() == [
+        127, 138, 96, 107, 65, 76, 34, 45, 183, 194, 152, 163, 121, 132, 90, 101
+    ]
+    assert torch.equal(packer._unpack_weight_codes(qweight), logical_codes)
+    assert torch.equal(packer._unpack_scale_codes(wscales), logical_scales)
+
+
+def test_unaligned_pack_zero_fills_codes_and_identity_fills_scale_padding():
+    packer = NunchakuMXFP4Packer()
+    packed = packer.pack_residual(torch.ones(7, 65))
+
+    assert packed.logical_shape == (7, 65)
+    assert packed.padded_shape == (128, 128)
+    assert packed.qweight.shape == (128, 64)
+    assert packed.wscales.shape == (4, 128)
+    codes = packer._unpack_weight_codes(packed.qweight)
+    scales = packer._unpack_scale_codes(packed.wscales)
+    assert torch.count_nonzero(codes[7:]) == 0
+    assert torch.count_nonzero(codes[:7, 96:]) == 0
+    assert torch.equal(scales[7:], torch.full_like(scales[7:], 127))
+    assert torch.equal(scales[:7, 3:], torch.full_like(scales[:7, 3:], 127))
+
+
+@pytest.mark.parametrize(
+    "weight, message",
+    [
+        (torch.ones(32), "2D floating-point"),
+        (torch.ones(2, 3, 4), "2D floating-point"),
+        (torch.ones(2, 32, dtype=torch.int32), "2D floating-point"),
+        (torch.tensor([[torch.nan]]), "finite"),
+        (torch.empty(0, 32), "non-empty"),
+    ],
+)
+def test_pack_residual_rejects_invalid_weights(weight, message):
+    with pytest.raises(ValueError, match=message):
+        NunchakuMXFP4Packer().pack_residual(weight)
+
+
+def test_pack_residual_rejects_wrong_group_size_and_warp_layout():
+    with pytest.raises(ValueError, match="group_size must be 32"):
+        NunchakuMXFP4Packer().pack_residual(torch.ones(2, 32), group_size=16)
+    with pytest.raises(ValueError, match="warp_n must be 128"):
+        NunchakuMXFP4Packer(warp_n=64)
+
+
+def test_unpack_residual_rejects_wrong_shapes_dtypes_and_logical_bounds():
+    packer = NunchakuMXFP4Packer()
+    packed = packer.pack_residual(torch.ones(7, 65))
+
+    invalid_calls = [
+        (packed.qweight.to(torch.uint8), packed.wscales, (7, 65), torch.float32, "qweight.*int8"),
+        (packed.qweight[:, :-1], packed.wscales, (7, 65), torch.float32, "qweight shape"),
+        (packed.qweight, packed.wscales.to(torch.int16), (7, 65), torch.float32, "wscales.*uint8"),
+        (packed.qweight, packed.wscales[:-1], (7, 65), torch.float32, "wscales shape"),
+        (packed.qweight, packed.wscales, (129, 65), torch.float32, "logical_shape"),
+        (packed.qweight, packed.wscales, (7,), torch.float32, "logical_shape"),
+        (packed.qweight, packed.wscales, (7, 65), torch.int32, "dtype"),
+    ]
+    for qweight, wscales, logical_shape, dtype, message in invalid_calls:
+        with pytest.raises(ValueError, match=message):
+            packer.unpack_residual(qweight, wscales, logical_shape, dtype)
 
 
 def test_e2m1_roundtrips_every_logical_code():
