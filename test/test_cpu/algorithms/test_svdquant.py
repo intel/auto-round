@@ -201,6 +201,108 @@ def test_svdquant_multi_round_uses_registered_rtn_and_retains_no_worse_candidate
     assert selected_error <= first_error
 
 
+def test_svdquant_multi_round_materializes_known_later_winner(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    weight = torch.tensor(
+        [
+            [3.0, -1.0, 0.5, 2.0],
+            [-2.0, 4.0, 1.5, -0.5],
+            [0.25, -3.0, 2.5, 1.0],
+        ]
+    )
+    layer = torch.nn.Linear(4, 3, bias=False)
+    with torch.no_grad():
+        layer.weight.copy_(weight)
+    layer.data_type = "int"
+    layer.bits = 4
+    layer.group_size = 4
+    layer.sym = True
+    layer.global_name = "model.layers.0.later_winner"
+
+    first_u, first_s, first_vh = torch.linalg.svd(weight, full_matrices=False)
+    first_down = first_vh[:1]
+    first_up = first_u[:, :1] * first_s[:1].reshape(1, -1)
+    first_residual = weight - first_up @ first_down
+    first_qdq = first_residual + 10.0
+    second_u, second_s, second_vh = torch.linalg.svd(weight - first_qdq, full_matrices=False)
+    expected_down = second_vh[:1]
+    expected_up = second_u[:, :1] * second_s[:1].reshape(1, -1)
+    expected_residual = weight - expected_up @ expected_down
+    qdq_calls = []
+
+    def controlled_qdq(residual, scheme):
+        qdq_calls.append(residual.clone())
+        if len(qdq_calls) == 1:
+            return residual + 10.0
+        if len(qdq_calls) == 2:
+            return residual
+        return residual + 20.0
+
+    monkeypatch.setattr(residual_module, "rtn_qdq_residual", controlled_qdq)
+    block = torch.nn.Sequential(layer)
+    transform = SVDQuantTransform(SVDQuantConfig(rank=1, residual_iters=3, low_rank_dtype="float32"))
+
+    transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))
+
+    assert len(qdq_calls) == 3
+    torch.testing.assert_close(block[0].lora_down.weight, expected_down, rtol=0, atol=0)
+    torch.testing.assert_close(block[0].lora_up.weight, expected_up, rtol=0, atol=0)
+    torch.testing.assert_close(block[0].residual_linear.weight, expected_residual, rtol=0, atol=0)
+
+
+def test_svdquant_multi_round_ranks_candidates_at_materialized_bf16_dtypes(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    layer = torch.nn.Linear(2, 2, bias=False, dtype=torch.bfloat16)
+    with torch.no_grad():
+        layer.weight.zero_()
+    layer.data_type = "int"
+    layer.bits = 4
+    layer.group_size = 2
+    layer.sym = True
+    layer.global_name = "model.layers.0.bf16_ranking"
+    svd_calls = []
+
+    def controlled_svd(weight, full_matrices):
+        svd_calls.append(weight.clone())
+        factor = 1.01 if len(svd_calls) == 1 else 1.0
+        u = torch.tensor([[factor, 0.0], [0.0, 1.0]], dtype=weight.dtype, device=weight.device)
+        s = torch.tensor([1.0, 0.0], dtype=weight.dtype, device=weight.device)
+        vh = torch.tensor([[factor, 0.0], [0.0, 1.0]], dtype=weight.dtype, device=weight.device)
+        return u, s, vh
+
+    qdq_dtypes = []
+
+    def identity_qdq(residual, scheme):
+        qdq_dtypes.append(residual.dtype)
+        return residual
+
+    monkeypatch.setattr(torch.linalg, "svd", controlled_svd)
+    monkeypatch.setattr(residual_module, "rtn_qdq_residual", identity_qdq)
+    block = torch.nn.Sequential(layer)
+    transform = SVDQuantTransform(SVDQuantConfig(rank=1, residual_iters=2, low_rank_dtype="bfloat16"))
+
+    transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))
+
+    expected_down = torch.tensor([[1.0, 0.0]], dtype=torch.bfloat16)
+    expected_up = torch.tensor([[1.0], [0.0]], dtype=torch.bfloat16)
+    expected_residual = torch.tensor([[-1.0, 0.0], [0.0, 0.0]], dtype=torch.bfloat16)
+    assert qdq_dtypes == [torch.bfloat16, torch.bfloat16]
+    assert svd_calls[1].dtype == torch.float32
+    torch.testing.assert_close(
+        svd_calls[1],
+        torch.tensor([[1.0234375, 0.0], [0.0, 0.0]]),
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(block[0].lora_down.weight, expected_down, rtol=0, atol=0)
+    torch.testing.assert_close(block[0].lora_up.weight, expected_up, rtol=0, atol=0)
+    torch.testing.assert_close(block[0].residual_linear.weight, expected_residual, rtol=0, atol=0)
+
+
 def test_svdquant_early_stop_materializes_best_candidate_when_second_worsens(monkeypatch):
     from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 
 import torch
@@ -109,6 +110,7 @@ class SVDQuantTransform(BaseWeightTransformer):
         smooth = self._build_smooth(module, weight)
         smooth = smooth.to(device=weight.device, dtype=weight.dtype)
         weight_hat = weight / smooth.reshape(1, -1)
+        low_rank_dtype = self._resolve_low_rank_dtype(module.weight.dtype)
 
         if self.config.residual_iters == 1:
             try:
@@ -120,10 +122,11 @@ class SVDQuantTransform(BaseWeightTransformer):
             residual_weight = weight_hat - low_rank
             self._raise_if_nonfinite(module, 1, residual_weight, low_rank, down_weight, up_weight)
         else:
-            residual_weight, down_weight, up_weight = self._iterate_residual(module, weight_hat, rank)
+            residual_weight, down_weight, up_weight = self._iterate_residual(
+                module, weight_hat, rank, low_rank_dtype
+            )
 
         residual = self._new_linear_like(module, residual_weight, module.bias)
-        low_rank_dtype = self._resolve_low_rank_dtype(module.weight.dtype)
         lora_down = torch.nn.Linear(in_features, rank, bias=False, dtype=low_rank_dtype, device=module.weight.device)
         lora_up = torch.nn.Linear(rank, out_features, bias=False, dtype=low_rank_dtype, device=module.weight.device)
         with torch.no_grad():
@@ -136,12 +139,18 @@ class SVDQuantTransform(BaseWeightTransformer):
         return SVDQuantLinear(residual, lora_down, lora_up, smooth.to(module.weight.dtype))
 
     def _iterate_residual(
-        self, module: torch.nn.Linear, weight_hat: torch.Tensor, rank: int
+        self,
+        module: torch.nn.Linear,
+        weight_hat: torch.Tensor,
+        rank: int,
+        low_rank_dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         scheme = self._residual_quant_scheme(module)
         quantized_residual = torch.zeros_like(weight_hat)
-        best = None
+        best_down = None
+        best_up = None
         best_error = float("inf")
+        best_iteration = None
         last_failure = None
 
         for iteration in range(1, self.config.residual_iters + 1):
@@ -149,42 +158,63 @@ class SVDQuantTransform(BaseWeightTransformer):
                 low_rank, down_weight, up_weight = _truncated_svd(weight_hat - quantized_residual, rank)
             except (RuntimeError, ValueError) as exc:
                 last_failure = (iteration, f"SVD failed: {exc}")
+                del quantized_residual
                 break
+            del quantized_residual
 
             if not all(torch.isfinite(tensor).all() for tensor in (low_rank, down_weight, up_weight)):
                 last_failure = (iteration, "SVD produced non-finite values")
+                del low_rank, down_weight, up_weight
                 break
 
             residual_weight = weight_hat - low_rank
             if not torch.isfinite(residual_weight).all():
                 last_failure = (iteration, "residual computation produced non-finite values")
+                del residual_weight, low_rank, down_weight, up_weight
                 break
 
+            materialized_residual = residual_weight.to(module.weight.dtype)
+            del residual_weight, low_rank
             try:
-                quantized_residual = residual_module.rtn_qdq_residual(residual_weight, scheme)
+                qdq_residual = residual_module.rtn_qdq_residual(materialized_residual, scheme)
             except (RuntimeError, ValueError) as exc:
                 last_failure = (iteration, f"RTN residual QDQ failed: {exc}")
+                del materialized_residual, down_weight, up_weight
                 break
 
-            if not torch.isfinite(quantized_residual).all():
+            if not torch.isfinite(qdq_residual).all():
                 last_failure = (iteration, "RTN residual QDQ produced non-finite values")
+                del qdq_residual, materialized_residual, down_weight, up_weight
                 break
 
-            error = torch.sum((weight_hat - (quantized_residual + low_rank)).square())
-            if torch.isfinite(error):
-                error_value = error.item()
+            quantized_residual = qdq_residual.float()
+            del qdq_residual, materialized_residual
+            deployed_down = down_weight.to(low_rank_dtype)
+            deployed_up = up_weight.to(low_rank_dtype)
+            deployed_low_rank = deployed_up.float() @ deployed_down.float()
+            error = torch.sum((weight_hat - (quantized_residual + deployed_low_rank)).square())
+            error_value = error.item()
+            improved = False
+            if math.isfinite(error_value):
                 if error_value < best_error:
-                    best = (residual_weight.clone(), down_weight.clone(), up_weight.clone())
+                    best_down = down_weight.clone()
+                    best_up = up_weight.clone()
                     best_error = error_value
-                    continue
+                    best_iteration = iteration
+                    improved = True
             else:
                 last_failure = (iteration, "reconstruction error is non-finite")
 
-            if self.config.residual_early_stop and best is not None:
+            del deployed_down, deployed_up, deployed_low_rank, down_weight, up_weight, error
+
+            if self.config.residual_early_stop and best_down is not None and not improved:
                 break
 
-        if best is not None:
-            return best
+        if best_down is not None and best_up is not None:
+            assert best_iteration is not None
+            residual_weight = weight_hat - best_up @ best_down
+            self._raise_if_nonfinite(module, best_iteration, residual_weight, best_down, best_up)
+            return residual_weight, best_down, best_up
 
         failure_iteration, reason = last_failure or (self.config.residual_iters, "no finite candidate was produced")
         raise ValueError(
@@ -292,6 +322,7 @@ def _truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch
         up_weight = torch.empty((out_features, 0), dtype=weight.dtype, device=weight.device)
         return low_rank, down_weight, up_weight
 
+    # Exact SVD is intentional for one-round compatibility and stable multi-round quality.
     u, s, vh = torch.linalg.svd(weight, full_matrices=False)
     down_weight = vh[:rank, :]
     up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
