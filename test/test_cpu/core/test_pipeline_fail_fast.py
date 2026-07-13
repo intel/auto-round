@@ -15,7 +15,9 @@ from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
+from auto_round.compressors.entry import _select_rtn_compressor_base_cls
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
 class PartialSharedConfig(RTNConfig):
@@ -206,3 +208,53 @@ def test_user_scheme_overrides_reject_explicit_conflicts():
         collect_user_scheme_overrides([AWQConfig(bits=8), RTNConfig(bits=4)])
     with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
         resolve_shared_config_values([AWQConfig(bits=8), RTNConfig(bits=4)])
+
+
+# ===========================================================================
+#  Scheme-dependent config heuristics must see resolved values, not just
+#  whatever (often None) bits/lr the config was constructed with directly.
+# ===========================================================================
+
+
+@pytest.mark.parametrize(
+    "scheme, expect_disable_opt_rtn",
+    [
+        ("W8A16", True),
+        # "INT8" (bits=8, act_bits=8, data_type=int) is W8A8-equivalent but was
+        # previously missed because routing only matched the literal strings
+        # "W8A16"/"W8A8", not schemes reaching the same resolved values.
+        ("INT8", True),
+        ("W4A16", False),
+        ({"bits": 8, "act_bits": 8, "data_type": "int", "sym": True}, True),
+    ],
+)
+def test_rtn_routing_disable_opt_rtn_from_resolved_scheme(scheme, expect_disable_opt_rtn):
+    config = RTNConfig()
+    _select_rtn_compressor_base_cls(config, scheme, "auto_round", {})
+    assert config.disable_opt_rtn is expect_disable_opt_rtn
+
+
+def test_rtn_routing_respects_explicit_enable_opt_rtn():
+    """An explicit user choice must not be clobbered by the W8A16/W8A8 heuristic."""
+    config = RTNConfig(enable_opt_rtn=True)
+    _select_rtn_compressor_base_cls(config, "W8A16", "auto_round", {})
+    assert config.disable_opt_rtn is False
+
+
+@pytest.mark.parametrize("bits, expected_lr", [(3, 2.0 / 1000), (4, 1.0 / 1000)])
+def test_sign_round_finalize_scheme_lr_heuristic(bits, expected_lr):
+    """The low-bit lr bump must apply once `bits` is resolved via the scheme,
+    even though it was unset (None) at construction time (e.g. `scheme=` alone,
+    no explicit `bits=`)."""
+    config = SignRoundConfig(iters=1000)
+    config.scheme = QuantizationScheme(bits=bits, act_bits=16, data_type="int")
+    config.finalize_scheme()
+    assert config.lr == expected_lr
+
+
+def test_sign_round_finalize_scheme_respects_explicit_lr():
+    config = SignRoundConfig(iters=1000, lr=0.01, minmax_lr=0.05)
+    config.scheme = QuantizationScheme(bits=2, act_bits=16, data_type="int")
+    config.finalize_scheme()
+    assert config.lr == 0.01
+    assert config.minmax_lr == 0.05

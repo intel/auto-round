@@ -36,6 +36,7 @@ from auto_round.compressors.model_free import (
     _PatternMatcher,
     _preprocess_model_type_source_tensors,
     _process_shard,
+    _process_single_shard_task,
     _quantize_weight_mxfp,
     _validate_auto_scheme_options,
     get_predefined_ignore_layers_from_config,
@@ -413,6 +414,59 @@ class TestModelFreeQuantize:
         ).quantize_and_save(output_dir)
         qc = _read_qconfig(output_dir)
         assert qc["sym"] is False and qc["group_size"] == 64
+
+    def test_streaming_uses_dedicated_source_shard_cache(self, tmp_path, monkeypatch):
+        """Streaming source shards must not reuse same-named output shard files."""
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        shard_name = "model-00001-of-00001.safetensors"
+        stale_output_shard = os.path.join(output_dir, shard_name)
+
+        # Simulate stale quantized output shard from a previous run.
+        save_file({"lm_head.weight": torch.randn(8, 8)}, stale_output_shard)
+
+        called_local_dirs = []
+
+        def _fake_download_single_shard(model_name_or_path, shard_filename, local_dir):
+            called_local_dirs.append(local_dir)
+            os.makedirs(local_dir, exist_ok=True)
+            source_path = os.path.join(local_dir, shard_filename)
+            # Source shard contains quantizable linear weight.
+            save_file({"layer.weight": torch.randn(8, 8)}, source_path)
+            return source_path
+
+        monkeypatch.setattr(
+            "auto_round.compressors.model_free._download_single_shard",
+            _fake_download_single_shard,
+        )
+
+        result = _process_single_shard_task(
+            shard_idx=0,
+            shard_name=shard_name,
+            model_name_or_path="org/dummy-model",
+            work_dir=output_dir,
+            source_dir="",
+            is_streaming=True,
+            device="cpu",
+            default_scheme=_DEFAULT_SCHEME,
+            layer_config={},
+            ignore_patterns=["lm_head"],
+            fp8_block_size=None,
+            model_type=None,
+            quant_output_dir=output_dir,
+            total_shards=1,
+        )
+
+        _, _, _, out_shard_name, _, quantized, _ = result
+        assert out_shard_name == shard_name
+        assert "layer" in quantized
+        assert called_local_dirs
+        assert called_local_dirs[0] != output_dir
+        assert called_local_dirs[0].startswith(os.path.join(output_dir, ".cache"))
+
+        with safe_open(stale_output_shard, framework="pt") as sf:
+            out_keys = set(sf.keys())
+        assert "layer.qweight" in out_keys
 
 
 # ===========================================================================
