@@ -46,6 +46,36 @@ def test_e2m1_raw_values_follow_autoround_rounding_and_saturate():
     torch.testing.assert_close(actual, expected)
 
 
+def test_e2m1_reviewer_value_uses_autoround_float32_normalization():
+    values = torch.tensor([435.5967712], dtype=torch.float64)
+    scales = torch.tensor([1742.387207], dtype=torch.float64)
+    normalized = values.to(torch.float32) / scales.to(torch.float32)
+    expected = quant_element(normalized.clamp(min=-6.0, max=6.0), ebits=2, mbits=3, max_norm=6.0)
+
+    codes = encode_e2m1(values, scales)
+    actual = decode_e2m1(codes, torch.ones_like(scales), dtype=torch.float32)
+
+    torch.testing.assert_close(actual, expected)
+
+
+def test_e2m1_values_around_every_tie_match_float32_quant_element():
+    boundaries = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0], dtype=torch.float32)
+    below = torch.nextafter(boundaries, torch.full_like(boundaries, -torch.inf))
+    above = torch.nextafter(boundaries, torch.full_like(boundaries, torch.inf))
+    normalized_targets = torch.cat((below, boundaries, above))
+    normalized_targets = torch.cat((normalized_targets, -normalized_targets))
+    scales = torch.full(normalized_targets.shape, 4.0, dtype=torch.float64)
+    values = normalized_targets.to(torch.float64) * scales
+    normalized32 = values.to(torch.float32) / scales.to(torch.float32)
+    expected = quant_element(normalized32.clamp(min=-6.0, max=6.0), ebits=2, mbits=3, max_norm=6.0)
+
+    codes = encode_e2m1(values, scales)
+    actual = decode_e2m1(codes, torch.ones_like(scales), dtype=torch.float32)
+
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(torch.signbit(actual), torch.signbit(expected))
+
+
 def test_e2m1_float32_extreme_ratios_saturate_and_equal_edges_encode_one():
     finfo = torch.finfo(torch.float32)
     values = torch.tensor([finfo.max, -finfo.max, finfo.max, -finfo.max, finfo.tiny, -finfo.tiny])
