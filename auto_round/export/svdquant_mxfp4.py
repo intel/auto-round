@@ -16,6 +16,10 @@
 
 This module describes logical values only. It intentionally does not implement
 the tile reordering required by Nunchaku kernels.
+
+E2M1 scales use an explicit rank contract: scalars are global, scales with one
+fewer dimension than values are group-aligned along a new trailing singleton,
+and scales with the same rank use ordinary PyTorch broadcasting.
 """
 
 from __future__ import annotations
@@ -26,9 +30,17 @@ from auto_round.data_type.mxfp import quant_element
 
 
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+_SUPPORTED_DECODE_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 
 
 def _broadcast_scales(scales: torch.Tensor, shape: torch.Size, *, device: torch.device) -> torch.Tensor:
+    """Apply the codec scale layout contract.
+
+    A scalar scale is global. A scale tensor with one fewer dimension than the
+    values is group-aligned by appending a trailing singleton. A scale tensor
+    with equal rank uses ordinary PyTorch broadcasting. Other ranks are invalid.
+    """
+
     if not isinstance(scales, torch.Tensor):
         raise ValueError("scales must be a torch.Tensor")
     if not scales.is_floating_point():
@@ -37,19 +49,27 @@ def _broadcast_scales(scales: torch.Tensor, shape: torch.Size, *, device: torch.
         raise ValueError(f"scales must be on device {device}, got {scales.device}")
     if not bool(torch.isfinite(scales).all()) or not bool((scales > 0).all()):
         raise ValueError("scales must contain only positive finite values")
-    try:
-        return torch.broadcast_to(scales, shape)
-    except RuntimeError as direct_error:
-        if scales.ndim < len(shape):
-            group_aligned = scales.reshape(*scales.shape, *((1,) * (len(shape) - scales.ndim)))
-            try:
-                return torch.broadcast_to(group_aligned, shape)
-            except RuntimeError:
-                pass
+    tensor_ndim = len(shape)
+    if scales.ndim == 0:
+        aligned_scales = scales
+        layout = "global"
+    elif scales.ndim == tensor_ndim - 1:
+        aligned_scales = scales.unsqueeze(-1)
+        layout = "group-aligned"
+    elif scales.ndim == tensor_ndim:
+        aligned_scales = scales
+        layout = "ordinary-broadcast"
+    else:
         raise ValueError(
-            f"scales shape {tuple(scales.shape)} is neither broadcastable nor group-aligned "
-            f"with tensor shape {tuple(shape)}"
-        ) from direct_error
+            f"scales rank {scales.ndim} is invalid for tensor rank {tensor_ndim}; expected a scalar, "
+            f"rank {tensor_ndim - 1} for group alignment, or rank {tensor_ndim} for ordinary broadcasting"
+        )
+    try:
+        return torch.broadcast_to(aligned_scales, shape)
+    except RuntimeError as exc:
+        raise ValueError(
+            f"scales shape {tuple(scales.shape)} with {layout} layout cannot broadcast to tensor shape {tuple(shape)}"
+        ) from exc
 
 
 def _validate_codes(codes: torch.Tensor, *, maximum: int) -> None:
@@ -77,9 +97,8 @@ def encode_e2m1(values: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     normalized = normalized.clamp(min=-6.0, max=6.0)
     quantized = quant_element(normalized, ebits=2, mbits=3, max_norm=6.0)
 
-    magnitude_codes = torch.zeros(values.shape, dtype=torch.uint8, device=values.device)
-    for code, magnitude in enumerate(_E2M1_MAGNITUDES[1:], start=1):
-        magnitude_codes = torch.where(torch.abs(quantized) == magnitude, code, magnitude_codes)
+    magnitudes = torch.tensor(_E2M1_MAGNITUDES, dtype=quantized.dtype, device=quantized.device)
+    magnitude_codes = torch.searchsorted(magnitudes, torch.abs(quantized)).to(torch.uint8)
     sign_codes = torch.signbit(normalized).to(torch.uint8) << 3
     return magnitude_codes | sign_codes
 
@@ -88,8 +107,8 @@ def decode_e2m1(codes: torch.Tensor, scales: torch.Tensor, dtype: torch.dtype = 
     """Decode logical E2M1 codes and multiply by ``scales``."""
 
     _validate_codes(codes, maximum=15)
-    if not isinstance(dtype, torch.dtype) or not dtype.is_floating_point:
-        raise ValueError("dtype must be a floating-point torch.dtype")
+    if dtype not in _SUPPORTED_DECODE_DTYPES:
+        raise ValueError("dtype must be one of torch.float16, torch.bfloat16, torch.float32, or torch.float64")
     expanded_scales = _broadcast_scales(scales, codes.shape, device=codes.device)
     codebook = torch.tensor(
         (*_E2M1_MAGNITUDES, *(-value for value in _E2M1_MAGNITUDES)),
@@ -115,7 +134,11 @@ def encode_ue8m0(scales: torch.Tensor) -> torch.Tensor:
 
 
 def decode_ue8m0(codes: torch.Tensor) -> torch.Tensor:
-    """Decode UE8M0 codes to float32 powers of two."""
+    """Decode UE8M0 codes to float32 powers of two.
+
+    Code 255 remains decodable for Nunchaku runtime parity, but
+    :func:`encode_ue8m0` clamps valid exponents to 127 and never emits it.
+    """
 
     _validate_codes(codes, maximum=255)
     exponents = codes.to(torch.int16) - 127

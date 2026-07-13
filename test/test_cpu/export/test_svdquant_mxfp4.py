@@ -5,7 +5,7 @@ import pytest
 import torch
 
 import auto_round.export.svdquant_mxfp4 as codec_module
-from auto_round.data_type.mxfp import quant_element
+from auto_round.data_type.mxfp import quant_element, quant_mx
 from auto_round.export.svdquant_mxfp4 import (
     decode_e2m1,
     decode_ue8m0,
@@ -113,13 +113,15 @@ def test_ue8m0_encodes_invalid_values_and_exponent_boundaries():
     assert torch.equal(codes, torch.tensor([127, 127, 127, 127, 127, 0, 0, 127, 128, 254], dtype=torch.uint8))
 
 
-def test_ue8m0_decode_and_roundtrip_cover_full_encoded_range():
+def test_ue8m0_valid_export_codes_roundtrip_and_reserved_code_255_decodes():
     codes = torch.arange(255, dtype=torch.uint8)
 
     decoded = decode_ue8m0(codes)
 
     assert decoded.dtype == torch.float32
     assert torch.equal(encode_ue8m0(decoded), codes)
+    largest_finite_scale = torch.tensor([torch.finfo(torch.float64).max], dtype=torch.float64)
+    assert encode_ue8m0(largest_finite_scale).item() == 254
     assert torch.isinf(decode_ue8m0(torch.tensor([255], dtype=torch.uint8))).item()
 
 
@@ -158,6 +160,36 @@ def test_e2m1_accepts_group_aligned_scales_and_preserves_shape_and_requested_dty
     torch.testing.assert_close(decoded, values.to(torch.float64))
 
 
+def test_e2m1_group_aligned_scale_rank_wins_over_broadcast_collision():
+    rows = torch.arange(32).reshape(32, 1)
+    groups = torch.arange(32).reshape(1, 32)
+    scales = torch.pow(2.0, ((rows + 2 * groups) % 5).to(torch.float32))
+    values = scales.unsqueeze(-1).expand(32, 32, 32).contiguous()
+
+    codes = encode_e2m1(values, scales)
+    decoded = decode_e2m1(codes, scales, dtype=torch.float32)
+
+    assert torch.equal(codes, torch.full_like(codes, 2))
+    torch.testing.assert_close(decoded, values)
+
+
+def test_e2m1_group_size_32_codec_matches_autoround_quant_mx_qdq():
+    weight = torch.linspace(-7.0, 7.0, steps=3 * 64, dtype=torch.float32).reshape(3, 64)
+    expected, shared_exponent, _ = quant_mx(
+        weight,
+        bits=4,
+        group_size=32,
+        data_type="mx_fp4e2m1",
+    )
+    grouped_weight = weight.reshape(3, 2, 32)
+    scales = torch.exp2(shared_exponent.reshape(3, 2).to(torch.float32))
+
+    codes = encode_e2m1(grouped_weight, scales)
+    actual = decode_e2m1(codes, scales, dtype=torch.float32).reshape_as(weight)
+
+    torch.testing.assert_close(actual, expected)
+
+
 @pytest.mark.parametrize(
     "scales",
     [
@@ -172,6 +204,11 @@ def test_e2m1_accepts_group_aligned_scales_and_preserves_shape_and_requested_dty
 def test_e2m1_rejects_malformed_scales(scales):
     with pytest.raises(ValueError, match="scales"):
         encode_e2m1(torch.ones(2, 4), scales)
+
+
+def test_e2m1_rejects_ambiguous_scale_ranks():
+    with pytest.raises(ValueError, match="scales rank 1.*tensor rank 3"):
+        encode_e2m1(torch.ones(2, 3, 4), torch.ones(3))
 
 
 @pytest.mark.parametrize(
@@ -200,6 +237,20 @@ def test_e2m1_rejects_malformed_codes(codes):
 def test_e2m1_rejects_non_floating_decode_dtype():
     with pytest.raises(ValueError, match="dtype"):
         decode_e2m1(torch.tensor([0], dtype=torch.uint8), torch.tensor(1.0), dtype=torch.int32)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+def test_e2m1_decode_supports_runtime_float_dtypes(dtype):
+    decoded = decode_e2m1(torch.tensor([1, 6, 9, 14], dtype=torch.uint8), torch.tensor(2.0), dtype=dtype)
+
+    assert decoded.dtype == dtype
+    assert torch.equal(decoded, torch.tensor([1.0, 8.0, -1.0, -8.0], dtype=dtype))
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e4m3fn"), reason="PyTorch build has no float8 dtype")
+def test_e2m1_rejects_float8_decode_dtype():
+    with pytest.raises(ValueError, match="dtype.*float16.*bfloat16.*float32.*float64"):
+        decode_e2m1(torch.tensor([0], dtype=torch.uint8), torch.tensor(1.0), dtype=torch.float8_e4m3fn)
 
 
 def test_ue8m0_rejects_malformed_tensor_dtypes():
