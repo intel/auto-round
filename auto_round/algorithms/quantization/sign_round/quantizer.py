@@ -122,7 +122,7 @@ class SignRoundQuantizer(BaseQuantizer):
         pred_output: torch.Tensor,
         ref_output: torch.Tensor,
         indices: torch.Tensor,
-        mse_loss: Callable,
+        loss_func: Callable,
         device: Union[str, torch.device] = "cpu",
     ):
         autocast_ctx = (
@@ -136,13 +136,13 @@ class SignRoundQuantizer(BaseQuantizer):
             tmp_attention_mask.unsqueeze_(-1)
 
             with autocast_ctx:
-                loss = mse_loss(  # pylint: disable=not-callable
+                loss = loss_func(  # pylint: disable=not-callable
                     (pred_output * tmp_attention_mask).to(torch.float32),
                     (ref_output * tmp_attention_mask).to(torch.float32),
                 )
         else:
             with autocast_ctx:
-                loss = mse_loss(  # pylint: disable=not-callable
+                loss = loss_func(  # pylint: disable=not-callable
                     pred_output.to(torch.float32), ref_output.to(torch.float32)
                 )
 
@@ -247,7 +247,7 @@ class SignRoundQuantizer(BaseQuantizer):
         init_loss = None
         best_params = {}
         total_loss = 0
-        self.batch_size = 8  # TODO delete wenhuach
+        self.batch_size = self._calibration_state.batch_size  # TODO delete wenhuach
         global_batch_size = self.batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same

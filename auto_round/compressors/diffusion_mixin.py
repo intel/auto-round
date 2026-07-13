@@ -262,12 +262,11 @@ class DiffusionMixin:
         )
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
-            self.dataloader, self.batch_size, self.gradient_accumulate_steps = get_diffusion_dataloader(
+            self.dataloader, self.batch_size= get_diffusion_dataloader(
                 dataset=dataset,
                 bs=self.batch_size,
                 seed=self.seed,
                 nsamples=self.nsamples,
-                gradient_accumulate_steps=self.gradient_accumulate_steps,
             )
         else:
             self.dataloader = self.dataset

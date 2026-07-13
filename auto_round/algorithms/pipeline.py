@@ -237,7 +237,7 @@ class BlockForward:  # TODO override forward with
     def forward(
         self,
         block: "torch.nn.Module",
-        inputs: Any,
+        inputs: list[torch.Tensor],
         input_others: dict,
         indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -253,11 +253,14 @@ class BlockForward:  # TODO override forward with
             Normalized output tensor on ``self.cache_device``.
         """
         num_samples = self._count_samples(inputs)
+        device = inputs[0].device if isinstance(inputs, list) else inputs.device
 
         if indices is None:
-            indices = torch.arange(num_samples, dtype=torch.long)
+            indices = torch.arange(num_samples, dtype=torch.long,device=device)
         elif not isinstance(indices, torch.Tensor):
-            indices = torch.tensor(indices, dtype=torch.long)
+            indices = torch.tensor(indices, dtype=torch.long,device=device)
+        else:
+            indices = indices.to(device=device)
 
         outputs = []
 

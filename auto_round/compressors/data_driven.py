@@ -215,242 +215,7 @@ class DataDrivenCompressor(BaseCompressor):
             args, kwargs = step_input[0]
             fake_layer(*args, **kwargs)
 
-    # This is the API for llm-compressor, not used in AutoRound
-    def quantize_block(
-        self,
-        block: torch.nn.Module,
-        inputs: Any,
-        q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",  # TODO Delete wenhuach
-        auto_offload: bool = True,
-    ) -> Any:
-        """Quantize a single decoded block of the model (public API for LLM-Compressor).
 
-        This method is the new-arch equivalent of the old ``BaseCompressor.quantize_block``
-        (see ``compressors/base.py``).  It is primarily consumed by LLM-Compressor:
-        https://github.com/vllm-project/llm-compressor/pull/1994
-
-        The method normalizes the raw decoding-layer inputs provided by LLM-Compressor,
-        runs the full infrastructure pipeline (device placement, act-max collection,
-        reference-output caching) for the given *block*, delegates the pure-algorithm
-        weight optimization to ``self.quantizer.quantize_block``, then returns the
-        quantized-block outputs.
-
-        Args:
-            block: The transformer block (decoder layer) to quantize.
-            inputs: Either:
-
-                - the raw decoding-layer inputs captured by
-                  LLM-Compressor's hook (list of ``((args, kwargs),)`` tuples),
-                  in which case they are normalized via
-                  :meth:`normalize_decoding_layer_inputs_`; **or**
-                - a :class:`~auto_round.calibration.state.CalibrationState`
-                  instance produced by a :class:`~auto_round.calibration.base.Calibrator`,
-                  which is bound directly without re-normalization.
-            q_input: Optional quantized input from the previous block.  ``None`` on
-                the first block.
-            device: Target device for quantization (e.g. ``"cuda:0"``).
-            auto_offload: When *True*, use the device-map-aware offloading path;
-                otherwise move ``block`` directly to ``device``.
-
-        Returns:
-            tuple: ``(q_outputs, reference_output)`` where *q_outputs* is the
-            block's output after quantization (or ``None`` when
-            ``enable_quanted_input`` is ``False``), and *reference_output* is the
-            full-precision reference output collected before optimization.
-        """
-        from auto_round.calibration.state import CalibrationState
-
-        if self.diffusion:
-            raise NotImplementedError(
-                f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
-            )
-
-        # Ensure post_init has been called (sets up model_context, compress_context,
-        # quantizer, layer_config, etc.).
-        if not self._post_init_done:
-            self.post_init()
-
-        if len(self.quant_block_list) != 1 or len(self.quant_block_list[0]) != 1:
-            raise ValueError(
-                f"{self.__class__.__name__}.quantize_block supports exactly one target block, "
-                f"but quant_block_list is {self.quant_block_list!r}. "
-                "Use to_quant_block_names to select a single block."
-            )
-        expected_block_name = self.quant_block_list[0][0]
-        actual_block_name = getattr(block, "global_name", None)
-        if actual_block_name is not None and actual_block_name != expected_block_name:
-            raise ValueError(
-                f"quantize_block received block {actual_block_name!r}, but cached inputs are for "
-                f"{expected_block_name!r}. Pass the matching block or update to_quant_block_names."
-            )
-
-        # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
-        # (not the full VL model), so it must not be treated as an MLLM regardless of
-        # whether the original model had multimodal assets.  Force is_mllm=False for
-        # the duration of this call to stay on the standard LLM quantize_block path.
-        orig_is_mllm = self.model_context.is_mllm
-        self.model_context.is_mllm = False
-
-        try:
-            if isinstance(inputs, CalibrationState):
-                # Caller already produced a CalibrationState (typically via
-                # ``Calibrator.collect``).  Bind it as the authoritative store so
-                # the quantizer reads the same ``inputs`` / ``attention_mask`` /
-                # ``batch_dim``.
-                self.calibration_state = inputs
-            else:
-                self.normalize_decoding_layer_inputs_(inputs)
-            block_inputs = self.inputs[self.quant_block_list[0][0]]
-            input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
-
-            # ── Infrastructure: materialize, dtype convert, device placement ──────
-            materialize_model_(block)
-            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
-
-            if auto_offload:
-                if (
-                    is_auto_device_mapping(device_manager.device_map)
-                    and len(device_manager.device_list) > 1
-                    and not self.model_context.is_diffusion
-                ):
-                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-                    card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                        block,
-                        device_manager.device_list,
-                        input_ids,
-                        self.compress_context.low_gpu_mem_usage,
-                        self.quantizer.batch_size,
-                        device,
-                    )
-                else:
-                    block = block.to(device)
-                    card_0_in_high_risk, loss_device = False, device
-            else:
-                card_0_in_high_risk, loss_device = False, device
-
-            if len(device_manager.device_list) > 1 and auto_offload:
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                for n, m in block.named_modules():
-                    if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                        continue
-                    add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
-
-            blk_name = self.quant_block_list[0][0]
-            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
-
-            if not hasattr(self.quantizer, "create_block_io"):
-                if q_input is None:
-                    hook_handles = self.quantizer.register_calibration_hooks(block)
-                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                    for h in hook_handles:
-                        h.remove()
-                else:
-                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                    hook_handles = self.quantizer.register_calibration_hooks(block)
-                    if hook_handles:
-                        self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
-                    for h in hook_handles:
-                        h.remove()
-                    if input_ids is not q_input:
-                        clear_memory(input_ids, device_list=device_manager.device_list)
-                    else:
-                        clear_memory(device_list=device_manager.device_list)
-                    input_ids = q_input
-
-                self.quantizer.quantize_block(
-                    block,
-                    input_ids,
-                    input_others,
-                    reference_output,
-                    q_input,
-                    block_ctx=None,  # legacy path: no BlockContext
-                )
-
-                if is_nv_fp(self.act_data_type) or not self.act_dynamic:
-                    set_amax_for_all_moe_layers(block, attr_name="act_max")
-
-                if self.quantizer.enable_quanted_input:
-                    q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                else:
-                    q_outputs = None
-
-                if len(device_manager.device_list) > 1:
-                    accelerate.hooks.remove_hook_from_submodules(block)
-                mv_module_from_gpu(block)
-                return q_outputs, reference_output
-
-            from auto_round.algorithms.pipeline import BlockContext, InputSource
-
-            ctx = BlockContext(
-                model=self.model_context.model,
-                block=block,
-                block_names=[blk_name],
-                block_name=blk_name,
-                block_index=0,
-                bs=bs,
-                device=device,
-                is_mllm=False,
-                is_diffusion=False,
-            )
-            policy = self.pipeline.get_merged_policy(ctx)
-
-            if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
-                # First: reference forward with FP inputs and preprocessor hooks only.
-                with ExitStack() as fwd_stack:
-                    self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    ref_output = self.block_forward(block, input_ids, input_others)
-                    reference_output = self.block_forward.split_outputs(ref_output)
-                # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
-                with ExitStack() as fwd_stack:
-                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    if quantizer_hooks:
-                        self.block_forward(block, q_input, input_others)
-            else:
-                # Unified: reference forward with all hooks active (or no hooks).
-                with ExitStack() as fwd_stack:
-                    self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    ref_output = self.block_forward(block, input_ids, input_others)
-                    reference_output = self.block_forward.split_outputs(ref_output)
-
-            if q_input is not None:
-                if input_ids is not q_input:
-                    clear_memory(input_ids, device_list=device_manager.device_list)
-                else:
-                    clear_memory(device_list=device_manager.device_list)
-                input_ids = q_input
-
-            # pre_quantize_block: consolidate stats and apply weight transforms.
-            for pre in self.pipeline.preprocessors:
-                pre.pre_quantize_block(ctx)
-
-            # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
-            self.pipeline.block_quantizer.quantize_block(block, input_ids, input_others, reference_output, q_input, ctx)
-
-            # ── Pipeline lifecycle: post_quantize_block ───────────────────────────
-            for pre in self.pipeline.preprocessors:
-                pre.post_quantize_block(ctx)
-
-            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
-                set_amax_for_all_moe_layers(block, attr_name="act_max")
-
-            # ── Collect quantized-block outputs ───────────────────────────────────
-            if self.pipeline.block_quantizer.enable_quanted_input:
-                q_out = self.block_forward(block, input_ids, input_others)
-                q_outputs = self.block_forward.split_outputs(q_out)
-            else:
-                q_outputs = None
-
-            # ── Cleanup ───────────────────────────────────────────────────────────
-            if len(device_manager.device_list) > 1:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            mv_module_from_gpu(block)
-            return q_outputs, reference_output
-        finally:
-            self.model_context.is_mllm = orig_is_mllm
 
     def _quantize_blocks(
         self,
@@ -522,7 +287,7 @@ class DataDrivenCompressor(BaseCompressor):
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
-            bs = 8  # TODO change to calib wenhuach
+            bs = self.batch_size  # TODO add infer_bs_coeff
 
             ctx = BlockContext(
                 model=model,
@@ -918,3 +683,242 @@ class DataDrivenCompressor(BaseCompressor):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
+
+
+
+    # This is the API for llm-compressor, not used in AutoRound
+    def quantize_block(
+        self,
+        block: torch.nn.Module,
+        inputs: Any,
+        q_input: Union[torch.Tensor, dict, None] = None,
+        device: Union[str, torch.device] = "cpu",  # TODO Delete wenhuach
+        auto_offload: bool = True,
+    ) -> Any:
+        """Quantize a single decoded block of the model (public API for LLM-Compressor).
+
+        This method is the new-arch equivalent of the old ``BaseCompressor.quantize_block``
+        (see ``compressors/base.py``).  It is primarily consumed by LLM-Compressor:
+        https://github.com/vllm-project/llm-compressor/pull/1994
+
+        The method normalizes the raw decoding-layer inputs provided by LLM-Compressor,
+        runs the full infrastructure pipeline (device placement, act-max collection,
+        reference-output caching) for the given *block*, delegates the pure-algorithm
+        weight optimization to ``self.quantizer.quantize_block``, then returns the
+        quantized-block outputs.
+
+        Args:
+            block: The transformer block (decoder layer) to quantize.
+            inputs: Either:
+
+                - the raw decoding-layer inputs captured by
+                  LLM-Compressor's hook (list of ``((args, kwargs),)`` tuples),
+                  in which case they are normalized via
+                  :meth:`normalize_decoding_layer_inputs_`; **or**
+                - a :class:`~auto_round.calibration.state.CalibrationState`
+                  instance produced by a :class:`~auto_round.calibration.base.Calibrator`,
+                  which is bound directly without re-normalization.
+            q_input: Optional quantized input from the previous block.  ``None`` on
+                the first block.
+            device: Target device for quantization (e.g. ``"cuda:0"``).
+            auto_offload: When *True*, use the device-map-aware offloading path;
+                otherwise move ``block`` directly to ``device``.
+
+        Returns:
+            tuple: ``(q_outputs, reference_output)`` where *q_outputs* is the
+            block's output after quantization (or ``None`` when
+            ``enable_quanted_input`` is ``False``), and *reference_output* is the
+            full-precision reference output collected before optimization.
+        """
+        from auto_round.calibration.state import CalibrationState
+
+        if self.diffusion:
+            raise NotImplementedError(
+                f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
+            )
+
+        # Ensure post_init has been called (sets up model_context, compress_context,
+        # quantizer, layer_config, etc.).
+        if not self._post_init_done:
+            self.post_init()
+
+        if len(self.quant_block_list) != 1 or len(self.quant_block_list[0]) != 1:
+            raise ValueError(
+                f"{self.__class__.__name__}.quantize_block supports exactly one target block, "
+                f"but quant_block_list is {self.quant_block_list!r}. "
+                "Use to_quant_block_names to select a single block."
+            )
+        expected_block_name = self.quant_block_list[0][0]
+        actual_block_name = getattr(block, "global_name", None)
+        if actual_block_name is not None and actual_block_name != expected_block_name:
+            raise ValueError(
+                f"quantize_block received block {actual_block_name!r}, but cached inputs are for "
+                f"{expected_block_name!r}. Pass the matching block or update to_quant_block_names."
+            )
+
+        # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
+        # (not the full VL model), so it must not be treated as an MLLM regardless of
+        # whether the original model had multimodal assets.  Force is_mllm=False for
+        # the duration of this call to stay on the standard LLM quantize_block path.
+        orig_is_mllm = self.model_context.is_mllm
+        self.model_context.is_mllm = False
+
+        try:
+            if isinstance(inputs, CalibrationState):
+                # Caller already produced a CalibrationState (typically via
+                # ``Calibrator.collect``).  Bind it as the authoritative store so
+                # the quantizer reads the same ``inputs`` / ``attention_mask`` /
+                # ``batch_dim``.
+                self.calibration_state = inputs
+            else:
+                self.normalize_decoding_layer_inputs_(inputs)
+            block_inputs = self.inputs[self.quant_block_list[0][0]]
+            input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
+
+            # ── Infrastructure: materialize, dtype convert, device placement ──────
+            materialize_model_(block)
+            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+
+            if auto_offload:
+                if (
+                    is_auto_device_mapping(device_manager.device_map)
+                    and len(device_manager.device_list) > 1
+                    and not self.model_context.is_diffusion
+                ):
+                    from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                    card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                        block,
+                        device_manager.device_list,
+                        input_ids,
+                        self.compress_context.low_gpu_mem_usage,
+                        self.quantizer.batch_size,
+                        device,
+                    )
+                else:
+                    block = block.to(device)
+                    card_0_in_high_risk, loss_device = False, device
+            else:
+                card_0_in_high_risk, loss_device = False, device
+
+            if len(device_manager.device_list) > 1 and auto_offload:
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                for n, m in block.named_modules():
+                    if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                        continue
+                    add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
+
+            blk_name = self.quant_block_list[0][0]
+            bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff
+
+            if not hasattr(self.quantizer, "create_block_io"):
+                if q_input is None:
+                    hook_handles = self.quantizer.register_calibration_hooks(block)
+                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                    for h in hook_handles:
+                        h.remove()
+                else:
+                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                    hook_handles = self.quantizer.register_calibration_hooks(block)
+                    if hook_handles:
+                        self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
+                    for h in hook_handles:
+                        h.remove()
+                    if input_ids is not q_input:
+                        clear_memory(input_ids, device_list=device_manager.device_list)
+                    else:
+                        clear_memory(device_list=device_manager.device_list)
+                    input_ids = q_input
+
+                self.quantizer.quantize_block(
+                    block,
+                    input_ids,
+                    input_others,
+                    reference_output,
+                    q_input,
+                    block_ctx=None,  # legacy path: no BlockContext
+                )
+
+                if is_nv_fp(self.act_data_type) or not self.act_dynamic:
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+                if self.quantizer.enable_quanted_input:
+                    q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
+                else:
+                    q_outputs = None
+
+                if len(device_manager.device_list) > 1:
+                    accelerate.hooks.remove_hook_from_submodules(block)
+                mv_module_from_gpu(block)
+                return q_outputs, reference_output
+
+            from auto_round.algorithms.pipeline import BlockContext, InputSource
+
+            ctx = BlockContext(
+                model=self.model_context.model,
+                block=block,
+                block_names=[blk_name],
+                block_name=blk_name,
+                block_index=0,
+                bs=bs,
+                device=device,
+                is_mllm=False,
+                is_diffusion=False,
+            )
+            policy = self.pipeline.get_merged_policy(ctx)
+
+            if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
+                # First: reference forward with FP inputs and preprocessor hooks only.
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
+                    ref_output = self.block_forward(block, input_ids, input_others)
+                    reference_output = self.block_forward.split_outputs(ref_output)
+                # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
+                with ExitStack() as fwd_stack:
+                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
+                    if quantizer_hooks:
+                        self.block_forward(block, q_input, input_others)
+            else:
+                # Unified: reference forward with all hooks active (or no hooks).
+                with ExitStack() as fwd_stack:
+                    self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
+                    ref_output = self.block_forward(block, input_ids, input_others)
+                    reference_output = self.block_forward.split_outputs(ref_output)
+
+            if q_input is not None:
+                if input_ids is not q_input:
+                    clear_memory(input_ids, device_list=device_manager.device_list)
+                else:
+                    clear_memory(device_list=device_manager.device_list)
+                input_ids = q_input
+
+            # pre_quantize_block: consolidate stats and apply weight transforms.
+            for pre in self.pipeline.preprocessors:
+                pre.pre_quantize_block(ctx)
+
+            # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
+            self.pipeline.block_quantizer.quantize_block(block, input_ids, input_others, reference_output, q_input, ctx)
+
+            # ── Pipeline lifecycle: post_quantize_block ───────────────────────────
+            for pre in self.pipeline.preprocessors:
+                pre.post_quantize_block(ctx)
+
+            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
+                set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+            # ── Collect quantized-block outputs ───────────────────────────────────
+            if self.pipeline.block_quantizer.enable_quanted_input:
+                q_out = self.block_forward(block, input_ids, input_others)
+                q_outputs = self.block_forward.split_outputs(q_out)
+            else:
+                q_outputs = None
+
+            # ── Cleanup ───────────────────────────────────────────────────────────
+            if len(device_manager.device_list) > 1:
+                accelerate.hooks.remove_hook_from_submodules(block)
+            mv_module_from_gpu(block)
+            return q_outputs, reference_output
+        finally:
+            self.model_context.is_mllm = orig_is_mllm
