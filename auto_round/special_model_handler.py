@@ -949,11 +949,6 @@ def check_mllm_only_support_bs1(model: torch.nn.Module):
     for key in mllms_with_limited_bs:
         if key in effective_type:
             return True
-            logger.warning(
-                "To avoid the tensor concat mismatch problem, modified parameters to "
-                f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}"
-            )
-            return 1, accumulate_steps
     return False
 
 
