@@ -178,7 +178,7 @@ def _eval_init(tasks, model_path, device, disable_trust_remote_code=False, dtype
     # ,add_bos_token={True}
     model_args = f"pretrained={model_path},trust_remote_code={not disable_trust_remote_code},dtype={dtype}"
     if parallelism:
-        model_args += ",parallelize=True"
+        model_args += ",parallelize=True,device_map=sequential"
     if isinstance(tasks, str):
         tasks = tasks.split(",")
     return tasks, model_args, device_str
