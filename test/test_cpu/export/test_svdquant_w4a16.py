@@ -102,6 +102,25 @@ def test_pack_rejects_invalid_contract_inputs(weight, scale, bias, splits, group
         pack_adanorm_w4a16(weight, scale, bias=bias, splits=splits, group_size=group_size)
 
 
+@pytest.mark.parametrize("scale_dtype", [torch.float32, torch.float64])
+def test_pack_rejects_scale_dtype_that_does_not_match_weight(scale_dtype):
+    weight = torch.ones(12, 1024, dtype=torch.float16)
+    scale = torch.ones(12, 16, dtype=scale_dtype)
+
+    with pytest.raises(ValueError, match="scale dtype must exactly match weight dtype"):
+        pack_adanorm_w4a16(weight, scale)
+
+
+@pytest.mark.parametrize("bias_dtype", [torch.float32, torch.float64])
+def test_pack_rejects_bias_dtype_that_does_not_match_weight(bias_dtype):
+    weight = torch.ones(12, 1024, dtype=torch.bfloat16)
+    scale = torch.ones(12, 16, dtype=torch.bfloat16)
+    bias = torch.zeros(12, dtype=bias_dtype)
+
+    with pytest.raises(ValueError, match="bias dtype must exactly match weight dtype"):
+        pack_adanorm_w4a16(weight, scale, bias=bias)
+
+
 def test_flux_adanorm_dimensions_satisfy_runtime_shape_formulas_without_allocating_tensors():
     for out_features, splits in ((3072 * 3, 3), (3072 * 6, 6)):
         in_features = 3072

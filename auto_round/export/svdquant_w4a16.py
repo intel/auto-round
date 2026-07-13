@@ -76,6 +76,8 @@ def _validate_inputs(
         raise ValueError("runtime G=K/64 must be divisible by 16")
     if not isinstance(scale, torch.Tensor) or not scale.is_floating_point():
         raise ValueError("scale must be a floating-point tensor")
+    if scale.dtype != weight.dtype or scale.dtype not in (torch.bfloat16, torch.float16):
+        raise ValueError("scale dtype must exactly match weight dtype and be BF16 or FP16")
     if scale.device != weight.device:
         raise ValueError("scale must be on the same device as weight")
     if tuple(scale.shape) not in ((out_features, num_groups), (out_features, 1, num_groups, 1)):
@@ -83,13 +85,11 @@ def _validate_inputs(
     if not bool(torch.isfinite(scale).all()) or not bool((scale > 0).all()):
         raise ValueError("scale must contain only positive finite values")
     if bias is not None:
-        if (
-            not isinstance(bias, torch.Tensor)
-            or not bias.is_floating_point()
-            or tuple(bias.shape) != (out_features,)
-            or bias.device != weight.device
-            or not bool(torch.isfinite(bias).all())
-        ):
+        if not isinstance(bias, torch.Tensor) or not bias.is_floating_point():
+            raise ValueError("bias must be a floating-point tensor")
+        if bias.dtype != weight.dtype or bias.dtype not in (torch.bfloat16, torch.float16):
+            raise ValueError("bias dtype must exactly match weight dtype and be BF16 or FP16")
+        if tuple(bias.shape) != (out_features,) or bias.device != weight.device or not bool(torch.isfinite(bias).all()):
             raise ValueError("bias must be a finite floating-point [O] tensor on the weight device")
     return out_features, in_features, num_groups, scale.reshape(out_features, num_groups)
 
@@ -121,11 +121,11 @@ def pack_adanorm_w4a16(
     )
     qweight = packed16.view(torch.int32)
 
-    channel_scale = _channel_major(logical_scale, splits).to(weight.dtype)
+    channel_scale = _channel_major(logical_scale, splits)
     if bias is None:
         channel_bias = torch.zeros(out_features, dtype=weight.dtype, device=weight.device)
     else:
-        channel_bias = _channel_major(bias.reshape(out_features), splits).to(weight.dtype)
+        channel_bias = _channel_major(bias.reshape(out_features), splits)
     channel_bias = channel_bias.reshape(out_features // splits, splits)
     channel_bias[:, sorted({1, splits - 2})] += 1
     channel_bias = channel_bias.reshape(out_features)
