@@ -129,6 +129,7 @@ class AlgorithmHandler(ABC):
                 0,
                 SVDQuantConfig(
                     rank=getattr(args, "svdquant_rank", 32),
+                    smooth_enabled=getattr(args, "svdquant_smooth_enabled", True),
                     smooth_alpha=getattr(args, "svdquant_smooth_alpha", 0.5),
                     target_modules=getattr(args, "svdquant_target_modules", None),
                     exclude_modules=getattr(args, "svdquant_exclude_modules", None),

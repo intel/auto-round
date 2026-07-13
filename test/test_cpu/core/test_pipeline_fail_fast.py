@@ -152,6 +152,35 @@ def test_compat_entry_preserves_spinquant_dict_config(monkeypatch):
     assert spinquant_cfg.trainable_smooth is rotation_config["trainable_smooth"]
 
 
+def test_compat_entry_forwards_disabled_svdquant_smoothing(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.autoround import AutoRound as CompatAutoRound
+
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.is_mllm_model", lambda *args, **kwargs: False)
+    monkeypatch.setattr("auto_round.utils.is_diffusion_model", lambda *args, **kwargs: False)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    CompatAutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        iters=1,
+        seqlen=8,
+        nsamples=1,
+        enable_svdquant=True,
+        svdquant_smooth_enabled=False,
+    )
+
+    configs = captured["config"] if isinstance(captured["config"], list) else [captured["config"]]
+    svdquant_config = next(config for config in configs if isinstance(config, SVDQuantConfig))
+    assert svdquant_config.smooth_enabled is False
+
+
 def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):
     calls = []
 

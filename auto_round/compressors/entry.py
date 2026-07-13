@@ -562,6 +562,7 @@ class AutoRoundCompatible:
     def _pop_svdquant_config(kwargs: dict[str, Any]):
         enabled = kwargs.pop("enable_svdquant", False)
         rank = kwargs.pop("svdquant_rank", 32)
+        smooth_enabled = kwargs.pop("svdquant_smooth_enabled", True)
         smooth_alpha = kwargs.pop("svdquant_smooth_alpha", 0.5)
         target_modules = kwargs.pop("svdquant_target_modules", None)
         exclude_modules = kwargs.pop("svdquant_exclude_modules", None)
@@ -570,6 +571,7 @@ class AutoRoundCompatible:
             return None
         return SVDQuantConfig(
             rank=rank,
+            smooth_enabled=smooth_enabled,
             smooth_alpha=smooth_alpha,
             target_modules=target_modules,
             exclude_modules=exclude_modules,

@@ -162,6 +162,7 @@ def test_svdquant_disabled_smoothing_ignores_stale_act_max_and_preserves_forward
     transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))
 
     torch.testing.assert_close(block[0].smooth, torch.ones(3), rtol=0, atol=0)
+    assert id(layer) not in transform._act_max
     effective_weight = block[0].residual_linear.weight + block[0].lora_up.weight @ block[0].lora_down.weight
     torch.testing.assert_close(effective_weight, weight)
     torch.testing.assert_close(block(x), expected)
@@ -187,7 +188,28 @@ def test_svdquant_default_smoothing_collects_act_max_and_uses_nonidentity_scale(
     transform.pre_quantize_block(ctx)
 
     torch.testing.assert_close(block[0].smooth, torch.tensor([2.0, 0.5]), rtol=0, atol=0)
+    assert id(layer) not in transform._act_max
     torch.testing.assert_close(block(x), expected)
+
+
+def test_svdquant_consumes_act_max_when_decomposition_fails(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    layer = torch.nn.Linear(3, 2, bias=False)
+    block = torch.nn.Sequential(layer)
+    transform = SVDQuantTransform(SVDQuantConfig(rank=1))
+    transform._act_max[id(layer)] = torch.tensor([1.0, 2.0, 3.0])
+
+    def fail_svd(*args, **kwargs):
+        raise RuntimeError("forced SVD failure")
+
+    monkeypatch.setattr(torch.linalg, "svd", fail_svd)
+
+    with pytest.raises(ValueError, match="forced SVD failure"):
+        transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))
+
+    assert id(layer) not in transform._act_max
 
 
 def test_svdquant_one_round_matches_one_shot_svd_without_residual_qdq(monkeypatch):

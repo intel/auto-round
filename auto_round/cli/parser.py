@@ -133,6 +133,13 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     rt.add_argument("--svdquant-rank", dest="svdquant_rank", default=32, type=int, help="SVDQuant low-rank size.")
     rt.add_argument(
+        "--svdquant-smooth-enabled",
+        dest="svdquant_smooth_enabled",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="Enable SVDQuant activation-aware smoothing.",
+    )
+    rt.add_argument(
         "--svdquant-smooth-alpha",
         dest="svdquant_smooth_alpha",
         default=0.5,

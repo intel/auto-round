@@ -62,6 +62,7 @@ _COMPAT_KWARGS = {
     "rotation_config",
     "enable_svdquant",
     "svdquant_rank",
+    "svdquant_smooth_enabled",
     "svdquant_smooth_alpha",
     "svdquant_target_modules",
     "svdquant_exclude_modules",

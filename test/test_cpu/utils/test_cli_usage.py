@@ -260,3 +260,25 @@ def test_rtn_accepts_disable_opt_rtn_flag():
 
     assert args.disable_opt_rtn is True
     assert configs[0].disable_opt_rtn is True
+
+
+def test_cli_builds_svdquant_config_with_smoothing_disabled():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--algorithm",
+            "rtn",
+            "--enable_svdquant",
+            "--no-svdquant-smooth-enabled",
+        ]
+    )
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert args.svdquant_smooth_enabled is False
+    assert isinstance(configs[0], SVDQuantConfig)
+    assert configs[0].smooth_enabled is False
