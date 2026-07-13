@@ -89,8 +89,17 @@ if not oneapi_version:
         "and that the 'icx' compiler is in your PATH."
     )
 
+
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "on", "true", "yes")
+
+
 requirements = fetch_requirements("requirements.txt")
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
+enable_dnnl = env_flag("ARK_DNNL", False)
 
 
 def get_system_memory_gb():
@@ -181,6 +190,7 @@ class CMakeBuild(build_ext):
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_CXX_COMPILER=icx",
             "-DARK_XPU=ON",
+            f"-DARK_DNNL={'ON' if enable_dnnl else 'OFF'}",
             f"-DARK_SYCL_TLA={'ON' if enable_sycl_tla else 'OFF'}",
         ]
         if sys.platform == "win32":
