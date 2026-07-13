@@ -293,7 +293,7 @@ class TestAutoRound:
         )
 
         call_log = []
-        original_should_stop = autoround._should_stop_cache_forward
+        original_should_stop = autoround.calibration._should_stop_cache_forward
 
         def tracked_should_stop(name):
             result = original_should_stop(name)
@@ -306,7 +306,9 @@ class TestAutoRound:
             )
             return result
 
-        autoround._should_stop_cache_forward = tracked_should_stop
+        autoround.post_init()
+
+        autoround.calibration._should_stop_cache_forward = tracked_should_stop
 
         try:
             all_blocks = get_block_names(model, quant_vision=True)
@@ -324,4 +326,4 @@ class TestAutoRound:
             ), "last_cache_name should update to model.language_model.layers.0"
             assert "model.language_model.layers.0" in inputs, "Should have cached language model block"
         finally:
-            autoround._should_stop_cache_forward = original_should_stop
+            autoround.calibration._should_stop_cache_forward = original_should_stop
