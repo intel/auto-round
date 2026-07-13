@@ -17,6 +17,7 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
 
+
 class SignRoundConfig(QuantizationConfig):
     """Configuration for SignRound-style block quantization."""
 
