@@ -18,7 +18,7 @@ import torch
 
 from auto_round.data_type.utils import get_quant_func
 
-_MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+_FIXED_MXFP4_DTYPES = frozenset({"mx_fp4", "mx_fp4e2m1"})
 
 
 def _validate_scheme_values(scheme):
@@ -33,9 +33,14 @@ def _validate_scheme_values(scheme):
         raise ValueError("Residual quantization scheme data_type must be a non-empty string.")
     if not isinstance(values["bits"], int) or isinstance(values["bits"], bool) or values["bits"] <= 0:
         raise ValueError("Residual quantization scheme bits must be a positive integer.")
+    if values["data_type"] in _FIXED_MXFP4_DTYPES and values["bits"] != 4:
+        raise ValueError(
+            f"Residual quantization scheme data_type={values['data_type']!r} requires bits=4; "
+            f"got bits={values['bits']}."
+        )
 
     group_size = values["group_size"]
-    scalar_group_size = isinstance(group_size, int) and not isinstance(group_size, bool) and group_size > 0
+    scalar_group_size = isinstance(group_size, int) and not isinstance(group_size, bool) and group_size >= -1
     block_group_size = (
         isinstance(group_size, tuple)
         and len(group_size) == 2
@@ -43,7 +48,8 @@ def _validate_scheme_values(scheme):
     )
     if not scalar_group_size and not block_group_size:
         raise ValueError(
-            "Residual quantization scheme group_size must be a positive integer or a pair of positive integers."
+            "Residual quantization scheme group_size must be -1, 0, a positive integer, "
+            "or a pair of positive integers."
         )
     if not isinstance(values["sym"], bool):
         raise ValueError("Residual quantization scheme sym must be a boolean.")
@@ -67,7 +73,16 @@ class ResidualQuantScheme:
 def rtn_qdq_residual(weight: torch.Tensor, scheme: ResidualQuantScheme) -> torch.Tensor:
     """Apply the registered RTN quantize-dequantize function to a residual."""
     values = _validate_scheme_values(scheme)
-    if values["data_type"] in _MXFP4_ALIASES and values["bits"] == 4 and (
+    quant_func, resolved_dtype = get_quant_func(
+        dtype=values["data_type"],
+        bits=values["bits"],
+        sym=values["sym"],
+        disable_opt_rtn=True,
+        group_size=values["group_size"],
+        iters=0,
+    )
+    logical_dtype = resolved_dtype.removeprefix("rtn_")
+    if logical_dtype in _FIXED_MXFP4_DTYPES and (
         not isinstance(values["group_size"], int)
         or isinstance(values["group_size"], bool)
         or values["group_size"] != 32
@@ -77,24 +92,21 @@ def rtn_qdq_residual(weight: torch.Tensor, scheme: ResidualQuantScheme) -> torch
             f"got group_size={values['group_size']!r}."
         )
 
-    quant_func, resolved_dtype = get_quant_func(
-        dtype=values["data_type"],
-        bits=values["bits"],
-        sym=values["sym"],
-        disable_opt_rtn=True,
-        group_size=values["group_size"],
-        iters=0,
-    )
     qdq, _, _ = quant_func(
         tensor=weight,
         bits=values["bits"],
         group_size=values["group_size"],
-        data_type=resolved_dtype.removeprefix("rtn_"),
+        data_type=logical_dtype,
     )
     if qdq.shape != weight.shape or qdq.dtype != weight.dtype:
         raise ValueError(
             "Residual RTN QDQ must preserve the input shape and dtype; "
             f"got shape={tuple(qdq.shape)}, dtype={qdq.dtype}."
+        )
+    if qdq.device != weight.device:
+        raise ValueError(
+            "Residual RTN QDQ must preserve the input device; "
+            f"got input device={weight.device}, output device={qdq.device}."
         )
     if not torch.isfinite(qdq).all():
         raise ValueError("Residual RTN QDQ produced non-finite values.")
