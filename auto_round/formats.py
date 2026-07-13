@@ -447,6 +447,8 @@ class SVDQuantNunchakuFormat(OutputFormat):
         device: Union[str, torch.device] = "cpu",
         serialization_dict: dict = None,
         processor=None,
+        image_processor=None,
+        quant_nontext_module: bool = False,
         *,
         config=None,
         residual_provider=None,

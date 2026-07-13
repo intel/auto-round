@@ -229,6 +229,8 @@ def test_save_quantized_delegates_only_explicit_exporter_kwargs(monkeypatch, tmp
         device="cpu",
         serialization_dict={"ignored": True},
         processor=object(),
+        image_processor=object(),
+        quant_nontext_module=True,
         config=config,
         residual_provider=residual_provider,
         adapter=adapter,
