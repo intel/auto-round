@@ -1420,10 +1420,19 @@ class BaseCompressor(object):
 
         formats = getattr(self, "formats", [])
         has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
+        has_non_immediate_format = any(not fmt.supports_immediate_packing() for fmt in formats)
         # GGUF supports per-block / per-layer immediate packing even when
         # full-model in-place rewriting is disabled by outside-block layers.
-        if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
+        if (
+            len(formats) == 1
+            and not has_non_immediate_format
+            and not formats[0].is_fake()
+            and (self.inplace or has_single_gguf_format)
+        ):
             self.compress_context.is_immediate_packing = True
+        elif has_non_immediate_format:
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
 
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
             self.compress_context.is_immediate_packing = False
