@@ -240,7 +240,7 @@ class BlockForward:  # TODO override forward with
         inputs: list[torch.Tensor],
         input_others: dict,
         indices: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> list[torch.Tensor]|torch.Tensor:
         """Run block forward with batching, output normalization, and cache transfer.
 
         Args:
@@ -250,8 +250,12 @@ class BlockForward:  # TODO override forward with
             indices:      Sample indices to forward. None = all samples.
 
         Returns:
+            if indices is not None, this func returns tensor, otherwise list
             Normalized output tensor on ``self.cache_device``.
         """
+        is_returned_list = True
+        if indices is not None:
+            is_returned_list = False
         num_samples = self._count_samples(inputs)
         device = inputs[0].device if isinstance(inputs, list) else inputs.device
 
@@ -269,13 +273,24 @@ class BlockForward:  # TODO override forward with
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
             raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
             output = self._normalize_output(raw_output, block)
-            outputs.append(output)
+            if is_returned_list and self.batch_size!=1: # split  it to 1
+                output = self.split_outputs(output)
+            else:
+                output = [output]
+            outputs.extend(output)
 
         if not outputs:
             raise RuntimeError("BlockForward.forward: no outputs collected.")
 
-        result = outputs[0] if len(outputs) == 1 else torch.cat(outputs, dim=self.batch_dim)
-        return result.to(self.cache_device)
+        if is_returned_list:
+            return outputs
+        else:
+            if self.batch_size == 1:
+                outputs= [output.unsqueeze(dim=self.batch_dim).to(self.cache_device) for output in outputs]
+
+            outputs = torch.cat(outputs, dim=self.batch_dim).to(self.cache_device)
+
+        return outputs.to(self.cache_device)
 
     # ── Input selection ──────────────────────────────────────────────────────
 
