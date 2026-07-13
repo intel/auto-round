@@ -247,3 +247,31 @@ def test_save_quantized_delegates_only_explicit_exporter_kwargs(monkeypatch, tmp
         },
     }
     assert not output_dir.exists()
+
+
+def test_save_quantized_accepts_documented_nunchaku_export_kwargs(monkeypatch, tmp_path):
+    import auto_round.export.svdquant_nunchaku as exporter
+
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    model = torch.nn.Linear(2, 2)
+    model_adapter = object()
+    captured = {}
+
+    def fake_export(export_model, output_path, **kwargs):
+        captured.update(model=export_model, output_path=output_path, kwargs=kwargs)
+
+    monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
+
+    output_format.save_quantized(
+        tmp_path,
+        model=model,
+        weight_dtype="mx_fp4e2m1",
+        group_size=32,
+        model_adapter=model_adapter,
+    )
+
+    config = captured["kwargs"]["config"]
+    assert config.weight_dtype == "fp4_e2m1_all"
+    assert config.group_size == 32
+    assert config.runtime_loadable is True
+    assert captured["kwargs"]["adapter"] is model_adapter

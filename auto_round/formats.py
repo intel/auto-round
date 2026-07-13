@@ -453,12 +453,36 @@ class SVDQuantNunchakuFormat(OutputFormat):
         config=None,
         residual_provider=None,
         adapter=None,
+        weight_dtype: str | None = None,
+        group_size: int | None = None,
+        model_adapter=None,
     ) -> torch.nn.Module:
         """Export one deterministic ``model.safetensors`` file below ``output_dir``."""
         if output_dir is None:
             return model
 
-        from auto_round.export.svdquant_nunchaku import save_svdquant_nunchaku_safetensors
+        from auto_round.export.svdquant_nunchaku import (
+            SVDQuantExportConfig,
+            save_svdquant_nunchaku_safetensors,
+        )
+
+        if model_adapter is not None:
+            if adapter is not None:
+                raise TypeError("pass only one of model_adapter and adapter")
+            adapter = model_adapter
+        if weight_dtype is not None or group_size is not None:
+            if config is not None:
+                raise TypeError("weight_dtype and group_size cannot be combined with config")
+            if weight_dtype is not None and weight_dtype not in (*self._e2m1_aliases, "fp4_e2m1_all"):
+                raise ValueError(f"{self.format_name} weight_dtype must select MXFP4 E2M1, got {weight_dtype!r}")
+            resolved_group_size = 32 if group_size is None else group_size
+            config = SVDQuantExportConfig(
+                weight_dtype="fp4_e2m1_all",
+                group_size=resolved_group_size,
+                runtime_loadable=adapter is not None,
+            )
+        elif model_adapter is not None and config is None:
+            config = SVDQuantExportConfig(runtime_loadable=True)
 
         self._validate_svd_layer_overrides(model, layer_config)
         output_path = os.path.join(os.fspath(output_dir), "model.safetensors")
