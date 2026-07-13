@@ -40,9 +40,7 @@ def _get_sparse_preprocess_backend_preference() -> str:
 
 def _validate_gqa_head_config(num_heads_q: int, num_heads_kv: int, *, op_name: str) -> None:
     if num_heads_q <= 0 or num_heads_kv <= 0:
-        raise ValueError(
-            f"{op_name} requires positive num_heads_q/num_heads_kv, got {num_heads_q} and {num_heads_kv}"
-        )
+        raise ValueError(f"{op_name} requires positive num_heads_q/num_heads_kv, got {num_heads_q} and {num_heads_kv}")
     if num_heads_q < num_heads_kv:
         raise ValueError(
             f"{op_name} requires num_heads_q >= num_heads_kv for MHA/GQA, got {num_heads_q} and {num_heads_kv}"
