@@ -46,6 +46,32 @@ def test_e2m1_raw_values_follow_autoround_rounding_and_saturate():
     torch.testing.assert_close(actual, expected)
 
 
+def test_e2m1_float32_extreme_ratios_saturate_and_equal_edges_encode_one():
+    finfo = torch.finfo(torch.float32)
+    values = torch.tensor([finfo.max, -finfo.max, finfo.max, -finfo.max, finfo.tiny, -finfo.tiny])
+    scales = torch.tensor([finfo.tiny, finfo.tiny, finfo.max, finfo.max, finfo.tiny, finfo.tiny])
+
+    codes = encode_e2m1(values, scales)
+
+    assert torch.equal(codes, torch.tensor([7, 15, 2, 10, 2, 10], dtype=torch.uint8))
+
+
+def test_e2m1_float64_extremes_saturate_preserve_sign_and_encode_equal_huge_values():
+    finfo = torch.finfo(torch.float64)
+    values = torch.tensor(
+        [finfo.max, -finfo.max, finfo.max, -finfo.max, finfo.tiny, -finfo.tiny, finfo.tiny, -finfo.tiny],
+        dtype=torch.float64,
+    )
+    scales = torch.tensor(
+        [finfo.tiny, finfo.tiny, finfo.max, finfo.max, finfo.tiny, finfo.tiny, finfo.max, finfo.max],
+        dtype=torch.float64,
+    )
+
+    codes = encode_e2m1(values, scales)
+
+    assert torch.equal(codes, torch.tensor([7, 15, 2, 10, 2, 10, 0, 8], dtype=torch.uint8))
+
+
 def test_ue8m0_encodes_invalid_values_and_exponent_boundaries():
     scales = torch.tensor(
         [0.0, -1.0, torch.nan, torch.inf, -torch.inf, 2.0**-128, 2.0**-127, 1.0, 1.01, 2.0**127],

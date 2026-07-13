@@ -69,7 +69,7 @@ def encode_e2m1(values: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
     if not bool(torch.isfinite(values).all()):
         raise ValueError("values must contain only finite values")
     expanded_scales = _broadcast_scales(scales, values.shape, device=values.device)
-    normalized = values.to(torch.float32) / expanded_scales.to(torch.float32)
+    normalized = (values.to(torch.float64) / expanded_scales.to(torch.float64)).clamp(min=-6.0, max=6.0)
     quantized = quant_element(normalized, ebits=2, mbits=3, max_norm=6.0)
 
     magnitude_codes = torch.zeros(values.shape, dtype=torch.uint8, device=values.device)
