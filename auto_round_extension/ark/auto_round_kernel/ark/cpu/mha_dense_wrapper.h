@@ -36,18 +36,20 @@
 //               off = bf16 matmul, on = fp32 matmul exactly as Neural Speed).
 //     Features: same as Route 1.
 //
-//   Route 3 — f16,f16,f16,f16  (Tier 2, internal-only):
+//   Route 3 — f16,f16,f16,f16  (Tier 2, standard-SDPA internal optimization):
 //     bestla_fusion_attn_forward<fp16, fp16, fp16, fp16>
 //     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx512fp16 (AVX512-FP16).
 //     Features: causal, GQA. alibi/tanh/padding-right/prefer_fp32 are U (fp16
 //               score epilogue has no fp32-path term; rejected before kernel work).
-//     Exposure: NOT wired in ark.cpp; internal only.
+//     Exposure: wired from ark.cpp as an internal optimization backend for the
+//               standard public sdpa() path; unresolved cases fall back to scalar.
 //
-//   Route 4 — bf16,bf16,bf16,bf16  (Tier 2, internal-only):
+//   Route 4 — bf16,bf16,bf16,bf16  (Tier 2, standard-SDPA internal optimization):
 //     bestla_fusion_attn_forward<bf16, bf16, bf16, bf16>
 //     Launcher: mha_interface_t (non-stable exp-sum) / gemm::HCoreRowNAmxbf16.
 //     Features: causal only (no GQA, no alibi/tanh/padding-right/prefer_fp32).
-//     Exposure: NOT wired in ark.cpp; internal only.
+//     Exposure: wired from ark.cpp only for its narrow homogeneous bf16 contract;
+//               unresolved cases fall back to scalar.
 //
 // Key API-drift notes vs Neural Speed's BestLA:
 //   * ARK's ScaleTrackMax adds a padding_type argument (0=dense, 1=causal,
@@ -65,6 +67,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
@@ -143,10 +146,43 @@ struct attn_fwd_args_t {
   int step_k_bs, step_k_head_num, step_k_sl, step_k_head_size;
   int step_v_bs, step_v_head_num, step_v_sl, step_v_head_size;
   int step_dst_bs, step_dst_head_num, step_dst_sl;
-  // Number of valid (non-padding) K/V positions when ATTN_FLAG_PADDING_RIGHT is
-  // set (ARK addition; ignored otherwise).
-  int n_padding = 0;
+  // Number of valid (non-padding) K/V positions for each batch entry when
+  // ATTN_FLAG_PADDING_RIGHT is set (ARK addition; ignored otherwise).
+  const int* n_padding = nullptr;
 };
+
+struct bestla_tmp_layout_t {
+  size_t prefix_bytes;
+  size_t thread_bytes;
+  size_t thread_stride_bytes;
+};
+
+// Conservative scratch layout shared by every migrated BestLA attention route.
+//
+// Both the stable and non-stable launchers treat `tmp` as the start of the
+// current tile and then temporarily "rewind" by `i_m * ld_tmp_*` so the
+// epilogues can pretend they are writing into a full [sl_q, sl_kv] matrix. That
+// means each thread needs its OWN prefix region before its per-thread tile
+// scratch; a single process-wide prefix is not sufficient because adjacent
+// threads can otherwise alias when one thread handles tile i_m=0 and another
+// handles tile i_m=M_TILE.
+//
+// The layout is intentionally route-agnostic and over-allocates to the largest
+// migrated tile family:
+//   * M_TILE <= 16
+//   * NTILE <= 64   (homogeneous fp16/bf16 paths)
+//   * KTILE <= 64   (covers the route-4 exp-sum path's 64-wide K tile)
+inline bestla_tmp_layout_t bestla_tmp_layout(int sl_q, int sl_kv) {
+  constexpr int kMaxMTile = 16;
+  constexpr int kMaxNTile = 64;
+  constexpr int kMaxKTile = 64;
+  const int padded_n = utils::padto(std::max(1, sl_kv), kMaxNTile);
+  const int padded_k = utils::padto(padded_n, kMaxKTile);
+  const size_t prefix_bytes =
+      static_cast<size_t>(std::max(1, sl_q)) * static_cast<size_t>(padded_k) * sizeof(float);
+  const size_t thread_bytes = static_cast<size_t>(kMaxMTile) * static_cast<size_t>(padded_k) * sizeof(float);
+  return {prefix_bytes, thread_bytes, prefix_bytes + thread_bytes};
+}
 
 /**
  * @brief Epilogue that scales the fp32 GEMM result (optionally per-row), casts
@@ -168,6 +204,27 @@ class scale_write_back_t {
                                   size_t /* cachesize */) {
     const auto dst = p.dst + M_offset * p.ld_dst + N_offset;
     const auto scale = p.scale + M_offset;
+
+    // DEBUG Route4: check PV gemm fp32 output for NaN BEFORE scale+writeback
+    if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
+      if (env[0] == '1') {
+        bool has_nan = false;
+        int first_row = -1, first_col = -1;
+        for (int i = 0; i < M && !has_nan; ++i) {
+          for (int j = 0; j < N; ++j) {
+            if (std::isnan(src[i * src_step + j])) {
+              has_nan = true; first_row = i; first_col = j; break;
+            }
+          }
+        }
+        if (has_nan) {
+          std::fprintf(stderr, "[ROUTE4_DEBUG] PV_GEMM_OUTPUT(raw fp32): NaN at (row=%d,col=%d) "
+                       "M=%d N=%d M_offset=%d N_offset=%d\n",
+                       first_row, first_col, M, N, M_offset, N_offset);
+        }
+      }
+    }
+
     for (int i = 0; i < M; ++i)
       for (int j = 0; j < N; ++j)  //
         dst[i * p.ld_dst + j] = static_cast<DType>(scale[i] * src[i * src_step + j]);
@@ -208,6 +265,27 @@ class scale_exp_acc_sum_fp32_t {
   static inline BTLA_CODE forward(const float* src, const int src_step, const int M_offset, const int N_offset,
                                   const int M, const int N, const Param& p, void* tmpcache, size_t cachesize) {
     assert(("alibi not supported!", p.alibi_slope == 0.f));
+
+    // DEBUG Route4 NaN: check raw QK gemm output (fp32) before exp-sum epilogue
+    if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
+      if (env[0] == '1') {
+        bool has_nan = false;
+        int first_row = -1, first_col = -1;
+        for (int i = 0; i < M && !has_nan; ++i) {
+          for (int j = 0; j < N; ++j) {
+            if (std::isnan(src[i * src_step + j])) {
+              has_nan = true; first_row = i; first_col = j; break;
+            }
+          }
+        }
+        if (has_nan) {
+          std::fprintf(stderr, "[ROUTE4_DEBUG] QK_GEMM_OUTPUT(raw fp32): NaN at (row=%d,col=%d) "
+                       "M=%d N=%d M_offset=%d N_offset=%d\n",
+                       first_row, first_col, M, N, M_offset, N_offset);
+        }
+      }
+    }
+
     return bestla::kernel::wrapper::ScaleExpAccSumFp32<T_DST>::template forward<ISA_T>(
         src, src_step, p.dst, p.ld_dst, p.dst_sum, M_offset, N_offset, M, N, p.scale, p.causal_offset, tmpcache,
         cachesize);
@@ -912,10 +990,6 @@ class mha_stable_interface_t {
     assert(!is_causal || p.sl_q <= p.sl_kv);
     assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
     const auto group_heads = p.head_num / p.heads_kv;  // GQA: ihkv = ihn / group_heads
-    const auto sl_diff = p.sl_kv - p.sl_q;
-    // ARK addition: number of valid K/V positions for the right-padding route.
-    const auto padded_kv = is_padding ? std::min(p.sl_kv, p.n_padding) : p.sl_kv;
-
     // ARK drift: Neural Speed adjusts these under NS_TP_MODEL; ARK has no TP.
     const int32_t k_offset = 0;
     const int32_t log_head_num = p.head_num;
@@ -935,7 +1009,9 @@ class mha_stable_interface_t {
     th.parallel_for([&](int tid) {
       const int tmp_s_size = M_TILE * utils::padto(utils::padto(p.sl_kv, GemmQK::NTILE), GemmPV::KTILE);
       const int tmp_bytes = tmp_s_size * sizeof(float);  // S & exp
-      const auto tmp_s = reinterpret_cast<float*>(p.tmp + tid * tmp_bytes);
+      const auto tmp_layout = bestla_tmp_layout(p.sl_q, p.sl_kv);
+      const auto thread_tmp = p.tmp + static_cast<size_t>(tid) * tmp_layout.thread_stride_bytes;
+      const auto tmp_s = reinterpret_cast<float*>(thread_tmp + tmp_layout.prefix_bytes);
       using PType = typename GemmPV::AType;
       const auto tmp_p = reinterpret_cast<PType*>(tmp_s);  // overwrite tmp_s row-wisely
 
@@ -956,6 +1032,7 @@ class mha_stable_interface_t {
           const int ihn = ibat % p.head_num;
           const int ihkv = ihn / group_heads;  // GQA mapping
           const int m_size = std::min(M_TILE, p.sl_q - i_m);
+          const int padded_kv = is_padding ? std::min(p.sl_kv, p.n_padding[ibs]) : p.sl_kv;
 
           const auto alibi_ihn_m = !is_alibi ? 0.f
                                    : (ihn + k_offset < n_heads_log2_floor)
@@ -970,7 +1047,7 @@ class mha_stable_interface_t {
           const auto head_k = p.K + ibs * p.step_k_bs + ihkv * p.step_k_head_num;
           const auto head_v = p.V + ibs * p.step_v_bs + ihkv * p.step_v_head_num;
           const auto head_dst = p.dst + ibs * p.step_dst_bs + ihn * p.step_dst_head_num;
-          const auto unmasked_size = is_causal ? std::min(p.sl_kv, sl_diff + i_m + M_TILE - 1 + 1)
+          const auto unmasked_size = is_causal ? std::min(p.sl_kv, i_m + M_TILE)
                                      : is_padding ? padded_kv
                                                   : p.sl_kv;
 
@@ -1016,9 +1093,10 @@ class mha_stable_interface_t {
                       /* .dst_max = */ s_max - i_m,         // pretend that there is a whole S mat
                       /* .ld_dst = */ ld_tmp_s,
                       /* .scale = */ p.QK_scale * p.Q_sc * p.K_sc / (tanh_scale == 0 ? 1.0f : tanh_scale),
-                      // ARK: padding_type encodes the mask mode; causal reuses
-                      // sl_diff, right-padding reuses the n_padding boundary.
-                      /* .causal_offset = */ is_causal ? sl_diff : (is_padding ? padded_kv : -1),
+                      // Public sdpa aligns non-square causal to PyTorch: query
+                      // row i only sees keys [0, i], i.e. left-aligned rather
+                      // than Neural Speed's decode-style right alignment.
+                      /* .causal_offset = */ is_causal ? 0 : (is_padding ? padded_kv : -1),
                       /* .alibi_slope = */ alibi_ihn_m,
                       /* .tanh_scale = */ tanh_scale,
                       /* .padding_type = */ is_causal ? 1 : (is_padding ? 2 : 0),
@@ -1027,7 +1105,7 @@ class mha_stable_interface_t {
               tpQK);
 
           // softmax (with pre-computed row_max)
-          const auto unmasked_size_start = is_causal ? std::min(sl_diff + i_m + 1, p.sl_kv)
+          const auto unmasked_size_start = is_causal ? std::min(i_m + 1, p.sl_kv)
                                            : is_padding ? padded_kv
                                                         : p.sl_kv;
           float expsum[M_TILE]{};  // sum of exp for each row of the S matrix
@@ -1037,9 +1115,10 @@ class mha_stable_interface_t {
               is_causal, tmp_s, tmp_p, s_max, expsum, ld_tmp_s, ld_tmp_p);           //
 
           const auto pv_scale = expsum;
-          // PV scale composition: V_sc / dst_sc (with the int8 1/UINT8_MAX
-          // dequant factor scaffolded in, matching Neural Speed).
-          for (int i = 0; i < M_TILE; ++i) pv_scale[i] = p.V_sc / UINT8_MAX / expsum[i] / p.dst_sc;
+          // Only the first m_size rows are consumed by the PV GEMM for this tile.
+          // Leaving the tail rows as 1/0 = inf can leak into AMX small-shape tiles.
+          for (int i = 0; i < m_size; ++i) pv_scale[i] = p.V_sc / UINT8_MAX / expsum[i] / p.dst_sc;
+          for (int i = m_size; i < M_TILE; ++i) pv_scale[i] = 0.f;
 
           const auto pv_prov_ldb = p.step_v_head_size == 1                          ? p.step_v_sl
                                    : p.V_layout == ATTN_FWD_LAYOUT_NTILE48_ROWPACK4 ? p.step_v_head_size
@@ -1160,16 +1239,34 @@ class mha_interface_t {
     (void)is_alibi;
     const auto sl_diff = p.sl_kv - p.sl_q;
 
+    // Release any stale AMX tile state left by a previous call (or another AMX
+    // user in the same process).  Without this, ldtilecfg + tilezero inside the
+    // first gemm can operate on corrupted tile configuration, producing NaN in
+    // gemm output on repeated calls.
+#ifdef __x86_64__
+    __asm__ __volatile__(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0" ::: "memory");
+#endif
+
     // prepare memory for packed weight (one reordered K/V tensor per head)
     storage_packed_weight_batch_t /*<typename GemmQK::BType>*/ K_pack(GemmQK::ID);  // packed K
     K_pack.resize(utils::padto(p.sl_kv, GemmQK::NTILE), utils::padto(p.head_size, GemmQK::KTILE), p.sl_kv, p.head_size,
                   num_heads, utils::bestla_dtype<typename GemmQK::BType>);
     auto bufferK = utils::amalloc<int8_t>(K_pack.mSize);
+    std::memset(bufferK, 0, K_pack.mSize);
     K_pack.assign(bufferK);
     storage_packed_weight_batch_t /*<typename GemmPV::BType>*/ V_pack(GemmPV::ID);  // packed V
-    V_pack.resize(utils::padto(p.head_size, GemmPV::NTILE), utils::padto(p.sl_kv, GemmPV::KTILE), p.head_size, p.sl_kv,
+    // The PV gemm K-dimension is padto(sl_kv, GemmQK::NTILE), not sl_kv, because
+    // the P-matrix N-dimension (the K for P×V) is padded to the QK gemm's NTILE.
+    // The V_pack buffer must be large enough for the gemm kernel to read all K
+    // tiles without overflowing — each tile reads BKStepSize =
+    // KTILE*NTILE*sizeof(bf16) bytes.  Sizing for the actual gemm K prevents
+    // out-of-bounds reads that produce NaN when the buffer is too small
+    // (observed when num_heads == 1, where the old sizing was too tight).
+    const int v_k_gemm = utils::padto(p.sl_kv, GemmQK::NTILE);
+    V_pack.resize(utils::padto(p.head_size, GemmPV::NTILE), v_k_gemm, p.head_size, v_k_gemm,
                   num_heads, utils::bestla_dtype<typename GemmPV::BType>);
     auto bufferV = utils::amalloc<int8_t>(V_pack.mSize);
+    std::memset(bufferV, 0, V_pack.mSize);
     V_pack.assign(bufferV);
     const auto K_pack_batch_off = K_pack.mKPad * K_pack.mNPad;
     const auto V_pack_batch_off = V_pack.mKPad * V_pack.mNPad;
@@ -1221,7 +1318,9 @@ class mha_interface_t {
       // calculate mm + softmax + mm
       {
         const int tmp_exp_size = M_TILE * utils::padto(p.sl_kv, GemmQK::NTILE) * static_cast<int>(sizeof(utils::bf16));
-        const auto tmp = p.tmp + tid * tmp_exp_size;
+        const auto tmp_layout = bestla_tmp_layout(p.sl_q, p.sl_kv);
+        const auto thread_tmp = p.tmp + static_cast<size_t>(tid) * tmp_layout.thread_stride_bytes;
+        const auto tmp = thread_tmp + tmp_layout.prefix_bytes;
         ThreadProblem2D thdp{tid};
         parl.getIndex(thdp);
         const auto [task_start, _assert0] = thdp.loc;
@@ -1245,8 +1344,8 @@ class mha_interface_t {
           const auto head_dst = p.dst + ibs * p.step_dst_bs + ihn * p.step_dst_head_num;
           const auto unmasked_size = is_causal ? std::min(p.sl_kv, p.sl_kv - p.sl_q + i_m + M_TILE - 1 + 1) : p.sl_kv;
 
-          const auto unmasked_size_pad_qk = std::min(p.sl_kv, utils::padto(unmasked_size, GemmQK::NTILE));
-          const auto unmasked_size_pad_pv = std::min(p.sl_kv, utils::padto(unmasked_size, GemmPV::KTILE));
+          const auto unmasked_size_pad_qk = utils::padto(unmasked_size, GemmQK::NTILE);
+          const auto unmasked_size_pad_pv = utils::padto(unmasked_size, GemmPV::KTILE);
           const auto ld_tmp_exp = utils::padto(utils::padto(unmasked_size_pad_pv, GemmQK::NTILE), GemmPV::KTILE);
 
           typename parallel::gemm::ThreadProblemBase tpQK{
@@ -1256,6 +1355,14 @@ class mha_interface_t {
               /* .tmpcachesize = */ _cd->getL2CacheSize(),
           };
           const auto bf16_tmp = reinterpret_cast<utils::bf16*>(tmp);
+
+          // Release any stale AMX tile state before every gemm to prevent
+          // cross-gemm tile register corruption (observed as NaN at row=8,col=0
+          // in QK gemm output on repeated causal calls).
+#ifdef __x86_64__
+          __asm__ __volatile__(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0" ::: "memory");
+#endif
+
           L_ExpSum::run(  // QxK => S ==exp==> P
               QKArgs{
                   utils::GemmProblem{
@@ -1277,7 +1384,111 @@ class mha_interface_t {
                   },
               },
               tpQK, /* w_offset */ ibat * K_pack_batch_off);
-          for (int ii = 0; ii < M_TILE; ++ii) exp_sum[ii] = 1.f / exp_sum[ii];
+
+          // DEBUG Route4 NaN instrumentation: checkpoint 1 — after QK exp-sum
+          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
+            if (env[0] == '1') {
+              static int call_count = 0;
+              bool has_nan_p = false, has_nan_sum = false;
+              int first_nan_p_row = -1, first_nan_p_col = -1;
+              for (int ii = 0; ii < m_size && !has_nan_p; ++ii) {
+                for (int jj = 0; jj < unmasked_size_pad_qk; ++jj) {
+                  auto val = bf16_tmp[ii * ld_tmp_exp + jj];
+                  if (std::isnan(static_cast<float>(val))) {
+                    has_nan_p = true; first_nan_p_row = ii; first_nan_p_col = jj; break;
+                  }
+                }
+              }
+              for (int ii = 0; ii < m_size; ++ii) {
+                if (std::isnan(exp_sum[ii])) { has_nan_sum = true; break; }
+              }
+              if (has_nan_p || has_nan_sum) {
+                std::fprintf(stderr, "[ROUTE4_DEBUG] call=%d tid=%d ibat=%d ihn=%d i_m=%d "
+                             "CKPT1(after QK exp-sum): NaN_P=%d(first@row=%d,col=%d) NaN_exp_sum=%d "
+                             "m_size=%d unmasked=%d\n",
+                             call_count, tid, ibat, ihn, i_m,
+                             has_nan_p, first_nan_p_row, first_nan_p_col, has_nan_sum,
+                             m_size, unmasked_size);
+              }
+              ++call_count;
+            }
+          }
+
+          for (int ii = 0; ii < m_size; ++ii) exp_sum[ii] = 1.f / exp_sum[ii];
+          for (int ii = m_size; ii < M_TILE; ++ii) exp_sum[ii] = 0.f;
+
+          // DEBUG Route4 NaN instrumentation: checkpoint 2 — after reciprocal
+          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
+            if (env[0] == '1') {
+              bool has_nan = false, has_inf = false;
+              for (int ii = 0; ii < m_size; ++ii) {
+                if (std::isnan(exp_sum[ii])) has_nan = true;
+                if (std::isinf(exp_sum[ii])) has_inf = true;
+              }
+              if (has_nan || has_inf) {
+                std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ibat=%d ihn=%d i_m=%d "
+                             "CKPT2(after 1/exp_sum): NaN=%d Inf=%d m_size=%d exp_sum=[",
+                             tid, ibat, ihn, i_m, has_nan, has_inf, m_size);
+                for (int ii = 0; ii < m_size; ++ii)
+                  std::fprintf(stderr, "%a ", static_cast<double>(exp_sum[ii]));
+                std::fprintf(stderr, "]\n");
+              }
+            }
+          }
+
+          // Release AMX tile state before the PV gemm to prevent AVX-512
+          // register aliasing with tile registers from the QK+exp-sum stage.
+          // BestLA's JIT gemm kernels do NOT call tilerelease, so the tile
+          // configuration remains active after the QK gemm + exp-sum epilogue
+          // (which uses AVX-512). Without tilerelease here, the PV gemm's
+          // subsequent ldtilecfg+tilezero may operate on corrupted tile state.
+          // The tilerelease instruction encoding is: C4 E2 78 49 C0
+#ifdef __x86_64__
+          __asm__ __volatile__(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0" ::: "memory");
+#endif
+
+          // DEBUG Route4: dump V packed data for head 3 to check for corruption
+          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
+            if (env[0] == '1' && ihn == 3) {
+              const auto* vpack = reinterpret_cast<const utils::bf16*>(
+                  V_pack.template WPtr<typename GemmPV::BType>());
+              const int v_kpad = V_pack.mKPad;  // = head_size padded
+              const int v_npad = V_pack.mNPad;  // = sl_kv padded
+              bool v_has_nan = false, v_has_inf = false;
+              int v_nan_k = -1, v_nan_n = -1;
+              // Check head 3's V data (ibus=0, ihn=3 → ibat=3)
+              const int ibat3 = 3;
+              for (int kk = 0; kk < v_kpad && !v_has_nan; ++kk) {
+                for (int nn = 0; nn < v_npad && !v_has_nan; ++nn) {
+                  auto vv = vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad +
+                                   static_cast<size_t>(kk) * v_npad + nn];
+                  if (std::isnan(static_cast<float>(vv))) {
+                    v_has_nan = true; v_nan_k = kk; v_nan_n = nn;
+                  }
+                  if (std::isinf(static_cast<float>(vv))) {
+                    v_has_inf = true;
+                  }
+                }
+              }
+              if (v_has_nan || v_has_inf) {
+                std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ihn=%d V_pack_HEAD3: NaN=%d Inf=%d "
+                             "(first_nan@k=%d,n=%d) v_kpad=%d v_npad=%d head_size=%d sl_kv=%d\n",
+                             tid, ihn, v_has_nan, v_has_inf, v_nan_k, v_nan_n,
+                             v_kpad, v_npad, p.head_size, p.sl_kv);
+              }
+              // Also dump a few samples of V data for head 3
+              std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ihn=%d V_pack_HEAD3_sample: "
+                           "v[0,0]=%f v[0,1]=%f v[1,0]=%f v[15,31]=%f "
+                           "KPad=%d NPad=%d mK=%d mN=%d\n",
+                           tid, ihn,
+                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad]),
+                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad + 1]),
+                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad + v_npad]),
+                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad +
+                                                        15 * v_npad + 31]),
+                           v_kpad, v_npad, V_pack.mK, V_pack.mN);
+            }
+          }
 
           typename parallel::gemm::ThreadProblemBase tpPV{
               /* ThreadProblem2D */ {tid, {}, {0, 0}, {m_size, p.head_size}, true},
@@ -1303,11 +1514,49 @@ class mha_interface_t {
                   },
               },
               tpPV, /* w_offset */ ibat * V_pack_batch_off);
+
+          // DEBUG Route4 NaN instrumentation: checkpoint 3 — after PV write-back
+          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
+            if (env[0] == '1') {
+              bool has_nan = false;
+              int first_row = -1, first_col = -1;
+              for (int ii = 0; ii < m_size && !has_nan; ++ii) {
+                for (int jj = 0; jj < p.head_size; ++jj) {
+                  auto val = head_dst[ii * p.step_dst_sl + jj];
+                  if (std::isnan(static_cast<float>(val))) {
+                    has_nan = true; first_row = ii; first_col = jj; break;
+                  }
+                }
+              }
+              if (has_nan) {
+                std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ibat=%d ihn=%d i_m=%d "
+                             "CKPT3(after PV writeback): NaN in dst first@(row=%d,col=%d) "
+                             "m_size=%d head_size=%d\n",
+                             tid, ibat, ihn, i_m,
+                             first_row, first_col, m_size, p.head_size);
+              }
+            }
+          }
         }
+
+        // Release AMX tile state at end of this thread's work to prevent
+        // cross-call tile state leakage on hyperthreaded cores.
+#ifdef __x86_64__
+        __asm__ __volatile__(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0" ::: "memory");
+#endif
       }
     });
     utils::afree(bufferK);
     utils::afree(bufferV);
+
+    // Release AMX tile state so the next call to compute() (or any other AMX
+    // user in the same process) starts with a clean tile configuration.
+    // Without this, state leakage across calls can cause NaN in QK gemm output
+    // when the previous PV gemm left tiles in an incompatible configuration.
+#ifdef __x86_64__
+    __asm__ __volatile__(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0" ::: "memory");
+#endif
+
     return BTLA_CODE::Success;
   }
 };
@@ -1382,8 +1631,13 @@ template <>
 inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
     const attn_fwd_args_t<float, utils::bf16, utils::bf16, float>& params, parallel::IThreading& th) {
   GetCPUDevice();
+  const bool force_fp32_features =
+      (params.attn_flags & (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8)) != 0;
+  const bool force_fp32_small_shape = params.sl_kv < 48 || params.head_size < 48;
   if (_cd->AVX512F() &&
-      ((_cd->AMX_BF16() && (params.attn_flags & ATTN_FLAG_PREFER_FP32) != 0) || !_cd->AMX_BF16())) {
+      ((_cd->AMX_BF16() &&
+        ((params.attn_flags & ATTN_FLAG_PREFER_FP32) != 0 || force_fp32_features || force_fp32_small_shape)) ||
+       !_cd->AMX_BF16())) {
 #if CompileAVX512F()
     using GemmKernelBF16TrackMax = launcher_base_weight_t<  //
         gemm::SCoreRowNAvx512f<48, 8>,                      //
@@ -1541,7 +1795,7 @@ inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, ut
         prologue_a::gemm::ActivationBase,              //
         WeightPackBatchBf16Bf16NonTr,                  //
         ScaleWriteBackFp32Bf16>;                       //
-    static mha_interface_t<GemmKernelBF16ExpSum, GemmKernelBF16> mha;
+    mha_interface_t<GemmKernelBF16ExpSum, GemmKernelBF16> mha;
     [[maybe_unused]] const auto ret = mha.compute(params, th);
     assert(ret == BTLA_CODE::Success);
 #else

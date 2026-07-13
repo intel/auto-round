@@ -124,8 +124,14 @@ struct attn_fwd_args_t {
   int step_dst_head_num = 0;
   int step_dst_sl = 0;
 
-  // Number of valid (non-padding) K/V positions when PADDING_RIGHT is set.
-  int n_padding = 0;
+  // Scalar compatibility path for right-padding callers that have not migrated to
+  // per-batch padding metadata yet. When `n_padding` is null and
+  // ATTN_FLAG_PADDING_RIGHT is set, the runtime can materialize a batch-sized
+  // temporary array filled with this scalar.
+  int n_padding_scalar = 0;
+  // Number of valid (non-padding) K/V positions for each batch entry when
+  // PADDING_RIGHT is set. Length must be batch_size; ignored otherwise.
+  const int* n_padding = nullptr;
 
   // Optional BestLA threading context. Type-erased until Phase 2 wires the
   // BestLA parallel runtime in.
@@ -182,9 +188,36 @@ struct MhaDenseArgs {
   float* workspace = nullptr;
 };
 
+struct MhaReferenceArgs {
+  const void* query = nullptr;
+  const void* key = nullptr;
+  const void* value = nullptr;
+  void* output = nullptr;
+  const float* attn_mask = nullptr;
+  AttentionStrides q_strides;
+  AttentionStrides k_strides;
+  ValueStrides v_strides;
+  AttentionStrides o_strides;
+  BTLA_DTYPE q_dtype = BTLA_DTYPE::F32;
+  BTLA_DTYPE kv_dtype = BTLA_DTYPE::F32;
+  BTLA_DTYPE o_dtype = BTLA_DTYPE::F32;
+  int batch = 0;
+  int num_heads_q = 0;
+  int num_heads_kv = 0;
+  int seq_len_q = 0;
+  int seq_len_kv = 0;
+  int head_dim = 0;
+  float softmax_scale = 1.0f;
+  bool is_causal = false;
+  int kv_block_size = 0;
+  float* workspace = nullptr;
+};
+
 // Number of FP32 elements required by the workspace buffer for the given args.
 size_t mha_dense_workspace_size(const MhaDenseArgs& args);
+size_t mha_reference_workspace_size(const MhaReferenceArgs& args);
 
 void mha_dense_forward(const MhaDenseArgs& args);
+void mha_reference_forward(const MhaReferenceArgs& args);
 
 }  // namespace ark::cpu

@@ -14,6 +14,7 @@
 
 import os
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Optional
 import torch
 
@@ -265,6 +266,35 @@ def _contiguous_hnd_qko_strides(num_heads: int, seq_len: int, head_dim: int) -> 
 
 def _contiguous_hnd_v_strides(num_heads: int, seq_len: int, head_dim: int) -> tuple[int, int, int, int]:
     return 1, head_dim, seq_len * head_dim, num_heads * seq_len * head_dim
+
+
+def _torch_dtype_from_ark_dtype(dtype: int) -> torch.dtype:
+    if dtype == ARK_DT.float16:
+        return torch.float16
+    if dtype == ARK_DT.bfloat16:
+        return torch.bfloat16
+    if dtype == ARK_DT.float32:
+        return torch.float32
+    raise ValueError(f"Unsupported ARK dtype code: {dtype}")
+
+
+def _normalize_batch_padding(n_padding, batch: int):
+    if n_padding is None:
+        return None
+    if isinstance(n_padding, int):
+        return int(n_padding) if n_padding > 0 else None
+    if isinstance(n_padding, torch.Tensor):
+        if n_padding.ndim != 1 or n_padding.numel() != batch:
+            raise ValueError(f"n_padding tensor must be 1D with {batch} elements, got shape {tuple(n_padding.shape)}")
+        return [int(v) for v in n_padding.to(device="cpu", dtype=torch.int64).tolist()]
+    if isinstance(n_padding, Sequence) and not isinstance(n_padding, (str, bytes)):
+        values = [int(v) for v in n_padding]
+        if len(values) == 0:
+            return None
+        if len(values) != batch:
+            raise ValueError(f"n_padding sequence must have length {batch}, got {len(values)}")
+        return values
+    raise TypeError("n_padding must be None, an int, a 1D tensor, or a length-batch sequence of ints")
 
 
 @dataclass(frozen=True)
@@ -675,6 +705,9 @@ def sdpa(
     - NHD: [B, N, H, D]
 
     Args:
+    - attn_mask: Additive float32 attention bias with shape [B, 1, Sq, Skv].
+    - dropout_p: Must be 0.0; dropout is not supported.
+    - is_causal: Apply the standard causal mask.
     - scale: Softmax scale. Uses 1 / sqrt(D) when None.
     - tensor_layout: Layout of Q/K/V/O tensors.
     - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
@@ -698,15 +731,6 @@ def sdpa(
     """
     if query.device.type not in ("cpu", "xpu"):
         raise NotImplementedError(f"sdpa is not supported on {query.device.type}")
-
-    # BestLA-specific flags (use_alibi, use_tanh, prefer_fp32, n_padding) are
-    # only wired for the CPU path. Reject them early on XPU so callers get a
-    # clear error rather than silently missing the feature.
-    if query.device.type == "xpu" and (use_alibi or use_tanh or prefer_fp32 or n_padding):
-        raise NotImplementedError(
-            "use_alibi, use_tanh, prefer_fp32, and n_padding are CPU-only BestLA "
-            "features and are not supported on XPU"
-        )
 
     supported_dtypes = (torch.float32, torch.float16, torch.bfloat16) if query.device.type == "cpu" else (
         torch.float16,
@@ -971,6 +995,129 @@ def sdpa_varlen(
 
     if return_lse:
         return O, LSE
+    return O
+
+
+def debug_cpu_sdpa_route(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    attn_mask: torch.Tensor | None = None,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+    use_alibi: bool = False,
+    use_tanh: bool = False,
+    prefer_fp32: bool = False,
+    n_padding=None,
+) -> int:
+    """Return the resolved internal CPU SDPA route for tests/debugging."""
+    if query.device.type != "cpu":
+        raise NotImplementedError("debug_cpu_sdpa_route is only supported on CPU")
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_debug_resolve_sdpa_route"):
+        raise NotImplementedError("ARK CPU debug route resolver is not available")
+
+    mixed_kv = (
+        query.dtype == torch.float32
+        and key.dtype == value.dtype
+        and key.dtype in (torch.float16, torch.bfloat16)
+    )
+    if not mixed_kv and (key.dtype != query.dtype or value.dtype != query.dtype):
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
+    )
+    normalized_n_padding = _normalize_batch_padding(n_padding, B)
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    out_dtype = torch.float32 if mixed_kv else value.dtype
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=out_dtype, device=query.device, tensor_layout=tensor_layout)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    return cpu_lib.ark_cpu_debug_resolve_sdpa_route(
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        bool(use_alibi),
+        bool(use_tanh),
+        bool(prefer_fp32),
+        normalized_n_padding,
+    )
+
+
+def debug_route4_raw(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Debug-only: call the raw Route 4 kernel directly (bypassing the
+    mha_dense_forward mitigation). Requires ARK_DEBUG_ROUTE4_NAN=1 for NaN
+    instrumentation. Q/K/V must be bf16 and satisfy the Route 4 contract
+   (no GQA, PLAIN layout). Returns the kernel output tensor."""
+    if query.device.type != "cpu":
+        raise NotImplementedError("debug_route4_raw is only supported on CPU")
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_debug_route4_raw"):
+        raise NotImplementedError("ARK CPU debug route4 raw is not available")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
+    )
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    cpu_lib.ark_cpu_debug_route4_raw(
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        0,  # attn_mask
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        False,  # use_alibi
+        False,  # use_tanh
+        False,  # prefer_fp32
+        None,   # n_padding
+    )
     return O
 
 
@@ -1447,6 +1594,137 @@ def ark_cpu_kv_update(
     return key_cache, value_cache
 
 
+# -----------------------------------------------------------------------------
+# Internal/experimental CPU mixed-route lifecycle helpers.
+#
+# These APIs exist to manage backend state (packed descriptors/caches/rope/packed
+# forwards). They are intentionally outside the public sdpa() contract, which
+# remains the standard SDPA surface.
+# -----------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ArkCpuPackedKVHandle:
+    """Internal/experimental handle for the packed BestLA CPU KV-cache path."""
+    descriptor: object
+    dtype: torch.dtype
+
+    @classmethod
+    def create(
+        cls,
+        batch: int,
+        num_heads_kv: int,
+        capacity: int,
+        head_dim: int,
+        *,
+        dtype: torch.dtype = torch.float16,
+    ) -> "ArkCpuPackedKVHandle":
+        return cls(ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, dtype=dtype), dtype)
+
+    def info(self) -> dict:
+        return ark_cpu_packed_kv_info(descriptor=self.descriptor)
+
+    def alloc(self, *, device: str = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
+        return ark_cpu_packed_kv_alloc_from_descriptor(self.descriptor, dtype=self.dtype, device=device)
+
+    def update(
+        self,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        start_pos: int,
+        *,
+        tensor_layout: str = "HND",
+        no_zeroing: bool = False,
+    ) -> None:
+        return ark_cpu_update_packed_kv_from_descriptor(
+            self.descriptor, cache_k, cache_v, key, value, start_pos, tensor_layout=tensor_layout, no_zeroing=no_zeroing
+        )
+
+    def copy(
+        self,
+        dst_cache_k: torch.Tensor,
+        dst_cache_v: torch.Tensor,
+        src_cache_k: torch.Tensor,
+        src_cache_v: torch.Tensor,
+        seq_off: int,
+        seq_size: int,
+        *,
+        no_zeroing: bool = False,
+    ) -> None:
+        return ark_cpu_copy_packed_kv_from_descriptor(
+            self.descriptor, dst_cache_k, dst_cache_v, src_cache_k, src_cache_v, seq_off, seq_size, no_zeroing=no_zeroing
+        )
+
+    def shift_k(self, cache_k: torch.Tensor, cossin: torch.Tensor, *, seq_keep: int) -> None:
+        return ark_cpu_shift_packed_k_from_descriptor(self.descriptor, cache_k, cossin, seq_keep=seq_keep)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+        seq_len_kv: int,
+        num_heads_kv: int | None = None,
+        *,
+        is_causal: bool = False,
+        scale: Optional[float] = None,
+        use_alibi: bool = False,
+        use_tanh: bool = False,
+        prefer_fp32: bool = False,
+        n_padding=None,
+        tensor_layout: str = "HND",
+    ) -> torch.Tensor:
+        del num_heads_kv
+        return ark_cpu_bestla_sdpa_packed_from_descriptor(
+            self.descriptor,
+            query,
+            cache_k,
+            cache_v,
+            seq_len_kv,
+            is_causal=is_causal,
+            scale=scale,
+            use_alibi=use_alibi,
+            use_tanh=use_tanh,
+            prefer_fp32=prefer_fp32,
+            n_padding=n_padding,
+            tensor_layout=tensor_layout,
+        )
+
+
+def ark_cpu_packed_kv_descriptor(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float16,
+):
+    """Create an internal/experimental packed-KV descriptor for repeated CPU BestLA cache operations."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_descriptor"):
+        raise NotImplementedError("ARK CPU packed KV descriptor is not available (requires BestLA CPU extension build)")
+    return cpu_lib.ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype))
+
+
+def ark_cpu_packed_kv_alloc_from_descriptor(
+    descriptor,
+    *,
+    dtype: Optional[torch.dtype] = None,
+    device: str = "cpu",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_elems_desc"):
+        raise NotImplementedError("ARK CPU packed KV descriptor allocation is not available (requires BestLA CPU extension build)")
+    desc_info = ark_cpu_packed_kv_info(descriptor=descriptor)
+    desc_dtype = _torch_dtype_from_ark_dtype(int(desc_info["dtype"]))
+    alloc_dtype = dtype if dtype is not None else desc_dtype
+    if alloc_dtype != desc_dtype:
+        raise ValueError(f"Descriptor dtype {desc_dtype} does not match requested allocation dtype {alloc_dtype}")
+    k_elems, v_elems = cpu_lib.ark_cpu_packed_kv_elems_desc(descriptor)
+    return (
+        torch.zeros(k_elems, dtype=alloc_dtype, device=device),
+        torch.zeros(v_elems, dtype=alloc_dtype, device=device),
+    )
+
+
 def ark_cpu_packed_kv_alloc(
     batch: int,
     num_heads_kv: int,
@@ -1456,22 +1734,65 @@ def ark_cpu_packed_kv_alloc(
     dtype: torch.dtype = torch.float16,
     device: str = "cpu",
 ) -> tuple:
-    """Allocate 1-D packed K and V cache tensors for the NS-parity BestLA decode path.
+    """Allocate internal/experimental 1-D packed K/V tensors for the BestLA decode path.
 
     Returns (cache_k, cache_v) as 1-D tensors of the requested dtype.  The packed
     geometry is NTILE24_ROWPACK1 for fp16, NTILE48_ROWPACK2 for bf16, matching the
     layout expected by ark_cpu_update_packed_k/v and ark_cpu_bestla_sdpa_packed.
 
-    Requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 at forward time; allocation itself does
-    not check the env var.  Both tensors are zero-initialized (unwritten packed slots
-    read as zero).
+    Both tensors are zero-initialized (unwritten packed slots read as zero).
     """
-    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_elems"):
-        raise NotImplementedError("ARK CPU packed KV cache is not available (requires BestLA CPU extension build)")
-    k_elems, v_elems = cpu_lib.ark_cpu_packed_kv_elems(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype))
-    cache_k = torch.zeros(k_elems, dtype=dtype, device=device)
-    cache_v = torch.zeros(v_elems, dtype=dtype, device=device)
-    return cache_k, cache_v
+    descriptor = ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, dtype=dtype)
+    return ark_cpu_packed_kv_alloc_from_descriptor(descriptor, dtype=dtype, device=device)
+
+
+def ark_cpu_packed_kv_info(
+    batch: Optional[int] = None,
+    num_heads_kv: Optional[int] = None,
+    capacity: Optional[int] = None,
+    head_dim: Optional[int] = None,
+    *,
+    dtype: torch.dtype = torch.float16,
+    descriptor=None,
+) -> dict:
+    """Return the internal/experimental packed-KV descriptor used by the CPU BestLA path."""
+    if descriptor is not None:
+        if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_info_desc"):
+            raise NotImplementedError("ARK CPU packed KV descriptor query is not available (requires BestLA CPU extension build)")
+        return dict(cpu_lib.ark_cpu_packed_kv_info_desc(descriptor))
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_info"):
+        raise NotImplementedError("ARK CPU packed KV info query is not available (requires BestLA CPU extension build)")
+    if batch is None or num_heads_kv is None or capacity is None or head_dim is None:
+        raise ValueError("batch, num_heads_kv, capacity, and head_dim are required when descriptor is not provided")
+    return dict(cpu_lib.ark_cpu_packed_kv_info(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype)))
+
+
+def ark_cpu_update_packed_kv_from_descriptor(
+    descriptor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    *,
+    tensor_layout: str = "HND",
+    no_zeroing: bool = False,
+) -> None:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_update_packed_k_desc"):
+        raise NotImplementedError("ARK CPU packed KV descriptor update is not available (requires BestLA CPU extension build)")
+    batch, num_heads_kv, append_len, head_dim = _attention_shape(key, tensor_layout)
+    if batch != int(descriptor.batch_size) or num_heads_kv != int(descriptor.heads_kv) or head_dim != int(descriptor.head_dim):
+        raise ValueError("K descriptor shape does not match the key/value tensors")
+    if start_pos < 0 or start_pos + append_len > int(descriptor.logical_capacity):
+        raise ValueError("KV append range exceeds packed descriptor capacity")
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    cpu_lib.ark_cpu_update_packed_k_desc(
+        cache_k.data_ptr(), key.data_ptr(), *k_strides, descriptor, append_len, int(start_pos), bool(no_zeroing)
+    )
+    cpu_lib.ark_cpu_update_packed_v_desc(
+        cache_v.data_ptr(), value.data_ptr(), *v_strides, descriptor, append_len, int(start_pos), bool(no_zeroing)
+    )
 
 
 def ark_cpu_update_packed_kv(
@@ -1483,6 +1804,7 @@ def ark_cpu_update_packed_kv(
     capacity: int,
     *,
     tensor_layout: str = "HND",
+    no_zeroing: bool = False,
 ) -> None:
     """Append raw K/V tokens at [start_pos, start_pos+append_len) into packed caches.
 
@@ -1500,13 +1822,121 @@ def ark_cpu_update_packed_kv(
     cpu_lib.ark_cpu_update_packed_k(
         cache_k.data_ptr(), key.data_ptr(),
         *k_strides,
-        kv_dtype, batch, num_heads_kv, append_len, head_dim, capacity, int(start_pos),
+        kv_dtype, batch, num_heads_kv, append_len, head_dim, capacity, int(start_pos), bool(no_zeroing),
     )
     cpu_lib.ark_cpu_update_packed_v(
         cache_v.data_ptr(), value.data_ptr(),
         *v_strides,
-        kv_dtype, batch, num_heads_kv, append_len, head_dim, capacity, int(start_pos),
+        kv_dtype, batch, num_heads_kv, append_len, head_dim, capacity, int(start_pos), bool(no_zeroing),
     )
+
+
+def ark_cpu_copy_packed_kv(
+    dst_cache_k: torch.Tensor,
+    dst_cache_v: torch.Tensor,
+    src_cache_k: torch.Tensor,
+    src_cache_v: torch.Tensor,
+    seq_off: int,
+    seq_size: int,
+    *,
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    no_zeroing: bool = False,
+) -> None:
+    """Copy a logical window from one packed KV cache to another."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_copy_packed_k"):
+        raise NotImplementedError("ARK CPU packed KV copy is not available (requires BestLA CPU extension build)")
+    kv_dtype = cvt_dtype(dtype)
+    cpu_lib.ark_cpu_copy_packed_k(
+        dst_cache_k.data_ptr(),
+        src_cache_k.data_ptr(),
+        kv_dtype,
+        batch,
+        num_heads_kv,
+        capacity,
+        head_dim,
+        int(seq_off),
+        int(seq_size),
+        bool(no_zeroing),
+    )
+    cpu_lib.ark_cpu_copy_packed_v(
+        dst_cache_v.data_ptr(),
+        src_cache_v.data_ptr(),
+        kv_dtype,
+        batch,
+        num_heads_kv,
+        capacity,
+        head_dim,
+        int(seq_off),
+        int(seq_size),
+        bool(no_zeroing),
+    )
+
+
+def ark_cpu_copy_packed_kv_from_descriptor(
+    descriptor,
+    dst_cache_k: torch.Tensor,
+    dst_cache_v: torch.Tensor,
+    src_cache_k: torch.Tensor,
+    src_cache_v: torch.Tensor,
+    seq_off: int,
+    seq_size: int,
+    *,
+    no_zeroing: bool = False,
+) -> None:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_copy_packed_k_desc"):
+        raise NotImplementedError("ARK CPU packed KV descriptor copy is not available (requires BestLA CPU extension build)")
+    cpu_lib.ark_cpu_copy_packed_k_desc(
+        dst_cache_k.data_ptr(), src_cache_k.data_ptr(), descriptor, int(seq_off), int(seq_size), bool(no_zeroing)
+    )
+    cpu_lib.ark_cpu_copy_packed_v_desc(
+        dst_cache_v.data_ptr(), src_cache_v.data_ptr(), descriptor, int(seq_off), int(seq_size), bool(no_zeroing)
+    )
+
+
+def ark_cpu_shift_packed_k(
+    cache_k: torch.Tensor,
+    cossin: torch.Tensor,
+    *,
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    seq_keep: int,
+) -> None:
+    """Apply packed-K shift-RoPE in-place on the BF16 packed cache path."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_shift_packed_k"):
+        raise NotImplementedError("ARK CPU packed K shift-RoPE is not available (requires BestLA CPU extension build)")
+    if cossin.dtype != torch.float16:
+        raise ValueError(f"cossin must be float16, got {cossin.dtype}")
+    cpu_lib.ark_cpu_shift_packed_k(
+        cache_k.data_ptr(),
+        cossin.data_ptr(),
+        cvt_dtype(dtype),
+        batch,
+        num_heads_kv,
+        capacity,
+        head_dim,
+        int(seq_keep),
+    )
+
+
+def ark_cpu_shift_packed_k_from_descriptor(
+    descriptor,
+    cache_k: torch.Tensor,
+    cossin: torch.Tensor,
+    *,
+    seq_keep: int,
+) -> None:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_shift_packed_k_desc"):
+        raise NotImplementedError("ARK CPU packed K descriptor shift-RoPE is not available (requires BestLA CPU extension build)")
+    if cossin.dtype != torch.float16:
+        raise ValueError(f"cossin must be float16, got {cossin.dtype}")
+    cpu_lib.ark_cpu_shift_packed_k_desc(cache_k.data_ptr(), cossin.data_ptr(), descriptor, int(seq_keep))
 
 
 def ark_cpu_bestla_sdpa_packed(
@@ -1522,30 +1952,26 @@ def ark_cpu_bestla_sdpa_packed(
     use_alibi: bool = False,
     use_tanh: bool = False,
     prefer_fp32: bool = False,
-    n_padding: int = 0,
+    n_padding=None,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
-    """BestLA mixed-precision SDPA forward over a persistent packed K/V cache.
+    """Internal/experimental BestLA mixed-precision SDPA over a packed K/V cache.
 
     query must be float32; cache_k/cache_v must be float16 or bfloat16 (produced
     by ark_cpu_packed_kv_alloc + ark_cpu_update_packed_kv).  seq_len_kv is the
     current valid sequence length in the cache (<= capacity).  capacity and
     num_heads_kv must match the values used at allocation time.
 
-    Requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1.  This is the NS-parity decode forward
-    for routes 1/2; see sdpa.h for the full feature support matrix.
+    This helper is outside the standard public sdpa() contract and exists for the
+    internal mixed-route / packed-cache feature surface. n_padding accepts either
+    one scalar applied to every batch entry or a length-B vector.
     """
-    import os
-    if os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA", "0") == "0":
-        raise RuntimeError(
-            "ark_cpu_bestla_sdpa_packed requires ARK_UNSAFE_BESTLA_MIXED_SDPA=1 "
-            "(packed BestLA mixed-precision path is experimental)"
-        )
     if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed"):
         raise NotImplementedError("ARK CPU packed BestLA SDPA is not available (requires BestLA CPU extension build)")
 
     kv_dtype = cvt_dtype(cache_k.dtype)
     batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
+    normalized_n_padding = _normalize_batch_padding(n_padding, batch)
     sm_scale = scale if scale is not None else (head_dim ** -0.5)
     output = _empty_attention_output(batch, num_heads_q, seq_len_q, head_dim,
                                      dtype=query.dtype, device=query.device, tensor_layout=tensor_layout)
@@ -1556,7 +1982,59 @@ def ark_cpu_bestla_sdpa_packed(
         *q_strides, *o_strides,
         cvt_dtype(query.dtype), kv_dtype,
         batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, capacity, head_dim,
-        float(sm_scale), is_causal, use_alibi, use_tanh, prefer_fp32, n_padding,
+        float(sm_scale), is_causal, use_alibi, use_tanh, prefer_fp32, normalized_n_padding,
+    )
+    return output
+
+
+def ark_cpu_bestla_sdpa_packed_from_descriptor(
+    descriptor,
+    query: torch.Tensor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    seq_len_kv: int,
+    *,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+    use_alibi: bool = False,
+    use_tanh: bool = False,
+    prefer_fp32: bool = False,
+    n_padding=None,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Descriptor-based internal/experimental packed BestLA SDPA forward."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed_desc"):
+        raise NotImplementedError(
+            "ARK CPU packed BestLA SDPA descriptor path is not available (requires BestLA CPU extension build)"
+        )
+    batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
+    if batch != int(descriptor.batch_size) or head_dim != int(descriptor.head_dim):
+        raise ValueError("Query shape does not match the packed KV descriptor")
+    normalized_n_padding = _normalize_batch_padding(n_padding, batch)
+    sm_scale = scale if scale is not None else (head_dim ** -0.5)
+    output = _empty_attention_output(
+        batch, num_heads_q, seq_len_q, head_dim, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    o_strides = _attention_strides_qko(output, tensor_layout)
+    cpu_lib.ark_cpu_bestla_sdpa_packed_desc(
+        query.data_ptr(),
+        cache_k.data_ptr(),
+        cache_v.data_ptr(),
+        output.data_ptr(),
+        *q_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        descriptor,
+        num_heads_q,
+        seq_len_q,
+        seq_len_kv,
+        float(sm_scale),
+        bool(is_causal),
+        bool(use_alibi),
+        bool(use_tanh),
+        bool(prefer_fp32),
+        normalized_n_padding,
     )
     return output
 
@@ -2905,6 +3383,37 @@ def unpatch_torch_sdpa():
     from .torch_sdpa_patch import unpatch_torch_sdpa_with_ark
 
     return unpatch_torch_sdpa_with_ark()
+
+
+class _ArkInternalCpuNamespace:
+    """Internal/experimental CPU helpers and backend lifecycle tools."""
+
+    debug_resolve_sdpa_route = staticmethod(debug_cpu_sdpa_route)
+    debug_route4_raw = staticmethod(debug_route4_raw)
+    kv_cache_alloc = staticmethod(ark_cpu_kv_cache_alloc)
+    kv_update = staticmethod(ark_cpu_kv_update)
+    packed_kv_descriptor = staticmethod(ark_cpu_packed_kv_descriptor)
+    packed_kv_alloc_from_descriptor = staticmethod(ark_cpu_packed_kv_alloc_from_descriptor)
+    packed_kv_alloc = staticmethod(ark_cpu_packed_kv_alloc)
+    packed_kv_info = staticmethod(ark_cpu_packed_kv_info)
+    update_packed_kv_from_descriptor = staticmethod(ark_cpu_update_packed_kv_from_descriptor)
+    update_packed_kv = staticmethod(ark_cpu_update_packed_kv)
+    copy_packed_kv = staticmethod(ark_cpu_copy_packed_kv)
+    copy_packed_kv_from_descriptor = staticmethod(ark_cpu_copy_packed_kv_from_descriptor)
+    shift_packed_k = staticmethod(ark_cpu_shift_packed_k)
+    shift_packed_k_from_descriptor = staticmethod(ark_cpu_shift_packed_k_from_descriptor)
+    bestla_sdpa_packed = staticmethod(ark_cpu_bestla_sdpa_packed)
+    bestla_sdpa_packed_from_descriptor = staticmethod(ark_cpu_bestla_sdpa_packed_from_descriptor)
+    PackedKVHandle = ArkCpuPackedKVHandle
+
+
+class _ArkInternalNamespace:
+    """Internal/experimental helper surface."""
+
+    cpu = _ArkInternalCpuNamespace()
+
+
+internal = _ArkInternalNamespace()
 
 
 __all__ = ["patch_torch_sdpa", "unpatch_torch_sdpa"]

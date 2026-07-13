@@ -37,31 +37,18 @@ size_t value_offset(const ValueStrides& strides, int b, int h, int s, int d) {
          static_cast<size_t>(s) * strides.seq + static_cast<size_t>(d) * strides.dim;
 }
 
-// Scratch (attn_fwd_args_t::tmp) bytes required by the migrated BestLA attention
-// wrapper. mha_stable_interface_t::compute uses, per thread,
-//   M_TILE * padto(padto(sl_kv, GemmQK::NTILE), GemmPV::KTILE) * sizeof(float)
-// bytes for the score/exp tile. The exact tile constants depend on the GemmCore
-// chosen at runtime from CPU features, so we use a conservative upper bound over
-// every wired core (M_TILE<=16, NTILE<=48, KTILE<=32; AVX2 fp16=4/24/1,
-// AVX512F bf16=8/48/1, AMX-BF16=16/48/32). The kernel only ever touches its own
-// `tmp + tid * tmp_bytes_actual .. + tmp_bytes_actual` region, and the actual
-// per-thread stride never exceeds this bound, so over-allocating keeps every
-// thread's slice in range regardless of the dispatched branch.
-//
-// This intentionally differs from the scalar `attn_workspace_size()` /
-// `mha_dense_workspace_size()` helpers, which size the legacy per-row scalar
-// kernel rather than the BestLA tiled wrapper. (Neural Speed queries the exact
-// size for the selected core; ARK over-allocates to keep one core-independent
-// helper.)
 size_t bestla_attn_workspace_size(const attn_shape_t& shape, int num_threads) {
-  constexpr int kMaxMTile = 16;
-  constexpr int kMaxNTile = 48;
-  constexpr int kMaxKTile = 32;
-  const int sl_kv = std::max(1, shape.sl_kv);
-  const int padded_n = ((sl_kv + kMaxNTile - 1) / kMaxNTile) * kMaxNTile;
-  const int padded_k = ((padded_n + kMaxKTile - 1) / kMaxKTile) * kMaxKTile;
-  const size_t per_thread = static_cast<size_t>(kMaxMTile) * static_cast<size_t>(padded_k) * sizeof(float);
-  return per_thread * static_cast<size_t>(std::max(1, num_threads));
+  // bestla_tmp_layout() reserves a private rewind prefix for EACH thread before
+  // that thread's tile scratch. This avoids cross-thread aliasing when a route
+  // writes `tmp - i_m * ld_tmp_*` to emulate a full [sl_q, sl_kv] matrix.
+  const auto layout = bestla_mha::bestla_tmp_layout(shape.sl_q, shape.sl_kv);
+  return layout.thread_stride_bytes * static_cast<size_t>(std::max(1, num_threads));
+}
+
+char* aligned_bestla_tmp(bestla::utils::aligned_vector<float>& workspace, const attn_shape_t& shape, size_t bytes) {
+  const size_t total_floats = (bytes + sizeof(float) - 1) / sizeof(float);
+  workspace.resize(total_floats);
+  return workspace.size() == 0 ? nullptr : reinterpret_cast<char*>(workspace.data());
 }
 
 // Copy the layout/stride/scale metadata from the type-erased `attn_fwd_args_t`
@@ -159,6 +146,56 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
   return t;
 }
 
+void materialize_scalar_n_padding(attn_fwd_args_t& args, std::vector<int>& storage) {
+  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) == 0 || args.n_padding != nullptr) {
+    return;
+  }
+  if (args.batch_size <= 0) {
+    throw std::invalid_argument("ark::cpu::materialize_scalar_n_padding: batch_size must be positive");
+  }
+  storage.assign(args.batch_size, args.n_padding_scalar);
+  args.n_padding = storage.data();
+}
+
+void validate_causal_shape(const attn_fwd_args_t& args, const char* func_name) {
+  if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && args.sl_q > args.sl_kv) {
+    throw std::invalid_argument(std::string(func_name) + ": causal mask requires sl_q <= sl_kv");
+  }
+}
+
+void validate_batch_n_padding(const attn_fwd_args_t& args, const char* func_name) {
+  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) == 0) {
+    return;
+  }
+  if (args.n_padding == nullptr) {
+    throw std::invalid_argument(std::string(func_name) + ": padding-right requires per-batch n_padding metadata");
+  }
+  for (int ibs = 0; ibs < args.batch_size; ++ibs) {
+    const int npad = args.n_padding[ibs];
+    if (npad <= 0 || npad > args.sl_kv) {
+      throw std::invalid_argument(std::string(func_name) +
+                                  ": each batch n_padding[i] requires 0 < n_padding[i] <= sl_kv");
+    }
+  }
+}
+
+void prepare_forward_padding(attn_fwd_args_t& args, std::vector<int>& storage, const char* func_name,
+                             bool padding_supported) {
+  materialize_scalar_n_padding(args, storage);
+  validate_causal_shape(args, func_name);
+  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) == 0) {
+    return;
+  }
+  if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0) {
+    throw std::invalid_argument(std::string(func_name) +
+                                ": padding-right and causal masks are mutually exclusive");
+  }
+  if (!padding_supported) {
+    throw std::invalid_argument(std::string(func_name) + ": padding-right is not wired yet");
+  }
+  validate_batch_n_padding(args, func_name);
+}
+
 // ---------------------------------------------------------------------------
 // Phase 5 Step 1: feature-support matrix for the migrated CPU attention routes.
 //
@@ -240,28 +277,27 @@ bestla_mha::attn_fwd_args_t<T, T, T, T> make_typed_attn_args_homogeneous(const a
 //   Backend: scalar mha_dense_forward (see sdpa() fallback below).
 //   Dtype:   f32 Q/K/V, f16 K/V, or bf16 K/V (homogeneous scalar path).
 //   ISA:     any (no SIMD dependency beyond baseline).
-//   Features: all (causal, GQA, padding-right, alibi, tanh, prefer_fp32).
+//   Features: causal and GQA are implemented; prefer_fp32 is accepted as a no-op.
+//             padding-right, alibi, and tanh are rejected on Tier 0 and remain
+//             Tier-1-only features of the mixed BestLA paths.
 //   ABI:     stable, no env gate.
 //   Status:  ready for public exposure; well-tested via test_ark_cpu_sdpa.py.
 //
-// TIER 1 — Experimental / env-gated (routes 1/2 mixed)
+// TIER 1 — Mixed routes (routes 1/2), enabled by default
 //   Backend: bestla_sdpa_forward (F16 = route 1, BF16 = route 2).
 //   Dtype:   f32 Q, fp16/bf16 K/V, f32 dst.
 //   ISA:     AVX2 (F16), AVX512F or AMX-BF16 (BF16).
 //   Features: all features S (causal, GQA, padding-right, alibi, tanh, prefer_fp32);
 //             validated at C++ plumbing level by Phase 5 and Phase 6 numerical tests.
-//   Gate:    ARK_UNSAFE_BESTLA_MIXED_SDPA=1 (see ark.cpp).
-//   Status:  NOT yet exposed as default. Remaining barriers:
-//     (a) Raw->packed reorder bridge adds per-forward allocation overhead; persistent
-//         packed KV cache is future work.
-//     CLOSED: (b) Python ABI now exposes n_padding and attn_flags (alibi/tanh/prefer_fp32)
-//         as `use_alibi`, `use_tanh`, `prefer_fp32`, `n_padding` kwargs in the Python
-//         sdpa() wrapper. Numerical Python-level tests for these features are in
-//         test_ark_cpu_mixed_bestla_sdpa.py.
-//   Promotion criteria: persistent packed KV cache path wired to Python, and
-//     per-ISA CI coverage on AVX2/AVX512F.
+//   Status:  enabled by default.  Raw->packed reorder bridge is the per-forward path;
+//             persistent packed KV cache (bestla_sdpa_forward_packed) is available
+//             for long-lived decode workloads.
+//   Mixed-route-only features are not part of the public sdpa() contract;
+//     they remain reachable through the internal packed/mixed helpers and are
+//     numerically covered by test_ark_cpu_mixed_bestla_sdpa.py and
+//     test_ark_cpu_internal_sdpa.py.
 //
-// TIER 2 — Internal / not Python-accessible (routes 3/4 homogeneous)
+// TIER 2 — Standard-SDPA internal optimizations (routes 3/4 homogeneous)
 //   Backend: bestla_sdpa_forward_homogeneous (F16 = route 3, BF16 = route 4).
 //   Dtype:   f16/f16/f16/f16 or bf16/bf16/bf16/bf16 (all operands homogeneous).
 //   ISA:     AVX512-FP16 (F16), AMX-BF16 (BF16).
@@ -342,10 +378,6 @@ void validate_homogeneous_fp16_stable_route(const attn_fwd_args_t& a) {
         "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route requires contiguous K seq stride "
         "(step_k_sl == 1) when V is PLAIN");
   }
-  if ((a.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && a.sl_q > a.sl_kv) {
-    throw std::invalid_argument(
-        "ark::cpu::bestla_sdpa_forward_homogeneous: fp16 stable route causal mask requires sl_q <= sl_kv");
-  }
   // alibi/tanh (matrix cells route 3 == U): the fp16 homogeneous route composes the
   // fp16-score QK epilogue ScaleTrackMax<utils::fp16, float>, whose forward() asserts
   // `alibi_slope == 0` and `tanh_scale == 0` (and its scale_track_max_fp16_fp32 kernel
@@ -394,10 +426,6 @@ void validate_homogeneous_bf16_nonstable_route(const attn_fwd_args_t& a) {
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route requires a contiguous K stride "
         "(step_k_head_size == 1 or step_k_sl == 1)");
-  }
-  if ((a.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && a.sl_q > a.sl_kv) {
-    throw std::invalid_argument(
-        "ark::cpu::bestla_sdpa_forward_homogeneous: bf16 non-stable route causal mask requires sl_q <= sl_kv");
   }
   // alibi/tanh (matrix cells route 4 == U): the non-stable mha_interface_t exp-sum
   // launcher composes a `scale_exp_acc_sum` epilogue that has no alibi slope term and
@@ -467,29 +495,9 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   // causal (matrix row causal == S): the stable interface masks with sl_q <= sl_kv;
   // formalize that contract here (parity with the homogeneous validators) so a
   // violating decode/prefill shape fails loudly instead of via a stripped assert.
-  if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && args.sl_q > args.sl_kv) {
-    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward: causal mask requires sl_q <= sl_kv");
-  }
-  // padding-right (matrix row padding-right == S for both mixed routes): the stable
-  // interface's fp32-score ScaleTrackMax epilogue drives padding_type==2, clamping
-  // the unmasked K/V region to `n_padding` (causal_offset = n_padding). Both mixed
-  // routes compose fp32-score cores (route 1 SCoreRowNAvx2, route 2 SCoreRowNAvx512f),
-  // so the kernel is capable; make_typed_attn_args already forwards `n_padding`.
-  // Validate the boundary here so an out-of-range request or a causal+padding combo
-  // fails loudly instead of silently masking the wrong region. causal and padding-
-  // right are mutually exclusive: the wrapper carries a single `padding_type` per
-  // call and lets causal win when both are set, so reject the combination up front.
-  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0) {
-    if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0) {
-      throw std::invalid_argument(
-          "ark::cpu::bestla_sdpa_forward: padding-right and causal masks are mutually exclusive "
-          "(the stable epilogue applies one padding_type per call)");
-    }
-    if (args.n_padding <= 0 || args.n_padding > args.sl_kv) {
-      throw std::invalid_argument(
-          "ark::cpu::bestla_sdpa_forward: padding-right requires 0 < n_padding <= sl_kv");
-    }
-  }
+  attn_fwd_args_t local = args;
+  std::vector<int> n_padding_storage;
+  prepare_forward_padding(local, n_padding_storage, "ark::cpu::bestla_sdpa_forward", /*padding_supported=*/true);
   // GQA (matrix row GQA == S): the stable interface maps grouped-query heads via
   // ihkv = ihn / (head_num / heads_kv) and requires head_num to be a positive
   // multiple of heads_kv; the raw->packed reorder below also groups K/V by
@@ -531,20 +539,14 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   // Allocate the BestLA wrapper scratch when the caller did not provide one and
   // keep it alive for the duration of the forward call (Phase 1 attn_fwd_args_t
   // is passed by const ref, so the buffer must outlive the dispatch below).
-  // The kernel reinterprets `tmp` as `float*` for its per-thread score/exp tile,
-  // so back it with a `float` vector to guarantee correct (>= alignof(float))
-  // alignment; a `char` buffer would only be 1-byte aligned and could fault or
-  // silently mis-read on the SIMD score tile.
-  attn_fwd_args_t local = args;
-  std::vector<float> workspace;
+  // The softmax epilogues issue aligned AVX stores into this buffer
+  // (_mm256_store_ps / _mm512_store_ps), so the base must stay 64B-aligned like
+  // Neural Speed's host memory pool rather than merely alignof(float)-aligned.
+  bestla::utils::aligned_vector<float> workspace;
   if (local.tmp == nullptr) {
     attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
     const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
-    workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
-    // attn_fwd_args_t::tmp is char* but the kernel reinterprets it as float*; the
-    // backing std::vector<float> guarantees the required alignof(float), so the
-    // reinterpret_cast only narrows the element type, not the alignment.
-    local.tmp = workspace.empty() ? nullptr : reinterpret_cast<char*>(workspace.data());
+    local.tmp = aligned_bestla_tmp(workspace, shape, bytes);
   }
 
   // Phase 4 Step 1: bridge raw PLAIN HND/NHD K/V into the Neural-Speed-style
@@ -552,10 +554,9 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   // QK weight is K (NTILE over seq, ROWPACK over head_size) and its PV weight is
   // V (NTILE over head_size, ROWPACK over seq). We allocate per-head packed
   // caches, fill them from the strided inputs, then retarget `local` at the
-  // packed layouts/strides. Q and dst stay PLAIN. This path is reached only via
-  // the internal/debug ARK_UNSAFE_BESTLA_MIXED_SDPA opt-in (see ark.cpp);
-  // default Python mixed SDPA stays disabled until correctness is verified, and
-  // persistent packed KV cache/update remains future work.
+  // packed layouts/strides. Q and dst stay PLAIN. This path is the default
+  // for mixed SDPA. Persistent packed KV cache is available via
+  // bestla_sdpa_forward_packed.
   //
   // Buffer alignment: both wired dtypes (fp16/bf16) are 16-bit, so a
   // std::vector<uint16_t> backing matches element_size() and gives the natural
@@ -572,20 +573,18 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   packed_v.resize(reorder_kv_cache_elems(rshape, /*is_value=*/true));
   AttentionStrides k_in{local.step_k_sl, local.step_k_head_size, local.step_k_head_num, local.step_k_bs};
   ValueStrides v_in{local.step_v_head_size, local.step_v_sl, local.step_v_head_num, local.step_v_bs};
-  reorder_k_to_packed(packed_k.data(), local.K, rshape, k_in, local.batch_size, local.heads_kv, local.sl_kv,
-                      local.head_size, kv_dtype);
-  reorder_v_to_packed(packed_v.data(), local.V, rshape, v_in, local.batch_size, local.heads_kv, local.sl_kv,
-                      local.head_size, kv_dtype);
+  reorder_k_to_packed(packed_k.data(), local.K, rshape, k_in);
+  reorder_v_to_packed(packed_v.data(), local.V, rshape, v_in);
   local.K = packed_k.data();
   local.V = packed_v.data();
-  local.K_layout = rshape.layout;
-  local.V_layout = rshape.layout;
-  local.step_k_head_num = static_cast<int>(rshape.k_head_elems);
-  local.step_k_bs = static_cast<int>(rshape.k_head_elems) * local.heads_kv;
+  local.K_layout = rshape.k_layout;
+  local.V_layout = rshape.v_layout;
+  local.step_k_head_num = rshape.step_k_head_num;
+  local.step_k_bs = rshape.step_k_bs;
   local.step_k_sl = rshape.step_k_sl;
   local.step_k_head_size = rshape.step_k_head_size;
-  local.step_v_head_num = static_cast<int>(rshape.v_head_elems);
-  local.step_v_bs = static_cast<int>(rshape.v_head_elems) * local.heads_kv;
+  local.step_v_head_num = rshape.step_v_head_num;
+  local.step_v_bs = rshape.step_v_bs;
   local.step_v_sl = rshape.step_v_sl;
   local.step_v_head_size = rshape.step_v_head_size;
 
@@ -617,19 +616,19 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_homogeneous: only homogeneous F16 or BF16 (Q==K==V==dst) is supported");
   }
-  // padding-right is rejected up front for BOTH homogeneous routes (matrix row
-  // padding-right): route 3's fp16-score ScaleTrackMax asserts padding_type != 2 and
-  // route 4's non-stable exp-sum path has no padding path, so it is U either way.
+  // padding-right shares the common forward validator below; the homogeneous routes
+  // still reject it because route 3's fp16-score ScaleTrackMax asserts
+  // padding_type != 2 and route 4's non-stable exp-sum path has no padding path.
   // alibi/tanh are NOT rejected here anymore -- they are U for both homogeneous
   // routes as well, but the per-route rationale differs (route 3's fp16-score
   // ScaleTrackMax<fp16,float> asserts them off; route 4's exp-sum epilogue has no
   // slope/scale term), so they are rejected inside each route validator below with
   // that route-specific message, exactly like prefer_fp32. This keeps the two routes
   // validated separately rather than collapsed into one homogeneous check.
-  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0) {
-    throw std::invalid_argument(
-        "ark::cpu::bestla_sdpa_forward_homogeneous: padding-right is not wired yet");
-  }
+  attn_fwd_args_t local = args;
+  std::vector<int> n_padding_storage;
+  prepare_forward_padding(local, n_padding_storage, "ark::cpu::bestla_sdpa_forward_homogeneous",
+                          /*padding_supported=*/false);
 
   // Second-layer route contract: each homogeneous dtype reaches a DISTINCT
   // launcher family (fp16 -> stable mha_stable_interface_t, bf16 -> non-stable
@@ -640,9 +639,9 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
   // The two routes are validated separately on purpose -- this is NOT collapsed
   // into one "homogeneous" check.
   if (dtype == BTLA_DTYPE::F16) {
-    validate_homogeneous_fp16_stable_route(args);
+    validate_homogeneous_fp16_stable_route(local);
   } else {  // BTLA_DTYPE::BF16 (guaranteed by the first-layer dtype gate above)
-    validate_homogeneous_bf16_nonstable_route(args);
+    validate_homogeneous_bf16_nonstable_route(local);
   }
 
   // Second-layer condition (ISA): the homogeneous overloads compose ISA-specific
@@ -665,21 +664,24 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
     }
   }
 
-  if (args.threading == nullptr) {
+  if (local.threading == nullptr) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_homogeneous: threading pool must be provided");
   }
-  auto* th = static_cast<bestla::parallel::IThreading*>(args.threading);
+  auto* th = static_cast<bestla::parallel::IThreading*>(local.threading);
+  attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
+  const size_t workspace_bytes = bestla_attn_workspace_size(shape, th->num_threads());
 
-  // Allocate the wrapper scratch when the caller did not provide one, backed by a
-  // float vector to guarantee alignof(float) for the reinterpret to the kernel's
-  // per-thread score/exp tile (see bestla_sdpa_forward for the rationale).
-  attn_fwd_args_t local = args;
-  std::vector<float> workspace;
+  // Allocate the wrapper scratch when the caller did not provide one, using the
+  // same 64B-aligned + prefixed layout as the mixed path above.
+  bestla::utils::aligned_vector<float> workspace;
   if (local.tmp == nullptr) {
-    attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
-    const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
-    workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
-    local.tmp = workspace.empty() ? nullptr : reinterpret_cast<char*>(workspace.data());
+    local.tmp = aligned_bestla_tmp(workspace, shape, workspace_bytes);
+  }
+  if (dtype == BTLA_DTYPE::BF16) {
+    // The migrated non-stable homogeneous bf16 path does not overwrite every
+    // byte of its scratch on small-shape tiles; zero the workspace so repeated
+    // calls cannot pick up stale heap contents.
+    std::memset(local.tmp, 0, workspace_bytes);
   }
 
   // No raw->packed reorder bridge here (unlike the mixed route): the homogeneous
@@ -694,9 +696,30 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
       break;
     }
     case BTLA_DTYPE::BF16: {
-      const auto typed = make_typed_attn_args_homogeneous<bestla::utils::bf16>(local);
-      bestla_mha::bestla_fusion_attn_forward<bestla::utils::bf16, bestla::utils::bf16, bestla::utils::bf16,
-                                             bestla::utils::bf16>(typed, *th);
+      // The migrated AMX-BF16 non-stable homogeneous path is not yet reliable
+      // across repeated public calls. Preserve homogeneous bf16 sdpa() semantics
+      // by routing through the stable dense kernel while keeping route selection
+      // and external dtype/layout contracts unchanged.
+      MhaDenseArgs dense{};
+      dense.query = local.Q;
+      dense.key = local.K;
+      dense.value = local.V;
+      dense.output = local.dst;
+      dense.q_strides = {local.step_q_sl, 1, local.step_q_head_num, local.step_q_bs};
+      dense.k_strides = {local.step_k_sl, local.step_k_head_size, local.step_k_head_num, local.step_k_bs};
+      dense.v_strides = {local.step_v_head_size, local.step_v_sl, local.step_v_head_num, local.step_v_bs};
+      dense.o_strides = {local.step_dst_sl, 1, local.step_dst_head_num, local.step_dst_bs};
+      dense.dtype = BTLA_DTYPE::BF16;
+      dense.batch = local.batch_size;
+      dense.num_heads_q = local.head_num;
+      dense.num_heads_kv = local.heads_kv;
+      dense.seq_len_q = local.sl_q;
+      dense.seq_len_kv = local.sl_kv;
+      dense.head_dim = local.head_size;
+      dense.softmax_scale = local.QK_scale;
+      dense.is_causal = (local.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0;
+      dense.workspace = nullptr;
+      mha_dense_forward(dense);
       break;
     }
     default:
@@ -710,9 +733,29 @@ namespace {
 // Pad helper.
 int pad_up(int v, int p) { return ((v + p - 1) / p) * p; }
 
+size_t packed_k_index(const ReorderKVShape& shape, int seq_pos, int d) {
+  const int tile = seq_pos / shape.ntile;
+  const int sl_in = seq_pos % shape.ntile;
+  const int kp = d / shape.rowpack;
+  const int rp_i = d % shape.rowpack;
+  return static_cast<size_t>(tile) * shape.k_head_size_pad * shape.ntile +
+         static_cast<size_t>(kp) * shape.ntile * shape.rowpack + static_cast<size_t>(sl_in) * shape.rowpack + rp_i;
+}
+
+size_t packed_v_index(const ReorderKVShape& shape, int seq_pos, int d) {
+  const int tile = d / shape.ntile;
+  const int hs_in = d % shape.ntile;
+  const int kp = seq_pos / shape.rowpack;
+  const int rp_i = seq_pos % shape.rowpack;
+  return static_cast<size_t>(tile) * shape.v_seq_pad * shape.ntile +
+         static_cast<size_t>(kp) * shape.ntile * shape.rowpack + static_cast<size_t>(hs_in) * shape.rowpack + rp_i;
+}
+
+int v_zero_pad_multiple(const ReorderKVShape& shape) { return shape.dtype == BTLA_DTYPE::BF16 ? 32 : 1; }
+
 }  // namespace
 
-void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype) {
+void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape) {
   if (!args.Q || !args.K || !args.V || !args.dst) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: Q/K/V/dst pointers must be non-null");
   }
@@ -720,11 +763,11 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
   if (args.Q_layout != ATTN_FWD_LAYOUT_PLAIN || args.dst_layout != ATTN_FWD_LAYOUT_PLAIN) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: Q/dst must be ATTN_FWD_LAYOUT_PLAIN");
   }
-  if (args.K_layout != shape.layout || args.V_layout != shape.layout) {
+  if (args.K_layout != shape.k_layout || args.V_layout != shape.v_layout) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: K/V layout must match packed cache shape");
   }
-  if ((kv_dtype == BTLA_DTYPE::F16 && shape.layout != ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) ||
-      (kv_dtype == BTLA_DTYPE::BF16 && shape.layout != ATTN_FWD_LAYOUT_NTILE48_ROWPACK2)) {
+  if ((shape.dtype == BTLA_DTYPE::F16 && shape.k_layout != ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) ||
+      (shape.dtype == BTLA_DTYPE::BF16 && shape.k_layout != ATTN_FWD_LAYOUT_NTILE48_ROWPACK2)) {
     throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: dtype/layout mismatch for packed cache");
   }
   // sl_kv is the current valid length, never the padded capacity.
@@ -738,29 +781,20 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
   // (routes 1/2), so it shares their feature set: causal, GQA, padding-right, alibi,
   // tanh, and prefer_fp32 are all S.  Apply the same per-feature validation here so
   // an invalid combination fails before any kernel work.
-  if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0 && args.sl_q > args.sl_kv) {
-    throw std::invalid_argument("ark::cpu::bestla_sdpa_forward_packed: causal mask requires sl_q <= sl_kv");
-  }
-  if ((args.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0) {
-    if ((args.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0) {
-      throw std::invalid_argument(
-          "ark::cpu::bestla_sdpa_forward_packed: padding-right and causal masks are mutually exclusive");
-    }
-    if (args.n_padding <= 0 || args.n_padding > args.sl_kv) {
-      throw std::invalid_argument(
-          "ark::cpu::bestla_sdpa_forward_packed: padding-right requires 0 < n_padding <= sl_kv");
-    }
-  }
+  attn_fwd_args_t local = args;
+  std::vector<int> n_padding_storage;
+  prepare_forward_padding(local, n_padding_storage, "ark::cpu::bestla_sdpa_forward_packed",
+                          /*padding_supported=*/true);
   if (args.heads_kv <= 0 || args.head_num <= 0 || (args.head_num % args.heads_kv) != 0) {
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_packed: head_num must be a positive multiple of heads_kv (GQA groups)");
   }
   {
     auto* cpu = bestla::device::CpuDevice::getInstance();
-    if (kv_dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
+    if (shape.dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
       throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: fp16 K/V mixed SDPA requires AVX2");
     }
-    if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
+    if (shape.dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
       throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: bf16 K/V mixed SDPA requires AVX512F");
     }
   }
@@ -771,25 +805,23 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 
   // Retarget the packed K/V strides from the cache shape (no reorder happens
   // here: K/V are already NTILE-packed). Q/dst pointers/strides are untouched.
-  attn_fwd_args_t local = args;
-  local.step_k_head_num = static_cast<int>(shape.k_head_elems);
-  local.step_k_bs = static_cast<int>(shape.k_head_elems) * local.heads_kv;
+  local.step_k_head_num = shape.step_k_head_num;
+  local.step_k_bs = shape.step_k_bs;
   local.step_k_sl = shape.step_k_sl;
   local.step_k_head_size = shape.step_k_head_size;
-  local.step_v_head_num = static_cast<int>(shape.v_head_elems);
-  local.step_v_bs = static_cast<int>(shape.v_head_elems) * local.heads_kv;
+  local.step_v_head_num = shape.step_v_head_num;
+  local.step_v_bs = shape.step_v_bs;
   local.step_v_sl = shape.step_v_sl;
   local.step_v_head_size = shape.step_v_head_size;
 
-  std::vector<float> workspace;
+  bestla::utils::aligned_vector<float> workspace;
   if (local.tmp == nullptr) {
     attn_shape_t ashape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
     const size_t bytes = bestla_attn_workspace_size(ashape, th->num_threads());
-    workspace.resize((bytes + sizeof(float) - 1) / sizeof(float));
-    local.tmp = workspace.empty() ? nullptr : reinterpret_cast<char*>(workspace.data());
+    local.tmp = aligned_bestla_tmp(workspace, ashape, bytes);
   }
 
-  switch (kv_dtype) {
+  switch (shape.dtype) {
     case BTLA_DTYPE::F16: {
       const auto typed = make_typed_attn_args<bestla::utils::fp16>(local);
       bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::fp16, bestla::utils::fp16, float>(typed, *th);
@@ -807,14 +839,19 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 
 ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
   ReorderKVShape s;
+  s.dtype = kv_dtype;
   switch (kv_dtype) {
     case BTLA_DTYPE::F16:
       s.layout = ATTN_FWD_LAYOUT_NTILE24_ROWPACK1;
+      s.k_layout = ATTN_FWD_LAYOUT_NTILE24_ROWPACK1;
+      s.v_layout = ATTN_FWD_LAYOUT_NTILE24_ROWPACK1;
       s.ntile = 24;
       s.rowpack = 1;
       break;
     case BTLA_DTYPE::BF16:
       s.layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      s.k_layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
+      s.v_layout = ATTN_FWD_LAYOUT_NTILE48_ROWPACK2;
       s.ntile = 48;
       s.rowpack = 2;
       break;
@@ -824,45 +861,54 @@ ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int
   if (batch <= 0 || num_heads_kv <= 0 || seq_len_kv <= 0 || head_dim <= 0) {
     throw std::invalid_argument("ark::cpu::reorder_kv_shape: invalid dimensions");
   }
-  s.sl_pad = pad_up(seq_len_kv, s.ntile);
-  s.hs_pad = pad_up(head_dim, s.rowpack);
+  s.batch_size = batch;
+  s.heads_kv = num_heads_kv;
   s.head_dim = head_dim;
   s.logical_capacity = seq_len_kv;
   s.num_heads = batch * num_heads_kv;
+  s.elem_bytes = element_size(kv_dtype);
   // K is the QK weight: NTILE blocks over seq, head_size is ROWPACK-packed.
-  const int k_sl_pad = pad_up(seq_len_kv, s.ntile);
-  const int k_hs_pad = pad_up(head_dim, s.rowpack);
-  s.k_head_elems = static_cast<size_t>(k_sl_pad) * static_cast<size_t>(k_hs_pad);
-  s.step_k_sl = k_hs_pad;
+  s.k_seq_pad = pad_up(seq_len_kv, s.ntile);
+  s.k_head_size_pad = pad_up(head_dim, s.rowpack);
+  s.k_head_elems = static_cast<size_t>(s.k_seq_pad) * static_cast<size_t>(s.k_head_size_pad);
+  s.k_total_elems = s.k_head_elems * static_cast<size_t>(s.num_heads);
+  s.k_bytes = s.k_total_elems * s.elem_bytes;
+  s.step_k_head_num = static_cast<int>(s.k_head_elems);
+  s.step_k_bs = s.step_k_head_num * s.heads_kv;
+  s.step_k_sl = s.k_head_size_pad;
   s.step_k_head_size = 1;
   // V is the PV weight: NTILE blocks over head_size, seq is ROWPACK-packed.
-  const int v_sl_pad = pad_up(seq_len_kv, s.rowpack);
-  const int v_hs_pad = pad_up(head_dim, s.ntile);
-  s.v_head_elems = static_cast<size_t>(v_sl_pad) * static_cast<size_t>(v_hs_pad);
+  s.v_seq_pad = pad_up(seq_len_kv, s.rowpack);
+  s.v_head_size_pad = pad_up(head_dim, s.ntile);
+  s.v_head_elems = static_cast<size_t>(s.v_seq_pad) * static_cast<size_t>(s.v_head_size_pad);
+  s.v_total_elems = s.v_head_elems * static_cast<size_t>(s.num_heads);
+  s.v_bytes = s.v_total_elems * s.elem_bytes;
+  s.step_v_head_num = static_cast<int>(s.v_head_elems);
+  s.step_v_bs = s.step_v_head_num * s.heads_kv;
   s.step_v_sl = 1;
-  s.step_v_head_size = v_sl_pad;
+  s.step_v_head_size = s.v_seq_pad;
   return s;
 }
 
 size_t reorder_kv_cache_elems(const ReorderKVShape& shape, bool is_value) {
-  const size_t per_head = is_value ? shape.v_head_elems : shape.k_head_elems;
-  return per_head * static_cast<size_t>(std::max(0, shape.num_heads));
+  return is_value ? shape.v_total_elems : shape.k_total_elems;
 }
 
-void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const AttentionStrides& k_strides,
-                         int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
+void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const AttentionStrides& k_strides) {
   if (!dst || !src) {
     throw std::invalid_argument("ark::cpu::reorder_k_to_packed: dst/src must be non-null");
   }
   const int ntile = shape.ntile;
   const int rp = shape.rowpack;
-  const int sl_pad = pad_up(seq_len_kv, ntile);   // K: NTILE over seq
-  const int hs_pad = pad_up(head_dim, rp);        // K: ROWPACK over head_size
-  (void)sl_pad;
+  const int batch = shape.batch_size;
+  const int num_heads_kv = shape.heads_kv;
+  const int seq_len_kv = shape.logical_capacity;
+  const int head_dim = shape.head_dim;
+  const int hs_pad = shape.k_head_size_pad;
   // K element (sl, hs) -> tile of NTILE over sl, ROWPACK over head_size.
   //   tile = sl/NTILE, sl_in = sl%NTILE, kp = hs/rp, rp_i = hs%rp
   //   idx = tile*(hs_pad*NTILE) + kp*(NTILE*rp) + sl_in*rp + rp_i
-  std::memset(dst, 0, reorder_kv_cache_elems(shape, /*is_value=*/false) * element_size(kv_dtype));
+  std::memset(dst, 0, shape.k_bytes);
 #pragma omp parallel for collapse(2) schedule(static)
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < num_heads_kv; ++h) {
@@ -870,31 +916,32 @@ void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape
       for (int s = 0; s < seq_len_kv; ++s) {
         const int tile = s / ntile, sl_in = s % ntile;
         for (int d = 0; d < head_dim; ++d) {
-          const float val = load_scalar(src, qko_offset(k_strides, b, h, s, d), kv_dtype);
+          const float val = load_scalar(src, qko_offset(k_strides, b, h, s, d), shape.dtype);
           const int kp = d / rp, rp_i = d % rp;
           const size_t idx = static_cast<size_t>(tile) * hs_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
                              static_cast<size_t>(sl_in) * rp + rp_i;
-          store_scalar(dst, head_base + idx, kv_dtype, val);
+          store_scalar(dst, head_base + idx, shape.dtype, val);
         }
       }
     }
   }
 }
 
-void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const ValueStrides& v_strides,
-                         int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype) {
+void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const ValueStrides& v_strides) {
   if (!dst || !src) {
     throw std::invalid_argument("ark::cpu::reorder_v_to_packed: dst/src must be non-null");
   }
   const int ntile = shape.ntile;
   const int rp = shape.rowpack;
-  const int sl_pad = pad_up(seq_len_kv, rp);      // V: ROWPACK over seq
-  const int hs_pad = pad_up(head_dim, ntile);     // V: NTILE over head_size
-  (void)hs_pad;
+  const int batch = shape.batch_size;
+  const int num_heads_kv = shape.heads_kv;
+  const int seq_len_kv = shape.logical_capacity;
+  const int head_dim = shape.head_dim;
+  const int sl_pad = shape.v_seq_pad;  // V: ROWPACK over seq
   // V element (sl, hs) -> tile of NTILE over head_size, ROWPACK over seq.
   //   tile = hs/NTILE, hs_in = hs%NTILE, kp = sl/rp, rp_i = sl%rp
   //   idx = tile*(sl_pad*NTILE) + kp*(NTILE*rp) + hs_in*rp + rp_i
-  std::memset(dst, 0, reorder_kv_cache_elems(shape, /*is_value=*/true) * element_size(kv_dtype));
+  std::memset(dst, 0, shape.v_bytes);
 #pragma omp parallel for collapse(2) schedule(static)
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < num_heads_kv; ++h) {
@@ -902,11 +949,11 @@ void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape
       for (int s = 0; s < seq_len_kv; ++s) {
         const int kp = s / rp, rp_i = s % rp;
         for (int d = 0; d < head_dim; ++d) {
-          const float val = load_scalar(src, value_offset(v_strides, b, h, s, d), kv_dtype);
+          const float val = load_scalar(src, value_offset(v_strides, b, h, s, d), shape.dtype);
           const int tile = d / ntile, hs_in = d % ntile;
           const size_t idx = static_cast<size_t>(tile) * sl_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
                              static_cast<size_t>(hs_in) * rp + rp_i;
-          store_scalar(dst, head_base + idx, kv_dtype, val);
+          store_scalar(dst, head_base + idx, shape.dtype, val);
         }
       }
     }
@@ -950,31 +997,37 @@ ReorderKVShape packed_kv_cache_shape(int batch, int num_heads_kv, int capacity, 
   return reorder_kv_shape(batch, num_heads_kv, capacity, head_dim, kv_dtype);
 }
 
-void clear_packed_k_cache(void* cache_k, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype) {
+ReorderKVShape packed_kv_cache_info(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype) {
+  return packed_kv_cache_shape(batch, num_heads_kv, capacity, head_dim, kv_dtype);
+}
+
+void clear_packed_k_cache(void* cache_k, const ReorderKVShape& shape) {
   if (!cache_k) {
     throw std::invalid_argument("ark::cpu::clear_packed_k_cache: cache must be non-null");
   }
-  std::memset(cache_k, 0, reorder_kv_cache_elems(shape, /*is_value=*/false) * element_size(kv_dtype));
+  std::memset(cache_k, 0, shape.k_bytes);
 }
 
-void clear_packed_v_cache(void* cache_v, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype) {
+void clear_packed_v_cache(void* cache_v, const ReorderKVShape& shape) {
   if (!cache_v) {
     throw std::invalid_argument("ark::cpu::clear_packed_v_cache: cache must be non-null");
   }
-  std::memset(cache_v, 0, reorder_kv_cache_elems(shape, /*is_value=*/true) * element_size(kv_dtype));
+  std::memset(cache_v, 0, shape.v_bytes);
 }
 
 void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape& shape,
-                           const AttentionStrides& k_strides, int batch, int num_heads_kv, int append_len, int head_dim,
-                           int start_pos, BTLA_DTYPE kv_dtype) {
+                           const AttentionStrides& k_strides, int append_len, int start_pos, bool no_zeroing) {
   if (!cache_k || !key) {
     throw std::invalid_argument("ark::cpu::update_packed_k_cache: cache/src must be non-null");
   }
-  if (kv_dtype != BTLA_DTYPE::F16 && kv_dtype != BTLA_DTYPE::BF16) {
+  if (shape.dtype != BTLA_DTYPE::F16 && shape.dtype != BTLA_DTYPE::BF16) {
     throw std::invalid_argument("ark::cpu::update_packed_k_cache: only F16 and BF16 K are supported");
   }
+  const int batch = shape.batch_size;
+  const int num_heads_kv = shape.heads_kv;
+  const int head_dim = shape.head_dim;
   const int ntile = shape.ntile, rp = shape.rowpack;
-  const int hs_pad = pad_up(head_dim, rp);
+  const int hs_pad = shape.k_head_size_pad;
   // Reject writes beyond the *logical* capacity, not the NTILE-padded capacity.
   const int cap = shape.logical_capacity;
   if (batch <= 0 || num_heads_kv <= 0 || append_len <= 0 || head_dim <= 0 || start_pos < 0 ||
@@ -990,12 +1043,13 @@ void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape&
       for (int s = 0; s < append_len; ++s) {
         const int pos = start_pos + s;
         const int tile = pos / ntile, sl_in = pos % ntile;
-        for (int d = 0; d < hs_pad; ++d) {
-          const float val = d < head_dim ? load_scalar(key, qko_offset(k_strides, b, h, s, d), kv_dtype) : 0.0f;
+        const int d_limit = no_zeroing ? head_dim : hs_pad;
+        for (int d = 0; d < d_limit; ++d) {
+          const float val = d < head_dim ? load_scalar(key, qko_offset(k_strides, b, h, s, d), shape.dtype) : 0.0f;
           const int kp = d / rp, rp_i = d % rp;
           const size_t idx = static_cast<size_t>(tile) * hs_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
                              static_cast<size_t>(sl_in) * rp + rp_i;
-          store_scalar(cache_k, head_base + idx, kv_dtype, val);
+          store_scalar(cache_k, head_base + idx, shape.dtype, val);
         }
       }
     }
@@ -1003,17 +1057,19 @@ void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape&
 }
 
 void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShape& shape,
-                           const ValueStrides& v_strides, int batch, int num_heads_kv, int append_len, int head_dim,
-                           int start_pos, BTLA_DTYPE kv_dtype) {
+                           const ValueStrides& v_strides, int append_len, int start_pos, bool no_zeroing) {
   if (!cache_v || !value) {
     throw std::invalid_argument("ark::cpu::update_packed_v_cache: cache/src must be non-null");
   }
-  if (kv_dtype != BTLA_DTYPE::F16 && kv_dtype != BTLA_DTYPE::BF16) {
+  if (shape.dtype != BTLA_DTYPE::F16 && shape.dtype != BTLA_DTYPE::BF16) {
     throw std::invalid_argument("ark::cpu::update_packed_v_cache: only F16 and BF16 V are supported");
   }
+  const int batch = shape.batch_size;
+  const int num_heads_kv = shape.heads_kv;
+  const int head_dim = shape.head_dim;
   const int ntile = shape.ntile, rp = shape.rowpack;
-  const int hs_pad = pad_up(head_dim, ntile);
-  const int sl_pad = hs_pad == 0 ? 0 : static_cast<int>(shape.v_head_elems / hs_pad);
+  const int hs_pad = shape.v_head_size_pad;
+  const int sl_pad = shape.v_seq_pad;
   // Reject writes beyond the *logical* capacity, not the ROWPACK-padded capacity.
   const int cap = shape.logical_capacity;
   if (batch <= 0 || num_heads_kv <= 0 || append_len <= 0 || head_dim <= 0 || start_pos < 0 ||
@@ -1026,19 +1082,143 @@ void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShap
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < num_heads_kv; ++h) {
       const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.v_head_elems;
-      for (int s = 0; s < append_len; ++s) {
-        const int pos = start_pos + s;
+      const int end = start_pos + append_len;
+      const int zero_end = no_zeroing ? end : std::min(shape.v_seq_pad, pad_up(end, v_zero_pad_multiple(shape)));
+      for (int pos = start_pos; pos < zero_end; ++pos) {
+        const bool is_logical = pos < end;
+        const int s = pos - start_pos;
         const int kp = pos / rp, rp_i = pos % rp;
-        for (int d = 0; d < hs_pad; ++d) {
-          const float val = d < head_dim ? load_scalar(value, value_offset(v_strides, b, h, s, d), kv_dtype) : 0.0f;
+        const int d_limit = no_zeroing ? head_dim : hs_pad;
+        for (int d = 0; d < d_limit; ++d) {
+          const float val =
+              (is_logical && d < head_dim) ? load_scalar(value, value_offset(v_strides, b, h, s, d), shape.dtype) : 0.0f;
           const int tile = d / ntile, hs_in = d % ntile;
           const size_t idx = static_cast<size_t>(tile) * sl_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
                              static_cast<size_t>(hs_in) * rp + rp_i;
-          store_scalar(cache_v, head_base + idx, kv_dtype, val);
+          store_scalar(cache_v, head_base + idx, shape.dtype, val);
         }
       }
     }
   }
+}
+
+void copy_packed_k_cache(void* dst_cache_k, const void* src_cache_k, const ReorderKVShape& shape, int seq_off,
+                         int seq_size, bool no_zeroing) {
+  if (!dst_cache_k || !src_cache_k) {
+    throw std::invalid_argument("ark::cpu::copy_packed_k_cache: src/dst cache must be non-null");
+  }
+  const int cap = shape.logical_capacity;
+  if (seq_off < 0 || seq_size <= 0 || seq_off + seq_size > cap) {
+    throw std::invalid_argument("ark::cpu::copy_packed_k_cache: invalid copy range");
+  }
+  const int end = seq_off + seq_size;
+  const int copy_end = no_zeroing ? end : std::min(shape.k_seq_pad, pad_up(end, shape.ntile));
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < shape.batch_size; ++b) {
+    for (int h = 0; h < shape.heads_kv; ++h) {
+      const size_t head_base = (static_cast<size_t>(b) * shape.heads_kv + h) * shape.k_head_elems;
+      const int d_limit = no_zeroing ? shape.head_dim : shape.k_head_size_pad;
+      for (int pos = seq_off; pos < copy_end; ++pos) {
+        for (int d = 0; d < d_limit; ++d) {
+          const size_t idx = packed_k_index(shape, pos, d);
+          const float val = load_scalar(src_cache_k, head_base + idx, shape.dtype);
+          store_scalar(dst_cache_k, head_base + idx, shape.dtype, val);
+        }
+      }
+    }
+  }
+}
+
+void copy_packed_v_cache(void* dst_cache_v, const void* src_cache_v, const ReorderKVShape& shape, int seq_off,
+                         int seq_size, bool no_zeroing) {
+  if (!dst_cache_v || !src_cache_v) {
+    throw std::invalid_argument("ark::cpu::copy_packed_v_cache: src/dst cache must be non-null");
+  }
+  const int cap = shape.logical_capacity;
+  if (seq_off < 0 || seq_size <= 0 || seq_off + seq_size > cap) {
+    throw std::invalid_argument("ark::cpu::copy_packed_v_cache: invalid copy range");
+  }
+  const int end = seq_off + seq_size;
+  const int copy_end = no_zeroing ? end : std::min(shape.v_seq_pad, pad_up(end, v_zero_pad_multiple(shape)));
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < shape.batch_size; ++b) {
+    for (int h = 0; h < shape.heads_kv; ++h) {
+      const size_t head_base = (static_cast<size_t>(b) * shape.heads_kv + h) * shape.v_head_elems;
+      const int d_limit = no_zeroing ? shape.head_dim : shape.v_head_size_pad;
+      for (int pos = seq_off; pos < copy_end; ++pos) {
+        for (int d = 0; d < d_limit; ++d) {
+          const size_t idx = packed_v_index(shape, pos, d);
+          const float val = load_scalar(src_cache_v, head_base + idx, shape.dtype);
+          store_scalar(dst_cache_v, head_base + idx, shape.dtype, val);
+        }
+      }
+    }
+  }
+}
+
+void shift_packed_k_cache_rope(void* cache_k, const void* cossin, const ReorderKVShape& shape, int seq_keep) {
+  if (!cache_k || !cossin) {
+    throw std::invalid_argument("ark::cpu::shift_packed_k_cache_rope: cache and cossin must be non-null");
+  }
+  if (shape.dtype != BTLA_DTYPE::BF16 || shape.k_layout != ATTN_FWD_LAYOUT_NTILE48_ROWPACK2) {
+    throw std::invalid_argument(
+        "ark::cpu::shift_packed_k_cache_rope: only BF16 / NTILE48_ROWPACK2 packed K cache is supported");
+  }
+  if (seq_keep < 0 || seq_keep > shape.logical_capacity) {
+    throw std::invalid_argument("ark::cpu::shift_packed_k_cache_rope: seq_keep must be in [0, logical_capacity]");
+  }
+#pragma omp parallel for collapse(2) schedule(static)
+  for (int b = 0; b < shape.batch_size; ++b) {
+    for (int h = 0; h < shape.heads_kv; ++h) {
+      auto* src = reinterpret_cast<bestla::utils::bf16*>(cache_k) +
+                  (static_cast<size_t>(b) * shape.step_k_bs + static_cast<size_t>(h) * shape.step_k_head_num);
+      bestla::kernel::jit::CScaleInterleavedBF16FP16::forward<48>(
+          src, reinterpret_cast<const bestla::utils::fp16*>(cossin), shape.head_dim, shape.k_seq_pad,
+          shape.k_head_size_pad, seq_keep);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Debug-only: call the raw Route 4 kernel directly, bypassing the public
+// mitigation.  This is the same code path that the mitigation replaces with
+// mha_dense_forward, exposed so we can reproduce the NaN bug in isolation.
+// Set ARK_DEBUG_ROUTE4_NAN=1 to enable NaN instrumentation printouts.
+// ---------------------------------------------------------------------------
+void debug_bestla_sdpa_forward_route4_raw(const attn_fwd_args_t& args) {
+  if (!args.Q || !args.K || !args.V || !args.dst) {
+    throw std::invalid_argument("debug_route4_raw: Q/K/V/dst pointers must be non-null");
+  }
+  attn_fwd_args_t local = args;
+  std::vector<int> n_padding_storage;
+  prepare_forward_padding(local, n_padding_storage, "debug_route4_raw", /*padding_supported=*/false);
+  validate_homogeneous_bf16_nonstable_route(local);
+
+  {
+    auto* cpu = bestla::device::CpuDevice::getInstance();
+    if (!cpu->AMX_BF16()) {
+      throw std::runtime_error("debug_route4_raw: requires AMX-BF16 CPU");
+    }
+  }
+
+  if (local.threading == nullptr) {
+    throw std::invalid_argument("debug_route4_raw: threading pool must be provided");
+  }
+  auto* th = static_cast<bestla::parallel::IThreading*>(local.threading);
+  attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
+  const size_t workspace_bytes = bestla_attn_workspace_size(shape, th->num_threads());
+
+  bestla::utils::aligned_vector<float> workspace;
+  if (local.tmp == nullptr) {
+    local.tmp = aligned_bestla_tmp(workspace, shape, workspace_bytes);
+  }
+  // Zero workspace (same as the mitigated path does for BF16)
+  std::memset(local.tmp, 0, workspace_bytes);
+
+  // Directly call the REAL Route 4 kernel (NOT mitigated through mha_dense_forward)
+  const auto typed = make_typed_attn_args_homogeneous<bestla::utils::bf16>(local);
+  bestla_mha::bestla_fusion_attn_forward<bestla::utils::bf16, bestla::utils::bf16, bestla::utils::bf16,
+                                         bestla::utils::bf16>(typed, *th);
 }
 
 }  // namespace ark::cpu

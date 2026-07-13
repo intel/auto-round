@@ -1,17 +1,34 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+"""Standard public CPU sdpa() tests.
+
+This module covers only the standard sdpa() contract: mask, causal behavior,
+scale, dtype, GQA, prefill/decode behavior, and homogeneous route
+hit/fallback without touching internal mixed-route-only features.
+"""
+
 import math
-import os
 import sys
 from pathlib import Path
 
+import cpuinfo
 import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import auto_round_kernel
+
+
+CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
+HAS_AVX512_FP16 = "avx512_fp16" in CPU_FLAGS
+HAS_AMX_BF16 = "amx_bf16" in CPU_FLAGS
+BUILD_HAS_FP16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_FP16_ROUTE)
+BUILD_HAS_BF16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE)
+ROUTE_SCALAR = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_SCALAR
+ROUTE_HOMOGENEOUS_FP16 = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_FP16
+ROUTE_HOMOGENEOUS_BF16 = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16
 
 
 def _to_layout(tensor_hnd, layout):
@@ -25,6 +42,9 @@ def _to_layout(tensor_hnd, layout):
 def _to_hnd(tensor, layout):
     return tensor if layout == "HND" else tensor.transpose(1, 2)
 
+
+def _resolved_cpu_sdpa_route(query, key, value, **kwargs):
+    return auto_round_kernel.internal.cpu.debug_resolve_sdpa_route(query, key, value, **kwargs)
 
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
 def test_ark_cpu_sdpa_decode_matches_torch_for_layout(layout):
@@ -100,42 +120,6 @@ def test_ark_cpu_sdpa_nhd_and_hnd_are_equivalent():
     )
 
     torch.testing.assert_close(out_hnd, out_nhd.transpose(1, 2), atol=0, rtol=0)
-
-
-def test_ark_cpu_kv_update_append_matches_full_attention():
-    torch.manual_seed(2029)
-    batch, heads_q, heads_kv, head_dim = 1, 4, 2, 8
-    chunks = [5, 7, 3]
-    capacity = sum(chunks)
-    scale = 1 / math.sqrt(head_dim)
-    q = torch.randn(batch, heads_q, 1, head_dim, dtype=torch.float32)
-    k_full = torch.randn(batch, heads_kv, capacity, head_dim, dtype=torch.float32)
-    v_full = torch.randn(batch, heads_kv, capacity, head_dim, dtype=torch.float32)
-    k_cache, v_cache = auto_round_kernel.ark_cpu_kv_cache_alloc(batch, heads_kv, capacity, head_dim)
-
-    pos = 0
-    for chunk in chunks:
-        auto_round_kernel.ark_cpu_kv_update(
-            k_cache,
-            v_cache,
-            k_full[:, :, pos : pos + chunk, :],
-            v_full[:, :, pos : pos + chunk, :],
-            pos,
-        )
-        pos += chunk
-
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        q,
-        k_full,
-        v_full,
-        scale=scale,
-        enable_gqa=True,
-    )
-    actual = auto_round_kernel.sdpa(q, k_cache, v_cache, scale=scale)
-
-    torch.testing.assert_close(k_cache, k_full, atol=0, rtol=0)
-    torch.testing.assert_close(v_cache, v_full, atol=0, rtol=0)
-    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
 
 
 def test_ark_cpu_sdpa_rejects_mask_with_causal():
@@ -230,26 +214,17 @@ def test_ark_cpu_sdpa_decode_half_dtypes_match_torch(dtype):
 
 
 # ---------------------------------------------------------------------------
-# Module C: homogeneous-route classification assertion.
+# Module C: homogeneous runtime backend semantics.
 #
-# Routes 3/4 (fp16×4 / bf16×4) are internal-only and NOT wired in the Python
-# ABI (see validate_non_int8_cpu_sdpa.py, ROUTE_TABLE).  This test asserts
-# that calling sdpa() with fully homogeneous half-precision inputs:
-#   * produces numerically correct output (Tier 0 scalar handles them),
-#   * is unaffected by ARK_UNSAFE_BESTLA_MIXED_SDPA — the gate is only for
-#     the mixed Q=fp32/K|V=fp16|bf16 routes (1/2), not route 3/4.
+# Runtime dispatch may now select the homogeneous fp16 backend (route 3) for
+# eligible fp16 inputs and the homogeneous bf16 backend (route 4) for the narrow
+# no-GQA bf16 contract. Unsupported requests still fall back to Tier-0 scalar.
+# These tests assert semantic stability rather than a specific backend choice.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_homogeneous_half_uses_tier0_not_internal_routes(dtype):
-    """Homogeneous Q/K/V inputs (all fp16 or all bf16) must NOT enter routes 3/4.
-
-    Routes 3 (fp16×4) and 4 (bf16×4) are C++-internal and not wired in
-    ark.cpp/Python.  With or without ARK_UNSAFE_BESTLA_MIXED_SDPA=1, sdpa()
-    must route through Tier 0 scalar and produce correct output for homogeneous
-    half-precision inputs.  The two runs must agree exactly (no routing divergence).
-    """
+def test_homogeneous_half_preserves_sdpa_semantics(dtype):
     torch.manual_seed(4100)
     batch, heads, seq, head_dim = 1, 4, 32, 16
     scale = 1.0 / math.sqrt(head_dim)
@@ -261,24 +236,79 @@ def test_homogeneous_half_uses_tier0_not_internal_routes(dtype):
         q.float(), k.float(), v.float(), scale=scale
     )
 
-    # Without env gate.
-    out_no_gate = auto_round_kernel.sdpa(q, k, v, scale=scale)
+    out = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
-    # With env gate: must produce identical output since routes 3/4 are internal-only.
-    prev = os.environ.get("ARK_UNSAFE_BESTLA_MIXED_SDPA")
-    os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = "1"
-    try:
-        out_with_gate = auto_round_kernel.sdpa(q, k, v, scale=scale)
-    finally:
-        if prev is None:
-            os.environ.pop("ARK_UNSAFE_BESTLA_MIXED_SDPA", None)
-        else:
-            os.environ["ARK_UNSAFE_BESTLA_MIXED_SDPA"] = prev
+    assert out.dtype == dtype
+    torch.testing.assert_close(out.float(), expected, atol=2e-2, rtol=2e-2)
 
-    # Both must be the original dtype and match torch reference.
-    assert out_no_gate.dtype == dtype
-    assert out_with_gate.dtype == dtype
-    torch.testing.assert_close(out_no_gate.float(), expected, atol=2e-2, rtol=2e-2)
-    torch.testing.assert_close(out_with_gate.float(), expected, atol=2e-2, rtol=2e-2)
-    # No routing divergence between gated and ungated: exact bitwise match.
-    torch.testing.assert_close(out_no_gate, out_with_gate, atol=0, rtol=0)
+
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+def test_fp16_homogeneous_route_resolution_prefill_causal(layout):
+    torch.manual_seed(4103)
+    batch, heads_q, heads_kv, seq, head_dim = 1, 4, 2, 32, 16
+    q_hnd = torch.randn(batch, heads_q, seq, head_dim, dtype=torch.float16)
+    k_hnd = torch.randn(batch, heads_kv, seq, head_dim, dtype=torch.float16)
+    v_hnd = torch.randn(batch, heads_kv, seq, head_dim, dtype=torch.float16)
+
+    route = _resolved_cpu_sdpa_route(
+        _to_layout(q_hnd, layout),
+        _to_layout(k_hnd, layout),
+        _to_layout(v_hnd, layout),
+        is_causal=True,
+        tensor_layout=layout,
+    )
+    assert route == (ROUTE_HOMOGENEOUS_FP16 if HAS_AVX512_FP16 and BUILD_HAS_FP16_ROUTE else ROUTE_SCALAR)
+
+
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+def test_fp16_homogeneous_route_resolution_decode_gqa(layout):
+    torch.manual_seed(4104)
+    batch, heads_q, heads_kv, seq_q, seq_kv, head_dim = 1, 8, 2, 1, 48, 16
+    q_hnd = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float16)
+    k_hnd = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float16)
+    v_hnd = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float16)
+
+    route = _resolved_cpu_sdpa_route(
+        _to_layout(q_hnd, layout),
+        _to_layout(k_hnd, layout),
+        _to_layout(v_hnd, layout),
+        tensor_layout=layout,
+    )
+    assert route == (ROUTE_HOMOGENEOUS_FP16 if HAS_AVX512_FP16 and BUILD_HAS_FP16_ROUTE else ROUTE_SCALAR)
+
+
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+def test_bf16_homogeneous_route_resolution_causal_no_gqa(layout):
+    torch.manual_seed(4105)
+    batch, heads, seq, head_dim = 1, 4, 32, 16
+    q_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+    k_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+    v_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
+
+    route = _resolved_cpu_sdpa_route(
+        _to_layout(q_hnd, layout),
+        _to_layout(k_hnd, layout),
+        _to_layout(v_hnd, layout),
+        is_causal=True,
+        tensor_layout=layout,
+    )
+    assert route == (ROUTE_HOMOGENEOUS_BF16 if HAS_AMX_BF16 and BUILD_HAS_BF16_ROUTE else ROUTE_SCALAR)
+
+
+def test_homogeneous_bf16_gqa_falls_back_without_changing_semantics():
+    torch.manual_seed(4102)
+    batch, heads_q, heads_kv, seq, head_dim = 1, 4, 2, 24, 16
+    scale = 1.0 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, seq, head_dim, dtype=torch.bfloat16)
+    k = torch.randn(batch, heads_kv, seq, head_dim, dtype=torch.bfloat16)
+    v = torch.randn(batch, heads_kv, seq, head_dim, dtype=torch.bfloat16)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q.float(), k.float(), v.float(), scale=scale, enable_gqa=True
+    )
+    route = _resolved_cpu_sdpa_route(q, k, v, scale=scale)
+    assert route == ROUTE_SCALAR
+    actual = auto_round_kernel.sdpa(q, k, v, scale=scale)
+
+    assert actual.dtype == torch.bfloat16
+    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)

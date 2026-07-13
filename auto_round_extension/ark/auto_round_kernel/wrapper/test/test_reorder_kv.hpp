@@ -82,7 +82,7 @@ struct TestReorderKV {
     st.head = nhd ? hd : sl * hd;
     st.batch = sl * hkv * hd;
     std::vector<uint16_t> packed(reorder_kv_cache_elems(sh, false));
-    reorder_k_to_packed(packed.data(), raw.data(), sh, st, batch, hkv, sl, hd, dt);
+    reorder_k_to_packed(packed.data(), raw.data(), sh, st);
     for (int b = 0; b < batch; ++b)
       for (int h = 0; h < hkv; ++h) {
         size_t base = (size_t(b) * hkv + h) * sh.k_head_elems;
@@ -105,7 +105,7 @@ struct TestReorderKV {
     st.head = nhd ? hd : sl * hd;
     st.batch = sl * hkv * hd;
     std::vector<uint16_t> packed(reorder_kv_cache_elems(sh, true));
-    reorder_v_to_packed(packed.data(), raw.data(), sh, st, batch, hkv, sl, hd, dt);
+    reorder_v_to_packed(packed.data(), raw.data(), sh, st);
     for (int b = 0; b < batch; ++b)
       for (int h = 0; h < hkv; ++h) {
         size_t base = (size_t(b) * hkv + h) * sh.v_head_elems;
@@ -184,21 +184,19 @@ struct TestPersistentPackedKV {
     auto sh = packed_kv_cache_shape(batch, hkv, capacity, hd, dt);
     std::vector<uint16_t> ref_k(reorder_kv_cache_elems(sh, false));
     std::vector<uint16_t> ref_v(reorder_kv_cache_elems(sh, true));
-    reorder_k_to_packed(ref_k.data(), rawk.data(), sh, ks, batch, hkv, capacity, hd, dt);
-    reorder_v_to_packed(ref_v.data(), rawv.data(), sh, vs, batch, hkv, capacity, hd, dt);
+    reorder_k_to_packed(ref_k.data(), rawk.data(), sh, ks);
+    reorder_v_to_packed(ref_v.data(), rawv.data(), sh, vs);
     // Persistent: zero, append prefix [0,start_pos), then [start_pos,append_len).
     std::vector<uint16_t> cur_k(ref_k.size(), 0);
     std::vector<uint16_t> cur_v(ref_v.size(), 0);
     if (start_pos > 0) {
-      update_packed_k_cache(cur_k.data(), rawk.data(), sh, ks, batch, hkv, start_pos, hd, 0, dt);
-      update_packed_v_cache(cur_v.data(), rawv.data(), sh, vs, batch, hkv, start_pos, hd, 0, dt);
+      update_packed_k_cache(cur_k.data(), rawk.data(), sh, ks, start_pos, 0);
+      update_packed_v_cache(cur_v.data(), rawv.data(), sh, vs, start_pos, 0);
     }
     auto ks2 = raw_strides<AttentionStrides>(hkv, capacity, hd, nhd);  // append slice begins at row start_pos
     auto vs2 = raw_strides<ValueStrides>(hkv, capacity, hd, nhd);
-    update_packed_k_cache(cur_k.data(), rawk.data() + size_t(start_pos) * ks2.seq, sh, ks2, batch, hkv, append_len, hd,
-                          start_pos, dt);
-    update_packed_v_cache(cur_v.data(), rawv.data() + size_t(start_pos) * vs2.seq, sh, vs2, batch, hkv, append_len, hd,
-                          start_pos, dt);
+    update_packed_k_cache(cur_k.data(), rawk.data() + size_t(start_pos) * ks2.seq, sh, ks2, append_len, start_pos);
+    update_packed_v_cache(cur_v.data(), rawv.data() + size_t(start_pos) * vs2.seq, sh, vs2, append_len, start_pos);
     for (size_t i = 0; i < ref_k.size(); ++i)
       if (cur_k[i] != ref_k[i]) throw std::runtime_error("persistent K cache mismatch");
     for (size_t i = 0; i < ref_v.size(); ++i)
@@ -229,20 +227,23 @@ struct TestPackedForwardSetup {
   static void check_logical_capacity(BTLA_DTYPE dt, int cap, int hd) {
     auto sh = packed_kv_cache_shape(2, 2, cap, hd, dt);
     if (sh.logical_capacity != cap) throw std::runtime_error("logical_capacity not preserved");
+    if (sh.batch_size != 2 || sh.heads_kv != 2 || sh.dtype != dt) {
+      throw std::runtime_error("packed descriptor metadata not preserved");
+    }
     std::vector<uint16_t> k(reorder_kv_cache_elems(sh, false), 0), v(reorder_kv_cache_elems(sh, true), 0);
     AttentionStrides ks{hd, 1, cap * hd, cap * 2 * hd};
     ValueStrides vs{1, hd, cap * hd, cap * 2 * hd};
     std::vector<uint16_t> raw(size_t(2) * 2 * cap * hd, 0);
     // start_pos + append == capacity must be allowed.
-    update_packed_k_cache(k.data(), raw.data(), sh, ks, 2, 2, cap, hd, 0, dt);
-    update_packed_v_cache(v.data(), raw.data(), sh, vs, 2, 2, cap, hd, 0, dt);
+    update_packed_k_cache(k.data(), raw.data(), sh, ks, cap, 0);
+    update_packed_v_cache(v.data(), raw.data(), sh, vs, cap, 0);
     // start_pos + append > capacity must throw, even inside padded capacity.
     bool threw = false;
-    try { update_packed_k_cache(k.data(), raw.data(), sh, ks, 2, 2, 1, hd, cap, dt); }
+    try { update_packed_k_cache(k.data(), raw.data(), sh, ks, 1, cap); }
     catch (const std::invalid_argument&) { threw = true; }
     if (!threw) throw std::runtime_error("K overflow not rejected");
     threw = false;
-    try { update_packed_v_cache(v.data(), raw.data(), sh, vs, 2, 2, 1, hd, cap, dt); }
+    try { update_packed_v_cache(v.data(), raw.data(), sh, vs, 1, cap); }
     catch (const std::invalid_argument&) { threw = true; }
     if (!threw) throw std::runtime_error("V overflow not rejected");
   }
@@ -250,14 +251,14 @@ struct TestPackedForwardSetup {
   static void check_padding_zero(BTLA_DTYPE dt, int cap, int hd) {
     auto sh = packed_kv_cache_shape(2, 2, cap, hd, dt);
     std::vector<uint16_t> k(reorder_kv_cache_elems(sh, false), 0xFFFF), v(reorder_kv_cache_elems(sh, true), 0xFFFF);
-    clear_packed_k_cache(k.data(), sh, dt);
-    clear_packed_v_cache(v.data(), sh, dt);
+    clear_packed_k_cache(k.data(), sh);
+    clear_packed_v_cache(v.data(), sh);
     std::vector<uint16_t> raw(size_t(2) * 2 * cap * hd, 0);
     AttentionStrides ks{hd, 1, cap * hd, cap * 2 * hd};
     ValueStrides vs{1, hd, cap * hd, cap * 2 * hd};
     for (size_t i = 0; i < raw.size(); ++i) store_scalar(raw.data(), i, dt, 1.0f);
-    update_packed_k_cache(k.data(), raw.data(), sh, ks, 2, 2, 1, hd, 0, dt);  // append only 1 token
-    update_packed_v_cache(v.data(), raw.data(), sh, vs, 2, 2, 1, hd, 0, dt);
+    update_packed_k_cache(k.data(), raw.data(), sh, ks, 1, 0);  // append only 1 token
+    update_packed_v_cache(v.data(), raw.data(), sh, vs, 1, 0);
     // Padded head_dim / tile / rowpack slots beyond the single token stay zero.
     int zeros = 0;
     for (size_t i = 0; i < k.size(); ++i) if (k[i] == 0) ++zeros;
@@ -275,16 +276,18 @@ struct TestPackedForwardSetup {
     a.Q = q.data(); a.K = k.data(); a.V = v.data(); a.dst = dst.data();
     a.batch_size = 1; a.head_num = 1; a.heads_kv = 1; a.head_size = 64; a.sl_q = 1; a.sl_kv = 16;
     a.Q_layout = ATTN_FWD_LAYOUT_PLAIN; a.dst_layout = ATTN_FWD_LAYOUT_PLAIN;
-    a.K_layout = sh.layout; a.V_layout = sh.layout;
+    a.K_layout = sh.k_layout; a.V_layout = sh.v_layout;
     // Capacity overflow: sl_kv > logical_capacity must throw.
     a.sl_kv = 99;
     bool threw = false;
-    try { bestla_sdpa_forward_packed(a, sh, BTLA_DTYPE::F16); } catch (const std::exception&) { threw = true; }
+    try { bestla_sdpa_forward_packed(a, sh); } catch (const std::exception&) { threw = true; }
     if (!threw) throw std::runtime_error("forward capacity overflow not rejected");
     // Wrong dtype/layout pairing must throw.
     a.sl_kv = 16;
     threw = false;
-    try { bestla_sdpa_forward_packed(a, sh, BTLA_DTYPE::BF16); } catch (const std::exception&) { threw = true; }
+    auto bad = sh;
+    bad.dtype = BTLA_DTYPE::BF16;
+    try { bestla_sdpa_forward_packed(a, bad); } catch (const std::exception&) { threw = true; }
     if (!threw) throw std::runtime_error("forward dtype/layout mismatch not rejected");
   }
 
@@ -563,7 +566,7 @@ struct TestMixedPaddingRight {
       {
         auto a = make_args(q, k, v, dst);
         a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
-        a.n_padding = a.sl_kv / 2;
+        a.n_padding_scalar = a.sl_kv / 2;
         if (padding_rejected(a, dt))
           throw std::runtime_error("mixed padding-right with valid n_padding wrongly rejected");
       }
@@ -571,14 +574,14 @@ struct TestMixedPaddingRight {
       {
         auto a = make_args(q, k, v, dst);
         a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
-        a.n_padding = 0;
+        a.n_padding_scalar = 0;
         if (!padding_rejected(a, dt)) throw std::runtime_error("mixed padding-right n_padding<=0 not rejected");
       }
       // Reject: n_padding > sl_kv (boundary past the K/V sequence).
       {
         auto a = make_args(q, k, v, dst);
         a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
-        a.n_padding = a.sl_kv + 1;
+        a.n_padding_scalar = a.sl_kv + 1;
         if (!padding_rejected(a, dt)) throw std::runtime_error("mixed padding-right n_padding>sl_kv not rejected");
       }
       // Reject: padding-right combined with causal (mutually exclusive -- the stable
@@ -586,8 +589,28 @@ struct TestMixedPaddingRight {
       {
         auto a = make_args(q, k, v, dst);
         a.attn_flags = ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_CAUSAL;
-        a.n_padding = a.sl_kv / 2;
+        a.n_padding_scalar = a.sl_kv / 2;
         if (!padding_rejected(a, dt)) throw std::runtime_error("mixed padding-right + causal not rejected");
+      }
+      // Per-batch pointer semantics: valid entries for every batch must pass.
+      {
+        auto a = make_args(q, k, v, dst);
+        a.batch_size = 2;
+        int per_batch[] = {a.sl_kv / 2, a.sl_kv - 1};
+        a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
+        a.n_padding = per_batch;
+        if (padding_rejected(a, dt))
+          throw std::runtime_error("mixed padding-right per-batch n_padding wrongly rejected");
+      }
+      // Per-batch pointer semantics: one invalid entry must reject the whole call.
+      {
+        auto a = make_args(q, k, v, dst);
+        a.batch_size = 2;
+        int per_batch[] = {a.sl_kv / 2, a.sl_kv + 1};
+        a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
+        a.n_padding = per_batch;
+        if (!padding_rejected(a, dt))
+          throw std::runtime_error("mixed padding-right invalid per-batch n_padding not rejected");
       }
     }
     // Homogeneous routes 3/4 stay U for padding-right (route 3 fp16-score
@@ -598,7 +621,7 @@ struct TestMixedPaddingRight {
       std::vector<uint16_t> hq(64, 0), hk(64, 0), hv(64, 0), hd(64, 0);
       auto a = TestHomogeneousForwardSetup::make_route_valid_args(hq, hk, hv, hd, dt);
       a.attn_flags = ATTN_FLAG_PADDING_RIGHT;
-      a.n_padding = 2;
+      a.n_padding_scalar = 2;
       bool threw = false;
       try {
         bestla_sdpa_forward_homogeneous(a, dt);
@@ -840,7 +863,7 @@ struct TestMixedNumericalFeatures {
     a.head_size = D;
     a.sl_q = Sq;
     a.sl_kv = Sk;
-    a.n_padding = use_padding ? n_valid_kv : 0;
+    a.n_padding_scalar = use_padding ? n_valid_kv : 0;
     a.Q_layout = ATTN_FWD_LAYOUT_PLAIN;
     a.K_layout = ATTN_FWD_LAYOUT_PLAIN;
     a.V_layout = ATTN_FWD_LAYOUT_PLAIN;

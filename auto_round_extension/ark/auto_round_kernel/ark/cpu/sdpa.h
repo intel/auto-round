@@ -27,9 +27,8 @@ void sdpa_forward(const MhaDenseArgs& args);
 // Route 1 (kv_dtype == F16):  f32,f16,f16,f32  — stable fp32-score, AVX2.
 // Route 2 (kv_dtype == BF16): f32,bf16,bf16,f32 — stable fp32-score, AVX512F or AMX-BF16.
 //
-// Exposure: TIER 1 (experimental/env-gated). Reachable from the Python sdpa()
-// only with ARK_UNSAFE_BESTLA_MIXED_SDPA=1.  The scalar Tier-0 fallback handles
-// the default Python path; this entry handles the BestLA mixed-precision route.
+// Exposure: TIER 1 (enabled by default). The scalar Tier-0 fallback handles
+// homogeneous dtypes; this entry handles the BestLA mixed-precision route.
 //
 // Feature support (both routes, all S): causal, GQA (head_num % heads_kv == 0),
 // padding-right (n_padding, mutually exclusive with causal), alibi (ALIBI8 flag),
@@ -60,31 +59,48 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 // / `bestla_sdpa_forward_packed`) is the NS-parity runtime-ready path for
 // autoregressive decode: a fixed-capacity packed buffer is allocated once, updated
 // token-by-token, and passed directly to `bestla_sdpa_forward_packed` without
-// any per-forward reorder overhead.  This is the internal/experimental tier of
-// routes 1/2; it is gated behind ARK_UNSAFE_BESTLA_MIXED_SDPA alongside the
-// PLAIN entry.
+// any per-forward reorder overhead. This is the internal/experimental tier of
+// routes 1/2.
 //
 // `reorder_kv_shape` / `reorder_kv_cache_elems` / `reorder_k/v_to_packed` are
 // used by bestla_sdpa_forward's internal per-forward bridge (raw→packed on every
 // call) and are shared with the persistent path.
 // ---------------------------------------------------------------------------
 
-// Per-(NTILE, ROWPACK) packed K/V geometry for a single shape + element type.
+// Runtime-ready descriptor for the packed K/V cache layout selected for a single
+// [batch, heads_kv, capacity, head_size, dtype] contract.
 struct ReorderKVShape {
-  ATTN_FWD_LAYOUT layout = ATTN_FWD_LAYOUT_PLAIN;  // NTILE24/NTILE48 row-pack
-  int ntile = 0;                                   // 24 (fp16) or 48 (bf16)
-  int rowpack = 0;                                 // 1 (fp16) or 2 (bf16)
-  int sl_pad = 0;                                  // seq padded to NTILE
-  int hs_pad = 0;                                  // head_size padded to rowpack
-  int head_dim = 0;                                // logical head_size (unpadded)
-  int logical_capacity = 0;  // logical seq capacity (k_head_elems uses padded cap)
-  // Per-head element counts (one head = one [B,Hkv] slice).
-  size_t k_head_elems = 0;  // packed K bytes/elems per head ([hs_pad][sl_pad])
-  size_t v_head_elems = 0;  // packed V bytes/elems per head ([sl_pad][hs_pad])
-  int num_heads = 0;        // batch * heads_kv
+  BTLA_DTYPE dtype = BTLA_DTYPE::F16;
+  ATTN_FWD_LAYOUT layout = ATTN_FWD_LAYOUT_PLAIN;   // legacy common-layout alias
+  ATTN_FWD_LAYOUT k_layout = ATTN_FWD_LAYOUT_PLAIN; // explicit K layout
+  ATTN_FWD_LAYOUT v_layout = ATTN_FWD_LAYOUT_PLAIN; // explicit V layout
+  int ntile = 0;                                    // 24 (fp16) or 48 (bf16)
+  int rowpack = 0;                                  // 1 (fp16) or 2 (bf16)
+  int batch_size = 0;
+  int heads_kv = 0;
+  int head_dim = 0;  // logical head_size (unpadded)
+  int logical_capacity = 0;
+  int num_heads = 0;  // batch_size * heads_kv
+  int k_seq_pad = 0;
+  int k_head_size_pad = 0;
+  int v_seq_pad = 0;
+  int v_head_size_pad = 0;
+  size_t elem_bytes = 0;
+  // Per-head / total element counts.
+  size_t k_head_elems = 0;
+  size_t v_head_elems = 0;
+  size_t k_total_elems = 0;
+  size_t v_total_elems = 0;
+  // Total storage in bytes across all batch×head slots.
+  size_t k_bytes = 0;
+  size_t v_bytes = 0;
   // Step strides (in elements) for the resulting packed attn_fwd_args_t.
+  int step_k_bs = 0;
+  int step_k_head_num = 0;
   int step_k_sl = 0;
   int step_k_head_size = 0;
+  int step_v_bs = 0;
+  int step_v_head_num = 0;
   int step_v_sl = 0;
   int step_v_head_size = 0;
 };
@@ -97,12 +113,10 @@ size_t reorder_kv_cache_elems(const ReorderKVShape& shape, bool is_value);
 
 // Reorder raw HND/NHD K -> NTILE row-packed K cache. `src` is the raw K of one
 // batch with the provided strides; `dst` is the packed cache (>= K cache size).
-void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const AttentionStrides& k_strides,
-                         int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype);
+void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const AttentionStrides& k_strides);
 
 // Reorder raw HND/NHD V -> NTILE row-packed V cache (NTILE over head_size).
-void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const ValueStrides& v_strides,
-                         int batch, int num_heads_kv, int seq_len_kv, int head_dim, BTLA_DTYPE kv_dtype);
+void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape, const ValueStrides& v_strides);
 
 void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* value, const AttentionStrides& k_strides,
                      const ValueStrides& v_strides, BTLA_DTYPE dtype, int batch, int num_heads_kv, int append_len,
@@ -128,21 +142,33 @@ void kv_cache_update(void* cache_k, void* cache_v, const void* key, const void* 
 // deterministic. Callers must pass zero-filled buffers (or clear_packed_*_cache)
 // so padded/unwritten regions read as zero.
 ReorderKVShape packed_kv_cache_shape(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype);
+ReorderKVShape packed_kv_cache_info(int batch, int num_heads_kv, int capacity, int head_dim, BTLA_DTYPE kv_dtype);
 
 // Zero a freshly allocated packed K/V cache so padded regions and future tokens
 // are deterministic. Buffers hold reorder_kv_cache_elems(shape, is_value) elems.
-void clear_packed_k_cache(void* cache_k, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
-void clear_packed_v_cache(void* cache_v, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
+void clear_packed_k_cache(void* cache_k, const ReorderKVShape& shape);
+void clear_packed_v_cache(void* cache_v, const ReorderKVShape& shape);
 
 // Append raw K tokens -> persistent packed K cache at [start_pos, start_pos+append_len).
 void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape& shape,
-                           const AttentionStrides& k_strides, int batch, int num_heads_kv, int append_len, int head_dim,
-                           int start_pos, BTLA_DTYPE kv_dtype);
+                           const AttentionStrides& k_strides, int append_len, int start_pos, bool no_zeroing = false);
 
 // Append raw V tokens -> persistent packed V cache at [start_pos, start_pos+append_len).
 void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShape& shape,
-                           const ValueStrides& v_strides, int batch, int num_heads_kv, int append_len, int head_dim,
-                           int start_pos, BTLA_DTYPE kv_dtype);
+                           const ValueStrides& v_strides, int append_len, int start_pos, bool no_zeroing = false);
+
+// Copy a logical K/V window [seq_off, seq_off + seq_size) from one packed cache
+// to another cache with the same descriptor. With default zero-padding semantics,
+// packed padding/alignment slots touched by the copy are also propagated.
+void copy_packed_k_cache(void* dst_cache_k, const void* src_cache_k, const ReorderKVShape& shape, int seq_off,
+                         int seq_size, bool no_zeroing = false);
+void copy_packed_v_cache(void* dst_cache_v, const void* src_cache_v, const ReorderKVShape& shape, int seq_off,
+                         int seq_size, bool no_zeroing = false);
+
+// Shift-RoPE packed K in-place using precomputed fp16 cos/sin coefficients.
+// Mirrors Neural Speed's packed-K BF16 path; currently only BF16 / NTILE48_ROWPACK2
+// is supported.
+void shift_packed_k_cache_rope(void* cache_k, const void* cossin, const ReorderKVShape& shape, int seq_keep);
 
 // ---------------------------------------------------------------------------
 // Forward over an already-packed persistent K/V cache (NS-parity decode path).
@@ -157,10 +183,9 @@ void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShap
 // padding-right, alibi (ALIBI8), tanh (TANH30), and prefer_fp32 are all
 // validated and forwarded to the fp32-score epilogue.
 //
-// Exposure: internal/experimental, gated by ARK_UNSAFE_BESTLA_MIXED_SDPA
-// alongside the PLAIN entry.  This is the intended NS-parity persistent-cache
-// forward; promote to default once per-ISA CI coverage is in place.
-void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape, BTLA_DTYPE kv_dtype);
+// Exposure: internal/experimental, enabled by default alongside the PLAIN entry.
+// This is the intended NS-parity persistent-cache forward.
+void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShape& shape);
 
 // ---------------------------------------------------------------------------
 // Homogeneous attention routes (Tier 2 — internal-only by design).
@@ -181,11 +206,17 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 // and non-stable exp-sum epilogues do not implement them; they are rejected with
 // per-route messages before any kernel work).
 //
-// Exposure: NOT wired in ark.cpp / Python ABI.  Internal/experimental only.
-// Route 3 requires a packed K/V layout bridge for PLAIN inputs; route 4 is only
-// justified if an AMX-BF16 bf16-compute preference use case arises (route 2
-// already covers bf16 K/V with full feature set and fp32-score stability).
-// Both remain Tier 2 / internal-only as the correct NS-parity final state.
+// Exposure: route 3 is now callable from ark.cpp's runtime selector for eligible
+// fp16 PLAIN K/V inputs (with silent fallback to Tier-0 scalar when the
+// homogeneous contract is not met). Route 4 is also runtime-selectable now, but
+// only as a narrow bf16 optimization backend: ark.cpp tries it for homogeneous
+// bf16 requests that already satisfy its no-GQA/all-PLAIN/AMX-BF16 contract and
+// otherwise silently falls back to Tier-0 scalar.
 void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype);
+
+// Debug-only: call the raw Route 4 (mha_interface_t + AMX-BF16) kernel directly,
+// bypassing the public mitigation that redirects to mha_dense_forward.
+// Requires ARK_DEBUG_ROUTE4_NAN=1 to enable NaN instrumentation printouts.
+void debug_bestla_sdpa_forward_route4_raw(const attn_fwd_args_t& args);
 
 }  // namespace ark::cpu
