@@ -2,6 +2,15 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """FLUX model mapping for runtime-loadable SVDQuant Nunchaku artifacts."""
 
@@ -41,9 +50,29 @@ _RMS_MAP = {
     "attn.norm_added_k": "norm_added_k",
 }
 _TOP_LEVEL_PREFIXES = ("x_embedder.", "context_embedder.", "time_text_embed.", "norm_out.linear.", "proj_out.")
+FLUX_TOP_LEVEL_TENSOR_KEYS = frozenset(
+    {
+        "x_embedder.weight",
+        "x_embedder.bias",
+        "context_embedder.weight",
+        "context_embedder.bias",
+        "norm_out.linear.weight",
+        "norm_out.linear.bias",
+        "proj_out.weight",
+        "proj_out.bias",
+        *(
+            f"time_text_embed.{embedder}_embedder.linear_{linear}.{parameter}"
+            for embedder in ("timestep", "text", "guidance")
+            for linear in (1, 2)
+            for parameter in ("weight", "bias")
+        ),
+    }
+)
 
 
-def flux_onefile_tensor_count(num_layers: int, num_single_layers: int, top_level_tensors: int = 20) -> int:
+def flux_onefile_tensor_count(
+    num_layers: int, num_single_layers: int, top_level_tensors: int = len(FLUX_TOP_LEVEL_TENSOR_KEYS)
+) -> int:
     """Return the key count without constructing model-sized tensors."""
 
     return num_layers * (8 * 7 + 2 * 4 + 4) + num_single_layers * (4 * 7 + 4 + 2) + top_level_tensors
@@ -124,9 +153,21 @@ class FluxSVDQuantNunchakuAdapter:
     require_complete_model: bool = True
 
     def __post_init__(self) -> None:
-        self.decomposition_device = torch.device(self.decomposition_device)
-        if self.decomposition_device.type != "cpu":
-            raise ValueError("FLUX decomposition_device must be cpu")
+        try:
+            self.decomposition_device = torch.device(self.decomposition_device)
+        except (RuntimeError, TypeError) as exc:
+            raise ValueError(f"invalid FLUX decomposition_device {self.decomposition_device!r}") from exc
+        if self.decomposition_device.type not in ("cpu", "cuda"):
+            raise ValueError("FLUX decomposition_device must be CPU or CUDA")
+        if self.decomposition_device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("FLUX decomposition_device requests CUDA, but CUDA is not available")
+            device_count = torch.cuda.device_count()
+            index = self.decomposition_device.index
+            if index is not None and (index < 0 or index >= device_count):
+                raise ValueError(
+                    f"FLUX decomposition_device index {index} is invalid for CUDA device_count={device_count}"
+                )
         if self.config is not None:
             self.config = _config_dict(self.config)
         if not isinstance(self.require_complete_model, bool):
@@ -166,17 +207,62 @@ class FluxSVDQuantNunchakuAdapter:
         )
 
     def _fuse(self, prefix: str, sources: tuple[SourceLinearRecord, ...], rank: int) -> SVDQuantExportRecord:
-        effective = [_effective_weight(source, self.decomposition_device) for source in sources]
-        input_dims = {weight.shape[1] for weight in effective}
-        if len(input_dims) != 1:
-            raise ValueError(f"{prefix} fused sources have incompatible input dimensions {sorted(input_dims)}")
-        weight = torch.cat(effective, dim=0)
-        del effective
-        biases = [source.bias for source in sources]
-        if any(bias is None for bias in biases) and not all(bias is None for bias in biases):
-            raise ValueError(f"{prefix} fused sources must either all have bias or all omit bias")
-        bias = None if biases[0] is None else torch.cat([item.to(self.decomposition_device) for item in biases])
-        return _decompose(weight, rank=rank, template=sources[0], prefix=prefix, sources=sources, bias=bias)
+        def operation() -> SVDQuantExportRecord:
+            effective = [_effective_weight(source, self.decomposition_device) for source in sources]
+            input_dims = {weight.shape[1] for weight in effective}
+            if len(input_dims) != 1:
+                raise ValueError(f"{prefix} fused sources have incompatible input dimensions {sorted(input_dims)}")
+            weight = torch.cat(effective, dim=0)
+            biases = [source.bias for source in sources]
+            if any(bias is None for bias in biases) and not all(bias is None for bias in biases):
+                raise ValueError(f"{prefix} fused sources must either all have bias or all omit bias")
+            bias = None if biases[0] is None else torch.cat([item.to(self.decomposition_device) for item in biases])
+            return _decompose(weight, rank=rank, template=sources[0], prefix=prefix, sources=sources, bias=bias)
+
+        try:
+            return operation()
+        finally:
+            self._clear_decomposition_cache()
+
+    def _split_single_proj_out(
+        self, model: torch.nn.Module, block_prefix: str, source: SourceLinearRecord, rank: int
+    ) -> tuple[SVDQuantExportRecord, SVDQuantExportRecord]:
+        def operation() -> tuple[SVDQuantExportRecord, SVDQuantExportRecord]:
+            weight = _effective_weight(source, self.decomposition_device)
+            config = self._resolved_config(model)
+            heads, head_dim = config.get("num_attention_heads"), config.get("attention_head_dim")
+            inner_dim = heads * head_dim if isinstance(heads, int) and isinstance(head_dim, int) else weight.shape[0]
+            if inner_dim <= 0 or inner_dim >= weight.shape[1]:
+                raise ValueError(
+                    f"{block_prefix}.proj_out cannot split input columns at inner_dim={inner_dim} "
+                    f"for shape {tuple(weight.shape)}"
+                )
+            out_proj = _decompose(
+                weight[:, :inner_dim].clone(),
+                rank=rank,
+                template=source,
+                prefix=f"{block_prefix}.out_proj",
+                sources=(source,),
+                bias=None,
+            )
+            mlp_fc2 = _decompose(
+                weight[:, inner_dim:].clone(),
+                rank=rank,
+                template=source,
+                prefix=f"{block_prefix}.mlp_fc2",
+                sources=(source,),
+                bias=source.bias,
+            )
+            return out_proj, mlp_fc2
+
+        try:
+            return operation()
+        finally:
+            self._clear_decomposition_cache()
+
+    def _clear_decomposition_cache(self) -> None:
+        if self.decomposition_device.type == "cuda":
+            torch.cuda.empty_cache()
 
     def map_modules(
         self, model: torch.nn.Module, records: Iterable[SourceLinearRecord]
@@ -265,38 +351,7 @@ class FluxSVDQuantNunchakuAdapter:
                     output.append(self._direct(local["proj_mlp"], f"{block_prefix}.mlp_fc1"))
                 if "proj_out" in local:
                     source = local["proj_out"]
-                    weight = _effective_weight(source, self.decomposition_device)
-                    config = self._resolved_config(model)
-                    heads, head_dim = config.get("num_attention_heads"), config.get("attention_head_dim")
-                    inner_dim = (
-                        heads * head_dim if isinstance(heads, int) and isinstance(head_dim, int) else weight.shape[0]
-                    )
-                    if inner_dim <= 0 or inner_dim >= weight.shape[1]:
-                        raise ValueError(
-                            f"{block_prefix}.proj_out cannot split input columns at inner_dim={inner_dim} "
-                            f"for shape {tuple(weight.shape)}"
-                        )
-                    output.append(
-                        _decompose(
-                            weight[:, :inner_dim].clone(),
-                            rank=rank,
-                            template=source,
-                            prefix=f"{block_prefix}.out_proj",
-                            sources=(source,),
-                            bias=None,
-                        )
-                    )
-                    output.append(
-                        _decompose(
-                            weight[:, inner_dim:].clone(),
-                            rank=rank,
-                            template=source,
-                            prefix=f"{block_prefix}.mlp_fc2",
-                            sources=(source,),
-                            bias=source.bias,
-                        )
-                    )
-                    del weight
+                    output.extend(self._split_single_proj_out(model, block_prefix, source, rank))
         return output
 
     def validate_records(
@@ -389,9 +444,18 @@ class FluxSVDQuantNunchakuAdapter:
                         continue
                     tensors[f"{block}.{target_name}.weight"] = weight.detach().to(torch.bfloat16).cpu()
 
-        for name, parameter in model.named_parameters():
-            if name.startswith(_TOP_LEVEL_PREFIXES):
-                tensors[name] = parameter.detach().to(torch.bfloat16).cpu()
+        passthrough = {
+            name: parameter for name, parameter in model.named_parameters() if name.startswith(_TOP_LEVEL_PREFIXES)
+        }
+        if self.require_complete_model:
+            missing_top_level = FLUX_TOP_LEVEL_TENSOR_KEYS - passthrough.keys()
+            if missing_top_level:
+                raise ValueError(f"complete FLUX model is missing top-level parameters: {sorted(missing_top_level)}")
+            extra_top_level = passthrough.keys() - FLUX_TOP_LEVEL_TENSOR_KEYS
+            if extra_top_level:
+                raise ValueError(f"complete FLUX model has unexpected top-level parameters: {sorted(extra_top_level)}")
+        for name in FLUX_TOP_LEVEL_TENSOR_KEYS & passthrough.keys():
+            tensors[name] = passthrough[name].detach().to(torch.bfloat16).cpu()
         return {key: value.contiguous() for key, value in tensors.items()}
 
     def validate(self, tensors: Mapping[str, torch.Tensor], metadata: Mapping[str, str]) -> None:
@@ -412,6 +476,15 @@ class FluxSVDQuantNunchakuAdapter:
                 num_single_layers = int(config["num_single_layers"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("complete FLUX metadata requires layer counts") from exc
+            top_level_keys = {
+                key for key in tensors if not key.startswith(("transformer_blocks.", "single_transformer_blocks."))
+            }
+            missing_top_level = FLUX_TOP_LEVEL_TENSOR_KEYS - top_level_keys
+            if missing_top_level:
+                raise ValueError(f"complete FLUX artifact is missing top-level tensors: {sorted(missing_top_level)}")
+            extra_top_level = top_level_keys - FLUX_TOP_LEVEL_TENSOR_KEYS
+            if extra_top_level:
+                raise ValueError(f"complete FLUX artifact has unexpected top-level tensors: {sorted(extra_top_level)}")
             linear_suffixes = ("qweight", "wscales", "smooth", "smooth_orig", "lora_down", "lora_up", "bias")
             for index in range(num_layers):
                 block = f"transformer_blocks.{index}"
@@ -475,4 +548,4 @@ class FluxSVDQuantNunchakuAdapter:
                     raise ValueError(f"FLUX RMSNorm tensor {key!r} must be 1D BF16")
 
 
-__all__ = ["FluxSVDQuantNunchakuAdapter", "flux_onefile_tensor_count"]
+__all__ = ["FLUX_TOP_LEVEL_TENSOR_KEYS", "FluxSVDQuantNunchakuAdapter", "flux_onefile_tensor_count"]
