@@ -41,7 +41,7 @@ class BasePipelineMember:
     # scale_dtype: str | None
 
     def __init__(self, config: Any = None) -> None:
-        self.config = config #TODO wenhuach may be deleted
+        self.config = config  # TODO wenhuach may be deleted
         self.scheme = getattr(config, "scheme", None)
 
     @classmethod

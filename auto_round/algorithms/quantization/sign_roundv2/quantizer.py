@@ -320,9 +320,15 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         if (
             self.scheme.sym
             and self.scheme.super_group_size is None
-            and (self.scheme.data_type.startswith("int") or self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv"))
+            and (
+                self.scheme.data_type.startswith("int")
+                or self.scheme.data_type.startswith("mx")
+                or self.scheme.data_type.startswith("nv")
+            )
         ):
-            if self.scheme.bits > 2 and not (self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv")):
+            if self.scheme.bits > 2 and not (
+                self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv")
+            ):
                 logger.warning_once(
                     "algorithm extension has only undergone limited validation on "
                     "W2A16,INT4, MXFP4 and NVFP4; use with caution."
@@ -385,9 +391,9 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             yield hook_handles
 
     def _is_wint4aint4(self):
-        return ("int4" in self.scheme.act_data_type or ("int" in self.scheme.act_data_type and self.scheme.act_bits == 4)) and (
-            "int4" in self.scheme.data_type or ("int" in self.scheme.data_type and self.scheme.bits == 4)
-        )
+        return (
+            "int4" in self.scheme.act_data_type or ("int" in self.scheme.act_data_type and self.scheme.act_bits == 4)
+        ) and ("int4" in self.scheme.data_type or ("int" in self.scheme.data_type and self.scheme.bits == 4))
 
     def _register_imatrix_hooks(self, model):
         def collect_imatrix(module, input, output):
