@@ -35,14 +35,16 @@ def _validate_scheme_values(scheme):
         raise ValueError("Residual quantization scheme bits must be a positive integer.")
 
     group_size = values["group_size"]
-    scalar_group_size = isinstance(group_size, int) and not isinstance(group_size, bool)
+    scalar_group_size = isinstance(group_size, int) and not isinstance(group_size, bool) and group_size > 0
     block_group_size = (
         isinstance(group_size, tuple)
         and len(group_size) == 2
-        and all(isinstance(size, int) and not isinstance(size, bool) for size in group_size)
+        and all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in group_size)
     )
     if not scalar_group_size and not block_group_size:
-        raise ValueError("Residual quantization scheme group_size must be an integer or a pair of integers.")
+        raise ValueError(
+            "Residual quantization scheme group_size must be a positive integer or a pair of positive integers."
+        )
     if not isinstance(values["sym"], bool):
         raise ValueError("Residual quantization scheme sym must be a boolean.")
     return values
@@ -52,10 +54,10 @@ def _validate_scheme_values(scheme):
 class ResidualQuantScheme:
     """Weight quantization settings for stateless residual QDQ."""
 
-    data_type: str
-    bits: int
-    group_size: int | tuple[int, int]
-    sym: bool
+    data_type: str | None = None
+    bits: int | None = None
+    group_size: int | tuple[int, int] | None = None
+    sym: bool | None = None
 
     def __post_init__(self) -> None:
         _validate_scheme_values(self)

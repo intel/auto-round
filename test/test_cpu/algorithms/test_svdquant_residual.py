@@ -85,6 +85,21 @@ def test_residual_quant_scheme_rejects_malformed_values(kwargs, field):
         ResidualQuantScheme(**kwargs)
 
 
+@pytest.mark.parametrize("group_size", [0, -1, (0, 32), (32, 0), (-1, 32), (32, -1)])
+def test_residual_quant_scheme_rejects_non_positive_group_size(group_size):
+    with pytest.raises(ValueError, match="group_size"):
+        ResidualQuantScheme(data_type="int", bits=4, group_size=group_size, sym=True)
+
+
+@pytest.mark.parametrize("omitted_field", ["data_type", "bits", "group_size", "sym"])
+def test_residual_quant_scheme_rejects_omitted_required_value(omitted_field):
+    kwargs = {"data_type": "mx_fp4e2m1", "bits": 4, "group_size": 32, "sym": True}
+    kwargs.pop(omitted_field)
+
+    with pytest.raises(ValueError, match=omitted_field):
+        ResidualQuantScheme(**kwargs)
+
+
 def test_rtn_qdq_residual_rejects_missing_scheme_attribute():
     scheme = SimpleNamespace(data_type="mx_fp4e2m1", bits=4, group_size=32)
 
