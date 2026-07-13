@@ -266,7 +266,7 @@ def get_mllm_dataloader(
         set_seed(seed)
         dataloader_params = {"batch_size": bs, "shuffle": True, "collate_fn": dataset.template.processor.data_collator}
 
-        return DataLoader(dataset, **dataloader_params), bs, seqlen, True
+        return DataLoader(dataset, **dataloader_params), bs, seqlen
     else:
         # try to load text calibration dataset
         from auto_round.calib_dataset import get_dataloader

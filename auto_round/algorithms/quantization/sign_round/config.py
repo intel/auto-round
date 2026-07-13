@@ -25,7 +25,7 @@ class SignRoundConfig(QuantizationConfig):
         self,
         *,
         iters: int = 200,
-        lr: float = None,
+        lr: float = None, #TODO refine wenhuach
         minmax_lr: float = None,
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,

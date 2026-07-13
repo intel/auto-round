@@ -105,10 +105,10 @@ class MLLMCalibrator(LLMCalibrator):
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            orig_bs = c.bs
+            orig_bs = c.calibration_state.batch_size
             (
                 c.dataloader,
-                c.batch_size,
+                c.calibration_state.batch_size,
                 c.seqlen,
             ) = get_mllm_dataloader(
                 template=c.template_obj,
@@ -124,7 +124,7 @@ class MLLMCalibrator(LLMCalibrator):
                 nsamples=nsamples,
                 quant_nontext_module=c.quant_nontext_module,
             )
-            if orig_bs != 1 and c.batch_size == 1:
+            if orig_bs != 1 and c.calibration_state.batch_size == 1:
                 self.is_only_supported_bs1 = True
         else:
             c.dataloader = c.dataset
