@@ -29,6 +29,7 @@ class SVDQuantConfig(QuantizationConfig):
         self,
         *,
         rank: int = 32,
+        smooth_enabled: bool = True,
         smooth_alpha: float = 0.5,
         target_modules: list[str] | tuple[str, ...] | str | None = None,
         exclude_modules: list[str] | tuple[str, ...] | str | None = None,
@@ -41,6 +42,8 @@ class SVDQuantConfig(QuantizationConfig):
     ):
         super().__init__(**kwargs)
         residual_quant_method = residual_quant_method.lower()
+        if type(smooth_enabled) is not bool:
+            raise ValueError(f"`smooth_enabled` must be a bool, got {smooth_enabled!r}")
         if rank < 0:
             raise ValueError(f"`rank` must be non-negative, got {rank!r}")
         if not 0.0 <= smooth_alpha <= 1.0:
@@ -56,6 +59,7 @@ class SVDQuantConfig(QuantizationConfig):
             )
 
         self.rank = rank
+        self.smooth_enabled = smooth_enabled
         self.smooth_alpha = smooth_alpha
         self.target_modules = _normalize_patterns(target_modules)
         self.exclude_modules = _normalize_patterns(exclude_modules)
@@ -67,7 +71,8 @@ class SVDQuantConfig(QuantizationConfig):
 
     def __repr__(self) -> str:
         return (
-            f"SVDQuantConfig(rank={self.rank}, smooth_alpha={self.smooth_alpha}, "
+            f"SVDQuantConfig(rank={self.rank}, smooth_enabled={self.smooth_enabled!r}, "
+            f"smooth_alpha={self.smooth_alpha}, "
             f"low_rank_dtype={self.low_rank_dtype!r}, "
             f"target_modules={self.target_modules}, exclude_modules={self.exclude_modules}, "
             f"residual_iters={self.residual_iters}, residual_early_stop={self.residual_early_stop!r}, "

@@ -56,6 +56,9 @@ class SVDQuantTransform(BaseWeightTransformer):
     @contextmanager
     def block_forward_hooks(self, ctx):
         handles = []
+        if not self.config.smooth_enabled:
+            yield handles
+            return
 
         def collect_input_amax(module, inputs, _output):
             if not inputs:
@@ -248,6 +251,8 @@ class SVDQuantTransform(BaseWeightTransformer):
         return str(getattr(module, "global_name", module.__class__.__name__))
 
     def _build_smooth(self, module: torch.nn.Linear, weight: torch.Tensor) -> torch.Tensor:
+        if not self.config.smooth_enabled:
+            return torch.ones(weight.shape[1], dtype=torch.float32, device=weight.device)
         act = self._act_max.get(id(module))
         if act is None:
             return torch.ones(weight.shape[1], dtype=torch.float32, device=weight.device)
