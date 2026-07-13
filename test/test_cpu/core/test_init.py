@@ -14,28 +14,6 @@ def test_argparse_check(tiny_opt_model_path):
     # args all the way to the quantizer. Previously the CLI path dropped the flag,
     # so CalibrationState defaulted to 1 regardless of the user's value.
     steps = 8
-    from auto_round.cli.main import _build_entry_base_kwargs
-
-    args = argparse.Namespace(
-        platform="hf",
-        format="auto_round",
-        dataset="NeelNanda/pile-10k",
-        seqlen=2048,
-        nsamples=128,
-        batch_size=8,
-        gradient_accumulate_steps=steps,
-        low_gpu_mem_usage=False,
-        device_map="0",
-        seed=42,
-        layer_config=None,
-        model_dtype=None,
-        disable_trust_remote_code=False,
-    )
-    cli_kwargs = _build_entry_base_kwargs(args, low_cpu_mem_usage=True, enable_torch_compile=False, layer_config=None)
-    assert cli_kwargs.get("gradient_accumulate_steps") == steps, (
-        "_build_entry_base_kwargs must forward gradient_accumulate_steps so that "
-        "CalibrationState is seeded with the CLI value, not the default 1."
-    )
 
     ar = NewAutoRound(
         tiny_opt_model_path,

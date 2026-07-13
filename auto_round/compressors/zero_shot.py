@@ -112,7 +112,7 @@ class ZeroShotCompressor(BaseCompressor):
         self.quantizer.quantize_block(block, None, {}, None, None, ctx)
 
         # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-        if is_nv_fp(self.quantizer.act_data_type) or is_act_static(self.quantizer):
+        if is_nv_fp(self.act_data_type) or not self.act_dynamic:
             set_amax_for_all_moe_layers(block, attr_name="act_max")
 
         mv_module_from_gpu(block)
@@ -184,7 +184,7 @@ class ZeroShotCompressor(BaseCompressor):
                     self.quantizer.quantize_block(block, None, {}, None, None, ctx)
 
                     # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-                    if is_nv_fp(self.quantizer.act_data_type) or is_act_static(self.quantizer):
+                    if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                         set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                     # ── Infrastructure: shard write / device cleanup ──────────

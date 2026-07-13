@@ -369,7 +369,7 @@ class DataDrivenCompressor(BaseCompressor):
                     block_ctx=None,  # legacy path: no BlockContext
                 )
 
-                if is_nv_fp(self.quantizer.act_data_type) or is_act_static(self.quantizer):
+                if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                 if self.quantizer.enable_quanted_input:
@@ -434,7 +434,7 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.post_quantize_block(ctx)
 
             # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-            if is_nv_fp(self.quantizer.act_data_type) or is_act_static(self.quantizer):
+            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                 set_amax_for_all_moe_layers(block, attr_name="act_max")
 
             # ── Collect quantized-block outputs ───────────────────────────────────
