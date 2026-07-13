@@ -29,7 +29,7 @@ from auto_round.cli.parser import (
 def _extract_common_quantization_kwargs(args) -> dict:
     """Map parsed CLI args back to QuantizationConfig constructor kwargs.
 
-    Handles inverted flags: --asym -> sy m, --act_asym -> act_sym,
+    Handles inverted flags: --asym -> sym, --act_asym -> act_sym,
     --disable_act_dynamic -> act_dynamic.
     When the flag was not set (False), the value is None (defer to scheme).
     """

@@ -174,7 +174,7 @@ class BaseQuantizer(BasePipelineMember):
             input = input[0] if isinstance(input, (tuple, list)) else input
             if input.numel() == 0:
                 return
-            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
+            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max") or module.act_max.numel() == 0:
                 module.act_max = act_max
