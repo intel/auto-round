@@ -100,30 +100,67 @@ def build_sparse_metadata_and_mask(
     return lut.contiguous(), valid.contiguous(), mask.contiguous()
 
 
-def run_case(head_dim: int, block_size: int = 64, is_causal: bool = False) -> None:
+def _clamp_selected_blocks(kv_blocks: int, per_query_tile_selection: list[list[int]]) -> list[list[int]]:
+    clamped: list[list[int]] = []
+    for selected_blocks in per_query_tile_selection:
+        clamped_blocks = sorted({min(max(block, 0), kv_blocks - 1) for block in selected_blocks})
+        clamped.append(clamped_blocks)
+    return clamped
+
+
+def run_case(
+    head_dim: int,
+    block_size: int = 64,
+    is_causal: bool = False,
+    *,
+    seq_len: int = 256,
+    num_heads_q: int = 4,
+    num_heads_kv: int | None = None,
+    q_tile_override: int = 0,
+    sparse_q_block_tokens: int | None = None,
+    sparse_k_block_tokens: int | None = None,
+) -> None:
     device = torch.device("xpu")
     batch = 1
-    heads = 4
-    seq_len = 256
+    num_heads_kv = num_heads_q if num_heads_kv is None else num_heads_kv
     scale = 1.0 / math.sqrt(head_dim)
-    query_tile_tokens = 128 if head_dim == 64 else 256
+    query_tile_tokens = q_tile_override or (128 if head_dim == 64 else 256)
     kv_blocks = seq_len // block_size
+    active_query_tiles = (seq_len + query_tile_tokens - 1) // query_tile_tokens
     if not is_causal:
-        per_query_tile_selection = [[0, 1], [1, 3]] if head_dim == 64 else [[0, 2]]
+        if head_dim == 64:
+            per_query_tile_selection = [[0, 1], [1, 3]]
+        elif query_tile_tokens == 64:
+            per_query_tile_selection = [[0, 1], [1, 3], [0, 2, 3], [2, 3]]
+        else:
+            per_query_tile_selection = [[0, 2, 3], [2, 5, 7]][:active_query_tiles]
         case_name = "python_prefill"
     else:
-        per_query_tile_selection = [[0, 1, 2], [1, 3]] if head_dim == 64 else [[0, 2, 3]]
+        if head_dim == 64:
+            per_query_tile_selection = [[0, 1, 2], [1, 3]]
+        elif query_tile_tokens == 64:
+            per_query_tile_selection = [[0, 1], [1, 2], [1, 2, 3], [2, 3]]
+        else:
+            per_query_tile_selection = [[0, 2, 3], [2, 6, 7]][:active_query_tiles]
         case_name = "python_prefill_causal"
+    per_query_tile_selection = _clamp_selected_blocks(kv_blocks, per_query_tile_selection)
 
-    torch.manual_seed(2026 + head_dim)
-    query = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
-    key = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
-    value = torch.randn((batch, heads, seq_len, head_dim), dtype=torch.float16, device=device)
+    torch.manual_seed(2026 + head_dim + num_heads_q + (num_heads_kv * 11))
+    query = torch.randn((batch, num_heads_q, seq_len, head_dim), dtype=torch.float16, device=device)
+    key = torch.randn((batch, num_heads_kv, seq_len, head_dim), dtype=torch.float16, device=device)
+    value = torch.randn((batch, num_heads_kv, seq_len, head_dim), dtype=torch.float16, device=device)
 
     q_i8, q_scale = quantize_qk(query, block_size)
     k_i8, k_scale = quantize_qk(key, block_size)
     lut, valid, dense_mask = build_sparse_metadata_and_mask(
-        batch, heads, seq_len, block_size, query_tile_tokens, per_query_tile_selection, device, is_causal=is_causal
+        batch,
+        num_heads_q,
+        seq_len,
+        block_size,
+        query_tile_tokens,
+        per_query_tile_selection,
+        device,
+        is_causal=is_causal,
     )
 
     dense_out = ark.sage(
@@ -149,6 +186,9 @@ def run_case(head_dim: int, block_size: int = 64, is_causal: bool = False) -> No
         quant_block_size=block_size,
         qscale=q_scale,
         kscale=k_scale,
+        q_tile_override=q_tile_override,
+        sparse_q_block_tokens=sparse_q_block_tokens,
+        sparse_k_block_tokens=sparse_k_block_tokens,
         tensor_layout="HND",
     )
     torch.xpu.synchronize()
@@ -156,9 +196,15 @@ def run_case(head_dim: int, block_size: int = 64, is_causal: bool = False) -> No
     diff = (dense_out.float() - sparse_out.float()).abs()
     max_diff = float(diff.max().cpu())
     mean_diff = float(diff.mean().cpu())
-    print(f"[sage_sparse][{case_name}] D={head_dim} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}")
+    print(
+        f"[sage_sparse][{case_name}] D={head_dim} Hq={num_heads_q} Hkv={num_heads_kv} "
+        f"qtile={query_tile_tokens} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}"
+    )
     if max_diff > 5e-3 or mean_diff > 5e-4:
-        raise RuntimeError(f"sage_sparse python prefill mismatch for D={head_dim}, causal={is_causal}")
+        raise RuntimeError(
+            f"sage_sparse python prefill mismatch for D={head_dim}, Hq={num_heads_q}, "
+            f"Hkv={num_heads_kv}, causal={is_causal}"
+        )
 
 
 def run_multi_row_tile_case() -> None:
@@ -289,6 +335,16 @@ def main() -> None:
     run_case(64)
     run_case(128)
     run_multi_row_tile_case()
+    run_case(128, num_heads_q=32, num_heads_kv=8, q_tile_override=64)
+    run_case(
+        128,
+        num_heads_q=32,
+        num_heads_kv=8,
+        seq_len=512,
+        q_tile_override=256,
+        sparse_q_block_tokens=256,
+        sparse_k_block_tokens=64,
+    )
     run_case(64, is_causal=True)
     run_case(128, is_causal=True)
 

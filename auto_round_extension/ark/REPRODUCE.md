@@ -38,6 +38,16 @@ python \
   --tensor-layout NHD --topk 0.5 0.3 --q-tile-override 64
 ```
 
+GQA focus (`num_attention_heads=32`, `num_key_value_heads=8`, `head_dim=128`):
+
+```bash
+ZE_AFFINITY_MASK=4 \
+python \
+  test/bench_sparse_topk.py \
+  --batch 1 --num-heads-q 32 --num-heads-kv 8 --seq-len 16384 --head-dim 128 \
+  --tensor-layout HND --topk 1.0 0.5 0.25 0.125 --q-tile-override 64
+```
+
 `q_tile=256`, decoupled sparse rows:
 
 ```bash
@@ -50,6 +60,22 @@ python \
   --sparse-q-block-tokens 256 \
   --sparse-k-block-tokens 64
 ```
+
+GQA focus (`num_attention_heads=32`, `num_key_value_heads=8`, `head_dim=128`):
+
+```bash
+ZE_AFFINITY_MASK=4 \
+python \
+  test/bench_sparse_topk.py \
+  --batch 1 --num-heads-q 32 --num-heads-kv 8 --seq-len 16384 --head-dim 128 \
+  --tensor-layout HND --topk 1.0 0.5 0.25 0.125 \
+  --q-tile-override 256 \
+  --sparse-q-block-tokens 256 \
+  --sparse-k-block-tokens 64
+```
+
+The benchmark CSV now includes `attention_pattern` and `gqa_group_size` columns
+so `32/8/128` runs can be filtered directly.
 
 ## Wan Example
 

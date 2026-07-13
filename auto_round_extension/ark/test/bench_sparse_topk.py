@@ -141,6 +141,10 @@ def flops_to_tflops(flops: float, latency_ms: float) -> float:
     return flops / (latency_ms * 1.0e-3) / 1.0e12
 
 
+def attention_pattern(num_heads_q: int, num_heads_kv: int) -> str:
+    return "gqa" if num_heads_q != num_heads_kv else "mha"
+
+
 def make_row(
     *,
     mode: str,
@@ -160,11 +164,14 @@ def make_row(
     status: str,
     note: str = "",
 ) -> dict[str, object]:
+    gqa_group_size = num_heads_q // num_heads_kv
     return {
         "mode": mode,
         "batch": batch,
         "num_heads_q": num_heads_q,
         "num_heads_kv": num_heads_kv,
+        "gqa_group_size": gqa_group_size,
+        "attention_pattern": attention_pattern(num_heads_q, num_heads_kv),
         "seq_len": seq_len,
         "head_dim": head_dim,
         "dtype": str(dtype).replace("torch.", ""),
@@ -497,9 +504,9 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
 
 def print_summary(rows: list[dict[str, object]]) -> None:
     print(
-        "| mode | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |"
+        "| mode | pattern | gqa_group | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |"
     )
-    print("|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         topk = "-" if row["requested_topk"] is None else f"{float(row['requested_topk']):.3f}"
         ratio = "-" if row["selected_ratio"] is None else f"{float(row['selected_ratio']):.6f}"
@@ -510,7 +517,9 @@ def print_summary(rows: list[dict[str, object]]) -> None:
         sp_torch = "-" if row.get("speedup_vs_torch") is None else f"{float(row['speedup_vs_torch']):.3f}"
         sp_sage = "-" if row.get("speedup_vs_sagev1") is None else f"{float(row['speedup_vs_sagev1']):.3f}"
         print(
-            f"| {row['mode']} | {topk} | {ratio} | {blocks} | {latency} | {baseline_tflops} | {effective_tflops} | {row['status']} | {sp_torch} | {sp_sage} |"
+            f"| {row['mode']} | {row['attention_pattern']} | {row['gqa_group_size']} | {topk} | {ratio} | "
+            f"{blocks} | {latency} | {baseline_tflops} | {effective_tflops} | {row['status']} | {sp_torch} | "
+            f"{sp_sage} |"
         )
         if row["note"]:
             print(f"note[{row['mode']}]: {row['note']}")
@@ -531,6 +540,11 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
     ensure_sparse_binding(args)
     if not is_xpu_available():
         raise RuntimeError("XPU device is required")
+    if args.num_heads_q < args.num_heads_kv or args.num_heads_q % args.num_heads_kv != 0:
+        raise ValueError(
+            "Sparse benchmark requires num_heads_q >= num_heads_kv and num_heads_q divisible by num_heads_kv; "
+            f"got {args.num_heads_q} and {args.num_heads_kv}"
+        )
 
     device = torch.device("xpu")
     dtype = torch.float16

@@ -38,6 +38,26 @@ def _get_sparse_preprocess_backend_preference() -> str:
     return os.getenv("SAGE_ATTN_SPARSE_PREPROCESS_BACKEND", "auto").strip().lower()
 
 
+def _validate_gqa_head_config(num_heads_q: int, num_heads_kv: int, *, op_name: str) -> None:
+    if num_heads_q <= 0 or num_heads_kv <= 0:
+        raise ValueError(
+            f"{op_name} requires positive num_heads_q/num_heads_kv, got {num_heads_q} and {num_heads_kv}"
+        )
+    if num_heads_q < num_heads_kv:
+        raise ValueError(
+            f"{op_name} requires num_heads_q >= num_heads_kv for MHA/GQA, got {num_heads_q} and {num_heads_kv}"
+        )
+    if num_heads_q % num_heads_kv != 0:
+        raise ValueError(
+            f"{op_name} requires num_heads_q to be divisible by num_heads_kv, got {num_heads_q} and {num_heads_kv}"
+        )
+
+
+def _kv_head_index_for_q_heads(num_heads_q: int, num_heads_kv: int, device: torch.device) -> torch.Tensor:
+    _validate_gqa_head_config(num_heads_q, num_heads_kv, op_name="sparse attention")
+    return torch.arange(num_heads_q, device=device, dtype=torch.int64) // (num_heads_q // num_heads_kv)
+
+
 def sage_sparse(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -87,6 +107,7 @@ def sage_sparse(
         raise ValueError("K/V shape mismatch")
     if Dk != D:
         raise ValueError("Head dim mismatch between Q and K/V")
+    _validate_gqa_head_config(Hq, Hkv, op_name="sage_sparse")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
     _validate_sparse_q_tile_override_for_head_dim(D, q_tile_override)
@@ -238,6 +259,7 @@ def sage_sparse_row_linear(
         raise ValueError("K/V shape mismatch")
     if Dk != D:
         raise ValueError("Head dim mismatch between Q and K/V")
+    _validate_gqa_head_config(Hq, Hkv, op_name="sage_sparse_row_linear")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
 
@@ -944,8 +966,7 @@ def _build_sparge_preprocess_context(
         raise ValueError("Batch size mismatch between Q and K")
     if Dk != D:
         raise ValueError("Head dim mismatch between Q and K")
-    if Hq % Hkv != 0:
-        raise ValueError("num_heads_q must be divisible by num_heads_kv")
+    _validate_gqa_head_config(Hq, Hkv, op_name="sparge_preprocess_topk")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
 
@@ -1074,9 +1095,7 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         pooled_k_for_routing = pooled_k
         sim_k_for_routing = sim_kblocks
 
-    kv_head_index = torch.arange(ctx.num_heads_q, device=ctx.query.device, dtype=torch.int64) // (
-        ctx.num_heads_q // ctx.num_heads_kv
-    )
+    kv_head_index = _kv_head_index_for_q_heads(ctx.num_heads_q, ctx.num_heads_kv, ctx.query.device)
     pooled_k_for_q = pooled_k_for_routing[:, kv_head_index]
     sim_k_for_q = sim_k_for_routing[:, kv_head_index]
     sim_k_expand = sim_k_for_q.unsqueeze(-2).expand(-1, -1, ctx.num_q_tiles, -1)
@@ -1345,8 +1364,7 @@ def sparge_preprocess_topk_decode(
         raise ValueError(f"sparge_preprocess_topk_decode currently supports only seq_len_q == 1, got {Sq}")
     if Skv <= 0 or Skvc <= 0:
         raise ValueError("sparge_preprocess_topk_decode requires non-empty current K and K_cache")
-    if Hq % Hkv != 0:
-        raise ValueError("num_heads_q must be divisible by num_heads_kv")
+    _validate_gqa_head_config(Hq, Hkv, op_name="sparge_preprocess_topk_decode")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
 
@@ -1375,7 +1393,7 @@ def sparge_preprocess_topk_decode(
         key_mean,
     )
 
-    kv_head_index = torch.arange(Hq, device=query.device, dtype=torch.int64) // (Hq // Hkv)
+    kv_head_index = _kv_head_index_for_q_heads(Hq, Hkv, query.device)
     pooled_k_for_q = pooled_k[:, kv_head_index]
     sim_k_for_q = sim_kblocks[:, kv_head_index]
     pooled_score = torch.matmul(

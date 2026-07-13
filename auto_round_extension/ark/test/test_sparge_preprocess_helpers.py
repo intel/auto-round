@@ -14,6 +14,8 @@ from auto_round_kernel.sparse_attention import (
     _build_block_causal_mask,
     _build_sparge_preprocess_context,
     _fill_block_map_torch,
+    _kv_head_index_for_q_heads,
+    _validate_gqa_head_config,
 )
 
 
@@ -37,6 +39,23 @@ def test_fill_block_map_torch_selects_one_new_entry_when_topk_is_zero():
 
     expected = torch.tensor([[[[True, False, True, False]]]], dtype=torch.bool)
     assert torch.equal(filled, expected)
+
+
+def test_validate_gqa_head_config_accepts_32_over_8() -> None:
+    _validate_gqa_head_config(32, 8, op_name="test")
+
+
+@pytest.mark.parametrize("num_heads_q, num_heads_kv", [(8, 32), (30, 8)])
+def test_validate_gqa_head_config_rejects_invalid_ratios(num_heads_q: int, num_heads_kv: int) -> None:
+    with pytest.raises(ValueError, match="num_heads_q"):
+        _validate_gqa_head_config(num_heads_q, num_heads_kv, op_name="test")
+
+
+def test_kv_head_index_for_q_heads_maps_32_query_heads_onto_8_kv_heads() -> None:
+    indices = _kv_head_index_for_q_heads(32, 8, torch.device("cpu"))
+
+    expected = torch.arange(8, dtype=torch.int64).repeat_interleave(4)
+    assert torch.equal(indices.cpu(), expected)
 
 
 @pytest.mark.skipif(
@@ -170,3 +189,39 @@ def test_preprocess_context_accepts_decoupled_sparse_qtile256_row64k(tensor_layo
     assert ctx.num_k_blocks == 8
     assert ctx.num_sparse_q_blocks == 2
     assert ctx.num_sparse_k_blocks == 8
+
+
+@pytest.mark.skipif(
+    not (hasattr(torch, "xpu") and torch.xpu.is_available()),
+    reason="XPU not available",
+)
+@pytest.mark.parametrize("tensor_layout", ("HND", "NHD"))
+def test_preprocess_context_accepts_gqa_32_8_head_mapping(tensor_layout: str):
+    if tensor_layout == "HND":
+        q = torch.randn((1, 32, 512, 128), device="xpu", dtype=torch.float16)
+        k = torch.randn((1, 8, 512, 128), device="xpu", dtype=torch.float16)
+    else:
+        q = torch.randn((1, 512, 32, 128), device="xpu", dtype=torch.float16)
+        k = torch.randn((1, 512, 8, 128), device="xpu", dtype=torch.float16)
+
+    ctx = _build_sparge_preprocess_context(
+        q,
+        k,
+        is_causal=False,
+        smooth_k=True,
+        simthreshd1=-0.1,
+        topk=0.5,
+        attention_sink=False,
+        quant_block_size=64,
+        tensor_layout=tensor_layout,
+        query_tile_tokens=256,
+        sparse_q_block_tokens=256,
+        sparse_k_block_tokens=64,
+    )
+
+    assert ctx.num_heads_q == 32
+    assert ctx.num_heads_kv == 8
+    assert ctx.q_route_block_tokens == 256
+    assert ctx.k_route_block_tokens == 64
+    assert ctx.sparse_q_block_tokens == 256
+    assert ctx.sparse_k_block_tokens == 64
