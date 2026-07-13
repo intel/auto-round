@@ -25,11 +25,29 @@ from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.export.svdquant_mxfp4 import NunchakuMXFP4Packer, pack_lowrank_weight
 
 
+_DEPLOYABLE_E2M1_ALIASES = frozenset({"mx_fp4", "mx_fp4e2m1"})
+
+
 class ResidualTensorProvider(Protocol):
     """Provides packed MXFP4 residual tensors for one logical export record."""
 
     def tensors_for(self, record: SVDQuantExportRecord) -> Mapping[str, torch.Tensor]:
         """Return tensors keyed by suffix, for example ``qweight`` and ``wscales``."""
+
+
+@dataclass(frozen=True)
+class SVDQuantLinearScheme:
+    """AutoRound-selected weight and activation scheme values."""
+
+    data_type: str | None
+    bits: int | None
+    group_size: int | tuple[int, int] | None
+    sym: bool | None
+    act_data_type: str | None
+    act_bits: int | None
+    act_group_size: int | tuple[int, int] | None
+    act_sym: bool | None
+    act_dynamic: bool | None
 
 
 @dataclass(frozen=True)
@@ -43,6 +61,7 @@ class SourceLinearRecord:
     smooth: torch.Tensor
     smooth_orig: torch.Tensor
     bias: torch.Tensor | None
+    scheme: SVDQuantLinearScheme
 
 
 @dataclass(frozen=True)
@@ -56,6 +75,8 @@ class SVDQuantExportRecord:
     smooth: torch.Tensor
     smooth_orig: torch.Tensor
     bias: torch.Tensor | None
+    scheme: SVDQuantLinearScheme
+    sources: tuple[SourceLinearRecord, ...]
     key_mapping: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -86,6 +107,8 @@ class IdentitySVDQuantModelAdapter:
                 smooth=record.smooth,
                 smooth_orig=record.smooth_orig,
                 bias=record.bias,
+                scheme=record.scheme,
+                sources=(record,),
             )
             for record in records
         )
@@ -117,7 +140,7 @@ class SVDQuantExportConfig:
             raise ValueError("activation_dtype must be 'fp4_e2m1_all'")
         if self.scale_dtype != "ue8m0":
             raise ValueError("scale_dtype must be 'ue8m0'")
-        if self.group_size != 32:
+        if isinstance(self.group_size, bool) or not isinstance(self.group_size, int) or self.group_size != 32:
             raise ValueError("group_size must be 32")
         if self.low_rank_dtype not in (torch.bfloat16, torch.float16):
             raise ValueError("low_rank_dtype must be torch.bfloat16 or torch.float16")
@@ -207,6 +230,17 @@ def _source_records(model: torch.nn.Module) -> tuple[SourceLinearRecord, ...]:
                 bias=None
                 if module.residual_linear.bias is None
                 else module.residual_linear.bias.detach().cpu().contiguous(),
+                scheme=SVDQuantLinearScheme(
+                    data_type=getattr(module.residual_linear, "data_type", None),
+                    bits=getattr(module.residual_linear, "bits", None),
+                    group_size=getattr(module.residual_linear, "group_size", None),
+                    sym=getattr(module.residual_linear, "sym", None),
+                    act_data_type=getattr(module.residual_linear, "act_data_type", None),
+                    act_bits=getattr(module.residual_linear, "act_bits", None),
+                    act_group_size=getattr(module.residual_linear, "act_group_size", None),
+                    act_sym=getattr(module.residual_linear, "act_sym", None),
+                    act_dynamic=getattr(module.residual_linear, "act_dynamic", None),
+                ),
             )
         )
     if not records:
@@ -214,7 +248,64 @@ def _source_records(model: torch.nn.Module) -> tuple[SourceLinearRecord, ...]:
     return tuple(records)
 
 
-def _validate_export_record(record: SVDQuantExportRecord) -> int:
+def _validate_selected_scheme(scheme: SVDQuantLinearScheme, prefix: str) -> tuple:
+    required_weight = {
+        "data_type": scheme.data_type,
+        "bits": scheme.bits,
+        "group_size": scheme.group_size,
+        "sym": scheme.sym,
+    }
+    missing_weight = [name for name, value in required_weight.items() if value is None]
+    if missing_weight:
+        raise ValueError(f"{prefix} selected residual scheme is missing required {missing_weight[0]}")
+    if not isinstance(scheme.data_type, str) or scheme.data_type not in _DEPLOYABLE_E2M1_ALIASES:
+        raise ValueError(
+            f"{prefix} residual data_type must be one of {sorted(_DEPLOYABLE_E2M1_ALIASES)}, got {scheme.data_type!r}"
+        )
+    if isinstance(scheme.bits, bool) or not isinstance(scheme.bits, int) or scheme.bits != 4:
+        raise ValueError(f"{prefix} residual scheme requires bits=4, got {scheme.bits!r}")
+    if (
+        isinstance(scheme.group_size, bool)
+        or not isinstance(scheme.group_size, int)
+        or scheme.group_size != 32
+    ):
+        raise ValueError(f"{prefix} residual scheme requires scalar group_size=32, got {scheme.group_size!r}")
+    if scheme.sym is not True:
+        raise ValueError(f"{prefix} residual scheme requires sym=True, got {scheme.sym!r}")
+
+    required_activation = {
+        "act_data_type": scheme.act_data_type,
+        "act_bits": scheme.act_bits,
+        "act_group_size": scheme.act_group_size,
+        "act_sym": scheme.act_sym,
+        "act_dynamic": scheme.act_dynamic,
+    }
+    missing_activation = [name for name, value in required_activation.items() if value is None]
+    if missing_activation:
+        raise ValueError(f"{prefix} selected scheme is missing required activation value {missing_activation[0]}")
+    if not isinstance(scheme.act_data_type, str) or scheme.act_data_type not in _DEPLOYABLE_E2M1_ALIASES:
+        raise ValueError(
+            f"{prefix} activation data_type must be one of {sorted(_DEPLOYABLE_E2M1_ALIASES)}, "
+            f"got {scheme.act_data_type!r}"
+        )
+    if isinstance(scheme.act_bits, bool) or not isinstance(scheme.act_bits, int) or scheme.act_bits != 4:
+        raise ValueError(f"{prefix} activation scheme requires activation bits=4, got {scheme.act_bits!r}")
+    if (
+        isinstance(scheme.act_group_size, bool)
+        or not isinstance(scheme.act_group_size, int)
+        or scheme.act_group_size != 32
+    ):
+        raise ValueError(
+            f"{prefix} activation scheme requires activation scalar group_size=32, got {scheme.act_group_size!r}"
+        )
+    if scheme.act_sym is not True:
+        raise ValueError(f"{prefix} activation scheme requires activation sym=True, got {scheme.act_sym!r}")
+    if scheme.act_dynamic is not True:
+        raise ValueError(f"{prefix} activation scheme requires act_dynamic=True, got {scheme.act_dynamic!r}")
+    return ("mx_fp4e2m1", 4, 32, True, "mx_fp4e2m1", 4, 32, True, True)
+
+
+def _validate_export_record(record: SVDQuantExportRecord, config: SVDQuantExportConfig) -> int:
     tensors = (record.residual_weight, record.lora_down, record.lora_up, record.smooth, record.smooth_orig)
     if not record.prefix or not isinstance(record.prefix, str):
         raise ValueError("export record prefix must be a non-empty string")
@@ -237,6 +328,17 @@ def _validate_export_record(record: SVDQuantExportRecord) -> int:
         raise ValueError(f"{record.prefix} logical tensors must contain only finite values")
     if rank <= 0:
         raise ValueError(f"{record.prefix} rank must be positive")
+    selected_scheme = _validate_selected_scheme(record.scheme, record.prefix)
+    if not record.sources or any(not isinstance(source, SourceLinearRecord) for source in record.sources):
+        raise ValueError(f"{record.prefix} export record must retain at least one logical source record")
+    source_schemes = {_validate_selected_scheme(source.scheme, source.name) for source in record.sources}
+    if len(source_schemes) != 1 or selected_scheme not in source_schemes:
+        raise ValueError(f"{record.prefix} adapter sources have incompatible selected quantization schemes")
+    if config.group_size != selected_scheme[2]:
+        raise ValueError(
+            f"{record.prefix} export group_size={config.group_size} disagrees with "
+            f"selected group_size={selected_scheme[2]}"
+        )
     return rank
 
 
@@ -247,15 +349,20 @@ def _export_key(record: SVDQuantExportRecord, suffix: str) -> str:
     return f"{record.prefix}.{mapped_suffix}"
 
 
-def _validate_packed_residual(payload: Mapping[str, torch.Tensor], prefix: str) -> None:
+def _validate_packed_residual(payload: Mapping[str, torch.Tensor], record: SVDQuantExportRecord) -> None:
+    prefix = record.prefix
     if set(payload) != {"qweight", "wscales"}:
         raise ValueError(f"{prefix} packed residual must contain exactly qweight and wscales")
     qweight, wscales = payload["qweight"], payload["wscales"]
     if not isinstance(qweight, torch.Tensor) or qweight.dtype != torch.int8 or qweight.ndim != 2:
         raise ValueError(f"{prefix} qweight must be a 2D torch.int8 tensor")
-    if qweight.shape[0] == 0 or qweight.shape[0] % 128 or qweight.shape[1] == 0 or qweight.shape[1] % 64:
-        raise ValueError(f"{prefix} qweight shape must encode N and K dimensions divisible by 128")
-    expected_scale_shape = (qweight.shape[1] * 2 // 32, qweight.shape[0])
+    out_features, in_features = record.residual_weight.shape
+    padded_out = NunchakuMXFP4Packer._ceil_to(out_features, 128)
+    padded_in = NunchakuMXFP4Packer._ceil_to(in_features, 128)
+    expected_weight_shape = (padded_out, padded_in // 2)
+    if tuple(qweight.shape) != expected_weight_shape:
+        raise ValueError(f"{prefix} qweight shape must be {expected_weight_shape}")
+    expected_scale_shape = (padded_in // 32, padded_out)
     if not isinstance(wscales, torch.Tensor) or wscales.dtype != torch.uint8:
         raise ValueError(f"{prefix} wscales must be a torch.uint8 tensor")
     if tuple(wscales.shape) != expected_scale_shape:
@@ -268,10 +375,13 @@ def _collect_svdquant_export(
     residual_provider: ResidualTensorProvider,
     adapter: SVDQuantModelAdapter,
 ) -> tuple[dict[str, torch.Tensor], int]:
-    records = tuple(adapter.map_modules(model, _source_records(model)))
+    source_records = _source_records(model)
+    for source in source_records:
+        _validate_selected_scheme(source.scheme, source.name or "<root>")
+    records = tuple(adapter.map_modules(model, source_records))
     if not records:
         raise ValueError("model adapter produced no SVDQuant export records")
-    ranks = {_validate_export_record(record) for record in records}
+    ranks = {_validate_export_record(record, config) for record in records}
     if len(ranks) != 1:
         raise ValueError(f"mixed SVDQuant ranks are not supported: {sorted(ranks)}")
     tensors: dict[str, torch.Tensor] = {}
@@ -288,7 +398,7 @@ def _collect_svdquant_export(
             ),
         }
         residual_payload = residual_provider.tensors_for(record)
-        _validate_packed_residual(residual_payload, record.prefix)
+        _validate_packed_residual(residual_payload, record)
         serialized = {**high_precision, **residual_payload}
         if config.debug_unpacked:
             serialized["residual.weight"] = record.residual_weight

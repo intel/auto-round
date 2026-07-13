@@ -47,14 +47,14 @@ def _validate_lowrank_weight(weight: torch.Tensor, down: bool) -> None:
 
 
 def pack_lowrank_weight(weight: torch.Tensor, down: bool) -> torch.Tensor:
-    """Pad and pack a logical low-rank matrix into Nunchaku's 16-bit layout."""
+    """Pack a logical low-rank matrix with 128-feature and 16-rank alignment."""
 
     _validate_lowrank_weight(weight, down)
-    pack_n = pack_k = 16
-    rows = NunchakuMXFP4Packer._ceil_to(weight.shape[0], pack_n)
-    columns = NunchakuMXFP4Packer._ceil_to(weight.shape[1], pack_k)
+    rows = NunchakuMXFP4Packer._ceil_to(weight.shape[0], 16 if down else 128)
+    columns = NunchakuMXFP4Packer._ceil_to(weight.shape[1], 128 if down else 16)
     padded = torch.zeros((rows, columns), dtype=weight.dtype, device=weight.device)
     padded[: weight.shape[0], : weight.shape[1]] = weight
+    pack_n = pack_k = 16
     if down:
         rank, channels = padded.shape
         rank_packs, channel_packs = rank // pack_n, channels // pack_k
@@ -72,8 +72,8 @@ def unpack_lowrank_weight(weight: torch.Tensor, down: bool) -> torch.Tensor:
 
     _validate_lowrank_weight(weight, down)
     channels, rank = weight.shape
-    if channels % 16 or rank % 16:
-        raise ValueError("packed weight dimensions must be divisible by 16")
+    if channels % 128 or rank % 16:
+        raise ValueError("packed weight feature and rank dimensions must be divisible by 128 and 16 respectively")
     if down:
         rank_packs, channel_packs = rank // 16, channels // 16
     else:

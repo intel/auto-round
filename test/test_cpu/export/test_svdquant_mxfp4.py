@@ -27,32 +27,35 @@ E2M1_CODEBOOK = torch.tensor(
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("down,shape,packed_shape", [(True, (3, 17), (32, 16)), (False, (17, 3), (32, 16))])
-def test_lowrank_physical_pack_roundtrips_values_and_zero_padding(dtype, down, shape, packed_shape):
+@pytest.mark.parametrize("down,shape", [(True, (3, 17)), (False, (17, 3))])
+def test_lowrank_physical_pack_roundtrips_values_with_128_aligned_feature_axis(dtype, down, shape):
     logical = torch.arange(shape[0] * shape[1], dtype=torch.float32).reshape(shape).to(dtype)
 
     packed = pack_lowrank_weight(logical, down=down)
     padded = unpack_lowrank_weight(packed, down=down)
 
-    assert packed.shape == packed_shape
+    assert packed.shape == (128, 16)
     assert packed.dtype == dtype
-    assert padded.shape == ((16, 32) if down else (32, 16))
+    assert padded.shape == ((16, 128) if down else (128, 16))
     torch.testing.assert_close(padded[: shape[0], : shape[1]], logical)
     assert torch.count_nonzero(padded[shape[0] :, :]) == 0
     assert torch.count_nonzero(padded[: shape[0], shape[1] :]) == 0
 
 
-def test_lowrank_physical_pack_matches_independent_fixed_fixture():
-    logical = torch.arange(16 * 16, dtype=torch.float16).reshape(16, 16)
+@pytest.mark.parametrize(
+    "down,shape,expected_hash",
+    [
+        (True, (3, 17), "f62c895e44a7139fc942941b1244857d65143dfe52ad852e8847339aa6119029"),
+        (False, (17, 3), "0690f5c24d1ca25ad4f7714d9ce6b626b792ac89e46986d7a73dd0f327b163b4"),
+    ],
+)
+def test_lowrank_physical_pack_matches_independent_fixed_fixture(down, shape, expected_hash):
+    logical = torch.arange(shape[0] * shape[1], dtype=torch.float16).reshape(shape)
 
-    packed = pack_lowrank_weight(logical, down=False)
+    packed = pack_lowrank_weight(logical, down=down)
 
-    assert packed.flatten()[:32].tolist() == [
-        0.0, 1.0, 8.0, 9.0, 128.0, 129.0, 136.0, 137.0,
-        2.0, 3.0, 10.0, 11.0, 130.0, 131.0, 138.0, 139.0,
-        4.0, 5.0, 12.0, 13.0, 132.0, 133.0, 140.0, 141.0,
-        6.0, 7.0, 14.0, 15.0, 134.0, 135.0, 142.0, 143.0,
-    ]
+    assert packed.shape == (128, 16)
+    assert hashlib.sha256(bytes(packed.view(torch.uint8).flatten().tolist())).hexdigest() == expected_hash
 
 
 @pytest.mark.parametrize(
@@ -71,7 +74,7 @@ def test_lowrank_pack_rejects_invalid_inputs(weight, down, message):
 
 
 def test_lowrank_unpack_rejects_non_block_aligned_physical_shape():
-    with pytest.raises(ValueError, match="divisible by 16"):
+    with pytest.raises(ValueError, match="divisible by 128 and 16"):
         unpack_lowrank_weight(torch.ones(16, 15, dtype=torch.bfloat16), down=False)
 
 

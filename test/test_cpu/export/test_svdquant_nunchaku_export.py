@@ -20,11 +20,20 @@ from auto_round.export.svdquant_nunchaku import (
 )
 
 
-def _toy_model(*, rank=3, bias=True):
-    residual = torch.nn.Linear(65, 7, bias=bias)
-    lora_down = torch.nn.Linear(65, rank, bias=False)
-    lora_up = torch.nn.Linear(rank, 7, bias=False)
-    smooth = torch.arange(1, 66, dtype=torch.float32)
+def _toy_model(*, rank=3, bias=True, in_features=65, out_features=7):
+    residual = torch.nn.Linear(in_features, out_features, bias=bias)
+    residual.data_type = "mx_fp4e2m1"
+    residual.bits = 4
+    residual.group_size = 32
+    residual.sym = True
+    residual.act_data_type = "mx_fp4e2m1"
+    residual.act_bits = 4
+    residual.act_group_size = 32
+    residual.act_sym = True
+    residual.act_dynamic = True
+    lora_down = torch.nn.Linear(in_features, rank, bias=False)
+    lora_up = torch.nn.Linear(rank, out_features, bias=False)
+    smooth = torch.arange(1, in_features + 1, dtype=torch.float32)
     layer = SVDQuantLinear(residual, lora_down, lora_up, smooth)
     return torch.nn.Sequential(layer)
 
@@ -49,8 +58,8 @@ def test_default_collection_emits_runtime_layout_tensors_without_debug_residual(
     assert tensors["0.wscales"].dtype == torch.uint8
     for key in ("0.smooth", "0.smooth_orig", "0.lora_down", "0.lora_up", "0.bias"):
         assert tensors[key].dtype == torch.bfloat16
-    assert tensors["0.lora_down"].shape == (80, 16)
-    assert tensors["0.lora_up"].shape == (16, 16)
+    assert tensors["0.lora_down"].shape == (128, 16)
+    assert tensors["0.lora_up"].shape == (128, 16)
     logical_down = model[0].lora_down.weight.detach().to(torch.bfloat16)
     logical_up = model[0].lora_up.weight.detach().to(torch.bfloat16)
     unpacked_down = unpack_lowrank_weight(tensors["0.lora_down"], down=True)
@@ -76,6 +85,9 @@ def test_adapter_maps_all_logical_source_records_with_model_level_visibility():
             assert all(isinstance(record, SourceLinearRecord) for record in records)
             assert [record.name for record in records] == ["0", "1"]
             assert [record.lora_down.shape for record in records] == [(3, 65), (3, 65)]
+            assert [record.scheme.data_type for record in records] == ["mx_fp4e2m1", "mx_fp4e2m1"]
+            assert all(record.scheme.group_size == 32 and record.scheme.sym for record in records)
+            assert all(record.scheme.act_data_type == "mx_fp4e2m1" for record in records)
             self.records = records
             return super().map_modules(received_model, records)
 
@@ -157,6 +169,7 @@ def test_debug_unpacked_is_explicit_and_not_runtime_loadable(tmp_path):
         ("activation_dtype", "fp16", "activation_dtype"),
         ("scale_dtype", "fp16", "scale_dtype"),
         ("group_size", 16, "group_size"),
+        ("group_size", 32.0, "group_size"),
         ("low_rank_dtype", torch.float32, "low_rank_dtype"),
         ("debug_unpacked", 1, "debug_unpacked"),
     ],
@@ -164,6 +177,46 @@ def test_debug_unpacked_is_explicit_and_not_runtime_loadable(tmp_path):
 def test_config_rejects_non_nunchaku_formats(field, value, message):
     with pytest.raises(ValueError, match=message):
         SVDQuantExportConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("data_type", "mx_fp", "data_type"),
+        ("bits", 8, "bits=4"),
+        ("bits", 4.0, "bits=4"),
+        ("group_size", (32, 32), "scalar group_size=32"),
+        ("group_size", 64, "scalar group_size=32"),
+        ("group_size", 32.0, "scalar group_size=32"),
+        ("sym", False, "sym=True"),
+        ("act_data_type", "mx_fp", "activation data_type"),
+        ("act_bits", 16, "activation bits=4"),
+        ("act_bits", 4.0, "activation bits=4"),
+        ("act_group_size", 64, "activation scalar group_size=32"),
+        ("act_group_size", 32.0, "activation scalar group_size=32"),
+        ("act_sym", False, "activation sym=True"),
+        ("act_dynamic", False, "act_dynamic=True"),
+    ],
+)
+def test_collection_rejects_incompatible_selected_scheme(field, value, message):
+    model = _toy_model()
+    setattr(model[0].residual_linear, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        collect_svdquant_tensors(model)
+
+
+def test_collection_rejects_missing_selected_weight_or_activation_scheme():
+    missing_weight = _toy_model()
+    del missing_weight[0].residual_linear.data_type
+    with pytest.raises(ValueError, match="missing.*data_type"):
+        collect_svdquant_tensors(missing_weight)
+
+    missing_activation = _toy_model()
+    for field in ("act_data_type", "act_bits", "act_group_size", "act_sym", "act_dynamic"):
+        delattr(missing_activation[0].residual_linear, field)
+    with pytest.raises(ValueError, match="missing.*activation"):
+        collect_svdquant_tensors(missing_activation)
 
 
 def test_collection_rejects_nonfinite_values_and_mixed_ranks():
@@ -223,6 +276,8 @@ def test_adapter_can_expand_records_and_remap_export_suffixes():
                 "smooth": source.smooth,
                 "smooth_orig": source.smooth_orig,
                 "bias": source.bias,
+                "scheme": source.scheme,
+                "sources": (source,),
             }
             return (
                 SVDQuantExportRecord(prefix="left", key_mapping={"qweight": "packed_weight"}, **values),
@@ -234,6 +289,33 @@ def test_adapter_can_expand_records_and_remap_export_suffixes():
     assert "left.packed_weight" in tensors
     assert "left.qweight" not in tensors
     assert "right.qweight" in tensors
+
+
+def test_adapter_can_fuse_sources_with_compatible_e2m1_aliases():
+    model = torch.nn.Sequential(_toy_model()[0], _toy_model()[0])
+    model[0].residual_linear.data_type = "mx_fp4"
+    model[0].residual_linear.act_data_type = "mx_fp4"
+
+    class FusionAdapter(IdentitySVDQuantModelAdapter):
+        def map_modules(self, model, records):
+            left, right = tuple(records)
+            return (
+                SVDQuantExportRecord(
+                    prefix="fused",
+                    residual_weight=left.residual_weight,
+                    lora_down=left.lora_down,
+                    lora_up=left.lora_up,
+                    smooth=left.smooth,
+                    smooth_orig=left.smooth_orig,
+                    bias=left.bias,
+                    scheme=left.scheme,
+                    sources=(left, right),
+                ),
+            )
+
+    tensors = collect_svdquant_tensors(model, adapter=FusionAdapter())
+
+    assert "fused.qweight" in tensors
 
 
 @pytest.mark.parametrize(
@@ -257,6 +339,20 @@ def test_collection_rejects_malformed_packed_residual_payloads(payload, message)
 
     with pytest.raises(ValueError, match=message):
         collect_svdquant_tensors(_toy_model(), residual_provider=Provider())
+
+
+def test_collection_rejects_aligned_payload_that_is_too_small_for_logical_record():
+    class WrongProvider:
+        def tensors_for(self, record):
+            return {
+                "qweight": torch.zeros(128, 64, dtype=torch.int8),
+                "wscales": torch.zeros(4, 128, dtype=torch.uint8),
+            }
+
+    with pytest.raises(ValueError, match=r"qweight shape.*\(256, 128\)"):
+        collect_svdquant_tensors(
+            _toy_model(in_features=129, out_features=129), residual_provider=WrongProvider()
+        )
 
 
 def test_save_svdquant_nunchaku_safetensors_writes_metadata(tmp_path):
