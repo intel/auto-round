@@ -18,6 +18,7 @@ from contextlib import contextmanager
 
 import torch
 
+import auto_round.algorithms.transforms.svdquant.residual as residual_module
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.base import BaseWeightTransformer
 from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
@@ -109,17 +110,19 @@ class SVDQuantTransform(BaseWeightTransformer):
         smooth = smooth.to(device=weight.device, dtype=weight.dtype)
         weight_hat = weight / smooth.reshape(1, -1)
 
-        if rank == 0:
-            low_rank = torch.zeros_like(weight_hat)
-            down_weight = torch.empty((0, in_features), dtype=weight_hat.dtype, device=weight_hat.device)
-            up_weight = torch.empty((out_features, 0), dtype=weight_hat.dtype, device=weight_hat.device)
+        if self.config.residual_iters == 1:
+            try:
+                low_rank, down_weight, up_weight = _truncated_svd(weight_hat, rank)
+            except (RuntimeError, ValueError) as exc:
+                raise ValueError(
+                    f"SVDQuant decomposition failed for module {self._module_name(module)!r} at iteration 1: {exc}."
+                ) from exc
+            residual_weight = weight_hat - low_rank
+            self._raise_if_nonfinite(module, 1, residual_weight, low_rank, down_weight, up_weight)
         else:
-            u, s, vh = torch.linalg.svd(weight_hat, full_matrices=False)
-            down_weight = vh[:rank, :]
-            up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
-            low_rank = up_weight @ down_weight
+            residual_weight, down_weight, up_weight = self._iterate_residual(module, weight_hat, rank)
 
-        residual = self._new_linear_like(module, weight_hat - low_rank, module.bias)
+        residual = self._new_linear_like(module, residual_weight, module.bias)
         low_rank_dtype = self._resolve_low_rank_dtype(module.weight.dtype)
         lora_down = torch.nn.Linear(in_features, rank, bias=False, dtype=low_rank_dtype, device=module.weight.device)
         lora_up = torch.nn.Linear(rank, out_features, bias=False, dtype=low_rank_dtype, device=module.weight.device)
@@ -131,6 +134,88 @@ class SVDQuantTransform(BaseWeightTransformer):
         self._mark_unquantized(lora_up)
         self._copy_quant_attrs(module, residual, suffix=".residual_linear")
         return SVDQuantLinear(residual, lora_down, lora_up, smooth.to(module.weight.dtype))
+
+    def _iterate_residual(
+        self, module: torch.nn.Linear, weight_hat: torch.Tensor, rank: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        scheme = self._residual_quant_scheme(module)
+        quantized_residual = torch.zeros_like(weight_hat)
+        best = None
+        best_error = float("inf")
+        last_failure = None
+
+        for iteration in range(1, self.config.residual_iters + 1):
+            try:
+                low_rank, down_weight, up_weight = _truncated_svd(weight_hat - quantized_residual, rank)
+            except (RuntimeError, ValueError) as exc:
+                last_failure = (iteration, f"SVD failed: {exc}")
+                break
+
+            if not all(torch.isfinite(tensor).all() for tensor in (low_rank, down_weight, up_weight)):
+                last_failure = (iteration, "SVD produced non-finite values")
+                break
+
+            residual_weight = weight_hat - low_rank
+            if not torch.isfinite(residual_weight).all():
+                last_failure = (iteration, "residual computation produced non-finite values")
+                break
+
+            try:
+                quantized_residual = residual_module.rtn_qdq_residual(residual_weight, scheme)
+            except (RuntimeError, ValueError) as exc:
+                last_failure = (iteration, f"RTN residual QDQ failed: {exc}")
+                break
+
+            if not torch.isfinite(quantized_residual).all():
+                last_failure = (iteration, "RTN residual QDQ produced non-finite values")
+                break
+
+            error = torch.sum((weight_hat - (quantized_residual + low_rank)).square())
+            if torch.isfinite(error):
+                error_value = error.item()
+                if error_value < best_error:
+                    best = (residual_weight.clone(), down_weight.clone(), up_weight.clone())
+                    best_error = error_value
+                    continue
+            else:
+                last_failure = (iteration, "reconstruction error is non-finite")
+
+            if self.config.residual_early_stop and best is not None:
+                break
+
+        if best is not None:
+            return best
+
+        failure_iteration, reason = last_failure or (self.config.residual_iters, "no finite candidate was produced")
+        raise ValueError(
+            f"SVDQuant residual iteration failed for module {self._module_name(module)!r} "
+            f"at iteration {failure_iteration}: {reason}."
+        )
+
+    def _residual_quant_scheme(self, module: torch.nn.Linear) -> residual_module.ResidualQuantScheme:
+        required = ("data_type", "bits", "group_size", "sym")
+        missing = [attr for attr in required if not hasattr(module, attr) or getattr(module, attr) is None]
+        if missing:
+            raise ValueError(
+                f"SVDQuant residual iteration requires data_type, bits, group_size, and sym for module "
+                f"{self._module_name(module)!r}; missing: {', '.join(missing)}."
+            )
+        try:
+            return residual_module.ResidualQuantScheme(**{attr: getattr(module, attr) for attr in required})
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid residual quantization scheme for module {self._module_name(module)!r}: {exc}"
+            ) from exc
+
+    def _raise_if_nonfinite(self, module: torch.nn.Linear, iteration: int, *tensors: torch.Tensor) -> None:
+        if not all(torch.isfinite(tensor).all() for tensor in tensors):
+            raise ValueError(
+                f"SVDQuant decomposition produced non-finite values for module {self._module_name(module)!r} "
+                f"at iteration {iteration}."
+            )
+
+    def _module_name(self, module: torch.nn.Linear) -> str:
+        return str(getattr(module, "global_name", module.__class__.__name__))
 
     def _build_smooth(self, module: torch.nn.Linear, weight: torch.Tensor) -> torch.Tensor:
         act = self._act_max.get(id(module))
@@ -196,3 +281,18 @@ def _set_child_module(root: torch.nn.Module, name: str, module: torch.nn.Module)
         parent[int(leaf)] = module
     else:
         setattr(parent, leaf, module)
+
+
+def _truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return a rank-limited reconstruction and its down/up factors."""
+    out_features, in_features = weight.shape
+    if rank == 0:
+        low_rank = torch.zeros_like(weight)
+        down_weight = torch.empty((0, in_features), dtype=weight.dtype, device=weight.device)
+        up_weight = torch.empty((out_features, 0), dtype=weight.dtype, device=weight.device)
+        return low_rank, down_weight, up_weight
+
+    u, s, vh = torch.linalg.svd(weight, full_matrices=False)
+    down_weight = vh[:rank, :]
+    up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
+    return up_weight @ down_weight, down_weight, up_weight
