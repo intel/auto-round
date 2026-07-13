@@ -14,7 +14,9 @@ from auto_round.export.svdquant_mxfp4 import (
     decode_ue8m0,
     encode_e2m1,
     encode_ue8m0,
+    pack_lowrank_weight,
     pack_nibbles,
+    unpack_lowrank_weight,
     unpack_nibbles,
 )
 
@@ -22,6 +24,55 @@ from auto_round.export.svdquant_mxfp4 import (
 E2M1_CODEBOOK = torch.tensor(
     [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
 )
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("down,shape,packed_shape", [(True, (3, 17), (32, 16)), (False, (17, 3), (32, 16))])
+def test_lowrank_physical_pack_roundtrips_values_and_zero_padding(dtype, down, shape, packed_shape):
+    logical = torch.arange(shape[0] * shape[1], dtype=torch.float32).reshape(shape).to(dtype)
+
+    packed = pack_lowrank_weight(logical, down=down)
+    padded = unpack_lowrank_weight(packed, down=down)
+
+    assert packed.shape == packed_shape
+    assert packed.dtype == dtype
+    assert padded.shape == ((16, 32) if down else (32, 16))
+    torch.testing.assert_close(padded[: shape[0], : shape[1]], logical)
+    assert torch.count_nonzero(padded[shape[0] :, :]) == 0
+    assert torch.count_nonzero(padded[: shape[0], shape[1] :]) == 0
+
+
+def test_lowrank_physical_pack_matches_independent_fixed_fixture():
+    logical = torch.arange(16 * 16, dtype=torch.float16).reshape(16, 16)
+
+    packed = pack_lowrank_weight(logical, down=False)
+
+    assert packed.flatten()[:32].tolist() == [
+        0.0, 1.0, 8.0, 9.0, 128.0, 129.0, 136.0, 137.0,
+        2.0, 3.0, 10.0, 11.0, 130.0, 131.0, 138.0, 139.0,
+        4.0, 5.0, 12.0, 13.0, 132.0, 133.0, 140.0, 141.0,
+        6.0, 7.0, 14.0, 15.0, 134.0, 135.0, 142.0, 143.0,
+    ]
+
+
+@pytest.mark.parametrize(
+    "weight,down,message",
+    [
+        (torch.ones(16), False, "2D"),
+        (torch.ones(2, 2), False, "dtype"),
+        (torch.empty(0, 2, dtype=torch.float16), False, "non-empty"),
+        (torch.tensor([[torch.inf]], dtype=torch.float16), False, "finite"),
+        (torch.ones(2, 2, dtype=torch.float16), 1, "down"),
+    ],
+)
+def test_lowrank_pack_rejects_invalid_inputs(weight, down, message):
+    with pytest.raises(ValueError, match=message):
+        pack_lowrank_weight(weight, down=down)
+
+
+def test_lowrank_unpack_rejects_non_block_aligned_physical_shape():
+    with pytest.raises(ValueError, match="divisible by 16"):
+        unpack_lowrank_weight(torch.ones(16, 15, dtype=torch.bfloat16), down=False)
 
 
 def test_pack_residual_returns_immutable_aligned_physical_tensors():

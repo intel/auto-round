@@ -30,6 +30,61 @@ from auto_round.data_type.mxfp import quant_element, quant_mx
 
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _SUPPORTED_DECODE_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+_SUPPORTED_PACKED_DTYPES = (torch.float16, torch.bfloat16)
+
+
+def _validate_lowrank_weight(weight: torch.Tensor, down: bool) -> None:
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+        raise ValueError("weight must be a 2D torch.Tensor")
+    if weight.dtype not in _SUPPORTED_PACKED_DTYPES:
+        raise ValueError("weight dtype must be torch.float16 or torch.bfloat16")
+    if not isinstance(down, bool):
+        raise ValueError("down must be a bool")
+    if 0 in weight.shape:
+        raise ValueError("weight dimensions must be non-empty")
+    if not bool(torch.isfinite(weight).all()):
+        raise ValueError("weight must contain only finite values")
+
+
+def pack_lowrank_weight(weight: torch.Tensor, down: bool) -> torch.Tensor:
+    """Pad and pack a logical low-rank matrix into Nunchaku's 16-bit layout."""
+
+    _validate_lowrank_weight(weight, down)
+    pack_n = pack_k = 16
+    rows = NunchakuMXFP4Packer._ceil_to(weight.shape[0], pack_n)
+    columns = NunchakuMXFP4Packer._ceil_to(weight.shape[1], pack_k)
+    padded = torch.zeros((rows, columns), dtype=weight.dtype, device=weight.device)
+    padded[: weight.shape[0], : weight.shape[1]] = weight
+    if down:
+        rank, channels = padded.shape
+        rank_packs, channel_packs = rank // pack_n, channels // pack_k
+        packed = padded.view(rank_packs, pack_n, channel_packs, pack_k).permute(2, 0, 1, 3)
+    else:
+        channels, rank = padded.shape
+        channel_packs, rank_packs = channels // pack_n, rank // pack_k
+        packed = padded.view(channel_packs, pack_n, rank_packs, pack_k).permute(0, 2, 1, 3)
+    packed = packed.reshape(channel_packs, rank_packs, 2, 8, 1, 2, 4, 2)
+    return packed.permute(0, 1, 3, 6, 2, 5, 4, 7).contiguous().view(channels, rank)
+
+
+def unpack_lowrank_weight(weight: torch.Tensor, down: bool) -> torch.Tensor:
+    """Invert :func:`pack_lowrank_weight`, retaining its padded logical shape."""
+
+    _validate_lowrank_weight(weight, down)
+    channels, rank = weight.shape
+    if channels % 16 or rank % 16:
+        raise ValueError("packed weight dimensions must be divisible by 16")
+    if down:
+        rank_packs, channel_packs = rank // 16, channels // 16
+    else:
+        channel_packs, rank_packs = channels // 16, rank // 16
+    unpacked = weight.view(channel_packs, rank_packs, 8, 4, 2, 2, 1, 2)
+    unpacked = unpacked.permute(0, 1, 4, 2, 6, 5, 3, 7).contiguous().view(
+        channel_packs, rank_packs, 16, 16
+    )
+    if down:
+        return unpacked.permute(1, 2, 0, 3).contiguous().view(rank, channels)
+    return unpacked.permute(0, 2, 1, 3).contiguous().view(channels, rank)
 
 
 @dataclass(frozen=True)
