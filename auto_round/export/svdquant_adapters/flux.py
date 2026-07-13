@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -89,6 +90,18 @@ def _config_dict(value: Any) -> dict[str, Any]:
     if hasattr(value, "__dict__"):
         return {key: item for key, item in vars(value).items() if not key.startswith("_")}
     raise ValueError("FLUX config must be a mapping or serialize to a JSON object")
+
+
+def _normalize_config_paths(value: Any) -> Any:
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    if isinstance(value, Mapping):
+        return {key: _normalize_config_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_config_paths(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_config_paths(item) for item in value)
+    return value
 
 
 def _effective_weight(source: SourceLinearRecord, device: torch.device) -> torch.Tensor:
@@ -177,7 +190,7 @@ class FluxSVDQuantNunchakuAdapter:
         value = self.config if self.config is not None else getattr(model, "config", None)
         if value is None:
             raise ValueError("FLUX export requires explicit config or model.config")
-        config = _config_dict(value)
+        config = _normalize_config_paths(_config_dict(value))
         try:
             json.dumps(config)
         except (TypeError, ValueError) as exc:

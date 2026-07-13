@@ -132,7 +132,7 @@ def test_pack_rejects_unrepresentable_adanorm_identity_bias_offset(dtype, bias_v
     scale = torch.ones(12, 16, dtype=dtype)
     bias = torch.full((12,), bias_value, dtype=dtype)
 
-    with pytest.raises(ValueError, match=r"AdaNorm bias identity offset \+1 must be exactly representable"):
+    with pytest.raises(ValueError, match=r"AdaNorm bias identity offset \+1 must change the stored"):
         pack_adanorm_w4a16(weight, scale, bias=bias)
 
 

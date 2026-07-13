@@ -1,5 +1,6 @@
 import inspect
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -185,6 +186,22 @@ def test_metadata_explicit_config_and_complete_mode_rejects_gaps():
     assert metadata["format"] == "pt" and metadata["comfy_config"] == "{}"
     with pytest.raises(ValueError, match="indices mismatch"):
         tuple(adapter.map_modules(_model(), (_source("transformer_blocks.1.attn.to_q"),)))
+
+
+def test_metadata_normalizes_pathlike_config_values():
+    adapter = FluxSVDQuantNunchakuAdapter(
+        config={
+            "num_layers": 0,
+            "num_single_layers": 0,
+            "_name_or_path": Path("/models/flux/transformer"),
+            "nested": {"cache": Path("/cache/flux")},
+        }
+    )
+
+    config = json.loads(adapter.metadata(_model(), 2)["config"])
+
+    assert config["_name_or_path"] == "/models/flux/transformer"
+    assert config["nested"]["cache"] == "/cache/flux"
 
 
 def test_decomposition_device_accepts_available_cuda_index(monkeypatch):
