@@ -47,8 +47,8 @@ class SVDQuantConfig(QuantizationConfig):
             raise ValueError(f"`smooth_alpha` must be in [0, 1], got {smooth_alpha!r}")
         if smooth_eps <= 0:
             raise ValueError(f"`smooth_eps` must be positive, got {smooth_eps!r}")
-        if residual_iters < 1:
-            raise ValueError(f"`residual_iters` must be at least 1, got {residual_iters!r}")
+        if type(residual_iters) is not int or residual_iters < 1:
+            raise ValueError(f"`residual_iters` must be a positive integer, got {residual_iters!r}")
         if residual_iters > 1 and residual_quant_method != "rtn":
             raise ValueError(
                 "`residual_quant_method` must be 'rtn' when `residual_iters` is greater than 1, "

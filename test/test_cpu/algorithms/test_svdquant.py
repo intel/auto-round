@@ -27,6 +27,20 @@ def test_svdquant_config_rejects_invalid_residual_iteration_count():
         SVDQuantConfig(residual_iters=0)
 
 
+def test_svdquant_config_rejects_float_residual_iteration_count():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    with pytest.raises(ValueError, match="residual_iters"):
+        SVDQuantConfig(residual_iters=1.5)
+
+
+def test_svdquant_config_rejects_bool_residual_iteration_count():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    with pytest.raises(ValueError, match="residual_iters"):
+        SVDQuantConfig(residual_iters=True)
+
+
 def test_svdquant_config_rejects_non_rtn_multi_round_method():
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 
