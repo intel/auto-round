@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from auto_round.algorithms.pipeline import BlockContext
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.utils import is_nv_fp, is_act_static
+from auto_round.compressors.utils import is_act_static, is_nv_fp
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.utils import (

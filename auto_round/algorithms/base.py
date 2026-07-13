@@ -63,7 +63,7 @@ class BasePipelineMember:
         """Model-level preparation called once before block iteration starts."""
         return
 
-    def get_act_calib_policy(self, ctx: Any) -> Any: #TODO refine
+    def get_act_calib_policy(self, ctx: Any) -> Any:  # TODO refine
         """Return the activation calibration policy for this block."""
         from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
 
