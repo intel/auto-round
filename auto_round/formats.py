@@ -332,6 +332,65 @@ class OutputFormat(ABC):
         return "llm_compressor" in self.output_format or (self.backend is not None and self.backend.is_llm_compressor())
 
 
+@OutputFormat.register("svdquant_nunchaku")
+class SVDQuantNunchakuFormat(OutputFormat):
+    support_schemes = ["MXFP4"]
+    format_name = "svdquant_nunchaku"
+
+    def __init__(self, format: str, ar: BaseCompressor):
+        self.output_format = format
+        self.backend = None
+        if not self.is_support_scheme(ar.scheme):
+            raise ValueError(
+                f"{self.format_name} supports only the MXFP4 preset for Nunchaku E2M1 group32 export; "
+                f"got scheme {ar.scheme}. Use scheme='MXFP4' or choose a different output format."
+            )
+
+    @classmethod
+    def check_scheme_args(cls, scheme: QuantizationScheme) -> bool:
+        expected = PRESET_SCHEMES["MXFP4"]
+        incompatible = [
+            f"{name}={getattr(scheme, name)!r}"
+            for name in scheme.get_attributes()
+            if getattr(scheme, name) != getattr(expected, name)
+        ]
+        if incompatible:
+            raise ValueError(
+                f"{cls.format_name} supports only the MXFP4 preset; got {', '.join(incompatible)}. "
+                "Expected Nunchaku E2M1 weights and activations with group_size=32."
+            )
+        return True
+
+    def check_and_reset_format(self, ar: BaseCompressor) -> None:
+        return None
+
+    def pack_layer(self, *args, **kwargs):
+        return None
+
+    def save_quantized(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        *,
+        config=None,
+        residual_provider=None,
+        adapter=None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        """Export one deterministic ``model.safetensors`` file below ``output_dir``."""
+        from auto_round.export.svdquant_nunchaku import save_svdquant_nunchaku_safetensors
+
+        output_path = os.path.join(os.fspath(output_dir), "model.safetensors")
+        save_svdquant_nunchaku_safetensors(
+            model,
+            output_path,
+            config=config,
+            residual_provider=residual_provider,
+            adapter=adapter,
+        )
+        return model
+
+
 @OutputFormat.register("fake")
 class FakeFormat(OutputFormat):
     support_schemes = None
