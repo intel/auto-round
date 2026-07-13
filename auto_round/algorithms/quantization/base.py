@@ -44,7 +44,8 @@ from auto_round.utils import (
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear
 
-#TODO wenhuach annotate this class and functions clearly with details
+
+# TODO wenhuach annotate this class and functions clearly with details
 class BaseQuantizer(BasePipelineMember):
     """Base class for terminal weight-compression algorithms in a QuantizationPipeline.
 
@@ -65,10 +66,9 @@ class BaseQuantizer(BasePipelineMember):
     # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
     # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
 
-
     supported_types = SUPPORTED_LAYER_TYPES
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-    enable_alg_ext = False #TODO delete wenhuach
+    enable_alg_ext = False  # TODO delete wenhuach
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
@@ -93,7 +93,7 @@ class BaseQuantizer(BasePipelineMember):
 
     # ── Shared CalibrationState forwarders ───────────────────────────────────────
     @property
-    def calibration_state(self) -> Any: # TODO this one could be deleted?
+    def calibration_state(self) -> Any:  # TODO this one could be deleted?
         return self._calibration_state
 
     @calibration_state.setter
@@ -102,7 +102,7 @@ class BaseQuantizer(BasePipelineMember):
         self._calibration_state = new_state
 
     @property
-    def attention_mask(self) -> list: #TODO better move to quantize_block
+    def attention_mask(self) -> list:  # TODO better move to quantize_block
         return self._calibration_state.attention_mask
 
     @attention_mask.setter
@@ -121,14 +121,13 @@ class BaseQuantizer(BasePipelineMember):
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = compressor.scheme_context
-        self.scale_dtype = compressor.scale_dtype # TODO better move to scheme? wenhuach
+        self.scale_dtype = compressor.scale_dtype  # TODO better move to scheme? wenhuach
         # Share the compressor's CalibrationState instance.
         self._calibration_state = compressor._calibration_state
 
     @property
     def model(self) -> torch.nn.Module | None:
         return self.model_context.model if self.model_context is not None else None
-
 
     @property
     def amp(self) -> bool:
@@ -159,7 +158,6 @@ class BaseQuantizer(BasePipelineMember):
         Default: no-op (empty list).
         """
         return []
-
 
     # ── Activation-calibration hook infrastructure ───────────────────────────────
 
@@ -367,8 +365,9 @@ class BaseQuantizer(BasePipelineMember):
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
 
-
-    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, disable_opt_rtn: bool | None = None, **kwargs):
+    def quantize_layer_outside_block(
+        self, layer_name: str, input_ids=None, disable_opt_rtn: bool | None = None, **kwargs
+    ):
         """Quantizes a single layer outside of a block using RTN fallback.
 
         Args:
@@ -380,7 +379,6 @@ class BaseQuantizer(BasePipelineMember):
             layer = get_module(self.model, layer_name)
             set_module(self.model, layer_name, layer.to(dtype))
         self.quantize_layer_via_rtn(layer_name, disable_opt_rtn=disable_opt_rtn)
-
 
     @torch.no_grad()
     def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:
@@ -436,7 +434,7 @@ class BaseQuantizer(BasePipelineMember):
             except Exception:
                 raise
         set_module(self.model, layer_name, layer)
-        self._immediate_pack_and_save_module(layer_name) #TODO wenhuach should not handle it here
+        self._immediate_pack_and_save_module(layer_name)  # TODO wenhuach should not handle it here
 
     def _immediate_pack_and_save_module(self, module_name):
         from auto_round.compressors.shard_writer import ShardWriter
@@ -467,7 +465,7 @@ class BaseQuantizer(BasePipelineMember):
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
         block = block.to(device_manager.device)
-        return block, False, device_manager.device # This should
+        return block, False, device_manager.device  # This should
 
     def _resolve_block_forward(self):
         """Resolve and cache the block forward function once.

@@ -65,7 +65,7 @@ class RTNQuantizer(BaseQuantizer):
             # layer quantization from the current act_max. Unify MoE input-proj
             # act_max values before quantizing each expert so exported input_scale
             # stays aligned across experts.
-            set_amax_for_all_moe_layers(block, attr_name="act_max") #TODO wenhuach should move to compressor
+            set_amax_for_all_moe_layers(block, attr_name="act_max")  # TODO wenhuach should move to compressor
 
         for _name, m in block.named_modules():
             if hasattr(m, "global_name") and check_to_quantized(m):
@@ -77,7 +77,7 @@ class RTNQuantizer(BaseQuantizer):
         if dtype is not None:
             layer = get_module(self.model, name)
             set_module(self.model, name, layer.to(dtype))
-        self.quantize_layer_via_rtn(name,disable_opt_rtn=True)
+        self.quantize_layer_via_rtn(name, disable_opt_rtn=True)
 
 
 @register_pipeline_member(OptimizedRTNConfig)

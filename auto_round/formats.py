@@ -27,6 +27,7 @@ import torch
 import transformers
 
 from auto_round.compressors.utils import (
+    is_act_static,
     is_block_wfp8,
     is_dynamic_afp8,
     is_dynamic_wint8aint8,
@@ -34,7 +35,6 @@ from auto_round.compressors.utils import (
     is_mx_int,
     is_nv_fp,
     is_standard_fp,
-    is_act_static,
     is_wfp8afp8,
     is_wint_woq,
 )

@@ -106,7 +106,7 @@ def is_wint8aint8(ar):
 
 
 def is_act_static(ar_or_format: Union[str, Callable]) -> bool:
-    if isinstance(ar_or_format, str): #TODO this is not robust
+    if isinstance(ar_or_format, str):  # TODO this is not robust
         return "fp8_static" in ar_or_format.lower()
     if not ar_or_format.act_dynamic:
         return True

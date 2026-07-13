@@ -30,8 +30,8 @@ from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     immediate_pack,
-    is_nv_fp,
     is_act_static,
+    is_nv_fp,
 )
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
@@ -522,7 +522,7 @@ class DataDrivenCompressor(BaseCompressor):
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
-            bs = 8  #TODO change to calib wenhuach
+            bs = 8  # TODO change to calib wenhuach
 
             ctx = BlockContext(
                 model=model,

@@ -122,7 +122,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
     )
-    #TODO wenhuach need to add choice or verify the correctness
+    # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
         "--algorithm",
         "--algorithms",
