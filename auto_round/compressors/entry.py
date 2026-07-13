@@ -341,7 +341,8 @@ class AutoRound(object):
 
         if alg_configs is None:
             alg_configs = "auto_round"
-        # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override, e.g. gradient_accumulate_step
+        # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override,
+        #  e.g. gradient_accumulate_step
         device_map = normalize_default_device_map(device_map)
         split_kwargs = _split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])

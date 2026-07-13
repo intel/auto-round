@@ -435,6 +435,7 @@ class SignRoundQuantizer(BaseQuantizer):
         best_params = None
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
+        self.batch_size = self._calibration_state.batch_size
         gradient_accumulate_steps = self.batch_size  # Force to low gpu
 
         total_loss = 0
