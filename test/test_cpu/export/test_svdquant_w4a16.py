@@ -123,6 +123,34 @@ def test_pack_rejects_bias_dtype_that_does_not_match_weight(bias_dtype):
         pack_adanorm_w4a16(weight, scale, bias=bias)
 
 
+@pytest.mark.parametrize(
+    "dtype,bias_value",
+    [(torch.float16, 2048), (torch.bfloat16, 256)],
+)
+def test_pack_rejects_unrepresentable_adanorm_identity_bias_offset(dtype, bias_value):
+    weight = torch.zeros(12, 1024, dtype=dtype)
+    scale = torch.ones(12, 16, dtype=dtype)
+    bias = torch.full((12,), bias_value, dtype=dtype)
+
+    with pytest.raises(ValueError, match=r"AdaNorm bias identity offset \+1 must be exactly representable"):
+        pack_adanorm_w4a16(weight, scale, bias=bias)
+
+
+@pytest.mark.parametrize(
+    "dtype,bias_value,expected_offset",
+    [(torch.float16, 2047, 2048), (torch.bfloat16, 255, 256)],
+)
+def test_pack_accepts_exactly_representable_adanorm_identity_bias_boundary(dtype, bias_value, expected_offset):
+    weight = torch.zeros(12, 1024, dtype=dtype)
+    scale = torch.ones(12, 16, dtype=dtype)
+    bias = torch.full((12,), bias_value, dtype=dtype)
+
+    packed = pack_adanorm_w4a16(weight, scale, bias=bias)
+
+    assert torch.count_nonzero(packed.bias == expected_offset) == 4
+    assert torch.count_nonzero(packed.bias == bias_value) == 8
+
+
 def test_pack_rejects_scale_whose_emitted_zero_overflows_source_dtype():
     weight = torch.zeros(12, 1024, dtype=torch.float16)
     scale = torch.full((12, 16), 10000, dtype=torch.float16)

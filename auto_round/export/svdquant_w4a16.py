@@ -153,7 +153,12 @@ def pack_adanorm_w4a16(
             channel_bias[start:end] = bias.index_select(0, source_rows)
         del codes, normalized, scale_rows, weight_rows
     channel_bias = channel_bias.reshape(out_features // splits, splits)
-    channel_bias[:, sorted({1, splits - 2})] += 1
+    identity_fields = sorted({1, splits - 2})
+    identity_before = channel_bias[:, identity_fields].clone()
+    channel_bias[:, identity_fields] += 1
+    identity_delta = channel_bias[:, identity_fields].to(torch.float64) - identity_before.to(torch.float64)
+    if not bool((identity_delta == 1).all()):
+        raise ValueError(f"AdaNorm bias identity offset +1 must be exactly representable in {weight.dtype}")
     channel_bias = channel_bias.reshape(out_features)
     wscales = channel_scale.t().contiguous()
     wzeros = (-7 * channel_scale).t().contiguous()
