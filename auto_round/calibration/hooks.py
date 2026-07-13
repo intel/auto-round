@@ -200,7 +200,7 @@ def replace_forward_with_hooks(state) -> None:
             m.orig_forward = m.forward
             m.forward = partial(state.calibration._get_block_forward_func(n), m)
         elif n in state.to_cached_layers:  # linear / conv1d layer
-            hook_func = state.calibration._get_cache_data_hook_for_layer(n)
+            hook_func = make_layer_cache_hook(state, n)
             hook_handle = m.register_forward_hook(hook_func)
             hook_handles.append(hook_handle)
 

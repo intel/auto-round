@@ -25,20 +25,20 @@ class BasePipelineMember:
 
     model_context = None
     compress_context = None
-    _scheme_context_fields = set(QuantizationScheme.get_attributes())
-    bits: int | None #TODO deleted wenhuach
-    group_size: int | tuple | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
-    super_sym: bool | None
-    scale_dtype: str | None
+    # _scheme_context_fields = set(QuantizationScheme.get_attributes())
+    # bits: int | None #TODO deleted wenhuach
+    # group_size: int | tuple | None
+    # sym: bool | None
+    # data_type: str | None
+    # act_bits: int | None
+    # act_group_size: int | None
+    # act_sym: bool | None
+    # act_data_type: str | None
+    # act_dynamic: bool | None
+    # super_bits: int | None
+    # super_group_size: int | None
+    # super_sym: bool | None
+    # scale_dtype: str | None
 
     def __init__(self, config: Any = None) -> None:
         self.config = config
@@ -79,19 +79,19 @@ class BasePipelineMember:
         return
 
 
-def _make_scheme_property(name):
-    def getter(self):
-        scheme = getattr(self, "scheme", None)
-        return getattr(scheme, name, None) if scheme is not None else None
-
-    def setter(self, value):
-        scheme = getattr(self, "scheme", None)
-        if scheme is None:
-            raise AttributeError(f"{type(self).__name__} has no bound scheme")
-        setattr(scheme, name, value)
-
-    return property(getter, setter)
-
-
-for _scheme_field in QuantizationScheme.get_attributes():
-    setattr(BasePipelineMember, _scheme_field, _make_scheme_property(_scheme_field))
+# def _make_scheme_property(name):
+#     def getter(self):
+#         scheme = getattr(self, "scheme", None)
+#         return getattr(scheme, name, None) if scheme is not None else None
+#
+#     def setter(self, value):
+#         scheme = getattr(self, "scheme", None)
+#         if scheme is None:
+#             raise AttributeError(f"{type(self).__name__} has no bound scheme")
+#         setattr(scheme, name, value)
+#
+#     return property(getter, setter)
+#
+#
+# for _scheme_field in QuantizationScheme.get_attributes():
+#     setattr(BasePipelineMember, _scheme_field, _make_scheme_property(_scheme_field))

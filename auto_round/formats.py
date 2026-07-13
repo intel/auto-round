@@ -34,7 +34,7 @@ from auto_round.compressors.utils import (
     is_mx_int,
     is_nv_fp,
     is_standard_fp,
-    is_static_wfp8afp8,
+    is_act_static,
     is_wfp8afp8,
     is_wint_woq,
 )
@@ -407,7 +407,7 @@ class LLMCompressorFormat(OutputFormat):
                 self.backend = LLMCompressorFormat(ar.data_type, ar)
             elif is_dynamic_afp8(ar) and is_block_wfp8(ar):
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, ar)
-            elif is_static_wfp8afp8(ar):
+            elif is_act_static(ar):
                 self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
                 if ar.act_group_size != 0:
                     logger.warning(
@@ -1181,7 +1181,7 @@ class AutoRoundFormat(OutputFormat):
                 self.backend = AutoRoundFormat(ar.data_type, ar)
             elif is_mx_int(ar.data_type) and ar.bits == 4:  # only add mx_int4 now
                 self.backend = AutoRoundFormat(ar.data_type, ar)
-            elif is_static_wfp8afp8(ar):  # static wfp8afp8
+            elif is_act_static(ar):  # static wfp8afp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, ar)
             elif ar.data_type.startswith("fp") and ar.bits == 8 and ar.act_bits >= 16:  # woq fp8
                 self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, ar)

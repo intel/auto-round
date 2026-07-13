@@ -32,7 +32,7 @@ from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     immediate_pack,
     is_nv_fp,
-    is_static_wfp8afp8,
+    is_act_static,
 )
 
 from auto_round.logger import logger
@@ -373,7 +373,7 @@ class DataDrivenCompressor(BaseCompressor):
                     block_ctx=None,  # legacy path: no BlockContext
                 )
 
-                if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+                if is_nv_fp(self.quantizer.act_data_type) or is_act_static(self.quantizer):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                 if self.quantizer.enable_quanted_input:
@@ -438,7 +438,7 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.post_quantize_block(ctx)
 
             # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-            if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+            if is_nv_fp(self.quantizer.act_data_type) or is_act_static(self.quantizer):
                 set_amax_for_all_moe_layers(block, attr_name="act_max")
 
             # ── Collect quantized-block outputs ───────────────────────────────────
@@ -526,7 +526,7 @@ class DataDrivenCompressor(BaseCompressor):
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
-            bs = 8
+            bs = 8  #TODO change to calib wenhuach
 
             ctx = BlockContext(
                 model=model,
@@ -584,7 +584,7 @@ class DataDrivenCompressor(BaseCompressor):
                 pre.post_quantize_block(ctx)
 
             # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-            if is_nv_fp(self.quantizer.act_data_type) or is_static_wfp8afp8(self.quantizer):
+            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                 set_amax_for_all_moe_layers(m, attr_name="act_max")
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────

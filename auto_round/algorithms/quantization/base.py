@@ -44,7 +44,7 @@ from auto_round.utils import (
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear
 
-
+#TODO wenhuach annotate this class and functions clearly with details
 class BaseQuantizer(BasePipelineMember):
     """Base class for terminal weight-compression algorithms in a QuantizationPipeline.
 
@@ -64,7 +64,8 @@ class BaseQuantizer(BasePipelineMember):
     # Class-level attribute declarations for convenient access in quantization methods.
     # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
     # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
-    dataset = None # TODO delete wenhuach
+
+
     supported_types = SUPPORTED_LAYER_TYPES
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
     enable_alg_ext = False #TODO delete wenhuach
@@ -101,7 +102,7 @@ class BaseQuantizer(BasePipelineMember):
         self._calibration_state = new_state
 
     @property
-    def attention_mask(self) -> list:
+    def attention_mask(self) -> list: #TODO better move to quantize_block
         return self._calibration_state.attention_mask
 
     @attention_mask.setter
@@ -120,7 +121,7 @@ class BaseQuantizer(BasePipelineMember):
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = compressor.scheme_context
-        self.scale_dtype = compressor.scale_dtype # TODO better move to scheme?
+        self.scale_dtype = compressor.scale_dtype # TODO better move to scheme? wenhuach
         # Share the compressor's CalibrationState instance.
         self._calibration_state = compressor._calibration_state
 
@@ -128,9 +129,6 @@ class BaseQuantizer(BasePipelineMember):
     def model(self) -> torch.nn.Module | None:
         return self.model_context.model if self.model_context is not None else None
 
-    # @property
-    # def formats(self) -> Any:
-    #     return getattr(self.compress_context, "formats", None)
 
     @property
     def amp(self) -> bool:
@@ -139,6 +137,29 @@ class BaseQuantizer(BasePipelineMember):
     @property
     def amp_dtype(self) -> torch.dtype:
         return getattr(self.model_context, "amp_dtype", torch.float32)
+
+    def register_fp_input_forward_hooks(self, block: "torch.nn.Module") -> list:
+        """Register hooks that fire during the reference (FP-input) block forward.
+
+        Subclasses override to collect statistics (e.g. imatrix, AWQ scales)
+        that require full-precision activations. Returns a list of hook handles
+        that the caller must remove when done.
+
+        Default: no-op (empty list).
+        """
+        return []
+
+    def register_qinput_forward_hooks(self, block: "torch.nn.Module") -> list:
+        """Register hooks that fire during the reference (FP-input) block forward.
+
+        Subclasses override to collect statistics (e.g. imatrix, AWQ scales)
+        that require full-precision activations. Returns a list of hook handles
+        that the caller must remove when done.
+
+        Default: no-op (empty list).
+        """
+        return []
+
 
     # ── Activation-calibration hook infrastructure ───────────────────────────────
 
@@ -235,6 +256,11 @@ class BaseQuantizer(BasePipelineMember):
         layers specified in `self.layer_config`, and applies the appropriate quantization
         function based on bit precision, grouping strategy, and dtype.
 
+        Note:
+            Most quantization schemes do **not** quantize embeddings. Currently only
+            GGUF formats require embedding quantization. Subclasses almost never need
+            to override or call this method directly.
+
         Returns:
             bool: True if any embedding layer was quantized.
         """
@@ -320,6 +346,7 @@ class BaseQuantizer(BasePipelineMember):
         fp_outputs: list[torch.Tensor],
         q_inputs: list[torch.Tensor] | None,
         block_ctx: "BlockContext",
+        **kwargs,
     ) -> dict:
         """Apply the quantization algorithm to a prepared block.
 
@@ -340,16 +367,8 @@ class BaseQuantizer(BasePipelineMember):
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
 
-    def quantize_layer(self, layer_name: str, **kwargs) -> None:
-        """Quantizes a single layer of the model.
 
-        Args:
-            layer_name (str): The name of the layer to quantize. The layer module is
-                retrieved internally via get_module(model, layer_name).
-        """
-        raise NotImplementedError("quantize_layer must be implemented in subclasses of BaseQuantizer")
-
-    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, **kwargs):
+    def quantize_layer_outside_block(self, layer_name: str, input_ids=None, disable_opt_rtn: bool | None = None, **kwargs):
         """Quantizes a single layer outside of a block using RTN fallback.
 
         Args:
@@ -360,7 +379,8 @@ class BaseQuantizer(BasePipelineMember):
         if dtype is not None:
             layer = get_module(self.model, layer_name)
             set_module(self.model, layer_name, layer.to(dtype))
-        self.quantize_layer_via_rtn(layer_name, **kwargs)
+        self.quantize_layer_via_rtn(layer_name, disable_opt_rtn=disable_opt_rtn)
+
 
     @torch.no_grad()
     def quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: bool | None = None) -> None:

@@ -29,7 +29,7 @@ from auto_round.cli.parser import (
 def _extract_common_quantization_kwargs(args) -> dict:
     """Map parsed CLI args back to QuantizationConfig constructor kwargs.
 
-    Handles inverted flags: --asym -> sym, --act_asym -> act_sym,
+    Handles inverted flags: --asym -> sy m, --act_asym -> act_sym,
     --disable_act_dynamic -> act_dynamic.
     When the flag was not set (False), the value is None (defer to scheme).
     """
@@ -56,7 +56,6 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
         "batch_size": args.batch_size,
-        "gradient_accumulate_steps": getattr(args, "gradient_accumulate_steps", 1),
         "low_gpu_mem_usage": args.low_gpu_mem_usage,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,

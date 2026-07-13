@@ -148,7 +148,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
         return loss
 
-    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx) -> dict:
+    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, **kwargs) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
         This is the pure-algorithm entry point.  All infrastructure concerns
