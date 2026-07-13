@@ -21,6 +21,7 @@ typedef uintptr_t torch_ptr;
 #if ARK_XPU
 #include <sycl/sycl.hpp>
 #include "xpu_wrapper.hpp"
+#include "sycl_s8_wrapper.hpp"
 #if ARK_SYCL_TLA
 // Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
@@ -32,17 +33,26 @@ typedef uintptr_t torch_ptr;
 #include "cpu_wrapper.hpp"
 #endif
 
+#if ARK_DNNL
 #include "dnnl_wrapper.hpp"
+#endif
 
 namespace ark {
 
 static void matmul(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, torch_ptr B, int Bdt, torch_ptr C,
                    int Cdt, torch_ptr bias, bool BT) {
+#ifdef ARK_XPU
+#if ARK_DNNL
   auto dt = ark::to_dt((BTLA_DTYPE)Adt);
   auto cdt = dt;
   if (Adt == (int)BTLA_DTYPE::S8) cdt = dnnl::memory::data_type::s32;
-#ifdef ARK_XPU
   ark::DnnlWrapper::gemm((sycl::queue*)stream, m, n, k, (void*)A, dt, (void*)B, dt, BT, (void*)C, cdt, (void*)bias);
+#elif ARK_SYCL_TLA
+  ark::sycl_tla_dense_gemm((sycl::queue*)stream, m, n, k, (void*)A, (BTLA_DTYPE)Adt, (void*)B, (BTLA_DTYPE)Bdt,
+                           (void*)C, (BTLA_DTYPE)Cdt, (void*)bias, BT);
+#else
+  throw std::runtime_error("ark::matmul on XPU requires ARK_DNNL=ON or ARK_SYCL_TLA=ON");
+#endif
 #else
   CpuWrapper::gemm(m, n, k, (void*)A, (BTLA_DTYPE)Adt, (void*)B, BT, (float*)C, (const float*)bias);
 #endif
@@ -50,9 +60,16 @@ static void matmul(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, 
 
 static void woqgemm_s8(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt, torch_ptr B, torch_ptr C,
                        torch_ptr bias, bool BT, torch_ptr scaleb) {
+#if ARK_XPU
+  ark::SyclS8Wrapper::woq_s8((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C,
+                             (BTLA_DTYPE)ACdt, (void*)scaleb, (void*)bias, k);
+#elif ARK_DNNL
   auto dt = ark::to_dt((BTLA_DTYPE)ACdt);
   ark::DnnlWrapper::woq_s8((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C, dt, (void*)scaleb,
                            (void*)bias, k);
+#else
+  throw std::runtime_error("ark::woqgemm_s8 requires ARK_XPU or ARK_DNNL");
+#endif
 }
 
 static void woqgemm(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt, torch_ptr BlobB, torch_ptr C,

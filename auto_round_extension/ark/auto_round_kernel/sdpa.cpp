@@ -449,9 +449,9 @@ void sage_prefill_varlen(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
 
   compat::set_default_queue(*q);
 
-  // Zero-filled workspace for cu_seqlens_kv_cache via DnnlContext scratch pool.
+  // Zero-filled workspace for cu_seqlens_kv_cache via DeviceMemoryPool scratch pool.
   int* zero_cu_buf = static_cast<int*>(
-      DnnlContext::Instance()->get_scratch_mem((batch + 1) * sizeof(int), 3, q));
+      DeviceMemoryPool::Instance()->get_scratch_mem((batch + 1) * sizeof(int), 3, q));
   q->memset(zero_cu_buf, 0, (batch + 1) * sizeof(int));
   options.cu_seqlens_kv_cache = zero_cu_buf;
   options.use_tensor_strides = true;
@@ -512,10 +512,10 @@ void sdpa_varlen_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, voi
 
   // When isVarLen=true, the kernel's apply_variable_length accesses
   // cumulative_length for ALL three fields.  Even with max_seqlen_kv_cache=0,
-  // the pointer must be non-null and device-accessible.  Use the DnnlContext
+  // the pointer must be non-null and device-accessible.  Use the DeviceMemoryPool
   // scratch pool (reuses allocation across calls, only grows when needed).
   int* zero_cu_buf = static_cast<int*>(
-      DnnlContext::Instance()->get_scratch_mem((batch + 1) * sizeof(int), 4, q));
+      DeviceMemoryPool::Instance()->get_scratch_mem((batch + 1) * sizeof(int), 4, q));
   q->memset(zero_cu_buf, 0, (batch + 1) * sizeof(int));
   options.cu_seqlens_kv_cache = zero_cu_buf;
   options.use_tensor_strides = true;
