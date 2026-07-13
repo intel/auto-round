@@ -42,24 +42,27 @@ using namespace cute;
 template <class ATensor, class BTensor, class CTensor, class TiledMMA, class BiasElement>
 void gemm_device_impl(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA const& mma,
                       const BiasElement* bias_ptr) {
+  /* Get workgroup and local IDs */
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<2>();
   auto wg_m = int(item.get_group(1));
   auto wg_n = int(item.get_group(0));
   auto local_id = int(item.get_local_id(0));
 
-  Tensor cA = make_identity_tensor(A.shape());
-  Tensor cB = make_identity_tensor(B.shape());
-  Tensor cC = make_identity_tensor(C.shape());
+  /* Create proxy coordinate tensors for each global tensor */
+  Tensor cA = make_identity_tensor(A.shape());  // (M,K)
+  Tensor cB = make_identity_tensor(B.shape());  // (N,K)
+  Tensor cC = make_identity_tensor(C.shape());  // (M,N)
 
+  /* Split GEMM into workgroup tiles, and identify our workgroup's tile (wg_coord) */
   auto wg_tile = mma.tile_mnk();
   auto wg_coord = make_coord(wg_m, wg_n, 0);
 
-  Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
-  Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
-  Tensor gC = local_tile(cC, wg_tile, wg_coord, Step<_1, _1, X>{});
+  Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));  // (BLK_M,BLK_K,k)
+  Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));  // (BLK_N,BLK_K,k)
+  Tensor gC = local_tile(cC, wg_tile, wg_coord, Step<_1, _1, X>{});        // (BLK_M,BLK_N)
 
-  auto copy_a = make_block_2d_copy_A(XE_LOAD_2D<16, 8, 32, 32>{}, mma, A);
-  auto copy_b = make_block_2d_copy_B(XE_LOAD_2D_TRANSPOSE<32, 16, 8>{}, mma, B);
+  auto copy_a = make_block_2d_copy_A(mma, A);
+  auto copy_b = make_block_2d_copy_B(mma, B);
   auto copy_c = make_block_2d_copy_D(mma, C);
 
   auto thr_mma = mma.get_slice(local_id);
@@ -119,29 +122,34 @@ void gemm_device_impl(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA c
 
   using ElementOutput = typename CTensor::element_type;
   if constexpr (is_same_v<ElementOutput, float>) {
-    copy(copy_c, tCrC, tCgC);
-  } else {
-    Tensor tCrD = make_tensor_like<ElementOutput>(tCrC);
-
-    CUTE_UNROLL
-    for (int i = 0; i < size(tCrC); ++i) {
-      auto coord = tCgC(i);
-      int col = int(get<1>(coord));
-      float value = static_cast<float>(tCrC(i));
-      if (bias_ptr != nullptr && col < int(shape<1>(C))) {
-        value += static_cast<float>(bias_ptr[col]);
-      }
-      tCrD(i) = static_cast<ElementOutput>(value);
+    if (bias_ptr == nullptr) {
+      copy(copy_c, tCrC, tCgC);
+      return;
     }
-
-    copy(copy_c, tCrD, tCgC);
   }
+
+  Tensor tCrD = make_tensor_like<ElementOutput>(tCrC);
+
+  CUTE_UNROLL
+  for (int i = 0; i < size(tCrC); ++i) {
+    auto coord = tCgC(i);
+    int col = int(get<1>(coord));
+    float value = static_cast<float>(tCrC(i));
+    if (bias_ptr != nullptr && col < int(shape<1>(C))) {
+      value += static_cast<float>(bias_ptr[col]);
+    }
+    tCrD(i) = static_cast<ElementOutput>(value);
+  }
+
+  copy(copy_c, tCrD, tCgC);
 }
 
 template <typename TA, typename TB, typename TC>
 auto choose_mma_op() {
   if constexpr (is_complete_v<XE_DPAS_TT<8, TC, TA, TB>>) {
     return XE_DPAS_TT<8, TC, TA, TB>{};
+  } else if constexpr (is_same_v<TA, float> && is_same_v<TB, float>) {
+    return XE_DPAS_TT<8, float, cute::tfloat32_t>{};
   } else if constexpr (is_same_v<TA, cute::bfloat16_t>) {
     return XE_DPAS_TT<8, float, cute::bfloat16_t>{};
   } else {
@@ -256,6 +264,12 @@ inline void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void*
   }
 
   switch (at) {
+    case BTLA_DTYPE::F32:
+      dense_gemm_detail::run_dense_gemm(
+          q, m, n, k, static_cast<const float*>(a), static_cast<const float*>(b),
+          static_cast<float*>(c), static_cast<const float*>(bias));
+      return;
+
     case BTLA_DTYPE::F16:
       dense_gemm_detail::run_dense_gemm(
           q, m, n, k, static_cast<const cute::half_t*>(a), static_cast<const cute::half_t*>(b),
@@ -269,7 +283,7 @@ inline void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void*
       return;
 
     default:
-      throw std::invalid_argument("sycl_tla_dense_gemm: only FP16 and BF16 are supported");
+      throw std::invalid_argument("sycl_tla_dense_gemm: only FP32, FP16 and BF16 are supported");
   }
 }
 

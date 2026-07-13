@@ -244,8 +244,8 @@ def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tenso
         raise ValueError("A and B must be 2D tensors")
     if A.device != B.device:
         raise ValueError("A and B must be on the same device")
-    if A.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError("matmul_sycl_tla only supports torch.float16 and torch.bfloat16")
+    if A.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        raise ValueError("matmul_sycl_tla only supports torch.float32, torch.float16 and torch.bfloat16")
     if B.dtype != A.dtype:
         raise ValueError("A and B must have the same dtype")
 
