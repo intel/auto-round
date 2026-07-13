@@ -167,7 +167,7 @@ def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
 
 # TODO better to follow heng's imp to decouple llm/diffusion
 @dataclass
-class BlockForward: # TODO override forward with
+class BlockForward:  # TODO override forward with
     """Stateless block-forward execution engine shared across quantizer & compressor.
 
     Created **once** by the compressor at init time. Quantizer accesses via
@@ -334,7 +334,11 @@ class BlockForward: # TODO override forward with
         if self.is_diffusion:
             # Look up per-block-type output config; fall back to instance-level config.
             block_cls_name = block.__class__.__name__ if block is not None else None
-            oc = self.DIFFUSION_OUTPUT_CONFIGS.get(block_cls_name, self.output_config) if block_cls_name else self.output_config
+            oc = (
+                self.DIFFUSION_OUTPUT_CONFIGS.get(block_cls_name, self.output_config)
+                if block_cls_name
+                else self.output_config
+            )
             idx = oc.index("hidden_states")
             if idx >= len(output):
                 raise ValueError(f"Diffusion output has {len(output)} elements, but hidden_states index is {idx}.")
