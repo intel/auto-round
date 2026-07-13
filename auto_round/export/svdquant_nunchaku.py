@@ -66,7 +66,13 @@ class SourceLinearRecord:
 
 @dataclass(frozen=True)
 class SVDQuantExportRecord:
-    """Adapter-selected logical tensors and their exported key mapping."""
+    """Adapter-selected logical tensors and their exported key mapping.
+
+    Fusion adapters must reconstruct effective source weights, fuse or split those
+    weights, and recompute the low-rank decomposition at the configured output
+    rank. Nunchaku metadata stores one rank, so exact rank-sum LoRA fusion is not
+    representable by this export schema.
+    """
 
     prefix: str
     residual_weight: torch.Tensor
@@ -81,7 +87,12 @@ class SVDQuantExportRecord:
 
 
 class SVDQuantModelAdapter(Protocol):
-    """Boundary for architecture-specific module mapping and runtime metadata."""
+    """Boundary for model-level mapping and runtime metadata.
+
+    ``map_modules`` receives every logical source together so architecture adapters
+    can recompose effective weights before sibling fusion or splitting. Its output
+    must retain source provenance and use the configured source rank.
+    """
 
     def map_modules(
         self, model: torch.nn.Module, records: Iterable[SourceLinearRecord]
@@ -381,6 +392,8 @@ def _validate_packed_residual(payload: Mapping[str, torch.Tensor], record: SVDQu
 def _validate_adapter_provenance(
     sources: tuple[SourceLinearRecord, ...], records: tuple[SVDQuantExportRecord, ...]
 ) -> None:
+    """Require complete source identity coverage and configured-rank outputs."""
+
     source_ids = {id(source) for source in sources}
     referenced_ids: set[int] = set()
     for record in records:
@@ -390,7 +403,9 @@ def _validate_adapter_provenance(
                 raise ValueError(f"{record.prefix} adapter record references a foreign logical source")
             if source.lora_down.shape[0] != output_rank:
                 raise ValueError(
-                    f"{record.prefix} source rank={source.lora_down.shape[0]} must equal output rank={output_rank}"
+                    f"{record.prefix} source rank={source.lora_down.shape[0]} must equal output rank={output_rank}; "
+                    "the Nunchaku schema stores one configured rank, so adapters must recompose effective source "
+                    "weights and decompose them at that configured rank; exact rank-sum fusion is unsupported"
                 )
             referenced_ids.add(id(source))
     missing = [source.name or "<root>" for source in sources if id(source) not in referenced_ids]

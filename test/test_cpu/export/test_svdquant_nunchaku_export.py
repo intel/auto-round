@@ -365,35 +365,59 @@ def test_adapter_can_expand_records_and_remap_export_suffixes():
     assert "right.qweight" in tensors
 
 
-def test_adapter_can_fuse_sources_with_compatible_e2m1_aliases():
+def test_adapter_can_recompose_independent_sources_at_configured_rank():
     model = torch.nn.Sequential(_toy_model()[0], _toy_model()[0])
     model[0].residual_linear.data_type = "mx_fp4"
     model[0].residual_linear.act_data_type = "mx_fp4"
-    with torch.no_grad():
-        model[1].lora_down.weight.copy_(model[0].lora_down.weight)
-        model[1].smooth.copy_(model[0].smooth)
+
+    assert not torch.equal(model[0].lora_down.weight, model[1].lora_down.weight)
+    assert not torch.equal(model[0].lora_up.weight, model[1].lora_up.weight)
 
     class FusionAdapter(IdentitySVDQuantModelAdapter):
+        fused_record = None
+
         def map_modules(self, model, records):
             left, right = tuple(records)
-            return (
-                SVDQuantExportRecord(
-                    prefix="fused",
-                    residual_weight=torch.cat((left.residual_weight, right.residual_weight), dim=0),
-                    lora_down=left.lora_down,
-                    lora_up=torch.cat((left.lora_up, right.lora_up), dim=0),
-                    smooth=left.smooth,
-                    smooth_orig=left.smooth_orig,
-                    bias=torch.cat((left.bias, right.bias), dim=0),
-                    scheme=left.scheme,
-                    sources=(left, right),
-                ),
+            rank = left.lora_down.shape[0]
+            effective_weights = tuple(
+                source.residual_weight + source.lora_up @ source.lora_down for source in (left, right)
             )
+            fused_weight = torch.cat(effective_weights, dim=0)
+            u, singular_values, vh = torch.linalg.svd(fused_weight.float(), full_matrices=False)
+            lora_up = (u[:, :rank] * singular_values[:rank]).to(fused_weight.dtype)
+            lora_down = vh[:rank].to(fused_weight.dtype)
+            self.fused_record = SVDQuantExportRecord(
+                prefix="fused",
+                residual_weight=fused_weight - lora_up @ lora_down,
+                lora_down=lora_down,
+                lora_up=lora_up,
+                smooth=left.smooth,
+                smooth_orig=left.smooth_orig,
+                bias=torch.cat((left.bias, right.bias), dim=0),
+                scheme=left.scheme,
+                sources=(left, right),
+            )
+            return (self.fused_record,)
 
-    tensors = collect_svdquant_tensors(model, adapter=FusionAdapter())
+    adapter = FusionAdapter()
+    tensors = collect_svdquant_tensors(model, adapter=adapter)
 
     assert "fused.qweight" in tensors
     assert tensors["fused.qweight"].shape == (128, 64)
+    assert adapter.fused_record.lora_down.shape[0] == 3
+    expected = torch.cat(
+        tuple(
+            module.residual_linear.weight.detach()
+            + module.lora_up.weight.detach() @ module.lora_down.weight.detach()
+            for module in model
+        ),
+        dim=0,
+    )
+    actual = (
+        adapter.fused_record.residual_weight
+        + adapter.fused_record.lora_up @ adapter.fused_record.lora_down
+    )
+    torch.testing.assert_close(actual, expected)
 
 
 def test_adapter_provenance_rejects_dropped_and_foreign_sources():
@@ -429,7 +453,7 @@ def test_adapter_provenance_requires_source_rank_to_equal_output_rank():
                 ),
             )
 
-    with pytest.raises(ValueError, match="source rank=3.*output rank=2"):
+    with pytest.raises(ValueError, match="Nunchaku.*configured rank.*exact rank-sum fusion is unsupported"):
         collect_svdquant_tensors(_toy_model(), adapter=RankChangingAdapter())
 
 
