@@ -240,7 +240,7 @@ class BlockForward:  # TODO override forward with
         inputs: list[torch.Tensor],
         input_others: dict,
         indices: torch.Tensor | None = None,
-    ) -> list[torch.Tensor]|torch.Tensor:
+    ) -> list[torch.Tensor] | torch.Tensor:
         """Run block forward with batching, output normalization, and cache transfer.
 
         Args:
@@ -260,9 +260,9 @@ class BlockForward:  # TODO override forward with
         device = inputs[0].device if isinstance(inputs, list) else inputs.device
 
         if indices is None:
-            indices = torch.arange(num_samples, dtype=torch.long,device=device)
+            indices = torch.arange(num_samples, dtype=torch.long, device=device)
         elif not isinstance(indices, torch.Tensor):
-            indices = torch.tensor(indices, dtype=torch.long,device=device)
+            indices = torch.tensor(indices, dtype=torch.long, device=device)
         else:
             indices = indices.to(device=device)
 
@@ -273,7 +273,7 @@ class BlockForward:  # TODO override forward with
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
             raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
             output = self._normalize_output(raw_output, block)
-            if is_returned_list and self.batch_size!=1: # split  it to 1
+            if is_returned_list and self.batch_size != 1:  # split  it to 1
                 output = self.split_outputs(output)
             else:
                 output = [output]
@@ -286,7 +286,7 @@ class BlockForward:  # TODO override forward with
             return outputs
         else:
             if self.batch_size == 1:
-                outputs= [output.unsqueeze(dim=self.batch_dim).to(self.cache_device) for output in outputs]
+                outputs = [output.unsqueeze(dim=self.batch_dim).to(self.cache_device) for output in outputs]
 
             outputs = torch.cat(outputs, dim=self.batch_dim).to(self.cache_device)
 

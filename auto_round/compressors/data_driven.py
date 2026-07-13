@@ -215,8 +215,6 @@ class DataDrivenCompressor(BaseCompressor):
             args, kwargs = step_input[0]
             fake_layer(*args, **kwargs)
 
-
-
     def _quantize_blocks(
         self,
         model: torch.nn.Module,
@@ -680,8 +678,6 @@ class DataDrivenCompressor(BaseCompressor):
             logger.warning(
                 "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
             )
-
-
 
     # This is the API for llm-compressor, not used in AutoRound
     def quantize_block(

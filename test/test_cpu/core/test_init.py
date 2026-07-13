@@ -3,7 +3,6 @@ import argparse
 from auto_round import AutoRound
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 
-
 # def test_argparse_check(tiny_opt_model_path):
 #     ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", enable_torch_compile=True)
 #     assert not ar.enable_torch_compile, "NVFP4 cannot work with torch.compile."
