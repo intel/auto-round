@@ -99,7 +99,7 @@ def env_flag(name, default=False):
 
 requirements = fetch_requirements("requirements.txt")
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
-enable_dnnl = env_flag("ARK_DNNL", False)
+enable_dnnl = env_flag("ARK_DNNL", default=not enable_sycl_tla)
 
 
 def get_system_memory_gb():
