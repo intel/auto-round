@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from typing import Any
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -127,7 +126,7 @@ class BaseQuantizer(BasePipelineMember):
         return self.model_context.model if self.model_context is not None else None
 
     @property
-    def amp(self) -> bool: # TODO wenhuach move to block forward
+    def amp(self) -> bool:  # TODO wenhuach move to block forward
         return getattr(self.model_context, "amp", False)
 
     @property
@@ -157,7 +156,6 @@ class BaseQuantizer(BasePipelineMember):
         not by the quantizer.
         """
         return []
-
 
     # ── Embedding quantization ────────────────────────────────────────────────────
     @torch.inference_mode()
@@ -348,8 +346,6 @@ class BaseQuantizer(BasePipelineMember):
             except Exception:
                 raise
         set_module(self.model, layer_name, layer)
-
-
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.
