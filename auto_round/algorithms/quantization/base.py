@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from typing import Any
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -215,8 +214,6 @@ class BaseQuantizer(BasePipelineMember):
                 handles.append(module.register_forward_hook(collect_act_max))
         return handles
 
-
-
     # ── Embedding quantization ────────────────────────────────────────────────────
     @torch.inference_mode()
     def quantize_embedding_layer(self) -> bool:
@@ -407,8 +404,6 @@ class BaseQuantizer(BasePipelineMember):
                 raise
         set_module(self.model, layer_name, layer)
         # self._immediate_pack_and_save_module(layer_name)  # TODO wenhuach should not handle it here
-
-
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.

@@ -199,7 +199,6 @@ class AWQTransform(BaseWeightTransformer):
         )
         self._finalized = False
 
-
     def register_fp_input_forward_hooks(self, block) -> list:
         """Register AWQ activation-stats and parent-kwargs hooks.
 

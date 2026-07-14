@@ -25,7 +25,6 @@ class BasePipelineMember:
     model_context = None
     compress_context = None
 
-
     def __init__(self, config: Any = None) -> None:
         self.config = config  # TODO wenhuach may be deleted
         self.scheme = getattr(config, "scheme", None)
@@ -48,7 +47,6 @@ class BasePipelineMember:
     def prepare_run(self, compressor: Any) -> None:
         """Model-level preparation called once before block iteration starts."""
         return
-
 
     def register_fp_input_forward_hooks(self, block: Any) -> list:
         """Register hooks for the FP-input reference forward pass.
