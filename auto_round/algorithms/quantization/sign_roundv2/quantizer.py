@@ -390,7 +390,6 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             handles.extend(self._register_imatrix_hooks(block))
         return handles
 
-
     def _is_wint4aint4(self):
         return (
             "int4" in self.scheme.act_data_type or ("int" in self.scheme.act_data_type and self.scheme.act_bits == 4)

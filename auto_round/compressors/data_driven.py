@@ -294,7 +294,7 @@ class DataDrivenCompressor(BaseCompressor):
         q_input: torch.Tensor | None = None,
         nblocks: int = 1,
         pbar: tqdm | None = None,
-        input_others_extra_blocks: dict |None = None,
+        input_others_extra_blocks: dict | None = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -420,7 +420,6 @@ class DataDrivenCompressor(BaseCompressor):
                 else:
                     clear_memory()
                 input_ids = q_input
-
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
             self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others, reference_output, q_input, ctx)
@@ -705,7 +704,6 @@ class DataDrivenCompressor(BaseCompressor):
         for alg in self.pipeline.all():
             alg.prepare_run(self)
 
-
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -749,7 +747,6 @@ class DataDrivenCompressor(BaseCompressor):
         # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
         for alg in self.pipeline.all():
             alg.finalize_run(self)
-
 
         pbar.set_description("Quantizing done")
         pbar.close()
@@ -1132,7 +1129,6 @@ class DataDrivenCompressor(BaseCompressor):
                 clear_memory(device_list=device_manager.device_list)
             input_ids = q_input
 
-
         # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
         self.pipeline.block_quantizer.quantize_block(block, input_ids, input_others, reference_output, q_input, ctx)
 
@@ -1156,5 +1152,3 @@ class DataDrivenCompressor(BaseCompressor):
         mv_module_from_gpu(block)
         self.model_context.is_mllm = orig_is_mllm
         return q_outputs, reference_output
-
-

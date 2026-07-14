@@ -224,7 +224,6 @@ class AWQTransform(BaseWeightTransformer):
             return self._register_awq_hooks(self.compressor.model_context.model, block, block_name)
         return []
 
-
     def pre_quantize_block(self, ctx: "BlockContext") -> None:
         """Apply AWQ smoothing for this block and mark modified params.
 

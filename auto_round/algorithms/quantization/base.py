@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from typing import Any
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -215,7 +214,6 @@ class BaseQuantizer(BasePipelineMember):
             if name and should_collect(name, module):
                 handles.append(module.register_forward_hook(collect_act_max))
         return handles
-
 
     def get_act_calib_policy(self, ctx: Any) -> Any:
         """Return the activation calibration policy for this block.
