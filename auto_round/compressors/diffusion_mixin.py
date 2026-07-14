@@ -382,6 +382,10 @@ class DiffusionMixin:
 
         self.post_init()
 
+        # Zero-shot (RTN) path: no calibration data needed
+        if not self.need_calib:
+            return self._quantize_zero_shot()
+
         # Get block names and call cache_inter_data to populate self.inputs
         if bool(self.quantizer.quant_block_list):
             all_blocks = self.quantizer.quant_block_list

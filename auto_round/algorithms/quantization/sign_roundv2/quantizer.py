@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from functools import partial
 from typing import Callable, Union
 
@@ -383,12 +383,13 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                 return torch.mean((torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32)) * mask) ** 2)
         return super()._get_loss(pred_output, ref_output, indices, mse_loss, device)
 
-    @contextmanager
-    def block_forward_hooks(self, ctx):
-        with super().block_forward_hooks(ctx) as hook_handles:
-            if not self._is_wint4aint4():
-                hook_handles.extend(self._register_imatrix_hooks(ctx.block))
-            yield hook_handles
+    def register_fp_input_forward_hooks(self, block):
+        """Register FP-input hooks: act_max (from base) + imatrix."""
+        handles = super().register_fp_input_forward_hooks(block)
+        if not self._is_wint4aint4():
+            handles.extend(self._register_imatrix_hooks(block))
+        return handles
+
 
     def _is_wint4aint4(self):
         return (

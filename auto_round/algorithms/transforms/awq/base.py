@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import inspect
 import re
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -212,24 +211,19 @@ class AWQTransform(BaseWeightTransformer):
         # forward may be needed — handled via the block_quantizer's policy.
         return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
 
-    @contextmanager
-    def block_forward_hooks(self, ctx: "BlockContext"):
+    def register_fp_input_forward_hooks(self, block) -> list:
         """Register AWQ activation-stats and parent-kwargs hooks.
 
         Hooks are registered on the *current block's* smooth sources and
-        parent modules.  All handles are removed when this context manager
-        exits (before ``__exit__`` returns), regardless of exceptions.
+        parent modules. Returns hook handles that the caller must remove.
         """
-        handles = []
-        block_mappings = self._block_mappings.get(ctx.block_name, [])
+        # Need block_name from the block's global_name attribute
+        block_name = getattr(block, "global_name", "")
+        block_mappings = self._block_mappings.get(block_name, [])
         if block_mappings:
-            handles = self._register_awq_hooks(ctx.model, ctx.block, ctx.block_name)
-        try:
-            yield handles
-        finally:
-            for h in handles:
-                h.remove()
-            handles.clear()
+            return self._register_awq_hooks(self.compressor.model_context.model, block, block_name)
+        return []
+
 
     def pre_quantize_block(self, ctx: "BlockContext") -> None:
         """Apply AWQ smoothing for this block and mark modified params.

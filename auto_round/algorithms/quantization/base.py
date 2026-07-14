@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from contextlib import contextmanager
+from typing import Any
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -140,24 +140,24 @@ class BaseQuantizer(BasePipelineMember):
     def register_fp_input_forward_hooks(self, block: "torch.nn.Module") -> list:
         """Register hooks that fire during the reference (FP-input) block forward.
 
-        Subclasses override to collect statistics (e.g. imatrix, AWQ scales)
-        that require full-precision activations. Returns a list of hook handles
+        Includes act_max hooks (for static activation quantization) by default.
+        Subclasses override to add additional statistics collection
+        (e.g. imatrix, AWQ scales). Returns a list of hook handles
         that the caller must remove when done.
-
-        Default: no-op (empty list).
         """
-        return []
+        handles = self._register_act_max_hooks(block)
+        return handles
 
     def register_qinput_forward_hooks(self, block: "torch.nn.Module") -> list:
-        """Register hooks that fire during the reference (FP-input) block forward.
+        """Register hooks that fire during the quantized-input block forward.
 
-        Subclasses override to collect statistics (e.g. imatrix, AWQ scales)
-        that require full-precision activations. Returns a list of hook handles
+        Used when act-calib policy requires collecting stats from quantized
+        activations. Includes act_max hooks by default.
+        Subclasses override to add custom hooks. Returns a list of hook handles
         that the caller must remove when done.
-
-        Default: no-op (empty list).
         """
-        return []
+        handles = self._register_act_max_hooks(block)
+        return handles
 
     # ── Activation-calibration hook infrastructure ───────────────────────────────
 
@@ -216,19 +216,6 @@ class BaseQuantizer(BasePipelineMember):
                 handles.append(module.register_forward_hook(collect_act_max))
         return handles
 
-    @contextmanager
-    def block_forward_hooks(self, ctx: Any) -> Any:
-        """Register act-calib forward hooks for the reference forward.
-
-        Yields the list of hook handles so the caller can determine whether
-        any act-calib hooks were registered.
-        """
-        handles = self._register_act_max_hooks(ctx.block)
-        try:
-            yield handles
-        finally:
-            for h in handles:
-                h.remove()
 
     def get_act_calib_policy(self, ctx: Any) -> Any:
         """Return the activation calibration policy for this block.

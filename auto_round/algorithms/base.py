@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-from contextlib import contextmanager
 from typing import Any
 
 from auto_round.algorithms.registry import resolve_pipeline_member
@@ -69,10 +68,16 @@ class BasePipelineMember:
 
         return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
 
-    @contextmanager
-    def block_forward_hooks(self, ctx: Any) -> Any:
-        """Register algorithm-specific forward hooks for the reference forward."""
-        yield []
+    def register_fp_input_forward_hooks(self, block: Any) -> list:
+        """Register hooks for the FP-input reference forward pass.
+
+        Subclasses override to collect statistics during the reference forward.
+        Returns a list of hook handles; caller must call h.remove() on each.
+
+        Default: no-op (empty list).
+        """
+        return []
+
 
     def finalize_run(self, compressor: Any) -> None:
         """Model-level teardown called once after all blocks are processed."""

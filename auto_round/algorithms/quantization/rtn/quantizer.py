@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections import defaultdict
-from contextlib import contextmanager
 from typing import Any, Callable, Optional, Union
 
 import accelerate
@@ -95,12 +94,13 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def is_support_compile_block(self):
         return False
 
-    @contextmanager
-    def block_forward_hooks(self, ctx):
-        with super().block_forward_hooks(ctx) as hook_handles:
-            if self.enable_imatrix:
-                hook_handles.extend(self._register_imatrix_hooks(ctx.block, with_count=True))
-            yield hook_handles
+    def register_fp_input_forward_hooks(self, block):
+        """Register FP-input hooks: act_max (from base) + imatrix."""
+        handles = super().register_fp_input_forward_hooks(block)
+        if self.enable_imatrix:
+            handles.extend(self._register_imatrix_hooks(block, with_count=True))
+        return handles
+
 
     def _register_imatrix_hooks(self, model, *, with_count: bool = False):
         def collect_imatrix(module, input, output):

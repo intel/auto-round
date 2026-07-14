@@ -378,7 +378,7 @@ def remove_existed_quantization_config(model: torch.nn.Module):
 def convert_module_to_hp_if_necessary(
     model_or_layer: torch.nn.Module,
     dtype: torch.dtype = torch.bfloat16,
-    device: str = "cpu",
+    device: str | torch.device = "cpu",
     to_cpu: bool = False,
 ) -> torch.nn.Module:
     """Convert quantized layer(s) to high-precision Linear layer(s) if necessary.

@@ -30,7 +30,6 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
-from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
@@ -622,36 +621,5 @@ class QuantizationPipeline:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
-    # TODO I have deleted skip calibration
-    def get_merged_policy(self, ctx: "BlockContext") -> ActCalibPolicy:
-        """Compute the merged act-calib policy for the current block."""
-        policies = [q.get_act_calib_policy(ctx) for q in self.all()]
-        return merge_policies(policies)
 
-    def enter_block_forward_hooks(self, ctx: "BlockContext", fwd_stack: ExitStack) -> list:
-        """Enter all pipeline members' ``block_forward_hooks`` into *fwd_stack*.
 
-        Iterates over all members (preprocessors then block_quantizer) in order,
-        entering each member's ``block_forward_hooks(ctx)`` context manager into
-        the provided :class:`contextlib.ExitStack`.
-
-        Returns the hook handles yielded by the terminal ``block_quantizer``
-        so the caller can determine whether any act-calib hooks were registered
-        (needed to decide whether a second forward with quantized inputs is required).
-        """
-        self.enter_preprocessor_hooks(ctx, fwd_stack)
-        return self.enter_quantizer_hooks(ctx, fwd_stack)
-
-    def enter_preprocessor_hooks(self, ctx: "BlockContext", fwd_stack: ExitStack) -> None:
-        """Enter preprocessor hooks only.
-
-        Preprocessor hooks collect stats from the FP reference forward.  They are
-        intentionally separate from terminal quantizer hooks so quantizer stats
-        can be collected from quantized inputs when required by policy.
-        """
-        for pre in self.preprocessors:
-            fwd_stack.enter_context(pre.block_forward_hooks(ctx))
-
-    def enter_quantizer_hooks(self, ctx: "BlockContext", fwd_stack: ExitStack) -> list:
-        """Enter terminal block-quantizer hooks only and return their handles."""
-        return fwd_stack.enter_context(self.block_quantizer.block_forward_hooks(ctx))
