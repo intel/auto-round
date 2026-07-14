@@ -60,7 +60,7 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
-class DataDrivenCompressor(BaseCompressor): #TODO rename this to Compressor
+class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
 
     def __init__(
         self,
