@@ -27,7 +27,6 @@ import torch
 
 from auto_round.data_type.mxfp import quant_element, quant_mx
 
-
 _E2M1_MAGNITUDES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 _SUPPORTED_DECODE_DTYPES = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 _SUPPORTED_PACKED_DTYPES = (torch.float16, torch.bfloat16)
@@ -79,9 +78,7 @@ def unpack_lowrank_weight(weight: torch.Tensor, down: bool) -> torch.Tensor:
     else:
         channel_packs, rank_packs = channels // 16, rank // 16
     unpacked = weight.view(channel_packs, rank_packs, 8, 4, 2, 2, 1, 2)
-    unpacked = unpacked.permute(0, 1, 4, 2, 6, 5, 3, 7).contiguous().view(
-        channel_packs, rank_packs, 16, 16
-    )
+    unpacked = unpacked.permute(0, 1, 4, 2, 6, 5, 3, 7).contiguous().view(channel_packs, rank_packs, 16, 16)
     if down:
         return unpacked.permute(1, 2, 0, 3).contiguous().view(rank, channels)
     return unpacked.permute(0, 2, 1, 3).contiguous().view(channels, rank)
@@ -151,16 +148,20 @@ class NunchakuMXFP4Packer:
     def _unpack_weight_codes(self, qweight: torch.Tensor) -> torch.Tensor:
         n, packed_k = qweight.shape
         k = packed_k * 2
-        packed = qweight.contiguous().view(torch.int32).reshape(
-            n // self.mem_n,
-            k // self.mem_k,
-            1,
-            self.mem_n // (self.n_pack_size * self.num_n_lanes * self.reg_n),
-            self.num_n_lanes,
-            self.num_k_lanes,
-            self.n_pack_size,
-            self.k_pack_size,
-            self.reg_n,
+        packed = (
+            qweight.contiguous()
+            .view(torch.int32)
+            .reshape(
+                n // self.mem_n,
+                k // self.mem_k,
+                1,
+                self.mem_n // (self.n_pack_size * self.num_n_lanes * self.reg_n),
+                self.num_n_lanes,
+                self.num_k_lanes,
+                self.n_pack_size,
+                self.k_pack_size,
+                self.reg_n,
+            )
         )
         shifts = torch.arange(0, 32, 4, dtype=torch.int32, device=qweight.device)
         weight = (packed.unsqueeze(-1) >> shifts) & 0xF
@@ -188,9 +189,7 @@ class NunchakuMXFP4Packer:
         k_group_padded = self._ceil_to(k, group_size)
         k_padded = self._ceil_to(k_group_padded, self.mem_k * self.num_k_unrolls)
 
-        qdq, shared_exponent, _ = quant_mx(
-            weight, bits=4, group_size=group_size, data_type="mx_fp4e2m1"
-        )
+        qdq, shared_exponent, _ = quant_mx(weight, bits=4, group_size=group_size, data_type="mx_fp4e2m1")
         num_logical_groups = k_group_padded // group_size
         scales = torch.exp2(shared_exponent.reshape(n, num_logical_groups).to(torch.float32))
 
@@ -200,9 +199,7 @@ class NunchakuMXFP4Packer:
 
         padded_codes = torch.zeros((n_padded, k_padded), dtype=torch.uint8, device=weight.device)
         padded_codes[:n, :k_group_padded] = logical_codes.reshape(n, k_group_padded)
-        padded_scales = torch.full(
-            (n_padded, k_padded // group_size), 127, dtype=torch.uint8, device=weight.device
-        )
+        padded_scales = torch.full((n_padded, k_padded // group_size), 127, dtype=torch.uint8, device=weight.device)
         padded_scales[:n, :num_logical_groups] = encode_ue8m0(scales)
 
         return PackedMXFP4(
@@ -250,9 +247,9 @@ class NunchakuMXFP4Packer:
         weight_codes = self._unpack_weight_codes(qweight)
         scale_codes = self._unpack_scale_codes(wscales)
         scales = decode_ue8m0(scale_codes)
-        dequantized = decode_e2m1(
-            weight_codes.reshape(n_padded, k_padded // 32, 32), scales, dtype=dtype
-        ).reshape(n_padded, k_padded)
+        dequantized = decode_e2m1(weight_codes.reshape(n_padded, k_padded // 32, 32), scales, dtype=dtype).reshape(
+            n_padded, k_padded
+        )
         n, k = logical_shape
         return dequantized[:n, :k].contiguous()
 

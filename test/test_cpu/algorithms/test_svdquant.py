@@ -154,9 +154,7 @@ def test_svdquant_disabled_smoothing_ignores_stale_act_max_and_preserves_forward
     x = torch.tensor([[1.0, -2.0, 3.0], [-0.5, 4.0, 2.0]])
     expected = layer(x)
     block = torch.nn.Sequential(layer)
-    transform = SVDQuantTransform(
-        SVDQuantConfig(rank=1, smooth_enabled=False, low_rank_dtype="float32")
-    )
+    transform = SVDQuantTransform(SVDQuantConfig(rank=1, smooth_enabled=False, low_rank_dtype="float32"))
     transform._act_max[id(layer)] = torch.tensor([100.0, 0.01, 7.0])
 
     transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))

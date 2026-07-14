@@ -125,9 +125,7 @@ class SVDQuantTransform(BaseWeightTransformer):
             residual_weight = weight_hat - low_rank
             self._raise_if_nonfinite(module, 1, residual_weight, low_rank, down_weight, up_weight)
         else:
-            residual_weight, down_weight, up_weight = self._iterate_residual(
-                module, weight_hat, rank, low_rank_dtype
-            )
+            residual_weight, down_weight, up_weight = self._iterate_residual(module, weight_hat, rank, low_rank_dtype)
 
         residual = self._new_linear_like(module, residual_weight, module.bias)
         lora_down = torch.nn.Linear(in_features, rank, bias=False, dtype=low_rank_dtype, device=module.weight.device)

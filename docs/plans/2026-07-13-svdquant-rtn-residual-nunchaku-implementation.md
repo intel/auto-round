@@ -50,9 +50,9 @@ Expected: failure because the new attributes and validation do not exist.
 Extend `SVDQuantConfig.__init__` with:
 
 ```python
-residual_iters: int = 1,
-residual_early_stop: bool = False,
-residual_quant_method: str = "rtn",
+residual_iters: int = (1,)
+residual_early_stop: bool = (False,)
+residual_quant_method: str = ("rtn",)
 ```
 
 Normalize the method to lowercase, reject iteration counts below one, and reject non-RTN methods only when `residual_iters > 1`. Include all three values in `__repr__`.

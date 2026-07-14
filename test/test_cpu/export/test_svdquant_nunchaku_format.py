@@ -97,9 +97,7 @@ def test_svdquant_nunchaku_disables_immediate_packing_for_low_memory_diffusion()
     class DiffusionTransformer(torch.nn.Module):
         pass
 
-    output_format = get_formats(
-        "svdquant_nunchaku", SimpleNamespace(scheme="MXFP4", bits=4, group_size=32)
-    )[0]
+    output_format = get_formats("svdquant_nunchaku", SimpleNamespace(scheme="MXFP4", bits=4, group_size=32))[0]
     compressor = SimpleNamespace(
         formats=[output_format],
         inplace=True,
@@ -126,9 +124,7 @@ def test_svdquant_nunchaku_disables_immediate_packing_for_low_memory_diffusion()
 def test_save_quantized_without_output_dir_returns_model(monkeypatch):
     import auto_round.export.svdquant_nunchaku as exporter
 
-    output_format = get_formats(
-        "svdquant_nunchaku", SimpleNamespace(scheme="MXFP4", bits=4, group_size=32)
-    )[0]
+    output_format = get_formats("svdquant_nunchaku", SimpleNamespace(scheme="MXFP4", bits=4, group_size=32))[0]
     model = torch.nn.Linear(2, 2)
     monkeypatch.setattr(
         exporter,
@@ -140,9 +136,7 @@ def test_save_quantized_without_output_dir_returns_model(monkeypatch):
 
 
 def test_save_quantized_rejects_unknown_kwargs(tmp_path):
-    output_format = get_formats(
-        "svdquant_nunchaku", SimpleNamespace(scheme="MXFP4", bits=4, group_size=32)
-    )[0]
+    output_format = get_formats("svdquant_nunchaku", SimpleNamespace(scheme="MXFP4", bits=4, group_size=32))[0]
 
     with pytest.raises(TypeError, match=r"unexpected keyword argument 'adaptor'"):
         output_format.save_quantized(tmp_path, model=torch.nn.Linear(2, 2), adaptor=object())

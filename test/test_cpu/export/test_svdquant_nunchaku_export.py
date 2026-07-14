@@ -16,8 +16,8 @@ from auto_round.export.svdquant_nunchaku import (
     SVDQuantExportRecord,
     collect_svdquant_tensors,
     pack_nunchaku_16bit_vector,
-    unpack_nunchaku_16bit_vector,
     save_svdquant_nunchaku_safetensors,
+    unpack_nunchaku_16bit_vector,
 )
 
 
@@ -407,16 +407,12 @@ def test_adapter_can_recompose_independent_sources_at_configured_rank():
     assert adapter.fused_record.lora_down.shape[0] == 3
     expected = torch.cat(
         tuple(
-            module.residual_linear.weight.detach()
-            + module.lora_up.weight.detach() @ module.lora_down.weight.detach()
+            module.residual_linear.weight.detach() + module.lora_up.weight.detach() @ module.lora_down.weight.detach()
             for module in model
         ),
         dim=0,
     )
-    actual = (
-        adapter.fused_record.residual_weight
-        + adapter.fused_record.lora_up @ adapter.fused_record.lora_down
-    )
+    actual = adapter.fused_record.residual_weight + adapter.fused_record.lora_up @ adapter.fused_record.lora_down
     torch.testing.assert_close(actual, expected)
 
 
@@ -498,9 +494,7 @@ def test_collection_rejects_aligned_payload_that_is_too_small_for_logical_record
             }
 
     with pytest.raises(ValueError, match=r"qweight shape.*\(256, 128\)"):
-        collect_svdquant_tensors(
-            _toy_model(in_features=129, out_features=129), residual_provider=WrongProvider()
-        )
+        collect_svdquant_tensors(_toy_model(in_features=129, out_features=129), residual_provider=WrongProvider())
 
 
 def test_save_svdquant_nunchaku_safetensors_writes_metadata(tmp_path):

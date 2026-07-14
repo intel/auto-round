@@ -351,10 +351,7 @@ class SVDQuantNunchakuFormat(OutputFormat):
             )
         preset = PRESET_SCHEMES["MXFP4"]
         resolved = QuantizationScheme.from_dict(
-            {
-                name: getattr(ar, name, getattr(preset, name))
-                for name in QuantizationScheme.get_attributes()
-            }
+            {name: getattr(ar, name, getattr(preset, name)) for name in QuantizationScheme.get_attributes()}
         )
         self.check_scheme_args(resolved)
         self._resolved_scheme = resolved
