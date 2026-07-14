@@ -22,6 +22,7 @@ from typing import Iterable, Optional, Union
 import torch
 from accelerate import dispatch_model
 from tqdm import tqdm
+import math
 
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.register import register_scheme_methods
@@ -148,7 +149,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     return None
 
                 self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
-                self.mix_score = self.weight_score + self.act_score
+                self.mix_score = math.exp(self.weight_score + self.act_score)
                 self.x_diff = None
                 return None
 
@@ -1893,8 +1894,8 @@ def _gen_layer_config(
             target_params_cnt -= layer_bits
 
     head_name = get_lm_head_name(model)
-    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
-        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+    # if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+    #     _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
