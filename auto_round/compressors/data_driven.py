@@ -304,22 +304,22 @@ class DataDrivenCompressor(BaseCompressor):
             # All forward hooks (preprocessor stats + act-calib) are active during
             # the reference forward and removed when the ExitStack exits.
             policy = self.pipeline.get_merged_policy(ctx)
-
-            if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
-                # First: reference forward with FP inputs and preprocessor hooks only.
-                with ExitStack() as fwd_stack:
-                    self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
-                    reference_output = self.block_forward(m, input_ids, input_others)
-                # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
-                with ExitStack() as fwd_stack:
-                    quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
-                    if quantizer_hooks:
-                        self.block_forward(m, q_input, input_others)
-            else:
-                # Unified: reference forward with all hooks active (or no hooks).
-                with ExitStack() as fwd_stack:
-                    self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
-                    reference_output = self.block_forward(m, input_ids, input_others)
+            with torch.no_grad():
+                if policy.source == InputSource.QUANTIZED_INPUT and q_input is not None:
+                    # First: reference forward with FP inputs and preprocessor hooks only.
+                    with ExitStack() as fwd_stack:
+                        self.pipeline.enter_preprocessor_hooks(ctx, fwd_stack)
+                        reference_output = self.block_forward(m, input_ids, input_others)
+                    # Second: quantizer stats forward with q_input (triggers hooks, output discarded).
+                    with ExitStack() as fwd_stack:
+                        quantizer_hooks = self.pipeline.enter_quantizer_hooks(ctx, fwd_stack)
+                        if quantizer_hooks:
+                            self.block_forward(m, q_input, input_others)
+                else:
+                    # Unified: reference forward with all hooks active (or no hooks).
+                    with ExitStack() as fwd_stack:
+                        self.pipeline.enter_block_forward_hooks(ctx, fwd_stack)
+                        reference_output = self.block_forward(m, input_ids, input_others)
 
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
@@ -346,7 +346,8 @@ class DataDrivenCompressor(BaseCompressor):
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
-                q_input = self.block_forward(m, input_ids, input_others)
+                with torch.no_grad():
+                    q_input = self.block_forward(m, input_ids, input_others)
             else:
                 q_input = None
 
