@@ -620,6 +620,3 @@ class QuantizationPipeline:
         if overriders:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
-
-
-

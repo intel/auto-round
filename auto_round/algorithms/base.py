@@ -60,7 +60,6 @@ class BasePipelineMember:
         """
         return []
 
-
     def finalize_run(self, compressor: Any) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return

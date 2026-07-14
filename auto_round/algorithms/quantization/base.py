@@ -218,7 +218,6 @@ class BaseQuantizer(BasePipelineMember):
 
 
     # ── Embedding quantization ────────────────────────────────────────────────────
-
     @torch.inference_mode()
     def quantize_embedding_layer(self) -> bool:
         """Quantizes embedding layers in the model according to the configuration.

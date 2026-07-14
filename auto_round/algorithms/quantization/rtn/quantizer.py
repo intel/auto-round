@@ -101,7 +101,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             handles.extend(self._register_imatrix_hooks(block, with_count=True))
         return handles
 
-
     def _register_imatrix_hooks(self, model, *, with_count: bool = False):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
