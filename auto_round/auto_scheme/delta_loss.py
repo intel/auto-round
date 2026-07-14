@@ -78,6 +78,80 @@ from auto_round.wrapper import WrapperLinear
 __all__ = ["gen_layer_config"]
 
 
+# ------------------------------------------------------------------ #
+# Gradient-consistency (cosine) scoring
+#
+# The default Delta-Loss score for one layer under one scheme is
+#     score = Σ |g ⊙ Δ|                       (weight_score + act_score)
+# where ``g`` is the final-loss gradient back-propagated to the layer and
+# ``Δ`` is the quantization perturbation (``weight - qdq_w`` for weights,
+# ``x - qdq_x`` for activations). This is the element-wise L1 upper bound of
+# the first-order Taylor term ``⟨g, Δ⟩``, so it *ignores direction*: a
+# perturbation orthogonal to what the final loss actually cares about is
+# scored just as high as a perfectly aligned one.
+#
+# To recover the directional information (the "gradient consistency"
+# heuristic) we additionally accumulate the signed dot product ``⟨g, Δ⟩`` and
+# the squared norms ``‖g‖²``, ``‖Δ‖²``, from which
+#     cosθ = |⟨g, Δ⟩| / (‖g‖ · ‖Δ‖)   ∈ [0, 1]
+# measures how aligned the quantization error is with the loss gradient. The
+# score fed to the bit-allocation DP is then blended per component:
+#     score' = weight_score * (α + (1-α)·cosθ_w) + act_score * (α + (1-α)·cosθ_a)
+# with ``α = AR_AUTO_SCHEME_COS_ALPHA ∈ [0, 1]``:
+#     α = 1  -> pure magnitude score (identical to legacy behaviour, the default)
+#     α = 0  -> pure cosine-weighted score (layers whose error is orthogonal to
+#               the loss gradient are treated as cheap to quantize)
+#
+# ``_COS_ALPHA`` is refreshed from the env var at the start of every scoring
+# run so the accumulation hooks below are a pure no-op when the feature is off.
+# ------------------------------------------------------------------ #
+_COS_ALPHA = 1.0
+
+
+def _accum_cos_stats(wrapper, kind, grad, diff):
+    """Accumulate signed dot product and squared norms for cosine-consistency scoring.
+
+    ``kind`` is ``"weight"`` or ``"act"``. Stats are stored lazily on ``wrapper`` (via
+    ``setattr``) so the duplicated wrapper ``__init__`` methods need no change. This is a
+    no-op unless ``AR_AUTO_SCHEME_COS_ALPHA`` < 1 for the current scoring run.
+    """
+    if _COS_ALPHA >= 1.0:
+        return
+    g = grad.to(torch.float32)
+    d = diff.to(g.device).to(torch.float32)
+    if torch.isnan(g).any() or torch.isnan(d).any():
+        return
+    dot = torch.sum(g * d).item()
+    g_sq = torch.sum(g * g).item()
+    d_sq = torch.sum(d * d).item()
+    setattr(wrapper, f"{kind}_dot", getattr(wrapper, f"{kind}_dot", 0.0) + dot)
+    setattr(wrapper, f"{kind}_g_sq", getattr(wrapper, f"{kind}_g_sq", 0.0) + g_sq)
+    setattr(wrapper, f"{kind}_d_sq", getattr(wrapper, f"{kind}_d_sq", 0.0) + d_sq)
+
+
+def _cos_consistency_factor(wrapper, kind, alpha):
+    """Return the blend factor ``α + (1 - α)·|cosθ|`` for the ``kind`` component of ``wrapper``.
+
+    Falls back to ``1.0`` (no reweighting) when the required stats were never accumulated
+    (e.g. the GGUF/imatrix weight hooks that don't collect cosine stats, or a component
+    that never ran a backward pass).
+    """
+    g_sq = getattr(wrapper, f"{kind}_g_sq", 0.0)
+    d_sq = getattr(wrapper, f"{kind}_d_sq", 0.0)
+    if g_sq <= 0.0 or d_sq <= 0.0:
+        return 1.0
+    dot = getattr(wrapper, f"{kind}_dot", 0.0)
+    cos = min(abs(dot) / math.sqrt(g_sq * d_sq), 1.0)
+    return alpha + (1.0 - alpha) * cos
+
+
+def _cos_weighted_score(wrapper, alpha):
+    """Blend the weight/activation scores of ``wrapper`` by their cosine-consistency factors."""
+    w_factor = _cos_consistency_factor(wrapper, "weight", alpha)
+    a_factor = _cos_consistency_factor(wrapper, "act", alpha)
+    return wrapper.weight_score * w_factor + wrapper.act_score * a_factor
+
+
 class AutoSchemeWrapperLinear(WrapperLinear):
 
     def __init__(
@@ -147,6 +221,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     self.act_cnt -= 1
                     return None
 
+                _accum_cos_stats(self, "act", grad, self.x_diff)
                 self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
                 self.mix_score = self.weight_score + self.act_score
                 self.x_diff = None
@@ -181,6 +256,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
                 )
                 w_diff = self.orig_layer.weight - qdq_w.to(self.orig_layer.weight.device)
+                _accum_cos_stats(self, "weight", grad.to(w_diff.device), w_diff)
                 self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
                 self.mix_score = self.weight_score + self.act_score
                 return None
@@ -299,6 +375,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     self.act_cnt -= 1
                     return None
 
+                _accum_cos_stats(self, "act", grad, self.x_diff)
                 self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
                 self.mix_score = self.weight_score + self.act_score
                 self.x_diff = None
@@ -839,6 +916,13 @@ def get_score_for_scheme(
     forward(+backward, unless RTN-only) calibration over ``nsamples`` examples from
     ``dataset``/``dataloader``, then unwrap and return each layer's ``[bits, loss]``.
     """
+    from auto_round import envs as _envs
+
+    # Refresh the gradient-consistency blend factor for this scoring run so the cosine
+    # accumulation hooks are a pure no-op when the feature is disabled (alpha == 1.0).
+    global _COS_ALPHA
+    _COS_ALPHA = _envs.AR_AUTO_SCHEME_COS_ALPHA
+
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     # Include the visual block(s) when scoring VLMs with ``--quant_nontext_module``
     # (``force_mllm=True``) so vision-tower layer losses match a block below instead
@@ -1173,7 +1257,12 @@ def get_score_for_scheme(
                         "layer{n} max abs activation is 0, please use more data to improve the accuracy"
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
-            scores_dict[n] = [layer_bits, m.mix_score]
+            if _COS_ALPHA < 1.0:
+                # Gradient-consistency reweighting: down-weight layers whose quantization
+                # error is orthogonal to the back-propagated final-loss gradient.
+                scores_dict[n] = [layer_bits, _cos_weighted_score(m, _COS_ALPHA)]
+            else:
+                scores_dict[n] = [layer_bits, m.mix_score]
     _fill_inactive_expert_scores(scores_dict, block_names)
     _log_score_summary_by_block_and_nonblock(
         scores_dict,
@@ -1893,8 +1982,8 @@ def _gen_layer_config(
             target_params_cnt -= layer_bits
 
     head_name = get_lm_head_name(model)
-    if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
-        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+    # if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
+    #     _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")

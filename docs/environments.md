@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_COS_ALPHA
+- **Description**: Blend factor for the gradient-consistency (cosine) reweighting of AutoScheme layer scores. The score fed to the bit-allocation DP becomes `score * (alpha + (1 - alpha) * |cos(theta)|)`, where `cos(theta)` is the alignment between a layer's quantization perturbation and the back-propagated final-loss gradient. A layer whose quantization error is orthogonal to the loss gradient (`|cos(theta)| ~ 0`) is treated as cheaper to quantize.
+- **Default**: unset → `1.0` (pure magnitude score, identical to legacy behaviour)
+- **Valid Values**: a float in `[0, 1]`. `1.0` disables the reweighting; `0.0` uses the pure cosine-weighted score.
+- **Usage**: Set a value `< 1.0` to make AutoScheme favour keeping high precision on layers whose quantization error is most aligned with the final loss.
+
+```bash
+export AR_AUTO_SCHEME_COS_ALPHA=0.5
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables

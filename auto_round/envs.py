@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     LLAMA_CPP_ROOT: Optional[str] = None
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+    AR_AUTO_SCHEME_COS_ALPHA: float = 1.0
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -39,6 +40,20 @@ def _get_optional_positive_int_env(name: str) -> Optional[int]:
         raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
     if value < 1:
         raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
+def _get_unit_interval_float_env(name: str, default: float) -> float:
+    """Read an optional env var that must be a float in the closed interval [0, 1]."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a float in [0, 1], got {raw!r}") from exc
+    if not (0.0 <= value <= 1.0):
+        raise ValueError(f"{name} must be a float in [0, 1], got {value}")
     return value
 
 
@@ -85,6 +100,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Blend factor for the gradient-consistency (cosine) reweighting of AutoScheme layer
+    # scores, in [0, 1]. The score fed to the bit-allocation DP becomes
+    # ``score * (alpha + (1 - alpha) * |cos(theta)|)`` where ``cos(theta)`` is the alignment
+    # between a layer's quantization perturbation and the back-propagated final-loss gradient.
+    #   alpha = 1 (default) -> pure magnitude score (unchanged legacy behaviour)
+    #   alpha = 0           -> pure cosine-weighted score
+    "AR_AUTO_SCHEME_COS_ALPHA": lambda: _get_unit_interval_float_env("AR_AUTO_SCHEME_COS_ALPHA", 1.0),
 }
 
 

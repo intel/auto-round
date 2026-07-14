@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_COS_ALPHA
+- **描述**：AutoScheme 层评分的梯度一致性（余弦）加权混合系数。送入比特分配 DP 的分数变为 `score * (alpha + (1 - alpha) * |cos(theta)|)`，其中 `cos(theta)` 表示某层量化扰动方向与反向传播回来的最终 loss 梯度方向的夹角一致性。若某层的量化误差与 loss 梯度正交（`|cos(theta)| ~ 0`），则被视为更“便宜”、更适合低比特量化。
+- **默认值**：未设置 → `1.0`（纯幅值分数，与旧版行为完全一致）
+- **有效值**：`[0, 1]` 区间内的浮点数。`1.0` 关闭该加权；`0.0` 使用纯余弦加权分数。
+- **用途**：设为 `< 1.0` 时，AutoScheme 会更倾向于对“量化误差与最终 loss 最一致”的层保留高精度。
+
+```bash
+export AR_AUTO_SCHEME_COS_ALPHA=0.5
+```
+
 ## 使用示例
 
 ### 设置环境变量
