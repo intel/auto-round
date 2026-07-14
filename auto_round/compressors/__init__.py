@@ -21,13 +21,11 @@ if TYPE_CHECKING:
     from auto_round.compressors.data_driven import DataDrivenCompressor
     from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
     from auto_round.compressors.model_free import ModelFreeCompressor
-    from auto_round.compressors.zero_shot import ZeroShotCompressor
 
 __all__ = [
     "AutoRound",
     "BaseCompressor",
     "DataDrivenCompressor",
-    "ZeroShotCompressor",
     "AutoRoundCompatible",
     "ModelFreeCompressor",
 ]
@@ -50,9 +48,10 @@ def __getattr__(name):
 
         return DataDrivenCompressor
     elif name == "ZeroShotCompressor":
-        from auto_round.compressors.zero_shot import ZeroShotCompressor
+        # Backward compatibility: ZeroShotCompressor is now merged into DataDrivenCompressor
+        from auto_round.compressors.data_driven import DataDrivenCompressor
 
-        return ZeroShotCompressor
+        return DataDrivenCompressor
     elif name == "ModelFreeCompressor":
         from auto_round.compressors.model_free import ModelFreeCompressor
 

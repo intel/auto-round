@@ -43,11 +43,14 @@ from auto_round.utils import (
     convert_module_to_hp_if_necessary,
     flatten_list,
     get_block_names,
+    get_lm_head_name,
     get_module,
+    global_state,
     is_auto_device_mapping,
     memory_monitor,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
+    set_module,
     to_device,
 )
 from auto_round.utils.device import (
@@ -58,7 +61,6 @@ from auto_round.wrapper import WrapperMultiblock
 
 
 class DataDrivenCompressor(BaseCompressor):
-    need_calib: bool = True
 
     def __init__(
         self,
@@ -92,6 +94,67 @@ class DataDrivenCompressor(BaseCompressor):
         # Set after ``super().__init__()`` because the state object is created there.
         self.dataset = dataset
 
+    @property
+    def need_calib(self) -> bool:
+        """Whether this compressor instance actually needs calibration data.
+
+        Returns True when imatrix/opt-rtn is enabled, activation calibration is
+        needed (e.g. act_dynamic=False with NV FP types), or an AutoScheme is in
+        use.  Returns False for pure zero-shot RTN cases.
+        """
+        # During early __init__ quantize_config may not exist yet — default to True.
+        if not hasattr(self, "quantize_config") or self.quantize_config is None:
+            return True
+        return self._needs_calibration_data()
+
+    def _needs_calibration_data(self) -> bool:
+        """Determine whether calibration data is truly required.
+
+        Calibration data IS required when:
+        - imatrix optimization is enabled (enable_imatrix=True)
+        - Static activation quantization is needed (act_dynamic=False with NV FP)
+        - AutoScheme is being used (needs delta-loss evaluation)
+        - The quantizer uses iterative optimization (iters > 0, i.e., SignRound)
+
+        Otherwise, zero-shot (RTN) quantization can proceed without data.
+        """
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+        qcfg = self.quantize_config
+        if qcfg is None:
+            return True
+
+        # SignRound always needs data
+        if not isinstance(qcfg, RTNConfig):
+            return True
+
+        # AutoScheme needs data for delta-loss scheme selection
+        if isinstance(self.scheme, AutoScheme):
+            return True
+
+        # imatrix optimization needs data
+        if isinstance(qcfg, RTNConfig) and getattr(qcfg, "disable_opt_rtn", False):
+            return True
+
+        # Check if activation calibration is needed
+        from auto_round.compressors.utils import check_need_act_calibration
+
+        act_bits = getattr(qcfg, "act_bits", None)
+        act_data_type = getattr(qcfg, "act_data_type", None)
+        act_dynamic = getattr(qcfg, "act_dynamic", None)
+        is_act_quantize = act_bits is not None and act_bits <= 8
+        if is_act_quantize and check_need_act_calibration(
+            act_dynamic,
+            act_data_type,
+            act_bits if act_bits is not None else 16,
+            static_kv_dtype=getattr(self, "static_kv_dtype", None),
+            static_attention_dtype=getattr(self, "static_attention_dtype", None),
+        ):
+            return True
+
+        return False
+
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
 
@@ -102,7 +165,7 @@ class DataDrivenCompressor(BaseCompressor):
         if self._post_init_done:
             return
         super().post_init()
-        if self.calibration is None:
+        if self.need_calib and self.calibration is None:
             from auto_round.calibration import get_calibrator
 
             kind = self._get_calibrator_kind()
@@ -173,47 +236,7 @@ class DataDrivenCompressor(BaseCompressor):
             first_input_name=first_input_name,
         )
 
-    def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
-        # Thin wrapper around auto_round.calibration.inputs.split_inputs.
-        from auto_round.calibration.inputs import split_inputs
 
-        return split_inputs(
-            inputs,
-            first_input_name,
-            is_diffusion=self.model_context.is_diffusion,
-            shared_cache_keys=self.model_context.shared_cache_keys,
-        )
-
-    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
-        """Replay captured decoding-layer calls to populate ``self.inputs``.
-
-        Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
-        input hook into the ``self.inputs`` dict format expected by
-        :meth:`quantize_block`.  The logic mirrors the old-arch implementation in
-        ``compressors/base.py``.
-
-        Args:
-            decoding_layer_inputs:
-                A list of entries captured by a forward hook on the decoding layer.
-                Each element is a tuple whose first item is ``(args, kwargs)``.
-        """
-        first_block_name = self.quant_block_list[0][0]
-
-        class _FakeDecodingLayer(torch.nn.Module):
-
-            def forward(self, *args, **kwargs):
-                return args, kwargs
-
-        fake_layer = _FakeDecodingLayer()
-        fake_layer.orig_forward = fake_layer.forward
-        fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
-        fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
-
-        self.inputs = {}
-        self.last_cache_name = None
-        for step_input in decoding_layer_inputs:
-            args, kwargs = step_input[0]
-            fake_layer(*args, **kwargs)
 
     def _quantize_blocks(
         self,
@@ -324,9 +347,9 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Infrastructure: swap q_input ──────────────────────────────────
             if q_input is not None:
                 if input_ids is not q_input:
-                    clear_memory(input_ids, device_list=device_manager.device_list)
+                    clear_memory(input_ids)
                 else:
-                    clear_memory(device_list=device_manager.device_list)
+                    clear_memory()
                 input_ids = q_input
 
             # ── Pipeline lifecycle: pre_quantize_block (stats consolidation + weight transforms) ──
@@ -412,6 +435,131 @@ class DataDrivenCompressor(BaseCompressor):
         The quantized model and layer configurations.
         """
         self.post_init()
+
+        if not self.need_calib:
+            return self._quantize_zero_shot()
+
+        return self._quantize_data_driven()
+
+    @torch.no_grad()
+    def _quantize_zero_shot(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Zero-shot (RTN) quantization path — no calibration data needed.
+
+        This replaces the standalone ``ZeroShotCompressor.quantize()`` method.
+        Block-wise RTN quantization without any input data.
+        """
+        from auto_round.algorithms.pipeline import BlockContext
+
+        formats = self.formats if isinstance(self.formats, list) else []
+        if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
+            self.quantizer.quantize_embedding_layer()  # leave to gguf itself to handle
+
+        # Release memory
+        clear_memory()
+
+        # In RTN mode (iters == 0), force blockwise quantization to avoid
+        # full-model materialization and linear CPU RAM growth.
+        use_blockwise_quantization = True
+        logger.info(
+            "Zero-shot mode (no calibration data needed): using blockwise quantization."
+        )
+
+        tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
+        if tied_weights_keys is None:
+            tied_weights_keys = []
+        if isinstance(tied_weights_keys, dict):
+            tied_weights_values = list(tied_weights_keys.values())
+        else:
+            tied_weights_values = list(tied_weights_keys)
+        tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
+        # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
+        if getattr(self, "formats", None) and self.formats[0].is_gguf():
+            lm_head_name = get_lm_head_name(self.model)
+            if lm_head_name is not None:
+                tied_weights_layers.append(lm_head_name)
+
+        all_blocks = self.quant_block_list or get_block_names(self.model)
+        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+        for block_names in all_blocks:
+            for block_name in block_names:
+                pbar.set_description(f"Quantizing {block_name}")
+                block = get_module(self.model, block_name)
+
+                # ── Infrastructure: materialize ───────────────────────────
+                materialize_model_(block)
+
+                # ── Pure algorithm ────────────────────────────────────────
+                ctx = BlockContext(
+                    model=self.model_context.model,
+                    block=block,
+                    block_names=[block_name],
+                    block_name=block_name,
+                    block_index=0,
+                    device=device_manager.device,
+                )
+                self.quantizer.quantize_block(block, None, {}, None, None, ctx)
+
+                # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+                if is_nv_fp(self.act_data_type) or not self.act_dynamic:
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+                # ── Infrastructure: shard write / device cleanup ──────────
+                if self.compress_context.is_immediate_saving:
+                    # Save non-quantized leaf modules (e.g. norms, embeddings in block).
+                    for _n, m in block.named_modules():
+                        if (
+                            not any(m.children())
+                            and len(m.state_dict()) > 0
+                            and hasattr(m, "global_name")
+                            and m.global_name not in tied_weights_layers
+                            and not check_to_quantized(m)
+                        ):
+                            set_module(self.model, m.global_name, copy.deepcopy(m))
+                            self.shard_writer.write(name=m.global_name)
+                            get_module(self.model, m.global_name).to("meta")
+                            m.to("meta")
+                    # Write at block scope for any remaining params/buffers.
+                    self.shard_writer.write(name=block_name)
+                    block.to("meta")
+                else:
+                    mv_module_from_gpu(block)
+                    if self.low_cpu_mem_usage:
+                        self._offloader(self.model, block_name)
+
+                clear_memory(device_list=self.device_list)
+                memory_monitor.log_summary()
+                pbar.update(1)
+
+        cnt = 1
+        remain_layer_names = []
+        block_name_set = set(name for block in all_blocks for name in block)
+        for n, m in self.model_context.model.named_modules():
+            if not check_to_quantized(m):
+                continue
+            # Skip if this layer is part of any block (by prefix match)
+            if any(n == block_name or n.startswith(f"{block_name}.") for block_name in block_name_set):
+                continue
+            remain_layer_names.append(n)
+        for name in remain_layer_names:
+            logger.info(f"Quantizing remaining layer {name} on CPU.")
+            self.quantizer.quantize_layer(name)
+            cnt += 1
+            if cnt % 10 == 0:
+                clear_memory(device_list=self.device_list)
+                memory_monitor.log_summary()
+
+        # Convert remaining fp8
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        if self.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
+        if self.compress_context.is_immediate_saving:
+            self.shard_writer.write(is_finalize=True)
+
+        self.model_context.quantized = True
+        return self.model, self.layer_config
+
+    def _quantize_data_driven(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Data-driven quantization path — uses calibration data for optimization."""
 
         # Reclaim heap fragmentation from init/post_init before the memory-intensive quantize loop.
         gc.collect()
@@ -693,15 +841,9 @@ class DataDrivenCompressor(BaseCompressor):
     ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
 
-        This method is the new-arch equivalent of the old ``BaseCompressor.quantize_block``
-        (see ``compressors/base.py``).  It is primarily consumed by LLM-Compressor:
-        https://github.com/vllm-project/llm-compressor/pull/1994
-
-        The method normalizes the raw decoding-layer inputs provided by LLM-Compressor,
-        runs the full infrastructure pipeline (device placement, act-max collection,
-        reference-output caching) for the given *block*, delegates the pure-algorithm
-        weight optimization to ``self.quantizer.quantize_block``, then returns the
-        quantized-block outputs.
+        This method handles both data-driven and zero-shot (RTN) quantization.
+        When calibration data is not needed, ``inputs`` and ``q_input`` are accepted
+        for interface compatibility but not used for algorithm purposes.
 
         Args:
             block: The transformer block (decoder layer) to quantize.
@@ -726,6 +868,39 @@ class DataDrivenCompressor(BaseCompressor):
             ``enable_quanted_input`` is ``False``), and *reference_output* is the
             full-precision reference output collected before optimization.
         """
+
+        def normalize_decoding_layer_inputs_(self,
+                                             decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
+            """Replay captured decoding-layer calls to populate ``self.inputs``.
+
+            Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
+            input hook into the ``self.inputs`` dict format expected by
+            :meth:`quantize_block`.  The logic mirrors the old-arch implementation in
+            ``compressors/base.py``.
+
+            Args:
+                decoding_layer_inputs:
+                    A list of entries captured by a forward hook on the decoding layer.
+                    Each element is a tuple whose first item is ``(args, kwargs)``.
+            """
+            first_block_name = self.quant_block_list[0][0]
+
+            class _FakeDecodingLayer(torch.nn.Module):
+
+                def forward(self, *args, **kwargs):
+                    return args, kwargs
+
+            fake_layer = _FakeDecodingLayer()
+            fake_layer.orig_forward = fake_layer.forward
+            fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
+            fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
+
+            self.inputs = {}
+            self.last_cache_name = None
+            for step_input in decoding_layer_inputs:
+                args, kwargs = step_input[0]
+                fake_layer(*args, **kwargs)
+
         from auto_round.calibration.state import CalibrationState
 
         if self.diffusion:
@@ -737,6 +912,31 @@ class DataDrivenCompressor(BaseCompressor):
         # quantizer, layer_config, etc.).
         if not self._post_init_done:
             self.post_init()
+
+        # ── Zero-shot (RTN) path: no calibration data needed ──────────────────
+        if not self.need_calib:
+            from auto_round.algorithms.pipeline import BlockContext
+
+            materialize_model_(block)
+            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+            block = block.to(device)
+
+            ctx = BlockContext(
+                model=self.model_context.model,
+                block=block,
+                block_names=[getattr(block, "global_name", "")],
+                block_name=getattr(block, "global_name", ""),
+                block_index=0,
+                device=device,
+            )
+            self.quantizer.quantize_block(block, None, {}, None, None, ctx)
+
+            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
+                set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+            mv_module_from_gpu(block)
+            return None, None
 
         if len(self.quant_block_list) != 1 or len(self.quant_block_list[0]) != 1:
             raise ValueError(
@@ -809,46 +1009,6 @@ class DataDrivenCompressor(BaseCompressor):
             # bs = self.batch_size * self.quantizer.infer_bs_coeff
             bs = self.calibration_state.batch_size  # TODO wenhuach add infer_bs_coeff
 
-            if not hasattr(self.quantizer, "create_block_io"):
-                if q_input is None:
-                    hook_handles = self.quantizer.register_calibration_hooks(block)
-                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                    for h in hook_handles:
-                        h.remove()
-                else:
-                    reference_output = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                    hook_handles = self.quantizer.register_calibration_hooks(block)
-                    if hook_handles:
-                        self.quantizer._get_block_outputs(block, q_input, input_others, bs, save_output=False)
-                    for h in hook_handles:
-                        h.remove()
-                    if input_ids is not q_input:
-                        clear_memory(input_ids, device_list=device_manager.device_list)
-                    else:
-                        clear_memory(device_list=device_manager.device_list)
-                    input_ids = q_input
-
-                self.quantizer.quantize_block(
-                    block,
-                    input_ids,
-                    input_others,
-                    reference_output,
-                    q_input,
-                    block_ctx=None,  # legacy path: no BlockContext
-                )
-
-                if is_nv_fp(self.act_data_type) or not self.act_dynamic:
-                    set_amax_for_all_moe_layers(block, attr_name="act_max")
-
-                if self.quantizer.enable_quanted_input:
-                    q_outputs = self.quantizer._get_block_outputs(block, input_ids, input_others, bs)
-                else:
-                    q_outputs = None
-
-                if len(device_manager.device_list) > 1:
-                    accelerate.hooks.remove_hook_from_submodules(block)
-                mv_module_from_gpu(block)
-                return q_outputs, reference_output
 
             from auto_round.algorithms.pipeline import BlockContext, InputSource
 

@@ -148,7 +148,7 @@ class TestAutoRoundCPU:
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="cpu")
-        dataloader, template, truncation, batch_size, gradient_accumulate_steps, seqlen, nsamples = get_mllm_dataloader(
+        dataloader, template, truncation, batch_size, seqlen, nsamples = get_mllm_dataloader(
             template=None,
             model=model,
             tokenizer=tokenizer,

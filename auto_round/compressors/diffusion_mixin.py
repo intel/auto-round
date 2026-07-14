@@ -33,14 +33,13 @@ class DiffusionMixin:
     """Diffusion-specific functionality mixin.
 
     This mixin adds diffusion model-specific functionality to any compressor
-    (DataDrivenCompressor, ZeroShotCompressor, ImatrixCompressor, etc). It handles
+    (DataDrivenCompressor, ImatrixCompressor, etc). It handles
     diffusion models (like Stable Diffusion, FLUX) that require special pipeline
     handling and data generation logic.
 
     Can be combined with:
-    - DataDrivenCompressor (for AutoRound with calibration)
+    - DataDrivenCompressor (for AutoRound with calibration, or basic RTN)
     - ImatrixCompressor (for RTN with importance matrix)
-    - ZeroShotCompressor (for basic RTN)
 
     Diffusion-specific parameters:
         guidance_scale: Control how much image generation follows text prompt

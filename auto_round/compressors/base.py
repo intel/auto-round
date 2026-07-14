@@ -283,7 +283,7 @@ class BaseCompressor(object):
 
         # Calibrator strategy (auto_round.calibration.base.Calibrator).  Constructed
         # lazily by ``DataDrivenCompressor.post_init`` based on ``_get_calibrator_kind()``;
-        # remains ``None`` for ``ZeroShotCompressor`` (RTN does not need data).
+        # remains ``None`` when calibration data is not needed (RTN zero-shot path).
         self.calibration = None
 
         self.formats = format

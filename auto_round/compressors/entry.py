@@ -18,7 +18,6 @@ from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.utils import check_need_act_calibration
-from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.device_manager import normalize_default_device_map
@@ -300,11 +299,17 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     if enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme):
         if not isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = OptimizedRTNConfig
-        return DataDrivenCompressor
 
     if isinstance(quant_config, OptimizedRTNConfig):
-        quant_config.__class__ = RTNConfig
-    return ZeroShotCompressor
+        pass  # keep OptimizedRTNConfig as-is
+    elif not (enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme)):
+        # Pure zero-shot RTN: downgrade to basic RTNConfig
+        if isinstance(quant_config, OptimizedRTNConfig):
+            quant_config.__class__ = RTNConfig
+
+    # Always use DataDrivenCompressor — it internally detects whether calibration
+    # data is needed and falls back to the zero-shot (RTN) path when it is not.
+    return DataDrivenCompressor
 
 
 class AutoRound(object):
