@@ -967,7 +967,7 @@ class DataDrivenCompressor(BaseCompressor):
                 # ``batch_dim``.
                 self.calibration_state = inputs
             else:
-                self.normalize_decoding_layer_inputs_(inputs)
+                normalize_decoding_layer_inputs_(self, inputs)
             block_inputs = self.inputs[self.quant_block_list[0][0]]
             input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
 
