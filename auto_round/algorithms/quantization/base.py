@@ -127,7 +127,7 @@ class BaseQuantizer(BasePipelineMember):
         return self.model_context.model if self.model_context is not None else None
 
     @property
-    def amp(self) -> bool:
+    def amp(self) -> bool: # TODO wenhuach move to block forward
         return getattr(self.model_context, "amp", False)
 
     @property
@@ -348,7 +348,6 @@ class BaseQuantizer(BasePipelineMember):
             except Exception:
                 raise
         set_module(self.model, layer_name, layer)
-        # self._immediate_pack_and_save_module(layer_name)  # TODO wenhuach should not handle it here
 
 
 

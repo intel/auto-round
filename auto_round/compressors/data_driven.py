@@ -60,7 +60,7 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
-class DataDrivenCompressor(BaseCompressor):
+class DataDrivenCompressor(BaseCompressor): #TODO rename this to Compressor
 
     def __init__(
         self,
@@ -133,8 +133,8 @@ class DataDrivenCompressor(BaseCompressor):
         if isinstance(self.scheme, AutoScheme):
             return True
 
-        # imatrix optimization needs data
-        if isinstance(qcfg, RTNConfig) and getattr(qcfg, "disable_opt_rtn", False):
+        # opt-rtn (imatrix optimization) needs data when enabled
+        if isinstance(qcfg, RTNConfig) and not getattr(qcfg, "disable_opt_rtn", False):
             return True
 
         # Check if activation calibration is needed
@@ -364,7 +364,7 @@ class DataDrivenCompressor(BaseCompressor):
         q_input: torch.Tensor | None = None,
         nblocks: int = 1,
         pbar: tqdm | None = None,
-        input_others_extra_blocks: dict |None = None,
+        input_others_extra_blocks: dict | None = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -495,7 +495,7 @@ class DataDrivenCompressor(BaseCompressor):
             if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                 set_amax_for_all_moe_layers(m, attr_name="act_max")
 
-            update_block_global_scale_if_needed(model,self.data_type,self.group_size)
+            update_block_global_scale_if_needed(model, self.data_type, self.group_size)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
             self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others, reference_output, q_input, ctx)
@@ -503,8 +503,6 @@ class DataDrivenCompressor(BaseCompressor):
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────
             for pre in self.pipeline.preprocessors:
                 pre.post_quantize_block(ctx)
-
-
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
@@ -525,7 +523,7 @@ class DataDrivenCompressor(BaseCompressor):
             # enabled) is only used as the quantized-input companion for the
             # next block.
             next_input_ids = reference_output
-            clear_memory(input_ids if input_ids is not next_input_ids else None, device_list=device_manager.device_list)
+            clear_memory(input_ids if input_ids is not next_input_ids else None)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
@@ -640,6 +638,17 @@ class DataDrivenCompressor(BaseCompressor):
 
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
                 self.quantizer.quantize_block(block, None, {}, None, None, ctx)
+                if self.compress_context.is_immediate_packing:
+                    for _n, _mod in block.named_modules():
+                        if hasattr(_mod, "bits") and check_to_quantized(_mod):
+                            from auto_round.compressors.utils import immediate_pack as _immediate_pack
+
+                            module_name = getattr(_mod, "global_name", None)
+                            if module_name is None and self.nblocks == 1 and _n:
+                                module_name = f"{block.global_name}.{_n}"
+                            if module_name is None:
+                                continue
+                            _immediate_pack(module_name, self.quantizer.layer_config)
 
                 # ── Infrastructure: shard write / device cleanup ──────────
                 if self.compress_context.is_immediate_saving:
@@ -664,7 +673,7 @@ class DataDrivenCompressor(BaseCompressor):
                     if self.low_cpu_mem_usage:
                         self._offloader(self.model, block_name)
 
-                clear_memory(device_list=self.device_list)
+                clear_memory()
                 memory_monitor.log_summary()
                 pbar.update(1)
 
@@ -680,10 +689,10 @@ class DataDrivenCompressor(BaseCompressor):
             remain_layer_names.append(n)
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
-            self.quantizer.quantize_layer(name)
+            self.quantizer.quantize_layer_outside_block(name)
             cnt += 1
             if cnt % 10 == 0:
-                clear_memory(device_list=self.device_list)
+                clear_memory()
                 memory_monitor.log_summary()
 
         # Convert remaining fp8
@@ -779,7 +788,6 @@ class DataDrivenCompressor(BaseCompressor):
         for alg in self.pipeline.all():
             alg.prepare_run(self)
 
-
         for block_names in all_blocks:
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -823,7 +831,6 @@ class DataDrivenCompressor(BaseCompressor):
         # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
         for alg in self.pipeline.all():
             alg.finalize_run(self)
-
 
         pbar.set_description("Quantizing done")
         pbar.close()
@@ -921,7 +928,7 @@ class DataDrivenCompressor(BaseCompressor):
                         )
                         layer_names.remove(layer_name)
                         continue
-                self.quantizer.quantize_layer_outside_block( #TODO check alg merge
+                self.quantizer.quantize_layer_outside_block(  # TODO check alg merge
                     layer_name,
                     input_ids=None,
                     device=device_manager.device,
@@ -1234,7 +1241,6 @@ class DataDrivenCompressor(BaseCompressor):
                 clear_memory(device_list=device_manager.device_list)
             input_ids = q_input
 
-
         # ── Pure algorithm: block_quantizer.quantize_block ────────────────────
         self.pipeline.block_quantizer.quantize_block(block, input_ids, input_others, reference_output, q_input, ctx)
 
@@ -1258,5 +1264,3 @@ class DataDrivenCompressor(BaseCompressor):
         mv_module_from_gpu(block)
         self.model_context.is_mllm = orig_is_mllm
         return q_outputs, reference_output
-
-
