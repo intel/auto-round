@@ -375,22 +375,23 @@ class SignRoundQuantizer(BaseQuantizer):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        static_kv_dtype = self.compress_context.static_kv_dtype
-        static_attention_dtype = self.compress_context.static_attention_dtype
-        if self.config.is_act_quantize and check_need_act_calibration(
-            self.config.act_dynamic,
-            self.config.act_data_type,
-            self.config.act_bits,
-            static_kv_dtype,
-            static_attention_dtype,
-        ):
-            tmp_inputs = q_inputs if q_inputs is not None else input_ids
-            hook_handles = self._register_act_max_hooks(layer)
-            with torch.no_grad():
-                for input in tmp_inputs:
-                    layer(input)
-            for handle in hook_handles:
-                handle.remove()
+        #TODO have a check wenhuach
+        # static_kv_dtype = self.compress_context.static_kv_dtype
+        # static_attention_dtype = self.compress_context.static_attention_dtype
+        # if self.config.is_act_quantize and check_need_act_calibration(
+        #     self.config.act_dynamic,
+        #     self.config.act_data_type,
+        #     self.config.act_bits,
+        #     static_kv_dtype,
+        #     static_attention_dtype,
+        # ):
+        #     tmp_inputs = q_inputs if q_inputs is not None else input_ids
+        #     hook_handles = self._register_act_max_hooks(layer)
+        #     with torch.no_grad():
+        #         for input in tmp_inputs:
+        #             layer(input)
+        #     for handle in hook_handles:
+        #         handle.remove()
 
         wrapper_linear = WrapperLinear(
             layer,

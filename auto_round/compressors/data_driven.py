@@ -111,12 +111,11 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         """Determine whether calibration data is truly required.
 
         Calibration data IS required when:
-        - imatrix optimization is enabled (enable_imatrix=True)
         - Static activation quantization is needed (act_dynamic=False with NV FP)
         - AutoScheme is being used (needs delta-loss evaluation)
         - The quantizer uses iterative optimization (iters > 0, i.e., SignRound)
 
-        Otherwise, zero-shot (RTN) quantization can proceed without data.
+        Otherwise, zero-shot (RTN/opt-RTN) quantization can proceed without data.
         """
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -134,7 +133,11 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             return True
 
         # opt-rtn (imatrix optimization) needs data when enabled
-        if isinstance(qcfg, RTNConfig) and not getattr(qcfg, "disable_opt_rtn", False):
+        from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
+
+        if isinstance(qcfg, OptimizedRTNConfig):
+            return True
+        if isinstance(qcfg, RTNConfig) and getattr(qcfg, "disable_opt_rtn", None) is False:
             return True
 
         # Check if activation calibration is needed
@@ -1065,6 +1068,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             fake_layer = _FakeDecodingLayer()
             fake_layer.orig_forward = fake_layer.forward
             fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
+            self.post_init() # To cteate calibration
             fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
 
             self.inputs = {}

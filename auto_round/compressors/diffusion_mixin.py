@@ -67,6 +67,9 @@ class DiffusionMixin:
         self.generator_seed = generator_seed
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
+        # Default dataset for diffusion models is "coco2014", not "NeelNanda/pile-10k"
+        kwargs.setdefault("dataset", "coco2014")
+
         iters = kwargs.get("iters", None)
         _alg_cfg = args[0] if args else None
         if iters is None and _alg_cfg is not None:
