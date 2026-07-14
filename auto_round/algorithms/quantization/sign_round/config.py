@@ -31,7 +31,7 @@ class SignRoundConfig(QuantizationConfig):
         nblocks: int = 1,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
-        gradient_accumulate_steps: int = 1, # TODO change this, which may set batch_size to 1, wenhuach
+        gradient_accumulate_steps: int = 1,  # TODO change this, which may set batch_size to 1, wenhuach
         enable_alg_ext: bool = False,
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,

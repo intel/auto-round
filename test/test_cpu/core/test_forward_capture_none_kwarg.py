@@ -9,7 +9,7 @@ to an empty list before appending.
 from functools import partial
 from types import SimpleNamespace
 
-import torch ##TODO need to revert wenhuach
+import torch  # #TODO need to revert wenhuach
 
 from auto_round.calibration.hooks import make_block_forward_func
 
@@ -79,7 +79,7 @@ def test_none_then_tensor_kwarg_batch_size_1():
         3. Second forward call delivers a real Tensor for ``optional_mask``
            — must not raise ``AttributeError``.
     """
-    return # TODO wenhuach
+    return  # TODO wenhuach
     state = _make_state(batch_size=1)
     name = "decoder.layers.0"
     module = _attach_capture(state, name, _FakeModule())
@@ -95,6 +95,7 @@ def test_none_then_tensor_kwarg_batch_size_1():
     stored = state.inputs[name].get("optional_mask")
     assert isinstance(stored, list), f"expected list, got {type(stored)}"
     assert len(stored) == 1
+
 
 #
 # def test_none_then_tensor_kwarg_batch_size_gt1():

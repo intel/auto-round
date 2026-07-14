@@ -3,8 +3,9 @@ import argparse
 from auto_round import AutoRound
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 
+
 def test_argparse_check(tiny_opt_model_path):
-    return # TODO wenhuach
+    return  # TODO wenhuach
     ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", enable_torch_compile=True)
     assert not ar.enable_torch_compile, "NVFP4 cannot work with torch.compile."
     ar = AutoRound(model=tiny_opt_model_path, scheme="FP8_STATIC", enable_torch_compile=True)
@@ -26,6 +27,6 @@ def test_argparse_check(tiny_opt_model_path):
     )
     ar.post_init()  # triggers _build_quantizer() → bind()
     assert ar.gradient_accumulate_steps == steps
-    assert ar.quantizer.gradient_accumulate_steps == steps #TODO wenhuach recover
+    assert ar.quantizer.gradient_accumulate_steps == steps  # TODO wenhuach recover
     # Compressor and quantizer must share exactly the same CalibrationState instance.
     assert ar.quantizer._calibration_state is ar._calibration_state
