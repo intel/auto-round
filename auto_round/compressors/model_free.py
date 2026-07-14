@@ -2455,6 +2455,31 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             len(fp16_layers),
         )
 
+    def _precheck_auto_scheme_fallback(self, format: str) -> bool:
+        """Early fallback check for model-free + AutoScheme.
+
+        This avoids spending time on delta-loss AutoScheme selection when the
+        requested export format is known to be incompatible with the resolved
+        AutoScheme option family.
+        """
+        if not _looks_like_auto_scheme(self.scheme_input):
+            return False
+
+        family = _validate_auto_scheme_options(self.scheme_input)
+        accepted_formats = {"auto_round", "auto_round:auto_gptq"}
+        if family == "mx_fp":
+            accepted_formats = {"llm_compressor"}
+
+        if format not in accepted_formats:
+            logger.warning(
+                "Format '%s' is incompatible with model-free + AutoScheme (family=%s); "
+                "fallback before running AutoScheme scoring.",
+                format,
+                family,
+            )
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # AutoRound compressor interface
     # ------------------------------------------------------------------
@@ -2467,6 +2492,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
+        # Early fallback gate for model-free + AutoScheme: avoid running
+        # costly delta-loss selection when format is known incompatible.
+        if self._precheck_auto_scheme_fallback(format):
+            return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+
         # AutoScheme: run delta-loss selection first so the effective scheme /
         # data-type family (which drives the accepted export formats) is known.
         if _looks_like_auto_scheme(self.scheme_input):
