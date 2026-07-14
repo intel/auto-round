@@ -24,20 +24,7 @@ class BasePipelineMember:
 
     model_context = None
     compress_context = None
-    # _scheme_context_fields = set(QuantizationScheme.get_attributes())
-    # bits: int | None #TODO deleted wenhuach
-    # group_size: int | tuple | None
-    # sym: bool | None
-    # data_type: str | None
-    # act_bits: int | None
-    # act_group_size: int | None
-    # act_sym: bool | None
-    # act_data_type: str | None
-    # act_dynamic: bool | None
-    # super_bits: int | None
-    # super_group_size: int | None
-    # super_sym: bool | None
-    # scale_dtype: str | None
+
 
     def __init__(self, config: Any = None) -> None:
         self.config = config  # TODO wenhuach may be deleted
@@ -62,11 +49,6 @@ class BasePipelineMember:
         """Model-level preparation called once before block iteration starts."""
         return
 
-    def get_act_calib_policy(self, ctx: Any) -> Any:  # TODO refine
-        """Return the activation calibration policy for this block."""
-        from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
-
-        return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
 
     def register_fp_input_forward_hooks(self, block: Any) -> list:
         """Register hooks for the FP-input reference forward pass.

@@ -187,9 +187,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
         )
-        if self.config.is_nv_fp:
-            for module in block.modules():
-                update_fused_layer_global_scales(module)
+
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():

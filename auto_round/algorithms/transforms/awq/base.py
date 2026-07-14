@@ -35,11 +35,6 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.pipeline import (
-    ActCalibPolicy,
-    CalibTiming,
-    InputSource,
-)
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
@@ -204,12 +199,6 @@ class AWQTransform(BaseWeightTransformer):
         )
         self._finalized = False
 
-    def get_act_calib_policy(self, ctx: "BlockContext"):
-        """AWQ W4A16 (weight-only): no activation calibration needed."""
-        # AWQ pre-processing does not collect act-calib stats; that is the
-        # block_quantizer's concern.  For W8A8/static activation, a post-smooth
-        # forward may be needed — handled via the block_quantizer's policy.
-        return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
 
     def register_fp_input_forward_hooks(self, block) -> list:
         """Register AWQ activation-stats and parent-kwargs hooks.

@@ -55,7 +55,6 @@ class BaseQuantizer(BasePipelineMember):
 
     Lifecycle hooks to override as needed:
         - :meth:`prepare_run`                – model-level setup (once before all blocks)
-        - :meth:`get_act_calib_policy`       – activation calibration policy
         - :meth:`block_forward_hooks`        – register act-calib hooks (context manager)
         - :meth:`quantize_block`             – **must override**: quantize a single block
         - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
@@ -217,19 +216,6 @@ class BaseQuantizer(BasePipelineMember):
         return handles
 
 
-    def get_act_calib_policy(self, ctx: Any) -> Any:
-        """Return the activation calibration policy for this block.
-
-        Default: ``WITH_REFERENCE + FP_CACHE``, or ``QUANTIZED_INPUT`` when
-        ``enable_quanted_input=True`` and a quantized previous-block output is available.
-        """
-        from auto_round.algorithms.pipeline import ActCalibPolicy, CalibTiming, InputSource
-
-        # if ctx.has_quantized_inputs() and self.enable_quanted_input:
-        #     return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
-        if self.enable_quanted_input:  # TODO wenhuach check whether need has_quantized_inputs
-            return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.QUANTIZED_INPUT)
-        return ActCalibPolicy(when=CalibTiming.WITH_REFERENCE, source=InputSource.FP_CACHE)
 
     # ── Embedding quantization ────────────────────────────────────────────────────
 
@@ -421,29 +407,9 @@ class BaseQuantizer(BasePipelineMember):
             except Exception:
                 raise
         set_module(self.model, layer_name, layer)
-        self._immediate_pack_and_save_module(layer_name)  # TODO wenhuach should not handle it here
+        # self._immediate_pack_and_save_module(layer_name)  # TODO wenhuach should not handle it here
 
-    def _immediate_pack_and_save_module(self, module_name):
-        from auto_round.compressors.shard_writer import ShardWriter
 
-        shard_writer = ShardWriter.get_shard_writer()
-        to_cpu = self.compress_context.low_gpu_mem_usage
-        module = get_module(self.model, module_name)
-        if self.compress_context.is_immediate_packing:
-            immediate_pack(module_name, self.layer_config)
-            if to_cpu:
-                module = module.to("cpu")
-                packed_module = get_module(self.model, module_name)
-                set_module(self.model, module_name, packed_module.to("cpu"))
-        else:
-            if to_cpu:
-                module = module.to("cpu")
-            set_module(self.model, module_name, module)
-        if self.compress_context.is_immediate_saving:
-            module = get_module(self.model, module_name)
-            module.to("cpu")
-            shard_writer.write(module, module_name, False)
-            module.to("meta")
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.

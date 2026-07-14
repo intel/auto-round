@@ -32,6 +32,7 @@ from auto_round.compressors.utils import (
     is_act_static,
     is_nv_fp,
 )
+from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.utils import (
@@ -421,6 +422,11 @@ class DataDrivenCompressor(BaseCompressor):
                     clear_memory()
                 input_ids = q_input
 
+            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
+                set_amax_for_all_moe_layers(m, attr_name="act_max")
+
+            update_block_global_scale_if_needed(model,self.data_type,self.group_size)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
             self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others, reference_output, q_input, ctx)
@@ -429,9 +435,7 @@ class DataDrivenCompressor(BaseCompressor):
             for pre in self.pipeline.preprocessors:
                 pre.post_quantize_block(ctx)
 
-            # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-            if is_nv_fp(self.act_data_type) or not self.act_dynamic:
-                set_amax_for_all_moe_layers(m, attr_name="act_max")
+
 
             # ── Infrastructure: collect q_outputs if needed ───────────────────
             if self.pipeline.block_quantizer.enable_quanted_input:
@@ -561,11 +565,12 @@ class DataDrivenCompressor(BaseCompressor):
                     block_index=0,
                     device=device_manager.device,
                 )
-                self.quantizer.quantize_block(block, None, {}, None, None, ctx)
-
                 # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                 if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+                update_block_global_scale_if_needed(block, self.data_type, self.group_size)
+                self.quantizer.quantize_block(block, None, {}, None, None, ctx)
 
                 # ── Infrastructure: shard write / device cleanup ──────────
                 if self.compress_context.is_immediate_saving:
@@ -755,7 +760,7 @@ class DataDrivenCompressor(BaseCompressor):
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)
-        self._quantize_layers(layer_names, all_inputs)
+        self._quantize_layers_outside_blocks(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(
             self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
@@ -789,7 +794,29 @@ class DataDrivenCompressor(BaseCompressor):
         self.model_context.quantized = True
         return self.model_context.model, self.quantizer.layer_config
 
-    def _quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
+    def _immediate_pack_and_save_module(self, module_name):
+        from auto_round.compressors.shard_writer import ShardWriter
+
+        shard_writer = ShardWriter.get_shard_writer()
+        to_cpu = self.compress_context.low_gpu_mem_usage
+        module = get_module(self.model, module_name)
+        if self.compress_context.is_immediate_packing:
+            immediate_pack(module_name, self.layer_config)
+            if to_cpu:
+                module = module.to("cpu")
+                packed_module = get_module(self.model, module_name)
+                set_module(self.model, module_name, packed_module.to("cpu"))
+        else:
+            if to_cpu:
+                module = module.to("cpu")
+            set_module(self.model, module_name, module)
+        if self.compress_context.is_immediate_saving:
+            module = get_module(self.model, module_name)
+            module.to("cpu")
+            shard_writer.write(module, module_name, False)
+            module.to("meta")
+
+    def _quantize_layers_outside_blocks(self, layer_names: list, layer_inputs: dict) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
         Args:
@@ -825,13 +852,19 @@ class DataDrivenCompressor(BaseCompressor):
                         )
                         layer_names.remove(layer_name)
                         continue
-                self.quantizer.quantize_layer_outside_block(
+                self.quantizer.quantize_layer_outside_block( #TODO check alg merge
                     layer_name,
                     input_ids=None,
                     device=device_manager.device,
                     disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
                 )
                 layer_names.remove(layer_name)
+                if self.compress_context.is_immediate_packing:
+                    immediate_pack(layer_name, self.layer_config)
+
+                if self.compress_context.is_immediate_saving:
+                    m = get_module(self.model, layer_name)
+                    self.shard_writer.write(m, name=layer_name, is_finalize=False)
         if len(layer_names) == 0:
             memory_monitor.update()
             memory_monitor.log_summary()
@@ -857,7 +890,7 @@ class DataDrivenCompressor(BaseCompressor):
                 )  # self.model.hf_device_map has not been changed
         if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
-        clear_memory(device_list=device_manager.device_list)
+        clear_memory()
         quant_layer = self.quantizer.quantize_layer_outside_block
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
@@ -872,7 +905,7 @@ class DataDrivenCompressor(BaseCompressor):
                 m = get_module(self.model, layer_name)
                 self.shard_writer.write(m, name=layer_name, is_finalize=False)
             del layer_input
-            clear_memory(q_layer_input, device_list=device_manager.device_list)
+            clear_memory(q_layer_input)
             memory_monitor.log_summary()
 
     def _check_compatibility(self) -> None:
