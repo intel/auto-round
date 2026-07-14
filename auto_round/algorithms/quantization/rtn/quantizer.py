@@ -77,9 +77,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff
-        self.enable_imatrix = getattr(config, "enable_imatrix", True) #TODO wenhuach optrtn should always turn it on
+        self.enable_imatrix = getattr(config, "enable_imatrix", True)  # TODO wenhuach optrtn should always turn it on
 
-        self.enable_alg_ext = True #TODO wenhuach deleted
+        self.enable_alg_ext = True  # TODO wenhuach deleted
 
     def is_support_compile_block(self):
         return False
