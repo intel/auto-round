@@ -384,7 +384,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         return super()._get_loss(pred_output, ref_output, indices, mse_loss, device)
 
     def register_fp_input_forward_hooks(self, block):
-        """Register FP-input hooks: act_max (from base) + imatrix."""
+        """Register FP-input hooks: imatrix."""
         handles = super().register_fp_input_forward_hooks(block)
         if not self._is_wint4aint4():
             handles.extend(self._register_imatrix_hooks(block))

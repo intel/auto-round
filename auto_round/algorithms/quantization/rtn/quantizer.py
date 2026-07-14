@@ -95,7 +95,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         return False
 
     def register_fp_input_forward_hooks(self, block):
-        """Register FP-input hooks: act_max (from base) + imatrix."""
+        """Register FP-input hooks: imatrix."""
         handles = super().register_fp_input_forward_hooks(block)
         if self.enable_imatrix:
             handles.extend(self._register_imatrix_hooks(block, with_count=True))

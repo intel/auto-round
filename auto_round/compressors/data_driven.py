@@ -244,13 +244,15 @@ class DataDrivenCompressor(BaseCompressor):
     def get_quantizer_fp_hooks(self, block: torch.nn.Module) -> list:
         """Register quantizer hooks for the FP-input reference forward pass.
 
-        Quantizer hooks (act_max, imatrix, etc.) collect statistics needed
-        by the block quantizer. They run after preprocessor hooks.
+        Includes act_max hooks (for static activation quantization) and
+        quantizer-specific hooks (imatrix, etc.).
         Subclasses can override to add custom quantizer hooks.
 
         Returns a flat list of hook handles; caller must call h.remove() on each.
         """
-        return list(self.pipeline.block_quantizer.register_fp_input_forward_hooks(block))
+        handles = self._register_act_max_hooks(block)
+        handles.extend(self.pipeline.block_quantizer.register_fp_input_forward_hooks(block))
+        return handles
 
     def get_preprocessor_qinput_hooks(self, block: torch.nn.Module) -> list:
         """Register preprocessor hooks for the quantized-input forward pass.
@@ -269,12 +271,79 @@ class DataDrivenCompressor(BaseCompressor):
     def get_quantizer_qinput_hooks(self, block: torch.nn.Module) -> list:
         """Register quantizer hooks for the quantized-input forward pass.
 
-        Used when enable_quanted_input=True to collect act_max from quantized
+        Includes act_max hooks and quantizer-specific qinput hooks.
+        Used when enable_quanted_input=True to collect statistics from quantized
         activations. Subclasses can override to add custom hooks.
 
         Returns a flat list of hook handles; caller must call h.remove() on each.
         """
-        return list(self.pipeline.block_quantizer.register_qinput_forward_hooks(block))
+        handles = self._register_act_max_hooks(block)
+        handles.extend(self.pipeline.block_quantizer.register_qinput_forward_hooks(block))
+        return handles
+
+    # ── Activation-calibration hook infrastructure ───────────────────────────────
+
+    def _register_act_max_hooks(self, model: torch.nn.Module) -> list:
+        """Register per-module act_max tracking hooks for static activation quantization.
+
+        Returns a list of hook handles that the caller must remove when done.
+        """
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+
+        quantizer = self.pipeline.block_quantizer
+        is_act_nv_fp = getattr(quantizer.config, "is_act_nv_fp", False)
+        layer_config = quantizer.layer_config or {}
+
+        def collect_act_max(module, input, output):
+            input = input[0] if isinstance(input, (tuple, list)) else input
+            if input.numel() == 0:
+                return
+            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+                if is_act_nv_fp:
+                    max_val = act_max.max()
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                return
+
+            act_max = act_max.to(module.act_max.device)
+            if is_act_nv_fp:
+                max_val = torch.max(act_max.max(), module.act_max.max())
+                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                module.act_max = torch.max(act_max, module.act_max)
+
+        def should_collect(name, module):
+            from auto_round.compressors.utils import check_need_act_calibration
+            from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
+
+            if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
+                return (
+                    hasattr(module, "act_dynamic")
+                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+                    and check_to_quantized(module)
+                )
+            if name in layer_config:
+                config = layer_config[name]
+                act_dynamic = config.get("act_dynamic", True)
+                act_data_type = config.get("act_data_type", None)
+                act_bits = config.get("act_bits", 16)
+                return (
+                    config["bits"] <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                    and check_to_quantized(config)
+                )
+            return False
+
+        handles = []
+        if should_collect("", model):
+            handles.append(model.register_forward_hook(collect_act_max))
+            return handles
+        for name, module in model.named_modules():
+            if name and should_collect(name, module):
+                handles.append(module.register_forward_hook(collect_act_max))
+        return handles
 
     def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
         # Thin wrapper around auto_round.calibration.inputs.preprocess_block_inputs.
