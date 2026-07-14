@@ -1068,7 +1068,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             fake_layer = _FakeDecodingLayer()
             fake_layer.orig_forward = fake_layer.forward
             fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
-            self.post_init() # To cteate calibration
+            self.post_init()  # To create calibration
             fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
 
             self.inputs = {}
