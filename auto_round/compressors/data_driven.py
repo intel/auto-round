@@ -236,8 +236,6 @@ class DataDrivenCompressor(BaseCompressor):
             first_input_name=first_input_name,
         )
 
-
-
     def _quantize_blocks(
         self,
         model: torch.nn.Module,
@@ -460,9 +458,7 @@ class DataDrivenCompressor(BaseCompressor):
         # In RTN mode (iters == 0), force blockwise quantization to avoid
         # full-model materialization and linear CPU RAM growth.
         use_blockwise_quantization = True
-        logger.info(
-            "Zero-shot mode (no calibration data needed): using blockwise quantization."
-        )
+        logger.info("Zero-shot mode (no calibration data needed): using blockwise quantization.")
 
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
         if tied_weights_keys is None:
@@ -869,8 +865,9 @@ class DataDrivenCompressor(BaseCompressor):
             full-precision reference output collected before optimization.
         """
 
-        def normalize_decoding_layer_inputs_(self,
-                                             decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
+        def normalize_decoding_layer_inputs_(
+            self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]
+        ) -> None:
             """Replay captured decoding-layer calls to populate ``self.inputs``.
 
             Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
@@ -1008,7 +1005,6 @@ class DataDrivenCompressor(BaseCompressor):
             blk_name = self.quant_block_list[0][0]
             # bs = self.batch_size * self.quantizer.infer_bs_coeff
             bs = self.calibration_state.batch_size  # TODO wenhuach add infer_bs_coeff
-
 
             from auto_round.algorithms.pipeline import BlockContext, InputSource
 
