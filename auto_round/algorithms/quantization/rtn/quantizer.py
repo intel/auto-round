@@ -55,16 +55,6 @@ class RTNQuantizer(BaseQuantizer):
         Returns:
             dict: Empty dict (zero-shot RTN has no tunable parameters to return).
         """
-        if (
-            self.config.is_act_nv_fp
-            or self.config.is_static_afp8
-            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
-        ):
-            # For FP8 static / NVFP paths, expert input scales are derived during
-            # layer quantization from the current act_max. Unify MoE input-proj
-            # act_max values before quantizing each expert so exported input_scale
-            # stays aligned across experts.
-            set_amax_for_all_moe_layers(block, attr_name="act_max")  # TODO wenhuach should move to compressor
 
         for _name, m in block.named_modules():
             if hasattr(m, "global_name") and check_to_quantized(m):
