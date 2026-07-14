@@ -77,9 +77,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         self.data_type = config.data_type
         self.group_size = config.group_size
         self.infer_bs_coeff = config.infer_bs_coeff
-        self.enable_imatrix = getattr(config, "enable_imatrix", False)
+        self.enable_imatrix = getattr(config, "enable_imatrix", True) #TODO wenhuach optrtn should always turn it on
 
-        self.enable_alg_ext = True
+        self.enable_alg_ext = True #TODO wenhuach deleted
 
     def is_support_compile_block(self):
         return False
@@ -115,13 +115,6 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     @torch.no_grad()
     def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, **kwargs):
         """Apply imatrix-informed RTN quantization to a block."""
-        if (
-            self.config.is_act_nv_fp
-            or self.config.is_static_afp8
-            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
-        ):
-            # enable moe experts act_max automatic generation for Linear
-            set_amax_for_all_moe_layers(block, attr_name="act_max")
         # Normalize imatrix and quantize layers
         for name, m in block.named_modules():
             if hasattr(m, "imatrix"):
