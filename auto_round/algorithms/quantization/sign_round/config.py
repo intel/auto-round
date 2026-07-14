@@ -79,16 +79,10 @@ class SignRoundConfig(QuantizationConfig):
             logger.warning("`iters` must be non-negative, reset it to 200")
             self.iters = 200
 
-        if not lr:
-            # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
-            if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
-                self.lr = 2.0 / self.iters
-                logger.info("set the lr to 2.0/iters for better accuracy")
-            else:
-                self.lr = 1.0 / self.iters
-        else:
-            self.lr = lr
-        self.minmax_lr = minmax_lr or self.lr
+        # lr/minmax_lr depend on `bits`, which may still be unresolved here
+        # (e.g. only `scheme=` was given) -- finalize_scheme() fills them in.
+        self.lr = lr
+        self.minmax_lr = minmax_lr
         self.lr_scheduler = lr_scheduler
 
         self.nblocks = nblocks
@@ -107,6 +101,17 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_quanted_input = enable_quanted_input
         self.optimizer = optimizer
         self.enable_adam = enable_adam
+
+    def finalize_scheme(self) -> None:
+        """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""
+        if self.lr is None:
+            # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+            if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
+                self.lr = 2.0 / self.iters
+                logger.info("set the lr to 2.0/iters for better accuracy")
+            else:
+                self.lr = 1.0 / self.iters
+        self.minmax_lr = self.minmax_lr or self.lr
 
     def check_configs(self) -> None:
         """Checks if the configurations are valid.

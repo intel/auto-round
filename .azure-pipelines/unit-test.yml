@@ -54,7 +54,7 @@ stages:
       BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
-        timeoutInMinutes: 120
+        timeoutInMinutes: 45
         strategy:
           matrix:
             part1:

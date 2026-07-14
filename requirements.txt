@@ -5,5 +5,5 @@ numpy
 py-cpuinfo
 torch
 tqdm
-transformers<=5.12.1
+transformers>=4.38
 pydantic
