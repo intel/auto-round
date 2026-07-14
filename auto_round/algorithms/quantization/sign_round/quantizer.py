@@ -375,7 +375,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        #TODO have a check wenhuach
+        # TODO have a check wenhuach
         # static_kv_dtype = self.compress_context.static_kv_dtype
         # static_attention_dtype = self.compress_context.static_attention_dtype
         # if self.config.is_act_quantize and check_need_act_calibration(
