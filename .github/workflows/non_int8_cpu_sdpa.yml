@@ -58,19 +58,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install pytest py-cpuinfo
+          python -m pip install pytest
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cmake build-essential g++
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends cmake build-essential g++
 
-      - name: Build ARK CPU extension
-        id: build
+      - name: Build ARK CPU extension (CPU-only CMake)
         working-directory: auto_round_extension/ark
         run: |
-          pip install --no-build-isolation -e . 2>&1 || echo "::warning::CPU extension build failed; C++ and Tier 1 tests will be skipped"
-        continue-on-error: true
+            cmake -S auto_round_kernel -B build-cpu-fix -DCMAKE_BUILD_TYPE=Release
+            cmake --build build-cpu-fix -j"$(nproc)"
+            cp build-cpu-fix/auto_round_kernel_cpu*.so auto_round_kernel/
 
       - name: Print ISA + route status
         working-directory: auto_round_extension/ark
@@ -78,35 +78,30 @@ jobs:
 
       - name: Tier 0 — scalar path (Python)
         working-directory: auto_round_extension/ark
-        run: |
-          python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
-        continue-on-error: ${{ steps.build.outcome != 'success' }}
+        run: python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
 
       - name: Tier 1 — mixed BestLA route 1 (F16 K/V, AVX2)
         working-directory: auto_round_extension/ark
         run: |
-          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
-            -k "float16 and not packed" \
+            python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
+              -k "float16 and not packed" \
             2>&1 | tee tier1_avx2.log
-          # ISA-skip is expected for bf16 on AVX2-only; failures outside skip are real.
-        continue-on-error: ${{ steps.build.outcome != 'success' }}
+            # ISA-skip is expected for bf16 on AVX2-only; failures outside skip are real.
 
       - name: Tier 1 — packed KV path (F16, AVX2)
         working-directory: auto_round_extension/ark
         run: |
-          # Packed path tests skip if the C++ packed-kv symbols are not built.
-          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
-            -k "packed and float16" \
-            2>&1 | tee tier1_packed_avx2.log
-        continue-on-error: ${{ steps.build.outcome != 'success' }}
+            # Packed path tests skip if the C++ packed-kv symbols are not built.
+            python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short \
+              -k "packed and float16" \
+              2>&1 | tee tier1_packed_avx2.log
 
       - name: Tier 1 — mixed BestLA route 2 (BF16 K/V, routing check only on AVX2)
         working-directory: auto_round_extension/ark
         run: |
-          # Mixed-dtype SDPA is enabled by default and must match the reference.
-          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py::test_mixed_dtype_sdpa_routes_to_mixed_path \
-            -v --tb=short
-        continue-on-error: ${{ steps.build.outcome != 'success' }}
+            # Mixed-dtype SDPA is enabled by default and must match the reference.
+            python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py::test_mixed_dtype_sdpa_routes_to_mixed_path \
+              -v --tb=short
 
   # ---------------------------------------------------------------------------
   # AVX512F / AMX-BF16 / AVX512-FP16 jobs — require self-hosted hardware.
@@ -132,11 +127,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install pytest py-cpuinfo
+          python -m pip install pytest
 
-      - name: Build ARK CPU extension
+      - name: Build ARK CPU extension (CPU-only CMake)
         working-directory: auto_round_extension/ark
-        run: pip install --no-build-isolation -e .
+        run: |
+          cmake -S auto_round_kernel -B build-cpu-fix -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cpu-fix -j"$(nproc)"
+          cp build-cpu-fix/auto_round_kernel_cpu*.so auto_round_kernel/
 
       - name: Print ISA + route status
         working-directory: auto_round_extension/ark
@@ -175,11 +173,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install pytest py-cpuinfo
+          python -m pip install pytest
 
-      - name: Build ARK CPU extension
+      - name: Build ARK CPU extension (CPU-only CMake)
         working-directory: auto_round_extension/ark
-        run: pip install --no-build-isolation -e .
+        run: |
+          cmake -S auto_round_kernel -B build-cpu-fix -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cpu-fix -j"$(nproc)"
+          cp build-cpu-fix/auto_round_kernel_cpu*.so auto_round_kernel/
 
       - name: Print ISA + route status
         working-directory: auto_round_extension/ark
@@ -202,9 +203,7 @@ jobs:
       - name: Benchmark — route 2 raw vs packed (regression baseline)
         working-directory: auto_round_extension/ark
         run: |
-          python test/bench_ark_cpu_sdpa.py \
-            --dtype bfloat16 --shape decode --mode both --runs 30 \
-            --csv /tmp/bench_amx_bf16.csv
+          python test/bench_ark_cpu_sdpa.py --shape decode --runs 30 --csv /tmp/bench_amx_bf16.csv
           echo "Benchmark results saved to /tmp/bench_amx_bf16.csv"
 
   avx512-fp16:
@@ -228,9 +227,12 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install pytest
 
-      - name: Build ARK CPU extension
+      - name: Build ARK CPU extension (CPU-only CMake)
         working-directory: auto_round_extension/ark
-        run: pip install --no-build-isolation -e .
+        run: |
+          cmake -S auto_round_kernel -B build-cpu-fix -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-cpu-fix -j"$(nproc)"
+          cp build-cpu-fix/auto_round_kernel_cpu*.so auto_round_kernel/
 
       - name: Tier 0 — scalar path (Python)
         working-directory: auto_round_extension/ark
