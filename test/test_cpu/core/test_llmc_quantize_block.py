@@ -25,7 +25,7 @@ def test_llmc_quantize_block_allows_mllm(monkeypatch):
     compressor = object.__new__(DataDrivenCompressor)
     compressor.model_context = SimpleNamespace(model=None, is_mllm=True, is_diffusion=False, amp_dtype=torch.float32)
     compressor._post_init_done = True
-    compressor._calibration_state = SimpleNamespace(inputs={},batch_size=1)
+    compressor._calibration_state = SimpleNamespace(inputs={}, batch_size=1)
     compressor.compress_context = SimpleNamespace(
         device_map="cpu",
         device_list=["cpu"],

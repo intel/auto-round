@@ -42,7 +42,7 @@ class RTNConfig(QuantizationConfig):
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
 
-        if disable_opt_rtn is None: # TODO wenhuach move to AR entry
+        if disable_opt_rtn is None:  # TODO wenhuach move to AR entry
             if self.bits and self.bits >= 8 and self.act_bits and self.act_bits >= 8 and self.data_type == "int":
                 logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
                 disable_opt_rtn = True
