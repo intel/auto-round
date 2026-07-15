@@ -489,6 +489,34 @@ def _xpu_cleanup_between_tests():
         _release_xpu_memory()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ark_moe_env():
+    """Guarantee ``ARK_MOE_PREFILL_*`` flags never leak out of a perf test.
+
+    The perf sweeps toggle ``ARK_MOE_PREFILL_*`` flags per shape to attribute
+    each timing column to a specific dispatch path, restoring the prior value
+    only after the last measurement in the loop body. If a measurement raises
+    (OOM, kernel error, assertion) the manual restore is skipped and the flag
+    -- e.g. ``ARK_MOE_PREFILL_DPAS_S4=1``, which routes int4-sym through a
+    kernel with a known large-M defect -- leaks into subsequent tests. Those
+    tests then fail only when run after this one (i.e. only in the full
+    suite), while passing in isolation.
+
+    Snapshot the flags at setup and restore them unconditionally at teardown so
+    a leak can never escape a single test, regardless of exceptions.
+    """
+    prefix = "ARK_MOE_PREFILL_"
+    saved = {k: v for k, v in os.environ.items() if k.startswith(prefix)}
+    for k in saved:
+        del os.environ[k]
+    try:
+        yield
+    finally:
+        for k in [k for k in os.environ if k.startswith(prefix)]:
+            del os.environ[k]
+        os.environ.update(saved)
+
+
 def _print_header(title: str) -> None:
     """Print a benchmark header.
 

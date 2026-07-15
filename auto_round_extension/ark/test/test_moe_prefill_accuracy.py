@@ -272,6 +272,36 @@ class TestMoEGemmPrefillAccuracy:
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.manual_seed_all(0)
 
+    @pytest.fixture(autouse=True)
+    def _isolate_ark_moe_env(self):
+        """Give every test a clean ``ARK_MOE_PREFILL_*`` env baseline.
+
+        Several tests (here and in ``test_moe_prefill_perf.py``) opt into an
+        experimental dispatch path by exporting an ``ARK_MOE_PREFILL_*`` flag
+        -- some of which route through kernels with known numeric defects
+        (e.g. the S4 DPAS large-M outliers). If such a flag leaks -- because a
+        preceding test aborted before restoring it, or it was exported in the
+        shell -- the *default-path* parity tests below silently run the wrong
+        kernel and fail. That is the classic "passes in isolation, fails only
+        in the full suite" symptom.
+
+        Snapshot every ``ARK_MOE_PREFILL_*`` variable, clear them so each test
+        starts from the documented default (all opt-in paths OFF), then
+        restore the original process environment afterwards. Tests that need a
+        flag set it explicitly within their own body, so clearing the baseline
+        never changes their behaviour.
+        """
+        prefix = "ARK_MOE_PREFILL_"
+        saved = {k: v for k, v in os.environ.items() if k.startswith(prefix)}
+        for k in saved:
+            del os.environ[k]
+        try:
+            yield
+        finally:
+            for k in [k for k in os.environ if k.startswith(prefix)]:
+                del os.environ[k]
+            os.environ.update(saved)
+
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_accuracy_fp(self, dtype):
         for label, E, tpe, N, K in PREFILL_SHAPES:
