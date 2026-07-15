@@ -64,7 +64,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
 
     def __init__(
         self,
-        config: Union[object, list[object]],  # TODO rename wenhuach
+        config: Union[object, list[object]],  # TODO rename this to alg_config wenhuach
         model: Union[torch.nn.Module, str],
         tokenizer: Any = None,
         platform: str = "hf",
@@ -762,7 +762,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         is_quantized_embedding = self.quantizer.quantize_embedding_layer()
         clear_memory()
         all_q_inputs = None
-        if is_quantized_embedding:
+        if is_quantized_embedding: # TODO wenhuach check enable_quantized_input, if none extis, no need to run
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
@@ -774,6 +774,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
         clear_memory(device_list=device_manager.device_list)
+        memory_monitor.log_summary()
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:

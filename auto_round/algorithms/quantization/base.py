@@ -192,6 +192,10 @@ class BaseQuantizer(BasePipelineMember):
             # Determine quantization function key with symmetry/asymmetry
             if dtype not in QUANT_FUNC_WITH_DTYPE:
                 dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
+            if not hasattr(self, "iters") or self.iters <= 0:
+                tmp_dtype = "rtn_" + dtype
+                if tmp_dtype in QUANT_FUNC_WITH_DTYPE:
+                    dtype = tmp_dtype
 
             quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
             dtype = module.weight.dtype
@@ -242,21 +246,21 @@ class BaseQuantizer(BasePipelineMember):
             del weight
             del scale
             del zp
-            clear_memory(device_list=device_manager.device_list)
+            clear_memory()
 
         return is_quantized
 
     # ── Abstract quantization interface ──────────────────────────────────────────
 
     def quantize_block(
-        self,
-        block: "torch.nn.Module",
-        fp_inputs: list[torch.Tensor] | dict,
-        input_others: dict,
-        fp_outputs: list[torch.Tensor],
-        q_inputs: list[torch.Tensor] | None,
-        block_ctx: "BlockContext",
-        **kwargs,
+            self,
+            block: "torch.nn.Module",
+            fp_inputs: list[torch.Tensor] | dict,
+            input_others: dict,
+            fp_outputs: list[torch.Tensor],
+            q_inputs: list[torch.Tensor] | None,
+            block_ctx: "BlockContext",
+            **kwargs,
     ) -> dict:
         """Apply the quantization algorithm to a prepared block.
 
@@ -278,7 +282,7 @@ class BaseQuantizer(BasePipelineMember):
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
 
     def quantize_layer_outside_block(
-        self, layer_name: str, input_ids=None, disable_opt_rtn: bool | None = None, **kwargs
+            self, layer_name: str, input_ids=None, disable_opt_rtn: bool | None = None, **kwargs
     ):
         """Quantizes a single layer outside of a block using RTN fallback.
 
@@ -303,12 +307,12 @@ class BaseQuantizer(BasePipelineMember):
             if disable_opt_rtn is None:
                 disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
             if (
-                not disable_opt_rtn
-                and getattr(self.config, "orig_disable_opt_rtn", None) is None
-                and self.model_context.is_moe_model
-                and "expert" in layer.global_name
-                and "shared_expert" not in layer.global_name
-                and self.config.super_bits is None
+                    not disable_opt_rtn
+                    and getattr(self.config, "orig_disable_opt_rtn", None) is None
+                    and self.model_context.is_moe_model
+                    and "expert" in layer.global_name
+                    and "shared_expert" not in layer.global_name
+                    and self.config.super_bits is None
             ):
                 disable_opt_rtn = True
                 logger.warning_once(
@@ -369,9 +373,9 @@ class BaseQuantizer(BasePipelineMember):
         if cached is not None:
             return cached
         if (
-            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
-            or self.enable_alg_ext
-            or not getattr(self.config, "disable_opt_rtn", True)
+                (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
+                or self.enable_alg_ext
+                or not getattr(self.config, "disable_opt_rtn", True)
         ):
             self._resolved_block_forward = block_forward
         elif self.compress_context.enable_torch_compile:
