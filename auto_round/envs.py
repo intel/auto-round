@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     LLAMA_CPP_ROOT: Optional[str] = None
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+    AR_AUTO_SCHEME_DISABLE_HEAD_TRICK: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -85,6 +86,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Controls whether to disable the lm_head quantization bias trick in AutoScheme.
+    # When disabled (True), skips _apply_head_trick which biases lm_head toward higher precision.
+    # Default: False (trick is enabled). Set to "1", "true", or "yes" to disable the trick.
+    "AR_AUTO_SCHEME_DISABLE_HEAD_TRICK": lambda: os.getenv("AR_AUTO_SCHEME_DISABLE_HEAD_TRICK", "0").lower()
+    in ("1", "true", "yes"),
 }
 
 

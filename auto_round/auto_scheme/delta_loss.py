@@ -1893,7 +1893,13 @@ def _gen_layer_config(
 
     head_name = get_lm_head_name(model)
     if head_name is not None and (head_name not in fixed_layer_scheme and head_name in quant_layer_names):
-        _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+        # Check if head trick is disabled via environment variable (AR_AUTO_SCHEME_DISABLE_HEAD_TRICK)
+        from auto_round import envs as _envs
+        disable_head_trick = _envs.AR_AUTO_SCHEME_DISABLE_HEAD_TRICK
+        if not disable_head_trick:
+            _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores)
+        else:
+            logger.info("AutoScheme: head trick is disabled via AR_AUTO_SCHEME_DISABLE_HEAD_TRICK=1")
 
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
