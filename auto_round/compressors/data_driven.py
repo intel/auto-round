@@ -724,8 +724,10 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             logger.warning("could not find blocks, exit with original model")
             return self.model_context.model, self.layer_config
 
-        has_gguf = hasattr(self, "formats") and self.formats is not None and any(
-            fmt.is_gguf() for fmt in (self.formats if isinstance(self.formats, list) else [])
+        has_gguf = (
+            hasattr(self, "formats")
+            and self.formats is not None
+            and any(fmt.is_gguf() for fmt in (self.formats if isinstance(self.formats, list) else []))
         )
         if has_gguf or self.super_group_size is not None:
             layer_names = []
