@@ -762,7 +762,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         is_quantized_embedding = self.quantizer.quantize_embedding_layer()
         clear_memory()
         all_q_inputs = None
-        if is_quantized_embedding: # TODO wenhuach check enable_quantized_input, if none extis, no need to run
+        if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none extis, no need to run
             all_inputs = copy.deepcopy(self.inputs)
             clear_memory(self.inputs)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
