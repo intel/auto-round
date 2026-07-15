@@ -19,25 +19,10 @@ import torch
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.registry import register_pipeline_member
-from auto_round.compressors.utils import (
-    IndexSampler,
-    block_forward,
-    check_need_act_calibration,
-    check_skippable_keywords,
-    collect_best_params,
-    get_shared_keys,
-    infer_bits_by_data_type,
-    init_cache,
-    reset_params,
-    set_layer_config,
-)
-from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.utils import (
     check_to_quantized,
     get_module,
-    set_amax_for_all_moe_layers,
     set_module,
 )
 
@@ -74,12 +59,8 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
-        self.data_type = config.data_type
-        self.group_size = config.group_size
-        self.infer_bs_coeff = config.infer_bs_coeff
-        self.enable_imatrix = getattr(config, "enable_imatrix", True)  # TODO wenhuach optrtn should always turn it on
-
-        self.enable_alg_ext = True  # TODO wenhuach deleted
+        # self.data_type = config.data_type
+        # self.group_size = config.group_size
 
     def is_support_compile_block(self):
         return False
@@ -87,8 +68,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def register_fp_input_forward_hooks(self, block):
         """Register FP-input hooks: imatrix."""
         handles = super().register_fp_input_forward_hooks(block)
-        if self.enable_imatrix:
-            handles.extend(self._register_imatrix_hooks(block, with_count=True))
+        handles.extend(self._register_imatrix_hooks(block, with_count=True))
         return handles
 
     def _register_imatrix_hooks(self, model, *, with_count: bool = False):

@@ -71,7 +71,6 @@ class LLMCalibrator(Calibrator):
         if c.compress_context.low_gpu_mem_usage or (
             len(block_names) == 1
             and len(layer_names) == 0
-            and not c.quantizer.has_qlayer_outside_block
             and (last_cache_name is None or last_cache_name in block_names)
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer (also fast on CPU)
