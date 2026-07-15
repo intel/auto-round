@@ -192,7 +192,7 @@ class BaseQuantizer(BasePipelineMember):
             # Determine quantization function key with symmetry/asymmetry
             if dtype not in QUANT_FUNC_WITH_DTYPE:
                 dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
-            if not hasattr(self, "iters") or self.iters <= 0:
+            if not hasattr(self, "iters") or self.iters <= 0: # pylint: disable=E1101
                 tmp_dtype = "rtn_" + dtype
                 if tmp_dtype in QUANT_FUNC_WITH_DTYPE:
                     dtype = tmp_dtype
