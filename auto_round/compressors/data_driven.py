@@ -724,12 +724,18 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             logger.warning("could not find blocks, exit with original model")
             return self.model_context.model, self.layer_config
 
-        layer_names = _get_quantized_layer_names_outside_blocks(
-            model=self.model_context.model,
-            layer_config=self.layer_config,
-            supported_types=SUPPORTED_LAYER_TYPES,
-            quant_block_list=self.quant_block_list,
+        has_gguf = hasattr(self, "formats") and self.formats is not None and any(
+            fmt.is_gguf() for fmt in (self.formats if isinstance(self.formats, list) else [])
         )
+        if has_gguf or self.super_group_size is not None:
+            layer_names = []
+        else:
+            layer_names = _get_quantized_layer_names_outside_blocks(
+                model=self.model_context.model,
+                layer_config=self.layer_config,
+                supported_types=SUPPORTED_LAYER_TYPES,
+                quant_block_list=self.quant_block_list,
+            )
         if not self.has_variable_block_shape:
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
@@ -752,11 +758,11 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         )
         self.inputs = all_inputs
         is_quantized_embedding = self.quantizer.quantize_embedding_layer()
-        clear_memory(device_list=device_manager.device_list)
+        clear_memory()
         all_q_inputs = None
         if is_quantized_embedding:
             all_inputs = copy.deepcopy(self.inputs)
-            clear_memory(self.inputs, device_list=device_manager.device_list)
+            clear_memory(self.inputs)
             all_q_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names, self.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
             )
@@ -1187,7 +1193,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             # ``batch_dim``.
             self.calibration_state = inputs
         else:
-            normalize_decoding_layer_inputs_(self, inputs)
+            self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.inputs[self.quant_block_list[0][0]]
         input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
 

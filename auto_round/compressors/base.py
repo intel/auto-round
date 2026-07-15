@@ -1349,14 +1349,14 @@ class BaseCompressor(object):
     def batch_size(self, value: int) -> None:
         self._calibration_state.batch_size = value
 
-    @property
-    def gradient_accumulate_steps(self) -> int:
-        return self._calibration_state.gradient_accumulate_steps
-
-    @gradient_accumulate_steps.setter
-    def gradient_accumulate_steps(self, value: int) -> None:
-        if value is not None:
-            self._calibration_state.gradient_accumulate_steps = value
+    # @property
+    # def gradient_accumulate_steps(self) -> int:
+    #     return self._calibration_state.gradient_accumulate_steps
+    #
+    # @gradient_accumulate_steps.setter
+    # def gradient_accumulate_steps(self, value: int) -> None:
+    #     if value is not None:
+    #         self._calibration_state.gradient_accumulate_steps = value
 
     @property
     def nsamples(self) -> int:
