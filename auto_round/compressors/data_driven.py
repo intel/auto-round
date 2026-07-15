@@ -762,10 +762,12 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         all_q_inputs = None
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
-        if not has_gguf and (not hasattr(self.quantizer,"iters") or self.quantizer.iters<=0):# pylint: disable=E1101
+        if not has_gguf and (
+            not hasattr(self.quantizer, "iters") or self.quantizer.iters <= 0
+        ):  # pylint: disable=E1101
             is_quantized_embedding = self.quantizer.quantize_embedding_layer()
             clear_memory()
-            if is_quantized_embedding: # TODO wenhuach check enable_quantized_input, if none exits, no need to run
+            if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none exits, no need to run
                 all_inputs = copy.deepcopy(self.inputs)
                 clear_memory(self.inputs)
                 all_q_inputs = self.try_cache_inter_data_gpucpu(
