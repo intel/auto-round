@@ -79,7 +79,18 @@ void moe_gemm_launcher(sycl::queue* q, const ElementA* activations, const Elemen
                        const int num_experts) {
   compat::set_default_queue(*q);
 
-  int sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+  // Query the multiprocessor (Xe-core / EU) count from the *queue's own device*
+  // instead of a hardcoded ordinal 0. On multi-card systems the CUTLASS /
+  // syclcompat device enumeration order need not match the device the caller's
+  // queue runs on, so `query_device_multiprocessor_count(0)` may report a
+  // different device's count. That mis-sizes the persistent-scheduler grid for
+  // the device the kernel actually executes on, leading to incorrect tile
+  // coverage and wrong results that only manifest when more than one device is
+  // visible. Deriving the count from `*q` keeps the launch consistent with the
+  // tensor's device. (`query_device_multiprocessor_count` is itself just
+  // `get_device(id).get_info<max_compute_units>()`, so this is numerically
+  // identical for the correct device.)
+  int sm_count = q->get_device().get_info<sycl::info::device::max_compute_units>();
   cutlass::KernelHardwareInfo hw_info{0, sm_count};
 
   auto dummy_problem_shape = cute::Shape<int, int, int>{1, gemm_k, gemm_n};

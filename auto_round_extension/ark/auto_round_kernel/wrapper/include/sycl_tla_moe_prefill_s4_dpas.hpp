@@ -641,8 +641,11 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                                       SGLayout>::TiledMMA;
   auto mma = MMA{};
 
+  // Query the EU count from the queue's own device (see sycl_tla_moe.hpp): on
+  // multi-card systems a hardcoded ordinal 0 can name a different device than
+  // the one `stream` runs on, mis-sizing the grid and corrupting results.
   int sm_count =
-      cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+      stream.get_device().get_info<sycl::info::device::max_compute_units>();
   auto MaxThreadsPerWorkgroup = size(mma);
 
   static constexpr int MaxThreadsPerSM = 512;
