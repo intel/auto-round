@@ -371,9 +371,15 @@ struct FMHAConfig {
     //
 
     // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
-    // information is used by the underlying kernel.
+    // information is used by the underlying kernel. Query the EU count from the *default queue's own
+    // device* (the caller sets it via `compat::set_default_queue(*q)` and the kernel is launched on
+    // that same queue) instead of a hardcoded ordinal 0. On multi-card systems the syclcompat device
+    // enumeration order need not match the device the kernel runs on, so
+    // `query_device_multiprocessor_count(hw_info.device_id)` (device_id defaults to 0) can report a
+    // different device's count, mis-sizing the persistent-scheduler grid and producing wrong results
+    // that only manifest when more than one device is visible.
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
+    hw_info.sm_count = compat::get_default_queue().get_device().get_info<sycl::info::device::max_compute_units>();
 
     using ProblemShapeType = cutlass::fmha::kernel::FMHAProblemShape<isVarLen>;
 
@@ -733,9 +739,15 @@ struct SageConfig {
     //
 
     // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
-    // information is used by the underlying kernel.
+    // information is used by the underlying kernel. Query the EU count from the *default queue's own
+    // device* (the caller sets it via `compat::set_default_queue(*q)` and the kernel is launched on
+    // that same queue) instead of a hardcoded ordinal 0. On multi-card systems the syclcompat device
+    // enumeration order need not match the device the kernel runs on, so
+    // `query_device_multiprocessor_count(hw_info.device_id)` (device_id defaults to 0) can report a
+    // different device's count, mis-sizing the persistent-scheduler grid and producing wrong results
+    // that only manifest when more than one device is visible.
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
+    hw_info.sm_count = compat::get_default_queue().get_device().get_info<sycl::info::device::max_compute_units>();
 
     using ProblemShapeType = cutlass::fmha::kernel::SageProblemShape<isVarLen>;
 
