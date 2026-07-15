@@ -62,6 +62,17 @@ namespace detail {
 
 using namespace cute;
 
+// Query the multiprocessor (Xe-core / EU) count from the *default queue's own
+// device*. The caller binds the default queue to the tensor's queue via
+// `compat::set_default_queue(*q)` and the kernel is launched on that same queue,
+// so this reports the count for the device the kernel actually runs on. Using a
+// hardcoded ordinal 0 instead can name a different device on multi-card systems,
+// mis-sizing the persistent-scheduler grid and producing wrong results that only
+// manifest when more than one device is visible.
+inline int query_default_queue_sm_count() {
+  return compat::get_default_queue().get_device().get_info<sycl::info::device::max_compute_units>();
+}
+
 // Command line options parsing
 struct Options {
    const void *q = nullptr, *k = nullptr, *v = nullptr;
@@ -371,15 +382,10 @@ struct FMHAConfig {
     //
 
     // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
-    // information is used by the underlying kernel. Query the EU count from the *default queue's own
-    // device* (the caller sets it via `compat::set_default_queue(*q)` and the kernel is launched on
-    // that same queue) instead of a hardcoded ordinal 0. On multi-card systems the syclcompat device
-    // enumeration order need not match the device the kernel runs on, so
-    // `query_device_multiprocessor_count(hw_info.device_id)` (device_id defaults to 0) can report a
-    // different device's count, mis-sizing the persistent-scheduler grid and producing wrong results
-    // that only manifest when more than one device is visible.
+    // information is used by the underlying kernel. Derive it from the default queue's own device so
+    // the grid is sized for the device the kernel actually runs on (see query_default_queue_sm_count).
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.sm_count = compat::get_default_queue().get_device().get_info<sycl::info::device::max_compute_units>();
+    hw_info.sm_count = query_default_queue_sm_count();
 
     using ProblemShapeType = cutlass::fmha::kernel::FMHAProblemShape<isVarLen>;
 
@@ -739,15 +745,10 @@ struct SageConfig {
     //
 
     // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
-    // information is used by the underlying kernel. Query the EU count from the *default queue's own
-    // device* (the caller sets it via `compat::set_default_queue(*q)` and the kernel is launched on
-    // that same queue) instead of a hardcoded ordinal 0. On multi-card systems the syclcompat device
-    // enumeration order need not match the device the kernel runs on, so
-    // `query_device_multiprocessor_count(hw_info.device_id)` (device_id defaults to 0) can report a
-    // different device's count, mis-sizing the persistent-scheduler grid and producing wrong results
-    // that only manifest when more than one device is visible.
+    // information is used by the underlying kernel. Derive it from the default queue's own device so
+    // the grid is sized for the device the kernel actually runs on (see query_default_queue_sm_count).
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.sm_count = compat::get_default_queue().get_device().get_info<sycl::info::device::max_compute_units>();
+    hw_info.sm_count = query_default_queue_sm_count();
 
     using ProblemShapeType = cutlass::fmha::kernel::SageProblemShape<isVarLen>;
 
