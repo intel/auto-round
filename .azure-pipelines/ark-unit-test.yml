@@ -61,7 +61,7 @@ stages:
         - ${{ each torchVersion in split(parameters.torchVersions, ',') }}:
           - job: TestArk_py${{ replace(trim(pythonVersion), '.', '') }}_torch${{ replace(replace(trim(torchVersion), '.', ''), '+', '_') }}
             displayName: "Test py${{ trim(pythonVersion) }} torch${{ trim(torchVersion) }}"
-            pool: B60
+            pool: INTEL-CPU
             variables:
               condaName: "kernel_binary_test_py${{ replace(trim(pythonVersion), '.', '') }}$(NODE_LABEL)"
             steps:
