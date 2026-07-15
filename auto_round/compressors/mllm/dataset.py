@@ -264,7 +264,12 @@ def get_mllm_dataloader(
         if check_mllm_only_support_bs1(model):
             bs = 1
         set_seed(seed)
-        dataloader_params = {"batch_size": bs, "shuffle": True, "collate_fn": dataset.template.processor.data_collator}
+        # Calibration should be deterministic: keep a fixed sample order.
+        dataloader_params = {
+            "batch_size": bs,
+            "shuffle": False,
+            "collate_fn": dataset.template.processor.data_collator,
+        }
 
         return DataLoader(dataset, **dataloader_params), bs, seqlen
     else:
