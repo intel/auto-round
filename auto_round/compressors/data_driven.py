@@ -132,12 +132,10 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         if isinstance(self.scheme, AutoScheme):
             return True
 
-        # opt-rtn (imatrix optimization) needs data when enabled
+        # opt-rtn (imatrix optimization) needs data for imatrix computation
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
 
         if isinstance(qcfg, OptimizedRTNConfig):
-            return True
-        if isinstance(qcfg, RTNConfig) and getattr(qcfg, "disable_opt_rtn", None) is False:
             return True
 
         # Check if activation calibration is needed
@@ -931,7 +929,6 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
                         )
                         layer_names.remove(layer_name)
                         continue
-                # TODO wenhuach needs act max for some cases
                 self.quantizer.quantize_layer_outside_block(  # TODO check alg merge
                     layer_name,
                     input_ids=None,
@@ -977,7 +974,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             layer_input = to_device(layer_input, self.compress_context.cache_device)
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
-            # TODO wenhuach needs act max for some scenarion
+            self._attach_act_max_for_outside_layer(layer_name, layer_input, q_layer_input)
             quant_layer(layer_name, layer_input, q_layer_input, device=device_manager.device)
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.quantizer.layer_config)
@@ -988,6 +985,50 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             del layer_input
             clear_memory(q_layer_input)
             memory_monitor.log_summary()
+
+    def _attach_act_max_for_outside_layer(self, layer_name, layer_input: list[torch.Tensor], q_layer_input) -> None:
+        """Compute and attach act_max for an outside-block layer directly from cached inputs.
+
+        This avoids a full forward pass — since we already have the layer inputs cached,
+        we can compute act_max by iterating over the input tensors directly.
+
+        Args:
+            layer_name: The name of the layer in the model.
+            layer_input: List of input tensors collected during calibration.
+            q_layer_input: Optional list of quantized input tensors. If provided, used instead of layer_input.
+        """
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+
+        target_input = layer_input
+        if q_layer_input:
+            target_input = q_layer_input
+
+        module = get_module(self.model, layer_name)
+        act_group_size = getattr(module, "act_group_size", -1)
+        act_data_type = getattr(module, "act_data_type", None)
+        is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
+
+        for inp in target_input:
+            if isinstance(inp, (tuple, list)):
+                inp = inp[0]
+            if inp.numel() == 0:
+                continue
+            inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
+            act_max = torch.max(torch.abs(inp), dim=-1).values
+
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+                if is_act_nv_fp_flag:
+                    max_val = act_max.max()
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                continue
+
+            act_max = act_max.to(module.act_max.device)
+            if is_act_nv_fp_flag:
+                max_val = torch.max(act_max.max(), module.act_max.max())
+                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                module.act_max = torch.max(act_max, module.act_max)
 
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
@@ -1005,6 +1046,40 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         #     logger.warning(
         #         "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
         #     )
+
+    #This is also for llmc
+    def normalize_decoding_layer_inputs_(
+            self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]
+    ) -> None:
+        """Replay captured decoding-layer calls to populate ``self.inputs``.
+
+        Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
+        input hook into the ``self.inputs`` dict format expected by
+        :meth:`quantize_block`.  The logic mirrors the old-arch implementation in
+        ``compressors/base.py``.
+
+        Args:
+            decoding_layer_inputs:
+                A list of entries captured by a forward hook on the decoding layer.
+                Each element is a tuple whose first item is ``(args, kwargs)``.
+        """
+        first_block_name = self.quant_block_list[0][0]
+
+        class _FakeDecodingLayer(torch.nn.Module):
+
+            def forward(self, *args, **kwargs):
+                return args, kwargs
+
+        fake_layer = _FakeDecodingLayer()
+        fake_layer.orig_forward = fake_layer.forward
+        fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
+        fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
+
+        self.inputs = {}
+        self.last_cache_name = None
+        for step_input in decoding_layer_inputs:
+            args, kwargs = step_input[0]
+            fake_layer(*args, **kwargs)
 
     # This is the API for llm-compressor, not used in AutoRound
     def quantize_block(
@@ -1045,39 +1120,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             full-precision reference output collected before optimization.
         """
 
-        def normalize_decoding_layer_inputs_(
-            self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]
-        ) -> None:
-            """Replay captured decoding-layer calls to populate ``self.inputs``.
 
-            Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
-            input hook into the ``self.inputs`` dict format expected by
-            :meth:`quantize_block`.  The logic mirrors the old-arch implementation in
-            ``compressors/base.py``.
-
-            Args:
-                decoding_layer_inputs:
-                    A list of entries captured by a forward hook on the decoding layer.
-                    Each element is a tuple whose first item is ``(args, kwargs)``.
-            """
-            first_block_name = self.quant_block_list[0][0]
-
-            class _FakeDecodingLayer(torch.nn.Module):
-
-                def forward(self, *args, **kwargs):
-                    return args, kwargs
-
-            fake_layer = _FakeDecodingLayer()
-            fake_layer.orig_forward = fake_layer.forward
-            fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
-            self.post_init()  # To create calibration
-            fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
-
-            self.inputs = {}
-            self.last_cache_name = None
-            for step_input in decoding_layer_inputs:
-                args, kwargs = step_input[0]
-                fake_layer(*args, **kwargs)
 
         from auto_round.calibration.state import CalibrationState
 
