@@ -1053,10 +1053,8 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         #         "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
         #     )
 
-    #This is also for llmc
-    def normalize_decoding_layer_inputs_(
-            self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]
-    ) -> None:
+    # This is also for llmc
+    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
         """Replay captured decoding-layer calls to populate ``self.inputs``.
 
         Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
@@ -1125,8 +1123,6 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             ``enable_quanted_input`` is ``False``), and *reference_output* is the
             full-precision reference output collected before optimization.
         """
-
-
 
         from auto_round.calibration.state import CalibrationState
 
