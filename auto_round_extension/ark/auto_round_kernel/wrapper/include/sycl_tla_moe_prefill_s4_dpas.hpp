@@ -3,9 +3,12 @@
 //
 // STATUS: NEEDS-HARDWARE-VALIDATION -- single-pass port. The env gate
 // `ARK_MOE_PREFILL_DPAS_S4` defaults OFF (see `moe_prefill_dpas_s4_enabled()`
-// below) because the mainloop still intermittently miscomputes a fraction of
-// outputs on production-scale prefill shapes; set `ARK_MOE_PREFILL_DPAS_S4=1`
-// to opt in for debugging. The packed-nibble mainloop decodes each `int4b_t`
+// below); set `ARK_MOE_PREFILL_DPAS_S4=1` to opt in. The previously observed
+// gross-outlier defect on the large-M `medium E=8`, K=14336 shape (max abs diff
+// ~70) was traced to the bespoke large-M policy breaking the packed-nibble
+// decode's `SG_N = 16` invariant (it used `SG_N = 64`); large-M now reuses the
+// validated `m_32` geometry (see the dispatch below), matching the sub-group
+// fragment shape every passing S4 shape exercises. The packed-nibble mainloop decodes each `int4b_t`
 // B fragment into an `int8_t` staging fragment in registers and then reuses
 // the SAME validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group
 // path uses (see `xe_gemm_s4_pergroup`). This avoids the interleaved
@@ -154,37 +157,27 @@ using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
 
 // ---------------------------------------------------------------------------
-// Large-M policy for the S4 packed-nibble path -- `tile_k = 32`.
+// Large-M policy for the S4 packed-nibble path.
 //
-// The re-exported `dpas_w8a16_policy` (the INT8/FP8 large-M policy) uses a
-// `WGTile` of `<128, 128, 16>`, i.e. `tile_k = 16`. For the INT8 path that is
-// fine: `int8_t` B is one byte per element, so a `tile_k = 16` k-tile is a
-// contiguous 16-byte B load whose 2D-block-copy fragment layout matches the
-// `int8_t -> ElementA` `reorder(...)`.
+// There is NO bespoke large-M policy: the `A_avg_M > 32` range reuses the
+// validated `dpas_w8a16_policy_m_32` geometry (see the dispatch in
+// `moe_prefill_s4_dpas_per_group_dispatch` below). The packed-nibble decode
+// (`tBrB` -> `int8_t` staging -> `reorder(tBrB_i8, tCrB)`) is only correct for
+// the SUB-GROUP fragment shape the `m_16` / `m_32` policies use, i.e.
+// `tile_k = 32` AND `SG_N = tile_n / ATOM_N = 64 / 4 = 16` (`tile_n = 64`,
+// `SGLayout<1,4,1>` -> `ATOM_N = 4`).
 //
-// For the S4 path B is `cutlass::int4b_t` (packed nibbles, 4 bits/element), so
-// `tile_k = 16` is only 8 contiguous bytes per k-tile. At that sub-byte width
-// the block-2d copy atom derives a B fragment TV-layout that does NOT line up
-// with the `int8_t` staging fragment we decode into and hand to
-// `reorder(tBrB_i8, tCrB)`. A fraction of B lanes then decode from the wrong
-// nibble and whole output tiles come out grossly wrong (observed: max abs diff
-// ~70 on the `medium E=8`, K=14336 prefill shape, which routes here because
-// `A_avg_M = 66 > 32`). The packed-nibble decode + reorder is only validated at
-// `tile_k = 32` (the width the `m_16` / `m_32` policies already use and which
-// every passing S4 shape exercises).
-//
-// This policy keeps the large `<128, 128>` WG tile (so large-M throughput is
-// preserved) but pins `tile_k = 32` so the packed-nibble copy fragment matches
-// the staging layout. `SGLayout` and the D-store copy atom are unchanged from
-// `dpas_w8a16_policy`.
-class dpas_w8a16_policy_s4_large : public dpas_policy_base {
- public:
-  using WGTile = Shape<_128, _128, _32>;
-  using SGLayout = Layout<Shape<_4, _2, _1>, Stride<_2, _1, _0>>;
-
-  using GmemTiledCopyD = XE_STORE_2D<16, 8, 32>;
-};
-
+// A previous attempt introduced a wider `<128, 128, 32>` large-M policy with
+// `SGLayout<4,2,1>`. That kept `tile_k = 32` but changed `ATOM_N` to 2, so
+// `SG_N` became `128 / 2 = 64` (and `sg_n_strides` became 4). At that sub-group
+// width the block-2d copy atom derives a B fragment TV-layout that no longer
+// lines up with the element-wise `int8_t` staging decode, so a fraction of B
+// lanes decode from the wrong nibble and whole output tiles come out grossly
+// wrong (observed: max abs diff ~70 on the `medium E=8`, K=14336 prefill shape,
+// which routes to the large-M branch because `A_avg_M = 66 > 32`). Pinning
+// `tile_k = 32` alone was therefore insufficient -- `SG_N` must also stay 16.
+// Large-M reuses `m_32` (more M-tiles at the same validated per-tile decode /
+// reorder geometry) rather than a wider, unvalidated tile.
 // ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
 //
@@ -754,16 +747,21 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 
   if (A_avg_M <= 8) {
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
   } else {
-    // Large-M: use the S4-specific `tile_k = 32` policy rather than the
-    // re-exported `dpas_w8a16_policy` (`tile_k = 16`). The packed-nibble B
-    // copy fragment only lines up with the `int8_t` staging + reorder at
-    // `tile_k = 32`; at `tile_k = 16` a fraction of B lanes decode from the
-    // wrong nibble and whole output tiles come out grossly wrong. See
-    // `dpas_w8a16_policy_s4_large` above for the full rationale.
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_s4_large);
+    // Both the mid-M (`A_avg_M <= 32`) and large-M (`> 32`) ranges use the
+    // validated `dpas_w8a16_policy_m_32` geometry. The packed-nibble B copy
+    // fragment + `int8_t` staging + `reorder(tBrB_i8, tCrB)` is only correct
+    // for the `(tile_k = 32, SG_N = 16)` fragment shape the `m_16` / `m_32`
+    // policies use (`tile_n = 64`, `SGLayout<1,4,1>` -> `ATOM_N = 4` ->
+    // `SG_N = tile_n / ATOM_N = 16`). A bespoke large-M policy that widened the
+    // WG tile to `<128, 128, 32>` (`SGLayout<4,2,1>`) kept `tile_k = 32` but
+    // changed `SG_N` to `128 / 2 = 64`, which re-broke the nibble<->lane mapping
+    // for a fraction of B lanes and produced gross outliers (max abs diff ~70 on
+    // `medium E=8`, K=14336). Pinning `tile_k = 32` alone was insufficient --
+    // `SG_N` must also stay 16 -- so large-M reuses the validated `m_32`
+    // geometry (more M-tiles, identical per-tile decode / reorder) rather than a
+    // wider, unvalidated tile. See the `Large-M policy` note above.
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
 
@@ -778,13 +776,14 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 // S4->S8 upcast + INT8 DPAS path is itself default OFF behind
 // `ARK_MOE_PREFILL_DPAS_LOWBIT`, since it exhibits the same numeric defect).
 //
-// STATUS: default OFF. The single-pass packed-nibble mainloop still
-// intermittently miscomputes a fraction of outputs on production-scale
-// prefill shapes (observed: max abs diff ~70 on the `medium E=8`,
-// K=14336 int4-sym + fp16 accuracy case). Until that kernel defect is
-// root-caused and fixed on hardware, callers get the bit-exact generic
-// dequant path by default; the single-pass path stays available behind
-// `ARK_MOE_PREFILL_DPAS_S4=1` for continued debugging.
+// STATUS: default OFF pending on-hardware validation. The large-M
+// gross-outlier defect (observed: max abs diff ~70 on the `medium E=8`,
+// K=14336 int4-sym + fp16 accuracy case) was root-caused to the bespoke
+// large-M policy breaking the packed-nibble decode's `SG_N = 16` invariant
+// (it used `SG_N = 64`); large-M now reuses the validated `m_32` geometry.
+// The gate stays default OFF until the fix is confirmed on hardware; callers
+// get the bit-exact generic dequant path by default, and the single-pass
+// path stays available behind `ARK_MOE_PREFILL_DPAS_S4=1`.
 //
 // Truthy values (case-insensitive): "1", "true", "on", "yes" enable.
 // Anything else (including unset) leaves the path disabled. Re-read on
