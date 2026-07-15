@@ -245,8 +245,8 @@ class SignRoundQuantizer(BaseQuantizer):
         init_loss = None
         best_params = {}
         total_loss = 0
-        self.batch_size = self._calibration_state.batch_size  # TODO delete wenhuach
-        global_batch_size = self.batch_size * self.gradient_accumulate_steps
+        batch_size = self._calibration_state.batch_size  # TODO delete wenhuach
+        global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
@@ -254,7 +254,6 @@ class SignRoundQuantizer(BaseQuantizer):
             num_elm = sum(active_inputs[i].numel() for i in whole_indices)
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
-        batch_size = self.batch_size
         block_fwd = self.compressor.block_forward
         for i in range(self.iters):
             if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
@@ -375,23 +374,6 @@ class SignRoundQuantizer(BaseQuantizer):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-        # TODO have a check wenhuach
-        # static_kv_dtype = self.compress_context.static_kv_dtype
-        # static_attention_dtype = self.compress_context.static_attention_dtype
-        # if self.config.is_act_quantize and check_need_act_calibration(
-        #     self.config.act_dynamic,
-        #     self.config.act_data_type,
-        #     self.config.act_bits,
-        #     static_kv_dtype,
-        #     static_attention_dtype,
-        # ):
-        #     tmp_inputs = q_inputs if q_inputs is not None else input_ids
-        #     hook_handles = self._register_act_max_hooks(layer)
-        #     with torch.no_grad():
-        #         for input in tmp_inputs:
-        #             layer(input)
-        #     for handle in hook_handles:
-        #         handle.remove()
 
         wrapper_linear = WrapperLinear(
             layer,
@@ -434,8 +416,8 @@ class SignRoundQuantizer(BaseQuantizer):
         best_params = None
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        self.batch_size = self._calibration_state.batch_size
-        gradient_accumulate_steps = self.batch_size  # Force to low gpu
+        batch_size = self._calibration_state.batch_size
+        gradient_accumulate_steps = batch_size  # Force to low gpu
 
         total_loss = 0
         num_elm = 1
@@ -444,7 +426,7 @@ class SignRoundQuantizer(BaseQuantizer):
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         batch_size = 1  # Force to low gpu
-        global_batch_size = self.batch_size * gradient_accumulate_steps
+        global_batch_size = batch_size * gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         if gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)

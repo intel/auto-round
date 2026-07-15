@@ -18,7 +18,7 @@ from typing import Any
 from auto_round.algorithms.registry import resolve_pipeline_member
 from auto_round.schemes import QuantizationScheme
 
-
+# TODO later wenhuach may be deleted
 class BasePipelineMember:
     """Shared interface for all members of a quantization pipeline."""
 
@@ -26,7 +26,7 @@ class BasePipelineMember:
     compress_context = None
 
     def __init__(self, config: Any = None) -> None:
-        self.config = config  # TODO wenhuach may be deleted
+        self.config = config
         self.scheme = getattr(config, "scheme", None)
 
     @classmethod
@@ -48,34 +48,8 @@ class BasePipelineMember:
         """Model-level preparation called once before block iteration starts."""
         return
 
-    def register_fp_input_forward_hooks(self, block: Any) -> list:
-        """Register hooks for the FP-input reference forward pass.
-
-        Subclasses override to collect statistics during the reference forward.
-        Returns a list of hook handles; caller must call h.remove() on each.
-
-        Default: no-op (empty list).
-        """
-        return []
 
     def finalize_run(self, compressor: Any) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return
 
-
-# def _make_scheme_property(name):
-#     def getter(self):
-#         scheme = getattr(self, "scheme", None)
-#         return getattr(scheme, name, None) if scheme is not None else None
-#
-#     def setter(self, value):
-#         scheme = getattr(self, "scheme", None)
-#         if scheme is None:
-#             raise AttributeError(f"{type(self).__name__} has no bound scheme")
-#         setattr(scheme, name, value)
-#
-#     return property(getter, setter)
-#
-#
-# for _scheme_field in QuantizationScheme.get_attributes():
-#     setattr(BasePipelineMember, _scheme_field, _make_scheme_property(_scheme_field))

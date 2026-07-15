@@ -64,7 +64,7 @@ class BaseQuantizer(BasePipelineMember):
 
     supported_types = SUPPORTED_LAYER_TYPES
     inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-    enable_alg_ext = False  # TODO delete wenhuach
+    enable_alg_ext = False  # TODO delete later wenhuach
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
@@ -77,19 +77,18 @@ class BaseQuantizer(BasePipelineMember):
         from auto_round.calibration.state import CalibrationState
 
         self._calibration_state = CalibrationState()
-        self.infer_bs_coeff = getattr(config, "infer_bs_coeff", 1)  # TODO wenhuach move to block_forward or calib state
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
-    def is_support_compile_block(self):
+    def is_support_compile_block(self): #TODO support compile block
         return True
 
     # ── Shared CalibrationState forwarders ───────────────────────────────────────
     @property
-    def calibration_state(self) -> Any:  # TODO this one could be deleted?
+    def calibration_state(self) -> Any:  # TODO later decouple it from compressor this one could be deleted?
         return self._calibration_state
 
     @calibration_state.setter

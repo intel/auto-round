@@ -538,7 +538,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
                             module_name = f"{n}.{_n}"
                         if module_name is None:
                             continue
-                        _immediate_pack(module_name, self.quantizer.layer_config)
+                        _immediate_pack(module_name, self.layer_config)
 
             input_ids = next_input_ids
 
@@ -649,7 +649,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
                                 module_name = f"{block.global_name}.{_n}"
                             if module_name is None:
                                 continue
-                            _immediate_pack(module_name, self.quantizer.layer_config)
+                            _immediate_pack(module_name, self.layer_config)
 
                 # ── Infrastructure: shard write / device cleanup ──────────
                 if self.compress_context.is_immediate_saving:
@@ -883,7 +883,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         logger.info(summary_info)
 
         self.model_context.quantized = True
-        return self.model_context.model, self.quantizer.layer_config
+        return self.model_context.model, self.layer_config
 
     def _immediate_pack_and_save_module(self, module_name):
         from auto_round.compressors.shard_writer import ShardWriter
@@ -982,16 +982,15 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         if not self.compress_context.is_immediate_saving:
             self.model = mv_module_from_gpu(self.model)
         clear_memory()
-        quant_layer = self.quantizer.quantize_layer_outside_block
         for layer_name in layer_names:
             layer_input = layer_inputs[layer_name]
             layer_input = to_device(layer_input, self.compress_context.cache_device)
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self._attach_act_max_for_outside_layer(layer_name, layer_input, q_layer_input)
-            quant_layer(layer_name, layer_input, q_layer_input, device=device_manager.device)
+            self.quantizer.quantize_layer_outside_block(layer_name, layer_input, q_layer_input, device=device_manager.device)
             if self.compress_context.is_immediate_packing:
-                immediate_pack(layer_name, self.quantizer.layer_config)
+                immediate_pack(layer_name, self.layer_config)
 
             if self.compress_context.is_immediate_saving:
                 m = get_module(self.model, layer_name)
