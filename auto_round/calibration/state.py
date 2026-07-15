@@ -146,4 +146,3 @@ class CalibrationState:
         else:
             self.dataloader = self.dataset
         return self.dataloader
-

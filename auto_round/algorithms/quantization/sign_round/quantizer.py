@@ -369,7 +369,6 @@ class SignRoundQuantizer(BaseQuantizer):
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
-
         wrapper_linear = WrapperLinear(
             layer,
             enable_minmax_tuning=self.enable_minmax_tuning,

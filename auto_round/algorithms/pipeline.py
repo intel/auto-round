@@ -236,7 +236,7 @@ class BlockForward:
     def forward(
         self,
         block: "torch.nn.Module",
-        inputs: list[torch.Tensor]|dict,
+        inputs: list[torch.Tensor] | dict,
         input_others: dict,
         indices: torch.Tensor | None = None,
     ) -> list[torch.Tensor] | torch.Tensor:

@@ -83,7 +83,7 @@ class BaseQuantizer(BasePipelineMember):
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
-    def is_support_compile_block(self): #TODO support compile block
+    def is_support_compile_block(self):  # TODO support compile block
         return True
 
     # ── Shared CalibrationState forwarders ───────────────────────────────────────

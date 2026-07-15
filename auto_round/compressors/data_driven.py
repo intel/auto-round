@@ -988,7 +988,9 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self._attach_act_max_for_outside_layer(layer_name, layer_input, q_layer_input)
-            self.quantizer.quantize_layer_outside_block(layer_name, layer_input, q_layer_input, device=device_manager.device)
+            self.quantizer.quantize_layer_outside_block(
+                layer_name, layer_input, q_layer_input, device=device_manager.device
+            )
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.layer_config)
 
