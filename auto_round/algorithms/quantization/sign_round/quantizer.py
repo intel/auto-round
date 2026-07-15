@@ -12,12 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from collections import defaultdict
 from contextlib import nullcontext
-from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
-import accelerate
 import torch
 from torch import autocast
 
@@ -59,11 +56,9 @@ class SignRoundQuantizer(BaseQuantizer):
         self.minmax_lr = config.minmax_lr
         self.lr_scheduler = config.lr_scheduler
         self.momentum = config.momentum
-        self.infer_bs_coeff = config.infer_bs_coeff
         self.enable_minmax_tuning = config.enable_minmax_tuning
         self.enable_norm_bias_tuning = config.enable_norm_bias_tuning
         self.gradient_accumulate_steps = config.gradient_accumulate_steps
-        from auto_round.special_model_handler import check_mllm_only_support_bs1
 
         self.enable_alg_ext = config.enable_alg_ext
         self.not_use_best_mse = config.not_use_best_mse

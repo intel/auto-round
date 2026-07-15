@@ -48,6 +48,7 @@ def test_flux(setup_flux):
         scheme="MXFP4",
         iters=0,
         num_inference_steps=2,
+        disable_opt_rtn=True, # We change the logic, for opt-rtn, we alway do calibration which is slow on cpu
     )
     # skip model saving since it takes much time
     autoround.quantize()

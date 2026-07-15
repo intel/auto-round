@@ -166,7 +166,7 @@ def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
 
 # TODO better to follow heng's imp to decouple llm/diffusion
 @dataclass
-class BlockForward:  # TODO override forward with
+class BlockForward:
     """Stateless block-forward execution engine shared across quantizer & compressor.
 
     Created **once** by the compressor at init time. Quantizer accesses via
@@ -236,7 +236,7 @@ class BlockForward:  # TODO override forward with
     def forward(
         self,
         block: "torch.nn.Module",
-        inputs: list[torch.Tensor],
+        inputs: list[torch.Tensor]|dict,
         input_others: dict,
         indices: torch.Tensor | None = None,
     ) -> list[torch.Tensor] | torch.Tensor:
@@ -256,7 +256,13 @@ class BlockForward:  # TODO override forward with
         if indices is not None:
             is_returned_list = False
         num_samples = self._count_samples(inputs)
-        device = inputs[0].device if isinstance(inputs, list) else inputs.device
+        if isinstance(inputs, list):
+            device = inputs[0].device
+        elif isinstance(inputs, dict):
+            first_val = next(iter(inputs.values()))
+            device = first_val[0].device if isinstance(first_val, list) else first_val.device
+        else:
+            device = inputs.device
 
         if indices is None:
             indices = torch.arange(num_samples, dtype=torch.long, device=device)

@@ -75,9 +75,9 @@ class TestAlgExt:
         )
         ar.post_init()
 
-        assert ar.quantizer.bits == 2
-        assert ar.quantizer.group_size == 64
-        assert ar.quantizer.sym is False
+        assert ar.quantizer.scheme.bits == 2
+        assert ar.quantizer.scheme.group_size == 64
+        assert ar.quantizer.scheme.sym is False
         assert ar.quantizer.enable_alg_ext is True
         assert ar.quantizer.enable_minmax_tuning is False
         assert ar.quantizer.enable_norm_bias_tuning is True

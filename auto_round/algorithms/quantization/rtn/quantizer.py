@@ -11,15 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections import defaultdict
-from typing import Any, Callable, Optional, Union
 
-import accelerate
 import torch
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
     get_module,
@@ -59,8 +57,11 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
-        # self.data_type = config.data_type
-        # self.group_size = config.group_size
+        if "nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type:
+            logger.warning_once(
+                "opt-rtn does not support NVFP or MXFP. It behaves the same as RTN but is much slower. "
+                "Please use RTN instead."
+            )
 
     def is_support_compile_block(self):
         return False
