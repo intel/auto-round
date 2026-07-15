@@ -29,7 +29,6 @@ from auto_round.auto_scheme.utils import (
     _describe_layer_config,
     _fill_inactive_expert_scores,
     _log_batch_avg_loss,
-    _log_scheme_loss_matrix,
     _log_score_summary_by_block_and_nonblock,
     _scheme_short_name,
     apply_quant_scheme,
@@ -1917,7 +1916,6 @@ def _gen_layer_config(
         layer_scheme = options[item[1]]
         for layer_name in layer_names:
             layer_config[layer_name] = asdict(layer_scheme)
-    _log_scheme_loss_matrix(total_scores, options, block_name, model=model, layer_numel=layer_numel)
     _describe_layer_config(layer_config, total_scores, options, block_name, model=model)
     if model_name is not None:
         model = None
