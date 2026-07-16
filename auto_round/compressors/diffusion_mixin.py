@@ -261,10 +261,11 @@ class DiffusionMixin:
         # already be dispatched to multi-device in a prior calib call.  The dispatch
         # state is preserved across calls, so re-dispatching or moving is unnecessary and
         # would break the existing placement.
+        if pipe.device != self.model.device:
+            pipe.to(self.model.device)
         if (
             hasattr(self.model, "hf_device_map")
             and len(self.model.hf_device_map) > 1
-            and pipe.device != self.model.device
             and torch.device(self.model.device).type in ["cuda", "xpu"]
         ):
             logger.warning(
@@ -273,8 +274,7 @@ class DiffusionMixin:
                 "Skipping re-dispatch to avoid breaking the existing placement."
             )
 
-        if pipe.device != self.model.device:
-            pipe.to(self.model.device)
+
 
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
@@ -335,7 +335,7 @@ class DiffusionMixin:
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
-
+    #TODO move to calibration wenhuach
     def try_cache_inter_data_gpucpu(self, *args, **kwargs) -> Any:
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
 

@@ -50,7 +50,7 @@ class Calibrator(ABC):
         self.shared_cache_keys = compressor.model_context.shared_cache_keys
         self.is_only_supported_bs1 = False
         self.seqlen= compressor.seqlen
-        self.hook_handles=[] # TODO make sure release later
+        self.hook_handles=[]
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -104,11 +104,11 @@ class Calibrator(ABC):
         """Bridge hook stop checks to the calibrator's stop policy."""
         return self.should_stop(name)
 
-    def __getattr__(self, name: str) -> Any:
-        # Anything not defined on the calibrator is read off the compressor.
-        # Calibrator code can use ``self.model_context`` / ``self.quantizer`` /
-        # ``self.dataset`` / etc. as if it were still a method on DataDrivenCompressor.
-        compressor = self.__dict__.get("compressor", None)
-        if compressor is None:
-            raise AttributeError(name)
-        return getattr(compressor, name)
+    # def __getattr__(self, name: str) -> Any:
+    #     # Anything not defined on the calibrator is read off the compressor.
+    #     # Calibrator code can use ``self.model_context`` / ``self.quantizer`` /
+    #     # ``self.dataset`` / etc. as if it were still a method on DataDrivenCompressor.
+    #     compressor = self.__dict__.get("compressor", None)
+    #     if compressor is None:
+    #         raise AttributeError(name)
+    #     return getattr(compressor, name)
