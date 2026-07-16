@@ -1,6 +1,7 @@
 import copy
 import re
 import shutil
+from test.helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 import pytest
 import torch
@@ -12,7 +13,6 @@ from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 from auto_round.utils import get_module
 
 from ...envs import multi_card
-from test.helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 
 class TestAutoScheme:

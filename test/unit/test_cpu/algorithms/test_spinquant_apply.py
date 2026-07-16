@@ -14,8 +14,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.transforms.spinquant.apply import SpinQuantRotation
 from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
+from auto_round.algorithms.transforms.spinquant.apply import SpinQuantRotation
 
 
 class TestSpinQuantRotation:
@@ -89,32 +89,24 @@ class TestSpinQuantRotation:
     def test_inject_buffers_on_layer_r1(self):
         """inject_buffers_on_layer handles R1 targets."""
         model = nn.Module()
-        model._rotation_config = SpinQuantConfig(
-            r1=True, r2=False, r3=False, r4=False, online_r1_rotation=True
-        )
+        model._rotation_config = SpinQuantConfig(r1=True, r2=False, r3=False, r4=False, online_r1_rotation=True)
         qlayer = nn.Module()
 
         rotation = SpinQuantRotation(model._rotation_config)
 
         # Should handle q_proj target
-        rotation.inject_buffers_on_layer(
-            "layer0.attn.q_proj", qlayer, model
-        )
+        rotation.inject_buffers_on_layer("layer0.attn.q_proj", qlayer, model)
 
     def test_inject_buffers_on_layer_r4(self):
         """inject_buffers_on_layer handles R4 targets."""
         model = nn.Module()
-        model._rotation_config = SpinQuantConfig(
-            r1=False, r2=False, r3=False, r4=True
-        )
+        model._rotation_config = SpinQuantConfig(r1=False, r2=False, r3=False, r4=True)
         qlayer = nn.Module()
 
         rotation = SpinQuantRotation(model._rotation_config)
 
         # Should handle down_proj target
-        rotation.inject_buffers_on_layer(
-            "layer0.mlp.down_proj", qlayer, model
-        )
+        rotation.inject_buffers_on_layer("layer0.mlp.down_proj", qlayer, model)
 
     def test_inject_buffers_on_layer_non_target(self):
         """inject_buffers_on_layer skips non-target layers."""
@@ -125,9 +117,7 @@ class TestSpinQuantRotation:
         rotation = SpinQuantRotation(model._rotation_config)
 
         # o_proj is not in R1 targets
-        rotation.inject_buffers_on_layer(
-            "layer0.attn.o_proj", qlayer, model
-        )
+        rotation.inject_buffers_on_layer("layer0.attn.o_proj", qlayer, model)
 
     def test_inject_buffers_bulk(self):
         """inject_buffers_bulk processes quantization_config dict."""
@@ -140,8 +130,8 @@ class TestSpinQuantRotation:
 
     def test_save_config(self):
         """save_config writes spinquant config."""
-        import tempfile
         import os
+        import tempfile
 
         model = nn.Module()
         model._rotation_config = SpinQuantConfig(r1=True, r2=True)

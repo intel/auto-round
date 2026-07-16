@@ -38,15 +38,53 @@ import pytest
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.transforms.spinquant.apply import SpinQuantRotation
+from auto_round.algorithms.transforms.spinquant.cayley_optimizer import (
+    SGDG,
+    AdamAndSGDG,
+)
+from auto_round.algorithms.transforms.spinquant.inplace.apply import (
+    apply_spinquant_in_place,
+    register_spinquant_hooks,
+    remove_spinquant_hooks,
+)
+from auto_round.algorithms.transforms.spinquant.monkeypatch import (
+    QKRotationWrapper,
+    add_qk_rotation_after_rope,
+    add_wrapper_after_function_call_in_method,
+    copy_func_with_new_globals,
+)
 from auto_round.algorithms.transforms.spinquant.preprocessor import (
     SpinQuantConfig,
     SpinQuantPreprocessor,
     TrainableRMSNorm,
 )
-from auto_round.algorithms.transforms.spinquant.apply import SpinQuantRotation
-from auto_round.algorithms.transforms.spinquant.cayley_optimizer import (
-    SGDG,
-    AdamAndSGDG,
+from auto_round.algorithms.transforms.spinquant.rotation_utils import (
+    InputRotationWrapperHadamard,
+    apply_hadamard_to_linear,
+    create_block_diag_from_head_matrix,
+    deterministic_hadamard_matrix,
+    get_hadamard_K,
+    get_model_arch_info,
+    is_pow2,
+    matmul_hadU,
+    random_hadamard_matrix,
+    rotate_in_channels_,
+    rotate_out_channels_,
+    untie_word_embeddings_if_needed,
+)
+from auto_round.algorithms.transforms.spinquant.serialize import (
+    ROTATION_TYPE_HADAMARD,
+    ROTATION_TYPE_RANDOM,
+    ROTATION_TYPE_TRAINED,
+    _apply_block_rotation_butterfly,
+    _apply_rotation_from_buffer,
+    _has_spinquant_buffers,
+    _is_quantlinear,
+    inject_spinquant_buffers,
+    preregister_spinquant_buffers,
+    rebuild_spinquant_online,
+    save_spinquant_config,
 )
 from auto_round.algorithms.transforms.spinquant.training import (
     LossLogger,
@@ -55,58 +93,20 @@ from auto_round.algorithms.transforms.spinquant.training import (
     RotationTrainerCallback,
     RotationTrainerConfig,
     SpinQuantState,
-    compute_rotation_loss,
-    spinquant_loss_fn,
-    create_dual_optimizer,
-    create_spinquant_optimizer,
     check_orthogonality,
     clone_model_for_reference,
+    compute_rotation_loss,
+    create_dual_optimizer,
+    create_spinquant_optimizer,
     move_batch_to_device,
     run_training_loop,
+    spinquant_loss_fn,
 )
-from auto_round.algorithms.transforms.spinquant.rotation_utils import (
-    deterministic_hadamard_matrix,
-    random_hadamard_matrix,
-    is_pow2,
-    get_hadamard_K,
-    matmul_hadU,
-    rotate_in_channels_,
-    rotate_out_channels_,
-    InputRotationWrapperHadamard,
-    get_model_arch_info,
-    untie_word_embeddings_if_needed,
-    apply_hadamard_to_linear,
-    create_block_diag_from_head_matrix,
-)
-from auto_round.algorithms.transforms.spinquant.monkeypatch import (
-    copy_func_with_new_globals,
-    add_wrapper_after_function_call_in_method,
-    QKRotationWrapper,
-    add_qk_rotation_after_rope,
-)
-from auto_round.algorithms.transforms.spinquant.inplace.apply import (
-    register_spinquant_hooks,
-    remove_spinquant_hooks,
-    apply_spinquant_in_place,
-)
-from auto_round.algorithms.transforms.spinquant.serialize import (
-    inject_spinquant_buffers,
-    save_spinquant_config,
-    preregister_spinquant_buffers,
-    rebuild_spinquant_online,
-    ROTATION_TYPE_HADAMARD,
-    ROTATION_TYPE_RANDOM,
-    ROTATION_TYPE_TRAINED,
-    _is_quantlinear,
-    _has_spinquant_buffers,
-    _apply_rotation_from_buffer,
-    _apply_block_rotation_butterfly,
-)
-
 
 # =============================================================================
 # TestSpinQuantConfig — validation, defaults, serialization
 # =============================================================================
+
 
 class TestSpinQuantConfig:
     """SpinQuantConfig validation and field defaults."""
@@ -198,7 +198,10 @@ class TestSpinQuantConfig:
 
     def test_quarat_mode_fixed_hadamard(self):
         cfg = SpinQuantConfig(
-            r1=True, r2=True, r3=True, r4=True,
+            r1=True,
+            r2=True,
+            r3=True,
+            r4=True,
             trainable_rotation=False,
             trainable_smooth=False,
         )
@@ -218,6 +221,7 @@ class TestSpinQuantConfig:
 # =============================================================================
 # TestTrainableRMSNorm — smooth value scaling and gradient flow
 # =============================================================================
+
 
 class TestTrainableRMSNorm:
     """TrainableRMSNorm wrapper for joint SpinQuant + SmoothQuant."""
@@ -289,6 +293,7 @@ class TestTrainableRMSNorm:
 # TestRotationUtils — Hadamard matrices and rotation primitives
 # =============================================================================
 
+
 class TestIsPow2:
     """is_pow2 correctly identifies powers of two."""
 
@@ -320,9 +325,7 @@ class TestDeterministicHadamardMatrix:
         # so its unique values are ±1/sqrt(N) — not the classical ±1.
         scale = 1.0 / math.sqrt(size)
         expected = torch.tensor([scale, -scale], dtype=H.dtype, device=H.device)
-        assert torch.allclose(
-            torch.sort(H.unique()).values, torch.sort(expected).values, atol=1e-6
-        )
+        assert torch.allclose(torch.sort(H.unique()).values, torch.sort(expected).values, atol=1e-6)
 
     @pytest.mark.parametrize("size", [2, 4, 8, 16, 32, 64])
     def test_orthogonal_property(self, size):
@@ -449,7 +452,7 @@ class TestMatmulHadU:
         X = torch.randn(4, size)
         result = matmul_hadU(X)
         # Orthogonality: ||H X||^2 == ||X||^2
-        assert torch.allclose((result ** 2).sum(-1), (X ** 2).sum(-1), atol=1e-3)
+        assert torch.allclose((result**2).sum(-1), (X**2).sum(-1), atol=1e-3)
         # H @ H.T = I when applied to a basis vector
         I = torch.eye(size, dtype=torch.float32)
         H = matmul_hadU(I)
@@ -741,6 +744,7 @@ class TestUntieWordEmbeddings:
 # TestCayleyOptimizer — SGDG and AdamAndSGDG
 # =============================================================================
 
+
 class TestSGDG:
     """SGDG optimizer with Cayley retraction on the Stiefel manifold."""
 
@@ -933,6 +937,7 @@ class TestAdamAndSGDG:
 # TestLossFunctions — compute_rotation_loss and spinquant_loss_fn
 # =============================================================================
 
+
 class TestComputeRotationLoss:
     """compute_rotation_loss with kl_top, kl_full, and mse loss types."""
 
@@ -991,6 +996,7 @@ class TestComputeRotationLoss:
 # TestSpinQuantState — training state tracking
 # =============================================================================
 
+
 class TestSpinQuantState:
     """SpinQuantState tracks training metrics."""
 
@@ -1048,6 +1054,7 @@ class TestSpinQuantState:
 # =============================================================================
 # TestTrainingUtilities — check_orthogonality, clone_model, move_batch
 # =============================================================================
+
 
 class TestCheckOrthogonality:
     """check_orthogonality computes R @ R.T deviation."""
@@ -1109,6 +1116,7 @@ class TestMoveBatchToDevice:
 # TestLossLogger — training callback
 # =============================================================================
 
+
 class TestLossLogger:
     """LossLogger callback for rotation training."""
 
@@ -1144,6 +1152,7 @@ class TestLossLogger:
 # TestOptimizerCreation — create_dual_optimizer and alias
 # =============================================================================
 
+
 class TestOptimizerCreation:
     """create_dual_optimizer groups params by type."""
 
@@ -1170,6 +1179,7 @@ class TestOptimizerCreation:
 # =============================================================================
 # TestSpinQuantRotation — BaseRotation registry integration
 # =============================================================================
+
 
 class TestSpinQuantRotation:
     """SpinQuantRotation registered as 'spinquant' in BaseRotation."""
@@ -1208,6 +1218,7 @@ class TestSpinQuantRotation:
 # TestSpinQuantPreprocessor — model preprocessing integration
 # =============================================================================
 
+
 class TestSpinQuantPreprocessor:
     """SpinQuantPreprocessor orchestrates the rotation pipeline."""
 
@@ -1234,6 +1245,7 @@ class TestSpinQuantPreprocessor:
 # =============================================================================
 # TestMonkeypatch — QKRotationWrapper and R3 monkeypatch
 # =============================================================================
+
 
 class TestCopyFuncWithNewGlobals:
     """copy_func_with_new_globals creates function copies with modified globals."""
@@ -1332,6 +1344,7 @@ class TestQKRotationWrapper:
 
     def test_attention_orthogonality_preserved(self):
         """(Q@R) @ (K@R).T = Q @ K.T since R is orthogonal."""
+
         def dummy_rope(q, k, *args, **kwargs):
             return q, k
 
@@ -1351,6 +1364,7 @@ class TestQKRotationWrapper:
 # =============================================================================
 # TestInplaceApply — hook registration for R3 and R4
 # =============================================================================
+
 
 class TestRegisterSpinquantHooks:
     """register_spinquant_hooks registers R3 and R4 online rotations."""
@@ -1413,6 +1427,7 @@ class TestApplySpinquantInPlace:
 # =============================================================================
 # TestSerialize — buffer injection, rebuild, config save/load
 # =============================================================================
+
 
 class TestIsQuantlinear:
     """_is_quantlinear identifies QuantLinear subclasses."""
@@ -1544,6 +1559,7 @@ class TestRebuildSpinquantOnline:
 # TestRotationTrainer — standalone trainer
 # =============================================================================
 
+
 class TestRotationTrainerConfig:
     """RotationTrainerConfig dataclass defaults."""
 
@@ -1608,6 +1624,7 @@ class TestRotationTrainer:
 # =============================================================================
 # TestSerializationTypes — rotation type constants
 # =============================================================================
+
 
 class TestRotationTypeConstants:
     """ROTATION_TYPE_* constants have expected integer values."""

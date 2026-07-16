@@ -16,9 +16,9 @@ import torch.nn as nn
 
 from auto_round.algorithms.transforms.hadamard.apply import (
     HadamardRotation,
-    apply_rotation_transform,
     _apply_to_module,
     _triton_available,
+    apply_rotation_transform,
 )
 
 

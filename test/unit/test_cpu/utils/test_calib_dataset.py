@@ -1,14 +1,13 @@
 import json
 import os
 import shutil
+from test.helpers import get_model_path, opt_name_or_path
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path, opt_name_or_path
 
 
 class TestLocalCalibDataset:

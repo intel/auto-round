@@ -32,16 +32,14 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from typing import Optional
-
-import pytest
-import torch
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     record,
 )
+from typing import Optional
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -111,9 +109,9 @@ def _require_ram(min_gib: int) -> None:
 
 def _quantize_diffusion(model_id: str, scheme: str, output_dir: str, num_inference_steps: int) -> None:
     """Quantize a diffusion model with ``auto-round`` and write to ``output_dir``."""
-    from auto_round import AutoRound
-
     from test.helpers import get_model_path
+
+    from auto_round import AutoRound
 
     model_id = get_model_path(model_id)
     shutil.rmtree(output_dir, ignore_errors=True)
@@ -187,9 +185,9 @@ class TestDiffusionQuantizeE2E:
         quant_time = time.perf_counter() - t0
 
         # Sanity: the saved pipeline must contain the expected files.
-        assert os.path.isfile(os.path.join(save_dir, "model_index.json")), (
-            f"diffusion pipeline not exported correctly: missing model_index.json in {save_dir}"
-        )
+        assert os.path.isfile(
+            os.path.join(save_dir, "model_index.json")
+        ), f"diffusion pipeline not exported correctly: missing model_index.json in {save_dir}"
         # The transformer (the thing we actually quantized) must carry a
         # quantization_config.json so downstream tools can dequantize.
         assert os.path.isfile(

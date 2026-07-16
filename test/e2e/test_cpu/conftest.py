@@ -205,15 +205,11 @@ def require_ram(model_case: ModelCase, request):
     override = _resolve_mem_override(request)
     if override is not None:
         if override < model_case.min_ram_gib:
-            pytest.skip(
-                f"--e2e-cpu-mem-gib={override} < required {model_case.min_ram_gib} GiB for {model_case.hf_id}"
-            )
+            pytest.skip(f"--e2e-cpu-mem-gib={override} < required {model_case.min_ram_gib} GiB for {model_case.hf_id}")
         return
     avail = _host_mem_avail_gib()
     if avail < model_case.min_ram_gib:
-        pytest.skip(
-            f"Skipping {model_case.hf_id}: only {avail:.1f} GiB free, need {model_case.min_ram_gib} GiB"
-        )
+        pytest.skip(f"Skipping {model_case.hf_id}: only {avail:.1f} GiB free, need {model_case.min_ram_gib} GiB")
 
 
 @pytest.fixture
@@ -244,7 +240,6 @@ def require_diffusers():
 def require_transformers_vlm():
     """Some VLMs need a recent transformers version; skip if too old."""
     import transformers
-
     from packaging.version import Version
 
     if Version(transformers.__version__) < Version("4.45.0"):

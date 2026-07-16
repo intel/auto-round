@@ -71,10 +71,7 @@ class TestQuantLinearInit:
 
     def test_init_use_pc_true(self):
         """Test init with use_pc=True sets w_bf16_to_fp8_scale shape to (1, outfeatures)."""
-        ql = QuantLinear(
-            bits=4, group_size=64, infeatures=512, outfeatures=256,
-            bias=False, use_pc=True
-        )
+        ql = QuantLinear(bits=4, group_size=64, infeatures=512, outfeatures=256, bias=False, use_pc=True)
         assert ql.w_bf16_to_fp8_scale.shape == (1, 256)
 
     def test_repr(self):

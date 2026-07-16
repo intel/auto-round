@@ -40,7 +40,6 @@ from auto_round.modeling.fused_moe.replace_modules import (
 )
 from auto_round.modeling.fused_moe.utils import _update_parameter
 
-
 # ---------------------------------------------------------------------------
 # fused_moe.utils._update_parameter
 # ---------------------------------------------------------------------------

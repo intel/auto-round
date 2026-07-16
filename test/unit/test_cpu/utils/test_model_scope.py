@@ -1,13 +1,12 @@
 import copy
 import os
 import shutil
+from test.helpers import get_model_path
 
 import pytest
 import torch
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path
 
 
 class TestModelScope:

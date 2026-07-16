@@ -19,7 +19,6 @@ from auto_round.algorithms.transforms.spinquant.preprocessor import (
     TrainableRMSNorm,
 )
 
-
 # ==============================================================================
 # SpinQuantConfig
 # ==============================================================================

@@ -33,18 +33,16 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List
-
-import pytest
-import torch
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     quantize_and_save,
     record,
 )
+from typing import List
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -180,9 +178,9 @@ class TestMoeExpertUnfuse:
         ids=["qwen-moe"],
     )
     def test_save_preserves_expert_count(self, model_id, expected_expert_attr, tmp_path):
-        from transformers import AutoConfig
-
         from test.helpers import get_model_path
+
+        from transformers import AutoConfig
 
         model_id = get_model_path(model_id)
 
@@ -202,6 +200,6 @@ class TestMoeExpertUnfuse:
 
         cfg = AutoConfig.from_pretrained(save_dir, trust_remote_code=True)
         n_experts = getattr(cfg, expected_expert_attr, None)
-        assert n_experts is not None and n_experts > 0, (
-            f"saved MoE checkpoint lost its expert count (cfg.{expected_expert_attr}={n_experts})"
-        )
+        assert (
+            n_experts is not None and n_experts > 0
+        ), f"saved MoE checkpoint lost its expert count (cfg.{expected_expert_attr}={n_experts})"

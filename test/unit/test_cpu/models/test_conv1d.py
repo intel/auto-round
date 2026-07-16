@@ -1,13 +1,12 @@
 import copy
 import shutil
+from test.helpers import lamini_name_or_path, model_infer
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import lamini_name_or_path, model_infer
 
 
 class TestQuantizationConv1d:

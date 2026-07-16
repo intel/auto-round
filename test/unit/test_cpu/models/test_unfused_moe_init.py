@@ -45,7 +45,6 @@ from auto_round.modeling.unfused_moe import (
     pre_check_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # MODEL_CONFIG
 # ---------------------------------------------------------------------------
@@ -58,9 +57,9 @@ def test_model_config_has_required_keys():
         assert isinstance(cfg, dict), f"{model_type} config is not a dict"
         assert cfg.get("block_patch"), f"{model_type} has no block_patch"
         # The "min/max transformers version" key is required.
-        assert "min_transformers_version" in cfg or "max_transformers_version" in cfg, (
-            f"{model_type} missing transformers-version gate"
-        )
+        assert (
+            "min_transformers_version" in cfg or "max_transformers_version" in cfg
+        ), f"{model_type} missing transformers-version gate"
 
 
 def test_model_config_known_architectures():
@@ -69,9 +68,7 @@ def test_model_config_known_architectures():
     *and* the e2e matrix.
     """
     required = {"qwen3_moe", "glm4_moe_lite", "glm4_moe", "deepseek_v3", "ernie4_5_moe"}
-    assert required.issubset(MODEL_CONFIG.keys()), (
-        f"Missing architectures: {required - MODEL_CONFIG.keys()}"
-    )
+    assert required.issubset(MODEL_CONFIG.keys()), f"Missing architectures: {required - MODEL_CONFIG.keys()}"
 
 
 def test_model_config_block_patch_paths_are_valid_python():
@@ -88,9 +85,7 @@ def test_model_config_block_patch_paths_are_valid_python():
                 spec = importlib.util.find_spec(module_path)
                 assert spec is not None, f"{model_type}: cannot find module {module_path}"
                 mod = importlib.import_module(module_path)
-                assert hasattr(mod, class_name), (
-                    f"{model_type}: {module_path} does not define {class_name}"
-                )
+                assert hasattr(mod, class_name), f"{model_type}: {module_path} does not define {class_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +229,7 @@ def test_pre_check_config_accepts_known_model_type(monkeypatch):
         "get_file_path_via_model_name",
         lambda *a, **kw: "/dev/null/no-such-file",
     )
+
     # The function calls ``os.path.exists`` and tries to read the file;
     # we make ``open`` raise so the heuristic falls into the ``except:``
     # branch and returns True.
@@ -451,6 +447,7 @@ def test_apply_modeling_patch_replaces_modules_in_place(monkeypatch):
         "auto_round.modeling.unfused_moe.pre_check_config",
         lambda *a, **kw: True,
     )
+
     # ``set_submodule`` is only present on PreTrainedModel; the helper
     # we test against is called on a bare ``nn.Module``, so we add a
     # tiny stub via ``types.MethodType`` rather than monkey-patching

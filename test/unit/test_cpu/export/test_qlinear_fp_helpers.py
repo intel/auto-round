@@ -26,6 +26,7 @@ import torch.nn as nn
 class TestModuleConstants:
     def test_float_to_e2m1_lookup(self):
         from auto_round.export.export_to_autoround.qlinear_fp import FLOAT_TO_E2M1
+
         assert len(FLOAT_TO_E2M1) == 8
         # Monotonically non-decreasing
         for i in range(1, len(FLOAT_TO_E2M1)):
@@ -56,8 +57,13 @@ class TestQuantLinearInit:
         from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(
-            bits=4, group_size=16, infeatures=32, outfeatures=4, bias=False,
-            data_type="nv_fp4", act_bits=16,
+            bits=4,
+            group_size=16,
+            infeatures=32,
+            outfeatures=4,
+            bias=False,
+            data_type="nv_fp4",
+            act_bits=16,
         )
         assert layer.weight_global_scale.shape == (1,)
         # act_bits > 8 -> input_global_scale NOT registered
@@ -67,8 +73,13 @@ class TestQuantLinearInit:
         from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(
-            bits=4, group_size=16, infeatures=32, outfeatures=4, bias=False,
-            data_type="nv_fp4", act_bits=8,
+            bits=4,
+            group_size=16,
+            infeatures=32,
+            outfeatures=4,
+            bias=False,
+            data_type="nv_fp4",
+            act_bits=8,
         )
         # act_bits <= 8 -> input_global_scale registered
         assert hasattr(layer, "input_global_scale")
@@ -97,7 +108,11 @@ class TestQuantLinearInit:
 
         with pytest.raises(NotImplementedError):
             QuantLinear(
-                bits=4, group_size=15, infeatures=30, outfeatures=4, bias=False,
+                bits=4,
+                group_size=15,
+                infeatures=30,
+                outfeatures=4,
+                bias=False,
                 data_type="nv_fp4",
             )
 
@@ -106,7 +121,11 @@ class TestQuantLinearInit:
 
         with pytest.raises(NotImplementedError):
             QuantLinear(
-                bits=4, group_size=16, infeatures=33, outfeatures=4, bias=False,
+                bits=4,
+                group_size=16,
+                infeatures=33,
+                outfeatures=4,
+                bias=False,
                 data_type="nv_fp4",
             )
 
@@ -125,6 +144,7 @@ class TestPackFp4ToUint8Cpu:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             pack_fp4_to_uint8_cpu,
         )
+
         x = torch.zeros(4, 8)
         packed = pack_fp4_to_uint8_cpu(x)
         assert packed.shape == (4, 4)
@@ -134,6 +154,7 @@ class TestPackFp4ToUint8Cpu:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             pack_fp4_to_uint8_cpu,
         )
+
         x = torch.zeros(2, 6)
         packed = pack_fp4_to_uint8_cpu(x)
         # Half of 6 is 3
@@ -145,6 +166,7 @@ class TestPackFp4ToUint8:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
+
         x = torch.zeros(2, 4)
         packed = _pack_fp4_to_uint8(x)
         assert (packed == 0).all()
@@ -154,6 +176,7 @@ class TestPackFp4ToUint8:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
+
         x = torch.full((2, 4), 6.0)
         packed = _pack_fp4_to_uint8(x)
         # Positive: low nibble = 7, high nibble = 7 -> 0x77
@@ -164,6 +187,7 @@ class TestPackFp4ToUint8:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
+
         x = torch.full((2, 4), 100.0)
         packed = _pack_fp4_to_uint8(x)
         # Snaps to 6.0 -> index 7 -> 0x77
@@ -174,6 +198,7 @@ class TestPackFp4ToUint8:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
+
         x = torch.full((1, 4), -6.0)
         packed = _pack_fp4_to_uint8(x)
         # |x| = 6 -> index 7 in low; sign bit set in high (bit 3).
@@ -184,9 +209,10 @@ class TestPackFp4ToUint8:
 
     def test_pack_pairs(self):
         from auto_round.export.export_to_autoround.qlinear_fp import (
-            _pack_fp4_to_uint8,
             FLOAT_TO_E2M1,
+            _pack_fp4_to_uint8,
         )
+
         # Use FLOAT_TO_E2M1[1] = 0.5 (positive, index 1)
         x = torch.full((1, 2), FLOAT_TO_E2M1[1])
         packed = _pack_fp4_to_uint8(x)
@@ -200,6 +226,7 @@ class TestPackFp4ToUint8Dispatcher:
         from auto_round.export.export_to_autoround.qlinear_fp import (
             pack_fp4_to_uint8,
         )
+
         x = torch.zeros(2, 4)
         packed = pack_fp4_to_uint8(x)
         assert packed.shape == (2, 2)

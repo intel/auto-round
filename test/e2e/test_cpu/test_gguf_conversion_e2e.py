@@ -38,16 +38,14 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List, Optional
-
-import pytest
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     record,
 )
+from typing import List, Optional
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -118,7 +116,9 @@ def _gguf_general_metadata(path: str) -> dict:
 class TestGgufFullMatrix:
     """Quantize + verify metadata for every supported GGUF type."""
 
-    @pytest.mark.parametrize("gguf_type,bits,group_size,gguf_name", ALL_GGUF_TYPES, ids=[_case_id(g) for g, *_ in ALL_GGUF_TYPES])
+    @pytest.mark.parametrize(
+        "gguf_type,bits,group_size,gguf_name", ALL_GGUF_TYPES, ids=[_case_id(g) for g, *_ in ALL_GGUF_TYPES]
+    )
     def test_quantize_and_verify(self, gguf_type, bits, group_size, gguf_name, tmp_path, require_llama_cpp):
         from test.helpers import get_model_path
 
@@ -126,11 +126,11 @@ class TestGgufFullMatrix:
         save_dir = str(tmp_path / "gguf_full_out")
 
         # ---- 1. quantize + save ----
-        from auto_round import AutoRound  # local import: heavy module
-
         # Skip the model-load if we've already exported the same model
         # once during this test session.
         import shutil
+
+        from auto_round import AutoRound  # local import: heavy module
 
         ar = AutoRound(
             model=model_id,
@@ -157,8 +157,7 @@ class TestGgufFullMatrix:
         file_type = str(meta.get("general.file_type", ""))
         if file_type:
             assert file_type.startswith(gguf_name), (
-                f"{gguf_type}: GGUF metadata general.file_type={file_type!r} "
-                f"does not start with {gguf_name!r}"
+                f"{gguf_type}: GGUF metadata general.file_type={file_type!r} " f"does not start with {gguf_name!r}"
             )
 
         # ---- 3. load + run a single generation ----
@@ -202,7 +201,9 @@ class TestGgufFullMatrix:
 class TestGgufMetadataHeader:
     """Header-only check; useful for fast CI feedback without loading the model."""
 
-    @pytest.mark.parametrize("gguf_type,bits,group_size,_", ALL_GGUF_TYPES[:4], ids=[_case_id(g) for g, *_ in ALL_GGUF_TYPES[:4]])
+    @pytest.mark.parametrize(
+        "gguf_type,bits,group_size,_", ALL_GGUF_TYPES[:4], ids=[_case_id(g) for g, *_ in ALL_GGUF_TYPES[:4]]
+    )
     def test_header_only(self, gguf_type, bits, group_size, _, tmp_path):
         """Quantize, then read the header and verify metadata - no inference."""
         from test.helpers import get_model_path

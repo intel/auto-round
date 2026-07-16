@@ -33,17 +33,15 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, Optional
-
-import pytest
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     extract_metric,
     quantize_and_save,
     record,
 )
+from typing import Dict, Optional
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Matrix

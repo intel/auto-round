@@ -1,5 +1,6 @@
 import copy
 import shutil
+from test.helpers import get_model_path, get_tiny_model, model_infer
 
 import pytest
 import torch
@@ -8,7 +9,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_gptqmodel
-from test.helpers import get_model_path, get_tiny_model, model_infer
 
 
 class TestQuantizationConv1d:

@@ -1,6 +1,7 @@
 import shutil
 import subprocess
 from math import ceil
+from test.helpers import get_model_path
 
 import pytest
 import torch
@@ -8,8 +9,6 @@ import torch
 from auto_round import AutoRound
 from auto_round.data_type.fp8 import quant_block_fp_sym
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
-
-from test.helpers import get_model_path
 
 
 class TestAutoRoundBlockFP:

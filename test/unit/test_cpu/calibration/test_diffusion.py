@@ -126,9 +126,7 @@ class TestDiffusionCalibrator:
     def test_calib_string_dataset_reloads_dataloader(self, calibrator):
         new_dataloader = [("id0", ["p1", "p2"])]
         calibrator.compressor.dataset = "mock_dataset"
-        calibrator.compressor.model_context.pipe = FakePipeline(
-            fn=lambda *args, **kwargs: None
-        )
+        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator.compressor._requires_calibration_image = lambda: False
         calibrator.compressor._autoround_pipeline_fn = None
 
@@ -151,9 +149,7 @@ class TestDiffusionCalibrator:
 
     def test_calib_non_string_dataset_keeps_existing_dataloader(self, calibrator):
         calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(
-            fn=lambda *args, **kwargs: None
-        )
+        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator.compressor._requires_calibration_image = lambda: False
         calibrator.compressor._autoround_pipeline_fn = None
 
@@ -176,9 +172,7 @@ class TestDiffusionCalibrator:
                 return iter([("id0", ["p1"])])
 
         calibrator.compressor.dataset = FakeDataloader()
-        calibrator.compressor.model_context.pipe = FakePipeline(
-            fn=lambda *args, **kwargs: None
-        )
+        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator.compressor._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
@@ -230,7 +224,7 @@ class TestDiffusionCalibrator:
         ):
             calibrator.calib(nsamples=2, bs=1)
 
-        assert seen == ['cuda:0']
+        assert seen == ["cuda:0"]
 
     def test_calib_uses_autoround_pipeline_fn_when_available(self, calibrator):
         calls = []
@@ -239,9 +233,7 @@ class TestDiffusionCalibrator:
             calls.append((pipe, prompts, kwargs))
 
         calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(
-            fn=lambda *args, **kwargs: None
-        )
+        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator.compressor.model_context.pipe._autoround_pipeline_fn = pipeline_fn
 
         def fake_calib(nsamples, bs):
@@ -285,9 +277,7 @@ class TestDiffusionCalibrator:
         calibrator.compressor.dataset = [("id0", ["p1"])]
         calibrator.compressor.model_context.pipe = FakePipeline(fn=fake_pipe)
         calibrator.compressor._requires_calibration_image = lambda: True
-        calibrator.compressor._get_calibration_image = lambda batch_size: torch.randn(
-            batch_size, 4, 64, 64
-        )
+        calibrator.compressor._get_calibration_image = lambda batch_size: torch.randn(batch_size, 4, 64, 64)
         calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):

@@ -1,4 +1,5 @@
 import shutil
+from test.helpers import check_version
 
 import pytest
 import torch
@@ -7,8 +8,6 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssForCausalLM
 from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
 from auto_round import AutoRound
-
-from test.helpers import check_version
 
 
 @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")

@@ -23,14 +23,13 @@ Covers:
 import json
 import os
 import shutil
+from test.helpers import generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
 
 import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
 
 
 class TestAWQNormalLLM:

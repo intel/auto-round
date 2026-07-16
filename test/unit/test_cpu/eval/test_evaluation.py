@@ -9,12 +9,12 @@
 
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
 import torch.nn as nn
-from types import SimpleNamespace
 
 from auto_round.eval.evaluation import (
     _collect_model_floating_dtypes,

@@ -1,13 +1,12 @@
 import os
 import shutil
+from test.helpers import get_model_path, transformers_version
 
 import pytest
 import torch
 from packaging import version
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path, transformers_version
 
 flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
 

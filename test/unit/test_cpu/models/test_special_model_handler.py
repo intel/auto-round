@@ -14,9 +14,10 @@
 
 """Tests for auto_round/special_model_handler.py"""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 import torch
-from unittest.mock import MagicMock, patch
 
 
 class TestMllmsWithLimitedBs:
@@ -1100,8 +1101,8 @@ class TestUpdateModule:
     """Test update_module function."""
 
     def test_gguf_format_returns_unchanged(self):
-        from auto_round.special_model_handler import update_module
         from auto_round.formats import OutputFormat
+        from auto_round.special_model_handler import update_module
 
         mock_model = MagicMock()
         gguf_format = MagicMock(spec=OutputFormat)
@@ -1110,8 +1111,8 @@ class TestUpdateModule:
         assert result is mock_model
 
     def test_non_gguf_format_applies_replacements(self):
-        from auto_round.special_model_handler import update_module
         from auto_round.formats import OutputFormat
+        from auto_round.special_model_handler import update_module
 
         mock_model = MagicMock()
         non_gguf_format = MagicMock(spec=OutputFormat)

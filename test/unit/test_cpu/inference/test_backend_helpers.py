@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the small pure helpers in ``auto_round/inference/backend.py``.
-"""
+"""Tests for the small pure helpers in ``auto_round/inference/backend.py``."""
+
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -24,14 +24,17 @@ from unittest.mock import patch, MagicMock
 class TestBackendConstants:
     def test_backend_act_attrs_contains_act_bits(self):
         from auto_round.inference.backend import BACKEND_ACT_ATTRS
+
         assert "act_bits" in BACKEND_ACT_ATTRS
 
     def test_backend_act_attrs_contains_act_dynamic(self):
         from auto_round.inference.backend import BACKEND_ACT_ATTRS
+
         assert "act_dynamic" in BACKEND_ACT_ATTRS
 
     def test_mx_tensor_data_types(self):
         from auto_round.inference.backend import MX_TENSOR_DATA_TYPES
+
         assert "mx_fp" in MX_TENSOR_DATA_TYPES
         assert "mx_fp_rceil" in MX_TENSOR_DATA_TYPES
         assert "mx_int" in MX_TENSOR_DATA_TYPES
@@ -90,18 +93,22 @@ class TestBackendInfo:
 class TestFeatureMultiplyChecker:
     def test_both_divisible(self):
         from auto_round.inference.backend import feature_multiply_checker
+
         assert feature_multiply_checker(64, 64, {}, 32) is True
 
     def test_in_not_divisible(self):
         from auto_round.inference.backend import feature_multiply_checker
+
         assert feature_multiply_checker(33, 64, {}, 32) is False
 
     def test_out_not_divisible(self):
         from auto_round.inference.backend import feature_multiply_checker
+
         assert feature_multiply_checker(64, 33, {}, 32) is False
 
     def test_distinct_in_out_multipliers(self):
         from auto_round.inference.backend import feature_multiply_checker
+
         assert feature_multiply_checker(8, 16, {}, 8, 16) is True
         assert feature_multiply_checker(8, 17, {}, 8, 16) is False
 
@@ -112,22 +119,27 @@ class TestFeatureMultiplyChecker:
 class TestFeatureMultiplyCheckerGroupSize:
     def test_all_divisible(self):
         from auto_round.inference.backend import feature_multiply_checker_group_size
+
         assert feature_multiply_checker_group_size(64, 64, {"group_size": 32}, 32) is True
 
     def test_group_size_fails(self):
         from auto_round.inference.backend import feature_multiply_checker_group_size
+
         assert feature_multiply_checker_group_size(64, 64, {"group_size": 7}, 32) is False
 
     def test_in_multiplier_fails(self):
         from auto_round.inference.backend import feature_multiply_checker_group_size
+
         assert feature_multiply_checker_group_size(33, 64, {"group_size": 32}, 32) is False
 
     def test_out_multiplier_fails(self):
         from auto_round.inference.backend import feature_multiply_checker_group_size
+
         assert feature_multiply_checker_group_size(64, 33, {"group_size": 32}, 32) is False
 
     def test_distinct_out_multiplier(self):
         from auto_round.inference.backend import feature_multiply_checker_group_size
+
         # Pass explicit out_feature_multiplier
         assert feature_multiply_checker_group_size(8, 16, {"group_size": 8}, 8, 16) is True
 
@@ -138,28 +150,33 @@ class TestFeatureMultiplyCheckerGroupSize:
 class TestFeatureCompatibleMultiplyChecker:
     def test_in_div_by_group_size(self):
         from auto_round.inference.backend import feature_compatible_multiply_checker
+
         # in_feature=64 divisible by group_size=32 -> ok
         assert feature_compatible_multiply_checker(64, 64, {"group_size": 32}, 32) is True
 
     def test_in_less_than_group_size_with_compatible(self):
         """When in_feature < group_size but in*out is divisible, the check passes."""
         from auto_round.inference.backend import feature_compatible_multiply_checker
+
         # Need: in%32 == 0 AND out%32 == 0 AND (in%64==0 OR (in<64 AND in*out%64==0))
         # in=32, out=32, group=64: 32%32=0, 32%32=0, 32<64 AND 32*32%64==0 -> ok
         assert feature_compatible_multiply_checker(32, 32, {"group_size": 64}, 32) is True
 
     def test_in_less_than_group_size_incompatible(self):
         from auto_round.inference.backend import feature_compatible_multiply_checker
+
         # in=8, out=15, group=32: 8 < 32 and 8*15 = 120 not div by 32 -> fail
         assert feature_compatible_multiply_checker(8, 15, {"group_size": 32}, 32) is False
 
     def test_in_divisible_by_group_size(self):
         from auto_round.inference.backend import feature_compatible_multiply_checker
+
         # 64 divisible by 32 -> ok (first branch)
         assert feature_compatible_multiply_checker(64, 64, {"group_size": 32}, 32) is True
 
     def test_in_multiplier_fails(self):
         from auto_round.inference.backend import feature_compatible_multiply_checker
+
         assert feature_compatible_multiply_checker(33, 64, {"group_size": 32}, 32) is False
 
 

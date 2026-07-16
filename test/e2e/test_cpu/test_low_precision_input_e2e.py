@@ -35,16 +35,14 @@ from __future__ import annotations
 
 import os
 import time
-
-import pytest
-import torch
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     record,
 )
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -141,9 +139,7 @@ class TestLowPrecisionInputE2E:
                     break
             if first_layer is not None:
                 wt = getattr(first_layer, "weight_packed", first_layer.weight)
-                assert wt.dtype == expected_dtype, (
-                    f"{model_id} weight dtype {wt.dtype} != expected {expected_dtype}"
-                )
+                assert wt.dtype == expected_dtype, f"{model_id} weight dtype {wt.dtype} != expected {expected_dtype}"
 
         # ---- 2. re-export through auto-round (no further quant) ----
         from auto_round import AutoRound

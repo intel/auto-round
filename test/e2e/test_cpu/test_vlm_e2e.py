@@ -32,16 +32,14 @@ from __future__ import annotations
 
 import os
 import time
-
-import pytest
-import torch
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     record,
 )
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -98,10 +96,10 @@ def _load_tiny_prompt(model_id: str):
 
 def _quantize_vlm(model_id: str, scheme: str, quant_vision: bool, save_dir: str) -> None:
     """Quantize a VLM end-to-end and save the checkpoint."""
+    from test.helpers import get_model_path
+
     from auto_round import AutoRound
     from auto_round.utils import mllm_load_model
-
-    from test.helpers import get_model_path
 
     model_id = get_model_path(model_id)
     model, processor, tokenizer, image_processor = mllm_load_model(model_id)
@@ -162,7 +160,7 @@ def _reload_and_generate(saved_dir: str, model_id: str, max_new_tokens: int = 16
         inputs = processor(text=[text], images=[image], return_tensors="pt", padding=True)
         with torch.no_grad():
             ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
-        out_ids = ids[0][len(inputs["input_ids"][0]):]
+        out_ids = ids[0][len(inputs["input_ids"][0]) :]
         return processor.batch_decode([out_ids], skip_special_tokens=True)[0]
     finally:
         del model
@@ -214,9 +212,9 @@ class TestVlmE2E:
 
         cfg = AutoConfig.from_pretrained(save_dir, trust_remote_code=True)
         # VLM models always carry some form of vision config.
-        assert any(hasattr(cfg, attr) for attr in ("vision_config", "image_config")), (
-            "saved checkpoint does not look like a VLM: missing vision_config"
-        )
+        assert any(
+            hasattr(cfg, attr) for attr in ("vision_config", "image_config")
+        ), "saved checkpoint does not look like a VLM: missing vision_config"
 
         t0 = time.perf_counter()
         text = _reload_and_generate(save_dir, model_id, max_new_tokens=12)

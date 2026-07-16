@@ -42,70 +42,76 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.transforms.hadamard.config import (
-    RotationConfig,
-    normalize_rotation_config,
-    to_dict_rotation_config,
-    dump_group_size_to_rotation_config,
-)
-from auto_round.algorithms.transforms.hadamard.transforms import (
-    HadamardTransform,
-    RandomHadamardTransform,
-    build_hadamard_transform,
-    HADAMARDS,
-)
-from auto_round.algorithms.transforms.hadamard.utils.math import (
-    deterministic_hadamard_matrix,
-    random_hadamard_matrix,
-    is_pow2,
-    _fetch_hadamard_divisor,
-    _matmul_hadU,
-)
-from auto_round.algorithms.transforms.hadamard.utils.matrix import (
-    apply_transform_weight,
-    multihead_matmul,
-)
-from auto_round.algorithms.transforms.hadamard.dispatcher import (
-    resolve_hadamard_backend,
-    apply_hadamard_rotation,
-)
 from auto_round.algorithms.transforms.hadamard.apply import (
     HadamardRotation,
 )
-from auto_round.algorithms.transforms.hadamard.inplace.model_config import (
-    RotationMapping,
-    MAPPING_REGISTRY,
-    register_mapping,
-    get_mapping,
-    infer_mapping_from_model,
-    _resolve,
+from auto_round.algorithms.transforms.hadamard.config import (
+    RotationConfig,
+    dump_group_size_to_rotation_config,
+    normalize_rotation_config,
+    to_dict_rotation_config,
 )
+from auto_round.algorithms.transforms.hadamard.dispatcher import (
+    apply_hadamard_rotation,
+    resolve_hadamard_backend,
+)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
+    CrossHeadOnlineHadamardHook,
+    FullOnlineHadamardHook,
+    GroupOnlineHadamardHook,
+    _normalize_rotation_matrix,
+    _resolve_compute_device,
+    apply_cross_head_had_to_linear,
+    apply_exact_had_to_linear,
+    clear_random_hadamard_cache,
+)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
+    deterministic_hadamard_matrix as inplace_det_hadamard,
+)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
+    get_hadK,
+    get_or_create_random_hadamard,
+)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import is_pow2 as inplace_is_pow2
 from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
     matmul_hadU,
     matmul_hadUt,
-    get_hadK,
-    is_pow2 as inplace_is_pow2,
-    _normalize_rotation_matrix,
-    _resolve_compute_device,
-    get_or_create_random_hadamard,
-    clear_random_hadamard_cache,
-    FullOnlineHadamardHook,
-    CrossHeadOnlineHadamardHook,
-    GroupOnlineHadamardHook,
-    apply_exact_had_to_linear,
-    apply_cross_head_had_to_linear,
-    deterministic_hadamard_matrix as inplace_det_hadamard,
-    random_hadamard_matrix as inplace_rand_hadamard,
+)
+from auto_round.algorithms.transforms.hadamard.inplace.hooks import random_hadamard_matrix as inplace_rand_hadamard
+from auto_round.algorithms.transforms.hadamard.inplace.model_config import (
+    MAPPING_REGISTRY,
+    RotationMapping,
+    _resolve,
+    get_mapping,
+    infer_mapping_from_model,
+    register_mapping,
 )
 from auto_round.algorithms.transforms.hadamard.patch import (
     patch_wrapperlinear_to_apply_transform,
     patch_wrapperwalayer_forward_to_apply_transform,
 )
-
+from auto_round.algorithms.transforms.hadamard.transforms import (
+    HADAMARDS,
+    HadamardTransform,
+    RandomHadamardTransform,
+    build_hadamard_transform,
+)
+from auto_round.algorithms.transforms.hadamard.utils.math import (
+    _fetch_hadamard_divisor,
+    _matmul_hadU,
+    deterministic_hadamard_matrix,
+    is_pow2,
+    random_hadamard_matrix,
+)
+from auto_round.algorithms.transforms.hadamard.utils.matrix import (
+    apply_transform_weight,
+    multihead_matmul,
+)
 
 # =============================================================================
 # Test RotationConfig
 # =============================================================================
+
 
 class TestRotationConfigValidation:
     """RotationConfig field validation and defaults."""
@@ -220,9 +226,7 @@ class TestDumpGroupSizeToRotationConfig:
         assert result["block_size"] == 64
 
     def test_preserves_other_keys(self):
-        result = dump_group_size_to_rotation_config(
-            {"hadamard_type": "random_hadamard"}, 32
-        )
+        result = dump_group_size_to_rotation_config({"hadamard_type": "random_hadamard"}, 32)
         assert result["hadamard_type"] == "random_hadamard"
         assert result["block_size"] == 32
 
@@ -274,6 +278,7 @@ class TestNormalizeRotationConfig:
 # Test is_pow2
 # =============================================================================
 
+
 class TestIsPow2:
     """is_pow2 correctly identifies powers of two."""
 
@@ -294,6 +299,7 @@ class TestIsPow2:
 # =============================================================================
 # Test Hadamard Matrix Construction
 # =============================================================================
+
 
 class TestDeterministicHadamardMatrix:
     """deterministic_hadamard_matrix via Sylvester construction."""
@@ -421,6 +427,7 @@ class TestFetchHadamardDivisor:
 # Test Matrix Operations
 # =============================================================================
 
+
 class TestMultiheadMatmul:
     """multihead_matmul block-diagonal matrix multiplication."""
 
@@ -500,6 +507,7 @@ class TestApplyTransformWeight:
 # =============================================================================
 # Test HadamardTransform
 # =============================================================================
+
 
 class TestHadamardTransformClass:
     """HadamardTransform nn.Module — deterministic block-diagonal rotation."""
@@ -620,9 +628,7 @@ class TestBuildHadamardTransform:
             build_hadamard_transform("unknown", block_size=8)
 
     def test_passes_kwargs(self):
-        result = build_hadamard_transform(
-            "random_hadamard", block_size=8, seed=42, device=torch.device("cpu")
-        )
+        result = build_hadamard_transform("random_hadamard", block_size=8, seed=42, device=torch.device("cpu"))
         assert isinstance(result, RandomHadamardTransform)
         assert result.generator is not None
 
@@ -645,6 +651,7 @@ class TestHADAMARDSRegistry:
 # =============================================================================
 # Test Dispatcher
 # =============================================================================
+
 
 class TestResolveHadamardBackend:
     """resolve_hadamard_backend routes to correct backend string."""
@@ -724,6 +731,7 @@ class TestApplyHadamardRotation:
 # Test HadamardRotation BaseRotation Subclass
 # =============================================================================
 
+
 class TestHadamardRotationClass:
     """HadamardRotation — the BaseRotation implementation."""
 
@@ -752,9 +760,7 @@ class TestApplyRotationTransformOneShot:
         assert cfg == {}
 
     def test_dict_config_normalizes(self):
-        cfg = normalize_rotation_config(
-            {"backend": "inplace", "hadamard_type": "hadamard"}, data_type="int"
-        )
+        cfg = normalize_rotation_config({"backend": "inplace", "hadamard_type": "hadamard"}, data_type="int")
         assert cfg["backend"] == "inplace"
         assert cfg["hadamard_type"] == "hadamard"
 
@@ -768,6 +774,7 @@ class TestApplyRotationTransformOneShot:
 # =============================================================================
 # Test Inplace Rotation — matmul_hadU
 # =============================================================================
+
 
 class TestMatmulHadU:
     """matmul_hadU butterfly Hadamard transform on tensors."""
@@ -832,6 +839,7 @@ class TestGetHadK:
 # Test Inplace Rotation — Hook Classes
 # =============================================================================
 
+
 class TestFullOnlineHadamardHook:
     """FullOnlineHadamardHook applies Hadamard on the entire last dimension."""
 
@@ -868,9 +876,7 @@ class TestCrossHeadOnlineHadamardHook:
     def test_forward_hook_shape_preserved(self):
         module = nn.Linear(32, 32)
         num_heads, head_dim = 4, 8
-        hook = CrossHeadOnlineHadamardHook(
-            had_K=None, K=1, head_dim=head_dim, use_fast_had=False
-        )
+        hook = CrossHeadOnlineHadamardHook(had_K=None, K=1, head_dim=head_dim, use_fast_had=False)
         x = torch.randn(2, num_heads * head_dim)
         args = (x,)
         result = hook(module, args)
@@ -880,9 +886,7 @@ class TestCrossHeadOnlineHadamardHook:
         module = nn.Linear(32, 32)
         num_heads, head_dim = 4, 8
         H = torch.eye(num_heads)
-        hook = CrossHeadOnlineHadamardHook(
-            had_K=None, K=None, head_dim=head_dim, use_fast_had=False, had_matrix=H
-        )
+        hook = CrossHeadOnlineHadamardHook(had_K=None, K=None, head_dim=head_dim, use_fast_had=False, had_matrix=H)
         x = torch.randn(2, num_heads * head_dim)
         args = (x,)
         result = hook(module, args)
@@ -924,6 +928,7 @@ class TestGroupOnlineHadamardHook:
 # Test Inplace Rotation — Low-Level Primitives
 # =============================================================================
 
+
 class TestNormalizeRotationMatrix:
     """_normalize_rotation_matrix parses all supported preset inputs."""
 
@@ -934,25 +939,19 @@ class TestNormalizeRotationMatrix:
         assert preset is None
 
     def test_quarot_hadamard_string(self):
-        had_dict, use_fast, preset = _normalize_rotation_matrix(
-            "quarot_hadamard", group_size=8
-        )
+        had_dict, use_fast, preset = _normalize_rotation_matrix("quarot_hadamard", group_size=8)
         assert had_dict is None
         assert use_fast is True
         assert preset == "quarot_hadamard"
 
     def test_hadamard_string(self):
-        had_dict, use_fast, preset = _normalize_rotation_matrix(
-            "hadamard", group_size=8
-        )
+        had_dict, use_fast, preset = _normalize_rotation_matrix("hadamard", group_size=8)
         assert had_dict is None
         assert use_fast is False
         assert preset == "hadamard"
 
     def test_random_hadamard_string(self):
-        had_dict, use_fast, preset = _normalize_rotation_matrix(
-            "random_hadamard", group_size=8
-        )
+        had_dict, use_fast, preset = _normalize_rotation_matrix("random_hadamard", group_size=8)
         assert had_dict is None
         assert use_fast is False
         assert preset == "random_hadamard"
@@ -1021,9 +1020,7 @@ class TestApplyCrossHeadHadToLinear:
         module = nn.Linear(16, 16)
         num_heads, head_dim = 4, 4
         original_weight = module.weight.data.clone()
-        apply_cross_head_had_to_linear(
-            module, num_heads=num_heads, head_dim=head_dim, use_fast_had=False
-        )
+        apply_cross_head_had_to_linear(module, num_heads=num_heads, head_dim=head_dim, use_fast_had=False)
         assert not module.weight.equal(original_weight)
 
     def test_requires_linear_module(self):
@@ -1034,6 +1031,7 @@ class TestApplyCrossHeadHadToLinear:
 # =============================================================================
 # Test Inplace Rotation — Random Cache
 # =============================================================================
+
 
 class TestRandomHadamardCache:
     """Random Hadamard global cache ensures consistent matrices across operations."""
@@ -1069,6 +1067,7 @@ class TestRandomHadamardCache:
 # =============================================================================
 # Test RotationMapping
 # =============================================================================
+
 
 class TestRotationMappingRegistry:
     """RotationMapping registry and model-config inference."""
@@ -1120,6 +1119,7 @@ class TestRotationMappingRegistry:
 # Test Patch Idempotency
 # =============================================================================
 
+
 class TestWrapperLinearPatch:
     """patch_wrapperlinear_to_apply_transform is idempotent."""
 
@@ -1130,18 +1130,14 @@ class TestWrapperLinearPatch:
 
         patch_wrapperlinear_to_apply_transform(w_transform, inp_transform)
         flag_after_first = getattr(
-            __import__(
-                "auto_round.wrapper", fromlist=["WrapperLinear"]
-            ).WrapperLinear,
+            __import__("auto_round.wrapper", fromlist=["WrapperLinear"]).WrapperLinear,
             "_hadamard_patched",
             False,
         )
 
         patch_wrapperlinear_to_apply_transform(w_transform, inp_transform)
         flag_after_second = getattr(
-            __import__(
-                "auto_round.wrapper", fromlist=["WrapperLinear"]
-            ).WrapperLinear,
+            __import__("auto_round.wrapper", fromlist=["WrapperLinear"]).WrapperLinear,
             "_hadamard_patched",
             False,
         )
@@ -1158,9 +1154,7 @@ class TestWrapperWALayerPatch:
         patch_wrapperwalayer_forward_to_apply_transform(inp_transform)
 
         flag = getattr(
-            __import__(
-                "auto_round.wrapper", fromlist=["WrapperWALayer"]
-            ).WrapperWALayer,
+            __import__("auto_round.wrapper", fromlist=["WrapperWALayer"]).WrapperWALayer,
             "_hadamard_forward_patched",
             False,
         )
@@ -1170,6 +1164,7 @@ class TestWrapperWALayerPatch:
 # =============================================================================
 # Test Resolved Compute Device
 # =============================================================================
+
 
 class TestResolveComputeDevice:
     """_resolve_compute_device auto-detects available accelerator."""
@@ -1186,6 +1181,7 @@ class TestResolveComputeDevice:
 # =============================================================================
 # Test Inplace Apply — Full Integration (CPU-safe subset)
 # =============================================================================
+
 
 class TestInplaceApplyRotationFuseLn:
     """LayerNorm fusion is a core step before weight rotation."""
@@ -1206,6 +1202,7 @@ class TestInplaceApplyRotationFuseLn:
 # =============================================================================
 # Test Orthogonality Invariants
 # =============================================================================
+
 
 class TestHadamardMatrixOrthogonality:
     """Hadamard matrices must satisfy H @ H.T = n * I for unnormalized forms."""
@@ -1262,6 +1259,7 @@ class TestHadamardMatrixOrthogonality:
 # Test RotationConfig Model Dump Consistency
 # =============================================================================
 
+
 class TestRotationConfigPersistence:
     """RotationConfig round-trips correctly for serialization."""
 
@@ -1296,6 +1294,7 @@ class TestRotationConfigPersistence:
 # Test Non-Power-of-2 Construction
 # =============================================================================
 
+
 class TestNonPowerOfTwoConstruction:
     """Random Hadamard supports non-power-of-2 via precomputed matrices."""
 
@@ -1323,6 +1322,7 @@ class TestNonPowerOfTwoConstruction:
 # =============================================================================
 # Test Memory Cleanup (gc + cache)
 # =============================================================================
+
 
 class TestMemoryCleanup:
     """Rotation primitives properly manage memory via gc.collect()."""

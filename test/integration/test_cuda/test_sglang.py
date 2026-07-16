@@ -5,14 +5,13 @@ import multiprocessing.resource_tracker
 import shutil
 import sys
 from pathlib import Path
+from test.helpers import get_model_path, qwen_name_or_path
 
 import pytest
 import sglang as sgl
 import torch
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path, qwen_name_or_path
 
 # A patch to fix the Python `multiprocessing.ResourceTracker` [Errno 10] error.
 _original_stop = multiprocessing.resource_tracker.ResourceTracker._stop

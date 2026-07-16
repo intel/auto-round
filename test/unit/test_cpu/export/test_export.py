@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
 
 import pytest
 import torch
@@ -12,8 +13,6 @@ from auto_round.export.export_to_autogptq import export as autogptq_export
 from auto_round.export.export_to_autoround import export as autoround_export
 from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
 from auto_round.export.export_to_awq import export as awq_export
-
-from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
 
 
 def _get_folder_size(path: str) -> float:

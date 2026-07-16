@@ -30,7 +30,7 @@ class TestUnpackAwq:
         # 4-bit slices, cast to int8.
         packed = torch.tensor([0x5B], dtype=torch.int32).view(1, 1, 1)
         zeros = torch.zeros((1, 1, 1), dtype=torch.int32)
-        iw, iz = unpack_awq(packed, zeros, bits=4)
+        iw, is = unpack_awq(packed, zeros, bits=4)
         assert iw.shape == (1, 8)
         # iw[0,0] = 0x5B (no shift, the whole int32, fits in int8: 91)
         assert iw[0, 0].item() == 0x5B
@@ -54,9 +54,10 @@ class TestUnpackAwq:
 class TestReverseAwqOrder:
     def test_reverse_identity(self):
         from auto_round.export.export_to_awq.utils import reverse_awq_order
+
         iw = torch.arange(8, dtype=torch.int32).view(1, 8)
-        iz = torch.zeros(1, 8, dtype=torch.int32)
-        out_iw, out_iz = reverse_awq_order(iw, iz, bits=4)
+        is = torch.zeros(1, 8, dtype=torch.int32)
+        out_iw, out_is = reverse_awq_order(iw, is, bits=4)
         # AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
         expected = torch.tensor([0, 4, 1, 5, 2, 6, 3, 7], dtype=torch.int32).view(1, 8)
         assert torch.equal(out_iw, expected)
@@ -131,30 +132,25 @@ class TestWQLinearGEMM:
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         with pytest.raises(NotImplementedError):
-            WQLinear_GEMM(
-                w_bit=8, group_size=4, in_features=8, out_features=8, bias=False, dev="cpu"
-            )
+            WQLinear_GEMM(w_bit=8, group_size=4, in_features=8, out_features=8, bias=False, dev="cpu")
 
     def test_infeatures_not_divisible_raises(self):
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         with pytest.raises(ValueError):
-            WQLinear_GEMM(
-                w_bit=4, group_size=4, in_features=9, out_features=8, bias=False, dev="cpu"
-            )
+            WQLinear_GEMM(w_bit=4, group_size=4, in_features=9, out_features=8, bias=False, dev="cpu")
 
     def test_outfeatures_not_aligned_raises(self):
         from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         # out_features must be divisible by (32 // w_bit) = 8
         with pytest.raises(ValueError):
-            WQLinear_GEMM(
-                w_bit=4, group_size=4, in_features=8, out_features=7, bias=False, dev="cpu"
-            )
+            WQLinear_GEMM(w_bit=4, group_size=4, in_features=8, out_features=7, bias=False, dev="cpu")
 
     def test_from_linear_init_only(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
         from torch.nn import Linear
+
+        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         linear = Linear(8, 8, bias=True)
         layer = WQLinear_GEMM.from_linear(linear, w_bit=4, group_size=4, init_only=True)
@@ -164,8 +160,9 @@ class TestWQLinearGEMM:
         assert torch.equal(layer.qweight, torch.zeros_like(layer.qweight))
 
     def test_from_linear_requires_scales_and_zeros(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
         from torch.nn import Linear
+
+        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
 
         linear = Linear(8, 8, bias=True)
         with pytest.raises(ValueError, match="scales"):
@@ -178,6 +175,7 @@ class TestWQLinearGEMM:
 class TestModuleConstants:
     def test_reverse_order_table(self):
         from auto_round.export.export_to_awq.utils import AWQ_REVERSE_ORDER
+
         assert len(AWQ_REVERSE_ORDER) == 8
         # Permutation of 0..7
         assert sorted(AWQ_REVERSE_ORDER) == list(range(8))
@@ -197,8 +195,14 @@ class TestWQLinearMMFunction:
         bias = torch.zeros(out_f, dtype=torch.float16)
         x = torch.randn(2, in_f, dtype=torch.float16)
         out = WQLinearMMFunction.apply(
-            x, qweight, qzeros, scales,
-            4, group_size, bias, out_f,
+            x,
+            qweight,
+            qzeros,
+            scales,
+            4,
+            group_size,
+            bias,
+            out_f,
         )
         # Output should be (1, 2, 8) because the function unsqueezes 2D tensors
         assert out.shape == (1, 2, 8)

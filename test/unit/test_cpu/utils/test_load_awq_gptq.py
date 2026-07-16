@@ -1,9 +1,8 @@
 import shutil
+from test.helpers import get_model_path, model_infer
 
 import pytest
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
-
-from test.helpers import get_model_path, model_infer
 
 
 class TestAutoRound:

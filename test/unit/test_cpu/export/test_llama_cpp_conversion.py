@@ -70,12 +70,16 @@ class TestConversionContextIsSupported:
         class _Cls:
             pass
 
-        module = type("M", (), {
-            "ModelType": _MT,
-            "ModelBase": type("MB", (), {
-                "from_model_architecture": classmethod(lambda cls, arch, model_type=None: _Cls)
-            }),
-        })()
+        module = type(
+            "M",
+            (),
+            {
+                "ModelType": _MT,
+                "ModelBase": type(
+                    "MB", (), {"from_model_architecture": classmethod(lambda cls, arch, model_type=None: _Cls)}
+                ),
+            },
+        )()
 
         ctx = lcc.ConversionContext(module=module, source="")
         assert ctx.is_supported("TestArch") is True
@@ -88,12 +92,14 @@ class TestConversionContextIsSupported:
         def _raise(*args, **kwargs):
             raise NotImplementedError("x")
 
-        module = type("M", (), {
-            "ModelType": _MT,
-            "ModelBase": type("MB", (), {
-                "from_model_architecture": classmethod(_raise)
-            }),
-        })()
+        module = type(
+            "M",
+            (),
+            {
+                "ModelType": _MT,
+                "ModelBase": type("MB", (), {"from_model_architecture": classmethod(_raise)}),
+            },
+        )()
 
         ctx = lcc.ConversionContext(module=module, source="")
         assert ctx.is_supported("BogusArch") is False

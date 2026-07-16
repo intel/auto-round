@@ -1,6 +1,7 @@
 import copy
 import shutil
 import tempfile
+from test.helpers import get_model_path, save_tiny_model
 
 import pytest
 import torch
@@ -14,7 +15,6 @@ from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
 from auto_round.formats import AutoRoundExportFormat
 
 from ...envs import has_module, require_awq, require_optimum
-from test.helpers import get_model_path, save_tiny_model
 
 testing_schemes = [
     AutoRoundExportFormat.MXFP8.value,

@@ -14,10 +14,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-
 # ==============================================================================
 # Helper: build a minimal mock model that exercises specific methods
 # ==============================================================================
+
 
 def _make_mock_model(cls, hparams=None):
     """Create a bare-minimum mock of a conversion model class for testing."""
@@ -57,7 +57,7 @@ def _make_mock_model(cls, hparams=None):
     def mock_get_name(key=None, try_suffixes=None):
         if key is not None and try_suffixes is not None:
             return key
-        return key if key else "tensor"
+        return key or "tensor"
 
     def mock_format_name(key, bid=None, suffix=".weight"):
         if hasattr(key, "name"):
@@ -84,6 +84,7 @@ def _make_mock_model(cls, hparams=None):
 # mimo.py tests
 # ==============================================================================
 
+
 class TestMimoConversion:
     """Tests for MiMo conversion module."""
 
@@ -105,9 +106,7 @@ class TestMimoConversion:
         n_col_blocks = (n_col + bs - 1) // bs  # = 8
         scale_inv = torch.randn(8, n_col_blocks)
 
-        result = MimoV2Model._tp_aware_qkv_dequant(
-            weight, scale_inv, n_q, n_kv, hd, vhd, bs=bs
-        )
+        result = MimoV2Model._tp_aware_qkv_dequant(weight, scale_inv, n_q, n_kv, hd, vhd, bs=bs)
         assert result.shape == (total_rows, n_col)
 
     def test_tp_aware_qkv_dequant_tp8(self):
@@ -125,9 +124,7 @@ class TestMimoConversion:
         n_col_blocks = (n_col + bs - 1) // bs  # = 8
         scale_inv = torch.randn(8, n_col_blocks)
 
-        result = MimoV2Model._tp_aware_qkv_dequant(
-            weight, scale_inv, n_q, n_kv, hd, vhd, bs=bs
-        )
+        result = MimoV2Model._tp_aware_qkv_dequant(weight, scale_inv, n_q, n_kv, hd, vhd, bs=bs)
         assert result.shape == (total_rows, n_col)
 
     def test_tp_aware_qkv_dequant_invalid_rows(self):
@@ -182,10 +179,13 @@ class TestMimoConversion:
         """Test that unprocessed experts raise ValueError."""
         from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
 
-        obj = _make_mock_model(MimoV2Model, {
-            "num_hidden_layers": 2,
-            "n_routed_experts": 4,
-        })
+        obj = _make_mock_model(
+            MimoV2Model,
+            {
+                "num_hidden_layers": 2,
+                "n_routed_experts": 4,
+            },
+        )
         obj._experts = [{"unprocessed.tensor.0": None}]
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
@@ -199,6 +199,7 @@ class TestMimoConversion:
 # minicpm.py tests
 # ==============================================================================
 
+
 class TestMiniCPMConversion:
     """Tests for MiniCPM conversion module."""
 
@@ -210,18 +211,21 @@ class TestMiniCPMConversion:
         long_factors = [1.0] * (rope_dims // 2)
         short_factors = [1.0] * (rope_dims // 2)
 
-        obj = _make_mock_model(MiniCPMModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "num_attention_heads": 32,
-            "scale_emb": 1.0,
-            "scale_depth": 4.0,
-            "dim_model_base": 1024,
-            "rope_scaling": {
-                "long_factor": long_factors,
-                "short_factor": short_factors,
+        obj = _make_mock_model(
+            MiniCPMModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "num_attention_heads": 32,
+                "scale_emb": 1.0,
+                "scale_depth": 4.0,
+                "dim_model_base": 1024,
+                "rope_scaling": {
+                    "long_factor": long_factors,
+                    "short_factor": short_factors,
+                },
             },
-        })
+        )
 
         results = list(obj.generate_extra_tensors())
 
@@ -235,17 +239,20 @@ class TestMiniCPMConversion:
         """Test missing long_factor raises KeyError."""
         from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPMModel
 
-        obj = _make_mock_model(MiniCPMModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "num_attention_heads": 32,
-            "scale_emb": 1.0,
-            "scale_depth": 4.0,
-            "dim_model_base": 1024,
-            "rope_scaling": {
-                "short_factor": [1.0] * 32,
+        obj = _make_mock_model(
+            MiniCPMModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "num_attention_heads": 32,
+                "scale_emb": 1.0,
+                "scale_depth": 4.0,
+                "dim_model_base": 1024,
+                "rope_scaling": {
+                    "short_factor": [1.0] * 32,
+                },
             },
-        })
+        )
 
         with pytest.raises(KeyError, match="long_factor"):
             list(obj.generate_extra_tensors())
@@ -254,18 +261,21 @@ class TestMiniCPMConversion:
         """Test mismatched factor lengths raise ValueError."""
         from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPMModel
 
-        obj = _make_mock_model(MiniCPMModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "num_attention_heads": 32,
-            "scale_emb": 1.0,
-            "scale_depth": 4.0,
-            "dim_model_base": 1024,
-            "rope_scaling": {
-                "long_factor": [1.0] * 64,
-                "short_factor": [1.0] * 32,  # wrong length
+        obj = _make_mock_model(
+            MiniCPMModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "num_attention_heads": 32,
+                "scale_emb": 1.0,
+                "scale_depth": 4.0,
+                "dim_model_base": 1024,
+                "rope_scaling": {
+                    "long_factor": [1.0] * 64,
+                    "short_factor": [1.0] * 32,  # wrong length
+                },
             },
-        })
+        )
 
         with pytest.raises(ValueError, match="length of rope long and short factors"):
             list(obj.generate_extra_tensors())
@@ -274,18 +284,21 @@ class TestMiniCPMConversion:
         """Test MiniCPM3Model._reverse_hf_permute transforms tensor correctly."""
         from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPM3Model
 
-        obj = _make_mock_model(MiniCPM3Model, {
-            "num_hidden_layers": 2,
-            "num_attention_heads": 8,
-            "num_key_value_heads": 2,
-            "qk_nope_head_dim": 64,
-            "qk_rope_head_dim": 32,
-            "v_head_dim": 64,
-            "kv_lora_rank": 128,
-            "hidden_size": 512,
-            "rms_norm_eps": 1e-5,
-            "max_position_embeddings": 4096,
-        })
+        obj = _make_mock_model(
+            MiniCPM3Model,
+            {
+                "num_hidden_layers": 2,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "qk_nope_head_dim": 64,
+                "qk_rope_head_dim": 32,
+                "v_head_dim": 64,
+                "kv_lora_rank": 128,
+                "hidden_size": 512,
+                "rms_norm_eps": 1e-5,
+                "max_position_embeddings": 4096,
+            },
+        )
 
         tensor = torch.randn(256, 512)
         result = obj._reverse_hf_permute(tensor, 4, 2)
@@ -295,18 +308,21 @@ class TestMiniCPMConversion:
         """Test _reverse_hf_permute when n_kv_head equals n_head."""
         from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPM3Model
 
-        obj = _make_mock_model(MiniCPM3Model, {
-            "num_hidden_layers": 2,
-            "num_attention_heads": 8,
-            "num_key_value_heads": 8,
-            "qk_nope_head_dim": 64,
-            "qk_rope_head_dim": 64,
-            "v_head_dim": 64,
-            "kv_lora_rank": 128,
-            "hidden_size": 512,
-            "rms_norm_eps": 1e-5,
-            "max_position_embeddings": 4096,
-        })
+        obj = _make_mock_model(
+            MiniCPM3Model,
+            {
+                "num_hidden_layers": 2,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 8,
+                "qk_nope_head_dim": 64,
+                "qk_rope_head_dim": 64,
+                "v_head_dim": 64,
+                "kv_lora_rank": 128,
+                "hidden_size": 512,
+                "rms_norm_eps": 1e-5,
+                "max_position_embeddings": 4096,
+            },
+        )
 
         tensor = torch.randn(512, 512)
         result = obj._reverse_hf_permute(tensor, 8, 8)
@@ -317,6 +333,7 @@ class TestMiniCPMConversion:
 # minimax.py tests
 # ==============================================================================
 
+
 class TestMiniMaxConversion:
     """Tests for MiniMax conversion module."""
 
@@ -324,15 +341,18 @@ class TestMiniMaxConversion:
         """Test MiniMaxM2Model.set_gguf_parameters sets MoE parameters."""
         from auto_round.export.export_to_gguf.conversion.minimax import MiniMaxM2Model
 
-        obj = _make_mock_model(MiniMaxM2Model, {
-            "num_hidden_layers": 2,
-            "num_local_experts": 8,
-            "intermediate_size": 10944,
-            "rotary_dim": 32,
-            "num_attention_heads": 8,
-            "num_key_value_heads": 2,
-            "hidden_size": 2048,
-        })
+        obj = _make_mock_model(
+            MiniMaxM2Model,
+            {
+                "num_hidden_layers": 2,
+                "num_local_experts": 8,
+                "intermediate_size": 10944,
+                "rotary_dim": 32,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+                "hidden_size": 2048,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -345,6 +365,7 @@ class TestMiniMaxConversion:
 # mpt.py tests
 # ==============================================================================
 
+
 class TestMPTConversion:
     """Tests for MPT conversion module."""
 
@@ -352,13 +373,16 @@ class TestMPTConversion:
         """Test modify_tensors handles names containing 'scales'."""
         from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
 
-        obj = _make_mock_model(MPTModel, {
-            "num_hidden_layers": 2,
-            "max_seq_len": 2048,
-            "d_model": 2048,
-            "n_heads": 16,
-            "attn_config": {"kv_n_heads": 4, "clip_qkv": None, "alibi": False, "alibi_bias_max": 8.0},
-        })
+        obj = _make_mock_model(
+            MPTModel,
+            {
+                "num_hidden_layers": 2,
+                "max_seq_len": 2048,
+                "d_model": 2048,
+                "n_heads": 16,
+                "attn_config": {"kv_n_heads": 4, "clip_qkv": None, "alibi": False, "alibi_bias_max": 8.0},
+            },
+        )
 
         data = torch.randn(2048, 2048)
         # The MPT model replaces "scales" -> "act.scales" in map_tensor_name result
@@ -371,13 +395,16 @@ class TestMPTConversion:
         """Test regular weight tensor is mapped normally."""
         from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
 
-        obj = _make_mock_model(MPTModel, {
-            "num_hidden_layers": 2,
-            "max_seq_len": 2048,
-            "d_model": 2048,
-            "n_heads": 16,
-            "attn_config": {"kv_n_heads": 4, "clip_qkv": None, "alibi": False, "alibi_bias_max": 8.0},
-        })
+        obj = _make_mock_model(
+            MPTModel,
+            {
+                "num_hidden_layers": 2,
+                "max_seq_len": 2048,
+                "d_model": 2048,
+                "n_heads": 16,
+                "attn_config": {"kv_n_heads": 4, "clip_qkv": None, "alibi": False, "alibi_bias_max": 8.0},
+            },
+        )
 
         data = torch.randn(2048, 2048)
         obj.tensor_map.get_name.return_value = "blk.0.attn_q.weight"
@@ -390,6 +417,7 @@ class TestMPTConversion:
 # nemotron.py tests
 # ==============================================================================
 
+
 class TestNemotronConversion:
     """Tests for Nemotron conversion module."""
 
@@ -397,17 +425,20 @@ class TestNemotronConversion:
         """Test that norm.weight tensors get +1 added."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
 
-        obj = _make_mock_model(NemotronModel, {
-            "num_hidden_layers": 2,
-            "vocab_size": 32000,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 16,
-            "num_key_value_heads": 16,
-            "partial_rotary_factor": 0.25,
-            "layer_norm_eps": 1e-5,
-            "rope_pct": 0.25,
-        })
+        obj = _make_mock_model(
+            NemotronModel,
+            {
+                "num_hidden_layers": 2,
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 16,
+                "partial_rotary_factor": 0.25,
+                "layer_norm_eps": 1e-5,
+                "rope_pct": 0.25,
+            },
+        )
 
         data = torch.ones(2048) * 0.5
         results = list(obj.modify_tensors(data, "model.layers.0.input_layernorm.weight", bid=0))
@@ -419,17 +450,20 @@ class TestNemotronConversion:
         """Test non-norm tensors are passed through unchanged."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
 
-        obj = _make_mock_model(NemotronModel, {
-            "num_hidden_layers": 2,
-            "vocab_size": 32000,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 16,
-            "num_key_value_heads": 16,
-            "partial_rotary_factor": 0.25,
-            "layer_norm_eps": 1e-5,
-            "rope_pct": 0.25,
-        })
+        obj = _make_mock_model(
+            NemotronModel,
+            {
+                "num_hidden_layers": 2,
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 16,
+                "partial_rotary_factor": 0.25,
+                "layer_norm_eps": 1e-5,
+                "rope_pct": 0.25,
+            },
+        )
 
         data = torch.randn(2048, 2048)
         original = data.clone()
@@ -441,19 +475,22 @@ class TestNemotronConversion:
         """Test rope_scaling with LINEAR type."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
 
-        obj = _make_mock_model(NemotronModel, {
-            "num_hidden_layers": 2,
-            "vocab_size": 32000,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 16,
-            "num_key_value_heads": 16,
-            "partial_rotary_factor": 0.25,
-            "layer_norm_eps": 1e-5,
-            "rope_pct": 0.25,
-            "rope_scaling": {"type": "linear"},
-            "factor": 4.0,
-        })
+        obj = _make_mock_model(
+            NemotronModel,
+            {
+                "num_hidden_layers": 2,
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 16,
+                "partial_rotary_factor": 0.25,
+                "layer_norm_eps": 1e-5,
+                "rope_pct": 0.25,
+                "rope_scaling": {"type": "linear"},
+                "factor": 4.0,
+            },
+        )
         obj.rope_parameters = {"rope_type": "linear", "factor": 4.0}
 
         obj.set_gguf_parameters()
@@ -465,18 +502,21 @@ class TestNemotronConversion:
         """Test when rope_scaling is None."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
 
-        obj = _make_mock_model(NemotronModel, {
-            "num_hidden_layers": 2,
-            "vocab_size": 32000,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 16,
-            "num_key_value_heads": 16,
-            "partial_rotary_factor": 0.25,
-            "layer_norm_eps": 1e-5,
-            "rope_pct": 0.25,
-            "rope_scaling": None,
-        })
+        obj = _make_mock_model(
+            NemotronModel,
+            {
+                "num_hidden_layers": 2,
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 16,
+                "partial_rotary_factor": 0.25,
+                "layer_norm_eps": 1e-5,
+                "rope_pct": 0.25,
+                "rope_scaling": None,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -486,9 +526,12 @@ class TestNemotronConversion:
         """Test NemotronNanoV2VLModel.filter_tensors skips input_conditioner."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronNanoV2VLModel
 
-        obj = _make_mock_model(NemotronNanoV2VLModel, {
-            "vision_config": {"ImageSize": 512},
-        })
+        obj = _make_mock_model(
+            NemotronNanoV2VLModel,
+            {
+                "vision_config": {"ImageSize": 512},
+            },
+        )
         obj.hparams_vision = {"patch_size": 14}
         obj.global_config = {"force_image_size": 512, "vision_config": {}}
         obj.preprocessor_config = {}
@@ -501,41 +544,44 @@ class TestNemotronConversion:
         """Test NemotronNanoV2VLModel.filter_tensors skips video tensors."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronNanoV2VLModel
 
-        obj = _make_mock_model(NemotronNanoV2VLModel, {
-            "vision_config": {"ImageSize": 512},
-        })
+        obj = _make_mock_model(
+            NemotronNanoV2VLModel,
+            {
+                "vision_config": {"ImageSize": 512},
+            },
+        )
         obj.hparams_vision = {"patch_size": 14}
         obj.global_config = {"force_image_size": 512, "vision_config": {}}
         obj.preprocessor_config = {}
 
         # Should skip video tensors
-        result = obj.filter_tensors((
-            "vision_model.radio_model.model.patch_generator.video_embedder.tensor",
-            lambda: None
-        ))
+        result = obj.filter_tensors(
+            ("vision_model.radio_model.model.patch_generator.video_embedder.tensor", lambda: None)
+        )
         assert result is None
 
     def test_nemotron_nanov2_filter_tensors_passes_vision(self):
         """Test NemotronNanoV2VLModel.filter_tensors passes vision tensors."""
         from auto_round.export.export_to_gguf.conversion.nemotron import NemotronNanoV2VLModel
 
-        obj = _make_mock_model(NemotronNanoV2VLModel, {
-            "vision_config": {"ImageSize": 512},
-        })
+        obj = _make_mock_model(
+            NemotronNanoV2VLModel,
+            {
+                "vision_config": {"ImageSize": 512},
+            },
+        )
         obj.hparams_vision = {"patch_size": 14}
         obj.global_config = {"force_image_size": 512, "vision_config": {}}
         obj.preprocessor_config = {}
 
-        result = obj.filter_tensors((
-            "vision_model.radio_model.model.patch_generator.pos_embed",
-            lambda: None
-        ))
+        result = obj.filter_tensors(("vision_model.radio_model.model.patch_generator.pos_embed", lambda: None))
         assert result is not None
 
 
 # ==============================================================================
 # olmo.py tests
 # ==============================================================================
+
 
 class TestOlmoConversion:
     """Tests for Olmo conversion module."""
@@ -544,12 +590,15 @@ class TestOlmoConversion:
         """Test OlmoModel permutes q_proj tensor."""
         from auto_round.export.export_to_gguf.conversion.olmo import OlmoModel
 
-        obj = _make_mock_model(OlmoModel, {
-            "num_hidden_layers": 2,
-            "num_attention_heads": 8,
-            "num_key_value_heads": 8,
-            "hidden_size": 2048,
-        })
+        obj = _make_mock_model(
+            OlmoModel,
+            {
+                "num_hidden_layers": 2,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 8,
+                "hidden_size": 2048,
+            },
+        )
 
         n_head, hd, hidden = 8, 64, 2048
         tensor = torch.randn(n_head * hd, hidden)
@@ -562,12 +611,15 @@ class TestOlmoConversion:
         """Test Olmo2Model adds sliding window pattern."""
         from auto_round.export.export_to_gguf.conversion.olmo import Olmo2Model
 
-        obj = _make_mock_model(Olmo2Model, {
-            "num_hidden_layers": 8,
-            "hidden_size": 2048,
-            "sliding_window": 4096,
-            "layer_types": ["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
-        })
+        obj = _make_mock_model(
+            Olmo2Model,
+            {
+                "num_hidden_layers": 8,
+                "hidden_size": 2048,
+                "sliding_window": 4096,
+                "layer_types": ["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -578,11 +630,14 @@ class TestOlmoConversion:
         """Test Olmo2Model with no layer_types defaults to every-4th."""
         from auto_round.export.export_to_gguf.conversion.olmo import Olmo2Model
 
-        obj = _make_mock_model(Olmo2Model, {
-            "num_hidden_layers": 8,
-            "hidden_size": 2048,
-            "sliding_window": 4096,
-        })
+        obj = _make_mock_model(
+            Olmo2Model,
+            {
+                "num_hidden_layers": 8,
+                "hidden_size": 2048,
+                "sliding_window": 4096,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -594,11 +649,14 @@ class TestOlmoConversion:
         """Test unprocessed experts raise ValueError."""
         from auto_round.export.export_to_gguf.conversion.olmo import OlmoeModel
 
-        obj = _make_mock_model(OlmoeModel, {
-            "num_hidden_layers": 2,
-            "num_local_experts": 8,
-            "hidden_size": 2048,
-        })
+        obj = _make_mock_model(
+            OlmoeModel,
+            {
+                "num_hidden_layers": 2,
+                "num_local_experts": 8,
+                "hidden_size": 2048,
+            },
+        )
         obj._experts = [{"unprocessed.tensor": None}]
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
@@ -611,6 +669,7 @@ class TestOlmoConversion:
 # openelm.py tests
 # ==============================================================================
 
+
 class TestOpenELMConversion:
     """Tests for OpenELM conversion module."""
 
@@ -618,18 +677,21 @@ class TestOpenELMConversion:
         """Test find_hparam returns num_transformer_layers for n_layers key."""
         from auto_round.export.export_to_gguf.conversion.openelm import OpenELMModel
 
-        obj = _make_mock_model(OpenELMModel, {
-            "num_transformer_layers": 12,
-            "model_dim": 1024,
-            "ffn_multipliers": [2.0] * 12,
-            "ffn_dim_divisor": 64,
-            "num_kv_heads": [2] * 12,
-            "num_query_heads": [4] * 12,
-            "head_dim": 128,
-            "vocab_size": 32000,
-            "max_context_length": 2048,
-            "rope_freq_constant": 10000.0,
-        })
+        obj = _make_mock_model(
+            OpenELMModel,
+            {
+                "num_transformer_layers": 12,
+                "model_dim": 1024,
+                "ffn_multipliers": [2.0] * 12,
+                "ffn_dim_divisor": 64,
+                "num_kv_heads": [2] * 12,
+                "num_query_heads": [4] * 12,
+                "head_dim": 128,
+                "vocab_size": 32000,
+                "max_context_length": 2048,
+                "rope_freq_constant": 10000.0,
+            },
+        )
         obj._n_embd = 1024
         obj._num_kv_heads = [2] * 12
         obj._num_query_heads = [4] * 12
@@ -642,18 +704,21 @@ class TestOpenELMConversion:
         """Test OpenELMModel splits ffn.proj_1.weight into gate and up."""
         from auto_round.export.export_to_gguf.conversion.openelm import OpenELMModel
 
-        obj = _make_mock_model(OpenELMModel, {
-            "num_transformer_layers": 2,
-            "model_dim": 1024,
-            "ffn_multipliers": [2.0, 2.0],
-            "ffn_dim_divisor": 64,
-            "num_kv_heads": [2, 2],
-            "num_query_heads": [4, 4],
-            "head_dim": 128,
-            "vocab_size": 32000,
-            "max_context_length": 2048,
-            "rope_freq_constant": 10000.0,
-        })
+        obj = _make_mock_model(
+            OpenELMModel,
+            {
+                "num_transformer_layers": 2,
+                "model_dim": 1024,
+                "ffn_multipliers": [2.0, 2.0],
+                "ffn_dim_divisor": 64,
+                "num_kv_heads": [2, 2],
+                "num_query_heads": [4, 4],
+                "head_dim": 128,
+                "vocab_size": 32000,
+                "max_context_length": 2048,
+                "rope_freq_constant": 10000.0,
+            },
+        )
         obj._n_embd = 1024
         obj._num_kv_heads = [2, 2]
         obj._num_query_heads = [4, 4]
@@ -671,6 +736,7 @@ class TestOpenELMConversion:
 # orion.py tests
 # ==============================================================================
 
+
 class TestOrionConversion:
     """Tests for Orion conversion module."""
 
@@ -678,14 +744,17 @@ class TestOrionConversion:
         """Test context length from max_sequence_length."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "max_sequence_length": 8192,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 11008,
+                "num_attention_heads": 32,
+                "max_sequence_length": 8192,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -695,14 +764,17 @@ class TestOrionConversion:
         """Test context length from max_position_embeddings."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 4096,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 11008,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 4096,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -712,14 +784,17 @@ class TestOrionConversion:
         """Test context length from model_max_length."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "model_max_length": 16384,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 11008,
+                "num_attention_heads": 32,
+                "model_max_length": 16384,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -729,13 +804,16 @@ class TestOrionConversion:
         """Test ValueError when no context length parameter is present."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 11008,
+                "num_attention_heads": 32,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         with pytest.raises(ValueError, match="can not find ctx length"):
             obj.set_gguf_parameters()
@@ -745,6 +823,7 @@ class TestOrionConversion:
 # pangu.py tests
 # ==============================================================================
 
+
 class TestPanguConversion:
     """Tests for Pangu conversion module."""
 
@@ -752,14 +831,17 @@ class TestPanguConversion:
         """Test that tied lm_head.weight is skipped."""
         from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
 
-        obj = _make_mock_model(PanguEmbeddedModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "num_attention_heads": 16,
-            "head_dim": 64,
-            "vocab_size": 43008,
-            "tie_word_embeddings": True,
-        })
+        obj = _make_mock_model(
+            PanguEmbeddedModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "num_attention_heads": 16,
+                "head_dim": 64,
+                "vocab_size": 43008,
+                "tie_word_embeddings": True,
+            },
+        )
 
         data = torch.randn(43008, 2048)
         results = list(obj.modify_tensors(data, "lm_head.weight", bid=None))
@@ -770,14 +852,17 @@ class TestPanguConversion:
         """Test that untied lm_head.weight is passed through."""
         from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
 
-        obj = _make_mock_model(PanguEmbeddedModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "num_attention_heads": 16,
-            "head_dim": 64,
-            "vocab_size": 43008,
-            "tie_word_embeddings": False,
-        })
+        obj = _make_mock_model(
+            PanguEmbeddedModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "num_attention_heads": 16,
+                "head_dim": 64,
+                "vocab_size": 43008,
+                "tie_word_embeddings": False,
+            },
+        )
 
         data = torch.randn(43008, 2048)
         results = list(obj.modify_tensors(data, "lm_head.weight", bid=None))
@@ -789,6 +874,7 @@ class TestPanguConversion:
 # plamo.py tests
 # ==============================================================================
 
+
 class TestPlamoConversion:
     """Tests for Plamo conversion module."""
 
@@ -796,14 +882,17 @@ class TestPlamoConversion:
         """Test shuffle_attn_q_weight reshapes and permutes correctly."""
         from auto_round.export.export_to_gguf.conversion.plamo import PlamoModel
 
-        obj = _make_mock_model(PlamoModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 5120,
-            "intermediate_size": 8192,
-            "num_attention_heads": 40,
-            "num_key_value_heads": 5,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            PlamoModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 5120,
+                "intermediate_size": 8192,
+                "num_attention_heads": 40,
+                "num_key_value_heads": 5,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         data = torch.randn(5120, 5120)
         result = obj.shuffle_attn_q_weight(data)
@@ -815,14 +904,17 @@ class TestPlamoConversion:
         """Test shuffle_attn_output_weight reshapes and permutes correctly."""
         from auto_round.export.export_to_gguf.conversion.plamo import PlamoModel
 
-        obj = _make_mock_model(PlamoModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 5120,
-            "intermediate_size": 8192,
-            "num_attention_heads": 40,
-            "num_key_value_heads": 5,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            PlamoModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 5120,
+                "intermediate_size": 8192,
+                "num_attention_heads": 40,
+                "num_key_value_heads": 5,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         data = torch.randn(5120, 5120)
         result = obj.shuffle_attn_output_weight(data)
@@ -834,14 +926,17 @@ class TestPlamoConversion:
         """Test attn_q.weight triggers shuffle."""
         from auto_round.export.export_to_gguf.conversion.plamo import PlamoModel
 
-        obj = _make_mock_model(PlamoModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 5120,
-            "intermediate_size": 8192,
-            "num_attention_heads": 40,
-            "num_key_value_heads": 5,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            PlamoModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 5120,
+                "intermediate_size": 8192,
+                "num_attention_heads": 40,
+                "num_key_value_heads": 5,
+                "rms_norm_eps": 1e-6,
+            },
+        )
 
         data = torch.randn(5120, 5120)
         results = list(obj.modify_tensors(data, "blk.0.attn_q.weight", bid=0))
@@ -853,17 +948,20 @@ class TestPlamoConversion:
         """Test A_log transformation (negate exp)."""
         from auto_round.export.export_to_gguf.conversion.plamo import Plamo2Model
 
-        obj = _make_mock_model(Plamo2Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 8192,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 4,
-            "vocab_size": 32000,
-            "rms_norm_eps": 1e-6,
-            "mamba_step": 2,
-            "mamba_enabled": True,
-        })
+        obj = _make_mock_model(
+            Plamo2Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 8192,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 4,
+                "vocab_size": 32000,
+                "rms_norm_eps": 1e-6,
+                "mamba_step": 2,
+                "mamba_enabled": True,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 10000}
 
         data = torch.tensor([0.0, 1.0, 2.0])
@@ -874,17 +972,20 @@ class TestPlamoConversion:
         """Test pre_mixer_norm.weight gets +1 added."""
         from auto_round.export.export_to_gguf.conversion.plamo import Plamo2Model
 
-        obj = _make_mock_model(Plamo2Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 8192,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 4,
-            "vocab_size": 32000,
-            "rms_norm_eps": 1e-6,
-            "mamba_step": 2,
-            "mamba_enabled": True,
-        })
+        obj = _make_mock_model(
+            Plamo2Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 8192,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 4,
+                "vocab_size": 32000,
+                "rms_norm_eps": 1e-6,
+                "mamba_step": 2,
+                "mamba_enabled": True,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 10000}
 
         data = torch.ones(4096) * 0.5
@@ -895,18 +996,21 @@ class TestPlamoConversion:
         """Test Plamo2Model with mamba layers sets head counts correctly."""
         from auto_round.export.export_to_gguf.conversion.plamo import Plamo2Model
 
-        obj = _make_mock_model(Plamo2Model, {
-            "num_hidden_layers": 8,
-            "hidden_size": 4096,
-            "intermediate_size": 8192,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 4,
-            "vocab_size": 32000,
-            "rms_norm_eps": 1e-6,
-            "mamba_step": 2,
-            "mamba_enabled": True,
-            "hidden_size_per_head": 128,
-        })
+        obj = _make_mock_model(
+            Plamo2Model,
+            {
+                "num_hidden_layers": 8,
+                "hidden_size": 4096,
+                "intermediate_size": 8192,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 4,
+                "vocab_size": 32000,
+                "rms_norm_eps": 1e-6,
+                "mamba_step": 2,
+                "mamba_enabled": True,
+                "hidden_size_per_head": 128,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 10000}
 
         obj.set_gguf_parameters()
@@ -918,14 +1022,17 @@ class TestPlamoConversion:
         """Test norm.weight gets +1 in Plamo3Model."""
         from auto_round.export.export_to_gguf.conversion.plamo import Plamo3Model
 
-        obj = _make_mock_model(Plamo3Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "intermediate_size": 8192,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 32,
-            "vocab_size": 32000,
-        })
+        obj = _make_mock_model(
+            Plamo3Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "intermediate_size": 8192,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 32,
+                "vocab_size": 32000,
+            },
+        )
 
         data = torch.ones(4096)
         results = list(obj.modify_tensors(data, "blk.0.norm.weight", bid=0))
@@ -936,6 +1043,7 @@ class TestPlamoConversion:
 # rwkv.py tests
 # ==============================================================================
 
+
 class TestRWKVConversion:
     """Tests for RWKV conversion module."""
 
@@ -943,14 +1051,17 @@ class TestRWKVConversion:
         """Test Rwkv6Model.set_gguf_parameters sets all expected parameters."""
         from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv6Model
 
-        obj = _make_mock_model(Rwkv6Model, {
-            "num_hidden_layers": 2,
-            "head_size": 64,
-            "hidden_size": 4096,
-            "intermediate_size": 28672,
-            "layer_norm_epsilon": 1e-5,
-            "rescale_every": 3,
-        })
+        obj = _make_mock_model(
+            Rwkv6Model,
+            {
+                "num_hidden_layers": 2,
+                "head_size": 64,
+                "hidden_size": 4096,
+                "intermediate_size": 28672,
+                "layer_norm_epsilon": 1e-5,
+                "rescale_every": 3,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -964,13 +1075,16 @@ class TestRWKVConversion:
         """Test Rwkv7Model.calc_lora_rank computes correctly."""
         from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv7Model
 
-        obj = _make_mock_model(Rwkv7Model, {
-            "num_hidden_layers": 2,
-            "head_dim": 64,
-            "hidden_size": 4096,
-            "intermediate_size": 28672,
-            "norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            Rwkv7Model,
+            {
+                "num_hidden_layers": 2,
+                "head_dim": 64,
+                "hidden_size": 4096,
+                "intermediate_size": 28672,
+                "norm_eps": 1e-5,
+            },
+        )
 
         # calc_lora_rank = max(1, round(hidden_size ** exponent * multiplier / 32)) * 32
         result = obj.calc_lora_rank(4096, 0.5, 1.8)
@@ -981,13 +1095,16 @@ class TestRWKVConversion:
         """Test Rwkv7Model.filter_tensors unifies tensor name patterns."""
         from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv7Model
 
-        obj = _make_mock_model(Rwkv7Model, {
-            "num_hidden_layers": 2,
-            "head_dim": 64,
-            "hidden_size": 4096,
-            "intermediate_size": 28672,
-            "norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            Rwkv7Model,
+            {
+                "num_hidden_layers": 2,
+                "head_dim": 64,
+                "hidden_size": 4096,
+                "intermediate_size": 28672,
+                "norm_eps": 1e-5,
+            },
+        )
 
         # "blocks" -> "layers", "ffn" -> "feed_forward"
         name, gen = "model.blocks.0.ffn.linear.weight", lambda: None
@@ -1000,13 +1117,16 @@ class TestRWKVConversion:
         """Test self_attn and attn are renamed to attention."""
         from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv7Model
 
-        obj = _make_mock_model(Rwkv7Model, {
-            "num_hidden_layers": 2,
-            "head_dim": 64,
-            "hidden_size": 4096,
-            "intermediate_size": 28672,
-            "norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            Rwkv7Model,
+            {
+                "num_hidden_layers": 2,
+                "head_dim": 64,
+                "hidden_size": 4096,
+                "intermediate_size": 28672,
+                "norm_eps": 1e-5,
+            },
+        )
 
         name, gen = "model.layers.0.self_attn.q_proj.weight", lambda: None
         result = obj.filter_tensors((name, gen))
@@ -1018,6 +1138,7 @@ class TestRWKVConversion:
 # smallthinker.py tests
 # ==============================================================================
 
+
 class TestSmallThinkerConversion:
     """Tests for SmallThinker conversion module."""
 
@@ -1025,11 +1146,14 @@ class TestSmallThinkerConversion:
         """Test unprocessed experts raise ValueError."""
         from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
 
-        obj = _make_mock_model(SmallThinkerModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "moe_num_primary_experts": 8,
-        })
+        obj = _make_mock_model(
+            SmallThinkerModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "moe_num_primary_experts": 8,
+            },
+        )
         obj._experts = [{"unprocessed.tensor": None}]
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
@@ -1041,14 +1165,17 @@ class TestSmallThinkerConversion:
         """Test expert gating function is set correctly."""
         from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
 
-        obj = _make_mock_model(SmallThinkerModel, {
-            "num_hidden_layers": 2,
-            "hidden_size": 2048,
-            "moe_num_primary_experts": 8,
-            "moe_num_active_primary_experts": 2,
-            "moe_ffn_hidden_size": 8192,
-            "moe_primary_router_apply_softmax": True,
-        })
+        obj = _make_mock_model(
+            SmallThinkerModel,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 2048,
+                "moe_num_primary_experts": 8,
+                "moe_num_active_primary_experts": 2,
+                "moe_ffn_hidden_size": 8192,
+                "moe_primary_router_apply_softmax": True,
+            },
+        )
 
         obj.set_gguf_parameters()
 
@@ -1059,6 +1186,7 @@ class TestSmallThinkerConversion:
 # step3.py tests
 # ==============================================================================
 
+
 class TestStep3Conversion:
     """Tests for Step3 conversion module."""
 
@@ -1066,21 +1194,24 @@ class TestStep3Conversion:
         """Test router_bias tensor gets .bias suffix appended."""
         from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
 
-        obj = _make_mock_model(Step35Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_attention_groups": 32,
-            "head_dim": 128,
-            "sliding_window": 4096,
-            "moe_num_experts": 8,
-            "moe_top_k": 2,
-            "moe_intermediate_size": 14336,
-            "share_expert_dim": 2048,
-            "rms_norm_eps": 1e-5,
-            "layer_types": ["full_attention"] * 2,
-            "partial_rotary_factors": [1.0] * 2,
-        })
+        obj = _make_mock_model(
+            Step35Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "num_attention_groups": 32,
+                "head_dim": 128,
+                "sliding_window": 4096,
+                "moe_num_experts": 8,
+                "moe_top_k": 2,
+                "moe_intermediate_size": 14336,
+                "share_expert_dim": 2048,
+                "rms_norm_eps": 1e-5,
+                "layer_types": ["full_attention"] * 2,
+                "partial_rotary_factors": [1.0] * 2,
+            },
+        )
 
         name, gen = "model.layers.0.moe.router_bias", lambda: None
         result = obj.filter_tensors((name, gen))
@@ -1092,21 +1223,24 @@ class TestStep3Conversion:
         """Test norm.weight gets +1 added."""
         from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
 
-        obj = _make_mock_model(Step35Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_attention_groups": 32,
-            "head_dim": 128,
-            "sliding_window": 4096,
-            "moe_num_experts": 8,
-            "moe_top_k": 2,
-            "moe_intermediate_size": 14336,
-            "share_expert_dim": 2048,
-            "rms_norm_eps": 1e-5,
-            "layer_types": ["full_attention"] * 2,
-            "partial_rotary_factors": [1.0] * 2,
-        })
+        obj = _make_mock_model(
+            Step35Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "num_attention_groups": 32,
+                "head_dim": 128,
+                "sliding_window": 4096,
+                "moe_num_experts": 8,
+                "moe_top_k": 2,
+                "moe_intermediate_size": 14336,
+                "share_expert_dim": 2048,
+                "rms_norm_eps": 1e-5,
+                "layer_types": ["full_attention"] * 2,
+                "partial_rotary_factors": [1.0] * 2,
+            },
+        )
         obj.rope_parameters = {}
 
         data = torch.ones(4096) * 0.5
@@ -1118,22 +1252,25 @@ class TestStep3Conversion:
         """Test generate_extra_tensors yields rope freqs for llama3 rope scaling."""
         from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
 
-        obj = _make_mock_model(Step35Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_attention_groups": 32,
-            "head_dim": 128,
-            "sliding_window": 4096,
-            "moe_num_experts": 8,
-            "moe_top_k": 2,
-            "moe_intermediate_size": 14336,
-            "share_expert_dim": 2048,
-            "rms_norm_eps": 1e-5,
-            "layer_types": ["full_attention"] * 2,
-            "partial_rotary_factors": [1.0] * 2,
-            "rope_theta": 10000.0,
-        })
+        obj = _make_mock_model(
+            Step35Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "num_attention_groups": 32,
+                "head_dim": 128,
+                "sliding_window": 4096,
+                "moe_num_experts": 8,
+                "moe_top_k": 2,
+                "moe_intermediate_size": 14336,
+                "share_expert_dim": 2048,
+                "rms_norm_eps": 1e-5,
+                "layer_types": ["full_attention"] * 2,
+                "partial_rotary_factors": [1.0] * 2,
+                "rope_theta": 10000.0,
+            },
+        )
         obj.rope_parameters = {
             "rope_type": "llama3",
             "factor": 8.0,
@@ -1153,22 +1290,25 @@ class TestStep3Conversion:
         """Test generate_extra_tensors returns empty for non-llama3 rope."""
         from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
 
-        obj = _make_mock_model(Step35Model, {
-            "num_hidden_layers": 2,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_attention_groups": 32,
-            "head_dim": 128,
-            "sliding_window": 4096,
-            "moe_num_experts": 8,
-            "moe_top_k": 2,
-            "moe_intermediate_size": 14336,
-            "share_expert_dim": 2048,
-            "rms_norm_eps": 1e-5,
-            "layer_types": ["full_attention"] * 2,
-            "partial_rotary_factors": [1.0] * 2,
-            "rope_theta": 10000.0,
-        })
+        obj = _make_mock_model(
+            Step35Model,
+            {
+                "num_hidden_layers": 2,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "num_attention_groups": 32,
+                "head_dim": 128,
+                "sliding_window": 4096,
+                "moe_num_experts": 8,
+                "moe_top_k": 2,
+                "moe_intermediate_size": 14336,
+                "share_expert_dim": 2048,
+                "rms_norm_eps": 1e-5,
+                "layer_types": ["full_attention"] * 2,
+                "partial_rotary_factors": [1.0] * 2,
+                "rope_theta": 10000.0,
+            },
+        )
         obj.rope_parameters = {
             "rope_type": "linear",
             "factor": 2.0,
@@ -1182,6 +1322,7 @@ class TestStep3Conversion:
 # t5.py tests
 # ==============================================================================
 
+
 class TestT5Conversion:
     """Tests for T5 conversion module."""
 
@@ -1189,16 +1330,19 @@ class TestT5Conversion:
         """Test first shared token embedding is used."""
         from auto_round.export.export_to_gguf.conversion.t5 import T5Model
 
-        obj = _make_mock_model(T5Model, {
-            "num_decoder_layers": 2,
-            "d_model": 512,
-            "d_ff": 2048,
-            "num_heads": 8,
-            "d_kv": 64,
-            "layer_norm_epsilon": 1e-6,
-            "relative_attention_num_buckets": 32,
-            "decoder_start_token_id": 0,
-        })
+        obj = _make_mock_model(
+            T5Model,
+            {
+                "num_decoder_layers": 2,
+                "d_model": 512,
+                "d_ff": 2048,
+                "num_heads": 8,
+                "d_kv": 64,
+                "layer_norm_epsilon": 1e-6,
+                "relative_attention_num_buckets": 32,
+                "decoder_start_token_id": 0,
+            },
+        )
         obj.shared_token_embeddings_found = False
 
         data = torch.randn(32000, 512)
@@ -1212,16 +1356,19 @@ class TestT5Conversion:
         """Test second shared token embedding is skipped."""
         from auto_round.export.export_to_gguf.conversion.t5 import T5Model
 
-        obj = _make_mock_model(T5Model, {
-            "num_decoder_layers": 2,
-            "d_model": 512,
-            "d_ff": 2048,
-            "num_heads": 8,
-            "d_kv": 64,
-            "layer_norm_epsilon": 1e-6,
-            "relative_attention_num_buckets": 32,
-            "decoder_start_token_id": 0,
-        })
+        obj = _make_mock_model(
+            T5Model,
+            {
+                "num_decoder_layers": 2,
+                "d_model": 512,
+                "d_ff": 2048,
+                "num_heads": 8,
+                "d_kv": 64,
+                "layer_norm_epsilon": 1e-6,
+                "relative_attention_num_buckets": 32,
+                "decoder_start_token_id": 0,
+            },
+        )
         obj.shared_token_embeddings_found = True  # Already found
 
         data = torch.randn(32000, 512)
@@ -1234,6 +1381,7 @@ class TestT5Conversion:
 # ultravox.py tests
 # ==============================================================================
 
+
 class TestUltravoxConversion:
     """Tests for Ultravox conversion module."""
 
@@ -1241,16 +1389,19 @@ class TestUltravoxConversion:
         """Test audio_encoder.* tensors are renamed correctly."""
         from auto_round.export.export_to_gguf.conversion.ultravox import GlmASRWhisperEncoderModel
 
-        obj = _make_mock_model(GlmASRWhisperEncoderModel, {
-            "hidden_size": 1024,
-            "intermediate_size": 4096,
-            "num_attention_heads": 16,
-            "num_mel_bins": 80,
-            "d_model": 1024,
-            "encoder_ffn_dim": 4096,
-            "encoder_attention_heads": 16,
-            "merge_factor": 4,
-        })
+        obj = _make_mock_model(
+            GlmASRWhisperEncoderModel,
+            {
+                "hidden_size": 1024,
+                "intermediate_size": 4096,
+                "num_attention_heads": 16,
+                "num_mel_bins": 80,
+                "d_model": 1024,
+                "encoder_ffn_dim": 4096,
+                "encoder_attention_heads": 16,
+                "merge_factor": 4,
+            },
+        )
         obj.global_config = {"merge_factor": 4}
         obj.hparams_vision = {}
 
@@ -1264,16 +1415,19 @@ class TestUltravoxConversion:
         """Test model.* and lm_head.* tensors are skipped."""
         from auto_round.export.export_to_gguf.conversion.ultravox import GlmASRWhisperEncoderModel
 
-        obj = _make_mock_model(GlmASRWhisperEncoderModel, {
-            "hidden_size": 1024,
-            "intermediate_size": 4096,
-            "num_attention_heads": 16,
-            "num_mel_bins": 80,
-            "d_model": 1024,
-            "encoder_ffn_dim": 4096,
-            "encoder_attention_heads": 16,
-            "merge_factor": 4,
-        })
+        obj = _make_mock_model(
+            GlmASRWhisperEncoderModel,
+            {
+                "hidden_size": 1024,
+                "intermediate_size": 4096,
+                "num_attention_heads": 16,
+                "num_mel_bins": 80,
+                "d_model": 1024,
+                "encoder_ffn_dim": 4096,
+                "encoder_attention_heads": 16,
+                "merge_factor": 4,
+            },
+        )
         obj.global_config = {"merge_factor": 4}
         obj.hparams_vision = {}
 
@@ -1287,27 +1441,30 @@ class TestUltravoxConversion:
         """Test conv weights are forced to F16."""
         from auto_round.export.export_to_gguf.conversion.ultravox import WhisperEncoderModel
 
-        obj = _make_mock_model(WhisperEncoderModel, {
-            "hidden_size": 1024,
-            "intermediate_size": 4096,
-            "num_attention_heads": 16,
-            "num_mel_bins": 80,
-            "d_model": 1024,
-            "encoder_ffn_dim": 4096,
-            "encoder_attention_heads": 16,
-        })
+        obj = _make_mock_model(
+            WhisperEncoderModel,
+            {
+                "hidden_size": 1024,
+                "intermediate_size": 4096,
+                "num_attention_heads": 16,
+                "num_mel_bins": 80,
+                "d_model": 1024,
+                "encoder_ffn_dim": 4096,
+                "encoder_attention_heads": 16,
+            },
+        )
         obj.hparams_vision = {}
 
-        result = obj.tensor_force_quant(
-            "audio.conv1.weight", "audio.conv1.weight", 0, 4
-        )
+        result = obj.tensor_force_quant("audio.conv1.weight", "audio.conv1.weight", 0, 4)
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         assert result == gguf.GGMLQuantizationType.F16
 
 
 # ==============================================================================
 # refact.py tests
 # ==============================================================================
+
 
 class TestRefactConversion:
     """Tests for Refact conversion module."""
@@ -1316,13 +1473,16 @@ class TestRefactConversion:
         """Test attn.q.weight is passed through."""
         from auto_round.export.export_to_gguf.conversion.refact import RefactModel
 
-        obj = _make_mock_model(RefactModel, {
-            "num_hidden_layers": 2,
-            "n_embd": 2048,
-            "n_positions": 2048,
-            "n_head": 16,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            RefactModel,
+            {
+                "num_hidden_layers": 2,
+                "n_embd": 2048,
+                "n_positions": 2048,
+                "n_head": 16,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
 
         data = torch.randn(2048, 2048)
         results = list(obj.modify_tensors(data, "transformer.h.0.attn.q.weight", bid=0))
@@ -1333,13 +1493,16 @@ class TestRefactConversion:
         """Test attn.kv.weight is split into k and v."""
         from auto_round.export.export_to_gguf.conversion.refact import RefactModel
 
-        obj = _make_mock_model(RefactModel, {
-            "num_hidden_layers": 2,
-            "n_embd": 2048,
-            "n_positions": 2048,
-            "n_head": 16,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            RefactModel,
+            {
+                "num_hidden_layers": 2,
+                "n_embd": 2048,
+                "n_positions": 2048,
+                "n_head": 16,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
 
         # k and v each have 1 head_dim = n_embd/n_head = 128
         head_dim = 128
@@ -1355,13 +1518,16 @@ class TestRefactConversion:
         """Test gate_up_proj.weight is split into gate and up."""
         from auto_round.export.export_to_gguf.conversion.refact import RefactModel
 
-        obj = _make_mock_model(RefactModel, {
-            "num_hidden_layers": 2,
-            "n_embd": 2048,
-            "n_positions": 2048,
-            "n_head": 16,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            RefactModel,
+            {
+                "num_hidden_layers": 2,
+                "n_embd": 2048,
+                "n_positions": 2048,
+                "n_head": 16,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
 
         hidden_dim = 2048
         inner_dim = 4 * hidden_dim
@@ -1381,6 +1547,7 @@ class TestRefactConversion:
 # wavtokenizer.py tests
 # ==============================================================================
 
+
 class TestWavTokenizerConversion:
     """Tests for WavTokenizer conversion module."""
 
@@ -1388,15 +1555,18 @@ class TestWavTokenizerConversion:
         """Test codebook.* tensors are skipped."""
         from auto_round.export.export_to_gguf.conversion.wavtokenizer import WavTokenizerDecModel
 
-        obj = _make_mock_model(WavTokenizerDecModel, {
-            "vocab_size": 1024,
-            "n_embd_features": 128,
-            "n_ff": 2048,
-            "group_norm_epsilon": 1e-5,
-            "group_norm_groups": 32,
-            "posnet": {"n_embd": 512, "n_layer": 4},
-            "convnext": {"n_embd": 256, "n_layer": 3},
-        })
+        obj = _make_mock_model(
+            WavTokenizerDecModel,
+            {
+                "vocab_size": 1024,
+                "n_embd_features": 128,
+                "n_ff": 2048,
+                "group_norm_epsilon": 1e-5,
+                "group_norm_groups": 32,
+                "posnet": {"n_embd": 512, "n_layer": 4},
+                "convnext": {"n_embd": 256, "n_layer": 3},
+            },
+        )
 
         # Should skip codebook tensors
         for suffix in ["codebook.cluster_size", "codebook.embed_avg", "codebook.inited"]:
@@ -1407,15 +1577,18 @@ class TestWavTokenizerConversion:
         """Test non-codebook tensors are kept."""
         from auto_round.export.export_to_gguf.conversion.wavtokenizer import WavTokenizerDecModel
 
-        obj = _make_mock_model(WavTokenizerDecModel, {
-            "vocab_size": 1024,
-            "n_embd_features": 128,
-            "n_ff": 2048,
-            "group_norm_epsilon": 1e-5,
-            "group_norm_groups": 32,
-            "posnet": {"n_embd": 512, "n_layer": 4},
-            "convnext": {"n_embd": 256, "n_layer": 3},
-        })
+        obj = _make_mock_model(
+            WavTokenizerDecModel,
+            {
+                "vocab_size": 1024,
+                "n_embd_features": 128,
+                "n_ff": 2048,
+                "group_norm_epsilon": 1e-5,
+                "group_norm_groups": 32,
+                "posnet": {"n_embd": 512, "n_layer": 4},
+                "convnext": {"n_embd": 256, "n_layer": 3},
+            },
+        )
 
         result = obj.filter_tensors(("model.encoder.conv.weight", lambda: None))
         assert result is not None
@@ -1424,6 +1597,7 @@ class TestWavTokenizerConversion:
 # ==============================================================================
 # baichuan.py tests
 # ==============================================================================
+
 
 class TestBaichuanConversion:
     """Tests for Baichuan conversion module."""
@@ -1482,7 +1656,7 @@ class TestBaichuanConversion:
         # n_part=2 -> V section, no permutation
         v_part = obj._reverse_hf_part(weights, 2)
         assert v_part.shape == (n_embd, 128)
-        assert torch.equal(v_part, weights[2 * n_embd:, :])
+        assert torch.equal(v_part, weights[2 * n_embd :, :])
 
     def test_set_vocab_delegates_to_sentencepiece(self):
         """Test set_vocab calls the sentencepiece vocab setter."""
@@ -1497,13 +1671,16 @@ class TestBaichuanConversion:
         """Test set_gguf_parameters writes gguf metadata + baichuan-specific fields."""
         from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
 
-        obj = _make_mock_model(BaichuanModel, {
-            "hidden_size": 512,
-            "num_attention_heads": 8,
-            "num_key_value_heads": 8,
-            "max_position_embeddings": 2048,
-            "intermediate_size": 2048,
-        })
+        obj = _make_mock_model(
+            BaichuanModel,
+            {
+                "hidden_size": 512,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 8,
+                "max_position_embeddings": 2048,
+                "intermediate_size": 2048,
+            },
+        )
         with patch.object(BaichuanModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
 
@@ -1514,10 +1691,13 @@ class TestBaichuanConversion:
         """Test modify_tensors unpacks W_pack into Q, K, V at the right block id."""
         from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
 
-        obj = _make_mock_model(BaichuanModel, {
-            "num_attention_heads": 8,
-            "num_key_value_heads": 2,
-        })
+        obj = _make_mock_model(
+            BaichuanModel,
+            {
+                "num_attention_heads": 8,
+                "num_key_value_heads": 2,
+            },
+        )
 
         # Simulate W_pack weight of shape (3*n_embd, n_embd)
         n_embd = 64
@@ -1534,10 +1714,13 @@ class TestBaichuanConversion:
         """Test modify_tensors for non-W_pack tensors delegates to parent mapping."""
         from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
 
-        obj = _make_mock_model(BaichuanModel, {
-            "num_attention_heads": 8,
-            "num_key_value_heads": 8,
-        })
+        obj = _make_mock_model(
+            BaichuanModel,
+            {
+                "num_attention_heads": 8,
+                "num_key_value_heads": 8,
+            },
+        )
 
         # Mock parent modify_tensors to return a known list. Use a simple function
         # instead of MagicMock so it doesn't interfere with generator exhaustion.
@@ -1563,6 +1746,7 @@ class TestBaichuanConversion:
 # maincoder.py tests
 # ==============================================================================
 
+
 class TestMaincoderConversion:
     """Tests for Maincoder conversion module."""
 
@@ -1570,13 +1754,16 @@ class TestMaincoderConversion:
         """Test set_gguf_parameters writes rope dimension when head_dim is set."""
         from auto_round.export.export_to_gguf.conversion.maincoder import MaincoderModel
 
-        obj = _make_mock_model(MaincoderModel, {
-            "head_dim": 128,
-            "max_position_embeddings": 2048,
-            "hidden_size": 512,
-            "intermediate_size": 2048,
-            "num_attention_heads": 8,
-        })
+        obj = _make_mock_model(
+            MaincoderModel,
+            {
+                "head_dim": 128,
+                "max_position_embeddings": 2048,
+                "hidden_size": 512,
+                "intermediate_size": 2048,
+                "num_attention_heads": 8,
+            },
+        )
         with patch.object(MaincoderModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
@@ -1586,6 +1773,7 @@ class TestMaincoderConversion:
 # codeshell.py tests
 # ==============================================================================
 
+
 class TestCodeShellConversion:
     """Tests for CodeShell conversion module."""
 
@@ -1593,13 +1781,16 @@ class TestCodeShellConversion:
         """Test set_gguf_parameters writes all CodeShell gguf fields."""
         from auto_round.export.export_to_gguf.conversion.codeshell import CodeShellModel
 
-        obj = _make_mock_model(CodeShellModel, {
-            "n_positions": 8192,
-            "n_embd": 2048,
-            "n_head": 16,
-            "num_query_groups": 1,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            CodeShellModel,
+            {
+                "n_positions": 8192,
+                "n_embd": 2048,
+                "n_head": 16,
+                "num_query_groups": 1,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(8192)
@@ -1610,6 +1801,7 @@ class TestCodeShellConversion:
         w.add_layer_norm_eps.assert_called_once_with(1e-5)
         w.add_rope_freq_base.assert_called_once_with(10000.0)
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         w.add_rope_scaling_type.assert_called_once_with(gguf.RopeScalingType.LINEAR)
         w.add_rope_scaling_factor.assert_called_once_with(1.0)
 
@@ -1618,6 +1810,7 @@ class TestCodeShellConversion:
 # starcoder.py tests
 # ==============================================================================
 
+
 class TestStarCoderConversion:
     """Tests for StarCoder / StarCoder2 conversion modules."""
 
@@ -1625,12 +1818,15 @@ class TestStarCoderConversion:
         """Test StarCoderModel.set_gguf_parameters writes gguf metadata for starcoder."""
         from auto_round.export.export_to_gguf.conversion.starcoder import StarCoderModel
 
-        obj = _make_mock_model(StarCoderModel, {
-            "n_positions": 8192,
-            "n_embd": 2048,
-            "n_head": 24,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            StarCoderModel,
+            {
+                "n_positions": 8192,
+                "n_embd": 2048,
+                "n_head": 24,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(8192)
@@ -1646,6 +1842,7 @@ class TestStarCoderConversion:
 # lighton_ocr.py tests
 # ==============================================================================
 
+
 class TestLightOnOCRConversion:
     """Tests for LightOnOCR conversion module."""
 
@@ -1657,6 +1854,7 @@ class TestLightOnOCRConversion:
         with patch.object(LightOnOCRVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.LIGHTONOCR)
 
     def test_filter_tensors_replaces_prefixes(self):
@@ -1670,21 +1868,18 @@ class TestLightOnOCRConversion:
 
         with patch.object(LightOnOCRVisionModel.__mro__[1], "filter_tensors", staticmethod(parent_filter)):
             # Vision encoder path
-            result = LightOnOCRVisionModel.filter_tensors(
-                ("model.vision_encoder.layer.weight", lambda: None)
-            )
+            result = LightOnOCRVisionModel.filter_tensors(("model.vision_encoder.layer.weight", lambda: None))
             assert result[0] == "vision_tower.layer.weight"
 
             # Vision projection path
-            result = LightOnOCRVisionModel.filter_tensors(
-                ("model.vision_projection.proj.weight", lambda: None)
-            )
+            result = LightOnOCRVisionModel.filter_tensors(("model.vision_projection.proj.weight", lambda: None))
             assert result[0] == "multi_modal_projector.proj.weight"
 
 
 # ==============================================================================
 # dots1.py tests
 # ==============================================================================
+
 
 class TestDots1Conversion:
     """Tests for Dots1 conversion module."""
@@ -1693,16 +1888,19 @@ class TestDots1Conversion:
         """Test Dots1Model.set_gguf_parameters writes MoE-specific fields."""
         from auto_round.export.export_to_gguf.conversion.dots1 import Dots1Model
 
-        obj = _make_mock_model(Dots1Model, {
-            "first_k_dense_replace": 3,
-            "n_shared_experts": 2,
-            "routed_scaling_factor": 1.5,
-            "norm_topk_prob": True,
-            "max_position_embeddings": 4096,
-            "hidden_size": 1024,
-            "intermediate_size": 4096,
-            "num_attention_heads": 16,
-        })
+        obj = _make_mock_model(
+            Dots1Model,
+            {
+                "first_k_dense_replace": 3,
+                "n_shared_experts": 2,
+                "routed_scaling_factor": 1.5,
+                "norm_topk_prob": True,
+                "max_position_embeddings": 4096,
+                "hidden_size": 1024,
+                "intermediate_size": 4096,
+                "num_attention_heads": 16,
+            },
+        )
         with patch.object(Dots1Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -1715,6 +1913,7 @@ class TestDots1Conversion:
 # ==============================================================================
 # sarashina2.py tests
 # ==============================================================================
+
 
 class TestSarashina2Conversion:
     """Tests for Sarashina2 conversion module."""
@@ -1743,6 +1942,7 @@ class TestSarashina2Conversion:
 # cogvlm.py tests
 # ==============================================================================
 
+
 class TestCogVLMConversion:
     """Tests for CogVLM conversion module."""
 
@@ -1769,6 +1969,7 @@ class TestCogVLMConversion:
         with patch.object(CogVLMVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.COGVLM)
         obj.gguf_writer.add_vision_attention_layernorm_eps.assert_called_once_with(1e-5)
 
@@ -1776,6 +1977,7 @@ class TestCogVLMConversion:
 # ==============================================================================
 # orion.py tests
 # ==============================================================================
+
 
 class TestOrionConversion:
     """Tests for Orion conversion module."""
@@ -1793,13 +1995,16 @@ class TestOrionConversion:
         """Test set_gguf_parameters picks the right context length key."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_attention_heads": 16,
-            "max_sequence_length": 8192,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "rms_norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_attention_heads": 16,
+                "max_sequence_length": 8192,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "rms_norm_eps": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         obj.gguf_writer.add_context_length.assert_called_once_with(8192)
 
@@ -1807,13 +2012,16 @@ class TestOrionConversion:
         """Test set_gguf_parameters falls back to max_position_embeddings."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_attention_heads": 16,
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "rms_norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_attention_heads": 16,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "rms_norm_eps": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         obj.gguf_writer.add_context_length.assert_called_once_with(4096)
 
@@ -1821,12 +2029,15 @@ class TestOrionConversion:
         """Test set_gguf_parameters raises if no ctx length key is set."""
         from auto_round.export.export_to_gguf.conversion.orion import OrionModel
 
-        obj = _make_mock_model(OrionModel, {
-            "num_attention_heads": 16,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "rms_norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_attention_heads": 16,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "rms_norm_eps": 1e-5,
+            },
+        )
         with pytest.raises(ValueError, match="can not find ctx length"):
             obj.set_gguf_parameters()
 
@@ -1835,6 +2046,7 @@ class TestOrionConversion:
 # llama4.py tests
 # ==============================================================================
 
+
 class TestLlama4Conversion:
     """Tests for Llama4 conversion module."""
 
@@ -1842,14 +2054,18 @@ class TestLlama4Conversion:
         """Test set_gguf_parameters asserts hidden_act is 'gelu' and writes use_gelu."""
         from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
 
-        obj = _make_mock_model(Llama4VisionModel, {
-            "norm_eps": 1e-5,
-            "pixel_shuffle_ratio": 0.5,
-            "hidden_act": "gelu",
-        })
+        obj = _make_mock_model(
+            Llama4VisionModel,
+            {
+                "norm_eps": 1e-5,
+                "pixel_shuffle_ratio": 0.5,
+                "hidden_act": "gelu",
+            },
+        )
         with patch.object(Llama4VisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.LLAMA4)
         obj.gguf_writer.add_vision_attention_layernorm_eps.assert_called_once_with(1e-5)
         obj.gguf_writer.add_vision_projector_scale_factor.assert_called_once_with(2)
@@ -1871,15 +2087,13 @@ class TestLlama4Conversion:
             return item
 
         with patch.object(Llama4VisionModel.__mro__[1], "filter_tensors", staticmethod(parent_filter)):
-            result = Llama4VisionModel.filter_tensors(
-                ("vision_model.positional_embedding_vlm", lambda: None)
-            )
+            result = Llama4VisionModel.filter_tensors(("vision_model.positional_embedding_vlm", lambda: None))
             assert result[0] == "vision_model.positional_embedding_vlm.weight"
 
     def test_modify_tensors_mmproj_linear_1(self):
         """Test Llama4VisionModel.modify_tensors maps multi_modal_projector.linear_1 to V_MMPROJ_FC."""
-        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
 
         obj = _make_mock_model(Llama4VisionModel)
         data = torch.randn(8, 8)
@@ -1902,6 +2116,7 @@ class TestLlama4Conversion:
 # pixtral.py tests
 # ==============================================================================
 
+
 class TestPixtralConversion:
     """Tests for Pixtral conversion module."""
 
@@ -1909,15 +2124,18 @@ class TestPixtralConversion:
         """Test PixtralModel.set_gguf_parameters writes projector + vision params."""
         from auto_round.export.export_to_gguf.conversion.pixtral import PixtralModel
 
-        obj = _make_mock_model(PixtralModel, {
-            "norm_eps": 1e-5,
-            "rope_theta": 10000.0,
-            "mm_projector_id": "patch_merge",
-            "spatial_merge_size": 2,
-            "hidden_size": 1024,
-            "intermediate_size": 4096,
-            "num_attention_heads": 16,
-        })
+        obj = _make_mock_model(
+            PixtralModel,
+            {
+                "norm_eps": 1e-5,
+                "rope_theta": 10000.0,
+                "mm_projector_id": "patch_merge",
+                "spatial_merge_size": 2,
+                "hidden_size": 1024,
+                "intermediate_size": 4096,
+                "num_attention_heads": 16,
+            },
+        )
         # find_vparam asserts hparams_vision is not None
         obj.hparams_vision = {
             "norm_eps": 1e-5,
@@ -1928,6 +2146,7 @@ class TestPixtralConversion:
         with patch.object(PixtralModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.PIXTRAL)
         obj.gguf_writer.add_vision_use_silu.assert_called_once_with(True)
         obj.gguf_writer.add_vision_spatial_merge_size.assert_called_once_with(2)
@@ -1947,6 +2166,7 @@ class TestPixtralConversion:
 # pangu.py tests
 # ==============================================================================
 
+
 class TestPanguConversion:
     """Tests for Pangu conversion module."""
 
@@ -1954,14 +2174,17 @@ class TestPanguConversion:
         """Test set_gguf_parameters writes rope_dim from head_dim when present."""
         from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
 
-        obj = _make_mock_model(PanguEmbeddedModel, {
-            "vocab_size": 32000,
-            "head_dim": 128,
-            "hidden_size": 2048,
-            "num_attention_heads": 16,
-            "max_position_embeddings": 4096,
-            "intermediate_size": 8192,
-        })
+        obj = _make_mock_model(
+            PanguEmbeddedModel,
+            {
+                "vocab_size": 32000,
+                "head_dim": 128,
+                "hidden_size": 2048,
+                "num_attention_heads": 16,
+                "max_position_embeddings": 4096,
+                "intermediate_size": 8192,
+            },
+        )
         with patch.object(PanguEmbeddedModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
@@ -1970,13 +2193,16 @@ class TestPanguConversion:
         """Test set_gguf_parameters derives rope_dim from hidden_size/num_heads."""
         from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
 
-        obj = _make_mock_model(PanguEmbeddedModel, {
-            "vocab_size": 32000,
-            "hidden_size": 2048,
-            "num_attention_heads": 16,
-            "max_position_embeddings": 4096,
-            "intermediate_size": 8192,
-        })
+        obj = _make_mock_model(
+            PanguEmbeddedModel,
+            {
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "num_attention_heads": 16,
+                "max_position_embeddings": 4096,
+                "intermediate_size": 8192,
+            },
+        )
         with patch.object(PanguEmbeddedModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         # 2048 / 16 = 128
@@ -1988,6 +2214,7 @@ class TestPanguConversion:
 # ==============================================================================
 # bitnet.py tests
 # ==============================================================================
+
 
 class TestBitnetConversion:
     """Tests for Bitnet conversion module."""
@@ -2012,15 +2239,19 @@ class TestBitnetConversion:
         """Test BitnetModel.set_gguf_parameters writes linear rope scaling."""
         from auto_round.export.export_to_gguf.conversion.bitnet import BitnetModel
 
-        obj = _make_mock_model(BitnetModel, {
-            "max_position_embeddings": 4096,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 16,
-        })
+        obj = _make_mock_model(
+            BitnetModel,
+            {
+                "max_position_embeddings": 4096,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 16,
+            },
+        )
         with patch.object(BitnetModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_rope_scaling_type.assert_called_once_with(gguf.RopeScalingType.LINEAR)
         obj.gguf_writer.add_rope_scaling_factor.assert_called_once_with(1.0)
 
@@ -2029,6 +2260,7 @@ class TestBitnetConversion:
 # mpt.py tests
 # ==============================================================================
 
+
 class TestMptConversion:
     """Tests for MPT conversion module."""
 
@@ -2036,12 +2268,15 @@ class TestMptConversion:
         """Test MPTModel.set_gguf_parameters writes kv heads when present."""
         from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
 
-        obj = _make_mock_model(MPTModel, {
-            "max_seq_len": 2048,
-            "d_model": 4096,
-            "n_heads": 32,
-            "attn_config": {"kv_n_heads": 8, "clip_qkv": None, "alibi": False},
-        })
+        obj = _make_mock_model(
+            MPTModel,
+            {
+                "max_seq_len": 2048,
+                "d_model": 4096,
+                "n_heads": 32,
+                "attn_config": {"kv_n_heads": 8, "clip_qkv": None, "alibi": False},
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(2048)
@@ -2056,12 +2291,15 @@ class TestMptConversion:
         """Test MPTModel.set_gguf_parameters writes alibi_bias_max when alibi=True."""
         from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
 
-        obj = _make_mock_model(MPTModel, {
-            "max_seq_len": 2048,
-            "d_model": 4096,
-            "n_heads": 32,
-            "attn_config": {"kv_n_heads": None, "clip_qkv": None, "alibi": True, "alibi_bias_max": 8.0},
-        })
+        obj = _make_mock_model(
+            MPTModel,
+            {
+                "max_seq_len": 2048,
+                "d_model": 4096,
+                "n_heads": 32,
+                "attn_config": {"kv_n_heads": None, "clip_qkv": None, "alibi": True, "alibi_bias_max": 8.0},
+            },
+        )
         obj.set_gguf_parameters()
         obj.gguf_writer.add_max_alibi_bias.assert_called_once_with(8.0)
 
@@ -2070,6 +2308,7 @@ class TestMptConversion:
 # minimax.py tests
 # ==============================================================================
 
+
 class TestMinimaxConversion:
     """Tests for MiniMax M2 conversion module."""
 
@@ -2077,13 +2316,16 @@ class TestMinimaxConversion:
         """Test MiniMaxM2Model.set_gguf_parameters writes expert + rope dims."""
         from auto_round.export.export_to_gguf.conversion.minimax import MiniMaxM2Model
 
-        obj = _make_mock_model(MiniMaxM2Model, {
-            "intermediate_size": 8192,
-            "rotary_dim": 64,
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            MiniMaxM2Model,
+            {
+                "intermediate_size": 8192,
+                "rotary_dim": 64,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(MiniMaxM2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_expert_feed_forward_length.assert_called_once_with(8192)
@@ -2094,6 +2336,7 @@ class TestMinimaxConversion:
 # falcon.py tests
 # ==============================================================================
 
+
 class TestFalconConversion:
     """Tests for Falcon conversion module."""
 
@@ -2101,12 +2344,15 @@ class TestFalconConversion:
         """Test FalconModel.set_gguf_parameters uses jploski layout and writes metadata."""
         from auto_round.export.export_to_gguf.conversion.falcon import FalconModel
 
-        obj = _make_mock_model(FalconModel, {
-            "num_attention_heads": 64,
-            "num_kv_heads": 8,
-            "hidden_size": 8192,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            FalconModel,
+            {
+                "num_attention_heads": 64,
+                "num_kv_heads": 8,
+                "hidden_size": 8192,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_tensor_data_layout.assert_called_once_with("jploski")
@@ -2120,6 +2366,7 @@ class TestFalconConversion:
 # gptneox.py tests
 # ==============================================================================
 
+
 class TestGptNeoxConversion:
     """Tests for GPTNeoX conversion module."""
 
@@ -2127,15 +2374,18 @@ class TestGptNeoxConversion:
         """Test GPTNeoXModel.set_gguf_parameters computes rope dim from rotary_pct."""
         from auto_round.export.export_to_gguf.conversion.gptneox import GPTNeoXModel
 
-        obj = _make_mock_model(GPTNeoXModel, {
-            "max_position_embeddings": 2048,
-            "hidden_size": 6144,
-            "intermediate_size": 24576,
-            "rotary_pct": 0.25,
-            "num_attention_heads": 64,
-            "layer_norm_eps": 1e-5,
-            "use_parallel_residual": True,
-        })
+        obj = _make_mock_model(
+            GPTNeoXModel,
+            {
+                "max_position_embeddings": 2048,
+                "hidden_size": 6144,
+                "intermediate_size": 24576,
+                "rotary_pct": 0.25,
+                "num_attention_heads": 64,
+                "layer_norm_eps": 1e-5,
+                "use_parallel_residual": True,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         # rotary_dim = int(0.25 * (6144 / 64)) = int(24) = 24
@@ -2147,6 +2397,7 @@ class TestGptNeoxConversion:
 # bloom.py tests
 # ==============================================================================
 
+
 class TestBloomConversion:
     """Tests for Bloom conversion module."""
 
@@ -2154,12 +2405,15 @@ class TestBloomConversion:
         """Test BloomModel.set_gguf_parameters writes metadata with kv == q heads."""
         from auto_round.export.export_to_gguf.conversion.bloom import BloomModel
 
-        obj = _make_mock_model(BloomModel, {
-            "hidden_size": 4096,
-            "n_head": 32,
-            "seq_length": 2048,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            BloomModel,
+            {
+                "hidden_size": 4096,
+                "n_head": 32,
+                "seq_length": 2048,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_embedding_length.assert_called_once_with(4096)
@@ -2173,6 +2427,7 @@ class TestBloomConversion:
 # xverse.py tests
 # ==============================================================================
 
+
 class TestXverseConversion:
     """Tests for Xverse conversion module."""
 
@@ -2180,12 +2435,15 @@ class TestXverseConversion:
         """Test XverseModel.set_gguf_parameters writes Meta layout and rope dim."""
         from auto_round.export.export_to_gguf.conversion.xverse import XverseModel
 
-        obj = _make_mock_model(XverseModel, {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 4096,
-            "intermediate_size": 16384,
-        })
+        obj = _make_mock_model(
+            XverseModel,
+            {
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 4096,
+                "intermediate_size": 16384,
+            },
+        )
         with patch.object(XverseModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_tensor_data_layout.assert_called_once_with("Meta AI original pth")
@@ -2214,6 +2472,7 @@ class TestXverseConversion:
 # plm.py tests
 # ==============================================================================
 
+
 class TestPlmConversion:
     """Tests for PLM conversion module."""
 
@@ -2230,17 +2489,20 @@ class TestPlmConversion:
         """Test PLMModel.set_gguf_parameters writes kv_lora_rank and head dims."""
         from auto_round.export.export_to_gguf.conversion.plm import PLMModel
 
-        obj = _make_mock_model(PLMModel, {
-            "vocab_size": 32000,
-            "kv_lora_rank": 64,
-            "qk_nope_head_dim": 32,
-            "qk_rope_head_dim": 16,
-            "v_head_dim": 64,
-            "max_position_embeddings": 4096,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 16,
-        })
+        obj = _make_mock_model(
+            PLMModel,
+            {
+                "vocab_size": 32000,
+                "kv_lora_rank": 64,
+                "qk_nope_head_dim": 32,
+                "qk_rope_head_dim": 16,
+                "v_head_dim": 64,
+                "max_position_embeddings": 4096,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 16,
+            },
+        )
         with patch.object(PLMModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -2256,6 +2518,7 @@ class TestPlmConversion:
 # chameleon.py tests
 # ==============================================================================
 
+
 class TestChameleonConversion:
     """Tests for Chameleon conversion module."""
 
@@ -2263,13 +2526,16 @@ class TestChameleonConversion:
         """Test ChameleonModel.set_gguf_parameters writes swin_norm flag."""
         from auto_round.export.export_to_gguf.conversion.chameleon import ChameleonModel
 
-        obj = _make_mock_model(ChameleonModel, {
-            "swin_norm": True,
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            ChameleonModel,
+            {
+                "swin_norm": True,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(ChameleonModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_swin_norm.assert_called_once_with(True)
@@ -2295,6 +2561,7 @@ class TestChameleonConversion:
 # dream.py tests
 # ==============================================================================
 
+
 class TestDreamConversion:
     """Tests for Dream conversion module."""
 
@@ -2302,12 +2569,15 @@ class TestDreamConversion:
         """Test DreamModel.set_gguf_parameters sets non-causal attention."""
         from auto_round.export.export_to_gguf.conversion.dream import DreamModel
 
-        obj = _make_mock_model(DreamModel, {
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            DreamModel,
+            {
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(DreamModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_causal_attention.assert_called_once_with(False)
@@ -2316,13 +2586,16 @@ class TestDreamConversion:
         """Test DreamModel.set_gguf_parameters writes mask_token_id when present."""
         from auto_round.export.export_to_gguf.conversion.dream import DreamModel
 
-        obj = _make_mock_model(DreamModel, {
-            "mask_token_id": 32000,
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            DreamModel,
+            {
+                "mask_token_id": 32000,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(DreamModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_mask_token_id.assert_called_once_with(32000)
@@ -2332,6 +2605,7 @@ class TestDreamConversion:
 # dbrx.py tests
 # ==============================================================================
 
+
 class TestDbrxConversion:
     """Tests for Dbrx conversion module."""
 
@@ -2339,21 +2613,24 @@ class TestDbrxConversion:
         """Test DbrxModel.set_gguf_parameters writes MoE and rope params."""
         from auto_round.export.export_to_gguf.conversion.dbrx import DbrxModel
 
-        obj = _make_mock_model(DbrxModel, {
-            "max_seq_len": 2048,
-            "d_model": 4096,
-            "n_heads": 32,
-            "ffn_config": {
-                "ffn_hidden_size": 14336,
-                "moe_num_experts": 16,
-                "moe_top_k": 4,
+        obj = _make_mock_model(
+            DbrxModel,
+            {
+                "max_seq_len": 2048,
+                "d_model": 4096,
+                "n_heads": 32,
+                "ffn_config": {
+                    "ffn_hidden_size": 14336,
+                    "moe_num_experts": 16,
+                    "moe_top_k": 4,
+                },
+                "attn_config": {
+                    "kv_n_heads": 8,
+                    "rope_theta": 10000.0,
+                    "clip_qkv": 8.0,
+                },
             },
-            "attn_config": {
-                "kv_n_heads": 8,
-                "rope_theta": 10000.0,
-                "clip_qkv": 8.0,
-            },
-        })
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(2048)
@@ -2380,6 +2657,7 @@ class TestDbrxConversion:
 # gpt2.py tests
 # ==============================================================================
 
+
 class TestGpt2Conversion:
     """Tests for GPT2 conversion module."""
 
@@ -2387,12 +2665,15 @@ class TestGpt2Conversion:
         """Test GPT2Model.set_gguf_parameters writes GPT-2 metadata."""
         from auto_round.export.export_to_gguf.conversion.gpt2 import GPT2Model
 
-        obj = _make_mock_model(GPT2Model, {
-            "n_ctx": 1024,
-            "n_embd": 768,
-            "n_head": 12,
-            "layer_norm_epsilon": 1e-5,
-        })
+        obj = _make_mock_model(
+            GPT2Model,
+            {
+                "n_ctx": 1024,
+                "n_embd": 768,
+                "n_head": 12,
+                "layer_norm_epsilon": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(1024)
@@ -2405,6 +2686,7 @@ class TestGpt2Conversion:
 # ==============================================================================
 # afmoe.py tests
 # ==============================================================================
+
 
 class TestAfmoeConversion:
     """Tests for Afmoe conversion module."""
@@ -2425,6 +2707,7 @@ class TestAfmoeConversion:
 # smallthinker.py tests
 # ==============================================================================
 
+
 class TestSmallThinkerConversion:
     """Tests for SmallThinker conversion module."""
 
@@ -2432,19 +2715,23 @@ class TestSmallThinkerConversion:
         """Test SmallThinkerModel.set_gguf_parameters writes SOFTMAX when configured."""
         from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
 
-        obj = _make_mock_model(SmallThinkerModel, {
-            "moe_num_primary_experts": 32,
-            "moe_num_active_primary_experts": 4,
-            "moe_ffn_hidden_size": 4096,
-            "moe_primary_router_apply_softmax": True,
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            SmallThinkerModel,
+            {
+                "moe_num_primary_experts": 32,
+                "moe_num_active_primary_experts": 4,
+                "moe_ffn_hidden_size": 4096,
+                "moe_primary_router_apply_softmax": True,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         w = obj.gguf_writer
         w.add_expert_count.assert_called_once_with(32)
         w.add_expert_used_count.assert_called_once_with(4)
@@ -2455,25 +2742,30 @@ class TestSmallThinkerConversion:
         """Test SmallThinkerModel.set_gguf_parameters writes SIGMOID by default."""
         from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
 
-        obj = _make_mock_model(SmallThinkerModel, {
-            "moe_num_primary_experts": 32,
-            "moe_num_active_primary_experts": 4,
-            "moe_ffn_hidden_size": 4096,
-            "moe_primary_router_apply_softmax": False,
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            SmallThinkerModel,
+            {
+                "moe_num_primary_experts": 32,
+                "moe_num_active_primary_experts": 4,
+                "moe_ffn_hidden_size": 4096,
+                "moe_primary_router_apply_softmax": False,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_expert_gating_func.assert_called_once_with(gguf.ExpertGatingFuncType.SIGMOID)
 
 
 # ==============================================================================
 # openelm.py tests
 # ==============================================================================
+
 
 class TestOpenElmConversion:
     """Tests for OpenELM conversion module."""
@@ -2494,6 +2786,7 @@ class TestOpenElmConversion:
 # command_r.py tests
 # ==============================================================================
 
+
 class TestCommandRConversion:
     """Tests for CommandR / Cohere2 conversion module."""
 
@@ -2501,17 +2794,21 @@ class TestCommandRConversion:
         """Test CommandR2Model.set_gguf_parameters writes logit_scale + rope none."""
         from auto_round.export.export_to_gguf.conversion.command_r import CommandR2Model
 
-        obj = _make_mock_model(CommandR2Model, {
-            "logit_scale": 0.0625,
-            "model_max_length": 131072,
-            "max_position_embeddings": 8192,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            CommandR2Model,
+            {
+                "logit_scale": 0.0625,
+                "model_max_length": 131072,
+                "max_position_embeddings": 8192,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(CommandR2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_logit_scale.assert_called_once_with(0.0625)
         obj.gguf_writer.add_rope_scaling_type.assert_called_once_with(gguf.RopeScalingType.NONE)
 
@@ -2519,19 +2816,23 @@ class TestCommandRConversion:
         """Test Cohere2Model.set_gguf_parameters writes sliding_window and rope dims."""
         from auto_round.export.export_to_gguf.conversion.command_r import Cohere2Model
 
-        obj = _make_mock_model(Cohere2Model, {
-            "logit_scale": 0.0625,
-            "sliding_window": 4096,
-            "vocab_size": 256000,
-            "rotary_pct": 0.25,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 131072,
-            "intermediate_size": 16384,
-        })
+        obj = _make_mock_model(
+            Cohere2Model,
+            {
+                "logit_scale": 0.0625,
+                "sliding_window": 4096,
+                "vocab_size": 256000,
+                "rotary_pct": 0.25,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 131072,
+                "intermediate_size": 16384,
+            },
+        )
         with patch.object(Cohere2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         w = obj.gguf_writer
         w.add_logit_scale.assert_called_once_with(0.0625)
         w.add_sliding_window.assert_called_once_with(4096)
@@ -2544,6 +2845,7 @@ class TestCommandRConversion:
 # stablelm.py tests
 # ==============================================================================
 
+
 class TestStableLmConversion:
     """Tests for StableLM conversion module."""
 
@@ -2551,16 +2853,19 @@ class TestStableLmConversion:
         """Test StableLMModel.set_gguf_parameters computes rope dim from partial_rotary_factor."""
         from auto_round.export.export_to_gguf.conversion.stablelm import StableLMModel
 
-        obj = _make_mock_model(StableLMModel, {
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "partial_rotary_factor": 0.25,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "use_parallel_residual": True,
-            "layer_norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            StableLMModel,
+            {
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "partial_rotary_factor": 0.25,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "use_parallel_residual": True,
+                "layer_norm_eps": 1e-5,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         # rotary_dim = int(0.25 * (4096 / 32)) = int(32) = 32
@@ -2573,6 +2878,7 @@ class TestStableLmConversion:
 # mistral3.py tests
 # ==============================================================================
 
+
 class TestMistral3Conversion:
     """Tests for Mistral3 conversion module."""
 
@@ -2582,13 +2888,16 @@ class TestMistral3Conversion:
 
         # The inner class
         cls = Mistral3Model.Ministral3Model
-        obj = _make_mock_model(cls, {
-            "model_type": "ministral3",
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            cls,
+            {
+                "model_type": "ministral3",
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         obj.rope_parameters = {
             "rope_type": "yarn",
             "mscale_all_dim": 1.0,
@@ -2604,13 +2913,16 @@ class TestMistral3Conversion:
         from auto_round.export.export_to_gguf.conversion.mistral3 import Mistral3Model
 
         cls = Mistral3Model.Ministral3Model
-        obj = _make_mock_model(cls, {
-            "model_type": "ministral3",
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            cls,
+            {
+                "model_type": "ministral3",
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         obj.rope_parameters = {"rope_type": "linear", "mscale_all_dim": 1.0, "llama_4_scaling_beta": 0.5}
         with patch.object(cls.__mro__[1], "set_gguf_parameters", lambda self: None):
             with pytest.raises(AssertionError, match="rope_type must be 'yarn'"):
@@ -2621,6 +2933,7 @@ class TestMistral3Conversion:
 # internvl.py tests
 # ==============================================================================
 
+
 class TestInternVlConversion:
     """Tests for InternVL conversion module."""
 
@@ -2628,10 +2941,13 @@ class TestInternVlConversion:
         """Test InternVisionModel.set_gguf_parameters writes vision_use_gelu for gelu activation."""
         from auto_round.export.export_to_gguf.conversion.internvl import InternVisionModel
 
-        obj = _make_mock_model(InternVisionModel, {
-            "layer_norm_eps": 1e-6,
-            "hidden_act": "gelu",
-        })
+        obj = _make_mock_model(
+            InternVisionModel,
+            {
+                "layer_norm_eps": 1e-6,
+                "hidden_act": "gelu",
+            },
+        )
         obj.hparams_vision = {
             "image_size": 448,
             "patch_size": 14,
@@ -2644,6 +2960,7 @@ class TestInternVlConversion:
         with patch.object(InternVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.INTERNVL)
         obj.gguf_writer.add_vision_use_gelu.assert_called_once_with(True)
         obj.gguf_writer.add_vision_projector_scale_factor.assert_called_once_with(2)
@@ -2653,6 +2970,7 @@ class TestInternVlConversion:
 # smolvlm.py tests
 # ==============================================================================
 
+
 class TestSmolVlmConversion:
     """Tests for SmolVLM conversion module."""
 
@@ -2660,13 +2978,16 @@ class TestSmolVlmConversion:
         """Test SmolVLMModel.set_gguf_parameters writes IDEFICS3 projector and uses defaults."""
         from auto_round.export.export_to_gguf.conversion.smolvlm import SmolVLMModel
 
-        obj = _make_mock_model(SmolVLMModel, {
-            "model_type": "smolvlm_vision",
-            "hidden_size": 1152,
-            "num_attention_heads": 16,
-            "intermediate_size": 3072,
-            "layer_norm_eps": 1e-5,
-        })
+        obj = _make_mock_model(
+            SmolVLMModel,
+            {
+                "model_type": "smolvlm_vision",
+                "hidden_size": 1152,
+                "num_attention_heads": 16,
+                "intermediate_size": 3072,
+                "layer_norm_eps": 1e-5,
+            },
+        )
         obj.hparams_vision = {
             "image_size": 384,
             "patch_size": 14,
@@ -2681,6 +3002,7 @@ class TestSmolVlmConversion:
         with patch.object(SmolVLMModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.IDEFICS3)
         obj.gguf_writer.add_vision_use_gelu.assert_called_once_with(True)
         obj.gguf_writer.add_vision_projector_scale_factor.assert_called_once_with(2)
@@ -2690,6 +3012,7 @@ class TestSmolVlmConversion:
 # ==============================================================================
 # dotsocr.py tests
 # ==============================================================================
+
 
 class TestDotsOcrConversion:
     """Tests for DotsOCR conversion module."""
@@ -2713,6 +3036,7 @@ class TestDotsOcrConversion:
         with patch.object(DotsOCRVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.DOTSOCR)
         obj.gguf_writer.add_vision_min_pixels.assert_called_once_with(256)
         obj.gguf_writer.add_vision_max_pixels.assert_called_once_with(1280 * 28 * 28)
@@ -2723,6 +3047,7 @@ class TestDotsOcrConversion:
 # youtuvl.py tests
 # ==============================================================================
 
+
 class TestYoutuVlConversion:
     """Tests for YoutuVL conversion module."""
 
@@ -2730,13 +3055,16 @@ class TestYoutuVlConversion:
         """Test YoutuVLVisionModel.set_gguf_parameters writes YOUTUVL projector and use_gelu."""
         from auto_round.export.export_to_gguf.conversion.youtuvl import YoutuVLVisionModel
 
-        obj = _make_mock_model(YoutuVLVisionModel, {
-            "layer_norm_eps": 1e-6,
-            "hidden_act": "gelu_pytorch_tanh",
-            "spatial_merge_size": 2,
-            "fullatt_block_indexes": [2, 5, 8, 11],
-            "window_size": 112,
-        })
+        obj = _make_mock_model(
+            YoutuVLVisionModel,
+            {
+                "layer_norm_eps": 1e-6,
+                "hidden_act": "gelu_pytorch_tanh",
+                "spatial_merge_size": 2,
+                "fullatt_block_indexes": [2, 5, 8, 11],
+                "window_size": 112,
+            },
+        )
         obj.hparams_vision = {
             "image_size": 560,
             "patch_size": 14,
@@ -2748,6 +3076,7 @@ class TestYoutuVlConversion:
         with patch.object(YoutuVLVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.YOUTUVL)
         obj.gguf_writer.add_vision_use_gelu.assert_called_once_with(True)
         obj.gguf_writer.add_vision_spatial_merge_size.assert_called_once_with(2)
@@ -2759,6 +3088,7 @@ class TestYoutuVlConversion:
 # chatglm.py tests
 # ==============================================================================
 
+
 class TestChatGlmConversion:
     """Tests for ChatGLM conversion module."""
 
@@ -2766,17 +3096,20 @@ class TestChatGlmConversion:
         """Test ChatGLMModel.set_gguf_parameters uses attention_dim for rope when present."""
         from auto_round.export.export_to_gguf.conversion.chatglm import ChatGLMModel
 
-        obj = _make_mock_model(ChatGLMModel, {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "multi_query_group_num": 2,
-            "seq_length": 2048,
-            "ffn_hidden_size": 16384,
-            "layernorm_epsilon": 1e-5,
-            "attention_dim": 128,
-            "partial_rotary_factor": 0.5,
-            "rope_ratio": 1.0,
-        })
+        obj = _make_mock_model(
+            ChatGLMModel,
+            {
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "multi_query_group_num": 2,
+                "seq_length": 2048,
+                "ffn_hidden_size": 16384,
+                "layernorm_epsilon": 1e-5,
+                "attention_dim": 128,
+                "partial_rotary_factor": 0.5,
+                "rope_ratio": 1.0,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(2048)
@@ -2794,13 +3127,16 @@ class TestChatGlmConversion:
         """Test ChatGLMModel.set_gguf_parameters multiplies rope_freq by rope_ratio."""
         from auto_round.export.export_to_gguf.conversion.chatglm import ChatGLMModel
 
-        obj = _make_mock_model(ChatGLMModel, {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "ffn_hidden_size": 16384,
-            "layernorm_epsilon": 1e-5,
-            "rope_ratio": 2.0,
-        })
+        obj = _make_mock_model(
+            ChatGLMModel,
+            {
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "ffn_hidden_size": 16384,
+                "layernorm_epsilon": 1e-5,
+                "rope_ratio": 2.0,
+            },
+        )
         obj.set_gguf_parameters()
         # rope_freq = 10000 * 2.0 = 20000
         obj.gguf_writer.add_rope_freq_base.assert_called_once_with(20000.0)
@@ -2832,6 +3168,7 @@ class TestChatGlmConversion:
 # jais.py tests
 # ==============================================================================
 
+
 class TestJaisConversion:
     """Tests for Jais / Jais2 conversion module."""
 
@@ -2839,13 +3176,16 @@ class TestJaisConversion:
         """Test Jais2Model.set_gguf_parameters writes rope_dimension_count from head_dim."""
         from auto_round.export.export_to_gguf.conversion.jais import Jais2Model
 
-        obj = _make_mock_model(Jais2Model, {
-            "head_dim": 128,
-            "max_position_embeddings": 8192,
-            "hidden_size": 4096,
-            "intermediate_size": 16384,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            Jais2Model,
+            {
+                "head_dim": 128,
+                "max_position_embeddings": 8192,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(Jais2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
@@ -2854,12 +3194,15 @@ class TestJaisConversion:
         """Test Jais2Model.set_gguf_parameters derives head_dim from hidden_size/num_heads."""
         from auto_round.export.export_to_gguf.conversion.jais import Jais2Model
 
-        obj = _make_mock_model(Jais2Model, {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 8192,
-            "intermediate_size": 16384,
-        })
+        obj = _make_mock_model(
+            Jais2Model,
+            {
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 8192,
+                "intermediate_size": 16384,
+            },
+        )
         with patch.object(Jais2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         # 4096 / 32 = 128
@@ -2885,11 +3228,14 @@ class TestJaisConversion:
         """Test JaisModel.modify_tensors computes max_alibi_bias from slopes."""
         from auto_round.export.export_to_gguf.conversion.jais import JaisModel
 
-        obj = _make_mock_model(JaisModel, {
-            "n_head": 32,
-            "embeddings_scale": 1.0,
-            "width_scale": 1.0,
-        })
+        obj = _make_mock_model(
+            JaisModel,
+            {
+                "n_head": 32,
+                "embeddings_scale": 1.0,
+                "width_scale": 1.0,
+            },
+        )
         # Manually set max_alibi_bias (normally set in __init__)
         obj.max_alibi_bias = 8.0
         # max_alibi_bias starts at 8.0
@@ -2907,11 +3253,14 @@ class TestJaisConversion:
         """Test JaisModel.modify_tensors transposes .c_attn/c_proj/c_fc/c_fc2 weights."""
         from auto_round.export.export_to_gguf.conversion.jais import JaisModel
 
-        obj = _make_mock_model(JaisModel, {
-            "n_head": 32,
-            "embeddings_scale": 1.0,
-            "width_scale": 1.0,
-        })
+        obj = _make_mock_model(
+            JaisModel,
+            {
+                "n_head": 32,
+                "embeddings_scale": 1.0,
+                "width_scale": 1.0,
+            },
+        )
         data = torch.randn(8, 16)
         with patch.object(JaisModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
             result = list(obj.modify_tensors(data, "transformer.h.0.attn.c_attn.weight", bid=0))
@@ -2923,6 +3272,7 @@ class TestJaisConversion:
 # grok.py tests
 # ==============================================================================
 
+
 class TestGrokConversion:
     """Tests for Grok conversion module."""
 
@@ -2930,28 +3280,32 @@ class TestGrokConversion:
         """Test GrokModel.set_gguf_parameters writes yarn rope params."""
         from auto_round.export.export_to_gguf.conversion.grok import GrokModel
 
-        obj = _make_mock_model(GrokModel, {
-            "head_dim": 128,
-            "hidden_size": 6144,
-            "num_attention_heads": 48,
-            "moe_intermediate_size": 2048,
-            "rope_type": "yarn",
-            "scaling_factor": 16.0,
-            "original_max_position_embeddings": 32768,
-            "extrapolation_factor": 1.0,
-            "attn_factor": 1.0,
-            "beta_fast": 32.0,
-            "beta_slow": 1.0,
-            "attn_temperature_len": 1024,
-            "attn_output_multiplier": 0.1,
-            "embedding_multiplier_scale": 0.5,
-            "output_multiplier_scale": 1.0,
-            "max_position_embeddings": 131072,
-            "intermediate_size": 24576,
-        })
+        obj = _make_mock_model(
+            GrokModel,
+            {
+                "head_dim": 128,
+                "hidden_size": 6144,
+                "num_attention_heads": 48,
+                "moe_intermediate_size": 2048,
+                "rope_type": "yarn",
+                "scaling_factor": 16.0,
+                "original_max_position_embeddings": 32768,
+                "extrapolation_factor": 1.0,
+                "attn_factor": 1.0,
+                "beta_fast": 32.0,
+                "beta_slow": 1.0,
+                "attn_temperature_len": 1024,
+                "attn_output_multiplier": 0.1,
+                "embedding_multiplier_scale": 0.5,
+                "output_multiplier_scale": 1.0,
+                "max_position_embeddings": 131072,
+                "intermediate_size": 24576,
+            },
+        )
         with patch.object(GrokModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         w = obj.gguf_writer
         w.add_attn_logit_softcapping.assert_called_once_with(30.0)
         w.add_router_logit_softcapping.assert_called_once_with(30.0)
@@ -2967,6 +3321,7 @@ class TestGrokConversion:
 # jamba.py tests
 # ==============================================================================
 
+
 class TestJambaConversion:
     """Tests for Jamba conversion module."""
 
@@ -2974,22 +3329,25 @@ class TestJambaConversion:
         """Test JambaModel.set_gguf_parameters writes SSM and MoE fields."""
         from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
 
-        obj = _make_mock_model(JambaModel, {
-            "hidden_size": 4096,
-            "mamba_d_conv": 4,
-            "mamba_expand": 2,
-            "mamba_d_state": 16,
-            "mamba_dt_rank": 32,
-            "layer_norm_epsilon": 1e-6,
-            "num_key_value_heads": 8,
-            "attn_layer_offset": 1,
-            "attn_layer_period": 8,
-            "max_position_embeddings": 8192,
-            "intermediate_size": 14336,
-            "num_attention_heads": 32,
-            "num_local_experts": 16,
-            "num_experts_per_tok": 2,
-        })
+        obj = _make_mock_model(
+            JambaModel,
+            {
+                "hidden_size": 4096,
+                "mamba_d_conv": 4,
+                "mamba_expand": 2,
+                "mamba_d_state": 16,
+                "mamba_dt_rank": 32,
+                "layer_norm_epsilon": 1e-6,
+                "num_key_value_heads": 8,
+                "attn_layer_offset": 1,
+                "attn_layer_period": 8,
+                "max_position_embeddings": 8192,
+                "intermediate_size": 14336,
+                "num_attention_heads": 32,
+                "num_local_experts": 16,
+                "num_experts_per_tok": 2,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_block_count.assert_called_once_with(2)
@@ -3007,10 +3365,13 @@ class TestJambaConversion:
         """Test JambaModel.modify_tensors negates exp of A_log."""
         from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
 
-        obj = _make_mock_model(JambaModel, {
-            "expert_layer_offset": 0,
-            "expert_layer_period": 100,
-        })
+        obj = _make_mock_model(
+            JambaModel,
+            {
+                "expert_layer_offset": 0,
+                "expert_layer_period": 100,
+            },
+        )
         # A_log -> -exp(A_log)
         data = torch.tensor([0.0, 1.0, 2.0])
         result = list(obj.modify_tensors(data, "model.layers.0.mixer.A_log", bid=0))
@@ -3022,10 +3383,13 @@ class TestJambaConversion:
         """Test JambaModel.modify_tensors squeezes SSM_CONV1D tensors."""
         from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
 
-        obj = _make_mock_model(JambaModel, {
-            "expert_layer_offset": 0,
-            "expert_layer_period": 100,
-        })
+        obj = _make_mock_model(
+            JambaModel,
+            {
+                "expert_layer_offset": 0,
+                "expert_layer_period": 100,
+            },
+        )
         # Without map_tensor_name mock, we can't easily hit SSM_CONV1D squeeze path,
         # but we verify the function doesn't crash.
         data = torch.randn(8)
@@ -3037,11 +3401,14 @@ class TestJambaConversion:
         """Test JambaModel.modify_tensors merges feed_forward.experts tensors (Mini-Jamba)."""
         from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
 
-        obj = _make_mock_model(JambaModel, {
-            "num_local_experts": 2,
-            "expert_layer_offset": 0,
-            "expert_layer_period": 1,
-        })
+        obj = _make_mock_model(
+            JambaModel,
+            {
+                "num_local_experts": 2,
+                "expert_layer_offset": 0,
+                "expert_layer_period": 1,
+            },
+        )
         captured = []
         obj.map_tensor_name = lambda n: n  # identity mapping
         obj.match_model_tensor_name = lambda *args, **kwargs: False
@@ -3063,6 +3430,7 @@ class TestJambaConversion:
 # januspro.py tests
 # ==============================================================================
 
+
 class TestJanusProConversion:
     """Tests for JanusPro conversion module."""
 
@@ -3070,15 +3438,21 @@ class TestJanusProConversion:
         """Test JanusProModel.filter_tensors drops vision, aligner, generation tensors."""
         from auto_round.export.export_to_gguf.conversion.januspro import JanusProModel
 
-        for skip in ("model.vision_model.encoder", "model.aligner.fc1",
-                     "model.vqmodel.quantizer", "model.generation_embeddings",
-                     "model.generation_aligner", "model.generation_head"):
+        for skip in (
+            "model.vision_model.encoder",
+            "model.aligner.fc1",
+            "model.vqmodel.quantizer",
+            "model.generation_embeddings",
+            "model.generation_aligner",
+            "model.generation_head",
+        ):
             assert JanusProModel.filter_tensors((skip + ".weight", lambda: None)) is None
 
 
 # ==============================================================================
 # grovemoe.py tests
 # ==============================================================================
+
 
 class TestGroveMoeConversion:
     """Tests for GroveMoe conversion module."""
@@ -3087,14 +3461,17 @@ class TestGroveMoeConversion:
         """Test GroveMoeModel.set_gguf_parameters writes MoE + hardcoded per-group values."""
         from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
 
-        obj = _make_mock_model(GroveMoeModel, {
-            "moe_intermediate_size": 2048,
-            "head_dim": 128,
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "intermediate_size": 12288,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            GroveMoeModel,
+            {
+                "moe_intermediate_size": 2048,
+                "head_dim": 128,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 12288,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(GroveMoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3115,11 +3492,16 @@ class TestGroveMoeConversion:
         """Test GroveMoeModel.modify_tensors merges chunk_experts tensors."""
         from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
 
-        obj = _make_mock_model(GroveMoeModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            GroveMoeModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         captured = []
-        with patch.object(GroveMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            GroveMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # n_experts // 2 = 1, so 3 tensors trigger merge
             for xid in range(1):
                 for wid in ["down_proj", "gate_proj", "up_proj"]:
@@ -3134,11 +3516,16 @@ class TestGroveMoeConversion:
         """Test GroveMoeModel.modify_tensors merges regular experts tensors."""
         from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
 
-        obj = _make_mock_model(GroveMoeModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            GroveMoeModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         captured = []
-        with patch.object(GroveMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            GroveMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # 3 experts * 3 weights = 6 tensors trigger merge
             for xid in range(2):
                 for wid in ["down_proj", "gate_proj", "up_proj"]:
@@ -3153,6 +3540,7 @@ class TestGroveMoeConversion:
 # falcon_h1.py tests
 # ==============================================================================
 
+
 class TestFalconH1Conversion:
     """Tests for FalconH1 conversion module."""
 
@@ -3160,18 +3548,21 @@ class TestFalconH1Conversion:
         """Test FalconH1Model.set_gguf_parameters writes vocab, attention head dims."""
         from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
 
-        obj = _make_mock_model(FalconH1Model, {
-            "vocab_size": 128256,
-            "max_position_embeddings": 131072,
-            "intermediate_size": 28672,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 5120,
-            "n_groups": 1,
-            "mamba_d_ssm": 8192,
-            "d_head": 64,
-        })
+        obj = _make_mock_model(
+            FalconH1Model,
+            {
+                "vocab_size": 128256,
+                "max_position_embeddings": 131072,
+                "intermediate_size": 28672,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 5120,
+                "n_groups": 1,
+                "mamba_d_ssm": 8192,
+                "d_head": 64,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 10000.0}
         # The __init__ method sets attributes like d_inner/d_head/n_group that
         # are required for the post-assert in set_gguf_parameters.
@@ -3244,12 +3635,15 @@ class TestFalconH1Conversion:
         """Test FalconH1Model.modify_tensors applies ssm_in + zxbcdt multipliers on in_proj."""
         from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
 
-        obj = _make_mock_model(FalconH1Model, {
-            "ssm_multipliers": [1.0, 1.0, 1.0, 1.0, 1.0],
-            "mamba_d_ssm": 8,
-            "mamba_n_groups": 1,
-            "mamba_d_state": 4,
-        })
+        obj = _make_mock_model(
+            FalconH1Model,
+            {
+                "ssm_multipliers": [1.0, 1.0, 1.0, 1.0, 1.0],
+                "mamba_d_ssm": 8,
+                "mamba_n_groups": 1,
+                "mamba_d_state": 4,
+            },
+        )
         obj.mlp_multipliers = [1.0, 1.0]
         obj.attention_in_multiplier = 1.0
         obj.attention_out_multiplier = 1.0
@@ -3269,10 +3663,13 @@ class TestFalconH1Conversion:
         """Test FalconH1Model.modify_tensors applies lm_head/embedding multipliers."""
         from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
 
-        obj = _make_mock_model(FalconH1Model, {
-            "lm_head_multiplier": 2.0,
-            "embedding_multiplier": 3.0,
-        })
+        obj = _make_mock_model(
+            FalconH1Model,
+            {
+                "lm_head_multiplier": 2.0,
+                "embedding_multiplier": 3.0,
+            },
+        )
         obj.mlp_multipliers = [1.0, 1.0]
         obj.attention_in_multiplier = 1.0
         obj.attention_out_multiplier = 1.0
@@ -3297,6 +3694,7 @@ class TestFalconH1Conversion:
 # gpt_oss.py tests
 # ==============================================================================
 
+
 class TestGptOssConversion:
     """Tests for GPT-OSS conversion module."""
 
@@ -3313,13 +3711,16 @@ class TestGptOssConversion:
         """Test GptOssModel.set_gguf_parameters writes sliding_window and expert FF length."""
         from auto_round.export.export_to_gguf.conversion.gpt_oss import GptOssModel
 
-        obj = _make_mock_model(GptOssModel, {
-            "sliding_window": 128,
-            "intermediate_size": 2048,
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            GptOssModel,
+            {
+                "sliding_window": 128,
+                "intermediate_size": 2048,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(GptOssModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_sliding_window.assert_called_once_with(128)
@@ -3342,8 +3743,10 @@ class TestGptOssConversion:
 
         obj = _make_mock_model(GptOssModel)
         # Single 16-element uint8 tensor with mixed nibbles
-        tensor = torch.tensor([[[[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
-                                  0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]]]], dtype=torch.uint8)
+        tensor = torch.tensor(
+            [[[[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]]]],
+            dtype=torch.uint8,
+        )
         out = obj.transform_nibble_layout(tensor)
         assert out.shape == tensor.shape
         assert out.dtype == torch.uint8
@@ -3352,6 +3755,7 @@ class TestGptOssConversion:
 # ==============================================================================
 # deci.py tests
 # ==============================================================================
+
 
 class TestDeciConversion:
     """Tests for DeciLM conversion module."""
@@ -3380,6 +3784,7 @@ class TestDeciConversion:
 # llada.py tests
 # ==============================================================================
 
+
 class TestLladaConversion:
     """Tests for LLaDA conversion module."""
 
@@ -3387,17 +3792,20 @@ class TestLladaConversion:
         """Test LLaDAModel.set_gguf_parameters writes non-causal + diffusion shift flags."""
         from auto_round.export.export_to_gguf.conversion.llada import LLaDAModel
 
-        obj = _make_mock_model(LLaDAModel, {
-            "vocab_size": 126336,
-            "head_dim": 128,
-            "num_attention_heads": 32,
-            "max_sequence_length": 4096,
-            "d_model": 4096,
-            "mlp_hidden_size": 12288,
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 12288,
-        })
+        obj = _make_mock_model(
+            LLaDAModel,
+            {
+                "vocab_size": 126336,
+                "head_dim": 128,
+                "num_attention_heads": 32,
+                "max_sequence_length": 4096,
+                "d_model": 4096,
+                "mlp_hidden_size": 12288,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 12288,
+            },
+        )
         with patch.object(LLaDAModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3410,13 +3818,16 @@ class TestLladaConversion:
         """Test LLaDAMoEModel.set_gguf_parameters writes expert FF + mask token."""
         from auto_round.export.export_to_gguf.conversion.llada import LLaDAMoEModel
 
-        obj = _make_mock_model(LLaDAMoEModel, {
-            "expert_intermediate_size": 2048,
-            "max_position_embeddings": 4096,
-            "hidden_size": 4096,
-            "intermediate_size": 12288,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            LLaDAMoEModel,
+            {
+                "expert_intermediate_size": 2048,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 12288,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(LLaDAMoEModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_expert_feed_forward_length.assert_called_once_with(2048)
@@ -3428,6 +3839,7 @@ class TestLladaConversion:
 # kimi_linear.py tests
 # ==============================================================================
 
+
 class TestKimiLinearConversion:
     """Tests for KimiLinear conversion module."""
 
@@ -3435,30 +3847,33 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.set_gguf_parameters writes MLA + KDA parameters."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "vocab_size": 102400,
-            "num_hidden_layers": 24,
-            "linear_attn_config": {
-                "full_attn_layers": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-                "short_conv_kernel_size": 4,
-                "head_dim": 128,
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "vocab_size": 102400,
+                "num_hidden_layers": 24,
+                "linear_attn_config": {
+                    "full_attn_layers": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+                    "short_conv_kernel_size": 4,
+                    "head_dim": 128,
+                },
+                "q_lora_rank": 1536,
+                "kv_lora_rank": 512,
+                "qk_nope_head_dim": 128,
+                "qk_rope_head_dim": 64,
+                "v_head_dim": 128,
+                "moe_intermediate_size": 1024,
+                "num_shared_experts": 1,
+                "first_k_dense_replace": 1,
+                "routed_scaling_factor": 2.446,
+                "n_embd_head_k_mla": 192,
+                "n_embd_head_v_mla": 128,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 12288,
+                "num_attention_heads": 32,
             },
-            "q_lora_rank": 1536,
-            "kv_lora_rank": 512,
-            "qk_nope_head_dim": 128,
-            "qk_rope_head_dim": 64,
-            "v_head_dim": 128,
-            "moe_intermediate_size": 1024,
-            "num_shared_experts": 1,
-            "first_k_dense_replace": 1,
-            "routed_scaling_factor": 2.446,
-            "n_embd_head_k_mla": 192,
-            "n_embd_head_v_mla": 128,
-            "max_position_embeddings": 32768,
-            "hidden_size": 4096,
-            "intermediate_size": 12288,
-            "num_attention_heads": 32,
-        })
+        )
         with patch.object(KimiLinearModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3481,9 +3896,12 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.modify_tensors reshapes 2D conv1d weights to (1, d_inner, 1, d_conv)."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         # 2D weight [d_inner, d_conv]
         data = torch.randn(8, 4)
         with patch.object(KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
@@ -3495,9 +3913,12 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.modify_tensors reshapes 3D conv1d weights."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         # 3D weight [d_inner, 1, d_conv]
         data = torch.randn(8, 1, 4)
         with patch.object(KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
@@ -3508,9 +3929,12 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.modify_tensors negates exp of A_log."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         data = torch.tensor([0.0, 1.0])
         with patch.object(KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
             result = list(obj.modify_tensors(data, "model.layers.0.linear_attn.A_log", bid=0))
@@ -3520,11 +3944,16 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.modify_tensors renames dt_bias to dt_proj.bias."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         captured = []
-        with patch.object(KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             data = torch.randn(4)
             list(obj.modify_tensors(data, "model.layers.0.linear_attn.dt_bias", bid=0))
         # The name should be renamed from dt_bias to dt_proj.bias
@@ -3534,12 +3963,17 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.modify_tensors merges block_sparse_moe.experts tensors."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "num_local_experts": 2,
-            "num_key_value_heads": 1,
-        })
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "num_local_experts": 2,
+                "num_key_value_heads": 1,
+            },
+        )
         captured = []
-        with patch.object(KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # 2 experts * 3 weights = 6 tensors trigger merge
             for xid in range(2):
                 for wid in ["w1", "w2", "w3"]:
@@ -3552,18 +3986,23 @@ class TestKimiLinearConversion:
         """Test KimiLinearModel.modify_tensors splits kv_b_proj.weight into k_b/v_b."""
         from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
 
-        obj = _make_mock_model(KimiLinearModel, {
-            "num_local_experts": 2,
-            "num_key_value_heads": 4,
-            "v_head_dim": 64,
-            "qk_nope_head_dim": 32,
-            "q_lora_rank": 0,
-        })
+        obj = _make_mock_model(
+            KimiLinearModel,
+            {
+                "num_local_experts": 2,
+                "num_key_value_heads": 4,
+                "v_head_dim": 64,
+                "qk_nope_head_dim": 32,
+                "q_lora_rank": 0,
+            },
+        )
         captured = []
         # kv_b_proj shape: [n_head_kv * (v_head_dim + qk_nope_head_dim), hidden_in]
         # = 4 * (64 + 32) = 384
         data = torch.randn(384, 8)
-        with patch.object(KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            KimiLinearModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             list(obj.modify_tensors(data, "model.layers.0.self_attn.kv_b_proj.weight", bid=0))
         # Should yield 2 outputs: k_b_proj and v_b_proj
         assert len(captured) == 2
@@ -3575,6 +4014,7 @@ class TestKimiLinearConversion:
 # arctic.py tests
 # ==============================================================================
 
+
 class TestArcticConversion:
     """Tests for Arctic conversion module."""
 
@@ -3582,13 +4022,16 @@ class TestArcticConversion:
         """Test ArcticModel.set_gguf_parameters writes vocab_size and rope_dimension_count."""
         from auto_round.export.export_to_gguf.conversion.arctic import ArcticModel
 
-        obj = _make_mock_model(ArcticModel, {
-            "vocab_size": 100352,
-            "hidden_size": 7168,
-            "num_attention_heads": 56,
-            "max_position_embeddings": 4096,
-            "intermediate_size": 18432,
-        })
+        obj = _make_mock_model(
+            ArcticModel,
+            {
+                "vocab_size": 100352,
+                "hidden_size": 7168,
+                "num_attention_heads": 56,
+                "max_position_embeddings": 4096,
+                "intermediate_size": 18432,
+            },
+        )
         with patch.object(ArcticModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3600,10 +4043,13 @@ class TestArcticConversion:
         """Test ArcticModel.modify_tensors permutes q_proj/k_proj via LlamaModel.permute."""
         from auto_round.export.export_to_gguf.conversion.arctic import ArcticModel
 
-        obj = _make_mock_model(ArcticModel, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-        })
+        obj = _make_mock_model(
+            ArcticModel,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+            },
+        )
         # q_proj gets permuted by LlamaModel.permute
         q_data = torch.randn(4096, 1024)
         q_result = list(obj.modify_tensors(q_data, "model.layers.0.self_attn.q_proj.weight", bid=0))
@@ -3619,15 +4065,20 @@ class TestArcticConversion:
         """Test ArcticModel.modify_tensors merges block_sparse_moe.experts tensors."""
         from auto_round.export.export_to_gguf.conversion.arctic import ArcticModel
 
-        obj = _make_mock_model(ArcticModel, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            ArcticModel,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "num_local_experts": 2,
+            },
+        )
         # Feed all expert tensors (3 per expert = 6 total) for bid=0
         n_experts = 2
         captured = []
-        with patch.object(ArcticModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)])):
+        with patch.object(
+            ArcticModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)])
+        ):
             for xid in range(n_experts):
                 for wid in ["w1", "w2", "w3"]:
                     ename = f"model.layers.0.block_sparse_moe.experts.{xid}.{wid}.weight"
@@ -3643,6 +4094,7 @@ class TestArcticConversion:
 # bailingmoe.py tests
 # ==============================================================================
 
+
 class TestBailingMoeConversion:
     """Tests for BailingMoe / BailingMoeV2 conversion module."""
 
@@ -3650,18 +4102,21 @@ class TestBailingMoeConversion:
         """Test BailingMoeModel.set_gguf_parameters writes MoE + first_k_dense_replace."""
         from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
 
-        obj = _make_mock_model(BailingMoeModel, {
-            "vocab_size": 107136,
-            "head_dim": 128,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "first_k_dense_replace": 1,
-            "moe_intermediate_size": 1536,
-            "num_shared_experts": 2,
-            "norm_topk_prob": True,
-            "max_position_embeddings": 131072,
-            "intermediate_size": 12288,
-        })
+        obj = _make_mock_model(
+            BailingMoeModel,
+            {
+                "vocab_size": 107136,
+                "head_dim": 128,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "first_k_dense_replace": 1,
+                "moe_intermediate_size": 1536,
+                "num_shared_experts": 2,
+                "norm_topk_prob": True,
+                "max_position_embeddings": 131072,
+                "intermediate_size": 12288,
+            },
+        )
         with patch.object(BailingMoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3677,22 +4132,25 @@ class TestBailingMoeConversion:
         """Test BailingMoeV2Model.set_gguf_parameters handles partial_rotary_factor + nextn."""
         from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeV2Model
 
-        obj = _make_mock_model(BailingMoeV2Model, {
-            "vocab_size": 107136,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "head_dim": 128,
-            "first_k_dense_replace": 1,
-            "moe_intermediate_size": 1536,
-            "moe_shared_expert_intermediate_size": 256,
-            "routed_scaling_factor": 2.5,
-            "num_shared_experts": 2,
-            "norm_topk_prob": True,
-            "num_nextn_predict_layers": 1,
-            "partial_rotary_factor": 0.5,
-            "max_position_embeddings": 131072,
-            "intermediate_size": 12288,
-        })
+        obj = _make_mock_model(
+            BailingMoeV2Model,
+            {
+                "vocab_size": 107136,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "head_dim": 128,
+                "first_k_dense_replace": 1,
+                "moe_intermediate_size": 1536,
+                "moe_shared_expert_intermediate_size": 256,
+                "routed_scaling_factor": 2.5,
+                "num_shared_experts": 2,
+                "norm_topk_prob": True,
+                "num_nextn_predict_layers": 1,
+                "partial_rotary_factor": 0.5,
+                "max_position_embeddings": 131072,
+                "intermediate_size": 12288,
+            },
+        )
         with patch.object(BailingMoeV2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3715,14 +4173,21 @@ class TestBailingMoeConversion:
         """Test BailingMoeModel.modify_tensors splits qkv + dense rename."""
         from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
 
-        obj = _make_mock_model(BailingMoeModel, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            BailingMoeModel,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 4096,
+            },
+        )
         captured = []
-        with patch.object(BailingMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)])):
+        with patch.object(
+            BailingMoeModel.__mro__[1],
+            "modify_tensors",
+            lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)]),
+        ):
             # attention.dense.weight -> ATTN_OUT
             data = torch.randn(4096, 4096)
             list(obj.modify_tensors(data, "model.layers.0.attention.dense.weight", bid=0))
@@ -3733,14 +4198,21 @@ class TestBailingMoeConversion:
         """Test BailingMoeModel.modify_tensors splits query_key_value.weight into q/k/v."""
         from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
 
-        obj = _make_mock_model(BailingMoeModel, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            BailingMoeModel,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 4096,
+            },
+        )
         captured = []
-        with patch.object(BailingMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)])):
+        with patch.object(
+            BailingMoeModel.__mro__[1],
+            "modify_tensors",
+            lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)]),
+        ):
             # total dim = (32 + 2*8) * 128 = 6144
             data = torch.randn(6144, 4096)
             list(obj.modify_tensors(data, "model.layers.0.attention.query_key_value.weight", bid=0))
@@ -3752,6 +4224,7 @@ class TestBailingMoeConversion:
 # exaone.py tests
 # ==============================================================================
 
+
 class TestExaoneConversion:
     """Tests for Exaone conversion module."""
 
@@ -3759,14 +4232,17 @@ class TestExaoneConversion:
         """Test ExaoneModel.set_gguf_parameters writes rope dim from partial_rotary_factor."""
         from auto_round.export.export_to_gguf.conversion.exaone import ExaoneModel
 
-        obj = _make_mock_model(ExaoneModel, {
-            "activation_function": "silu",
-            "partial_rotary_factor": 0.5,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 32768,
-            "intermediate_size": 16384,
-        })
+        obj = _make_mock_model(
+            ExaoneModel,
+            {
+                "activation_function": "silu",
+                "partial_rotary_factor": 0.5,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 32768,
+                "intermediate_size": 16384,
+            },
+        )
         with patch.object(ExaoneModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         # 0.5 * (4096 / 32) = 0.5 * 128 = 64
@@ -3776,6 +4252,7 @@ class TestExaoneConversion:
 # ==============================================================================
 # internlm.py tests
 # ==============================================================================
+
 
 class TestInternlmConversion:
     """Tests for InternLM2 conversion module."""
@@ -3792,11 +4269,14 @@ class TestInternlmConversion:
         """Test InternLM2Model.modify_tensors permutes q_proj via LlamaModel.permute."""
         from auto_round.export.export_to_gguf.conversion.internlm import InternLM2Model
 
-        obj = _make_mock_model(InternLM2Model, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            InternLM2Model,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "hidden_size": 4096,
+            },
+        )
         data = torch.randn(4096, 1024)
         with patch.object(InternLM2Model.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
             result = list(obj.modify_tensors(data, "model.layers.0.attention.wq.weight", bid=0))
@@ -3808,6 +4288,7 @@ class TestInternlmConversion:
 # glm.py tests
 # ==============================================================================
 
+
 class TestGlm4Conversion:
     """Tests for GLM4 conversion module."""
 
@@ -3815,14 +4296,17 @@ class TestGlm4Conversion:
         """Test Glm4Model.set_gguf_parameters writes rope dim using head_dim * partial_rotary_factor."""
         from auto_round.export.export_to_gguf.conversion.glm import Glm4Model
 
-        obj = _make_mock_model(Glm4Model, {
-            "head_dim": 128,
-            "partial_rotary_factor": 0.5,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 131072,
-            "intermediate_size": 13696,
-        })
+        obj = _make_mock_model(
+            Glm4Model,
+            {
+                "head_dim": 128,
+                "partial_rotary_factor": 0.5,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 131072,
+                "intermediate_size": 13696,
+            },
+        )
         # rope_parameters dict (used in __init__) needs to be present on the object
         obj.rope_parameters = {"partial_rotary_factor": 0.5}
         # Use the already-instantiated obj.partial_rotary_factor (set in __init__)
@@ -3837,6 +4321,7 @@ class TestGlm4Conversion:
 # lfm2.py tests
 # ==============================================================================
 
+
 class TestLfm2Conversion:
     """Tests for LFM2 conversion module."""
 
@@ -3844,21 +4329,24 @@ class TestLfm2Conversion:
         """Test LFM2Model.set_gguf_parameters writes vocab + lfm2-specific fields."""
         from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2Model
 
-        obj = _make_mock_model(LFM2Model, {
-            "vocab_size": 65536,
-            "layer_types": ["conv", "full_attention"],
-            "conv_L_cache": 4,
-            "norm_eps": 1e-5,
-            "block_ff_dim": 8192,
-            "block_auto_adjust_ff_dim": False,
-            "block_ffn_dim_multiplier": None,
-            "block_multiple_of": 256,
-            "intermediate_size": 8192,
-            "num_key_value_heads": 8,
-            "max_position_embeddings": 32768,
-            "hidden_size": 2048,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            LFM2Model,
+            {
+                "vocab_size": 65536,
+                "layer_types": ["conv", "full_attention"],
+                "conv_L_cache": 4,
+                "norm_eps": 1e-5,
+                "block_ff_dim": 8192,
+                "block_auto_adjust_ff_dim": False,
+                "block_ffn_dim_multiplier": None,
+                "block_multiple_of": 256,
+                "intermediate_size": 8192,
+                "num_key_value_heads": 8,
+                "max_position_embeddings": 32768,
+                "hidden_size": 2048,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(LFM2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3870,22 +4358,25 @@ class TestLfm2Conversion:
 
     def test_lfm2moe_set_gguf_parameters(self):
         """Test LFM2MoeModel.set_gguf_parameters writes MoE fields and gating func."""
-        from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2MoeModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2MoeModel
 
-        obj = _make_mock_model(LFM2MoeModel, {
-            "vocab_size": 65536,
-            "layer_types": ["conv", "full_attention"],
-            "conv_L_cache": 4,
-            "moe_intermediate_size": 2048,
-            "num_dense_layers": 1,
-            "num_local_experts": 32,
-            "max_position_embeddings": 32768,
-            "hidden_size": 2048,
-            "intermediate_size": 8192,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-        })
+        obj = _make_mock_model(
+            LFM2MoeModel,
+            {
+                "vocab_size": 65536,
+                "layer_types": ["conv", "full_attention"],
+                "conv_L_cache": 4,
+                "moe_intermediate_size": 2048,
+                "num_dense_layers": 1,
+                "num_local_experts": 32,
+                "max_position_embeddings": 32768,
+                "hidden_size": 2048,
+                "intermediate_size": 8192,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+            },
+        )
         with patch.object(LFM2MoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -3909,11 +4400,16 @@ class TestLfm2Conversion:
         """Test LFM2MoeModel.modify_tensors merges feed_forward.experts tensors."""
         from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2MoeModel
 
-        obj = _make_mock_model(LFM2MoeModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            LFM2MoeModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         captured = []
-        with patch.object(LFM2MoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            LFM2MoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # 2 experts * 3 weights = 6 tensors trigger merge
             for xid in range(2):
                 for wid in ["w1", "w2", "w3"]:
@@ -3928,6 +4424,7 @@ class TestLfm2Conversion:
 # gemma.py tests
 # ==============================================================================
 
+
 class TestGemmaConversion:
     """Tests for Gemma / Gemma2 / Gemma3 conversion module."""
 
@@ -3935,15 +4432,18 @@ class TestGemmaConversion:
         """Test GemmaModel.set_gguf_parameters writes gemma fields."""
         from auto_round.export.export_to_gguf.conversion.gemma import GemmaModel
 
-        obj = _make_mock_model(GemmaModel, {
-            "max_position_embeddings": 8192,
-            "hidden_size": 2048,
-            "intermediate_size": 16384,
-            "num_attention_heads": 8,
-            "num_key_value_heads": 1,
-            "head_dim": 256,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            GemmaModel,
+            {
+                "max_position_embeddings": 8192,
+                "hidden_size": 2048,
+                "intermediate_size": 16384,
+                "num_attention_heads": 8,
+                "num_key_value_heads": 1,
+                "head_dim": 256,
+                "rms_norm_eps": 1e-6,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(8192)
@@ -3959,15 +4459,18 @@ class TestGemmaConversion:
         """Test GemmaModel.set_gguf_parameters defaults num_key_value_heads to num_attention_heads."""
         from auto_round.export.export_to_gguf.conversion.gemma import GemmaModel
 
-        obj = _make_mock_model(GemmaModel, {
-            "max_position_embeddings": 8192,
-            "hidden_size": 2048,
-            "intermediate_size": 16384,
-            "num_attention_heads": 8,
-            # No num_key_value_heads provided
-            "head_dim": 256,
-            "rms_norm_eps": 1e-6,
-        })
+        obj = _make_mock_model(
+            GemmaModel,
+            {
+                "max_position_embeddings": 8192,
+                "hidden_size": 2048,
+                "intermediate_size": 16384,
+                "num_attention_heads": 8,
+                # No num_key_value_heads provided
+                "head_dim": 256,
+                "rms_norm_eps": 1e-6,
+            },
+        )
         obj.set_gguf_parameters()
         obj.gguf_writer.add_head_count_kv.assert_called_once_with(8)
 
@@ -3990,18 +4493,21 @@ class TestGemmaConversion:
         """Test Gemma2Model.set_gguf_parameters writes softcap and sliding_window."""
         from auto_round.export.export_to_gguf.conversion.gemma import Gemma2Model
 
-        obj = _make_mock_model(Gemma2Model, {
-            "max_position_embeddings": 8192,
-            "hidden_size": 3072,
-            "intermediate_size": 24576,
-            "num_attention_heads": 16,
-            "num_key_value_heads": 8,
-            "head_dim": 256,
-            "rms_norm_eps": 1e-6,
-            "attn_logit_softcapping": 50.0,
-            "final_logit_softcapping": 30.0,
-            "sliding_window": 4096,
-        })
+        obj = _make_mock_model(
+            Gemma2Model,
+            {
+                "max_position_embeddings": 8192,
+                "hidden_size": 3072,
+                "intermediate_size": 24576,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 8,
+                "head_dim": 256,
+                "rms_norm_eps": 1e-6,
+                "attn_logit_softcapping": 50.0,
+                "final_logit_softcapping": 30.0,
+                "sliding_window": 4096,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_attn_logit_softcapping.assert_called_once_with(50.0)
@@ -4012,19 +4518,22 @@ class TestGemmaConversion:
         """Test Gemma3Model.set_gguf_parameters writes gemma3 fields + asserts attn_softcapping is None."""
         from auto_round.export.export_to_gguf.conversion.gemma import Gemma3Model
 
-        obj = _make_mock_model(Gemma3Model, {
-            "max_position_embeddings": 131072,
-            "hidden_size": 2560,
-            "intermediate_size": 10240,
-            "num_attention_heads": 10,
-            "num_key_value_heads": 4,
-            "head_dim": 256,
-            "rms_norm_eps": 1e-6,
-            "attn_logit_softcapping": None,
-            "final_logit_softcapping": 0.0,
-            "sliding_window": 512,
-            "sliding_window_pattern": 6,  # != 1, so add_sliding_window is called
-        })
+        obj = _make_mock_model(
+            Gemma3Model,
+            {
+                "max_position_embeddings": 131072,
+                "hidden_size": 2560,
+                "intermediate_size": 10240,
+                "num_attention_heads": 10,
+                "num_key_value_heads": 4,
+                "head_dim": 256,
+                "rms_norm_eps": 1e-6,
+                "attn_logit_softcapping": None,
+                "final_logit_softcapping": 0.0,
+                "sliding_window": 512,
+                "sliding_window_pattern": 6,  # != 1, so add_sliding_window is called
+            },
+        )
         obj.rope_parameters = {"rope_theta": 1_000_000.0}
         with patch.object(Gemma3Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
@@ -4044,18 +4553,21 @@ class TestGemmaConversion:
         """Test Gemma3Model.set_gguf_parameters skips sliding_window when pattern == 1."""
         from auto_round.export.export_to_gguf.conversion.gemma import Gemma3Model
 
-        obj = _make_mock_model(Gemma3Model, {
-            "max_position_embeddings": 131072,
-            "hidden_size": 2560,
-            "intermediate_size": 10240,
-            "num_attention_heads": 10,
-            "num_key_value_heads": 4,
-            "head_dim": 256,
-            "rms_norm_eps": 1e-6,
-            "attn_logit_softcapping": None,
-            "sliding_window": 512,
-            "sliding_window_pattern": 1,
-        })
+        obj = _make_mock_model(
+            Gemma3Model,
+            {
+                "max_position_embeddings": 131072,
+                "hidden_size": 2560,
+                "intermediate_size": 10240,
+                "num_attention_heads": 10,
+                "num_key_value_heads": 4,
+                "head_dim": 256,
+                "rms_norm_eps": 1e-6,
+                "attn_logit_softcapping": None,
+                "sliding_window": 512,
+                "sliding_window_pattern": 1,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 1_000_000.0}
         obj.set_gguf_parameters()
         obj.gguf_writer.add_sliding_window.assert_not_called()
@@ -4082,14 +4594,17 @@ class TestGemmaConversion:
 
     def test_gemma3_vision_set_gguf_parameters(self):
         """Test Gemma3VisionModel.set_gguf_parameters writes GEMMA3 projector + use_gelu."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
 
-        obj = _make_mock_model(Gemma3VisionModel, {
-            "layer_norm_eps": 1e-6,
-            "image_size": 896,
-            "patch_size": 14,
-        })
+        obj = _make_mock_model(
+            Gemma3VisionModel,
+            {
+                "layer_norm_eps": 1e-6,
+                "image_size": 896,
+                "patch_size": 14,
+            },
+        )
         obj.preprocessor_config = {"image_seq_length": 256}
         with patch.object(Gemma3VisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
@@ -4101,20 +4616,16 @@ class TestGemmaConversion:
 
     def test_gemma3_vision_tensor_force_quant(self):
         """Test Gemma3VisionModel.tensor_force_quant forces F16/F32 for input_projection/embeddings."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
 
         obj = Gemma3VisionModel.__new__(Gemma3VisionModel)
         # input_projection forces F16
-        quant = obj.tensor_force_quant(
-            "model.vision_tower.input_projection.weight",
-            "v.input.weight", bid=0, n_dims=2)
+        quant = obj.tensor_force_quant("model.vision_tower.input_projection.weight", "v.input.weight", bid=0, n_dims=2)
         assert quant == gguf.GGMLQuantizationType.F16
 
         # embeddings forces F32
-        quant = obj.tensor_force_quant(
-            "model.vision_tower.embeddings.weight",
-            "v.embed.weight", bid=0, n_dims=2)
+        quant = obj.tensor_force_quant("model.vision_tower.embeddings.weight", "v.embed.weight", bid=0, n_dims=2)
         assert quant == gguf.GGMLQuantizationType.F32
 
     def test_gemma3_vision_filter_tensors(self):
@@ -4130,13 +4641,14 @@ class TestGemmaConversion:
 # kimivl.py tests
 # ==============================================================================
 
+
 class TestKimiVlConversion:
     """Tests for KimiVL conversion module."""
 
     def test_set_gguf_parameters(self):
         """Test KimiVLModel.set_gguf_parameters writes vision projector type and layernorm eps."""
-        from auto_round.export.export_to_gguf.conversion.kimivl import KimiVLModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.kimivl import KimiVLModel
 
         obj = _make_mock_model(KimiVLModel)
         obj.hparams_vision = {"layer_norm_eps": 1e-5}
@@ -4162,6 +4674,7 @@ class TestKimiVlConversion:
 # phi.py tests
 # ==============================================================================
 
+
 class TestPhiConversion:
     """Tests for Phi conversion module."""
 
@@ -4169,15 +4682,18 @@ class TestPhiConversion:
         """Test Phi2Model.set_gguf_parameters writes phi2 fields."""
         from auto_round.export.export_to_gguf.conversion.phi import Phi2Model
 
-        obj = _make_mock_model(Phi2Model, {
-            "partial_rotary_factor": 0.5,
-            "hidden_size": 2560,
-            "num_attention_heads": 32,
-            "n_positions": 2048,
-            "layer_norm_epsilon": 1e-5,
-            "max_position_embeddings": 2048,
-            "intermediate_size": 10240,
-        })
+        obj = _make_mock_model(
+            Phi2Model,
+            {
+                "partial_rotary_factor": 0.5,
+                "hidden_size": 2560,
+                "num_attention_heads": 32,
+                "n_positions": 2048,
+                "layer_norm_epsilon": 1e-5,
+                "max_position_embeddings": 2048,
+                "intermediate_size": 10240,
+            },
+        )
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(2048)
@@ -4192,16 +4708,20 @@ class TestPhiConversion:
     def test_phi3_set_gguf_parameters(self):
         """Test Phi3MiniModel.set_gguf_parameters writes phi3 fields with sliding_window=0 default."""
         from auto_round.export.export_to_gguf.conversion.phi import Phi3MiniModel
-        obj = _make_mock_model(Phi3MiniModel, {
-            "hidden_size": 3072,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 32,
-            "rms_norm_eps": 1e-5,
-            "max_position_embeddings": 4096,
-            "original_max_position_embeddings": 4096,
-            "partial_rotary_factor": 1.0,
-            "intermediate_size": 8192,
-        })
+
+        obj = _make_mock_model(
+            Phi3MiniModel,
+            {
+                "hidden_size": 3072,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 32,
+                "rms_norm_eps": 1e-5,
+                "max_position_embeddings": 4096,
+                "original_max_position_embeddings": 4096,
+                "partial_rotary_factor": 1.0,
+                "intermediate_size": 8192,
+            },
+        )
         obj.rope_parameters = {"full_attention": {"rope_theta": 10000.0}}
         obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -4221,16 +4741,19 @@ class TestPhiConversion:
         """Test Phi3MiniModel.set_gguf_parameters uses sliding_window from hparams when present."""
         from auto_round.export.export_to_gguf.conversion.phi import Phi3MiniModel
 
-        obj = _make_mock_model(Phi3MiniModel, {
-            "hidden_size": 3072,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 32,
-            "rms_norm_eps": 1e-5,
-            "max_position_embeddings": 4096,
-            "original_max_position_embeddings": 4096,
-            "intermediate_size": 8192,
-            "sliding_window": 512,
-        })
+        obj = _make_mock_model(
+            Phi3MiniModel,
+            {
+                "hidden_size": 3072,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 32,
+                "rms_norm_eps": 1e-5,
+                "max_position_embeddings": 4096,
+                "original_max_position_embeddings": 4096,
+                "intermediate_size": 8192,
+                "sliding_window": 512,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 10000.0}
         obj.set_gguf_parameters()
         obj.gguf_writer.add_sliding_window.assert_called_once_with(512)
@@ -4239,22 +4762,25 @@ class TestPhiConversion:
         """Test Phi3MiniModel.generate_extra_tensors produces ROPE_FACTORS_LONG/SHORT."""
         from auto_round.export.export_to_gguf.conversion.phi import Phi3MiniModel
 
-        obj = _make_mock_model(Phi3MiniModel, {
-            "hidden_size": 3072,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 131072,
-            "original_max_position_embeddings": 4096,
-            "partial_rotary_factor": 1.0,
-            "intermediate_size": 8192,
-            "num_key_value_heads": 32,
-            "rms_norm_eps": 1e-5,
-            # rope_dims = int(1.0 * 3072) // 32 = 96, factors length = 48
-            "rope_scaling": {
-                "rope_type": "longrope",
-                "long_factor": [1.0] * 48,
-                "short_factor": [1.0] * 48,
+        obj = _make_mock_model(
+            Phi3MiniModel,
+            {
+                "hidden_size": 3072,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 131072,
+                "original_max_position_embeddings": 4096,
+                "partial_rotary_factor": 1.0,
+                "intermediate_size": 8192,
+                "num_key_value_heads": 32,
+                "rms_norm_eps": 1e-5,
+                # rope_dims = int(1.0 * 3072) // 32 = 96, factors length = 48
+                "rope_scaling": {
+                    "rope_type": "longrope",
+                    "long_factor": [1.0] * 48,
+                    "short_factor": [1.0] * 48,
+                },
             },
-        })
+        )
         obj.rope_parameters = {"rope_theta": 10000.0}
         results = list(obj.generate_extra_tensors())
         # Should yield 2 tensors: long and short factors
@@ -4262,6 +4788,7 @@ class TestPhiConversion:
         # format_tensor_name(prefix) yields a fully qualified name like "blk.0.rope_factors_long.weight"
         # ensure both tensors are present and contain the expected tensor kinds
         from auto_round.export.export_to_gguf.conversion.base import gguf
+
         assert any(gguf.MODEL_TENSOR.ROPE_FACTORS_LONG.name in n for n, _ in results)
         assert any(gguf.MODEL_TENSOR.ROPE_FACTORS_SHORT.name in n for n, _ in results)
 
@@ -4269,17 +4796,20 @@ class TestPhiConversion:
         """Test PhiMoeModel.set_gguf_parameters adds expert_count and expert_used_count."""
         from auto_round.export.export_to_gguf.conversion.phi import PhiMoeModel
 
-        obj = _make_mock_model(PhiMoeModel, {
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "rms_norm_eps": 1e-5,
-            "max_position_embeddings": 4096,
-            "original_max_position_embeddings": 4096,
-            "intermediate_size": 14336,
-            "num_local_experts": 16,
-            "num_experts_per_tok": 2,
-        })
+        obj = _make_mock_model(
+            PhiMoeModel,
+            {
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "rms_norm_eps": 1e-5,
+                "max_position_embeddings": 4096,
+                "original_max_position_embeddings": 4096,
+                "intermediate_size": 14336,
+                "num_local_experts": 16,
+                "num_experts_per_tok": 2,
+            },
+        )
         obj.rope_parameters = {"rope_theta": 10000.0}
         with patch.object(PhiMoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
@@ -4290,16 +4820,21 @@ class TestPhiConversion:
         """Test PhiMoeModel.modify_tensors merges block_sparse_moe.experts tensors."""
         from auto_round.export.export_to_gguf.conversion.phi import PhiMoeModel
 
-        obj = _make_mock_model(PhiMoeModel, {
-            "num_local_experts": 2,
-            "hidden_size": 8,
-            "num_attention_heads": 2,
-            "num_key_value_heads": 2,
-            "rms_norm_eps": 1e-5,
-            "intermediate_size": 8,
-        })
+        obj = _make_mock_model(
+            PhiMoeModel,
+            {
+                "num_local_experts": 2,
+                "hidden_size": 8,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 2,
+                "rms_norm_eps": 1e-5,
+                "intermediate_size": 8,
+            },
+        )
         captured = []
-        with patch.object(PhiMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            PhiMoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # 2 experts * 3 weights = 6 tensors trigger merge
             for xid in range(2):
                 for wid in ["w1", "w2", "w3"]:
@@ -4312,13 +4847,16 @@ class TestPhiConversion:
 
     def test_phi4_vision_set_gguf_parameters(self):
         """Test Phi4VisionMmprojModel.set_gguf_parameters writes PHI4 projector + use_gelu."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
 
-        obj = _make_mock_model(Phi4VisionMmprojModel, {
-            "layer_norm_eps": 1e-6,
-            "num_hidden_layers": 24,
-        })
+        obj = _make_mock_model(
+            Phi4VisionMmprojModel,
+            {
+                "layer_norm_eps": 1e-6,
+                "num_hidden_layers": 24,
+            },
+        )
         obj.min_pixels = 256 * 16 * 16
         obj.max_pixels = 1280 * 16 * 16
         # vision-related fields required for the parent class paths
@@ -4337,33 +4875,30 @@ class TestPhiConversion:
         from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
 
         # Vision tower non-prefixed -> None
-        assert Phi4VisionMmprojModel.filter_tensors(
-            ("model.embed_tokens.weight", lambda: None)) is None
+        assert Phi4VisionMmprojModel.filter_tensors(("model.embed_tokens.weight", lambda: None)) is None
 
         # vision_tower.* tensors are kept (returned)
-        result = Phi4VisionMmprojModel.filter_tensors(
-            ("vision_tower.encoder.layers.0.ln.weight", lambda: None))
+        result = Phi4VisionMmprojModel.filter_tensors(("vision_tower.encoder.layers.0.ln.weight", lambda: None))
         assert result is not None
 
         # Drop post_layernorm and vision_model.head
-        assert Phi4VisionMmprojModel.filter_tensors(
-            ("vision_tower.vision_model.post_layernorm.weight", lambda: None)) is None
-        assert Phi4VisionMmprojModel.filter_tensors(
-            ("vision_tower.vision_model.head.weight", lambda: None)) is None
+        assert (
+            Phi4VisionMmprojModel.filter_tensors(("vision_tower.vision_model.post_layernorm.weight", lambda: None))
+            is None
+        )
+        assert Phi4VisionMmprojModel.filter_tensors(("vision_tower.vision_model.head.weight", lambda: None)) is None
 
     def test_phi4_vision_modify_tensors_mm_projector(self):
         """Test Phi4VisionMmprojModel.modify_tensors maps mm_projector.0./2. to V_MMPROJ."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
 
         obj = _make_mock_model(Phi4VisionMmprojModel, {})
         # Test mm_projector.0 mapping (becomes V_MMPROJ.0.weight)
         data = torch.randn(8, 8)
         result = list(obj.modify_tensors(data, "model.mm_projector.0.weight", bid=None))
         assert len(result) == 1
-        assert result[0][0] == obj.format_tensor_name(
-            gguf.MODEL_TENSOR.V_MMPROJ, 0, suffix=".weight"
-        )
+        assert result[0][0] == obj.format_tensor_name(gguf.MODEL_TENSOR.V_MMPROJ, 0, suffix=".weight")
 
         # mm_projector.2.bias
         result_bias = list(obj.modify_tensors(data, "model.mm_projector.2.bias", bid=None))
@@ -4385,8 +4920,9 @@ class TestPhiConversion:
         data = torch.randn(8, 12)
         obj.hparams_vision = {"patch_size": 2}
         with patch.object(Phi4VisionMmprojModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
-            result = list(obj.modify_tensors(
-                data, "vision_tower.vision_model.embeddings.patch_embedding.weight", bid=0))
+            result = list(
+                obj.modify_tensors(data, "vision_tower.vision_model.embeddings.patch_embedding.weight", bid=0)
+            )
         # After view + permute: shape should be (8, 3, 2, 2)
         assert result[0][1].shape == (8, 3, 2, 2)
 
@@ -4394,6 +4930,7 @@ class TestPhiConversion:
 # ==============================================================================
 # qwen.py tests
 # ==============================================================================
+
 
 class TestQwenConversion:
     """Tests for Qwen / Qwen2 / Qwen2MoE conversion module."""
@@ -4436,7 +4973,9 @@ class TestQwenConversion:
         obj.hf_arch = "Qwen2Model"
         data = torch.randn(8, 8)
         captured = []
-        with patch.object(Qwen2Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            Qwen2Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             list(obj.modify_tensors(data, "embed_tokens.weight", bid=None))
         # Name should be prefixed with "model."
         assert captured[0] == "model.embed_tokens.weight"
@@ -4449,7 +4988,9 @@ class TestQwenConversion:
         obj.hf_arch = "Qwen2ForCausalLM"
         data = torch.randn(8, 8)
         captured = []
-        with patch.object(Qwen2Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            Qwen2Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             list(obj.modify_tensors(data, "model.embed_tokens.weight", bid=None))
         # Name stays unchanged when hf_arch != "Qwen2Model"
         assert captured[0] == "model.embed_tokens.weight"
@@ -4458,10 +4999,13 @@ class TestQwenConversion:
         """Test Qwen2MoeModel.set_gguf_parameters writes expert FF / shared FF lengths."""
         from auto_round.export.export_to_gguf.conversion.qwen import Qwen2MoeModel
 
-        obj = _make_mock_model(Qwen2MoeModel, {
-            "moe_intermediate_size": 1536,
-            "shared_expert_intermediate_size": 512,
-        })
+        obj = _make_mock_model(
+            Qwen2MoeModel,
+            {
+                "moe_intermediate_size": 1536,
+                "shared_expert_intermediate_size": 512,
+            },
+        )
         with patch.object(Qwen2MoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -4486,7 +5030,9 @@ class TestQwenConversion:
         captured = []
         # [n_expert, 2*n_ff, n_embd] = [2, 8, 4] -> gate shape [2, 4, 4], up shape [2, 4, 4]
         data = torch.randn(2, 8, 4)
-        with patch.object(Qwen2MoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)])):
+        with patch.object(
+            Qwen2MoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append((n, d)) or iter([(n, d)])
+        ):
             list(obj.modify_tensors(data, "model.layers.0.mlp.experts.gate_up_proj.weight", bid=0))
         # Should yield 2 outputs: gate_proj and up_proj
         assert len(captured) == 2
@@ -4510,7 +5056,9 @@ class TestQwenConversion:
         obj = _make_mock_model(Qwen2MoeModel, {})
         data = torch.randn(2, 4, 8)
         captured = []
-        with patch.object(Qwen2MoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            Qwen2MoeModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             list(obj.modify_tensors(data, "model.layers.0.mlp.experts.down_proj.weight", bid=0))
         assert len(captured) == 1
         assert "down_proj.weight" in captured[0]
@@ -4520,13 +5068,14 @@ class TestQwenConversion:
 # qwen3vl.py tests
 # ==============================================================================
 
+
 class TestQwen3VlConversion:
     """Tests for Qwen3VL vision conversion module."""
 
     def test_set_gguf_parameters(self):
         """Test Qwen3VLVisionModel.set_gguf_parameters writes vision projector fields."""
-        from auto_round.export.export_to_gguf.conversion.qwen3vl import Qwen3VLVisionModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.qwen3vl import Qwen3VLVisionModel
 
         obj = _make_mock_model(Qwen3VLVisionModel)
         # has_audio_encoder is required on the object
@@ -4561,6 +5110,7 @@ class TestQwen3VlConversion:
 # ernie.py tests
 # ==============================================================================
 
+
 class TestErnieConversion:
     """Tests for Ernie / Ernie4_5 / PaddleOCR conversion module."""
 
@@ -4580,19 +5130,22 @@ class TestErnieConversion:
         """Test Ernie4_5MoeModel.set_gguf_parameters writes MoE-specific fields."""
         from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5MoeModel
 
-        obj = _make_mock_model(Ernie4_5MoeModel, {
-            "moe_num_experts": 8,
-            "moe_k": 2,
-            "moe_layer_interval": 2,
-            "moe_layer_start_index": 1,
-            "moe_intermediate_size": 1536,
-            "moe_num_shared_experts": 2,
-            "intermediate_size": 12288,
-            "num_key_value_heads": 8,
-            "max_position_embeddings": 131072,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            Ernie4_5MoeModel,
+            {
+                "moe_num_experts": 8,
+                "moe_k": 2,
+                "moe_layer_interval": 2,
+                "moe_layer_start_index": 1,
+                "moe_intermediate_size": 1536,
+                "moe_num_shared_experts": 2,
+                "intermediate_size": 12288,
+                "num_key_value_heads": 8,
+                "max_position_embeddings": 131072,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+            },
+        )
         # __init__ sets _experts
         obj._experts = [{} for _ in range(obj.block_count)]
         with patch.object(Ernie4_5MoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
@@ -4612,14 +5165,18 @@ class TestErnieConversion:
         from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5MoeModel
 
         # All MTP-related prefixes should be filtered out
-        for name in ["model.mtp_block.0.weight", "model.mtp_emb_norm.3.weight",
-                     "model.mtp_hidden_norm.5.weight", "model.mtp_linear_proj.2.weight"]:
+        for name in [
+            "model.mtp_block.0.weight",
+            "model.mtp_emb_norm.3.weight",
+            "model.mtp_hidden_norm.5.weight",
+            "model.mtp_linear_proj.2.weight",
+        ]:
             assert Ernie4_5MoeModel.filter_tensors((name, lambda: None)) is None
 
     def test_paddleocr_vision_set_gguf_parameters(self):
         """Test PaddleOCRVisionModel.set_gguf_parameters writes vision projector fields."""
-        from auto_round.export.export_to_gguf.conversion.ernie import PaddleOCRVisionModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.ernie import PaddleOCRVisionModel
 
         obj = _make_mock_model(PaddleOCRVisionModel)
         obj.hparams_vision = {"rms_norm_eps": 1e-6}
@@ -4643,24 +5200,30 @@ class TestErnieConversion:
         # tensors without 'vision_model' or 'mlp_AR' should be dropped
         assert PaddleOCRVisionModel.filter_tensors(("lm_head.weight", lambda: None)) is None
         # packing_position_embedding and vision_model.head are dropped even for vision
-        assert PaddleOCRVisionModel.filter_tensors(
-            ("vision_model.packing_position_embedding.weight", lambda: None)) is None
-        assert PaddleOCRVisionModel.filter_tensors(
-            ("vision_model.head.weight", lambda: None)) is None
+        assert (
+            PaddleOCRVisionModel.filter_tensors(("vision_model.packing_position_embedding.weight", lambda: None))
+            is None
+        )
+        assert PaddleOCRVisionModel.filter_tensors(("vision_model.head.weight", lambda: None)) is None
 
     def test_ernie4_5_modify_tensors_qkv_split(self):
         """Test Ernie4_5Model.modify_tensors splits qkv_proj into q/k/v."""
         from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
 
-        obj = _make_mock_model(Ernie4_5Model, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            Ernie4_5Model,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 4096,
+            },
+        )
         captured = []
-        with patch.object(Ernie4_5Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
-            data = torch.randn((32 + 2*8) * 128, 4096)  # total_qkv dim
+        with patch.object(
+            Ernie4_5Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
+            data = torch.randn((32 + 2 * 8) * 128, 4096)  # total_qkv dim
             list(obj.modify_tensors(data, "model.layers.0.self_attn.qkv_proj.weight", bid=0))
         # 3 outputs: q_proj, k_proj, v_proj
         assert len(captured) == 3
@@ -4672,14 +5235,19 @@ class TestErnieConversion:
         """Test Ernie4_5Model.modify_tensors splits up_gate_proj into gate/up."""
         from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
 
-        obj = _make_mock_model(Ernie4_5Model, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            Ernie4_5Model,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 4096,
+            },
+        )
         captured = []
-        with patch.object(Ernie4_5Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            Ernie4_5Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             data = torch.randn(8192, 4096)  # 2 * intermediate_size
             list(obj.modify_tensors(data, "model.layers.0.mlp.up_gate_proj.weight", bid=0))
         # 2 outputs: gate_proj, up_proj
@@ -4691,14 +5259,19 @@ class TestErnieConversion:
         """Test Ernie4_5Model.modify_tensors passes through non-qkv/up_gate tensors."""
         from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
 
-        obj = _make_mock_model(Ernie4_5Model, {
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            Ernie4_5Model,
+            {
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 4096,
+            },
+        )
         captured = []
-        with patch.object(Ernie4_5Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            Ernie4_5Model.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             data = torch.randn(4096, 4096)
             list(obj.modify_tensors(data, "model.embed_tokens.weight", bid=None))
         assert captured == ["model.embed_tokens.weight"]
@@ -4707,17 +5280,22 @@ class TestErnieConversion:
         """Test Ernie4_5MoeModel.modify_tensors merges mlp.experts tensors."""
         from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5MoeModel
 
-        obj = _make_mock_model(Ernie4_5MoeModel, {
-            "moe_num_experts": 2,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-            "head_dim": 128,
-            "hidden_size": 4096,
-        })
+        obj = _make_mock_model(
+            Ernie4_5MoeModel,
+            {
+                "moe_num_experts": 2,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "head_dim": 128,
+                "hidden_size": 4096,
+            },
+        )
         # __init__ sets _experts
         obj._experts = [{} for _ in range(obj.block_count)]
         captured = []
-        with patch.object(Ernie4_5MoeModel.__mro__[2], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            Ernie4_5MoeModel.__mro__[2], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # Feed 3 experts * 3 weights = 6 tensors
             for xid in range(2):
                 for wid in ["gate_proj", "up_proj", "down_proj"]:
@@ -4732,6 +5310,7 @@ class TestErnieConversion:
 # ==============================================================================
 # mistral.py tests
 # ==============================================================================
+
 
 class TestMistralConversion:
     """Tests for Mistral conversion module (static methods and helpers)."""
@@ -4750,8 +5329,8 @@ class TestMistralConversion:
 
     def test_set_mistral_config_with_yarn(self):
         """Test MistralModel.set_mistral_config writes yarn rope params."""
-        from auto_round.export.export_to_gguf.conversion.mistral import MistralModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.mistral import MistralModel
 
         hparams = {
             "yarn": {
@@ -4787,14 +5366,14 @@ class TestMistralConversion:
 
         with patch.object(MistralMoeModel.__mro__[1], "filter_tensors", staticmethod(parent_filter)):
             # w1 -> gate_proj, w2 -> down_proj, w3 -> up_proj, plus experts -> mlp.experts
-            result = MistralMoeModel.filter_tensors(
-                ("model.experts.0.w1.weight", lambda: None))
+            result = MistralMoeModel.filter_tensors(("model.experts.0.w1.weight", lambda: None))
             assert result[0] == "model.model.mlp.experts.0.gate_proj.weight"
 
 
 # ==============================================================================
 # hunyuan.py tests
 # ==============================================================================
+
 
 class TestHunyuanConversion:
     """Tests for HunYuan conversion module."""
@@ -4803,16 +5382,19 @@ class TestHunyuanConversion:
         """Test HunYuanMoEModel.set_gguf_parameters writes expert shared FF length and top-k."""
         from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanMoEModel
 
-        obj = _make_mock_model(HunYuanMoEModel, {
-            "intermediate_size": 12288,
-            "moe_intermediate_size": [1536, 1536, 1536],
-            "moe_topk": [8, 8, 8],
-            "num_shared_expert": [1, 1, 1],
-            "hidden_act": "silu",
-            "max_position_embeddings": 262144,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-        })
+        obj = _make_mock_model(
+            HunYuanMoEModel,
+            {
+                "intermediate_size": 12288,
+                "moe_intermediate_size": [1536, 1536, 1536],
+                "moe_topk": [8, 8, 8],
+                "num_shared_expert": [1, 1, 1],
+                "hidden_act": "silu",
+                "max_position_embeddings": 262144,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+            },
+        )
         with patch.object(HunYuanMoEModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         w = obj.gguf_writer
@@ -4830,8 +5412,8 @@ class TestHunyuanConversion:
 
     def test_hunyuan_vl_vision_set_gguf_parameters(self):
         """Test HunyuanVLVisionModel.set_gguf_parameters writes vision projector fields."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLVisionModel
         from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLVisionModel
 
         obj = _make_mock_model(HunyuanVLVisionModel)
         obj.hparams_vision = {
@@ -4862,17 +5444,24 @@ class TestHunyuanConversion:
         """Test HunyuanVLTextModel.set_gguf_parameters writes xdrope fields when applicable."""
         from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLTextModel
 
-        obj = _make_mock_model(HunyuanVLTextModel, {
+        obj = _make_mock_model(
+            HunyuanVLTextModel,
+            {
+                "rope_type": "xdrope",
+                "rope_theta": 10000.0,
+                "alpha": 1000,
+                "hidden_size": 4096,
+                "num_attention_heads": 32,
+                "max_position_embeddings": 32768,
+                "intermediate_size": 12288,
+            },
+        )
+        obj.rope_parameters = {
             "rope_type": "xdrope",
             "rope_theta": 10000.0,
             "alpha": 1000,
-            "hidden_size": 4096,
-            "num_attention_heads": 32,
-            "max_position_embeddings": 32768,
-            "intermediate_size": 12288,
-        })
-        obj.rope_parameters = {"rope_type": "xdrope", "rope_theta": 10000.0, "alpha": 1000,
-                               "xdrope_section": [16, 16, 16, 16]}
+            "xdrope_section": [16, 16, 16, 16],
+        }
         with patch.object(HunyuanVLTextModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
         obj.gguf_writer.add_rope_freq_base.assert_called_once_with(10000.0)
@@ -4882,11 +5471,16 @@ class TestHunyuanConversion:
         """Test HunYuanMoEModel.modify_tensors merges mlp.experts tensors."""
         from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanMoEModel
 
-        obj = _make_mock_model(HunYuanMoEModel, {
-            "num_local_experts": 2,
-        })
+        obj = _make_mock_model(
+            HunYuanMoEModel,
+            {
+                "num_local_experts": 2,
+            },
+        )
         captured = []
-        with patch.object(HunYuanMoEModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])):
+        with patch.object(
+            HunYuanMoEModel.__mro__[1], "modify_tensors", lambda self, d, n, b: captured.append(n) or iter([(n, d)])
+        ):
             # 3 experts * 3 weights = 6 tensors trigger merge
             for xid in range(2):
                 for wid in ["down_proj", "gate_proj", "up_proj"]:
@@ -4930,6 +5524,7 @@ class TestHunyuanConversion:
 # ==============================================================================
 # bert.py tests
 # ==============================================================================
+
 
 class TestBertConversion:
     """Tests for Bert conversion module."""
@@ -5009,8 +5604,13 @@ class TestBertConversion:
         """Test BertModel.filter_tensors drops position_ids, pooler, cls.predictions, cls.seq_relationship."""
         from auto_round.export.export_to_gguf.conversion.bert import BertModel
 
-        for name in ["embeddings.position_ids", "pooler.dense.weight", "pooler.dense.bias",
-                     "cls.predictions.decoder.weight", "cls.seq_relationship.weight"]:
+        for name in [
+            "embeddings.position_ids",
+            "pooler.dense.weight",
+            "pooler.dense.bias",
+            "cls.predictions.decoder.weight",
+            "cls.seq_relationship.weight",
+        ]:
             assert BertModel.filter_tensors((name, lambda: None)) is None
 
     def test_bert_modify_tensors_classifier_rename(self):

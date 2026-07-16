@@ -21,12 +21,11 @@ from auto_round.compressors.mllm.processor import (
     HFProcessor,
     LongCatNextProcessor,
     Mistral3Processor,
-    Qwen2VLProcessor,
     Qwen2_5OmniProcessor,
+    Qwen2VLProcessor,
     Qwen3OmniProcessor,
     register_processor,
 )
-
 
 # ==============================================================================
 # Helpers
@@ -97,6 +96,7 @@ class TestProcessorsRegistry:
     def test_register_returns_decorator(self):
         """register_processor returns a decorator that adds to PROCESSORS."""
         decorator = register_processor("wrap_me")
+
         # The decorator should be callable and return the class unchanged
         @decorator
         class ToWrap(BasicProcessor):

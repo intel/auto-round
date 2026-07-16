@@ -16,31 +16,31 @@ import pytest
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 from auto_round.algorithms.transforms.spinquant.serialize import (
-    _is_quantlinear,
-    _has_spinquant_buffers,
-    _get_online_r1_target_names,
-    _get_r4_target_names,
-    _get_hidden_size,
-    _get_head_dim,
-    _get_intermediate_size,
-    _config_to_serializable,
-    _load_config_from_model,
-    _inject_rotation_buffers,
-    _preregister_buffers_on_module,
-    _apply_rotation_from_buffer,
-    _apply_block_rotation_butterfly,
-    preregister_spinquant_buffers,
     ROTATION_TYPE_HADAMARD,
     ROTATION_TYPE_RANDOM,
     ROTATION_TYPE_TRAINED,
+    _apply_block_rotation_butterfly,
+    _apply_rotation_from_buffer,
+    _config_to_serializable,
+    _get_head_dim,
+    _get_hidden_size,
+    _get_intermediate_size,
+    _get_online_r1_target_names,
+    _get_r4_target_names,
+    _has_spinquant_buffers,
+    _inject_rotation_buffers,
+    _is_quantlinear,
+    _load_config_from_model,
+    _preregister_buffers_on_module,
+    preregister_spinquant_buffers,
 )
-from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
-
 
 # ==============================================================================
 # _is_quantlinear
 # ==============================================================================
+
 
 class TestIsQuantLinear:
     """Detect quantized linear layers."""
@@ -71,6 +71,7 @@ class TestIsQuantLinear:
 # _has_spinquant_buffers
 # ==============================================================================
 
+
 class TestHasSpinquantBuffers:
     """Detect spinquant buffers on modules."""
 
@@ -93,6 +94,7 @@ class TestHasSpinquantBuffers:
 # ==============================================================================
 # _get_online_r1_target_names
 # ==============================================================================
+
 
 class TestGetOnlineR1TargetNames:
     """Find modules that need online R1 rotation."""
@@ -130,6 +132,7 @@ class TestGetOnlineR1TargetNames:
 # _get_r4_target_names
 # ==============================================================================
 
+
 class TestGetR4TargetNames:
     """Find down_proj layers for R4 rotation."""
 
@@ -149,6 +152,7 @@ class TestGetR4TargetNames:
 # Architecture extraction helpers
 # ==============================================================================
 
+
 class TestArchitectureExtraction:
     """Extract model architecture info from config."""
 
@@ -165,9 +169,7 @@ class TestArchitectureExtraction:
         assert _get_head_dim(model) == 128
 
     def test_get_head_dim_computed(self):
-        model = SimpleNamespace(
-            config=SimpleNamespace(hidden_size=5120, num_attention_heads=40)
-        )
+        model = SimpleNamespace(config=SimpleNamespace(hidden_size=5120, num_attention_heads=40))
         assert _get_head_dim(model) == 128
 
     def test_get_head_dim_missing(self):
@@ -187,6 +189,7 @@ class TestArchitectureExtraction:
 # Config serialization / deserialization
 # ==============================================================================
 
+
 class TestConfigSerialization:
     """SpinQuantConfig <-> dict roundtrip."""
 
@@ -203,9 +206,7 @@ class TestConfigSerialization:
 
     def test_load_config_from_model_dict(self):
         model = SimpleNamespace()
-        model.config = SimpleNamespace(
-            quantization_config={"spinquant_config": {"r1": True, "r2": False}}
-        )
+        model.config = SimpleNamespace(quantization_config={"spinquant_config": {"r1": True, "r2": False}})
         loaded = _load_config_from_model(model)
         assert loaded is not None
         assert loaded.r1 is True
@@ -213,9 +214,7 @@ class TestConfigSerialization:
 
     def test_load_config_from_top_level(self):
         model = SimpleNamespace()
-        model.config = SimpleNamespace(
-            spinquant_config={"r1": False, "r2": True}
-        )
+        model.config = SimpleNamespace(spinquant_config={"r1": False, "r2": True})
         loaded = _load_config_from_model(model)
         assert loaded is not None
         assert loaded.r1 is False
@@ -229,6 +228,7 @@ class TestConfigSerialization:
 # ==============================================================================
 # Buffer injection
 # ==============================================================================
+
 
 class TestInjectRotationBuffers:
     """Inject rotation buffers into QuantLinear modules."""
@@ -287,6 +287,7 @@ class TestInjectRotationBuffers:
 # ==============================================================================
 # Buffer pre-registration
 # ==============================================================================
+
 
 class TestPreregisterBuffers:
     """Pre-register empty buffers for state_dict loading."""
@@ -355,6 +356,7 @@ class TestPreregisterBuffers:
 # ==============================================================================
 # Rotation application from buffers
 # ==============================================================================
+
 
 class TestApplyRotationFromBuffer:
     """Apply rotation using buffers stored on QuantLinear."""

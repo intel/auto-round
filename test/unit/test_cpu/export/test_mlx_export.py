@@ -22,28 +22,28 @@ import torch
 import torch.nn as nn
 
 from auto_round.export.export_to_mlx.export import (
-    _is_mlx_quantizable,
     _build_mlx_quantization_config,
-    _flatten_rope_parameters_recursive,
-    _extract_rope_theta_from_obj,
-    _ensure_rope_theta_from_config_obj,
-    _load_original_config_json,
-    _snapshot_original_model_types,
-    _preserve_original_model_types,
-    _strip_prefix,
     _build_text_subconfig_quantization,
     _detect_text_module_prefix,
-    _pack_weight_mlx,
+    _ensure_rope_theta_from_config_obj,
+    _extract_rope_theta_from_obj,
+    _flatten_rope_parameters_recursive,
+    _is_mlx_quantizable,
+    _load_original_config_json,
     _MLXPackedLayer,
+    _pack_weight_mlx,
+    _preserve_original_model_types,
+    _snapshot_original_model_types,
+    _strip_prefix,
     pack_layer,
     save_quantized_as_mlx,
 )
 from auto_round.utils.common import MM_KEYS
 
-
 # ==============================================================================
 # _is_mlx_quantizable
 # ==============================================================================
+
 
 class TestIsMlxQuantizable:
     """Predicate matching mlx-lm's default quantization predicate."""
@@ -76,6 +76,7 @@ class TestIsMlxQuantizable:
 # ==============================================================================
 # _flatten_rope_parameters_recursive
 # ==============================================================================
+
 
 class TestFlattenRopeParameters:
     """Flatten rope_parameters nested dicts into top-level config."""
@@ -140,6 +141,7 @@ class TestFlattenRopeParameters:
 # _extract_rope_theta_from_obj
 # ==============================================================================
 
+
 class TestExtractRopeTheta:
     """Best-effort extraction of rope_theta from HF config objects."""
 
@@ -181,6 +183,7 @@ class TestExtractRopeTheta:
 # _ensure_rope_theta_from_config_obj
 # ==============================================================================
 
+
 class TestEnsureRopeTheta:
     """Backfill rope_theta from live config object to JSON dict."""
 
@@ -218,6 +221,7 @@ class TestEnsureRopeTheta:
 # _load_original_config_json
 # ==============================================================================
 
+
 class TestLoadOriginalConfigJson:
     """Load raw config.json from checkpoint directory."""
 
@@ -250,17 +254,20 @@ class TestLoadOriginalConfigJson:
 # _snapshot_original_model_types
 # ==============================================================================
 
+
 class TestSnapshotOriginalModelTypes:
     """Snapshot model_type for top-level and known sub-configs."""
 
     def test_from_on_disk_config(self, tmp_path):
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(
-            json.dumps({
-                "model_type": "qwen2",
-                "vision_config": {"model_type": "qwen2_vision"},
-                "text_config": {"hidden_size": 5120},
-            })
+            json.dumps(
+                {
+                    "model_type": "qwen2",
+                    "vision_config": {"model_type": "qwen2_vision"},
+                    "text_config": {"hidden_size": 5120},
+                }
+            )
         )
         model = SimpleNamespace(config=SimpleNamespace(_name_or_path=str(tmp_path)))
         result = _snapshot_original_model_types(model)
@@ -282,6 +289,7 @@ class TestSnapshotOriginalModelTypes:
 # ==============================================================================
 # _preserve_original_model_types
 # ==============================================================================
+
 
 class TestPreserveOriginalModelTypes:
     """Restore model_type fields from original config snapshot."""
@@ -318,6 +326,7 @@ class TestPreserveOriginalModelTypes:
 # _strip_prefix
 # ==============================================================================
 
+
 class TestStripPrefix:
     """Strip prefix. from layer names."""
 
@@ -334,6 +343,7 @@ class TestStripPrefix:
 # ==============================================================================
 # _build_text_subconfig_quantization
 # ==============================================================================
+
 
 class TestBuildTextSubconfigQuantization:
     """Re-key quantization dict for VLM text_config placement."""
@@ -364,6 +374,7 @@ class TestBuildTextSubconfigQuantization:
 # _detect_text_module_prefix
 # ==============================================================================
 
+
 class TestDetectTextModulePrefix:
     """Detect VLM language-model sub-module name."""
 
@@ -387,6 +398,7 @@ class TestDetectTextModulePrefix:
 # ==============================================================================
 # _pack_weight_mlx
 # ==============================================================================
+
 
 class TestPackWeightMlx:
     """Pack integer weights into uint32 in MLX format."""
@@ -433,6 +445,7 @@ class TestPackWeightMlx:
 # _MLXPackedLayer
 # ==============================================================================
 
+
 class TestMLXPackedLayer:
     """Holds MLX-packed quantized tensors."""
 
@@ -459,6 +472,7 @@ class TestMLXPackedLayer:
 # pack_layer
 # ==============================================================================
 
+
 class TestPackLayer:
     """Pack a single layer into MLX quantized format."""
 
@@ -479,6 +493,7 @@ class TestPackLayer:
 # ==============================================================================
 # save_quantized_as_mlx
 # ==============================================================================
+
 
 class TestSaveQuantizedAsMlx:
     """Full export to MLX format."""

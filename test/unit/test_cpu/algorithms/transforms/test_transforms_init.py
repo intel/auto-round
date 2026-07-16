@@ -18,17 +18,16 @@ from auto_round.algorithms.transforms import (
     BaseRotation,
     BaseRotationConfig,
     SerializerMixin,
-    check_supported_schemes,
     apply_rotation,
-    normalize_rotation_config,
-    inject_rotation_buffers_on_layer,
+    apply_rotation_hooks_from_config,
+    check_supported_schemes,
     inject_rotation_buffers_bulk,
-    save_rotation_config,
+    inject_rotation_buffers_on_layer,
+    normalize_rotation_config,
     preregister_rotation_buffers,
     rebuild_rotation_if_needed,
-    apply_rotation_hooks_from_config,
+    save_rotation_config,
 )
-
 
 # ==============================================================================
 # normalize_rotation_config
@@ -144,6 +143,7 @@ class TestSaveRotationConfig:
     def test_no_rotation_config_is_noop(self):
         model = nn.Module()
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             save_rotation_config(model, tmpdir)
 

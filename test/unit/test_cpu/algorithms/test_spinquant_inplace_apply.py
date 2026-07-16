@@ -10,12 +10,12 @@
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 from auto_round.algorithms.transforms.spinquant.inplace.apply import (
     apply_spinquant_in_place,
     register_spinquant_hooks,
     remove_spinquant_hooks,
 )
-from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
 
 class TestRegisterSpinquantHooks:
@@ -37,9 +37,7 @@ class TestRegisterSpinquantHooks:
             ]
         )
         config = SpinQuantConfig(r1=False, r2=False, r3=False, r4=True)
-        handles = register_spinquant_hooks(
-            model, config, intermediate_size=32, r4_rotation_size=16
-        )
+        handles = register_spinquant_hooks(model, config, intermediate_size=32, r4_rotation_size=16)
         assert isinstance(handles, list)
         # Both down_proj layers get hooks registered
         assert len(handles) == 2
@@ -53,9 +51,7 @@ class TestRegisterSpinquantHooks:
             ]
         )
         config = SpinQuantConfig(r1=False, r2=False, r3=False, r4=True)
-        handles = register_spinquant_hooks(
-            model, config, intermediate_size=32, r4_rotation_size=16
-        )
+        handles = register_spinquant_hooks(model, config, intermediate_size=32, r4_rotation_size=16)
         assert len(handles) == 1
         # remove_spinquant_hooks takes the handles list directly
         remove_spinquant_hooks(handles)
@@ -73,9 +69,7 @@ class TestApplySpinquantInPlace:
             [
                 nn.ModuleDict(
                     {
-                        "attn": nn.ModuleDict(
-                            {"q_proj": nn.Linear(16, 16), "k_proj": nn.Linear(16, 16)}
-                        ),
+                        "attn": nn.ModuleDict({"q_proj": nn.Linear(16, 16), "k_proj": nn.Linear(16, 16)}),
                         "mlp": nn.ModuleDict(
                             {
                                 "gate_proj": nn.Linear(16, 32),

@@ -24,21 +24,25 @@ import torch.nn as nn
 class TestMergeListsUnionFind:
     def test_empty_input(self):
         from auto_round.auto_scheme.utils import merge_lists_unionfind
+
         assert merge_lists_unionfind([]) == []
 
     def test_single_list(self):
         from auto_round.auto_scheme.utils import merge_lists_unionfind
+
         result = merge_lists_unionfind([["a", "b", "c"]])
         assert sorted(result) == [["a", "b", "c"]]
 
     def test_disjoint_lists_remain_separate(self):
         from auto_round.auto_scheme.utils import merge_lists_unionfind
+
         result = merge_lists_unionfind([["a", "b"], ["c", "d"]])
         groups = sorted([sorted(g) for g in result])
         assert groups == [["a", "b"], ["c", "d"]]
 
     def test_overlapping_lists_are_merged(self):
         from auto_round.auto_scheme.utils import merge_lists_unionfind
+
         # "b" and "c" overlap -> all 4 should end up in a single group
         result = merge_lists_unionfind([["a", "b"], ["b", "c"], ["c", "d"]])
         assert len(result) == 1
@@ -46,15 +50,15 @@ class TestMergeListsUnionFind:
 
     def test_three_way_overlap(self):
         from auto_round.auto_scheme.utils import merge_lists_unionfind
+
         result = merge_lists_unionfind([["a", "b"], ["c", "d"], ["b", "c"]])
         assert len(result) == 1
         assert sorted(result[0]) == ["a", "b", "c", "d"]
 
     def test_long_chain(self):
         from auto_round.auto_scheme.utils import merge_lists_unionfind
-        result = merge_lists_unionfind(
-            [["a", "b"], ["b", "c"], ["c", "d"], ["d", "e"]]
-        )
+
+        result = merge_lists_unionfind([["a", "b"], ["b", "c"], ["c", "d"], ["d", "e"]])
         assert len(result) == 1
         assert sorted(result[0]) == ["a", "b", "c", "d", "e"]
 
@@ -80,6 +84,7 @@ class TestComputeLayerBits:
 
     def test_unquantized_layer_default_16_bits(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer()
         total, avg = compute_layer_bits(layer)
         assert total == 16 * 32
@@ -87,12 +92,14 @@ class TestComputeLayerBits:
 
     def test_unquantized_with_ignore_overhead(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=16)
         total, _ = compute_layer_bits(layer, ignore_scale_zp_bits=True)
         assert total == 16 * 32
 
     def test_int4_sym_with_group(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=4, sym=True, data_type="int")
         # sym=True but data_type contains "int" -> zp_bits = 4
         # scale_bits = 16 (default)
@@ -104,6 +111,7 @@ class TestComputeLayerBits:
 
     def test_int4_asym_with_group(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=4, sym=False, data_type="int")
         # asym -> zp_bits = 4; aux per group = 20; aux_total = 160; total = 288
         total, _ = compute_layer_bits(layer)
@@ -111,6 +119,7 @@ class TestComputeLayerBits:
 
     def test_mx_fp_uses_8bit_scale_no_zp(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=4, sym=True, data_type="mx_fp4")
         # scale_bits=8, zp_bits=0 (sym AND not "int" in data_type)
         # aux per group = 8; n_group = 8 -> aux_total = 64
@@ -120,6 +129,7 @@ class TestComputeLayerBits:
 
     def test_group_size_zero(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=0, sym=True, data_type="int")
         # n_group = 1; aux = 20; weight = 128 -> total = 148
         total, _ = compute_layer_bits(layer)
@@ -127,6 +137,7 @@ class TestComputeLayerBits:
 
     def test_group_size_neg1(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=-1, sym=True, data_type="int")
         # n_group = out_features = 4; aux = 80; weight = 128 -> total = 208
         total, _ = compute_layer_bits(layer)
@@ -134,15 +145,21 @@ class TestComputeLayerBits:
 
     def test_invalid_group_size_raises(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=-99, sym=True, data_type="int")
         with pytest.raises(ValueError):
             compute_layer_bits(layer)
 
     def test_super_group_uses_super_bits(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(
-            bits=4, group_size=4, sym=True, data_type="int",
-            super_group_size=2, super_bits=6,
+            bits=4,
+            group_size=4,
+            sym=True,
+            data_type="int",
+            super_group_size=2,
+            super_bits=6,
         )
         # aux1 = 8 * 6 * 2 = 96; n_super_group = ceil(8/2) = 4; aux2 = 4 * 32 * 2 = 256
         # total aux = 352; weight = 128 -> total = 480
@@ -151,6 +168,7 @@ class TestComputeLayerBits:
 
     def test_cached_weight_numel_used_when_weight_empty(self):
         from auto_round.auto_scheme.utils import compute_layer_bits
+
         layer = self._make_layer(bits=4, group_size=4, sym=True, data_type="int")
         layer._cached_weight_numel = 32
         layer.weight = nn.Parameter(torch.empty(0), requires_grad=False)
@@ -164,8 +182,9 @@ class TestComputeLayerBits:
 # ---------------------------------------------------------------------------
 class TestApplyRemoveQuantScheme:
     def test_apply_with_string_scheme(self):
-        from auto_round.auto_scheme.utils import apply_quant_scheme
         from dataclasses import fields
+
+        from auto_round.auto_scheme.utils import apply_quant_scheme
         from auto_round.schemes import QuantizationScheme
 
         model = nn.Sequential(nn.Linear(8, 4))

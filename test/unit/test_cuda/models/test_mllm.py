@@ -2,6 +2,7 @@ import copy
 import os
 import re
 import shutil
+from test.helpers import get_model_path
 
 import pytest
 import requests
@@ -12,7 +13,6 @@ from auto_round import AutoRound
 from auto_round.utils import get_block_names
 
 from ...envs import require_gptqmodel, require_optimum, require_vlm_env
-from test.helpers import get_model_path
 
 
 class VisionDataLoader:

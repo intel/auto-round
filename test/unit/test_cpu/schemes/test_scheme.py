@@ -1,5 +1,6 @@
 import os
 import shutil
+from test.helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path, save_tiny_model
 
 import pytest
 import torch
@@ -8,8 +9,6 @@ import transformers
 
 from auto_round import AutoRound
 from auto_round.schemes import QuantizationScheme, _handle_special_schemes
-
-from test.helpers import get_model_path, get_tiny_model, opt_name_or_path, qwen_name_or_path, save_tiny_model
 
 
 class TestAutoRound:

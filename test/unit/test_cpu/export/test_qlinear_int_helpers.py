@@ -26,6 +26,7 @@ import torch.nn as nn
 class TestModuleConstants:
     def test_float_to_e0m4_lookup(self):
         from auto_round.export.export_to_autoround.qlinear_int import FLOAT_TO_E0M4
+
         assert len(FLOAT_TO_E0M4) == 8
         # monotonically non-decreasing
         for i in range(1, len(FLOAT_TO_E0M4)):
@@ -36,6 +37,7 @@ class TestModuleConstants:
             E8M0_EXPONENT_BIAS,
             E8M0_EXPONENT_NAN_VAL,
         )
+
         assert E8M0_EXPONENT_BIAS == 127
         assert E8M0_EXPONENT_NAN_VAL == 255
         assert E8M0_EXPONENT_NAN_VAL > E8M0_EXPONENT_BIAS
@@ -121,6 +123,7 @@ class TestPackInt4ToUint8Cpu:
         from auto_round.export.export_to_autoround.qlinear_int import (
             pack_int4_to_uint8_cpu,
         )
+
         x = torch.zeros(2, 4)
         packed = pack_int4_to_uint8_cpu(x)
         assert packed.dtype == torch.uint8
@@ -129,6 +132,7 @@ class TestPackInt4ToUint8Cpu:
         from auto_round.export.export_to_autoround.qlinear_int import (
             pack_int4_to_uint8_cpu,
         )
+
         # Odd number of columns should be padded, then reshaped to (rows, ceil(cols/2))
         x = torch.zeros(2, 6)
         packed = pack_int4_to_uint8_cpu(x)
@@ -144,6 +148,7 @@ class TestPackInt4ToUint8:
         from auto_round.export.export_to_autoround.qlinear_int import (
             _pack_int4_to_uint8,
         )
+
         # All-zero values map to index 0 (the 0.0 entry in FLOAT_TO_E0M4)
         x = torch.zeros(2, 4)
         packed = _pack_int4_to_uint8(x)
@@ -184,6 +189,7 @@ class TestPackInt4ToUint8:
         from auto_round.export.export_to_autoround.qlinear_int import (
             _pack_int4_to_uint8,
         )
+
         x = torch.full((1, 4), 100.0)
         packed = _pack_int4_to_uint8(x)
         assert (packed == 0x77).all()
@@ -191,9 +197,10 @@ class TestPackInt4ToUint8:
     def test_4bit_values_packed_per_byte(self):
         """The packer packs two int4 values per uint8 (low + high nibble)."""
         from auto_round.export.export_to_autoround.qlinear_int import (
-            _pack_int4_to_uint8,
             FLOAT_TO_E0M4,
+            _pack_int4_to_uint8,
         )
+
         # Use only the smallest positive value (0.25 -> index 1)
         x = torch.full((1, 2), FLOAT_TO_E0M4[1])
         packed = _pack_int4_to_uint8(x)

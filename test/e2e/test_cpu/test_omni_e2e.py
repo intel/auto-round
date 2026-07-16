@@ -34,16 +34,14 @@ from __future__ import annotations
 import os
 import time
 from io import BytesIO
-
-import pytest
-import torch
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     record,
 )
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -74,10 +72,10 @@ SILENT_WAV_BYTES = (
 
 
 def _quantize_omni(model_id: str, scheme: str, save_dir: str) -> None:
+    from test.helpers import get_model_path
+
     from auto_round import AutoRound
     from auto_round.utils import mllm_load_model
-
-    from test.helpers import get_model_path
 
     model_id = get_model_path(model_id)
     # ``mllm_load_model`` handles the (thinker, talker, processor, ...)
@@ -169,9 +167,9 @@ class TestOmniE2E:
         sub_blocks = [d for d in os.listdir(save_dir) if d in ("thinker", "talker", "code_predictor")]
         if not sub_blocks:
             # Saved as a single checkpoint rather than a sub-block split.
-            assert os.path.isfile(os.path.join(save_dir, "config.json")), (
-                f"omni checkpoint missing config.json in {save_dir}"
-            )
+            assert os.path.isfile(
+                os.path.join(save_dir, "config.json")
+            ), f"omni checkpoint missing config.json in {save_dir}"
 
         t0 = time.perf_counter()
         text = _reload_and_generate_text_only(save_dir)

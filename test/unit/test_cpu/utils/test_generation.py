@@ -1,13 +1,12 @@
 import copy
 import shutil
+from test.helpers import opt_name_or_path
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import opt_name_or_path
 
 
 class TestAutoRoundFormatGeneration:

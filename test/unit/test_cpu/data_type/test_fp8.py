@@ -11,11 +11,11 @@ import torch
 
 from auto_round.data_type.fp8 import (
     quant_block_fp_sym,
-    quant_fp8_sym,
     quant_fp8_e5m2,
-    quant_fp8_unit_scale,
     quant_fp8_e5m2_unit_scale,
+    quant_fp8_sym,
     quant_fp8_sym_gaudi3,
+    quant_fp8_unit_scale,
 )
 
 
@@ -142,7 +142,5 @@ class TestQuantFp8SymGaudi3:
 
     def test_with_max_and_min(self):
         t = torch.randn(4, 128, dtype=torch.bfloat16)
-        q, s, z = quant_fp8_sym_gaudi3(
-            t, tensor_max=torch.tensor(0.5), tensor_min=torch.tensor(-0.5)
-        )
+        q, s, z = quant_fp8_sym_gaudi3(t, tensor_max=torch.tensor(0.5), tensor_min=torch.tensor(-0.5))
         assert q.shape == t.shape

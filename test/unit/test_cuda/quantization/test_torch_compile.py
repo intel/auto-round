@@ -1,5 +1,6 @@
 import os
 import shutil
+from test.helpers import get_model_path, get_tiny_model
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,6 @@ from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.compressors.utils import block_forward
 
 from ...envs import require_gguf
-from test.helpers import get_model_path, get_tiny_model
 
 
 class TestTorchCompile:

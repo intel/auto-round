@@ -1,6 +1,7 @@
 import copy
 import os
 import shutil
+from test.helpers import eval_generated_prompt, generate_prompt, get_model_path
 
 import pytest
 import torch
@@ -11,7 +12,6 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoRoundConfig, Auto
 from auto_round import AutoRound
 
 from ...envs import require_gptqmodel
-from test.helpers import eval_generated_prompt, generate_prompt, get_model_path
 
 
 class TestAutoRound:

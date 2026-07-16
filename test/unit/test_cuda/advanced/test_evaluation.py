@@ -14,10 +14,9 @@
 
 import os
 import sys
+from test.helpers import opt_name_or_path
 
 import pytest
-
-from test.helpers import opt_name_or_path
 
 
 @pytest.mark.skipif(

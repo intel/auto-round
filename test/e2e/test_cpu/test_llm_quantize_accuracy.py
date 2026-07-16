@@ -46,9 +46,6 @@ Run only the heavier cases (>=24 GiB host recommended)::
 from __future__ import annotations
 
 import time
-
-import pytest
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     DEFAULT_MODEL_CASES,
     LARGE_MODEL_CASES,
@@ -59,6 +56,7 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     run_lm_eval,
 )
 
+import pytest
 
 # Loose accuracy floors.  These are intentionally below the values you'd
 # see in the paper so the tests catch *catastrophic* regressions (e.g. a

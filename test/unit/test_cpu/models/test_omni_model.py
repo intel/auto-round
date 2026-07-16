@@ -24,12 +24,11 @@ Tests cover:
 
 import copy
 import shutil
+from test.helpers import check_version, transformers_version
 
 import pytest
 import torch
 from transformers import Qwen2_5OmniForConditionalGeneration, Qwen3OmniMoeConfig, Qwen3OmniMoeForConditionalGeneration
-
-from test.helpers import check_version, transformers_version
 
 pytestmark = pytest.mark.skipif(
     not check_version("transformers>=5.1.0"),

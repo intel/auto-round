@@ -1,5 +1,6 @@
 import copy
 import shutil
+from test.helpers import get_model_path, save_tiny_model, transformers_version
 
 import pytest
 import torch
@@ -16,8 +17,6 @@ from transformers import (
 
 from auto_round import AutoRound
 from auto_round.utils import get_block_names, is_pure_text_model
-
-from test.helpers import get_model_path, save_tiny_model, transformers_version
 
 
 @pytest.mark.skip_ci(reason="Only tiny model is suggested")

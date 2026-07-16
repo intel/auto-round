@@ -18,27 +18,27 @@ import torch
 import torch.nn as nn
 
 from auto_round.algorithms.transforms.hadamard.inplace.apply import (
-    _resolve_head_dim,
+    _bake_mean_into_linear,
+    _fuse_layer_norms,
     _fuse_ln_linear,
+    _register_online_hooks,
+    _replace_layernorms_with_rmsnorm,
     _reset_ln_params,
-    _rotate_weight_chunked,
+    _resolve_head_dim,
+    _RMSNorm,
     _rotate_linear_by_Q,
+    _rotate_weight_chunked,
+    _subtract_embedding_mean,
     _untie_word_embeddings,
     _uses_layernorm_with_mean,
-    _bake_mean_into_linear,
-    _subtract_embedding_mean,
-    _RMSNorm,
-    _replace_layernorms_with_rmsnorm,
-    _fuse_layer_norms,
-    _register_online_hooks,
     apply_rotation_transform,
 )
 from auto_round.algorithms.transforms.hadamard.inplace.model_config import RotationMapping
 
-
 # ==============================================================================
 # _resolve_head_dim
 # ==============================================================================
+
 
 class TestResolveHeadDim:
     """Resolve per-head attention dimension from mapping and config."""
@@ -71,6 +71,7 @@ class TestResolveHeadDim:
 # ==============================================================================
 # _fuse_ln_linear
 # ==============================================================================
+
 
 class TestFuseLnLinear:
     """Fuse LayerNorm into adjacent Linear layers."""
@@ -107,6 +108,7 @@ class TestFuseLnLinear:
 # _reset_ln_params
 # ==============================================================================
 
+
 class TestResetLnParams:
     """Reset LayerNorm to identity (weight=1, bias=0)."""
 
@@ -131,6 +133,7 @@ class TestResetLnParams:
 # ==============================================================================
 # _rotate_weight_chunked
 # ==============================================================================
+
 
 class TestRotateWeightChunked:
     """Memory-efficient chunked weight rotation."""
@@ -158,6 +161,7 @@ class TestRotateWeightChunked:
 # ==============================================================================
 # _rotate_linear_by_Q
 # ==============================================================================
+
 
 class TestRotateLinearByQ:
     """Apply rotation Q to Linear weights."""
@@ -193,6 +197,7 @@ class TestRotateLinearByQ:
 # _uses_layernorm_with_mean
 # ==============================================================================
 
+
 class TestUsesLayerNormWithMean:
     """Detect standard LayerNorm (subtracts mean)."""
 
@@ -224,6 +229,7 @@ class TestUsesLayerNormWithMean:
 # _bake_mean_into_linear
 # ==============================================================================
 
+
 class TestBakeMeanIntoLinear:
     """Subtract column-wise mean from a Linear layer's weight."""
 
@@ -250,6 +256,7 @@ class TestBakeMeanIntoLinear:
 # _subtract_embedding_mean
 # ==============================================================================
 
+
 class TestSubtractEmbeddingMean:
     """Subtract per-row mean from embedding weight matrix."""
 
@@ -273,6 +280,7 @@ class TestSubtractEmbeddingMean:
 # ==============================================================================
 # _RMSNorm
 # ==============================================================================
+
 
 class TestRMSNorm:
     """RMS Normalization (no mean subtraction)."""
@@ -299,6 +307,7 @@ class TestRMSNorm:
 # ==============================================================================
 # _replace_layernorms_with_rmsnorm
 # ==============================================================================
+
 
 class TestReplaceLayerNorms:
     """Replace all nn.LayerNorm with _RMSNorm."""
@@ -327,6 +336,7 @@ class TestReplaceLayerNorms:
 # ==============================================================================
 # _register_online_hooks
 # ==============================================================================
+
 
 class TestRegisterOnlineHooks:
     """Register online Hadamard pre-forward hooks."""
@@ -369,6 +379,7 @@ class TestRegisterOnlineHooks:
 # ==============================================================================
 # apply_rotation_transform public API
 # ==============================================================================
+
 
 class TestApplyRotationTransformPublicAPI:
     """Test the public apply_rotation_transform entry point."""

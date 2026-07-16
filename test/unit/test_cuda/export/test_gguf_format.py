@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+from test.helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, save_tiny_model
 
 import pytest
 import torch
@@ -11,7 +12,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_gguf
-from test.helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, save_tiny_model
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -140,10 +140,10 @@ class TestAutoRound:
 
     @require_gguf
     def test_vlm_gguf(self):
+        from test.helpers import save_tiny_model
+
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import GatedRepoError, HfHubHTTPError
-
-        from test.helpers import save_tiny_model
 
         model_name = "google/gemma-3-4b-it"
         tiny_model_path = save_tiny_model(

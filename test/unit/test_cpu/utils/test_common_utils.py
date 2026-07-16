@@ -14,9 +14,10 @@
 
 """Unit tests for auto_round/utils/common.py to improve code coverage."""
 
-import torch
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+import torch
 
 
 class TestDownloadAudiocapsCsv:
@@ -37,8 +38,8 @@ class TestDownloadAudiocapsCsv:
             assert result is None or isinstance(result, str)
 
     def test_download_audiocaps_csv_uses_cache(self):
-        import tempfile
         import os
+        import tempfile
 
         from auto_round.utils.common import download_audiocaps_csv
 
@@ -237,6 +238,7 @@ class TestImportFunctions:
         # Just verify we can check if it exists
         try:
             import quark.autograd  # noqa: F401
+
             exists = True
         except ImportError:
             exists = False
@@ -248,6 +250,7 @@ class TestImportFunctions:
         # Test auto_round_extension import
         try:
             import auto_round_extension  # noqa: F401
+
             exists = True
         except ImportError:
             exists = False

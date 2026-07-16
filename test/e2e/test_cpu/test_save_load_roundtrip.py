@@ -41,17 +41,15 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from typing import List, Optional
-
-import pytest
-import torch
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     record,
 )
+from typing import List, Optional
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -225,8 +223,7 @@ class TestSaveLoadRoundtrip:
         present = _quant_config_keys(save_dir)
         missing = expected_keys - present
         assert not missing, (
-            f"{fmt}: saved checkpoint lost required quantization_config keys: {missing} "
-            f"(have {present})"
+            f"{fmt}: saved checkpoint lost required quantization_config keys: {missing} " f"(have {present})"
         )
 
         record(
@@ -256,9 +253,9 @@ class TestReloadFromCorruptedDir:
         a reload must raise - not silently fall back to a non-quantized
         model that would be weight-incompatible with the int4 weights.
         """
-        from transformers import AutoModelForCausalLM
-
         from test.helpers import get_model_path, qwen_name_or_path
+
+        from transformers import AutoModelForCausalLM
 
         save_dir = str(tmp_path / "corrupt_out")
         _quantize_to(qwen_name_or_path, "W4A16", "auto_round", save_dir)

@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from test.helpers import evaluate_accuracy, opt_name_or_path
 
 import pytest
 import torch
@@ -10,7 +11,6 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_gptqmodel
-from test.helpers import evaluate_accuracy, opt_name_or_path
 
 
 def _get_folder_size(path: str) -> float:

@@ -1,5 +1,6 @@
 import shutil
 import tempfile
+from test.helpers import get_model_path
 
 import pytest
 import torch
@@ -14,7 +15,6 @@ from auto_round.formats import AutoRoundExportFormat
 from auto_round.inference.backend import MX_TENSOR_DATA_TYPES
 
 from ...envs import has_module
-from test.helpers import get_model_path
 
 testing_scheme_name_lst = [
     AutoRoundExportFormat.MXFP8.value,
