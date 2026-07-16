@@ -31,10 +31,11 @@ from auto_round import envs
 from auto_round.calibration.base import Calibrator
 from auto_round.calibration.register import register_calibrator
 from auto_round.calibration.utils import _infer_last_cache_name
-from auto_round.compressors.utils import init_cache, check_skippable_keywords, reset_params
+from auto_round.compressors.utils import check_skippable_keywords, init_cache, reset_params
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
     check_seqlen_compatible,
     clear_memory,
     flatten_list,
@@ -42,7 +43,7 @@ from auto_round.utils import (
     is_quantized_input_module,
     mv_module_from_gpu,
     to_device,
-    to_dtype, SUPPORTED_LAYER_TYPES,
+    to_dtype,
 )
 from auto_round.utils.device import parse_available_devices
 from auto_round.utils.device_manager import device_manager
@@ -60,7 +61,7 @@ class LLMCalibrator(Calibrator):
 
         Verbatim port of the legacy ``DataDrivenCompressor.try_cache_inter_data_gpucpu``.
         """
-        if is_quantized_input_module(self.model):#e.g. FP8 model
+        if is_quantized_input_module(self.model):  # e.g. FP8 model
             layer_names = []
         if layer_names is None:
             layer_names = []
@@ -94,9 +95,7 @@ class LLMCalibrator(Calibrator):
                     materialize_model_(self.model)
 
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    dispatch_model(
-                        self.model, device_map=self.model.hf_device_map
-                    )
+                    dispatch_model(self.model, device_map=self.model.hf_device_map)
                 else:
                     if str(self.model.device) == "cpu" and (not device_manager.device.startswith("hpu")):
                         no_split_modules = list(getattr(self.model, "_no_split_modules", []))
@@ -181,7 +180,7 @@ class LLMCalibrator(Calibrator):
                 try:
                     logger.info("switch to cpu to cache block inputs")
 
-                    if len(block_names)>1 or len(layer_names)>1:
+                    if len(block_names) > 1 or len(layer_names) > 1:
                         logger.warning(
                             "we recommend using more GPUs in calibration."
                             " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
@@ -208,7 +207,7 @@ class LLMCalibrator(Calibrator):
         if layer_names is None:
             layer_names = []
 
-        #TODO have a check wenhuach need to pass attetnion_mask
+        # TODO have a check wenhuach need to pass attetnion_mask
         # if hasattr(c, "quantizer") and hasattr(c.quantizer, "attention_mask"):
         #     c.quantizer.attention_mask = []
 
@@ -390,7 +389,7 @@ class LLMCalibrator(Calibrator):
                 # never "all ones".
                 new_attention_mask[:, -1] = 0
 
-                #TODO wenhuach pass attention_mask to alg
+                # TODO wenhuach pass attention_mask to alg
                 # if not hasattr(c.quantizer, "attention_mask"):
                 #     c.quantizer.attention_mask = []
                 # c.quantizer.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
@@ -473,11 +472,8 @@ class LLMCalibrator(Calibrator):
                 self.batch_dim = 0
                 if hidden_states is not None and self.batch_size > 1:
                     if hidden_states.shape[0] > self.batch_size:
-                        self.batch_dim = 1 # TODO wenhuach this one should pass to algorithm
-                        if (
-                                len(hidden_states.shape) > 1
-                                and hidden_states.shape[1] > self.batch_size
-                        ):
+                        self.batch_dim = 1  # TODO wenhuach this one should pass to algorithm
+                        if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
                             logger.error(
                                 "this model has not been supported, "
                                 "please raise an issue in https://github.com/intel/auto-round/issues"
@@ -490,12 +486,15 @@ class LLMCalibrator(Calibrator):
                 kwargs["hidden_states"] = hidden_states
 
             for key in kwargs.keys():
-                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or isinstance(kwargs[key],
-                                                                                                        tuple):
+                if (
+                    isinstance(kwargs[key], torch.Tensor)
+                    or isinstance(kwargs[key], list)
+                    or isinstance(kwargs[key], tuple)
+                ):
                     if (
-                            self.has_variable_block_shape
-                            and name not in self.blocks_requiring_input_ids
-                            and key == "hidden_states"
+                        self.has_variable_block_shape
+                        and name not in self.blocks_requiring_input_ids
+                        and key == "hidden_states"
                     ):
                         continue
                     if key not in self.inputs[name].keys():  # initialization
@@ -508,8 +507,7 @@ class LLMCalibrator(Calibrator):
                         else:
                             data = post_process_cache_data(self.batch_size, data, key)
                             if isinstance(data, torch.Tensor):
-                                self.inputs[name][key] = list(
-                                    torch.split(data, 1, dim=self.batch_dim))
+                                self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
                             else:
                                 self.inputs[name][key] = [data]
                     else:  # append cache inputs
@@ -536,9 +534,7 @@ class LLMCalibrator(Calibrator):
                             self.inputs[name][key].append(new_data)
                         else:
                             if isinstance(new_data, torch.Tensor):
-                                self.inputs[name][key].extend(
-                                    list(torch.split(new_data, 1, dim=self.batch_dim))
-                                )
+                                self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.batch_dim)))
                             else:
                                 self.inputs[name][key].append(new_data)
                 elif isinstance(kwargs[key], (str, bool, type(None))):
@@ -638,4 +634,3 @@ class LLMCalibrator(Calibrator):
         # Lock the last cache name after the first full forward pass.
         self.last_cache_name = name
         return True
-

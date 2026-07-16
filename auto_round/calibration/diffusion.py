@@ -20,6 +20,7 @@ and customises:
 - :meth:`should_stop` — always ``False`` so all denoising steps execute.
 - :meth:`wrap_block_forward` — convert positional → kwargs for diffusion blocks.
 """
+
 import inspect
 from typing import Optional
 
@@ -39,13 +40,12 @@ class DiffusionCalibrator(LLMCalibrator):
     """Calibrator for diffusion models (Stable Diffusion / FLUX / ...)."""
 
     # ── Overrides for diffusion-specific behaviour ─────────────────────────
-    def __init__(self,
-                compressor:BaseCompressor):
+    def __init__(self, compressor: BaseCompressor):
         super().__init__(compressor)
         self.pipe = compressor.pipe
-        self.guidance_scale =compressor.guidance_scale
+        self.guidance_scale = compressor.guidance_scale
         self.num_inference_steps = compressor.num_inference_steps
-        self.generator_seed = compressor.generator_seed # make sure pass
+        self.generator_seed = compressor.generator_seed  # make sure pass
 
     def should_stop(self, name: str) -> bool:
         """Diffusion models must run *all* denoising steps to collect enough inputs.
@@ -80,7 +80,6 @@ class DiffusionCalibrator(LLMCalibrator):
         if batch_size == 1:
             return image
         return [image.copy() for _ in range(batch_size)]
-
 
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
@@ -130,7 +129,7 @@ class DiffusionCalibrator(LLMCalibrator):
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         # Check if this is an I2V pipeline (needs calibration image)
         requires_image = False
-        if  hasattr(self, "_requires_calibration_image"):
+        if hasattr(self, "_requires_calibration_image"):
             image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
             if image_param is not None and image_param.default is inspect.Parameter.empty:
                 requires_image = True
@@ -191,7 +190,8 @@ class DiffusionCalibrator(LLMCalibrator):
             )
             if total_cnt < self.batch_size:
                 raise ValueError(
-                    f"valid samples is less than batch_size({self.batch_size})," " please adjust c.batch_size or seqlen."
+                    f"valid samples is less than batch_size({self.batch_size}),"
+                    " please adjust c.batch_size or seqlen."
                 )
             max_len = (total_cnt // self.batch_size) * self.batch_size
             for k, v in self.inputs.items():
