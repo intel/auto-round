@@ -30,7 +30,6 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-
 # ---------------------------------------------------------------------------
 # Per-architecture config builders
 # ---------------------------------------------------------------------------
@@ -46,9 +45,8 @@ def _torch_2_0_or_newer() -> bool:
     """``topk`` on 1-D tensors requires PyTorch >= 2.0; older versions
     raise for the dsa / glm4-moe routers that use it.  We skip those
     cases on old torch but still cover the others."""
-    from packaging.version import Version
-
     import torch
+    from packaging.version import Version
 
     return Version(torch.__version__) >= Version("2.0.0")
 

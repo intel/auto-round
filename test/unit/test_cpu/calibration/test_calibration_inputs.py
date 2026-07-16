@@ -29,9 +29,7 @@ class TestSplitInputs:
             "hidden_state_v2": torch.randn(2, 4),
             "attention_mask": torch.randn(2, 4),
         }
-        input_ids, input_others = split_inputs(
-            inputs, "input_ids", is_diffusion=True
-        )
+        input_ids, input_others = split_inputs(inputs, "input_ids", is_diffusion=True)
 
         assert "hidden_states" in input_ids
         assert "hidden_state_v2" in input_ids
@@ -60,9 +58,7 @@ class TestSplitInputs:
             "input_ids": torch.tensor([1, 2, 3]),
             "attention_mask": torch.randn(2, 4),
         }
-        result_ids, input_others = split_inputs(
-            inputs, "input_ids", is_diffusion=False
-        )
+        result_ids, input_others = split_inputs(inputs, "input_ids", is_diffusion=False)
 
         assert torch.equal(result_ids, torch.tensor([1, 2, 3]))
         assert "input_ids" not in input_others
@@ -71,9 +67,7 @@ class TestSplitInputs:
     def test_non_diffusion_missing_first_input(self):
         """Test non-diffusion returns None when first_input_name is absent."""
         inputs = {"attention_mask": torch.randn(2, 4)}
-        result_ids, input_others = split_inputs(
-            inputs, "input_ids", is_diffusion=False
-        )
+        result_ids, input_others = split_inputs(inputs, "input_ids", is_diffusion=False)
 
         assert result_ids is None
         assert "attention_mask" in input_others
@@ -81,9 +75,7 @@ class TestSplitInputs:
     def test_diffusion_empty_hidden_state(self):
         """Test diffusion returns empty dict when no hidden_state keys."""
         inputs = {"attention_mask": torch.randn(2, 4)}
-        input_ids, input_others = split_inputs(
-            inputs, "input_ids", is_diffusion=True
-        )
+        input_ids, input_others = split_inputs(inputs, "input_ids", is_diffusion=True)
 
         assert input_ids == {}
         assert "attention_mask" in input_others

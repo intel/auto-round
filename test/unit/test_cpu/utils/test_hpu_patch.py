@@ -36,7 +36,6 @@ from unittest import mock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixture: always start from a clean module cache for hpu_patch + patch modules
 # ---------------------------------------------------------------------------
@@ -49,9 +48,7 @@ def fresh_hpu_patch(monkeypatch):
     """
     # Drop any cached imports so the module re-runs its top-level code.
     for mod in list(sys.modules):
-        if mod == "auto_round.modeling.hpu_patch" or mod.startswith(
-            "auto_round.modeling.finegrained_fp8"
-        ):
+        if mod == "auto_round.modeling.hpu_patch" or mod.startswith("auto_round.modeling.finegrained_fp8"):
             monkeypatch.delitem(sys.modules, mod, raising=False)
     yield
 

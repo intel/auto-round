@@ -13,11 +13,12 @@
 # limitations under the License.
 """Tests for ``auto_round/export/export_to_autoround/utils.py``."""
 
+from dataclasses import fields
+
 import pytest
 
 from auto_round.export.export_to_autoround.utils import check_neq_config
 from auto_round.schemes import QuantizationScheme
-from dataclasses import fields
 
 
 class TestCheckNeqConfig:

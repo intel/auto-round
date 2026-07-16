@@ -1,3 +1,5 @@
+from test.helpers import get_model_path, get_tiny_model, transformers_version
+
 import pytest
 import torch
 import transformers
@@ -9,8 +11,6 @@ from auto_round.utils.weight_handler import (
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
 )
-
-from test.helpers import get_model_path, get_tiny_model, transformers_version
 
 
 class TestCompressedTensor:

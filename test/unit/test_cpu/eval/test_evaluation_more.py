@@ -30,7 +30,6 @@ from auto_round.eval.evaluation import (
     simple_evaluate_user_model,
 )
 
-
 # ==============================================================================
 # _collect_model_floating_dtypes (additional tests)
 # ==============================================================================
@@ -235,7 +234,14 @@ class TestSimpleEvaluateUserModel:
 
     def test_creates_hflm(self):
         mock_hflm = MagicMock()
-        with patch.dict("sys.modules", {"lm_eval": MagicMock(), "lm_eval.models": MagicMock(), "lm_eval.models.huggingface": MagicMock(HFLM=mock_hflm)}):
+        with patch.dict(
+            "sys.modules",
+            {
+                "lm_eval": MagicMock(),
+                "lm_eval.models": MagicMock(),
+                "lm_eval.models.huggingface": MagicMock(HFLM=mock_hflm),
+            },
+        ):
             with patch("lm_eval.simple_evaluate", return_value={"results": {}}) as mock_eval:
                 model = MagicMock()
                 tokenizer = MagicMock()

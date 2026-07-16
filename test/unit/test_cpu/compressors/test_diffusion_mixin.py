@@ -91,9 +91,9 @@ class TestRequiresCalibrationImage:
                 self.model_context = SimpleNamespace(pipe=pipe)
 
         comp = MockCompressor()
-        with patch.object(inspect, "signature", return_value=MagicMock(
-            parameters={"prompt": MagicMock(default="test")}
-        )):
+        with patch.object(
+            inspect, "signature", return_value=MagicMock(parameters={"prompt": MagicMock(default="test")})
+        ):
             result = comp._requires_calibration_image()
         assert result is False
 
@@ -104,12 +104,16 @@ class TestRequiresCalibrationImage:
                 self.model_context = SimpleNamespace(pipe=pipe)
 
         comp = MockCompressor()
-        with patch.object(inspect, "signature", return_value=MagicMock(
-            parameters={
-                "prompt": MagicMock(default="test"),
-                "image": MagicMock(default=inspect.Parameter.empty),
-            }
-        )):
+        with patch.object(
+            inspect,
+            "signature",
+            return_value=MagicMock(
+                parameters={
+                    "prompt": MagicMock(default="test"),
+                    "image": MagicMock(default=inspect.Parameter.empty),
+                }
+            ),
+        ):
             result = comp._requires_calibration_image()
         assert result is True
 
@@ -124,9 +128,9 @@ class TestGetCalibrationImage:
                 self.model_context = SimpleNamespace(pipe=pipe)
 
         comp = MockCompressor()
-        with patch.object(inspect, "signature", return_value=MagicMock(
-            parameters={"prompt": MagicMock(default="test")}
-        )):
+        with patch.object(
+            inspect, "signature", return_value=MagicMock(parameters={"prompt": MagicMock(default="test")})
+        ):
             image = comp._get_calibration_image(1)
         assert image is not None
 
@@ -137,9 +141,9 @@ class TestGetCalibrationImage:
                 self.model_context = SimpleNamespace(pipe=pipe)
 
         comp = MockCompressor()
-        with patch.object(inspect, "signature", return_value=MagicMock(
-            parameters={"prompt": MagicMock(default="test")}
-        )):
+        with patch.object(
+            inspect, "signature", return_value=MagicMock(parameters={"prompt": MagicMock(default="test")})
+        ):
             images = comp._get_calibration_image(3)
         assert isinstance(images, list)
         assert len(images) == 3

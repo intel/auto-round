@@ -1,5 +1,6 @@
 import copy
 import shutil
+from test.helpers import get_model_path, save_tiny_model
 
 import pytest
 import torch
@@ -7,8 +8,6 @@ import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path, save_tiny_model
 
 
 class TestAutoRound:

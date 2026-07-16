@@ -1,13 +1,12 @@
 import shutil
 import sys
+from test.helpers import evaluate_accuracy, get_model_path
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import evaluate_accuracy, get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])

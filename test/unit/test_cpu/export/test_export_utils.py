@@ -34,7 +34,6 @@ from auto_round.export.utils import (
     save_pretrained_artifact,
 )
 
-
 # ==============================================================================
 # save_pretrained_artifact
 # ==============================================================================
@@ -362,6 +361,7 @@ class TestGetAutogptqPackingQlinear:
 
     def test_returns_quant_linear(self):
         from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
+
         result = get_autogptq_packing_qlinear("cuda", bits=4)
         assert result is QuantLinear
 

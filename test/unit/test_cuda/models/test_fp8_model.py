@@ -1,5 +1,6 @@
 import os
 import shutil
+from test.helpers import evaluate_accuracy, generate_prompt, get_model_path, get_tiny_model, transformers_version
 from unittest.mock import patch
 
 import pytest
@@ -14,8 +15,6 @@ from auto_round.utils.weight_handler import (
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
 )
-
-from test.helpers import evaluate_accuracy, generate_prompt, get_model_path, get_tiny_model, transformers_version
 
 DEVICE_CAPABILITY = torch.cuda.get_device_capability()
 

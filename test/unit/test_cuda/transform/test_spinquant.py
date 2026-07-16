@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import shutil
+from test.helpers import generate_prompt, get_model_path
 
 import pytest
 import torch
@@ -24,8 +25,6 @@ from auto_round.algorithms.transforms.spinquant.preprocessor import (
     SpinQuantPreprocessor,
     remove_spinquant_hooks_from_model,
 )
-
-from test.helpers import generate_prompt, get_model_path
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Config Tests

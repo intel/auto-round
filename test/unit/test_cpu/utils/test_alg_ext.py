@@ -1,6 +1,6 @@
-from auto_round import AutoRound
-
 from test.helpers import qwen_name_or_path
+
+from auto_round import AutoRound
 
 
 class TestAlgExt:

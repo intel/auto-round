@@ -39,7 +39,6 @@ from auto_round.data_type.nvfp import (
     search_nvfp4_scale,
 )
 
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -73,12 +72,8 @@ class TestCastToFp4:
 
     def test_basic_quantization(self):
         """Validate the ground-truth mapping from the vLLM reference test."""
-        data = torch.tensor(
-            [0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1, 6.0, 6.2, 8.9]
-        )
-        gt = torch.tensor(
-            [0.0, 0.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0, 6.0, 6.0, 6.0]
-        )
+        data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1, 6.0, 6.2, 8.9])
+        gt = torch.tensor([0.0, 0.0, 0.5, 1.0, 1.0, 1.5, 2.0, 2.0, 3.0, 4.0, 4.0, 6.0, 6.0, 6.0, 6.0])
         out = cast_to_fp4(data)
         assert torch.sum(torch.abs(out - gt)) < 1e-6
 
@@ -401,7 +396,7 @@ class TestFloatToE5m3Frexp:
 
     def test_subnormal(self):
         # A small subnormal value: 2**-15 (below 2**-14)
-        x = torch.tensor([2 ** -15], dtype=torch.float32)
+        x = torch.tensor([2**-15], dtype=torch.float32)
         out = float_to_e5m3_frexp(x)
         assert out.dtype == torch.uint8
 
@@ -430,7 +425,7 @@ class TestE5m3ToFloatTensor:
         # m=4 -> 4/8 * 2^-14 = 2^-15
         e = torch.tensor([0x04], dtype=torch.uint8)
         x = e5m3_to_float_tensor(e)
-        assert x.item() == pytest.approx(2 ** -15, rel=1e-5)
+        assert x.item() == pytest.approx(2**-15, rel=1e-5)
 
     def test_normal_decode(self):
         # Exponent 15 (=0x0F), mantissa 0 -> 1.0 * 2^(15-15) = 1.0
@@ -478,10 +473,10 @@ class TestUe5m3FrexpReference:
                 0.0,
                 1e-38,
                 2 ** (-17),
-                (2 ** -14) * 0.875,
-                2 ** -14,
-                2 ** -13,
-                2 ** -6,
+                (2**-14) * 0.875,
+                2**-14,
+                2**-13,
+                2**-6,
                 1e-6,
                 2.7657e-05,
                 0.1,

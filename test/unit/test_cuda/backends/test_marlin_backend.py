@@ -1,4 +1,5 @@
 import shutil
+from test.helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, model_infer
 
 import pytest
 import torch
@@ -7,7 +8,6 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import require_gptqmodel
-from test.helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, model_infer
 
 
 class TestAutoRoundMarlinBackend:

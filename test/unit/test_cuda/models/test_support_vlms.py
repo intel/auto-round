@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+from test.helpers import get_model_path, transformers_version
 
 import pytest
 import requests
@@ -10,7 +11,6 @@ from PIL import Image
 from transformers import AutoRoundConfig  # # must import for auto-round format
 
 from ...envs import require_gptqmodel, require_package_version_ut, require_vlm_env
-from test.helpers import get_model_path, transformers_version
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])

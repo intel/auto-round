@@ -34,19 +34,23 @@ import torch.nn as nn
 class TestFlattenNames:
     def test_flat_already(self):
         from auto_round.utils.offload import OffloadManager
+
         assert OffloadManager._flatten_names(["a", "b", "c"]) == ["a", "b", "c"]
 
     def test_nested_one_level(self):
         from auto_round.utils.offload import OffloadManager
+
         result = OffloadManager._flatten_names([["a", "b"], "c", ["d"]])
         assert result == ["a", "b", "c", "d"]
 
     def test_empty_input(self):
         from auto_round.utils.offload import OffloadManager
+
         assert OffloadManager._flatten_names([]) == []
 
     def test_deeply_nested(self):
         from auto_round.utils.offload import OffloadManager
+
         result = OffloadManager._flatten_names([["a", ["b", "c"]], "d"])
         # Inner ["b", "c"] is itself a list, so it gets treated as a single item;
         # the helper only handles one level of nesting
@@ -59,6 +63,7 @@ class TestFlattenNames:
 class TestOffloadManagerInit:
     def test_default_construction(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager()
         assert mgr.mode == "offload"
         assert mgr.enabled is True
@@ -67,17 +72,20 @@ class TestOffloadManagerInit:
 
     def test_disabled_construction(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager(enabled=False)
         assert mgr.enabled is False
 
     def test_clean_mode(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager(mode="clean", model_dir="/some/dir")
         assert mgr.mode == "clean"
         assert mgr.model_dir == "/some/dir"
 
     def test_cache_numel_flag(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager(cache_numel=True)
         assert mgr.cache_numel is True
 
@@ -88,11 +96,13 @@ class TestOffloadManagerInit:
 class TestOffloadManagerStateQueries:
     def test_has_returns_false_initially(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager()
         assert mgr.has("any.module") is False
 
     def test_has_offload_mode_returns_true_after_save(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager(mode="offload")
         mgr._saved["model.layer"] = {"save_path": "/tmp/foo"}
         assert mgr.has("model.layer") is True
@@ -100,6 +110,7 @@ class TestOffloadManagerStateQueries:
 
     def test_has_clean_mode_always_false(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager(mode="clean")
         mgr._saved["model.layer"] = {"save_path": "/tmp/foo"}  # pretend
         # In clean mode, has() always returns False
@@ -107,6 +118,7 @@ class TestOffloadManagerStateQueries:
 
     def test_reset_clears_saved(self):
         from auto_round.utils.offload import OffloadManager
+
         mgr = OffloadManager(mode="offload")
         mgr._saved["a"] = {"save_path": "/tmp/a"}
         mgr._current_loaded = "a"
@@ -123,12 +135,14 @@ class TestOffloadManagerStateQueries:
 class TestEstimateModuleSize:
     def test_empty_module(self):
         from auto_round.utils.offload import OffloadManager
+
         m = nn.Module()
         size = OffloadManager.estimate_module_size_gb(m)
         assert size == 0.0
 
     def test_small_module(self):
         from auto_round.utils.offload import OffloadManager
+
         m = nn.Linear(10, 10)  # 110 fp32 params
         size = OffloadManager.estimate_module_size_gb(m)
         # 110 * 4 bytes = 440 bytes; in GB = 440 / 1024^3
@@ -142,6 +156,7 @@ class TestEstimateModuleSize:
 class TestClearModuleWeights:
     def test_clear_sets_weight_to_empty(self):
         from auto_round.utils.offload import _clear_module_weights
+
         layer = nn.Linear(4, 4)
         assert layer.weight.numel() == 16
         _clear_module_weights(layer)
@@ -149,6 +164,7 @@ class TestClearModuleWeights:
 
     def test_clear_caches_numel_and_shape(self):
         from auto_round.utils.offload import _clear_module_weights
+
         layer = nn.Linear(4, 4)
         _clear_module_weights(layer, cache_numel=True)
         assert layer._cached_weight_numel == 16
@@ -156,6 +172,7 @@ class TestClearModuleWeights:
 
     def test_clear_none_is_noop(self):
         from auto_round.utils.offload import _clear_module_weights
+
         # Should not raise
         _clear_module_weights(None)
 
@@ -175,6 +192,7 @@ class TestClearModuleWeights:
 
     def test_clear_with_restorable_filter(self):
         from auto_round.utils.offload import _clear_module_weights
+
         layer = nn.Linear(4, 4)
         # Layer has both weight and bias; only clear weight
         _clear_module_weights(layer, restorable_params={"weight"})
@@ -184,6 +202,7 @@ class TestClearModuleWeights:
 
     def test_clear_with_restorable_excluding_weight(self):
         from auto_round.utils.offload import _clear_module_weights
+
         layer = nn.Linear(4, 4)
         # Restorable set does NOT include weight -> weight must remain
         _clear_module_weights(layer, restorable_params={"bias"})
@@ -228,6 +247,7 @@ class TestLoadStateDictIntoModule:
 class TestResolveModelDir:
     def test_existing_directory_returned_as_is(self, tmp_path):
         from auto_round.utils.offload import _resolve_model_dir
+
         assert _resolve_model_dir(str(tmp_path)) == str(tmp_path)
 
     def test_nonexistent_path_falls_through(self, tmp_path):

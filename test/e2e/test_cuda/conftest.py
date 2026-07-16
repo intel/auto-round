@@ -29,16 +29,16 @@ run in a weekly scheduled CI job, not on every PR.
 import gc
 import os
 import shutil
+
+# Make sure the repo root is importable so `from test.helpers import ...`
+# works when pytest is invoked from the repo root with a relative path.
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
 import pytest
 import torch
-
-# Make sure the repo root is importable so `from test.helpers import ...`
-# works when pytest is invoked from the repo root with a relative path.
-import sys
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _REPO_ROOT not in sys.path:

@@ -25,7 +25,6 @@ from auto_round.algorithms.transforms.spinquant.training import (
     spinquant_loss_fn,
 )
 
-
 # ==============================================================================
 # compute_rotation_loss
 # ==============================================================================
@@ -138,41 +137,31 @@ class TestCheckOrthogonality:
 
     def test_random_matrix_positive_deviation(self):
         model = nn.Module()
-        model.register_parameter(
-            "spinquant_R2", nn.Parameter(torch.randn(4, 4), requires_grad=True)
-        )
+        model.register_parameter("spinquant_R2", nn.Parameter(torch.randn(4, 4), requires_grad=True))
         dev = check_orthogonality(model)
         assert dev > 0
 
     def test_skips_non_trainable_params(self):
         model = nn.Module()
-        model.register_parameter(
-            "spinquant_R3", nn.Parameter(torch.randn(4, 4), requires_grad=False)
-        )
+        model.register_parameter("spinquant_R3", nn.Parameter(torch.randn(4, 4), requires_grad=False))
         dev = check_orthogonality(model)
         assert dev == 0.0
 
     def test_skips_non_rotation_params(self):
         model = nn.Module()
-        model.register_parameter(
-            "other_param", nn.Parameter(torch.randn(4, 4), requires_grad=True)
-        )
+        model.register_parameter("other_param", nn.Parameter(torch.randn(4, 4), requires_grad=True))
         dev = check_orthogonality(model)
         assert dev == 0.0
 
     def test_skips_empty_params(self):
         model = nn.Module()
-        model.register_parameter(
-            "spinquant_R4", nn.Parameter(torch.tensor([]), requires_grad=True)
-        )
+        model.register_parameter("spinquant_R4", nn.Parameter(torch.tensor([]), requires_grad=True))
         dev = check_orthogonality(model)
         assert dev == 0.0
 
     def test_skips_non_square_params(self):
         model = nn.Module()
-        model.register_parameter(
-            "spinquant_R5", nn.Parameter(torch.randn(4, 8), requires_grad=True)
-        )
+        model.register_parameter("spinquant_R5", nn.Parameter(torch.randn(4, 8), requires_grad=True))
         dev = check_orthogonality(model)
         assert dev == 0.0
 
@@ -207,25 +196,19 @@ class TestCreateDualOptimizer:
 
     def test_rotation_params_creates_optimizer(self):
         model = nn.Module()
-        model.register_parameter(
-            "spinquant_R1", nn.Parameter(torch.eye(4), requires_grad=True)
-        )
+        model.register_parameter("spinquant_R1", nn.Parameter(torch.eye(4), requires_grad=True))
         result = create_dual_optimizer(model, lr=1e-4, smooth_lr=1e-3)
         assert result is not None
 
     def test_smooth_values_creates_optimizer(self):
         model = nn.Module()
-        model.register_parameter(
-            "smooth_values", nn.Parameter(torch.ones(4), requires_grad=True)
-        )
+        model.register_parameter("smooth_values", nn.Parameter(torch.ones(4), requires_grad=True))
         result = create_dual_optimizer(model, lr=1e-4, smooth_lr=1e-3)
         assert result is not None
 
     def test_custom_lr(self):
         model = nn.Module()
-        model.register_parameter(
-            "spinquant_R1", nn.Parameter(torch.eye(4), requires_grad=True)
-        )
+        model.register_parameter("spinquant_R1", nn.Parameter(torch.eye(4), requires_grad=True))
         result = create_dual_optimizer(model, lr=1e-3)
         assert result is not None
 

@@ -19,7 +19,6 @@ from auto_round.modeling.fp8_quant import (
     oot_validate_environment,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -100,12 +99,8 @@ class TestOotReplaceWithFp8Linear:
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
             ):
-                with patch(
-                    "transformers.integrations.finegrained_fp8.logger"
-                ) as mock_logger:
-                    result = oot_replace_with_fp8_linear(
-                        model, quantization_config=config
-                    )
+                with patch("transformers.integrations.finegrained_fp8.logger") as mock_logger:
+                    result = oot_replace_with_fp8_linear(model, quantization_config=config)
                     assert result is model
                     assert mock_logger.warning.called
 
@@ -130,9 +125,7 @@ class TestOotReplaceWithFp8Linear:
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
                     return_value=False,
                 ):
-                    result = oot_replace_with_fp8_linear(
-                        model, quantization_config=config
-                    )
+                    result = oot_replace_with_fp8_linear(model, quantization_config=config)
                     # FP8Linear was called for each nn.Linear child.
                     assert result is model
 
@@ -169,9 +162,7 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch(
-            "transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture
-        ):
+        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
             with patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
@@ -200,9 +191,7 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch(
-            "transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture
-        ):
+        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
             with patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
@@ -211,9 +200,7 @@ class TestOotReplaceWithFp8Linear:
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
                     return_value=False,
                 ):
-                    oot_replace_with_fp8_linear(
-                        model, quantization_config=config
-                    )
+                    oot_replace_with_fp8_linear(model, quantization_config=config)
                     # At least one replacement happened.
                     assert len(captured_kwargs) >= 1
                     for kw in captured_kwargs:
@@ -233,9 +220,7 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch(
-            "transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture
-        ):
+        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
             with patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
@@ -244,9 +229,7 @@ class TestOotReplaceWithFp8Linear:
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
                     return_value=True,
                 ):
-                    oot_replace_with_fp8_linear(
-                        model, quantization_config=config
-                    )
+                    oot_replace_with_fp8_linear(model, quantization_config=config)
                     assert len(captured_kwargs) >= 1
                     for kw in captured_kwargs:
                         assert "has_bias" in kw
@@ -266,9 +249,7 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch(
-            "transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture
-        ):
+        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
             with patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
@@ -277,9 +258,7 @@ class TestOotReplaceWithFp8Linear:
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
                     return_value=False,
                 ):
-                    oot_replace_with_fp8_linear(
-                        model, quantization_config=config
-                    )
+                    oot_replace_with_fp8_linear(model, quantization_config=config)
                     assert len(captured_kwargs) >= 1
                     for kw in captured_kwargs:
                         assert kw.get("bias") is False
@@ -305,9 +284,7 @@ class TestOotReplaceWithFp8Linear:
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
                     return_value=True,
                 ):
-                    result = oot_replace_with_fp8_linear(
-                        model, quantization_config=config
-                    )
+                    result = oot_replace_with_fp8_linear(model, quantization_config=config)
                     assert result is model
 
 
@@ -323,9 +300,7 @@ class TestOotValidateEnvironment:
         """The patched validator must forward args/kwargs to the original."""
 
         mock_self = MagicMock()
-        with patch(
-            "auto_round.modeling.fp8_quant._orig_validate_environment"
-        ) as mock_orig:
+        with patch("auto_round.modeling.fp8_quant._orig_validate_environment") as mock_orig:
             oot_validate_environment(mock_self, "arg1", kwarg1="value1")
             mock_orig.assert_called_once_with(mock_self, "arg1", kwarg1="value1")
 
@@ -404,8 +379,9 @@ class TestApplyFp8ExpertReplacementPatch:
         ``replace_with_fp8_linear`` is replaced with our OOT function.
         """
 
-        import auto_round.modeling.fp8_quant as fp8q
         import transformers.integrations.finegrained_fp8 as upstream
+
+        import auto_round.modeling.fp8_quant as fp8q
 
         original = upstream.replace_with_fp8_linear
         try:
@@ -415,10 +391,7 @@ class TestApplyFp8ExpertReplacementPatch:
                     return_value=True,
                 ):
                     apply_fp8_expert_replacement_patch()
-                    assert (
-                        upstream.replace_with_fp8_linear
-                        is fp8q.oot_replace_with_fp8_linear
-                    )
+                    assert upstream.replace_with_fp8_linear is fp8q.oot_replace_with_fp8_linear
         finally:
             upstream.replace_with_fp8_linear = original
 
@@ -427,10 +400,11 @@ class TestApplyFp8ExpertReplacementPatch:
         to ``oot_validate_environment``.
         """
 
-        import auto_round.modeling.fp8_quant as fp8q
         from transformers.quantizers.quantizer_finegrained_fp8 import (
             FineGrainedFP8HfQuantizer,
         )
+
+        import auto_round.modeling.fp8_quant as fp8q
 
         original = FineGrainedFP8HfQuantizer.validate_environment
         try:
@@ -440,10 +414,7 @@ class TestApplyFp8ExpertReplacementPatch:
                     return_value=True,
                 ):
                     apply_fp8_expert_replacement_patch()
-                    assert (
-                        FineGrainedFP8HfQuantizer.validate_environment
-                        is fp8q.oot_validate_environment
-                    )
+                    assert FineGrainedFP8HfQuantizer.validate_environment is fp8q.oot_validate_environment
         finally:
             FineGrainedFP8HfQuantizer.validate_environment = original
 
@@ -489,9 +460,7 @@ class TestPatchBehaviorMatrix:
         "cuda_available, transformers_v5",
         [(True, True), (True, False), (False, True), (False, False)],
     )
-    def test_all_combinations_no_raise(
-        self, cuda_available, transformers_v5
-    ):
+    def test_all_combinations_no_raise(self, cuda_available, transformers_v5):
         """Every combination of gating conditions must not raise."""
 
         with patch("torch.cuda.is_available", return_value=cuda_available):

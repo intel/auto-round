@@ -16,9 +16,10 @@
 
 import json
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
 import torch
-from unittest.mock import MagicMock, patch
 
 
 class TestGetBlockNames:
@@ -26,8 +27,9 @@ class TestGetBlockNames:
 
     def test_opt_model_block_names(self):
         """Test get_block_names with OPT model."""
-        from auto_round.utils.model import get_block_names
         import transformers
+
+        from auto_round.utils.model import get_block_names
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.num_hidden_layers = 2
@@ -40,8 +42,9 @@ class TestGetBlockNames:
 
     def test_qwen_model_block_names(self):
         """Test get_block_names with Qwen model (mocked)."""
-        from auto_round.utils.model import get_block_names
         import transformers
+
+        from auto_round.utils.model import get_block_names
 
         # Create a minimal mock config that has the required attributes
         mock_config = MagicMock()
@@ -115,8 +118,9 @@ class TestGetLmHeadName:
 
     def test_opt_model_lm_head_name(self):
         """Test get_lm_head_name with OPT model."""
-        from auto_round.utils.model import get_lm_head_name
         import transformers
+
+        from auto_round.utils.model import get_lm_head_name
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.num_hidden_layers = 2
@@ -131,8 +135,9 @@ class TestGetExpertLinearNames:
 
     def test_qwen_moe_expert_linear_names(self):
         """Test get_expert_linear_names with Qwen MoE module."""
-        from auto_round.utils.model import get_expert_linear_names
         from transformers.models.qwen2_moe.modeling_qwen2_moe import Qwen2MoeSparseMoeBlock
+
+        from auto_round.utils.model import get_expert_linear_names
 
         # Create a mock module that looks like Qwen2MoeSparseMoeBlock
         mock_module = MagicMock()
@@ -332,8 +337,9 @@ class TestResolveModelType:
 
     def test_resolve_opt_model_type(self):
         """Test resolve_model_type with OPT model."""
-        from auto_round.utils.model import resolve_model_type
         import transformers
+
+        from auto_round.utils.model import resolve_model_type
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.num_hidden_layers = 2
@@ -531,8 +537,9 @@ class TestCleanModuleParameter:
 
     def test_clean_weight_parameter(self):
         """Test clean_module_parameter with Linear model weight."""
-        from auto_round.utils.model import clean_module_parameter
         import torch.nn as nn
+
+        from auto_round.utils.model import clean_module_parameter
 
         linear = nn.Linear(10, 10)
         # Ensure weight has data
@@ -547,8 +554,9 @@ class TestCleanModuleParameter:
 
     def test_clean_bias_parameter(self):
         """Test clean_module_parameter with Linear model bias."""
-        from auto_round.utils.model import clean_module_parameter
         import torch.nn as nn
+
+        from auto_round.utils.model import clean_module_parameter
 
         linear = nn.Linear(10, 10)
         if linear.bias is not None:
@@ -565,8 +573,9 @@ class TestCleanModuleParameter:
 
     def test_clean_buffer(self):
         """Test clean_module_parameter with a buffer."""
-        from auto_round.utils.model import clean_module_parameter
         import torch.nn as nn
+
+        from auto_round.utils.model import clean_module_parameter
 
         class MockModuleWithBuffer(nn.Module):
             def __init__(self):
@@ -776,9 +785,7 @@ class TestCheckStartWithBlockName:
         """Test check_start_with_block_name with multiple block names."""
         from auto_round.utils.model import check_start_with_block_name
 
-        result = check_start_with_block_name(
-            "model.decoder.layers.0", ["model.decoder.layers", "model.encoder.layers"]
-        )
+        result = check_start_with_block_name("model.decoder.layers.0", ["model.decoder.layers", "model.encoder.layers"])
         assert result is True
 
 
@@ -803,8 +810,9 @@ class TestIsMoeLayer:
 
     def test_regular_linear_layer(self):
         """Test is_moe_layer with regular Linear layer."""
-        from auto_round.utils.model import is_moe_layer
         import torch.nn as nn
+
+        from auto_round.utils.model import is_moe_layer
 
         linear = nn.Linear(10, 10)
         assert is_moe_layer(linear) is False
@@ -867,8 +875,9 @@ class TestSetAttr:
 
     def test_set_existing_attribute(self):
         """Test set_attr sets existing attribute correctly."""
-        from auto_round.utils.model import set_attr
         import torch.nn as nn
+
+        from auto_round.utils.model import set_attr
 
         # Use a real model where we can set an attribute
         model = nn.Linear(10, 10)
@@ -883,8 +892,9 @@ class TestGetModule:
 
     def test_get_existing_submodule(self):
         """Test get_module with existing submodule."""
-        from auto_round.utils.model import get_module
         import torch.nn as nn
+
+        from auto_round.utils.model import get_module
 
         model = nn.Sequential(nn.Linear(10, 10))
         result = get_module(model, "0")
@@ -893,8 +903,9 @@ class TestGetModule:
 
     def test_get_missing_submodule(self):
         """Test get_module with missing submodule returns None."""
-        from auto_round.utils.model import get_module
         import torch.nn as nn
+
+        from auto_round.utils.model import get_module
 
         model = nn.Linear(10, 10)
         result = get_module(model, "nonexistent")
@@ -906,8 +917,9 @@ class TestSetModule:
 
     def test_set_new_module(self):
         """Test set_module sets new module correctly."""
-        from auto_round.utils.model import set_module
         import torch.nn as nn
+
+        from auto_round.utils.model import set_module
 
         model = nn.Sequential(nn.Linear(10, 10))
         new_linear = nn.Linear(10, 10)
@@ -920,8 +932,9 @@ class TestGetLayerFeatures:
 
     def test_linear_layer(self):
         """Test get_layer_features with Linear layer."""
-        from auto_round.utils.model import get_layer_features
         import torch.nn as nn
+
+        from auto_round.utils.model import get_layer_features
 
         linear = nn.Linear(10, 20)
         in_features, out_features = get_layer_features(linear)
@@ -930,8 +943,9 @@ class TestGetLayerFeatures:
 
     def test_embedding_layer(self):
         """Test get_layer_features with Embedding layer."""
-        from auto_round.utils.model import get_layer_features
         import torch.nn as nn
+
+        from auto_round.utils.model import get_layer_features
 
         embedding = nn.Embedding(100, 50)
         num_embeddings, embedding_dim = get_layer_features(embedding)
@@ -985,8 +999,9 @@ class TestUnsupportedMetaDevice:
 
     def test_model_with_all_params_same_device(self):
         """Test unsupported_meta_device returns False when all params on same device."""
-        from auto_round.utils.model import unsupported_meta_device
         import torch.nn as nn
+
+        from auto_round.utils.model import unsupported_meta_device
 
         model = nn.Linear(10, 10)
         result = unsupported_meta_device(model)
@@ -1071,8 +1086,9 @@ class TestIsPureTextModel:
 
     def test_opt_model_is_pure_text(self):
         """Test OPT model is identified as pure text."""
-        from auto_round.utils.model import is_pure_text_model
         import transformers
+
+        from auto_round.utils.model import is_pure_text_model
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.num_hidden_layers = 2
@@ -1086,9 +1102,9 @@ class TestIsGgufModel:
 
     def test_gguf_file_path(self):
         """Test is_gguf_model with .gguf file path."""
-        from auto_round.utils.model import is_gguf_model
         import tempfile
-        import os
+
+        from auto_round.utils.model import is_gguf_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             gguf_path = os.path.join(tmpdir, "model.gguf")
@@ -1100,9 +1116,9 @@ class TestIsGgufModel:
 
     def test_gguf_directory(self):
         """Test is_gguf_model with directory containing .gguf files."""
-        from auto_round.utils.model import is_gguf_model
         import tempfile
-        import os
+
+        from auto_round.utils.model import is_gguf_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a fake .gguf file marker
@@ -1115,9 +1131,9 @@ class TestIsDiffusionModel:
 
     def test_string_path_with_config(self):
         """Test is_diffusion_model with string path that has config."""
-        from auto_round.utils.model import is_diffusion_model
         import tempfile
-        import os
+
+        from auto_round.utils.model import is_diffusion_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = os.path.join(tmpdir, "config.json")
@@ -1133,8 +1149,9 @@ class TestDetectModelType:
 
     def test_llm_model_type(self):
         """Test detect_model_type returns 'llm' for regular LLM."""
-        from auto_round.utils.model import detect_model_type
         import transformers
+
+        from auto_round.utils.model import detect_model_type
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.num_hidden_layers = 2
@@ -1224,8 +1241,9 @@ class TestCheckSeqLenCompatible:
 
     def test_model_exceeds_max_position_embeddings(self):
         """Test check_seqlen_compatible raises when input exceeds max_position_embeddings."""
-        from auto_round.utils.model import check_seqlen_compatible
         import transformers
+
+        from auto_round.utils.model import check_seqlen_compatible
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.max_position_embeddings = 2048
@@ -1348,9 +1366,9 @@ class TestConfigSavePretrained:
 
     def test_save_to_directory(self):
         """Test config_save_pretrained saves to directory."""
-        from auto_round.utils.model import config_save_pretrained
         import tempfile
-        import os
+
+        from auto_round.utils.model import config_save_pretrained
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {"model_type": "opt"}
@@ -1365,9 +1383,9 @@ class TestRenameWeightsFiles:
 
     def test_rename_single_safetensor(self):
         """Test rename_weights_files with single safetensor file."""
-        from auto_round.utils.model import rename_weights_files
         import tempfile
-        import os
+
+        from auto_round.utils.model import rename_weights_files
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a placeholder file
@@ -1386,8 +1404,9 @@ class TestHookNgramEmbeddingsOnCpu:
 
     def test_model_without_ngram_embeddings(self):
         """Test hook_ngram_embeddings_on_cpu with regular model."""
-        from auto_round.utils.model import hook_ngram_embeddings_on_cpu
         import transformers
+
+        from auto_round.utils.model import hook_ngram_embeddings_on_cpu
 
         config = transformers.AutoConfig.from_pretrained("facebook/opt-125m")
         config.num_hidden_layers = 2
@@ -1403,8 +1422,9 @@ class TestMvModuleFromGpu:
 
     def test_move_module_to_cpu(self):
         """Test mv_module_from_gpu moves module to cpu."""
-        from auto_round.utils.model import mv_module_from_gpu
         import torch.nn as nn
+
+        from auto_round.utils.model import mv_module_from_gpu
 
         linear = nn.Linear(10, 10)
         result = mv_module_from_gpu(linear)
@@ -1416,8 +1436,9 @@ class TestSafeDeviceMoveWithMetaHandling:
 
     def test_move_model_to_cpu(self):
         """Test safe_device_move_with_meta_handling moves model to cpu."""
-        from auto_round.utils.model import safe_device_move_with_meta_handling
         import torch.nn as nn
+
+        from auto_round.utils.model import safe_device_move_with_meta_handling
 
         model = nn.Linear(10, 10)
         result = safe_device_move_with_meta_handling(model, "cpu")
@@ -1429,8 +1450,9 @@ class TestIsMoeModel:
 
     def test_regular_model_returns_false(self):
         """Test is_moe_model with non-MoE model returns False."""
-        from auto_round.utils.model import is_moe_model
         import torch.nn as nn
+
+        from auto_round.utils.model import is_moe_model
 
         model = nn.Linear(10, 10)
         result = is_moe_model(model)
@@ -1442,10 +1464,10 @@ class TestFindLayersFromConfig:
 
     def test_find_layers_from_local_config(self):
         """Test find_layers_from_config with local config directory."""
-        from auto_round.utils.model import find_layers_from_config
-        import tempfile
-        import os
         import json
+        import tempfile
+
+        from auto_round.utils.model import find_layers_from_config
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {

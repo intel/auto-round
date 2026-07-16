@@ -120,9 +120,7 @@ class TestBumpDynamoCacheLimitDetailed:
         from auto_round.utils.device import _bump_dynamo_cache_limit
 
         mock_cfg = MagicMock(spec=[])  # no attrs at all
-        with patch.dict(sys.modules, {"torch._dynamo.config": mock_cfg}), patch(
-            "torch._dynamo.config", mock_cfg
-        ):
+        with patch.dict(sys.modules, {"torch._dynamo.config": mock_cfg}), patch("torch._dynamo.config", mock_cfg):
             # Should not raise even if all attrs are absent.
             _bump_dynamo_cache_limit(min_size=64)
 
@@ -134,9 +132,7 @@ class TestBumpDynamoCacheLimitDetailed:
             cache_size_limit = 1
 
         mock_cfg = _Cfg()
-        with patch.dict(sys.modules, {"torch._dynamo.config": mock_cfg}), patch(
-            "torch._dynamo.config", mock_cfg
-        ):
+        with patch.dict(sys.modules, {"torch._dynamo.config": mock_cfg}), patch("torch._dynamo.config", mock_cfg):
             _bump_dynamo_cache_limit(min_size=128)
             assert mock_cfg.cache_size_limit == 128
 
@@ -150,9 +146,7 @@ class TestBumpDynamoCacheLimitDetailed:
             recompile_limit = 1000
 
         mock_cfg = _Cfg()
-        with patch.dict(sys.modules, {"torch._dynamo.config": mock_cfg}), patch(
-            "torch._dynamo.config", mock_cfg
-        ):
+        with patch.dict(sys.modules, {"torch._dynamo.config": mock_cfg}), patch("torch._dynamo.config", mock_cfg):
             _bump_dynamo_cache_limit(min_size=16)
             # Larger existing value should be preserved.
             assert mock_cfg.cache_size_limit == 1000
@@ -405,9 +399,7 @@ class TestDispatchModelBlockWise:
 
         model = nn.Sequential(nn.Linear(4, 4))
         # Use a mocked device_map -> only one device -> short-circuit branch.
-        with patch(
-            "auto_round.utils.device.parse_available_devices", return_value=["cpu"]
-        ) as parsed:
+        with patch("auto_round.utils.device.parse_available_devices", return_value=["cpu"]) as parsed:
             result = dispatch_model_block_wise(model, device_map="cpu")
             assert result is model
             parsed.assert_called_once_with("cpu")
@@ -416,9 +408,7 @@ class TestDispatchModelBlockWise:
         from auto_round.utils.device import dispatch_model_block_wise
 
         model = MagicMock(spec=nn.Module)
-        with patch(
-            "auto_round.utils.device.parse_available_devices", return_value=["cpu"]
-        ):
+        with patch("auto_round.utils.device.parse_available_devices", return_value=["cpu"]):
             dispatch_model_block_wise(model, device_map="cpu")
             # Short-circuit path requires the model.to(target_device) call.
             model.to.assert_called_once_with("cpu")
@@ -437,9 +427,7 @@ class TestDispatchModelBlockWise:
             return_value=["cpu", "cpu"],
         ), patch(
             "auto_round.utils.device.get_max_memory", return_value={"cpu": 1024}
-        ), patch(
-            "auto_round.utils.device.get_balanced_memory", return_value={"cpu": 512}
-        ), patch(
+        ), patch("auto_round.utils.device.get_balanced_memory", return_value={"cpu": 512}), patch(
             "auto_round.utils.device.infer_auto_device_map",
             return_value={"0": "cpu"},
         ) as mock_infer, patch(
@@ -462,9 +450,7 @@ class TestDispatchModelByAllAvailableDevices:
         from auto_round.utils.device import dispatch_model_by_all_available_devices
 
         model = MagicMock(spec=nn.Module)
-        with patch(
-            "auto_round.utils.device.parse_available_devices", return_value=["cpu"]
-        ):
+        with patch("auto_round.utils.device.parse_available_devices", return_value=["cpu"]):
             result = dispatch_model_by_all_available_devices(model, device_map="cpu")
         # Single-device branch calls model.to(...) and returns it.
         assert result is model
@@ -475,9 +461,7 @@ class TestDispatchModelByAllAvailableDevices:
         from auto_round.utils.device import dispatch_model_by_all_available_devices
 
         model = MagicMock(spec=nn.Module)
-        with patch(
-            "auto_round.utils.device.get_balanced_memory", return_value={0: 1024}
-        ) as balanced, patch(
+        with patch("auto_round.utils.device.get_balanced_memory", return_value={0: 1024}) as balanced, patch(
             "auto_round.utils.device.infer_auto_device_map", return_value={"0": "cpu"}
         ), patch("auto_round.utils.device.dispatch_model", return_value="AUTO_MODEL"):
             with patch(
@@ -494,9 +478,7 @@ class TestDispatchModelByAllAvailableDevices:
         from auto_round.utils.device import dispatch_model_by_all_available_devices
 
         model = MagicMock(spec=nn.Module)
-        with patch(
-            "auto_round.utils.device.parse_available_devices", return_value=["cpu"]
-        ):
+        with patch("auto_round.utils.device.parse_available_devices", return_value=["cpu"]):
             dispatch_model_by_all_available_devices(model, device_map=None)
         # Should resolve to single-device branch.
         model.to.assert_called_once()
@@ -512,9 +494,7 @@ class TestSetAvgAutoDeviceMap:
         from auto_round.utils.device import set_avg_auto_device_map
 
         model = nn.Sequential(nn.Linear(4, 4))
-        with patch(
-            "auto_round.utils.device.parse_available_devices", return_value=["cpu"]
-        ):
+        with patch("auto_round.utils.device.parse_available_devices", return_value=["cpu"]):
             # Should not raise.  Single-device path is a no-op.
             set_avg_auto_device_map(model, device_map="cpu")
         # No tuning_device attribute should have been added.
@@ -570,9 +550,7 @@ class TestParseAvailableDevicesExtra:
     def test_numeric_string_in_device_list(self):
         from auto_round.utils.device import parse_available_devices
 
-        with patch(
-            "auto_round.utils.device.get_available_device_types", return_value=["cpu"]
-        ):
+        with patch("auto_round.utils.device.get_available_device_types", return_value=["cpu"]):
             # Numeric tokens in a list - device_types=["cpu"] -> cpu
             result = parse_available_devices("0")
             assert result == ["cpu"]
@@ -581,9 +559,7 @@ class TestParseAvailableDevicesExtra:
         """Dict-like strings like ``transformer:0,lm_head:1`` are parsed."""
         from auto_round.utils.device import parse_available_devices
 
-        with patch(
-            "auto_round.utils.device.get_available_device_types", return_value=["cpu"]
-        ):
+        with patch("auto_round.utils.device.get_available_device_types", return_value=["cpu"]):
             result = parse_available_devices("transformer:0,lm_head:1")
             # The pair parsing branch should produce 2 entries whose "values"
             # are the device indexes (with type prefix swapped to cpu).
@@ -628,9 +604,7 @@ class TestMemoryMonitor:
         m = MemoryMonitor()
         m.enabled = True
         prior = m.peak_ram
-        with patch(
-            "auto_round.utils.device.get_current_device_manager"
-        ) as mock_mgr_cls:
+        with patch("auto_round.utils.device.get_current_device_manager") as mock_mgr_cls:
             manager = MagicMock()
             manager.is_available.return_value = False
             manager.type = "cpu"
@@ -644,9 +618,7 @@ class TestMemoryMonitor:
         from auto_round.utils.device import MemoryMonitor
 
         m = MemoryMonitor()
-        with patch(
-            "auto_round.utils.device.get_current_device_manager"
-        ) as mock_mgr_cls:
+        with patch("auto_round.utils.device.get_current_device_manager") as mock_mgr_cls:
             manager = MagicMock()
             manager.is_available.return_value = False
             manager.type = "cpu"
@@ -865,9 +837,9 @@ class TestGetMajorDeviceExtended:
     """Additional ``get_major_device`` edge cases."""
 
     def test_none_returns_string(self):
-        from auto_round.utils.device import parse_available_devices  # noqa: F401
         # Already covered by device_manager tests, but ensure it imports
         # from device.py module too (function is re-exported).
+        from auto_round.utils.device import parse_available_devices  # noqa: F401
         from auto_round.utils.device import get_major_device
 
         result = get_major_device(None)
@@ -990,8 +962,8 @@ class TestPatchXpuSdpaCausalMask:
             assert device_mod._xpu_sdpa_patched is False
 
     def test_double_call_is_idempotent(self):
-        from auto_round.utils.device import patch_xpu_sdpa_drop_causal_mask
         from auto_round.utils import device as device_mod
+        from auto_round.utils.device import patch_xpu_sdpa_drop_causal_mask
 
         # First call returns early (no xpu available) -> patched stays False.
         # Second call similarly returns early.
@@ -1119,7 +1091,7 @@ class TestGlobalMemoryMonitor:
     """Test the ``memory_monitor`` module-level singleton."""
 
     def test_is_singleton(self):
-        from auto_round.utils.device import memory_monitor, MemoryMonitor
+        from auto_round.utils.device import MemoryMonitor, memory_monitor
 
         assert isinstance(memory_monitor, MemoryMonitor)
 
@@ -1204,8 +1176,8 @@ class TestMallocTrimCounter:
 
     def test_negative_or_zero_every_normalised_to_one(self):
         """``AR_MALLOC_TRIM_EVERY<=0`` should be clamped to 1."""
-        from auto_round.utils.device import _maybe_trim_malloc
         from auto_round.utils import device as device_mod
+        from auto_round.utils.device import _maybe_trim_malloc
 
         with patch.dict(
             os.environ,

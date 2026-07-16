@@ -24,7 +24,9 @@ import torch.nn as nn
 from safetensors.torch import save_file
 
 # Absolute path to the repository root (repo_root/test/test_cpu/models/ -> repo_root)
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+REPO_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+)
 
 from auto_round.special_model_handler import (
     _get_bagel_multimodal_block,

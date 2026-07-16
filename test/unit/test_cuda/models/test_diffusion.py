@@ -2,6 +2,7 @@ import copy
 import os
 import re
 import shutil
+from test.helpers import get_model_path, transformers_version
 
 import pytest
 import requests
@@ -11,7 +12,6 @@ from PIL import Image
 from auto_round import AutoRound
 
 from ...envs import multi_card, require_gptqmodel, require_optimum, require_vlm_env
-from test.helpers import get_model_path, transformers_version
 
 
 class TestAutoRound:

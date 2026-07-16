@@ -2,13 +2,12 @@ import copy
 import re
 import shutil
 import sys
+from test.helpers import get_model_path
 
 import pytest
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path
 
 
 class TestCustomizedData:

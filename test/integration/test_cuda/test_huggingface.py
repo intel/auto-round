@@ -1,6 +1,6 @@
-import pytest
-
 from test.helpers import evaluate_accuracy
+
+import pytest
 
 model_name_or_path = "Intel/Qwen3.5-2B-int4-AutoRound"
 

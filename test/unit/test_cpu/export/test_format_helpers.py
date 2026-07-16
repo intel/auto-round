@@ -23,12 +23,14 @@ import torch
 class TestAutoRoundExportFormat:
     def test_enum_values(self):
         from auto_round.formats import AutoRoundExportFormat
+
         assert AutoRoundExportFormat.FP8_STATIC.value == "fp8_static"
         assert AutoRoundExportFormat.MXFP4.value == "mxfp4"
         assert AutoRoundExportFormat.NVFP4.value == "nvfp4"
 
     def test_inherits_from_str(self):
         from auto_round.formats import AutoRoundExportFormat
+
         # str-Enum mixin means we can compare directly to strings
         assert AutoRoundExportFormat.FP8 == "fp8"
         assert AutoRoundExportFormat.INT8 == "int8_w8a8"
@@ -145,6 +147,7 @@ class TestOutputFormatRegister:
 
     def test_register_without_names_raises(self):
         from auto_round.formats import OutputFormat
+
         with pytest.raises(AssertionError):
             OutputFormat.register()
 
@@ -157,8 +160,11 @@ class TestSchemeCompatibility:
         from auto_round.formats import OutputFormat
 
         class _StubFormat(OutputFormat):
-            def pack_layer(self, *a, **kw): pass
-            def save_quantized(self, *a, **kw): pass
+            def pack_layer(self, *a, **kw):
+                pass
+
+            def save_quantized(self, *a, **kw):
+                pass
 
         if support_schemes is not None:
             # is_support_scheme is a classmethod that reads cls.support_schemes
@@ -199,15 +205,18 @@ class TestSchemeCompatibility:
 class TestSupportedFormatsRegistry:
     def test_supported_formats_is_nonempty_set(self):
         from auto_round.formats import OutputFormat
+
         assert isinstance(OutputFormat._format_list, dict)
         assert len(OutputFormat._format_list) > 0
 
     def test_fake_format_registered(self):
         from auto_round.formats import OutputFormat
+
         assert "fake" in OutputFormat._format_list
 
     def test_auto_round_format_registered(self):
         from auto_round.formats import OutputFormat
+
         # auto_round should always be a registered format
         assert "auto_round" in OutputFormat._format_list
 
@@ -218,6 +227,7 @@ class TestSupportedFormatsRegistry:
 class TestGetSupportMatrix:
     def test_returns_string(self):
         from auto_round.formats import OutputFormat
+
         s = OutputFormat.get_support_matrix()
         assert isinstance(s, str)
         assert "support scheme" in s

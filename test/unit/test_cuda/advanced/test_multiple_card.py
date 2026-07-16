@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import sys
+from test.helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 import pytest
 import torch
@@ -10,7 +11,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 
 from ...envs import multi_card, require_gptqmodel, require_greater_than_050
-from test.helpers import evaluate_accuracy, get_model_path, get_tiny_model
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])

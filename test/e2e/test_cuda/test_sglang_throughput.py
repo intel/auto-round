@@ -35,18 +35,16 @@ Run a single test locally::
 import json
 import os
 import time
-from typing import List
-
-import pytest
-import torch
-
 from test.e2e.test_cuda.conftest import (  # noqa: E402
     BenchResult,
     free_cuda,
     make_bench_prompts,
     quantize_and_save,
 )
+from typing import List
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Output sink
@@ -138,9 +136,7 @@ def _run_sglang_benchmark(
 
     model_path = get_model_path(model_path) if "/" in model_path else model_path
 
-    llm = _build_sglang_engine(
-        model_path, mem_fraction_static=mem_fraction_static, context_len=context_len
-    )
+    llm = _build_sglang_engine(model_path, mem_fraction_static=mem_fraction_static, context_len=context_len)
     try:
         # SGLang's tokenizer is the HuggingFace tokenizer.
         from transformers import AutoTokenizer
@@ -269,9 +265,9 @@ class TestSglangThroughput:
         assert result.sample_output.strip(), "SGLang produced empty output"
         assert "!!!" not in result.sample_output, "SGLang produced garbage output"
         assert result.output_tokens_per_s > 0
-        assert result.output_tokens_per_s >= 1.0, (
-            f"SGLang throughput suspiciously low: {result.output_tokens_per_s:.2f} tok/s"
-        )
+        assert (
+            result.output_tokens_per_s >= 1.0
+        ), f"SGLang throughput suspiciously low: {result.output_tokens_per_s:.2f} tok/s"
 
         print(
             f"\n[SGLang] {model_case.hf_id} {model_case.fmt} w{model_case.bits} "
@@ -346,7 +342,6 @@ def test_sglang_awq_format_via_cli(require_cuda):
     """
     import sys
     import tempfile
-
     from test.helpers import get_model_path
 
     model = get_model_path("Qwen/Qwen3-0.6B")

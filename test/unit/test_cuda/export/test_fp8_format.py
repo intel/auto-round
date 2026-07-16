@@ -1,11 +1,10 @@
 import shutil
+from test.helpers import eval_generated_prompt, get_model_path, is_cuda_support_fp8
 
 import pytest
 import torch
 
 from auto_round import AutoRound
-
-from test.helpers import eval_generated_prompt, get_model_path, is_cuda_support_fp8
 
 
 class TestAutoRoundBlockFP:

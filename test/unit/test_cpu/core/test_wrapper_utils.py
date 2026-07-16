@@ -14,9 +14,10 @@
 
 """Unit tests for auto_round/wrapper.py to improve code coverage."""
 
-import torch
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+import torch
 
 
 class TestGetScaleShape:
@@ -24,30 +25,35 @@ class TestGetScaleShape:
 
     def test_default_behavior_group_size_positive(self):
         from auto_round.wrapper import get_scale_shape
+
         weight = torch.randn(128, 64)
         shape = get_scale_shape(weight, group_size=32)
         assert shape == 128 * 2  # 64/32 = 2, so 128*2 = 256
 
     def test_group_size_zero(self):
         from auto_round.wrapper import get_scale_shape
+
         weight = torch.randn(128, 64)
         shape = get_scale_shape(weight, group_size=0)
         assert shape == 1
 
     def test_group_size_negative_one(self):
         from auto_round.wrapper import get_scale_shape
+
         weight = torch.randn(128, 64)
         shape = get_scale_shape(weight, group_size=-1)
         assert shape == 128  # Returns weight.shape[0]
 
     def test_group_size_larger_than_dim(self):
         from auto_round.wrapper import get_scale_shape
+
         weight = torch.randn(128, 64)
         shape = get_scale_shape(weight, group_size=128)
         assert shape == 128  # weight.shape[1] < group_size, returns weight.shape[0]
 
     def test_tuple_group_size(self):
         from auto_round.wrapper import get_scale_shape
+
         weight = torch.randn(128, 64)
         shape = get_scale_shape(weight, group_size=(8, 8))
         # (128//8, 64//8) = (16, 8)
@@ -55,6 +61,7 @@ class TestGetScaleShape:
 
     def test_tuple_group_size_wrong_dim_raises(self):
         from auto_round.wrapper import get_scale_shape
+
         weight = torch.randn(128, 64)
         with pytest.raises(AssertionError):
             get_scale_shape(weight, group_size=(8,))  # 1D tuple but weight is 2D
@@ -64,8 +71,9 @@ class TestWrapperLayerNorm:
     """Tests for WrapperLayerNorm class."""
 
     def test_creation_and_forward(self):
-        from auto_round.wrapper import WrapperLayerNorm
         import torch.nn as nn
+
+        from auto_round.wrapper import WrapperLayerNorm
 
         orig_layer = nn.LayerNorm(64)
         wrapper = WrapperLayerNorm(orig_layer, bit=4, group_size=-1, device="cpu")
@@ -211,11 +219,12 @@ class TestWrapperBlock:
     """Tests for wrapper_block function."""
 
     def test_wrapper_block_with_opt(self):
-        from auto_round.wrapper import wrapper_block, WrapperLinear
+        from auto_round.wrapper import WrapperLinear, wrapper_block
 
         try:
-            from transformers.models.opt.modeling_opt import OPTDecoderLayer
             from transformers.models.opt.configuration_opt import OPTConfig
+            from transformers.models.opt.modeling_opt import OPTDecoderLayer
+
             config = OPTConfig(
                 d_model=64,
                 ffn_dim=128,
@@ -238,11 +247,12 @@ class TestWrapperBlock:
         assert isinstance(unquantized, list)
 
     def test_wrapper_block_with_enable_norm_bias(self):
-        from auto_round.wrapper import wrapper_block, WrapperLinear, NORM_MAPPING
+        from auto_round.wrapper import NORM_MAPPING, WrapperLinear, wrapper_block
 
         try:
-            from transformers.models.opt.modeling_opt import OPTDecoderLayer
             from transformers.models.opt.configuration_opt import OPTConfig
+            from transformers.models.opt.modeling_opt import OPTDecoderLayer
+
             config = OPTConfig(
                 d_model=64,
                 ffn_dim=128,

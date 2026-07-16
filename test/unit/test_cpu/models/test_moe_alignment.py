@@ -1,5 +1,6 @@
 import os
 import shutil
+from test.helpers import get_model_path
 
 import pytest
 import torch
@@ -8,8 +9,6 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.modeling.fused_moe import apply_replacements
 from auto_round.utils.model import get_module, set_amax_for_all_moe_layers
-
-from test.helpers import get_model_path
 
 deepseek_v2_lite_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite-Chat")
 

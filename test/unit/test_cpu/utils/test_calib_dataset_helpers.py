@@ -13,8 +13,9 @@
 # limitations under the License.
 """Tests for the small pure helpers in ``auto_round/calib_dataset.py``."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +23,7 @@ from unittest.mock import MagicMock
 # ---------------------------------------------------------------------------
 class TestRegisterDataset:
     def test_register_single_name(self):
-        from auto_round.calib_dataset import register_dataset, CALIB_DATASETS
+        from auto_round.calib_dataset import CALIB_DATASETS, register_dataset
 
         @register_dataset("_test_ds_zzz_")
         class _StubDataset:
@@ -35,7 +36,7 @@ class TestRegisterDataset:
             CALIB_DATASETS.pop("_test_ds_zzz_", None)
 
     def test_register_multiple_names(self):
-        from auto_round.calib_dataset import register_dataset, CALIB_DATASETS
+        from auto_round.calib_dataset import CALIB_DATASETS, register_dataset
 
         @register_dataset(["_a_", "_b_"])
         class _Dual:
@@ -49,7 +50,7 @@ class TestRegisterDataset:
             CALIB_DATASETS.pop("_b_", None)
 
     def test_register_returns_class_unchanged(self):
-        from auto_round.calib_dataset import register_dataset, CALIB_DATASETS
+        from auto_round.calib_dataset import CALIB_DATASETS, register_dataset
 
         @register_dataset("_return_check_")
         class _Returned:
@@ -252,9 +253,7 @@ class TestApplyChatTemplateToSamples:
         tokenizer.return_value = {"input_ids": [[1]]}
 
         # Each sample is a list of message dicts (multi-turn)
-        samples = [
-            [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
-        ]
+        samples = [[{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]]
         apply_chat_template_to_samples(samples, tokenizer, seqlen=4)
         # The messages should be passed as-is (not wrapped in a new dict)
         args, _ = tokenizer.apply_chat_template.call_args
@@ -270,9 +269,7 @@ class TestApplyChatTemplateToSamples:
         tokenizer.apply_chat_template.return_value = "<rendered>"
         tokenizer.return_value = {"input_ids": [[1]]}
 
-        apply_chat_template_to_samples(
-            ["hello"], tokenizer, seqlen=4, system_prompt="you are helpful"
-        )
+        apply_chat_template_to_samples(["hello"], tokenizer, seqlen=4, system_prompt="you are helpful")
         args, _ = tokenizer.apply_chat_template.call_args
         msgs_arg = args[0]
         assert msgs_arg[0]["role"] == "system"
@@ -289,9 +286,7 @@ class TestApplyChatTemplateToSamples:
         ]
         tokenizer.return_value = {"input_ids": [[1]]}
 
-        apply_chat_template_to_samples(
-            ["hello"], tokenizer, seqlen=4, system_prompt="system prompt"
-        )
+        apply_chat_template_to_samples(["hello"], tokenizer, seqlen=4, system_prompt="system prompt")
         # Fallback call should have stripped the system role
         assert tokenizer.apply_chat_template.call_count == 2
         second_call_args = tokenizer.apply_chat_template.call_args_list[1]

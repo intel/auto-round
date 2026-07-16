@@ -26,6 +26,7 @@ Tests cover end-to-end quantization flow:
 
 import os
 import shutil
+from test.helpers import check_version
 
 import pytest
 import torch
@@ -37,8 +38,6 @@ from transformers import (
 )
 
 from auto_round import AutoRound
-
-from test.helpers import check_version
 
 pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),

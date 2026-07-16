@@ -1,6 +1,7 @@
 import copy
 import shutil
 from math import isclose
+from test.helpers import gptj_name_or_path
 
 import pytest
 import torch
@@ -8,8 +9,6 @@ import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound  # pylint: disable=E0401
-
-from test.helpers import gptj_name_or_path
 
 
 class TestAutoRound:

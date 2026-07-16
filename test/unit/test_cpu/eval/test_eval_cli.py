@@ -164,9 +164,7 @@ class TestEvalInit:
         with patch.object(eval_cli, "set_cuda_visible_devices"), patch.object(
             eval_cli, "get_device_and_parallelism", return_value=("cpu", "p")
         ), patch.object(eval_cli, "get_model_dtype", return_value="auto"):
-            _, model_args, _ = eval_cli._eval_init(
-                "mmlu", "/model", "0", disable_trust_remote_code=False, dtype="auto"
-            )
+            _, model_args, _ = eval_cli._eval_init("mmlu", "/model", "0", disable_trust_remote_code=False, dtype="auto")
         assert ",parallelize=True" in model_args
 
     def test_dtype_is_resolved_when_not_auto(self):
@@ -182,9 +180,7 @@ class TestEvalInit:
         with patch.object(eval_cli, "set_cuda_visible_devices"), patch.object(
             eval_cli, "get_device_and_parallelism", return_value=("cpu", None)
         ), patch.object(eval_cli, "get_model_dtype", return_value="auto"):
-            _, model_args, _ = eval_cli._eval_init(
-                "mmlu", "/model", "0", disable_trust_remote_code=True, dtype="auto"
-            )
+            _, model_args, _ = eval_cli._eval_init("mmlu", "/model", "0", disable_trust_remote_code=True, dtype="auto")
         assert "trust_remote_code=False" in model_args
         assert ",parallelize=True" not in model_args
 
@@ -655,9 +651,7 @@ class TestLoadGgufModelIfNeeded:
         fake_model = MagicMock()
 
         monkeypatch.setattr(eval_cli.os.path, "isfile", lambda value: value == str(gguf_path))
-        monkeypatch.setattr(
-            eval_cli.os.path, "exists", lambda value: value == str(tmp_path) or value == str(gguf_path)
-        )
+        monkeypatch.setattr(eval_cli.os.path, "exists", lambda value: value == str(tmp_path) or value == str(gguf_path))
         monkeypatch.setattr(eval_cli.os, "listdir", lambda value: ["model.gguf"] if value == str(tmp_path) else [])
         monkeypatch.setattr(eval_cli, "get_model_dtype", lambda value="auto": "auto")
         monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda *args, **kwargs: object())

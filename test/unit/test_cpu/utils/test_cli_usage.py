@@ -1,12 +1,11 @@
 import os
 import shutil
 import sys
+from test.helpers import get_model_path
 
 import pytest
 
 from auto_round.utils import parse_layer_config_arg
-
-from test.helpers import get_model_path
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])

@@ -1,5 +1,6 @@
 import os
 import shutil
+from test.helpers import get_model_path, lamini_name_or_path
 
 import pytest
 import torch
@@ -7,8 +8,6 @@ import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path, lamini_name_or_path
 
 
 # ================= simple multimodal model =================

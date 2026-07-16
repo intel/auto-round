@@ -126,9 +126,7 @@ class TestResolveHadamardBackend:
 
     def test_backend_transform_with_no_online_rotation_raises(self):
         """``backend='transform'`` requires ``allow_online_rotation=True``."""
-        cfg = RotationConfig(
-            backend="transform", hadamard_type="hadamard", allow_online_rotation=False
-        )
+        cfg = RotationConfig(backend="transform", hadamard_type="hadamard", allow_online_rotation=False)
         with pytest.raises(ValueError, match="only supports `allow_online_rotation`=True"):
             resolve_hadamard_backend(cfg, "mx_fp")
 
@@ -354,9 +352,7 @@ class TestApplyHadamardRotation:
         """When ``fuse_online_to_weight`` is None and env unset, the original None is forwarded."""
         model = nn.Linear(8, 8)
         # We override the field to None explicitly to bypass default behavior
-        cfg = RotationConfig(
-            backend="inplace", hadamard_type="hadamard", block_size=None, fuse_online_to_weight=None
-        )
+        cfg = RotationConfig(backend="inplace", hadamard_type="hadamard", block_size=None, fuse_online_to_weight=None)
         assert cfg.fuse_online_to_weight is None
 
         mock_apply = MagicMock(return_value=(model, []))
@@ -430,9 +426,7 @@ class TestApplyHadamardRotation:
     def test_allow_online_rotation_forwarded(self):
         """The ``allow_online_rotation`` flag is forwarded to the inplace backend."""
         model = nn.Linear(8, 8)
-        cfg = RotationConfig(
-            backend="inplace", hadamard_type="hadamard", block_size=None, allow_online_rotation=False
-        )
+        cfg = RotationConfig(backend="inplace", hadamard_type="hadamard", block_size=None, allow_online_rotation=False)
         mock_apply = MagicMock(return_value=(model, []))
 
         with patch(

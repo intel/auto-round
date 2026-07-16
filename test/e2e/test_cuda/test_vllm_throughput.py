@@ -44,18 +44,16 @@ Run the full (large) matrix::
 import json
 import os
 import time
-from typing import List
-
-import pytest
-import torch
-
 from test.e2e.test_cuda.conftest import (  # noqa: E402
     BenchResult,
     free_cuda,
     make_bench_prompts,
     quantize_and_save,
 )
+from typing import List
 
+import pytest
+import torch
 
 # ---------------------------------------------------------------------------
 # Output sink
@@ -270,9 +268,9 @@ class TestVllmThroughput:
         # Decoding throughput is bounded below by 1 tok/s on any modern GPU.
         # The number is intentionally loose – this is a regression check, not
         # a perf gate.
-        assert result.output_tokens_per_s >= 1.0, (
-            f"vLLM throughput suspiciously low: {result.output_tokens_per_s:.2f} tok/s"
-        )
+        assert (
+            result.output_tokens_per_s >= 1.0
+        ), f"vLLM throughput suspiciously low: {result.output_tokens_per_s:.2f} tok/s"
 
         print(
             f"\n[vLLM] {model_case.hf_id} {model_case.fmt} w{model_case.bits} "
@@ -342,7 +340,6 @@ def test_vllm_offline_eval_backend(tmp_path, require_cuda):
     the CLI plumbing.
     """
     import sys
-
     from test.helpers import get_model_path
 
     model = get_model_path("Qwen/Qwen3-0.6B")

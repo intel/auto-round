@@ -14,10 +14,10 @@
 """Tests for ``auto_round/export/export_to_autogptq/export.py``."""
 
 from auto_round.export.export_to_autogptq.export import (
+    BLOCK_PATTERNS,
+    GPTQ_REQUIRED_CONFIG_KEYS,
     convert_from_autogptq_dynamic,
     convert_to_autogptq_dynamic,
-    GPTQ_REQUIRED_CONFIG_KEYS,
-    BLOCK_PATTERNS,
 )
 
 

@@ -1,14 +1,13 @@
 import copy
 import shutil
 import sys
+from test.helpers import get_model_path, model_infer
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path, model_infer
 
 
 class TestAutoRoundAsym:

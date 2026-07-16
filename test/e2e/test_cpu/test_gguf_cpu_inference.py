@@ -36,17 +36,15 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List
-
-import pytest
-
 from test.e2e.test_cpu.conftest import (  # noqa: E402
     EvalResult,
     assert_non_garbage_output,
     quantize_and_save,
     record,
 )
+from typing import List
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Matrix
@@ -163,9 +161,7 @@ class TestGgufCpuInference:
             assert_non_garbage_output(text)
             # Loose keyword check; q2_k is allowed to miss it.
             if "q2_k" not in scheme:
-                assert expected in text.lower(), (
-                    f"{model_id} {scheme} did not produce '{expected}': {text!r}"
-                )
+                assert expected in text.lower(), f"{model_id} {scheme} did not produce '{expected}': {text!r}"
 
             record(
                 EvalResult(
@@ -203,7 +199,7 @@ class TestGgufCpuLarge:
         ids=[_case_id(m, s) for m, s, _ in LARGE_CASES],
     )
     def test_quantize_and_generate(self, model_id, scheme, expected, tmp_path, require_llama_cpp, require_ram):
-        # Re-use the smaller case's logic.  ``require_ram`` reads
+        # Reuse the smaller case's logic.  ``require_ram`` reads
         # ``model_case.min_ram_gib`` from a per-case constant below.
         from test.helpers import get_model_path
 

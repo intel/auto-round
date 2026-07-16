@@ -10,14 +10,13 @@ Run `pytest test/test_cuda/test_vllm.py`.
 import os
 import shutil
 import sys
+from test.helpers import get_model_path
 
 import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
 
 from auto_round import AutoRound
-
-from test.helpers import get_model_path
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 

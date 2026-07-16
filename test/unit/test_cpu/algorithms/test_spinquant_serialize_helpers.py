@@ -29,6 +29,7 @@ class TestIsQuantLinear:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _is_quantlinear,
         )
+
         assert _is_quantlinear(nn.Linear(4, 4)) is False
 
     def test_named_quant_linear_returns_true(self):
@@ -83,12 +84,14 @@ class TestHasSpinquantBuffers:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _has_spinquant_buffers,
         )
+
         assert _has_spinquant_buffers(nn.Linear(4, 4)) is False
 
     def test_module_with_r1_type_attribute_returns_true(self):
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _has_spinquant_buffers,
         )
+
         m = nn.Linear(4, 4)
         m.spinquant_r1_type = "online"
         assert _has_spinquant_buffers(m) is True
@@ -97,6 +100,7 @@ class TestHasSpinquantBuffers:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _has_spinquant_buffers,
         )
+
         m = nn.Linear(4, 4)
         m.spinquant_r4_type = "block"
         assert _has_spinquant_buffers(m) is True
@@ -141,6 +145,7 @@ class TestTargetNames:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_online_r1_target_names,
         )
+
         m = self._build_mini_lm()
         targets = _get_online_r1_target_names(m)
         # q/k/v/o_proj of attn + gate/up/down_proj of mlp, but o_proj is excluded
@@ -158,6 +163,7 @@ class TestTargetNames:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_r4_target_names,
         )
+
         m = self._build_mini_lm()
         targets = _get_r4_target_names(m)
         assert targets == {"layers.0.mlp.down_proj"}
@@ -171,6 +177,7 @@ class TestGetStoredRotation:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_stored_rotation,
         )
+
         model = nn.Linear(4, 4)
         assert _get_stored_rotation(model, "spinquant_R1") is None
 
@@ -178,6 +185,7 @@ class TestGetStoredRotation:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_stored_rotation,
         )
+
         model = nn.Linear(4, 4)
         model.spinquant_R1 = nn.Parameter(torch.eye(4))
         result = _get_stored_rotation(model, "spinquant_R1")
@@ -188,6 +196,7 @@ class TestGetStoredRotation:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_stored_rotation,
         )
+
         model = nn.Linear(4, 4)
         model.spinquant_R1 = "not_a_tensor"
         # Non-tensor attributes should return None
@@ -217,6 +226,7 @@ class TestConfigExtractors:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_hidden_size,
         )
+
         assert _get_hidden_size(nn.Linear(4, 4)) == 0
 
     def test_head_dim_explicit(self):
@@ -254,6 +264,7 @@ class TestConfigExtractors:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_head_dim,
         )
+
         assert _get_head_dim(nn.Linear(4, 4)) == 0
 
     def test_intermediate_size(self):
@@ -275,6 +286,7 @@ class TestConfigExtractors:
         from auto_round.algorithms.transforms.spinquant.serialize import (
             _get_intermediate_size,
         )
+
         assert _get_intermediate_size(nn.Linear(4, 4)) == 0
 
 

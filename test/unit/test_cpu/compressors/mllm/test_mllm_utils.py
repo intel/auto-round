@@ -15,9 +15,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from auto_round.compressors.mllm.utils import (
+    VISUAL_KEYS,
     _extract_data_dir,
     fetch_image,
-    VISUAL_KEYS,
 )
 
 

@@ -1,14 +1,5 @@
 import copy
 import shutil
-
-import pytest
-import torch
-from packaging import version
-from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
-
-from auto_round import AutoRound
-from auto_round.utils import get_module
-
 from test.helpers import (
     evaluate_accuracy,
     get_model_path,
@@ -17,6 +8,14 @@ from test.helpers import (
     qwen_name_or_path,
     transformers_version,
 )
+
+import pytest
+import torch
+from packaging import version
+from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
+
+from auto_round import AutoRound
+from auto_round.utils import get_module
 
 
 class TestAutoRound:

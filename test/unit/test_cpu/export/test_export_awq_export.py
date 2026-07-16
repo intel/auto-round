@@ -28,6 +28,7 @@ class TestIsSupportedLayer:
         """INNER_SUPPORTED_LAYER_TYPES is matched by classname; FP8Linear is
         the only CPU-reachable classname-based entry. We simulate a fake class
         with a known classname."""
+
         class _FakeInner(nn.Module):
             pass
 

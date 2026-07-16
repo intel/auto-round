@@ -1,13 +1,12 @@
 import os
 import shutil
+from test.helpers import get_model_path, opt_name_or_path
 
 import pytest
 from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer, Qwen2VLForConditionalGeneration
 
 from auto_round import AutoRound
 from auto_round.utils import get_block_names
-
-from test.helpers import get_model_path, opt_name_or_path
 
 
 class FakeDataLoader:

@@ -27,6 +27,7 @@ from auto_round.algorithms.quantization.utils import (
 
 class MockConfig:
     """Mock config with is_act_nv_fp flag."""
+
     def __init__(self):
         self.is_act_nv_fp = False
 
