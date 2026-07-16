@@ -369,6 +369,56 @@ def woqgemm_s8(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: tor
     return C
 
 
+def woqgemm_s8_sycl_tla(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor):
+    m = A.shape[0]
+    n = B.shape[0]
+    k = B.shape[1]
+    lib = get_lib(A)
+
+    C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    stream = get_stream(A)
+    lib.woqgemm_s8_sycl_tla(
+        stream,
+        m,
+        n,
+        k,
+        A.contiguous().data_ptr(),
+        cvt_dtype(A.dtype),
+        B.contiguous().data_ptr(),
+        C.contiguous().data_ptr(),
+        bias.contiguous().data_ptr(),
+        True,
+        scaleB.contiguous().data_ptr(),
+    )
+    return C
+
+
+# A: mxk:DT,  B: nxk:s8, scaleB: n:DT
+# return: mxn:DT
+def woqgemm_s8_joint_matrix(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor):
+    m = A.shape[0]
+    n = B.shape[0]
+    k = B.shape[1]
+    lib = get_lib(A)
+
+    C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    stream = get_stream(A)
+    lib.woqgemm_s8_joint_matrix(
+        stream,
+        m,
+        n,
+        k,
+        A.contiguous().data_ptr(),
+        cvt_dtype(A.dtype),
+        B.contiguous().data_ptr(),
+        C.contiguous().data_ptr(),
+        bias.contiguous().data_ptr(),
+        True,
+        scaleB.contiguous().data_ptr(),
+    )
+    return C
+
+
 # A: mxk:DT,  B: BS:s8, bias: n:DT
 # return: C: mxn:DT
 def woqgemm(

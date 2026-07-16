@@ -58,6 +58,22 @@ static void matmul(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, 
 #endif
 }
 
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+
+static void woqgemm_s8_joint_matrix(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt,
+                                    torch_ptr B, torch_ptr C, torch_ptr bias, bool BT, torch_ptr scaleb) {
+  ark::SyclS8Wrapper::woq_s8_joint_matrix((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C,
+                                          (BTLA_DTYPE)ACdt, (void*)scaleb, (void*)bias, k);
+}
+
+static void woqgemm_s8_sycl_tla(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt,
+                                torch_ptr B, torch_ptr C, torch_ptr bias, bool BT, torch_ptr scaleb) {
+  ark::SyclS8Wrapper::woq_s8_sycl_tla((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C,
+                                      (BTLA_DTYPE)ACdt, (void*)scaleb, (void*)bias, k);
+}
+
+#endif
+
 static void woqgemm_s8(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt, torch_ptr B, torch_ptr C,
                        torch_ptr bias, bool BT, torch_ptr scaleb) {
 #if ARK_XPU
@@ -694,5 +710,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
+  m.def("woqgemm_s8_joint_matrix", &ark::woqgemm_s8_joint_matrix);
+  m.def("woqgemm_s8_sycl_tla", &ark::woqgemm_s8_sycl_tla);
 #endif
 }
