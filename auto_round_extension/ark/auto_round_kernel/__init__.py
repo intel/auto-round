@@ -2184,13 +2184,20 @@ def moe_gemm_prefill(
         weights_ptr = dequant_workspace.data_ptr()
         workspace_ptr = dequant_workspace.data_ptr()
     else:
-        # Reuse a persistent `[E, K, N]` workspace across calls with the same
-        # (device, dtype, E, K, N). For real MoE prefill workloads the same
-        # shape is dispatched on every iteration; allocating a fresh
-        # `E*K*N*sizeof(act)` tensor each call adds non-trivial caching-
-        # allocator overhead (and, on the small shapes, dominates the
-        # quantized GEMM cost). The workspace is kept alive by the cache so
-        # we hand the data_ptr() to the kernel without taking a new ref.
+        # Allocate a fresh `[E, K, N]` workspace for every call rather than
+        # sharing a persistent, module-level cached buffer.
+        #
+        # A cached buffer is only safe when calls that share the same
+        # (device, dtype, E, K, N) shape never overlap. That assumption breaks
+        # under multi-card / multi-stream execution (e.g. tensor-parallel MoE
+        # prefill): two concurrently-launched kernels with the same shape would
+        # be handed the *same* `data_ptr()`, so one launch's dequant write races
+        # the other launch's Grouped-GEMM read of the same scratch. On INT4
+        # prefill this reproduces deterministically on multi-card runs and
+        # corrupts the output. Allocating a distinct tensor per call removes the
+        # aliasing entirely; PyTorch's caching allocator makes the repeated
+        # allocation cheap (reused device blocks, no fresh device malloc on the
+        # steady-state path).
         #
         # We allocate the workspace unconditionally for all quantized paths,
         # including native FP8. The native FP8 launcher fuses GEMM+scale and
@@ -2203,10 +2210,8 @@ def moe_gemm_prefill(
         # (`N % 16`, `K % 32`, `K % group_size`, `group_size % 32`) may not
         # hold, or the act dtype may not be F16/BF16. Without a workspace the
         # fall-through would hit the generic null-pointer check in
-        # `sycl_tla_moe_mixed.hpp` and raise. Since the workspace lives in
-        # the module-level cache, allocation happens once per shape and adds
-        # no per-call overhead when the native path is taken.
-        dequant_workspace = _get_moe_prefill_workspace(activations.device, activations.dtype, num_experts, K, N)
+        # `sycl_tla_moe_mixed.hpp` and raise.
+        dequant_workspace = torch.empty((num_experts, K, N), device=activations.device, dtype=activations.dtype)
         weights_ptr = weights.data_ptr()
         workspace_ptr = dequant_workspace.data_ptr()
 
@@ -2235,58 +2240,37 @@ def moe_gemm_prefill(
     # (see `moe_detail::moe_gemm_launcher` in `sycl_tla_moe.hpp`), so by the
     # time `lib.moe_gemm_prefill` returns the device has already consumed the
     # workspace. For the unquantized fast path the workspace is a per-call
-    # transposed copy of `weights` -- drop it now. For the quantized paths
-    # the workspace lives in the module-level cache (`_get_moe_prefill_workspace`)
-    # and is intentionally retained for reuse on the next call. The native
-    # fp8 path allocates no workspace at all, so there is nothing to drop.
-    if is_unquantized:
-        del dequant_workspace
+    # transposed copy of `weights`; for the quantized paths it is the per-call
+    # `[E, K, N]` dequant scratch allocated above. Either way it is a local,
+    # non-shared buffer that is safe to drop now (the native fp8 path allocates
+    # no workspace at all, so `dequant_workspace` is simply unused there).
+    del dequant_workspace
     return outputs
 
 
 # ---------------------------------------------------------------------------
-# `moe_gemm_prefill` dequant-workspace cache.
+# `moe_gemm_prefill` dequant-workspace.
 #
 # The Stage-1 quantized prefill kernel dequantises weights into an
 # `[E, K, N]` act-dtype scratch buffer before dispatching to the existing
-# CUTLASS-SYCL grouped GEMM. In real model usage the same `(E, K, N, dtype)`
-# tuple is hit on every prefill step, so allocating a fresh
-# `E * K * N * sizeof(act_dtype)` tensor per call adds caching-allocator
-# overhead that is significant on the small/medium shapes.
+# CUTLASS-SYCL grouped GEMM. This scratch is now allocated fresh per call
+# (see `moe_gemm_prefill`) rather than shared through a module-level cache:
+# a shared buffer aliases across concurrent same-shape launches on multi-card
+# / multi-stream setups and races the dequant write against the GEMM read.
 #
-# We cache one tensor per `(device, dtype, E, K, N)` key. The cache holds
-# references that keep the tensors alive across calls; callers can clear it
-# explicitly via `clear_moe_prefill_workspace_cache()` if they need to
-# release the memory (e.g., before allocating large buffers for a different
-# subsystem).
+# `clear_moe_prefill_workspace_cache()` is retained as a backwards-compatible
+# no-op for callers that used to drop the cache explicitly.
 # ---------------------------------------------------------------------------
-
-_MOE_PREFILL_WORKSPACE_CACHE: "dict[tuple, torch.Tensor]" = {}
-
-
-def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int, K: int, N: int) -> torch.Tensor:
-    """Return a persistent `[E, K, N]` workspace tensor for the prefill kernel.
-
-    The tensor is allocated lazily on first use and retained in a module-level
-    cache so subsequent calls with the same `(device, dtype, E, K, N)` reuse
-    the same memory. Returned tensors are contiguous and uninitialised; the
-    kernel writes every element before reading.
-    """
-    # `device` may be a `torch.device` or a string; normalise so the cache key
-    # is hashable and identifies the exact device (including ordinal).
-    if not isinstance(device, torch.device):
-        device = torch.device(device)
-    key = (device.type, device.index, dtype, int(E), int(K), int(N))
-    ws = _MOE_PREFILL_WORKSPACE_CACHE.get(key)
-    if ws is None:
-        ws = torch.empty((E, K, N), device=device, dtype=dtype)
-        _MOE_PREFILL_WORKSPACE_CACHE[key] = ws
-    return ws
 
 
 def clear_moe_prefill_workspace_cache() -> None:
-    """Release all cached `moe_gemm_prefill` dequant-workspace tensors."""
-    _MOE_PREFILL_WORKSPACE_CACHE.clear()
+    """Deprecated no-op.
+
+    The `moe_gemm_prefill` dequant workspace is no longer cached across calls;
+    each call allocates and releases its own buffer, so there is nothing to
+    clear. Kept for backwards compatibility with earlier callers.
+    """
+    return None
 
 
 # ---------------------------------------------------------------------------
