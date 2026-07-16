@@ -176,6 +176,11 @@ template <int TileM, int TileN, class SGLayout, class ATensor, class BTensor, cl
           typename TB, typename BiasElement, char layoutA, char layoutB>
 void gemm_cute_store_tile(sycl::queue* q, ATensor const& A, BTensor const& B, CTensor& C,
                           const BiasElement* bias_ptr) {
+  // Pin the process-global compat current-device to this queue's device before
+  // mutating the per-device default queue, so concurrent multi-card launchers
+  // don't clobber a single shared device-0 slot. See the detailed rationale in
+  // sycl_tla_moe.hpp::moe_gemm_launcher. No-op on a single visible device.
+  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
 
   auto C_accum = make_tensor(make_gmem_ptr(static_cast<float*>(nullptr)), C.shape(), C.stride());
