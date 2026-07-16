@@ -51,6 +51,7 @@ class Calibrator(ABC):
         self.is_only_supported_bs1 = False
         self.seqlen= compressor.seqlen
         self.hook_handles=[]
+        self.inputs = {}
 
     # ── Public API ──────────────────────────────────────────────────────────
 

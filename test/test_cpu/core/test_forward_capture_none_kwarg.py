@@ -11,8 +11,6 @@ from types import SimpleNamespace
 
 import torch  # #TODO need to revert wenhuach
 
-from auto_round.calibration.hooks import make_block_forward_func
-
 
 def _make_state(batch_size=1):
     """Return a minimal state stub accepted by ``make_block_forward_func``.
