@@ -615,7 +615,7 @@ class LLMCalibrator(Calibrator):
         class to always return ``False``; this helper is only used by the default
         LLM path.
         """
-        if hasattr(self,"last_cache_name") and name == self.last_cache_name:
+        if hasattr(self, "last_cache_name") and name == self.last_cache_name:
             return True
 
         if self.last_cache_name is not None:
