@@ -25,7 +25,7 @@ This file covers:
 
 Each test runs the full quantize -> save -> reload -> generate loop
 with a tiny audio waveform and a text prompt.  A 1-token generation is
-enough to catch the most common "block-name-mis-detected" or
+enough to catch the most common "block-name-miss-detected" or
 "ignore-list-too-broad" regressions.
 """
 
