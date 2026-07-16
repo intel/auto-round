@@ -243,10 +243,6 @@ void sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O
   options.kscale = kscale;
   options.vscale = vscale;
   options.lse = lse;
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the shared default-queue slot, so concurrent multi-card launchers
-  // don't target the wrong card (see sycl_tla_moe.hpp::moe_gemm_launcher).
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
   options.queue = q;
 
@@ -272,10 +268,6 @@ void flash_attn_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, v
               v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
               num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
   options.lse = lse;
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the shared default-queue slot, so concurrent multi-card launchers
-  // don't target the wrong card (see sycl_tla_moe.hpp::moe_gemm_launcher).
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
   options.queue = q;
 
@@ -301,10 +293,6 @@ void flash_attn_decode(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, vo
               v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q,
               num_heads_kv, 1, seq_len_kv, head_dim, softmax_scale, is_causal);
   options.lse = lse;
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the shared default-queue slot, so concurrent multi-card launchers
-  // don't target the wrong card (see sycl_tla_moe.hpp::moe_gemm_launcher).
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
   options.queue = q;
 
@@ -462,10 +450,6 @@ void sage_prefill_varlen(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   options.vscale = vscale;
   options.lse = lse;
 
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the shared default-queue slot, so concurrent multi-card launchers
-  // don't target the wrong card (see sycl_tla_moe.hpp::moe_gemm_launcher).
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
   options.queue = q;
 
@@ -528,10 +512,6 @@ void sdpa_varlen_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, voi
   options.max_seqlen_kv_cache = 0;
   options.lse = lse;
 
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the shared default-queue slot, so concurrent multi-card launchers
-  // don't target the wrong card (see sycl_tla_moe.hpp::moe_gemm_launcher).
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
   options.queue = q;
 

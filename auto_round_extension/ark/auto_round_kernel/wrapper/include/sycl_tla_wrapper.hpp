@@ -337,15 +337,6 @@ inline void run_prefill_impl(
   using ElementOutput = typename KernelBuilder::ElementOutput;
   using ProblemShape = typename Kernel::ProblemShape;
 
-  // This flash-attn path launches the cutlass kernel and allocates its
-  // workspace on `compat::get_default_queue()` (see `launch_prefill_kernel`
-  // and `cutlass::device_memory::allocation` below). Pin the process-global
-  // compat current-device to this queue's device first so both resolve to the
-  // correct card; otherwise concurrent multi-card launchers race on the shared
-  // device-0 default-queue slot and this kernel can run / allocate on the
-  // wrong device. See the detailed rationale in
-  // sycl_tla_moe.hpp::moe_gemm_launcher. No-op on a single visible device.
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
 
   typename Kernel::StrideQ stride_Q = cutlass::make_cute_packed_stride(
@@ -460,11 +451,6 @@ inline void run_decode_impl(
   using Kernel = typename KernelBuilder::Kernel;
   using ElementInput = typename KernelBuilder::ElementInput;
 
-  // See the prefill path above: this decode kernel also launches / allocates on
-  // `compat::get_default_queue()`, so pin the compat current-device to this
-  // queue's device before mutating the shared default-queue slot to avoid the
-  // multi-card race. No-op on a single visible device.
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
 
   const int seq_qo = 1;

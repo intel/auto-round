@@ -77,24 +77,6 @@ template <char layoutA, char layoutB, typename ElementA, typename ElementB, type
 void moe_gemm_launcher(sycl::queue* q, const ElementA* activations, const ElementB* weights, const ElementS* scales,
                        ElementD* outputs, const int gemm_n, const int gemm_k, int* num_rows_per_expert_device,
                        const int num_experts) {
-  // Pin the compat device-manager's *current device* (a process-global,
-  // thread-id-keyed singleton) to THIS queue's device before mutating the
-  // per-device default queue below. `compat::set_default_queue()` /
-  // `get_default_queue()` resolve the slot via `current_device()`, which
-  // falls back to device 0 for any thread that never called `select_device`.
-  // Since this wrapper never pinned it, every host thread resolved to device
-  // 0, so concurrent launchers running on *different* cards stamped their own
-  // queue into the single shared device-0 slot. cutlass-adapter / compat
-  // `launch` paths (e.g. flash-attn, and any allocation via
-  // `cutlass::device_memory`) then launch and allocate on
-  // `get_default_queue()` -- i.e. whichever card won the race -- issuing a
-  // kernel on the wrong device while dereferencing another card's USM
-  // pointers. That cross-device access yields the localized garbage seen only
-  // under multi-card + concurrent test execution (single card has one slot;
-  // multi-card single-case has no competing writer). Pinning makes the slot
-  // per-device and per-thread, so the race disappears; on a single visible
-  // device this is a no-op (`get_device_id` == 0).
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
 
   // Query the multiprocessor (Xe-core / EU) count from the *queue's own device*

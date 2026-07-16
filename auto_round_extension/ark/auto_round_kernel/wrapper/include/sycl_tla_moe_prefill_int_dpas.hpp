@@ -777,11 +777,6 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
     int E, int N, int K, int total_tokens) {
   if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
 
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the per-device default queue, so concurrent multi-card launchers
-  // don't clobber a single shared device-0 slot. See the detailed rationale in
-  // sycl_tla_moe.hpp::moe_gemm_launcher. No-op on a single visible device.
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
 
   using ElementB = int8_t;
@@ -845,11 +840,6 @@ void moe_prefill_int_dpas_per_group_dispatch(
         "moe_prefill_int_dpas(per-group): K must be a multiple of group_size");
   }
 
-  // Pin the process-global compat current-device to this queue's device before
-  // mutating the per-device default queue, so concurrent multi-card launchers
-  // don't clobber a single shared device-0 slot. See the detailed rationale in
-  // sycl_tla_moe.hpp::moe_gemm_launcher. No-op on a single visible device.
-  compat::select_device(compat::get_device_id(q->get_device()));
   compat::set_default_queue(*q);
 
   // Map the caller-facing SYCL native half/bfloat16 to the CUTLASS type CUTE
