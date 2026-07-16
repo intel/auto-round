@@ -602,10 +602,10 @@ struct SageKernelRunner {
   // Methods
   //
 
-  KernelRunner() = default;
-  KernelRunner(const KernelRunner&) = delete;
-  KernelRunner& operator=(const KernelRunner&) = delete;
-  ~KernelRunner() {
+  SageKernelRunner() = default;
+  SageKernelRunner(const SageKernelRunner&) = delete;
+  SageKernelRunner& operator=(const SageKernelRunner&) = delete;
+  ~SageKernelRunner() {
     if (zero_cu_cache_ != nullptr) {
       sycl::free(zero_cu_cache_, *zero_cu_cache_queue_);
     }
