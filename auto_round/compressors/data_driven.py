@@ -141,7 +141,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         # Check if activation calibration is needed
         from auto_round.compressors.utils import check_need_act_calibration
 
-        act_bits = getattr(qcfg, "act_bits", None)
+        act_bits = getattr(qcfg, "act_bits", 16)
         act_data_type = getattr(qcfg, "act_data_type", None)
         act_dynamic = getattr(qcfg, "act_dynamic", None)
         is_act_quantize = act_bits is not None and act_bits <= 8
@@ -197,23 +197,6 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             self.post_init()
         return self.calibration.collect(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
-    @torch.no_grad()
-    def cache_inter_data(
-        self,
-        block_names: list,
-        nsamples: int,
-        layer_names: Optional[list] = None,
-        last_cache_name: Optional[str] = None,
-    ) -> Any:
-        """Thin wrapper around ``self.calibration.cache_inter_data``.
-
-        Public API kept for backward compatibility.
-        """
-        if self.calibration is None:
-            self.post_init()
-        return self.calibration.cache_inter_data(
-            block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-        )
 
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> Any:
