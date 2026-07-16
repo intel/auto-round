@@ -72,19 +72,39 @@ void igemm_device_impl(ATensor const& A, BTensor const& B, TiledMMA const& mma, 
   int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
 
   clear(tCrC);
+  auto prefetch_a = make_block_2d_prefetch(copy_a);
+  auto prefetch_b = make_block_2d_prefetch(copy_b);
 
-  for (int k_tile = 0; k_tile < k_tile_count; ++k_tile) {
+  auto thr_prefetch_A = prefetch_a.get_slice(local_id);
+  auto thr_prefetch_B = prefetch_b.get_slice(local_id);
+
+  auto pAgA = thr_prefetch_A.partition_S(gA);
+  auto pBgB = thr_prefetch_B.partition_S(gB);
+
+  constexpr int prefetch_dist = 3;
+  int k_tile_prefetch = 0;
+
+    CUTE_UNROLL
+    for (; k_tile_prefetch < prefetch_dist; ++k_tile_prefetch) {
+    prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+    prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+    }
+
+    for (int k_tile = 0; k_tile < k_tile_count; ++k_tile, ++k_tile_prefetch) {
     barrier_arrive(barrier_scope);
 
     copy(copy_a, tAgA(_, _, _, k_tile), tArA);
     copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+
+    prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+    prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
 
     reorder(tArA, tCrA);
     reorder(tBrB, tCrB);
     gemm(mma, tCrA, tCrB, tCrC);
 
     barrier_wait(barrier_scope);
-  }
+    }
 
   CUTE_UNROLL
   for (int i = 0; i < size(tCrC); ++i) {
@@ -106,6 +126,7 @@ void igemm_device_impl(ATensor const& A, BTensor const& B, TiledMMA const& mma, 
     }
   }
 }
+
 
 template <bool AccumBlock, class ElementOut, int TileM, int TileN, class SGLayout>
 void launch_igemm_tile(sycl::queue* q, int m, int n, int gemm_k, int lda, int ldb, const int8_t* a, const int8_t* b,
@@ -136,12 +157,28 @@ void launch_igemm_tile(sycl::queue* q, int m, int n, int gemm_k, int lda, int ld
 }
 
 template <bool AccumBlock, class ElementOut>
-void launch_igemm(sycl::queue* q, int m, int n, int gemm_k, int lda, int ldb, const int8_t* a, const int8_t* b,
-                  ElementOut* c, float* accum, const ElementOut* scale_a, const ElementOut* scale_b,
+void launch_igemm(sycl::queue* q, int m, int n, int gemm_k, int lda, int ldb,
+                  const int8_t* a, const int8_t* b, ElementOut* c, float* accum,
+                  const ElementOut* scale_a, const ElementOut* scale_b,
                   const ElementOut* bias, int block_idx, int scale_b_stride) {
-  using SGLayout = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
-  launch_igemm_tile<AccumBlock, ElementOut, 128, 128, SGLayout>(
-      q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
+  using SmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
+  using SmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
+  using MediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+  using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+
+  if (m < 16) {
+    launch_igemm_tile<AccumBlock, ElementOut, 8, 128, SmallTileSG>(
+        q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
+  } else if (m < 128) {
+    launch_igemm_tile<AccumBlock, ElementOut, 64, 128, SmallMidTileSG>(
+        q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
+  } else if (m <= 1024) {
+    launch_igemm_tile<AccumBlock, ElementOut, 128, 128, MediumTileSG>(
+        q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
+  } else {
+    launch_igemm_tile<AccumBlock, ElementOut, 256, 256, LargeTileSG>(
+        q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
+  }
 }
 
 template <class ElementOut>
