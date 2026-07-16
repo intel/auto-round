@@ -2218,7 +2218,13 @@ def moe_gemm_prefill(
         # every expert with `num_tokens_per_expert[e] == 0` and never write its
         # slice of the workspace; leaving that slice uninitialised exposes stale
         # allocator memory to any consumer that still reads those rows.
-        dequant_workspace = torch.zeros((num_experts, K, N), device=activations.device, dtype=activations.dtype)
+        #
+        # Allocate double the `[E, K, N]` footprint (trailing headroom along N).
+        # The native kernels address the buffer as a flat `E * K * N` region via
+        # `workspace_ptr` (stride N), so only the first `E * K * N` elements are
+        # ever read/written; the extra half is spare capacity that guards any
+        # consumer path that over-reads past the nominal `[E, K, N]` extent.
+        dequant_workspace = torch.zeros((num_experts, K, N * 2), device=activations.device, dtype=activations.dtype)
         weights_ptr = weights.data_ptr()
         workspace_ptr = dequant_workspace.data_ptr()
 
