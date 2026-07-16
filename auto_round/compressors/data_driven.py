@@ -197,7 +197,6 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             self.post_init()
         return self.calibration.collect(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
-
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> Any:
         """Thin wrapper around ``self.calibration.calib``.
