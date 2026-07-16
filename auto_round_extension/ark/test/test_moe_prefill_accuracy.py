@@ -154,7 +154,12 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
     """
     total_tokens, _ = activations.shape
     E, N, _ = dequant_weights_NK.shape
-    out = torch.empty(total_tokens, N, dtype=activations.dtype, device=activations.device)
+    # Zero-initialise (not ``torch.empty``): any row not covered by the
+    # per-expert loop below -- e.g. a zero-token expert, or a
+    # ``num_tokens_per_expert`` sum that is short of ``total_tokens`` -- would
+    # otherwise expose stale allocator memory (frequently read back as
+    # all-zeros), silently corrupting the reference the kernel is compared to.
+    out = torch.zeros(total_tokens, N, dtype=activations.dtype, device=activations.device)
     offset = 0
     for e in range(E):
         n_tokens = int(num_tokens_per_expert[e].item())
