@@ -1142,6 +1142,12 @@ class ClearMemory:
         from auto_round.utils.device import _force_trim_malloc, is_hpex_available, memory_monitor
 
         if is_hpex_available():
+            if device_list is not None:
+                self.device_list = device_list
+            final_device_list = self.device_list
+            # Keep peak accounting consistent with non-HPU path: sample first,
+            # then release memory so post-clear values do not hide true peaks.
+            memory_monitor.update_hpu(final_device_list)
             # Clear CPU-side references so Python can reclaim them.
             if isinstance(tensor, list):
                 for i in range(len(tensor)):
@@ -1149,7 +1155,6 @@ class ClearMemory:
             tensor = None
             gc.collect()
             _force_trim_malloc()
-            memory_monitor.update_hpu(device_list)
             return
         else:
             if device_list is not None:
