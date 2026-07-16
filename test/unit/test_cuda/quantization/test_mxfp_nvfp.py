@@ -131,7 +131,7 @@ class TestAutoRound:
     def test_qwen_moe_quant_infer(self, dataloader):
         model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
         layer_config = {
-            "layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
+            r"layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
         }
         scheme = "nvfp4"
         autoround = AutoRound(

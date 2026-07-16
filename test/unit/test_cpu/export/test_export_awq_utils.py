@@ -30,7 +30,7 @@ class TestUnpackAwq:
         # 4-bit slices, cast to int8.
         packed = torch.tensor([0x5B], dtype=torch.int32).view(1, 1, 1)
         zeros = torch.zeros((1, 1, 1), dtype=torch.int32)
-        iw, is = unpack_awq(packed, zeros, bits=4)
+        iw, iz = unpack_awq(packed, zeros, bits=4)
         assert iw.shape == (1, 8)
         # iw[0,0] = 0x5B (no shift, the whole int32, fits in int8: 91)
         assert iw[0, 0].item() == 0x5B
@@ -56,8 +56,8 @@ class TestReverseAwqOrder:
         from auto_round.export.export_to_awq.utils import reverse_awq_order
 
         iw = torch.arange(8, dtype=torch.int32).view(1, 8)
-        is = torch.zeros(1, 8, dtype=torch.int32)
-        out_iw, out_is = reverse_awq_order(iw, is, bits=4)
+        iz = torch.zeros(1, 8, dtype=torch.int32)
+        out_iw, out_iz = reverse_awq_order(iw, iz, bits=4)
         # AWQ_REVERSE_ORDER = [0, 4, 1, 5, 2, 6, 3, 7]
         expected = torch.tensor([0, 4, 1, 5, 2, 6, 3, 7], dtype=torch.int32).view(1, 8)
         assert torch.equal(out_iw, expected)

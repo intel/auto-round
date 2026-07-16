@@ -817,6 +817,46 @@ class TestOrionConversion:
 
         with pytest.raises(ValueError, match="can not find ctx length"):
             obj.set_gguf_parameters()
+        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+
+        obj = _make_mock_model(OrionModel)
+        with patch.object(obj, "_set_vocab_sentencepiece") as mock:
+            obj.set_vocab()
+            mock.assert_called_once_with()
+
+    def test_set_gguf_parameters_with_max_sequence_length(self):
+        """Test set_gguf_parameters picks the right context length key."""
+        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_attention_heads": 16,
+                "max_sequence_length": 8192,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "rms_norm_eps": 1e-5,
+            },
+        )
+        obj.set_gguf_parameters()
+        obj.gguf_writer.add_context_length.assert_called_once_with(8192)
+
+    def test_set_gguf_parameters_with_max_position_embeddings(self):
+        """Test set_gguf_parameters falls back to max_position_embeddings."""
+        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+
+        obj = _make_mock_model(
+            OrionModel,
+            {
+                "num_attention_heads": 16,
+                "max_position_embeddings": 4096,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "rms_norm_eps": 1e-5,
+            },
+        )
+        obj.set_gguf_parameters()
+        obj.gguf_writer.add_context_length.assert_called_once_with(4096)
 
 
 # ==============================================================================
@@ -868,6 +908,43 @@ class TestPanguConversion:
         results = list(obj.modify_tensors(data, "lm_head.weight", bid=None))
 
         assert len(results) == 1
+        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
+
+        obj = _make_mock_model(
+            PanguEmbeddedModel,
+            {
+                "vocab_size": 32000,
+                "head_dim": 128,
+                "hidden_size": 2048,
+                "num_attention_heads": 16,
+                "max_position_embeddings": 4096,
+                "intermediate_size": 8192,
+            },
+        )
+        with patch.object(PanguEmbeddedModel.__mro__[1], "set_gguf_parameters", lambda self: None):
+            obj.set_gguf_parameters()
+        obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
+
+    def test_set_gguf_parameters_without_head_dim(self):
+        """Test set_gguf_parameters derives rope_dim from hidden_size/num_heads."""
+        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
+
+        obj = _make_mock_model(
+            PanguEmbeddedModel,
+            {
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "num_attention_heads": 16,
+                "max_position_embeddings": 4096,
+                "intermediate_size": 8192,
+            },
+        )
+        with patch.object(PanguEmbeddedModel.__mro__[1], "set_gguf_parameters", lambda self: None):
+            obj.set_gguf_parameters()
+        # 2048 / 16 = 128
+        obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
+        obj.gguf_writer.add_key_length.assert_called_once_with(128)
+        obj.gguf_writer.add_value_length.assert_called_once_with(128)
 
 
 # ==============================================================================
@@ -1180,6 +1257,53 @@ class TestSmallThinkerConversion:
         obj.set_gguf_parameters()
 
         obj.gguf_writer.add_expert_gating_func.assert_called()
+        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
+
+        obj = _make_mock_model(
+            SmallThinkerModel,
+            {
+                "moe_num_primary_experts": 32,
+                "moe_num_active_primary_experts": 4,
+                "moe_ffn_hidden_size": 4096,
+                "moe_primary_router_apply_softmax": True,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
+        with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
+            obj.set_gguf_parameters()
+        from auto_round.export.export_to_gguf.conversion.base import gguf
+
+        w = obj.gguf_writer
+        w.add_expert_count.assert_called_once_with(32)
+        w.add_expert_used_count.assert_called_once_with(4)
+        w.add_expert_feed_forward_length.assert_called_once_with(4096)
+        w.add_expert_gating_func.assert_called_once_with(gguf.ExpertGatingFuncType.SOFTMAX)
+
+    def test_set_gguf_parameters_with_sigmoid(self):
+        """Test SmallThinkerModel.set_gguf_parameters writes SIGMOID by default."""
+        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
+
+        obj = _make_mock_model(
+            SmallThinkerModel,
+            {
+                "moe_num_primary_experts": 32,
+                "moe_num_active_primary_experts": 4,
+                "moe_ffn_hidden_size": 4096,
+                "moe_primary_router_apply_softmax": False,
+                "max_position_embeddings": 32768,
+                "hidden_size": 4096,
+                "intermediate_size": 16384,
+                "num_attention_heads": 32,
+            },
+        )
+        with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
+            obj.set_gguf_parameters()
+        from auto_round.export.export_to_gguf.conversion.base import gguf
+
+        obj.gguf_writer.add_expert_gating_func.assert_called_once_with(gguf.ExpertGatingFuncType.SIGMOID)
 
 
 # ==============================================================================
@@ -1979,69 +2103,6 @@ class TestCogVLMConversion:
 # ==============================================================================
 
 
-class TestOrionConversion:
-    """Tests for Orion conversion module."""
-
-    def test_set_vocab_delegates_to_sentencepiece(self):
-        """Test set_vocab calls _set_vocab_sentencepiece."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
-
-        obj = _make_mock_model(OrionModel)
-        with patch.object(obj, "_set_vocab_sentencepiece") as mock:
-            obj.set_vocab()
-            mock.assert_called_once_with()
-
-    def test_set_gguf_parameters_with_max_sequence_length(self):
-        """Test set_gguf_parameters picks the right context length key."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
-
-        obj = _make_mock_model(
-            OrionModel,
-            {
-                "num_attention_heads": 16,
-                "max_sequence_length": 8192,
-                "hidden_size": 4096,
-                "intermediate_size": 16384,
-                "rms_norm_eps": 1e-5,
-            },
-        )
-        obj.set_gguf_parameters()
-        obj.gguf_writer.add_context_length.assert_called_once_with(8192)
-
-    def test_set_gguf_parameters_with_max_position_embeddings(self):
-        """Test set_gguf_parameters falls back to max_position_embeddings."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
-
-        obj = _make_mock_model(
-            OrionModel,
-            {
-                "num_attention_heads": 16,
-                "max_position_embeddings": 4096,
-                "hidden_size": 4096,
-                "intermediate_size": 16384,
-                "rms_norm_eps": 1e-5,
-            },
-        )
-        obj.set_gguf_parameters()
-        obj.gguf_writer.add_context_length.assert_called_once_with(4096)
-
-    def test_set_gguf_parameters_raises_without_ctx_length(self):
-        """Test set_gguf_parameters raises if no ctx length key is set."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
-
-        obj = _make_mock_model(
-            OrionModel,
-            {
-                "num_attention_heads": 16,
-                "hidden_size": 4096,
-                "intermediate_size": 16384,
-                "rms_norm_eps": 1e-5,
-            },
-        )
-        with pytest.raises(ValueError, match="can not find ctx length"):
-            obj.set_gguf_parameters()
-
-
 # ==============================================================================
 # llama4.py tests
 # ==============================================================================
@@ -2165,50 +2226,6 @@ class TestPixtralConversion:
 # ==============================================================================
 # pangu.py tests
 # ==============================================================================
-
-
-class TestPanguConversion:
-    """Tests for Pangu conversion module."""
-
-    def test_set_gguf_parameters_with_head_dim(self):
-        """Test set_gguf_parameters writes rope_dim from head_dim when present."""
-        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
-
-        obj = _make_mock_model(
-            PanguEmbeddedModel,
-            {
-                "vocab_size": 32000,
-                "head_dim": 128,
-                "hidden_size": 2048,
-                "num_attention_heads": 16,
-                "max_position_embeddings": 4096,
-                "intermediate_size": 8192,
-            },
-        )
-        with patch.object(PanguEmbeddedModel.__mro__[1], "set_gguf_parameters", lambda self: None):
-            obj.set_gguf_parameters()
-        obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
-
-    def test_set_gguf_parameters_without_head_dim(self):
-        """Test set_gguf_parameters derives rope_dim from hidden_size/num_heads."""
-        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
-
-        obj = _make_mock_model(
-            PanguEmbeddedModel,
-            {
-                "vocab_size": 32000,
-                "hidden_size": 2048,
-                "num_attention_heads": 16,
-                "max_position_embeddings": 4096,
-                "intermediate_size": 8192,
-            },
-        )
-        with patch.object(PanguEmbeddedModel.__mro__[1], "set_gguf_parameters", lambda self: None):
-            obj.set_gguf_parameters()
-        # 2048 / 16 = 128
-        obj.gguf_writer.add_rope_dimension_count.assert_called_once_with(128)
-        obj.gguf_writer.add_key_length.assert_called_once_with(128)
-        obj.gguf_writer.add_value_length.assert_called_once_with(128)
 
 
 # ==============================================================================
@@ -2706,60 +2723,6 @@ class TestAfmoeConversion:
 # ==============================================================================
 # smallthinker.py tests
 # ==============================================================================
-
-
-class TestSmallThinkerConversion:
-    """Tests for SmallThinker conversion module."""
-
-    def test_set_gguf_parameters_with_softmax(self):
-        """Test SmallThinkerModel.set_gguf_parameters writes SOFTMAX when configured."""
-        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
-
-        obj = _make_mock_model(
-            SmallThinkerModel,
-            {
-                "moe_num_primary_experts": 32,
-                "moe_num_active_primary_experts": 4,
-                "moe_ffn_hidden_size": 4096,
-                "moe_primary_router_apply_softmax": True,
-                "max_position_embeddings": 32768,
-                "hidden_size": 4096,
-                "intermediate_size": 16384,
-                "num_attention_heads": 32,
-            },
-        )
-        with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
-            obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-
-        w = obj.gguf_writer
-        w.add_expert_count.assert_called_once_with(32)
-        w.add_expert_used_count.assert_called_once_with(4)
-        w.add_expert_feed_forward_length.assert_called_once_with(4096)
-        w.add_expert_gating_func.assert_called_once_with(gguf.ExpertGatingFuncType.SOFTMAX)
-
-    def test_set_gguf_parameters_with_sigmoid(self):
-        """Test SmallThinkerModel.set_gguf_parameters writes SIGMOID by default."""
-        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
-
-        obj = _make_mock_model(
-            SmallThinkerModel,
-            {
-                "moe_num_primary_experts": 32,
-                "moe_num_active_primary_experts": 4,
-                "moe_ffn_hidden_size": 4096,
-                "moe_primary_router_apply_softmax": False,
-                "max_position_embeddings": 32768,
-                "hidden_size": 4096,
-                "intermediate_size": 16384,
-                "num_attention_heads": 32,
-            },
-        )
-        with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
-            obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-
-        obj.gguf_writer.add_expert_gating_func.assert_called_once_with(gguf.ExpertGatingFuncType.SIGMOID)
 
 
 # ==============================================================================

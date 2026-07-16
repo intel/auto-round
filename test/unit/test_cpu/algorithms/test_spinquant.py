@@ -1254,7 +1254,7 @@ class TestCopyFuncWithNewGlobals:
         # The copied function should have the same bytecode as the original
         # (so its behavior only changes through the modified globals).
         def original(x):
-            return x + ADD  # ADD is a free variable resolved from globals
+            return x + ADD  # noqa: F821  # ADD is injected by copy_func_with_new_globals
 
         copied = copy_func_with_new_globals(original, {"ADD": 1})
         assert copied(0) == 1
@@ -1262,7 +1262,7 @@ class TestCopyFuncWithNewGlobals:
 
     def test_modified_globals(self):
         def original(x):
-            return x + y
+            return x + y  # noqa: F821  # y is injected by copy_func_with_new_globals
 
         copied = copy_func_with_new_globals(original, {"y": 10})
         assert copied(5) == 15

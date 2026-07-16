@@ -13,6 +13,7 @@
 # limitations under the License.
 """Tests for ``auto_round/export/export_to_awq/export.py``."""
 
+import pytest
 import torch
 import torch.nn as nn
 
