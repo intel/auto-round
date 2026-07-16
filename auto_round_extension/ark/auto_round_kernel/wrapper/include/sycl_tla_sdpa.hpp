@@ -103,6 +103,7 @@ struct Options {
   /// SYCL queue used to launch the kernel. Transient device allocations
   /// (kernel workspace, zero-filled kv_cache scratch) are made on this queue so
   /// they bind to its device instead of syclcompat's implicit current device.
+  /// Must be non-null whenever a launcher is invoked (see sdpa.cpp).
   sycl::queue* queue = nullptr;
 
   void print(std::ostream& os = std::cout) const {
@@ -220,7 +221,8 @@ struct KernelRunner {
     zero_cu_cache_queue_ = q;
     zero_cu_cache_ = sycl::malloc_device<int>(count, *q);
     if (zero_cu_cache_ == nullptr) {
-      throw std::runtime_error("KernelRunner: failed to allocate zero_cu_cache scratch");
+      throw std::runtime_error("KernelRunner: failed to allocate zero_cu_cache scratch (" +
+                               std::to_string(count * sizeof(int)) + " bytes)");
     }
     q->memset(zero_cu_cache_, 0, count * sizeof(int)).wait();
     return zero_cu_cache_;
@@ -378,7 +380,8 @@ struct KernelRunner {
     if (workspace_size > 0) {
       workspace = sycl::malloc_device<uint8_t>(workspace_size, *q);
       if (workspace == nullptr) {
-        throw std::runtime_error("KernelRunner: failed to allocate kernel workspace");
+        throw std::runtime_error("KernelRunner: failed to allocate kernel workspace (" +
+                                 std::to_string(workspace_size) + " bytes)");
       }
     }
 
@@ -621,7 +624,8 @@ struct SageKernelRunner {
     zero_cu_cache_queue_ = q;
     zero_cu_cache_ = sycl::malloc_device<int>(count, *q);
     if (zero_cu_cache_ == nullptr) {
-      throw std::runtime_error("KernelRunner: failed to allocate zero_cu_cache scratch");
+      throw std::runtime_error("KernelRunner: failed to allocate zero_cu_cache scratch (" +
+                               std::to_string(count * sizeof(int)) + " bytes)");
     }
     q->memset(zero_cu_cache_, 0, count * sizeof(int)).wait();
     return zero_cu_cache_;
@@ -781,7 +785,8 @@ struct SageKernelRunner {
     if (workspace_size > 0) {
       workspace = sycl::malloc_device<uint8_t>(workspace_size, *q);
       if (workspace == nullptr) {
-        throw std::runtime_error("KernelRunner: failed to allocate kernel workspace");
+        throw std::runtime_error("KernelRunner: failed to allocate kernel workspace (" +
+                                 std::to_string(workspace_size) + " bytes)");
       }
     }
 
