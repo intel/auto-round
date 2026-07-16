@@ -83,6 +83,7 @@ def create_model_class(
     model_type=ModelType.TEXT,
     device="cpu",
     quant_nontext_module: bool = False,
+    is_auto_scheme: bool = False,
 ):
     tmp_work_dir = model.name_or_path
     os.makedirs(output_dir, exist_ok=True)
@@ -134,6 +135,7 @@ def create_model_class(
                 low_cpu_mem_usage=low_cpu_mem_usage,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
+                is_auto_scheme=is_auto_scheme,
             )
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
@@ -152,6 +154,7 @@ def pack_gguf_layer(
     model_type=ModelType.TEXT,
     device="cpu",
     quant_nontext_module=False,
+    is_auto_scheme=False,
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -166,6 +169,7 @@ def pack_gguf_layer(
                 model_type=ModelType.TEXT,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
+                is_auto_scheme=is_auto_scheme,
             )
         ]
         if model_type == ModelType.MMPROJ:
@@ -179,6 +183,7 @@ def pack_gguf_layer(
                     model_type=ModelType.MMPROJ,
                     device=device,
                     quant_nontext_module=quant_nontext_module,
+                    is_auto_scheme=is_auto_scheme,
                 )
             )
 
@@ -236,6 +241,7 @@ def save_quantized_as_gguf(
     mllm=False,
     device="cpu",
     quant_nontext_module=False,
+    is_auto_scheme=False,
     **kwargs,
 ):
     """Export the model to gguf format."""
@@ -252,6 +258,7 @@ def save_quantized_as_gguf(
                 model_type=ModelType.TEXT,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
+                is_auto_scheme=is_auto_scheme,
             )
         ]
         if mllm:
@@ -264,6 +271,7 @@ def save_quantized_as_gguf(
                     model_type=ModelType.MMPROJ,
                     device=device,
                     quant_nontext_module=quant_nontext_module,
+                    is_auto_scheme=is_auto_scheme,
                 )
             )
 

@@ -306,6 +306,7 @@ def _download_single_shard(
     local_dir: str,
 ) -> str:
     """Download a single safetensors shard file. Returns the local path."""
+    os.makedirs(local_dir, exist_ok=True)
     local_path = os.path.join(local_dir, shard_filename)
     if os.path.exists(local_path):
         logger.info(f"Shard '{shard_filename}' already exists at '{local_path}', skipping download.")
@@ -1263,7 +1264,10 @@ def _prefetch_shard(
     """Return the local path of the next shard (download if needed)."""
     try:
         if streaming:
-            return _download_single_shard(model_name_or_path, shard_name, work_dir)
+            # Keep source shards in a dedicated cache directory to avoid
+            # colliding with quantized output shard names in output_dir.
+            shard_cache_dir = os.path.join(work_dir, ".cache", "model_free_source_shards")
+            return _download_single_shard(model_name_or_path, shard_name, shard_cache_dir)
         path = os.path.join(source_dir, shard_name)
         return path if os.path.exists(path) else None
     except Exception as e:  # pragma: no cover
@@ -2069,6 +2073,21 @@ class _ModelFreeCompressorCore:
             elif os.path.isfile(src) and not os.path.exists(dst):
                 shutil.copy2(src, dst)
 
+    def _cleanup_streaming_shard_cache(self) -> None:
+        """Remove temporary streaming shard cache under output_dir/.cache."""
+        if not self.is_streaming:
+            return
+
+        cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        if os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+        # Best-effort prune for empty .cache directory created by this flow.
+        try:
+            os.rmdir(os.path.join(self.work_dir, ".cache"))
+        except OSError:
+            pass
+
     def _log_summary(self, total_time: float) -> None:
         compressed_quantized = compress_layer_names(self.all_quantized_layers)
         compressed_ignored = compress_layer_names(list(dict.fromkeys(self.all_ignored_layers)))
@@ -2152,6 +2171,7 @@ class _ModelFreeCompressorCore:
         self._write_index()
         self._write_config_files()
         self._copy_metadata_files()
+        self._cleanup_streaming_shard_cache()
 
         self._log_summary(time.time() - start_time)
         return self.output_dir
@@ -2435,6 +2455,31 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             len(fp16_layers),
         )
 
+    def _precheck_auto_scheme_fallback(self, format: str) -> bool:
+        """Early fallback check for model-free + AutoScheme.
+
+        This avoids spending time on delta-loss AutoScheme selection when the
+        requested export format is known to be incompatible with the resolved
+        AutoScheme option family.
+        """
+        if not _looks_like_auto_scheme(self.scheme_input):
+            return False
+
+        family = _validate_auto_scheme_options(self.scheme_input)
+        accepted_formats = {"auto_round", "auto_round:auto_gptq"}
+        if family == "mx_fp":
+            accepted_formats = {"llm_compressor"}
+
+        if format not in accepted_formats:
+            logger.warning(
+                "Format '%s' is incompatible with model-free + AutoScheme (family=%s); "
+                "fallback before running AutoScheme scoring.",
+                format,
+                family,
+            )
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # AutoRound compressor interface
     # ------------------------------------------------------------------
@@ -2447,6 +2492,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
+        # Early fallback gate for model-free + AutoScheme: avoid running
+        # costly delta-loss selection when format is known incompatible.
+        if self._precheck_auto_scheme_fallback(format):
+            return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+
         # AutoScheme: run delta-loss selection first so the effective scheme /
         # data-type family (which drives the accepted export formats) is known.
         if _looks_like_auto_scheme(self.scheme_input):
