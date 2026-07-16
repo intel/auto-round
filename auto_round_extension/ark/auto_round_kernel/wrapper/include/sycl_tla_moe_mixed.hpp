@@ -963,6 +963,14 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
           q, static_cast<const uint8_t*>(weights), upcast_i8, num_experts, N, K,
           num_tokens_per_expert);
     }
+    // The upcast kernel above is submitted asynchronously and captures no
+    // event, while the DPAS dispatch below reads the same `upcast_i8`
+    // workspace. On an out-of-order stream (PyTorch XPU queues are
+    // out-of-order) submission order alone does not serialise the two, so the
+    // GEMM could read the workspace before the upcast finishes writing it --
+    // a read-before-write race that yields localized garbage. Block until the
+    // upcast writes are visible before the GEMM consumes them.
+    q->wait();
     if (act_dtype == BTLA_DTYPE::F16) {
       using ScalarT = sycl::half;
       moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
@@ -1099,12 +1107,26 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
     auto* w_kn = static_cast<sycl::half*>(dequant_workspace);
     moe_mixed_detail::dequant_to_KN<sycl::half>(q, weights, scales, zeros, w_kn, weight_dtype, num_experts, N, K,
                                                 group_size, asym, num_tokens_per_expert);
+    // The dequant kernels are submitted asynchronously and capture no event,
+    // whereas `moe_gemm` reads the `[E, K, N]` workspace they just wrote. On an
+    // out-of-order stream (PyTorch XPU queues are out-of-order) submission order
+    // does not serialise the two launches, so the grouped GEMM can read the
+    // workspace before the dequant pass has finished writing it -- a
+    // read-before-write race that surfaces as a handful of localized, wildly
+    // wrong outputs whose values depend on the workspace's prior contents.
+    // Wait for the dequant writes to become visible before the GEMM consumes
+    // them.
+    q->wait();
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else if (act_dtype == BTLA_DTYPE::BF16) {
     using BF = sycl::ext::oneapi::bfloat16;
     auto* w_kn = static_cast<BF*>(dequant_workspace);
     moe_mixed_detail::dequant_to_KN<BF>(q, weights, scales, zeros, w_kn, weight_dtype, num_experts, N, K, group_size,
                                         asym, num_tokens_per_expert);
+    // See the F16 branch above: serialise the async dequant writes before the
+    // grouped GEMM reads the workspace to avoid a read-before-write race on
+    // out-of-order streams.
+    q->wait();
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else {
     throw std::invalid_argument("moe_gemm_prefill: act_dtype must be F16 or BF16");
