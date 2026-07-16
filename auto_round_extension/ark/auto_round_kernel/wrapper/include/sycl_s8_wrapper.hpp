@@ -9,12 +9,15 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-
 #pragma once
 
 #include "utils.hpp"
 
 #if ARK_XPU
+
+#if ARK_SYCL_TLA
+#include "sycl_tla_s8_gemm.hpp"
+#endif
 
 namespace ark {
 
@@ -45,6 +48,9 @@ class SyclS8Wrapper {
       throw std::invalid_argument("SyclS8Wrapper::igemm_s8s8: only B as n x k is supported");
     }
 
+#if ARK_SYCL_TLA
+    ark::sycl_tla_igemm_s8s8_dequant(q, m, n, k, a, b, c, ct, scale_a, scale_b, bias, blocksize);
+#else
     using namespace bestla::sycl_gemm;
 
     if (blocksize == k || blocksize == -1) {
@@ -77,6 +83,7 @@ class SyclS8Wrapper {
     } else {
       throw std::invalid_argument("SyclS8Wrapper::igemm_s8s8: k-block path supports only F32/F16 output");
     }
+#endif
   }
 
   static void woq_s8(sycl::queue* q, int m, int n, int k, const void* a, const void* b, bool BT, void* c,
