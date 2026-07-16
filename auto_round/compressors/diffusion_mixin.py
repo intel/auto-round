@@ -162,7 +162,6 @@ class DiffusionMixin:
     #     image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
     #     return image_param is not None and image_param.default is inspect.Parameter.empty
 
-
     def _find_additional_transformers(self):
         """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""
         pipe = getattr(self.model_context, "pipe", None)
@@ -274,8 +273,6 @@ class DiffusionMixin:
                 "Skipping re-dispatch to avoid breaking the existing placement."
             )
 
-
-
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
         # Skip dispatch for secondary transformers
@@ -335,7 +332,8 @@ class DiffusionMixin:
                         self.inputs[k][key] = v[key][:max_len]
 
         # torch.cuda.empty_cache()
-    #TODO move to calibration wenhuach
+
+    # TODO move to calibration wenhuach
     def try_cache_inter_data_gpucpu(self, *args, **kwargs) -> Any:
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
 

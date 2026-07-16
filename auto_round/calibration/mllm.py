@@ -34,7 +34,7 @@ from auto_round.utils import to_device
 class MLLMCalibrator(LLMCalibrator):
     """Calibrator for multimodal (vision-language) models."""
 
-    def __init__(self,compressor):
+    def __init__(self, compressor):
         super().__init__(compressor)
         self.processor = compressor.processor
         self.image_processor = compressor.image_processor
