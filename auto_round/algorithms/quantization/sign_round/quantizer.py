@@ -246,7 +246,9 @@ class SignRoundQuantizer(BaseQuantizer):
         # We assume the block input and output shape is same
         if self.gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = sum(active_inputs[i].numel() for i in whole_indices)
+            if isinstance(active_inputs, list): # dict for diffusion, tricky setting, not sure whether it's correct
+                num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
+
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         block_fwd = self.compressor.block_forward
@@ -424,7 +426,7 @@ class SignRoundQuantizer(BaseQuantizer):
         global_batch_size = batch_size * gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         if gradient_accumulate_steps != 1 and not self.attention_mask:
-            whole_indices = torch.arange(global_batch_size)
+            whole_indices = torch.arange(global_batch_size).tolist()
             if q_inputs is not None:
                 num_elm = self._count_layer_input_elements(q_inputs, whole_indices)
             else:

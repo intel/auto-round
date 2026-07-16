@@ -57,7 +57,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
-        if "nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type:
+        if  hasattr(self,"scheme") and ("nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type):
             logger.warning_once(
                 "opt-rtn does not support NVFP or MXFP. It behaves the same as RTN but is much slower. "
                 "Please use RTN instead."
