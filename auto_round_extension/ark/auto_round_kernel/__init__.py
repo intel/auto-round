@@ -101,7 +101,17 @@ def get_stream(A: torch.Tensor) -> int:
     if A.device.type == "cpu":
         return 0
     if A.device.type == "xpu":
-        return torch.xpu.current_stream().sycl_queue
+        # Query the stream for *A's own device*, not the global current device.
+        # `torch.xpu.current_stream()` with no argument resolves the device via
+        # `torch.xpu.current_device()`, a process-global that another operation
+        # (or, in a test suite, a preceding test) may have left pointing at a
+        # different card. Passing `A.device` guarantees the returned SYCL queue
+        # runs on the same device the tensor's memory lives on; otherwise the
+        # native kernel would launch on one card while dereferencing pointers
+        # into another card's memory, silently corrupting results. On a
+        # single-visible-device system the two always coincide, which is why
+        # the mismatch only surfaces with multiple cards visible.
+        return torch.xpu.current_stream(A.device).sycl_queue
 
 
 def _normalize_tensor_layout(tensor_layout: str) -> str:
