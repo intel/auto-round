@@ -418,7 +418,7 @@ class LLMCalibrator(Calibrator):
             except RuntimeError as error:
                 error_msg = str(error)
                 if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(c.seqlen, c.model_context.tokenizer, c.model)
+                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
                 logger.warning(
                     "When quantization encounters tensor shape mismatch error, "
                     "you can try to avoid it with batch_size=1"

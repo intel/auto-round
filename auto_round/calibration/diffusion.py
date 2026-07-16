@@ -179,7 +179,7 @@ class DiffusionCalibrator(LLMCalibrator):
                     break
         if total_cnt == 0:
             logger.error(
-                f"no data has been cached, please provide more data with sequence length >={c.seqlen} in the "
+                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
                 f"dataset or decease the sequence length"
             )
             exit(-1)

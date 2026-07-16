@@ -48,23 +48,27 @@ class _FakeModule(torch.nn.Module):
         return hidden_states
 
 
+# def _attach_capture(state, name, module):
+#     """Attach a ``forward_capture`` closure to *module* for block *name*.
+#
+#     Mirrors the wiring done by ``replace_forward_with_hooks`` so tests
+#     exercise the same code path as production calibration.
+#
+#     Args:
+#         state: Calibration state stub (from ``_make_state``).
+#         name (str): Block name key used in ``state.inputs``.
+#         module (_FakeModule): Module to instrument.
+#
+#     Returns:
+#         _FakeModule: The same module with ``forward`` replaced.
+#     """
+#     fn = make_block_forward_func(state, name)
+#     module.forward = partial(fn, module)
+#     return module
+#TODO wenhuach revert
 def _attach_capture(state, name, module):
-    """Attach a ``forward_capture`` closure to *module* for block *name*.
-
-    Mirrors the wiring done by ``replace_forward_with_hooks`` so tests
-    exercise the same code path as production calibration.
-
-    Args:
-        state: Calibration state stub (from ``_make_state``).
-        name (str): Block name key used in ``state.inputs``.
-        module (_FakeModule): Module to instrument.
-
-    Returns:
-        _FakeModule: The same module with ``forward`` replaced.
-    """
-    fn = make_block_forward_func(state, name)
-    module.forward = partial(fn, module)
     return module
+
 
 
 def test_none_then_tensor_kwarg_batch_size_1():
