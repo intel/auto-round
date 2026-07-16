@@ -20,6 +20,7 @@ class _QuantizerStub:
     def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx=None, **kwargs):
         return None
 
+
 ## AttributeError: 'DataDrivenCompressor' object has no attribute 'pipeline'
 # def test_llmc_quantize_block_allows_mllm(monkeypatch):
 #     compressor = object.__new__(DataDrivenCompressor)
