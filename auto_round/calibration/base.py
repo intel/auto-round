@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 class Calibrator(ABC):
     """Abstract base for all calibration strategies."""
 
-    #TODO wenhuach remove compressor in init
-    def __init__(self, compressor: "BaseCompressor",**kwargs) -> None:
+    # TODO wenhuach remove compressor in init
+    def __init__(self, compressor: "BaseCompressor", **kwargs) -> None:
         self.model = compressor.model_context.model
         self.tokenizer = compressor.model_context.tokenizer
         self.dataset = compressor.dataset
@@ -49,8 +49,8 @@ class Calibrator(ABC):
         self.has_variable_block_shape = compressor.has_variable_block_shape
         self.shared_cache_keys = compressor.model_context.shared_cache_keys
         self.is_only_supported_bs1 = False
-        self.seqlen= compressor.seqlen
-        self.hook_handles=[]
+        self.seqlen = compressor.seqlen
+        self.hook_handles = []
         self.inputs = {}
 
     # ── Public API ──────────────────────────────────────────────────────────

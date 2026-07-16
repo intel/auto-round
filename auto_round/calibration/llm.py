@@ -211,7 +211,6 @@ class LLMCalibrator(Calibrator):
         # if hasattr(c, "quantizer") and hasattr(c.quantizer, "attention_mask"):
         #     c.quantizer.attention_mask = []
 
-
         block_names = flatten_list(block_names)
         self.to_cached_layers = block_names + layer_names
 

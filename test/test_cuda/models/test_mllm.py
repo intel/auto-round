@@ -68,7 +68,6 @@ class TestAutoRound:
     #             res == """<s> There is a girl who likes adventure, and she is looking for a partner to go on a treasure hunt. She has found a map that leads to a hidden treasure, but she needs a partner to help her decipher the clues and find the treasure. You""")
 
     def qwen_inference(self, quantized_model_dir):
-        from transformers import AutoProcessor, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
@@ -131,7 +130,6 @@ class TestAutoRound:
 
     @require_vlm_env
     def test_mm_block_name(self):
-        from auto_round.utils import get_block_names
 
         model_name = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
         from transformers import MllamaForConditionalGeneration

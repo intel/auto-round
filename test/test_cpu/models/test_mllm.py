@@ -83,7 +83,7 @@ class TestAutoRound:
         autoround.save_quantized(self.save_dir, format="auto_round", inplace=True)
 
     def test_quant_block_names(self):
-        from auto_round.utils import find_matching_blocks, get_block_names
+        from auto_round.utils import find_matching_blocks
 
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)
