@@ -47,13 +47,6 @@ class DiffusionCalibrator(LLMCalibrator):
         self.num_inference_steps = compressor.num_inference_steps
         self.generator_seed = compressor.generator_seed  # make sure pass
 
-    def should_stop(self, name: str) -> bool:
-        """Diffusion models must run *all* denoising steps to collect enough inputs.
-
-        Mirrors the legacy ``DiffusionMixin._should_stop_cache_forward`` which
-        always returns ``False`` so the pipeline never exits early.
-        """
-        return False
 
     def wrap_block_forward(self, forward_fn):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""

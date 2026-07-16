@@ -73,13 +73,13 @@ class Calibrator(ABC):
 
     # ── Optional hooks (sane defaults) ─────────────────────────────────────
 
-    def should_stop(self, name: str) -> bool:
-        """Default early-stop policy: delegate to the module helper.
-
-        Subclasses (e.g. ``DiffusionCalibrator``) may override to always
-        return ``False`` so the pipeline runs every denoising step.
-        """
-        return self.should_stop_cache_forward(name)
+    # def should_stop(self, name: str) -> bool:
+    #     """Default early-stop policy: delegate to the module helper.
+    #
+    #     Subclasses (e.g. ``DiffusionCalibrator``) may override to always
+    #     return ``False`` so the pipeline runs every denoising step.
+    #     """
+    #     return self.should_stop_cache_forward(name)
 
     def wrap_block_forward(self, forward_fn):
         """Optionally wrap the block-forward function.  Default: passthrough.
@@ -103,7 +103,7 @@ class Calibrator(ABC):
 
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Bridge hook stop checks to the calibrator's stop policy."""
-        return self.should_stop(name)
+        return False
 
     # def __getattr__(self, name: str) -> Any:
     #     # Anything not defined on the calibrator is read off the compressor.

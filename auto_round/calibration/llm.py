@@ -607,7 +607,7 @@ class LLMCalibrator(Calibrator):
         for n, m in self.model.named_modules():
             register_hook(n, m)
 
-    def should_stop_cache_forward(self, name: str) -> bool:
+    def _should_stop_cache_forward(self, name: str) -> bool:
         """Default early-stop policy for block input collection.
 
         Mirrors the legacy ``DataDrivenCompressor._should_stop_cache_forward`` exactly.
@@ -615,7 +615,7 @@ class LLMCalibrator(Calibrator):
         class to always return ``False``; this helper is only used by the default
         LLM path.
         """
-        if name == self.last_cache_name:
+        if hasattr(self,"last_cache_name") and name == self.last_cache_name:
             return True
 
         if self.last_cache_name is not None:
