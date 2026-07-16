@@ -2211,7 +2211,14 @@ def moe_gemm_prefill(
         # hold, or the act dtype may not be F16/BF16. Without a workspace the
         # fall-through would hit the generic null-pointer check in
         # `sycl_tla_moe_mixed.hpp` and raise.
-        dequant_workspace = torch.empty((num_experts, K, N), device=activations.device, dtype=activations.dtype)
+        #
+        # Zero-initialise (rather than `torch.empty`) so experts that receive
+        # no tokens in this prefill batch have deterministic, zeroed rows. The
+        # generic `[E, K, N]` dequant kernels in `sycl_tla_moe_mixed.hpp` skip
+        # every expert with `num_tokens_per_expert[e] == 0` and never write its
+        # slice of the workspace; leaving that slice uninitialised exposes stale
+        # allocator memory to any consumer that still reads those rows.
+        dequant_workspace = torch.zeros((num_experts, K, N), device=activations.device, dtype=activations.dtype)
         weights_ptr = weights.data_ptr()
         workspace_ptr = dequant_workspace.data_ptr()
 
