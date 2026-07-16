@@ -151,7 +151,15 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
 
     This is the same reference used by ``TestMoEGemmPrefill`` in ``test_moe.py``
     and matches what a model would compute when no fused kernel is available.
+
+    The matmuls are executed on CPU (inputs are moved off the accelerator) so
+    the reference is independent of the device kernels under test; the result is
+    moved back to the original device so it stays comparable to the kernel output.
     """
+    orig_device = activations.device
+    activations = activations.cpu()
+    dequant_weights_NK = dequant_weights_NK.cpu()
+    num_tokens_per_expert = num_tokens_per_expert.cpu()
     total_tokens, _ = activations.shape
     E, N, _ = dequant_weights_NK.shape
     # Zero-initialise (not ``torch.empty``): any row not covered by the
@@ -159,7 +167,7 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
     # ``num_tokens_per_expert`` sum that is short of ``total_tokens`` -- would
     # otherwise expose stale allocator memory (frequently read back as
     # all-zeros), silently corrupting the reference the kernel is compared to.
-    out = torch.zeros(total_tokens, N, dtype=activations.dtype, device=activations.device)
+    out = torch.zeros(total_tokens, N, dtype=activations.dtype, device="cpu")
     offset = 0
     for e in range(E):
         n_tokens = int(num_tokens_per_expert[e].item())
@@ -168,7 +176,7 @@ def _reference_moe_prefill(activations, dequant_weights_NK, num_tokens_per_exper
         a = activations[offset : offset + n_tokens]
         out[offset : offset + n_tokens] = a @ dequant_weights_NK[e].T
         offset += n_tokens
-    return out
+    return out.to(orig_device)
 
 
 # ---------------------------------------------------------------------------
