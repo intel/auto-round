@@ -131,58 +131,37 @@ class DiffusionMixin:
         """
         return "diffusion"
 
-    def _build_pipeline_call_kwargs(self, pipe, prompts):
-        """Build kwargs for pipeline.__call__."""
-        call_kwargs = {
-            "guidance_scale": self.guidance_scale,
-            "num_inference_steps": self.num_inference_steps,
-            "generator": (
-                None
-                if self.generator_seed is None
-                else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
-            ),
-        }
-        call_kwargs.update(self.pipeline_call_kwargs)
+    # def _build_pipeline_call_kwargs(self, pipe, prompts):
+    #     """Build kwargs for pipeline.__call__."""
+    #     call_kwargs = {
+    #         "guidance_scale": self.guidance_scale,
+    #         "num_inference_steps": self.num_inference_steps,
+    #         "generator": (
+    #             None
+    #             if self.generator_seed is None
+    #             else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
+    #         ),
+    #     }
+    #     call_kwargs.update(self.pipeline_call_kwargs)
+    #
+    #     if self._requires_calibration_image():
+    #         call_kwargs.setdefault(
+    #             "image", self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
+    #         )
+    #         call_kwargs.setdefault("prompt", prompts)
+    #
+    #     return call_kwargs
+    #
+    # def _requires_calibration_image(self) -> bool:
+    #     """Return True when the pipeline's __call__ has a required 'image' parameter.
+    #
+    #     I2V (image-to-video) pipelines like WanImageToVideoPipeline require a PIL/torch
+    #     image as input. This is detected by checking whether 'image' is a positional-or-
+    #     keyword parameter without a default value.
+    #     """
+    #     image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
+    #     return image_param is not None and image_param.default is inspect.Parameter.empty
 
-        if self._requires_calibration_image():
-            call_kwargs.setdefault(
-                "image", self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
-            )
-            call_kwargs.setdefault("prompt", prompts)
-
-        return call_kwargs
-
-    def _requires_calibration_image(self) -> bool:
-        """Return True when the pipeline's __call__ has a required 'image' parameter.
-
-        I2V (image-to-video) pipelines like WanImageToVideoPipeline require a PIL/torch
-        image as input. This is detected by checking whether 'image' is a positional-or-
-        keyword parameter without a default value.
-        """
-        image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
-        return image_param is not None and image_param.default is inspect.Parameter.empty
-
-    def _get_calibration_image(self, batch_size: int):
-        """Return a synthetic PIL Image for I2V pipeline calibration."""
-        params = inspect.signature(self.model_context.pipe.__call__).parameters
-        width_param = params.get("width")
-        height_param = params.get("height")
-        width = (
-            832
-            if width_param is None or width_param.default in (inspect.Parameter.empty, None)
-            else width_param.default
-        )
-        height = (
-            480
-            if height_param is None or height_param.default in (inspect.Parameter.empty, None)
-            else height_param.default
-        )
-        from PIL import Image  # pylint: disable=E0401
-
-        image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
-        if batch_size == 1:
-            return image
-        return [image.copy() for _ in range(batch_size)]
 
     def _find_additional_transformers(self):
         """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""

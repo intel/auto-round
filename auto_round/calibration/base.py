@@ -30,8 +30,6 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import torch
 
-from auto_round.calibration.hooks import make_block_forward_func, should_stop_cache_forward
-
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
 
@@ -39,9 +37,20 @@ if TYPE_CHECKING:
 class Calibrator(ABC):
     """Abstract base for all calibration strategies."""
 
-    def __init__(self, compressor: "BaseCompressor") -> None:
-        self.compressor = compressor
+    #TODO wenhuach remove compressor in init
+    def __init__(self, compressor: "BaseCompressor",**kwargs) -> None:
+        self.model = compressor.model_context.model
+        self.tokenizer = compressor.model_context.tokenizer
+        self.dataset = compressor.dataset
+        self.seed = compressor.seed
+        self.low_gpu_mem_usage = compressor.low_gpu_mem_usage
+        self.batch_size = compressor.batch_size
+        self.batch_dim = compressor.calibration_state.batch_dim
+        self.has_variable_block_shape = compressor.has_variable_block_shape
+        self.shared_cache_keys = compressor.model_context.shared_cache_keys
         self.is_only_supported_bs1 = False
+        self.seqlen= compressor.seqlen
+        self.hook_handles=[] # TODO make sure release later
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -69,7 +78,7 @@ class Calibrator(ABC):
         Subclasses (e.g. ``DiffusionCalibrator``) may override to always
         return ``False`` so the pipeline runs every denoising step.
         """
-        return should_stop_cache_forward(self.compressor, name)
+        return self.should_stop_cache_forward(name)
 
     def wrap_block_forward(self, forward_fn):
         """Optionally wrap the block-forward function.  Default: passthrough.
@@ -79,12 +88,6 @@ class Calibrator(ABC):
         """
         return forward_fn
 
-    def _replace_forward(self) -> None:
-        """Install calibration forward hooks through the shared hook helper."""
-        from auto_round.calibration.hooks import replace_forward_with_hooks
-
-        replace_forward_with_hooks(self.compressor)
-
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
         """Build the block-forward replacement, then let the calibrator wrap it.
@@ -92,9 +95,9 @@ class Calibrator(ABC):
         ``Calibrator.wrap_block_forward`` defaults to passthrough; the
         Diffusion calibrator overrides it to convert positional → kwargs.
         """
-        fn = make_block_forward_func(self, name)  # TODO have a double check wenhuach
+        fn = self.make_block_forward_func(name)  # TODO have a double check wenhuach
 
-        fn = self.calibration.wrap_block_forward(fn)
+        fn = self.wrap_block_forward(fn)
         return fn
 
     def _should_stop_cache_forward(self, name: str) -> bool:
