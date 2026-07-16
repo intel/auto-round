@@ -18,6 +18,7 @@ from typing import Any
 from auto_round.algorithms.registry import resolve_pipeline_member
 from auto_round.schemes import QuantizationScheme
 
+
 # TODO later wenhuach may be deleted
 class BasePipelineMember:
     """Shared interface for all members of a quantization pipeline."""
@@ -48,8 +49,6 @@ class BasePipelineMember:
         """Model-level preparation called once before block iteration starts."""
         return
 
-
     def finalize_run(self, compressor: Any) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return
-
