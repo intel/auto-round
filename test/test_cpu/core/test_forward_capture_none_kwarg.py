@@ -65,10 +65,9 @@ class _FakeModule(torch.nn.Module):
 #     fn = make_block_forward_func(state, name)
 #     module.forward = partial(fn, module)
 #     return module
-#TODO wenhuach revert
+# TODO wenhuach revert
 def _attach_capture(state, name, module):
     return module
-
 
 
 def test_none_then_tensor_kwarg_batch_size_1():
