@@ -1,10 +1,11 @@
 einops
 gptqmodel
 # pip install gguf
-lm_eval >= 0.4.10  # for transformers >= 5.0.0
+lm_eval>=0.4.10  # for transformers >= 5.0.0
 optimum
 pandas
 pillow
 torchvision
 numba
 sentencepiece
+transformers>=5.5.0
