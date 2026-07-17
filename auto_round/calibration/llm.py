@@ -56,11 +56,14 @@ class LLMCalibrator(Calibrator):
     # ── Public API ──────────────────────────────────────────────────────────
 
     @torch.no_grad()
-    def collect(self, block_names, nsamples, layer_names=None, last_cache_name=None):
+    def calibration(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Attempts to cache intermediate data on GPU; on OOM, falls back to CPU.
 
         Verbatim port of the legacy ``DataDrivenCompressor.try_cache_inter_data_gpucpu``.
         """
+        self.hook_handles = [] # clear origin handels
+        self.inputs = {} # clear origin inputs
+
         if is_quantized_input_module(self.model):  # e.g. FP8 model
             layer_names = []
         if layer_names is None:
@@ -387,6 +390,9 @@ class LLMCalibrator(Calibrator):
                 # Force the last token in each sequence to be masked out so the mask is
                 # never "all ones".
                 new_attention_mask[:, -1] = 0
+                if "valid_token_mask" not in self.inputs:
+                    self.inputs["valid_token_mask"]=[]
+                self.inputs["valid_token_mask"].extend(list(torch.split(new_attention_mask, 1, dim=0)))
 
                 # TODO wenhuach pass attention_mask to alg
                 # if not hasattr(c.quantizer, "attention_mask"):
@@ -442,7 +448,7 @@ class LLMCalibrator(Calibrator):
                 f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
 
-    def make_block_forward_func(self, name: str) -> Callable:
+    def _make_block_forward_func(self, name: str) -> Callable:
         """Build a ``forward`` replacement that captures inputs for *block* ``name``.
 
         Mirrors the legacy ``DataDrivenCompressor._get_block_forward_func`` exactly.

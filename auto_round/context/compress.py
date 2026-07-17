@@ -38,7 +38,7 @@ class CompressContext(BaseContext):
         is_immediate_saving: bool = False,
         formats: Union[list, str] = None,
         output_dir: str = "./compressed_models",
-        static_kv_dtype: Optional[torch.dtype] = None,
+        static_kv_dtype: Optional[torch.dtype] = None, #TODO later this should be scheme wenhuach
         static_attention_dtype: Optional[torch.dtype] = None,
         **kwargs,
     ) -> None:

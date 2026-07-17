@@ -24,10 +24,8 @@ from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
-    check_need_act_calibration,
     collect_best_params,
 )
-from auto_round.data_type.utils import update_fused_layer_global_scales
 from auto_round.logger import logger
 from auto_round.utils import (
     get_module,
@@ -119,14 +117,15 @@ class SignRoundQuantizer(BaseQuantizer):
         indices: torch.Tensor,
         loss_func: Callable,
         device: Union[str, torch.device] = "cpu",
+        valid_token_mask: Optional[torch.Tensor] = None,
     ):
         autocast_ctx = (
             nullcontext()
             if self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
-        if self.attention_mask:
-            tmp_attention_mask = [self.attention_mask[i] for i in indices]
+        if valid_token_mask:
+            tmp_attention_mask = [valid_token_mask[i] for i in indices]
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
 
@@ -143,7 +142,17 @@ class SignRoundQuantizer(BaseQuantizer):
 
         return loss
 
-    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, **kwargs) -> dict:
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        valid_token_mask=None,
+        **kwargs,
+    ) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
         This is the pure-algorithm entry point.  All infrastructure concerns
@@ -151,16 +160,26 @@ class SignRoundQuantizer(BaseQuantizer):
         logging) are handled by the Compressor before and after this call.
 
         Args:
-            block:        The transformer block module.
-            fp_inputs:    FP calibration inputs (list[Tensor] or dict).
-            input_others: Auxiliary kwargs (attention_mask, position_ids, etc.).
-            fp_outputs:   FP reference outputs (list[Tensor]).
-            q_inputs:     Quantized inputs from previous block (or None).
-            block_ctx:    Per-block pipeline context.
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as the optimization
+                target for the sign-gradient descent loss (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+                When provided, the loss is computed only over valid token positions.
+            **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
-            best_params: Best quantization parameters found during optimization.
-                Empty dict if no trainable parameters were found.
+            dict: Best quantization parameters found during optimization, or an
+                empty dict if no trainable parameters were found.
         """
         device = device_manager.device
         loss_device = getattr(self, "_loss_device", device)
@@ -244,22 +263,22 @@ class SignRoundQuantizer(BaseQuantizer):
         global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not self.attention_mask:
+        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
             whole_indices = torch.arange(global_batch_size)
             if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
-        block_fwd = self.compressor.block_forward
+        block_fwd = self.block_forward
         for i in range(self.iters):
             if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -267,7 +286,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 pred_output = block_fwd.forward(block, active_inputs, input_others, indices)
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
-                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
+                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device,valid_token_mask)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
@@ -330,24 +349,42 @@ class SignRoundQuantizer(BaseQuantizer):
     def quantize_layer_outside_block(
         self,
         layer_name: str,
-        input_ids: Optional[list[torch.Tensor]] = None,
-        q_inputs: Optional[list[torch.Tensor]] = None,
+        fp_input: Optional[list[torch.Tensor]] = None,
+        q_input: Optional[list[torch.Tensor]] = None,
         device: str = "cpu",
         dtype: Optional[torch.dtype] = None,
+        valid_token_mask: Optional[list[torch.Tensor]] = None,
         **kwargs,
     ):
-        """Quantize a specific layer of the model using the provided inputs.
+        """Quantize a single layer that lives outside a transformer block.
+
+        When ``fp_input`` is provided the layer is tuned with the sign-gradient
+        descent optimizer (same loss loop as block-level quantization).  When
+        ``fp_input`` is ``None`` the method falls back to zero-shot RTN.
 
         Args:
-            layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor): Input data for quantization.
-            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
-            device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
-
-        Returns:
-            None
+            layer_name: Fully-qualified module name of the layer to quantize
+                (e.g. ``"model.lm_head"``).
+            fp_input: Per-sample FP activations fed into this layer, used as
+                calibration inputs during optimization. ``None`` triggers RTN
+                fallback.
+            q_input: Per-sample quantized activations from the previous stage,
+                used instead of ``fp_input`` during the forward pass when
+                cascaded quantized-input is enabled. ``None`` means use
+                ``fp_input`` for both reference and tuning forward.
+            device: Target device string for running the optimization
+                (e.g. ``"cuda:0"``). Defaults to ``"cpu"``.
+            dtype: Optional dtype to cast the layer to before quantization.
+                ``None`` keeps the existing dtype.
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed. Forwarded to the loss computation to weight out
+                padding tokens.
+            **kwargs: Additional keyword arguments forwarded to
+                :meth:`quantize_layer_via_rtn` (e.g. ``disable_opt_rtn``).
         """
-        if input_ids is None:
+        if fp_input is None:
             logger.info(f"using rtn to quantize {layer_name}")
             if dtype is not None:
                 layer = get_module(self.model, layer_name)
@@ -366,10 +403,10 @@ class SignRoundQuantizer(BaseQuantizer):
             device = layer.tuning_device
 
         layer = layer.to(device)
-        for i in range(len(input_ids)):
-            input_ids[i] = input_ids[i].to(layer.weight.dtype)
-            if q_inputs is not None:
-                q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
+        for i in range(len(fp_input)):
+            fp_input[i] = fp_input[i].to(layer.weight.dtype)
+            if q_input is not None:
+                q_input[i] = q_input[i].to(layer.weight.dtype)
 
         wrapper_linear = WrapperLinear(
             layer,
@@ -406,7 +443,7 @@ class SignRoundQuantizer(BaseQuantizer):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-        nsamples = len(input_ids)
+        nsamples = len(fp_input)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         best_params = None
@@ -426,10 +463,10 @@ class SignRoundQuantizer(BaseQuantizer):
         global_batch_size = min(nsamples, global_batch_size)
         if gradient_accumulate_steps != 1 and not self.attention_mask:
             whole_indices = torch.arange(global_batch_size).tolist()
-            if q_inputs is not None:
-                num_elm = self._count_layer_input_elements(q_inputs, whole_indices)
+            if q_input is not None:
+                num_elm = self._count_layer_input_elements(q_input, whole_indices)
             else:
-                num_elm = self._count_layer_input_elements(input_ids, whole_indices)
+                num_elm = self._count_layer_input_elements(fp_input, whole_indices)
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
@@ -441,13 +478,13 @@ class SignRoundQuantizer(BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                if q_inputs is not None:
-                    current_input = [q_inputs[i] for i in indices]
+                if q_input is not None:
+                    current_input = [q_input[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
-                    org_input = [input_ids[i] for i in indices]
+                    org_input = [fp_input[i] for i in indices]
                     org_input = torch.cat(org_input, dim=0).to(device)
                 else:
-                    current_input = [input_ids[i] for i in indices]
+                    current_input = [fp_input[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
                 with torch.no_grad():

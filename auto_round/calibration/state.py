@@ -49,14 +49,13 @@ class CalibrationState:
     See module docstring for field semantics and design rationale.
     """
 
-    # ── Capture buffers ────────────────────────────────────────────────────
-    inputs: dict = field(default_factory=dict)
-    to_cached_layers: list = field(default_factory=list)
-    last_cache_name: Optional[str] = None
-    blocks_requiring_input_ids: list = field(default_factory=list)
+    # # ── Capture buffers ────────────────────────────────────────────────────
+    # inputs: dict = field(default_factory=dict)
+    # to_cached_layers: list = field(default_factory=list)
+    # last_cache_name: Optional[str] = None
+    # blocks_requiring_input_ids: list = field(default_factory=list)
+    #
 
-    # ── Per-batch shape state ──────────────────────────────────────────────
-    attention_mask: list = field(default_factory=list)
     batch_dim: Optional[int] = None
 
     # ── Calibration parameters ─────────────────────────────────────────────
@@ -82,10 +81,10 @@ class CalibrationState:
             return live
         # Legacy fallback (no shared instance wired yet).
         return cls(
-            inputs=getattr(compressor, "inputs", {}) or {},
-            to_cached_layers=getattr(compressor, "to_cached_layers", []) or [],
-            last_cache_name=getattr(compressor, "last_cache_name", None),
-            blocks_requiring_input_ids=getattr(compressor, "blocks_requiring_input_ids", []) or [],
+            # inputs=getattr(compressor, "inputs", {}) or {},
+            # to_cached_layers=getattr(compressor, "to_cached_layers", []) or [],
+            # last_cache_name=getattr(compressor, "last_cache_name", None),
+            # blocks_requiring_input_ids=getattr(compressor, "blocks_requiring_input_ids", []) or [],
             batch_size=getattr(compressor, "batch_size", 8) or 8,
             nsamples=getattr(compressor, "nsamples", 128) or 128,
             seqlen=getattr(compressor, "seqlen", 2048) or 2048,
@@ -118,31 +117,31 @@ class CalibrationState:
             )
             self.seqlen = min(self.seqlen, tok_max)
 
-    def ensure_dataloader(self, model_context: Any, seed: int) -> Any:
-        """Resolve :attr:`dataset` into :attr:`dataloader` and return it.
-
-        - If ``self.dataset`` is a string, builds a tokenized dataloader via
-          :func:`auto_round.calib_dataset.get_dataloader`.
-        - Otherwise, treats ``self.dataset`` as an already-iterable loader.
-
-        Mirrors the inline logic that previously lived in
-        ``DataDrivenCompressor._compute_imatrix`` and the calibrator subclasses.
-        """
-        if isinstance(self.dataset, str):
-            tokenizer = getattr(model_context, "tokenizer", None)
-            if tokenizer is None:
-                raise ValueError("A tokenizer must be set for the model when using a dataset string.")
-            from auto_round.calib_dataset import get_dataloader
-
-            dataset_name = self.dataset.replace(" ", "")
-            self.dataloader = get_dataloader(
-                tokenizer,
-                self.seqlen,
-                dataset_name,
-                seed,
-                self.batch_size,
-                self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
-        return self.dataloader
+    # def ensure_dataloader(self, model_context: Any, seed: int) -> Any:
+    #     """Resolve :attr:`dataset` into :attr:`dataloader` and return it.
+    #
+    #     - If ``self.dataset`` is a string, builds a tokenized dataloader via
+    #       :func:`auto_round.calib_dataset.get_dataloader`.
+    #     - Otherwise, treats ``self.dataset`` as an already-iterable loader.
+    #
+    #     Mirrors the inline logic that previously lived in
+    #     ``DataDrivenCompressor._compute_imatrix`` and the calibrator subclasses.
+    #     """
+    #     if isinstance(self.dataset, str):
+    #         tokenizer = getattr(model_context, "tokenizer", None)
+    #         if tokenizer is None:
+    #             raise ValueError("A tokenizer must be set for the model when using a dataset string.")
+    #         from auto_round.calib_dataset import get_dataloader
+    #
+    #         dataset_name = self.dataset.replace(" ", "")
+    #         self.dataloader = get_dataloader(
+    #             tokenizer,
+    #             self.seqlen,
+    #             dataset_name,
+    #             seed,
+    #             self.batch_size,
+    #             self.nsamples,
+    #         )
+    #     else:
+    #         self.dataloader = self.dataset
+    #     return self.dataloader

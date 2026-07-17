@@ -60,7 +60,7 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
-class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
+class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this to Compressor
 
     def __init__(
         self,
@@ -181,7 +181,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         return "llm"
 
     @torch.no_grad()
-    def try_cache_inter_data_gpucpu(  # TODO the following two should have some differences wenhuach
+    def cache_data(  # TODO the following two should have some differences wenhuach
         self,
         block_names: list,
         nsamples: int,
@@ -195,18 +195,19 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         """
         if self.calibration is None:
             self.post_init()
-        return self.calibration.collect(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
+        # TODO wenhuach reset calibratin state
+        return self.calibration(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
-    @torch.no_grad()
-    def calib(self, nsamples: int, bs: int) -> Any:
-        """Thin wrapper around ``self.calibration.calib``.
-
-        ``MLLMMixin`` and ``DiffusionMixin`` override this method directly via
-        Python MRO; for plain LLM models this routes into ``LLMCalibrator.calib``.
-        """
-        if self.calibration is None:
-            self.post_init()
-        return self.calibration.calib(nsamples, bs)
+    # @torch.no_grad()
+    # def calib(self, nsamples: int, bs: int) -> Any:
+    #     """Thin wrapper around ``self.calibration.calib``.
+    #
+    #     ``MLLMMixin`` and ``DiffusionMixin`` override this method directly via
+    #     Python MRO; for plain LLM models this routes into ``LLMCalibrator.calib``.
+    #     """
+    #     if self.calibration is None:
+    #         self.post_init()
+    #     return self.calibration.calib(nsamples, bs)
 
     # ── Hook registration API (explicit register/remove pattern) ──────────────
 
@@ -348,6 +349,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         nblocks: int = 1,
         pbar: tqdm | None = None,
         input_others_extra_blocks: dict | None = None,
+        valid_token_mask:list[torch.Tensor] |None = None
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -481,7 +483,8 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             update_block_global_scale_if_needed(model, self.data_type, self.group_size)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
-            self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others, reference_output, q_input, ctx)
+            self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others,
+                                                         reference_output, q_input, ctx, valid_token_mask=valid_token_mask)
 
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────
             for pre in self.pipeline.preprocessors:
@@ -579,7 +582,6 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
 
         # In RTN mode (iters == 0), force blockwise quantization to avoid
         # full-model materialization and linear CPU RAM growth.
-        use_blockwise_quantization = True
         logger.info("Zero-shot mode (no calibration data needed): using blockwise quantization.")
 
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
@@ -734,25 +736,27 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             )
         else:
             logger.info("start to cache block inputs")
-        all_inputs = self.try_cache_inter_data_gpucpu(
+        all_inputs = self.cache_data(
             to_cache_block_names,
             self.nsamples,
             to_cache_layer_names,
             last_cache_name=_last_cache_name,
         )
+        # whether the token is pad token or not. For signround, the pad token should not be taken into account in loss
+        valid_token_mask = all_inputs.pop("valid_token_mask", None)
         self.inputs = all_inputs
         all_q_inputs = None
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
-        if not has_gguf and (
-            not hasattr(self.quantizer, "iters") or self.quantizer.iters <= 0
-        ):  # pylint: disable=E1101
+        if (has_gguf and (
+             hasattr(self.quantizer, "iters") or self.quantizer.iters > 0
+        )):  # pylint: disable=E1101
             is_quantized_embedding = self.quantizer.quantize_embedding_layer()
             clear_memory()
             if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none exits, no need to run
                 all_inputs = copy.deepcopy(self.inputs)
                 clear_memory(self.inputs)
-                all_q_inputs = self.try_cache_inter_data_gpucpu(
+                all_q_inputs = self.cache_data(
                     to_cache_block_names, self.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
                 )
         # Remove accelerate dispatch hooks before moving parameters.
@@ -795,7 +799,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
 
             inputs, q_inputs = _update_inputs(inputs, q_inputs)
 
-            clear_memory(self.inputs, device_list=device_manager.device_list)
+            clear_memory(self.inputs)
 
             if "input_ids" in inputs.keys():
                 total_samples = len(inputs["input_ids"])
@@ -818,6 +822,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
                 nblocks=self.nblocks,
                 pbar=pbar,
                 input_others_extra_blocks=all_inputs,
+                valid_token_mask=valid_token_mask,
             )
             if self.compress_context.is_immediate_packing and len(self.formats) != 1:
                 raise ValueError(
@@ -833,7 +838,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)
-        self._quantize_layers_outside_blocks(layer_names, all_inputs)
+        self._quantize_layers_outside_blocks(layer_names, all_inputs,valid_token_mask=valid_token_mask)
 
         convert_module_to_hp_if_necessary(
             self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
@@ -889,7 +894,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             shard_writer.write(module, module_name, False)
             module.to("meta")
 
-    def _quantize_layers_outside_blocks(self, layer_names: list, layer_inputs: dict) -> None:
+    def _quantize_layers_outside_blocks(self, layer_names: list, layer_inputs: dict, valid_token_mask:list[torch.Tensor]|None=None) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
         Args:
@@ -925,11 +930,12 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
                         )
                         layer_names.remove(layer_name)
                         continue
-                self.quantizer.quantize_layer_outside_block(  # TODO check alg merge
+                self.quantizer.quantize_layer_outside_block(
                     layer_name,
-                    input_ids=None,
+                    fp_input=None,
                     device=device_manager.device,
                     disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
+                    valid_token_mask=valid_token_mask,  # TODO wenhuach has not filter out loss
                 )
                 layer_names.remove(layer_name)
                 if self.compress_context.is_immediate_packing:
@@ -956,7 +962,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
 
         if enable_quanted_input:
             logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
-            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
+            q_layer_inputs = self.cache_data([], self.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
@@ -971,7 +977,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self._attach_act_max_for_outside_layer(layer_name, layer_input, q_layer_input)
             self.quantizer.quantize_layer_outside_block(
-                layer_name, layer_input, q_layer_input, device=device_manager.device
+                layer_name, fp_input=layer_input, q_input=q_layer_input, device=device_manager.device
             )
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.layer_config)
@@ -1178,10 +1184,10 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
             # ``Calibrator.collect``).  Bind it as the authoritative store so
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
             # ``batch_dim``.
-            self.calibration_state = inputs
+            self.calibration_state = inputs # TODO wenhuach this has issues, calibraion state no longer hold much info
         else:
             self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]]
+        block_inputs = self.inputs[self.quant_block_list[0][0]] #TODO we have wenhuach
         input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
 
         # ── Infrastructure: materialize, dtype convert, device placement ──────
@@ -1278,9 +1284,9 @@ class DataDrivenCompressor(BaseCompressor):  # TODO rename this to Compressor
 
         if q_input is not None:
             if input_ids is not q_input:
-                clear_memory(input_ids, device_list=device_manager.device_list)
+                clear_memory(input_ids)
             else:
-                clear_memory(device_list=device_manager.device_list)
+                clear_memory()
             input_ids = q_input
 
         # ── Pure algorithm: block_quantizer.quantize_block ────────────────────

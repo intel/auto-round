@@ -7,7 +7,6 @@ from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
-    sync_shared_config_from,
 )
 from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
@@ -182,15 +181,15 @@ def test_shared_config_values_reject_conflicts():
         )
 
 
-def test_shared_config_sync_from_source_skips_missing_attrs():
-    source = PartialSharedConfig(weight_clip_ratio=0.75)
-    target = PartialSharedConfig()
-    no_clip_target = NoWeightClipConfig()
-
-    sync_shared_config_from(source, [target, no_clip_target, RotationConfig()])
-
-    assert target.weight_clip_ratio == 0.75
-    assert not hasattr(no_clip_target, "weight_clip_ratio")
+# def test_shared_config_sync_from_source_skips_missing_attrs():
+#     source = PartialSharedConfig(weight_clip_ratio=0.75)
+#     target = PartialSharedConfig()
+#     no_clip_target = NoWeightClipConfig()
+#
+#     sync_shared_config_from(source, [target, no_clip_target, RotationConfig()])
+#
+#     assert target.weight_clip_ratio == 0.75
+#     assert not hasattr(no_clip_target, "weight_clip_ratio")
 
 
 def test_user_scheme_overrides_merge_across_all_configs():

@@ -47,7 +47,7 @@ class DiffusionCalibrator(LLMCalibrator):
         self.num_inference_steps = compressor.num_inference_steps
         self.generator_seed = compressor.generator_seed  # make sure pass
 
-    def wrap_block_forward(self, forward_fn):
+    def _wrap_block_forward(self, forward_fn):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
         return wrap_block_forward_positional_to_kwargs(forward_fn)
 

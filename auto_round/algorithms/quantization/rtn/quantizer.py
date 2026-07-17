@@ -32,11 +32,38 @@ class RTNQuantizer(BaseQuantizer):
         BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
-    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, **kwargs) -> dict:
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        valid_token_mask=None,
+        **kwargs,
+    ) -> dict:
         """Apply zero-shot RTN quantization to a block.
 
+        Args:
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as quantization
+                targets (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+            **kwargs: Reserved for forward-compatibility with future parameters.
+
         Returns:
-            dict: Empty dict (zero-shot RTN has no tunable parameters to return).
+            dict: Empty dict — zero-shot RTN has no tunable parameters to track.
         """
 
         for _name, m in block.named_modules():
@@ -98,8 +125,37 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         return handles
 
     @torch.no_grad()
-    def quantize_block(self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, **kwargs):
-        """Apply imatrix-informed RTN quantization to a block."""
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        valid_token_mask=None,
+        **kwargs,
+    ):
+        """Apply imatrix-informed RTN quantization to a block.
+
+        Args:
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as quantization
+                targets (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+                Currently unused in imatrix-RTN; reserved for future use.
+            **kwargs: Reserved for forward-compatibility with future parameters.
+        """
         # Normalize imatrix and quantize layers
         for name, m in block.named_modules():
             if hasattr(m, "imatrix"):

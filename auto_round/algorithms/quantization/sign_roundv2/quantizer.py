@@ -352,6 +352,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
+        valid_token_mask:list[torch.Tensor]|None = None,
     ):
         if self._use_outlier_suppressed_loss:
             loss_diff = torch.abs(pred_output - ref_output)
@@ -365,8 +366,8 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             autocast_ctx = (
                 autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype) if self.amp else nullcontext()
             )
-            if self.attention_mask:
-                tmp_attention_mask = [self.attention_mask[i] for i in indices]
+            if valid_token_mask:
+                tmp_attention_mask = [valid_token_mask[i] for i in indices]
                 tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                 tmp_attention_mask.unsqueeze_(-1)
                 with autocast_ctx:

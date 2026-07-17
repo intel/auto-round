@@ -850,7 +850,6 @@ class BaseCompressor(object):
                 self.model_context.model = self.model_context.model.to(torch.bfloat16)
 
         self._resolve_formats()
-        self._build_quantizer()
         self._patch_model()
         self._build_layer_config()
         self._apply_rotations()
@@ -868,6 +867,9 @@ class BaseCompressor(object):
         from auto_round.algorithms.pipeline import BlockForward
 
         self.block_forward = BlockForward.from_compressor(self)
+
+        # Must place at the end
+        self._build_quantizer()
 
         # Final trim after all init phases.
         gc.collect()
@@ -1162,27 +1164,27 @@ class BaseCompressor(object):
         # (AutoScheme path) runs delta-loss forward+backward passes.
         self._scheme_post_init()
 
-        # Sync the fully-resolved scheme state to the quantizer so that
-        # quantization methods (quantize_block, quantize_layer, etc.) have
-        # access to layer_config, scale_dtype, quant_block_list, etc.
-        self.quantizer.layer_config = self.layer_config
-        self.quantizer.has_qlayer_outside_block = self.has_qlayer_outside_block
-        self.quantizer.regex_config = self.regex_config
-        self.quantizer.quant_block_list = self.quant_block_list
-        self.quantizer.to_quant_block_names = self.to_quant_block_names
-        self.quantizer.scale_dtype = self.scale_dtype
-        self.quantizer.ignore_layers = self.ignore_layers
+        # # Sync the fully-resolved scheme state to the quantizer so that
+        # # quantization methods (quantize_block, quantize_layer, etc.) have
+        # # access to layer_config, scale_dtype, quant_block_list, etc.
+        # self.quantizer.layer_config = self.layer_config
+        # self.quantizer.has_qlayer_outside_block = self.has_qlayer_outside_block
+        # self.quantizer.regex_config = self.regex_config
+        # self.quantizer.quant_block_list = self.quant_block_list
+        # self.quantizer.to_quant_block_names = self.to_quant_block_names
+        # self.quantizer.scale_dtype = self.scale_dtype
+        # self.quantizer.ignore_layers = self.ignore_layers
 
-        from auto_round.algorithms.config_resolver import sync_shared_config_from
-
-        sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
-
-        # Also sync runtime-only state to all preprocessors in the pipeline so
-        # they have access to per-layer quant config during pre-processing (e.g.
-        # AWQ grid search uses layer_config to look up bits/group_size for each layer).
-        for pre in self._pipeline.preprocessors:
-            pre.layer_config = self.layer_config
-            pre.scale_dtype = self.scale_dtype
+        # from auto_round.algorithms.config_resolver import sync_shared_config_from
+        #
+        # sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
+        #
+        # # Also sync runtime-only state to all preprocessors in the pipeline so
+        # # they have access to per-layer quant config during pre-processing (e.g.
+        # # AWQ grid search uses layer_config to look up bits/group_size for each layer).
+        # for pre in self._pipeline.preprocessors:
+        #     pre.layer_config = self.layer_config
+        #     pre.scale_dtype = self.scale_dtype
 
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
@@ -1591,7 +1593,7 @@ class BaseCompressor(object):
             compressed_model = format.save_quantized(
                 save_folder,
                 model=self.model_context.model,
-                layer_config=self.quantizer.layer_config,
+                layer_config=self.layer_config,
                 inplace=inplace,
                 tokenizer=self.model_context.tokenizer,
                 device=device_manager.device,

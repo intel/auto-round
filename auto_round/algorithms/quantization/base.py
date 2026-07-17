@@ -96,14 +96,6 @@ class BaseQuantizer(BasePipelineMember):
         # Compressor-supplied shared instance; just rebind.
         self._calibration_state = new_state
 
-    @property
-    def attention_mask(self) -> list:  # TODO better move to quantize_block
-        return self._calibration_state.attention_mask
-
-    @attention_mask.setter
-    def attention_mask(self, value: list) -> None:
-        self._calibration_state.attention_mask = value if value is not None else []
-
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
 
@@ -112,11 +104,11 @@ class BaseQuantizer(BasePipelineMember):
         ``scale_dtype`` (string → torch dtype).  All quantizer fields that
         merely mirror the compressor are pulled from here in one place.
         """
-        self.compressor = compressor
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = compressor.scheme_context
         self.scale_dtype = compressor.scale_dtype  # TODO better move to scheme? wenhuach
+        self.block_forward = compressor.block_forward
         # Share the compressor's CalibrationState instance.
         self._calibration_state = compressor._calibration_state
 
@@ -176,41 +168,53 @@ class BaseQuantizer(BasePipelineMember):
         is_quantized = False
         for name, module in self.model_context.model.named_modules():
             # Skip non-Embedding modules or layers not in config
-            if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
+            if not isinstance(module, torch.nn.Embedding):
                 continue
-
-            config = self.layer_config[name]
 
             # Skip layers that are not marked for quantization
-            if not check_to_quantized(config):
+            if not check_to_quantized(module):
                 continue
+
             is_quantized = True
-            config["scale_dtype"] = self.scale_dtype
-            dtype = config["data_type"]
+
+            # Read all quant params directly from module attributes.
+            bits = getattr(module, "bits", None)
+            group_size = getattr(module, "group_size", None)
+            sym = getattr(module, "sym", None)
+            data_type = getattr(module, "data_type", None)
+            super_bits = getattr(module, "super_bits", None)
+            super_group_size = getattr(module, "super_group_size", None)
+            scale_dtype = self.scale_dtype
 
             # Determine quantization function key with symmetry/asymmetry
-            if dtype not in QUANT_FUNC_WITH_DTYPE:
-                dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
+            quant_dtype = data_type
+            if quant_dtype not in QUANT_FUNC_WITH_DTYPE:
+                quant_dtype = f"{quant_dtype}_{'sym' if sym else 'asym'}"
             if not hasattr(self, "iters") or self.iters <= 0:  # pylint: disable=E1101
-                tmp_dtype = "rtn_" + dtype
+                tmp_dtype = "rtn_" + quant_dtype
                 if tmp_dtype in QUANT_FUNC_WITH_DTYPE:
-                    dtype = tmp_dtype
+                    quant_dtype = tmp_dtype
 
-            quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
-            dtype = module.weight.dtype
+            quant_func = QUANT_FUNC_WITH_DTYPE[quant_dtype]
+            weight_dtype = module.weight.dtype
             # As typically float32 are used in RTN to search scale zp,
             # to avoid cache a bf16 copy we'd better use float32
-            if config.get("super_group_size", None) is not None:
-                dtype = torch.float32
+            if super_group_size is not None:
+                weight_dtype = torch.float32
+
+            quant_kwargs = {
+                "bits": bits,
+                "group_size": group_size,
+                "super_bits": super_bits,
+                "super_group_size": super_group_size,
+                "scale_dtype": scale_dtype,
+            }
 
             # Attempt quantization on GPU, fall back to CPU if OOM
             try:
                 weight, scale, zp = quant_func(
-                    module.weight.to(dtype=dtype, device=device_manager.device),
-                    **{
-                        k: config.get(k, None)
-                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
-                    },
+                    module.weight.to(dtype=weight_dtype, device=device_manager.device),
+                    **quant_kwargs,
                 )
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
@@ -219,10 +223,7 @@ class BaseQuantizer(BasePipelineMember):
                     logger.warning("falling back to CPU")
                     weight, scale, zp = quant_func(
                         module.weight.to("cpu"),
-                        **{
-                            k: config.get(k, None)
-                            for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
-                        },
+                        **quant_kwargs,
                     )
                 except Exception as e:
                     raise
@@ -240,8 +241,18 @@ class BaseQuantizer(BasePipelineMember):
                 else:
                     setattr(module, param_name, value)
 
-            # Update config
-            self.layer_config.setdefault(name, {}).update(config)
+            # # Update config with resolved quant params
+            # self.layer_config.setdefault(name, {}).update(
+            #     {
+            #         "bits": bits,
+            #         "group_size": group_size,
+            #         "sym": sym,
+            #         "data_type": data_type,
+            #         "super_bits": super_bits,
+            #         "super_group_size": super_group_size,
+            #         "scale_dtype": scale_dtype,
+            #     }
+            # )
             del weight
             del scale
             del zp
@@ -259,6 +270,7 @@ class BaseQuantizer(BasePipelineMember):
         fp_outputs: list[torch.Tensor],
         q_inputs: list[torch.Tensor] | None,
         block_ctx: "BlockContext",
+        valid_token_mask: list[torch.Tensor] | None = None,
         **kwargs,
     ) -> dict:
         """Apply the quantization algorithm to a prepared block.
@@ -268,26 +280,61 @@ class BaseQuantizer(BasePipelineMember):
         registration, DDP setup) has been completed.
 
         Args:
-            block:        The transformer block module.
-            fp_inputs:    FP calibration inputs for this block (list[Tensor] or dict for diffusion).
-            input_others: Auxiliary kwargs (attention_mask, position_ids, etc.).
-            fp_outputs:   FP reference outputs for this block (list[Tensor]).
-            q_inputs:     Quantized inputs from previous block (list[Tensor] or None).
-            block_ctx:    Per-block pipeline context (BlockContext).
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as quantization
+                targets (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+            **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
+
+        Raises:
+            NotImplementedError: Subclasses must override this method.
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
 
     def quantize_layer_outside_block(
-        self, layer_name: str, input_ids=None, disable_opt_rtn: bool | None = None, **kwargs
+        self,
+        layer_name: str,
+        fp_input: list[torch.Tensor] | None = None,
+        q_input: list[torch.Tensor] | None = None,
+        disable_opt_rtn: bool | None = None,
+        valid_token_mask: list[torch.Tensor] | None = None,
+        **kwargs,
     ):
-        """Quantizes a single layer outside of a block using RTN fallback.
+        """Quantize a single layer outside a transformer block using RTN fallback.
 
         Args:
-            layer_name (str): The name of the layer to quantize.
-            input_ids: Optional calibration inputs (unused in RTN fallback).
+            layer_name: Fully-qualified module name of the layer to quantize
+                (e.g. ``"model.lm_head"``).
+            fp_input: Optional per-sample FP calibration inputs for this layer.
+                Unused in the base RTN implementation but available for
+                subclasses that perform data-driven optimization.
+            q_input: Optional per-sample quantized activations from the previous
+                stage. Used instead of ``fp_input`` for the tuning forward pass
+                when cascaded quantized-input is enabled. Unused in the base
+                RTN fallback.
+            disable_opt_rtn: When ``True``, skip the optimized-RTN scale/zp
+                search and use plain RTN. ``None`` defers to
+                ``self.config.disable_opt_rtn``.
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if not needed.
+                Unused in the base RTN fallback; available for data-driven
+                subclasses.
+            **kwargs: Additional keyword arguments. Recognized key: ``dtype``
+                (torch.dtype) — casts the layer before quantization.
         """
         dtype = kwargs.pop("dtype", None)
         if dtype is not None:
