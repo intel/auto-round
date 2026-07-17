@@ -1048,11 +1048,8 @@ def _build_mxfp_quantization_config(
     :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
     """
     from auto_round.export.export_to_llmcompressor.config import (
-        check_compressed_tensors_supported,
         initialize_quantization,
     )
-
-    check_compressed_tensors_supported(raise_error=True)
 
     bits = default_scheme["bits"]
     if bits not in _SUPPORTED_MXFP_BITS:
