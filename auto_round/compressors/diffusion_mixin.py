@@ -84,7 +84,7 @@ class DiffusionMixin:
 
         if iters > 0:
             # ``batch_size`` is owned by the compressor / shared
-            # CalibrationState; it only comes from kwargs now (entry.py forwards
+            # CalibrationContext; it only comes from kwargs now (entry.py forwards
             # it explicitly).  AlgConfig no longer carries it.  Treat a missing
             # value as ``BaseCompressor``'s default (8) so the reset path always
             # triggers when the user didn't explicitly opt out.
@@ -364,7 +364,7 @@ class DiffusionMixin:
         self.post_init()
 
         # Zero-shot (RTN) path: no calibration data needed
-        if not self.need_calib:
+        if not self.need_data:
             return self._quantize_zero_shot()
 
         # Get block names and call cache_inter_data to populate self.inputs

@@ -45,6 +45,7 @@ class QuantizationConfig:
         super_bits: Bit width used for double quantization metadata.
         super_group_size: Group size used for double quantization metadata.
     """
+    need_data = True
 
     _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
 

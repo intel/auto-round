@@ -64,7 +64,7 @@ class ModelContext(BaseContext):
         trust_remote_code: bool = True,
         config: Optional[AutoConfig] = None,
         amp: bool = True,
-        need_calib: bool = True,
+        need_data: bool = True,
         is_act_quantize: bool = False,
         quant_nontext_module: bool = False,
         **kwargs,
@@ -102,7 +102,7 @@ class ModelContext(BaseContext):
         self.trust_remote_code = trust_remote_code
         self.config = config
         self.amp = amp
-        self.need_calib = need_calib
+        self.need_data = need_data
         self.quant_nontext_module = quant_nontext_module
 
         # Load model and run basic initialization eagerly so the model is ready
@@ -204,7 +204,7 @@ class ModelContext(BaseContext):
                 model_dtype=self.model_dtype,
                 trust_remote_code=self.trust_remote_code,
             )
-        elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
+        elif self.tokenizer is None and not self.is_diffusion and self.need_data:
             raise ValueError("A tokenizer must be set for non-str model input")
 
         self._model_loaded = True

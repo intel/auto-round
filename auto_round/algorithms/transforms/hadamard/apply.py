@@ -75,7 +75,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
     Or directly::
 
         from auto_round.algorithms.transforms.hadamard import apply_rotation_transform
-        model = apply_rotation_transform(model, config=RotationConfig(), need_calibration=True)
+        model = apply_rotation_transform(model, config=RotationConfig(), need_dataration=True)
     """
 
     def __init__(self, config: RotationConfig) -> None:

@@ -149,7 +149,7 @@ def _make_compressor_scheme_property(name):
 
 
 class BaseCompressor(object):
-    need_calib: bool = True
+    need_data: bool = True
     compress_context: CompressContext = None
     model_context: ModelContext = None
     shard_writer: ShardWriter = None
@@ -212,14 +212,14 @@ class BaseCompressor(object):
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
         **kwargs,
     ) -> None:
-        # ``CalibrationState`` is the single source of truth for calibration
+        # ``CalibrationContext`` is the single source of truth for calibration
         # runtime state.  Seed every calibration field here in one block so
         # the rest of ``__init__`` only ever interacts with the state object
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
-        from auto_round.calibration.state import CalibrationState  # TODO delete wenhuach
+        from auto_round.calibration.state import CalibrationContext  # TODO delete wenhuach
 
-        self._calibration_state = CalibrationState(
+        self._calibration_state = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
             batch_size=kwargs.pop("batch_size", 8),
@@ -227,7 +227,7 @@ class BaseCompressor(object):
 
         # ``dataset`` is not a named __init__ parameter – it arrives via
         # **kwargs from the compatibility layer.  Pop it early and route
-        # through the property setter so CalibrationState owns it.
+        # through the property setter so CalibrationContext owns it.
         _dataset = kwargs.pop("dataset", None)
         if _dataset is not None:
             self.dataset = _dataset
@@ -383,7 +383,7 @@ class BaseCompressor(object):
             trust_remote_code=trust_remote_code,
             config=model_config,
             amp=amp,
-            need_calib=self.need_calib,
+            need_data=self.need_data,
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
@@ -417,6 +417,58 @@ class BaseCompressor(object):
         fixed_attr = get_predefined_fixed_attr(self.model) or {}
         for key, value in fixed_attr.items():
             setattr(self, key, value)
+
+        self.need_data = self._check_need_data()
+
+
+    def _check_need_data(self) -> bool:
+        """Whether this compressor instance actually needs calibration data.
+
+        Returns True when imatrix/opt-rtn is enabled, activation calibration is
+        needed (e.g. act_dynamic=False with NV FP types), or an AutoScheme is in
+        use.  Returns False for pure zero-shot RTN cases.
+        """
+
+        # During early __init__ quantize_config may not exist yet — default to True.
+        if not hasattr(self, "quantize_config") or self.quantize_config is None:
+            return True
+        return self._needs_calibration_data()
+
+    def _needs_calibration_data(self) -> bool:
+        """Determine whether calibration data is truly required.
+
+        Calibration data IS required when:
+        - Static activation quantization is needed (act_dynamic=False with NV FP)
+        - AutoScheme is being used (needs delta-loss evaluation)
+        - The quantizer uses iterative optimization (iters > 0, i.e., SignRound)
+
+        Otherwise, zero-shot (RTN/opt-RTN) quantization can proceed without data.
+        """
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+        if any(getattr(config, "need_data", True) for config in self._alg_configs):
+            return True
+
+        # AutoScheme needs data for delta-loss scheme selection
+        if isinstance(self.scheme, AutoScheme): # TODO wenhuach check this one
+            return True
+
+        # Check if activation calibration is needed
+        from auto_round.compressors.utils import check_need_act_calibration
+        _, _, final_attrs = parse_scheme(self.scheme, {})
+        act_bits = final_attrs["act_bits"]
+        act_data_type = final_attrs["act_data_type"]
+        act_dynamic = final_attrs["act_dynamic"]
+        is_act_quantize = act_bits is not None and act_bits <= 8
+        if is_act_quantize and check_need_act_calibration(
+            act_dynamic,
+            act_data_type,
+            act_bits if act_bits is not None else 16,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
+        ):
+            return True
+
+        return False
 
     # ── Convenience properties ────────────────────────────────────────────────
 
@@ -761,7 +813,7 @@ class BaseCompressor(object):
             and act_bits > 8
             and not is_debug_mode()
             and not is_raw_fp8
-            and self.need_calib
+            and self.need_data
         ):
             logger.info(
                 "%s",
@@ -919,7 +971,7 @@ class BaseCompressor(object):
             so that the entire compressor operates through the pipeline abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
-            ``CalibrationState`` from this compressor.  ``quantizer.model``
+            ``CalibrationContext`` from this compressor.  ``quantizer.model``
             is a property that reads ``model_context.model``.
           - Exposes ``self.quantizer`` as a ``@property`` (see below) that
             transparently delegates to ``self.pipeline.block_quantizer`` so all
@@ -927,7 +979,7 @@ class BaseCompressor(object):
 
         Postconditions:
           - ``self.pipeline`` is a ``QuantizationPipeline`` wrapping the block quantizer.
-          - ``self.quantizer`` (via property) is ready and shares ``CalibrationState``
+          - ``self.quantizer`` (via property) is ready and shares ``CalibrationContext``
             with the compressor.
         """
         from auto_round.algorithms.pipeline import QuantizationPipeline
@@ -1221,7 +1273,7 @@ class BaseCompressor(object):
         # gguf lm-head used rtn in version>=0.13
         if (
             self.has_qlayer_outside_block
-            and self.need_calib
+            and self.need_data
             and (
                 self.compress_context.formats is None
                 or "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
@@ -1431,7 +1483,7 @@ class BaseCompressor(object):
         if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
             self.compress_context.is_immediate_packing = True
 
-        if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
+        if self.has_qlayer_outside_block and self.need_data and not has_single_gguf_format:
             self.compress_context.is_immediate_packing = False
         if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this

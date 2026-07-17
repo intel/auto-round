@@ -62,21 +62,19 @@ class BaseQuantizer(BasePipelineMember):
     # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
     # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
 
-    supported_types = SUPPORTED_LAYER_TYPES
-    inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
     enable_alg_ext = False  # TODO delete later wenhuach
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
         self.layer_config = None
         # Calibration-time state lives on a shared
-        # :class:`~auto_round.calibration.state.CalibrationState` instance.
+        # :class:`~auto_round.calibration.state.CalibrationContext` instance.
         # The compressor wires its own instance here in ``_resolve_scheme``;
         # until then we own a private placeholder so property-based reads /
         # writes during construction don't blow up.
-        from auto_round.calibration.state import CalibrationState
+        from auto_round.calibration.state import CalibrationContext
 
-        self._calibration_state = CalibrationState()
+        self._calibration_state = CalibrationContext()
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
@@ -86,21 +84,21 @@ class BaseQuantizer(BasePipelineMember):
     def is_support_compile_block(self):  # TODO support compile block
         return True
 
-    # ── Shared CalibrationState forwarders ───────────────────────────────────────
+    # ── Shared CalibrationContext forwarders ───────────────────────────────────────
     @property
     def calibration_state(self) -> Any:  # TODO later decouple it from compressor this one could be deleted?
         return self._calibration_state
 
-    @calibration_state.setter
-    def calibration_state(self, new_state: Any) -> None:
-        # Compressor-supplied shared instance; just rebind.
-        self._calibration_state = new_state
+    # @calibration_state.setter
+    # def calibration_state(self, new_state: Any) -> None:
+    #     # Compressor-supplied shared instance; just rebind.
+    #     self._calibration_state = new_state
 
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
 
         The compressor owns the authoritative ``model_context`` /
-        ``compress_context`` / ``CalibrationState`` and resolves
+        ``compress_context`` / ``CalibrationContext`` and resolves
         ``scale_dtype`` (string → torch dtype).  All quantizer fields that
         merely mirror the compressor are pulled from here in one place.
         """
@@ -109,7 +107,7 @@ class BaseQuantizer(BasePipelineMember):
         self.scheme = compressor.scheme_context
         self.scale_dtype = compressor.scale_dtype  # TODO better move to scheme? wenhuach
         self.block_forward = compressor.block_forward
-        # Share the compressor's CalibrationState instance.
+        # Share the compressor's CalibrationContext instance.
         self._calibration_state = compressor._calibration_state
 
     @property
@@ -434,10 +432,10 @@ class BaseQuantizer(BasePipelineMember):
             self._resolved_block_forward = block_forward
         return self._resolved_block_forward
 
-    def _invalidate_block_forward_cache(self):
-        """Clear the cached block forward function (call when block changes)."""
-        self.__dict__.pop("_resolved_block_forward", None)
-        self.__dict__.pop("_compiled_block_forward", None)
+    # def _invalidate_block_forward_cache(self):
+    #     """Clear the cached block forward function (call when block changes)."""
+    #     self.__dict__.pop("_resolved_block_forward", None)
+    #     self.__dict__.pop("_compiled_block_forward", None)
 
     def prepare_run(self, compressor: Any) -> None:
         """Model-level preparation (called once before block iteration starts)."""

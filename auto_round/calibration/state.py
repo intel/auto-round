@@ -11,27 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""``CalibrationState`` — single source of truth for calibration-time state.
+"""``CalibrationContext`` — single source of truth for calibration-time state.
 
 This dataclass owns every per-run calibration field shared between
 :class:`~auto_round.compressors.base.BaseCompressor` and
 :class:`~auto_round.algorithms.quantization.base.BaseQuantizer`:
 
-- Cache state ``(inputs, to_cached_layers, last_cache_name, blocks_requiring_input_ids)``
 - Per-batch shape state ``(attention_mask, batch_dim)``
 - Calibration parameters ``(batch_size, gradient_accumulate_steps, nsamples, seqlen, dataset, dataloader)``
 
 Both the compressor and the quantizer hold a reference to the same
-``CalibrationState`` instance (wired in ``BaseCompressor._resolve_scheme``).
-All legacy attribute reads/writes are routed here through ``@property``
-forwarders, so existing call sites need no changes.
+``CalibrationContext`` instance (wired in ``BaseCompressor._resolve_scheme``).
 
-The dataclass also provides two behavioural helpers that previously lived
-inline in :class:`~auto_round.compressors.data_driven.DataDrivenCompressor`:
+The dataclass also provides a behavioural helper:
 
 - :meth:`clamp_seqlen` — clamps ``self.seqlen`` to model / tokenizer limits.
-- :meth:`ensure_dataloader` — builds ``self.dataloader`` from
-  ``self.dataset`` (string name or pre-built loader).
 """
 
 from dataclasses import dataclass, field
@@ -39,11 +33,11 @@ from typing import Any, Optional
 
 from auto_round.logger import logger
 
-__all__ = ["CalibrationState"]
+__all__ = ["CalibrationContext"]
 
 
 @dataclass
-class CalibrationState:
+class CalibrationContext:
     """Authoritative runtime store for calibration state.
 
     See module docstring for field semantics and design rationale.
@@ -68,7 +62,7 @@ class CalibrationState:
     # ── Compressor / quantizer round-tripping ──────────────────────────────
 
     @classmethod
-    def from_compressor(cls, compressor: Any) -> "CalibrationState":
+    def from_compressor(cls, compressor: Any) -> "CalibrationContext":
         """Return the live shared instance held by ``compressor``.
 
         The compressor always owns a ``_calibration_state`` after

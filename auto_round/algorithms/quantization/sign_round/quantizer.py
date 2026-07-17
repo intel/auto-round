@@ -473,8 +473,8 @@ class SignRoundQuantizer(BaseQuantizer):
         for i in range(self.iters):
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -494,8 +494,8 @@ class SignRoundQuantizer(BaseQuantizer):
                     if not self.model_context.amp
                     else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
                 )
-                if self.attention_mask:
-                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
+                if valid_token_mask:
+                    tmp_attention_mask = [valid_token_mask[i] for i in indices]
                     tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                     tmp_attention_mask.unsqueeze_(-1)
 

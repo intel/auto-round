@@ -94,67 +94,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this t
         # Set after ``super().__init__()`` because the state object is created there.
         self.dataset = dataset
 
-    @property
-    def need_calib(self) -> bool:
-        """Whether this compressor instance actually needs calibration data.
 
-        Returns True when imatrix/opt-rtn is enabled, activation calibration is
-        needed (e.g. act_dynamic=False with NV FP types), or an AutoScheme is in
-        use.  Returns False for pure zero-shot RTN cases.
-        """
-        # During early __init__ quantize_config may not exist yet — default to True.
-        if not hasattr(self, "quantize_config") or self.quantize_config is None:
-            return True
-        return self._needs_calibration_data()
-
-    def _needs_calibration_data(self) -> bool:
-        """Determine whether calibration data is truly required.
-
-        Calibration data IS required when:
-        - Static activation quantization is needed (act_dynamic=False with NV FP)
-        - AutoScheme is being used (needs delta-loss evaluation)
-        - The quantizer uses iterative optimization (iters > 0, i.e., SignRound)
-
-        Otherwise, zero-shot (RTN/opt-RTN) quantization can proceed without data.
-        """
-        from auto_round.algorithms.quantization.rtn.config import RTNConfig
-        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-        qcfg = self.quantize_config
-        if qcfg is None:
-            return True
-
-        # SignRound always needs data
-        if not isinstance(qcfg, RTNConfig):
-            return True
-
-        # AutoScheme needs data for delta-loss scheme selection
-        if isinstance(self.scheme, AutoScheme):
-            return True
-
-        # opt-rtn (imatrix optimization) needs data for imatrix computation
-        from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
-
-        if isinstance(qcfg, OptimizedRTNConfig):
-            return True
-
-        # Check if activation calibration is needed
-        from auto_round.compressors.utils import check_need_act_calibration
-
-        act_bits = getattr(qcfg, "act_bits", 16)
-        act_data_type = getattr(qcfg, "act_data_type", None)
-        act_dynamic = getattr(qcfg, "act_dynamic", None)
-        is_act_quantize = act_bits is not None and act_bits <= 8
-        if is_act_quantize and check_need_act_calibration(
-            act_dynamic,
-            act_data_type,
-            act_bits if act_bits is not None else 16,
-            static_kv_dtype=getattr(self, "static_kv_dtype", None),
-            static_attention_dtype=getattr(self, "static_attention_dtype", None),
-        ):
-            return True
-
-        return False
 
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
@@ -166,7 +106,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this t
         if self._post_init_done:
             return
         super().post_init()
-        if self.need_calib and self.calibration is None:
+        if self.need_data and self.calibration is None:
             from auto_round.calibration import get_calibrator
 
             kind = self._get_calibrator_kind()
@@ -559,7 +499,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this t
         """
         self.post_init()
 
-        if not self.need_calib:
+        if not self.need_data:
             return self._quantize_zero_shot()
 
         return self._quantize_data_driven()
@@ -1134,7 +1074,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this t
             self.post_init()
 
         # ── Zero-shot (RTN) path: no calibration data needed ──────────────────
-        if not self.need_calib:
+        if not self.need_data:
             from auto_round.algorithms.pipeline import BlockContext
 
             materialize_model_(block)
