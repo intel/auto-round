@@ -315,6 +315,47 @@ class TestMoEGemmPrefillAccuracy:
                 del os.environ[k]
             os.environ.update(saved)
 
+    @pytest.fixture(autouse=True)
+    def _xpu_cleanup_between_tests(self):
+        """Release the XPU allocator cache before and after every test.
+
+        The quantized prefill paths allocate ``torch.empty`` buffers -- the
+        ``[total_tokens, N]`` output and (for the dequant path) a large
+        ``[E, K, N]`` scratch workspace -- and the grouped GEMM only writes the
+        token/expert rows it is actually dispatched for. Any element it does not
+        overwrite reads back whatever bytes the caching allocator handed out.
+
+        Run in isolation the accumulator starts empty, so those buffers come from
+        fresh device pages that read back as zeros and the comparison passes.
+        Run as part of the full suite, the preceding XPU test files
+        (``test_matmul``, ``test_moe``, ``test_moe_decode_perf``, ...) leave the
+        allocator holding a large, *non-zero* working set; the next ``torch.empty``
+        here reuses one of those dirty blocks and the stale bytes surface as a
+        handful of wildly-wrong outputs. That is the classic "passes in isolation,
+        fails only in the full suite" symptom (observed on
+        ``test_accuracy_int4``).
+
+        Every other XPU test file in this directory already brackets its tests
+        with ``torch.xpu.empty_cache()`` for exactly this reason (see
+        ``_xpu_cleanup_between_tests`` in ``test_moe_decode_perf.py`` and the
+        per-test ``empty_cache`` calls in ``test_matmul.py`` /
+        ``test_weightonly.py``). Mirror that here so each accuracy test starts
+        from a clean allocator state regardless of what ran before it.
+        """
+        self._release_xpu_memory()
+        try:
+            yield
+        finally:
+            self._release_xpu_memory()
+
+    @staticmethod
+    def _release_xpu_memory():
+        """Synchronize and free cached XPU memory (no-op when XPU is absent)."""
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.synchronize()
+            if hasattr(torch.xpu, "empty_cache"):
+                torch.xpu.empty_cache()
+
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_accuracy_fp(self, dtype):
         for label, E, tpe, N, K in PREFILL_SHAPES:
