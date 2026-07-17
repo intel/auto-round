@@ -409,6 +409,6 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
 
         handles = []
         for _, module in model.named_modules():
-            if  check_to_quantized(module):
+            if check_to_quantized(module):
                 handles.append(module.register_forward_hook(collect_imatrix))
         return handles

@@ -92,8 +92,6 @@ class Compressor(BaseCompressor):
         # Set after ``super().__init__()`` because the state object is created there.
         self.dataset = dataset
 
-
-
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
 
