@@ -896,7 +896,7 @@ class Compressor(BaseCompressor):
 
         if enable_quanted_input:
             logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
-            q_layer_inputs = self.cache_data([], self.nsamples, layer_names=layer_names)
+            q_layer_inputs = self.cache_data([], self.calibration_context.nsamples, layer_names=layer_names)
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
