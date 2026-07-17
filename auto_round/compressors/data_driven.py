@@ -29,7 +29,6 @@ from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     immediate_pack,
-    is_act_static,
     is_nv_fp,
 )
 from auto_round.data_type.utils import update_block_global_scale_if_needed
@@ -45,7 +44,6 @@ from auto_round.utils import (
     get_block_names,
     get_lm_head_name,
     get_module,
-    global_state,
     is_auto_device_mapping,
     memory_monitor,
     mv_module_from_gpu,
