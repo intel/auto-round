@@ -61,8 +61,8 @@ class LLMCalibrator(Calibrator):
 
         Verbatim port of the legacy ``Compressor.try_cache_inter_data_gpucpu``.
         """
-        self.hook_handles = [] # clear origin handels
-        self.inputs = {} # clear origin inputs
+        self.hook_handles = []  # clear origin handles
+        self.inputs = {}  # clear origin inputs
 
         if is_quantized_input_module(self.model):  # e.g. FP8 model
             layer_names = []
@@ -391,7 +391,7 @@ class LLMCalibrator(Calibrator):
                 # never "all ones".
                 new_attention_mask[:, -1] = 0
                 if "valid_token_mask" not in self.inputs:
-                    self.inputs["valid_token_mask"]=[]
+                    self.inputs["valid_token_mask"] = []
                 self.inputs["valid_token_mask"].extend(list(torch.split(new_attention_mask, 1, dim=0)))
 
                 # TODO wenhuach pass attention_mask to alg

@@ -287,7 +287,7 @@ class Compressor(BaseCompressor):
         nblocks: int = 1,
         pbar: tqdm | None = None,
         input_others_extra_blocks: dict | None = None,
-        valid_token_mask:list[torch.Tensor] |None = None
+        valid_token_mask: list[torch.Tensor] | None = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -421,8 +421,9 @@ class Compressor(BaseCompressor):
             update_block_global_scale_if_needed(model, self.data_type, self.group_size)
 
             # ── Pure algorithm: block_quantizer.quantize_block ────────────────
-            self.pipeline.block_quantizer.quantize_block(m, input_ids, input_others,
-                                                         reference_output, q_input, ctx, valid_token_mask=valid_token_mask)
+            self.pipeline.block_quantizer.quantize_block(
+                m, input_ids, input_others, reference_output, q_input, ctx, valid_token_mask=valid_token_mask
+            )
 
             # ── Pipeline lifecycle: post_quantize_block ───────────────────────
             for pre in self.pipeline.preprocessors:
@@ -686,9 +687,7 @@ class Compressor(BaseCompressor):
         all_q_inputs = None
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
-        if (has_gguf and (
-             hasattr(self.quantizer, "iters") or self.quantizer.iters > 0
-        )):  # pylint: disable=E1101
+        if has_gguf and (hasattr(self.quantizer, "iters") or self.quantizer.iters > 0):  # pylint: disable=E1101
             is_quantized_embedding = self.quantizer.quantize_embedding_layer()
             clear_memory()
             if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none exits, no need to run
@@ -776,7 +775,7 @@ class Compressor(BaseCompressor):
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)
-        self._quantize_layers_outside_blocks(layer_names, all_inputs,valid_token_mask=valid_token_mask)
+        self._quantize_layers_outside_blocks(layer_names, all_inputs, valid_token_mask=valid_token_mask)
 
         convert_module_to_hp_if_necessary(
             self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
@@ -832,7 +831,9 @@ class Compressor(BaseCompressor):
             shard_writer.write(module, module_name, False)
             module.to("meta")
 
-    def _quantize_layers_outside_blocks(self, layer_names: list, layer_inputs: dict, valid_token_mask:list[torch.Tensor]|None=None) -> None:
+    def _quantize_layers_outside_blocks(
+        self, layer_names: list, layer_inputs: dict, valid_token_mask: list[torch.Tensor] | None = None
+    ) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
         Args:
@@ -1122,10 +1123,10 @@ class Compressor(BaseCompressor):
             # ``Calibrator.collect``).  Bind it as the authoritative store so
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
             # ``batch_dim``.
-            self.calibration_state = inputs # TODO wenhuach this has issues, calibraion state no longer hold much info
+            self.calibration_state = inputs  # TODO wenhuach this has issues, calibraion state no longer hold much info
         else:
             self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]] #TODO we have wenhuach
+        block_inputs = self.inputs[self.quant_block_list[0][0]]  # TODO we have wenhuach
         input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
 
         # ── Infrastructure: materialize, dtype convert, device placement ──────

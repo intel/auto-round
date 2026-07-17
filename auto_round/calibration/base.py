@@ -101,7 +101,6 @@ class Calibrator(ABC):
                 directly by the quantization algorithm as per-block input data.
         """
 
-
     @abstractmethod
     def _make_block_forward_func(self, name: str) -> Callable:
         """Build and return a forward-replacement ``Callable`` that captures block inputs.
@@ -158,7 +157,6 @@ class Calibrator(ABC):
                 ``True``.
         """
 
-
     @torch.no_grad()
     def _get_block_forward_func(self, name: str) -> Callable:
         """Build the block-forward replacement, then let the calibrator wrap it.
@@ -178,7 +176,6 @@ class Calibrator(ABC):
         positional → kwargs so diffusion blocks can be captured uniformly.
         """
         return forward_fn
-
 
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Bridge hook stop checks to the calibrator's stop policy."""
