@@ -21,16 +21,12 @@ if TYPE_CHECKING:
 
 from auto_round.algorithms.base import BasePipelineMember
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.algorithms.transforms.base import BaseWeightTransformer
 from auto_round.compressors.utils import (
     block_forward,
-    immediate_pack,
 )
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.logger import logger
 from auto_round.utils import (
-    INNER_SUPPORTED_LAYER_TYPES,
-    SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     clear_memory,
     compile_func,
@@ -59,14 +55,10 @@ class BaseQuantizer(BasePipelineMember):
     """
 
     # Class-level attribute declarations for convenient access in quantization methods.
-    # Scheme-related attrs (layer_config, scale_dtype, has_qlayer_outside_block, etc.)
-    # are resolved by SchemeMixin in BaseCompressor and synced here after post_init().
-
     enable_alg_ext = False  # TODO delete later wenhuach
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
-        self.layer_config = None
         # Calibration-time state lives on a shared
         # :class:`~auto_round.calibration.state.CalibrationContext` instance.
         # The compressor wires its own instance here in ``_resolve_scheme``;
@@ -89,10 +81,6 @@ class BaseQuantizer(BasePipelineMember):
     def calibration_state(self) -> Any:  # TODO later decouple it from compressor this one could be deleted?
         return self._calibration_state
 
-    # @calibration_state.setter
-    # def calibration_state(self, new_state: Any) -> None:
-    #     # Compressor-supplied shared instance; just rebind.
-    #     self._calibration_state = new_state
 
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
@@ -129,7 +117,7 @@ class BaseQuantizer(BasePipelineMember):
         (e.g. imatrix). Returns a list of hook handles
         that the caller must remove when done.
 
-        Note: act_max hooks are registered by the compressor (DataDrivenCompressor),
+        Note: act_max hooks are registered by the compressor (Compressor),
         not by the quantizer.
         """
         return []
@@ -141,7 +129,7 @@ class BaseQuantizer(BasePipelineMember):
         activations. Subclasses override to add custom hooks. Returns a list
         of hook handles that the caller must remove when done.
 
-        Note: act_max hooks are registered by the compressor (DataDrivenCompressor),
+        Note: act_max hooks are registered by the compressor (Compressor),
         not by the quantizer.
         """
         return []
@@ -239,18 +227,6 @@ class BaseQuantizer(BasePipelineMember):
                 else:
                     setattr(module, param_name, value)
 
-            # # Update config with resolved quant params
-            # self.layer_config.setdefault(name, {}).update(
-            #     {
-            #         "bits": bits,
-            #         "group_size": group_size,
-            #         "sym": sym,
-            #         "data_type": data_type,
-            #         "super_bits": super_bits,
-            #         "super_group_size": super_group_size,
-            #         "scale_dtype": scale_dtype,
-            #     }
-            # )
             del weight
             del scale
             del zp

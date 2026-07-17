@@ -63,7 +63,7 @@ class TestGGUF:
             seqlen=8,
         )
 
-        assert type(autoround).__name__ == "DataDrivenCompressor"
+        assert type(autoround).__name__ == "Compressor"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
     def test_func(self):

@@ -58,7 +58,7 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
-class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this to Compressor
+class Compressor(BaseCompressor):
 
     def __init__(
         self,
@@ -214,7 +214,7 @@ class DataDrivenCompressor(BaseCompressor):  # TODO wenhuach later rename this t
 
         quantizer = self.pipeline.block_quantizer
         is_act_nv_fp = getattr(quantizer.config, "is_act_nv_fp", False)
-        layer_config = quantizer.layer_config or {}
+        layer_config = self.layer_config or {}
 
         def collect_act_max(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input

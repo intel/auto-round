@@ -16,7 +16,7 @@ from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.data_driven import DataDrivenCompressor
+from auto_round.compressors.compressor import Compressor
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
@@ -307,9 +307,9 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
         if isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = RTNConfig
 
-    # Always use DataDrivenCompressor — it internally detects whether calibration
+    # Always use Compressor — it internally detects whether calibration
     # data is needed and falls back to the zero-shot (RTN) path when it is not.
-    return DataDrivenCompressor
+    return Compressor
 
 
 class AutoRound(object):
@@ -421,13 +421,13 @@ class AutoRound(object):
         # the per-block preprocessor lifecycle (prepare_block_group ->
         # block_forward_hooks -> pre_quantize_block -> pre_quantize_block ->
         # post_quantize_block) actually runs.
-        # Preprocessor algorithms require DataDrivenCompressor for per-block lifecycle hooks.
+        # Preprocessor algorithms require Compressor for per-block lifecycle hooks.
         # The pipeline auto-appends RTN when no block_quantizer is supplied.
         if preprocessor_configs:
-            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **ctor_kwargs)
+            return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
 
         if isinstance(quant_config, SignRoundConfig):
-            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **ctor_kwargs)
+            return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
 
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)

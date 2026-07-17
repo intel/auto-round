@@ -33,12 +33,12 @@ class DiffusionMixin:
     """Diffusion-specific functionality mixin.
 
     This mixin adds diffusion model-specific functionality to any compressor
-    (DataDrivenCompressor, ImatrixCompressor, etc). It handles
+    (Compressor, ImatrixCompressor, etc). It handles
     diffusion models (like Stable Diffusion, FLUX) that require special pipeline
     handling and data generation logic.
 
     Can be combined with:
-    - DataDrivenCompressor (for AutoRound with calibration, or basic RTN)
+    - Compressor (for AutoRound with calibration, or basic RTN)
     - ImatrixCompressor (for RTN with importance matrix)
 
     Diffusion-specific parameters:
@@ -111,7 +111,7 @@ class DiffusionMixin:
                     f"because batch_size={batch_size} cannot be used for calibrating non-text modules."
                 )
 
-        # Call parent class __init__ (will be DataDrivenCompressor, ImatrixCompressor, etc)
+        # Call parent class __init__ (will be Compressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
         pipe = getattr(self.model_context, "pipe", None)

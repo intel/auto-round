@@ -21,7 +21,7 @@ shared-calibration pipeline.
 Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 - ``QuantizationPipeline`` is the *first-class abstraction*; it is NOT just
   AWQ's helper.
-- All block-wise scheduling in ``DataDrivenCompressor`` operates against
+- All block-wise scheduling in ``Compressor`` operates against
   ``QuantizationPipeline``, never against a concrete ``AWQTransform``.
 - Single-algorithm use is expressed as
   ``QuantizationPipeline(preprocessors=[], block_quantizer=q)``, which is

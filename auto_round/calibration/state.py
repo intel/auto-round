@@ -91,7 +91,7 @@ class CalibrationContext:
     def clamp_seqlen(self, model_context: Any) -> None:
         """Clamp :attr:`seqlen` to model / tokenizer maximum lengths.
 
-        Migrated verbatim from ``DataDrivenCompressor._check_compatibility``.
+        Migrated verbatim from ``Compressor._check_compatibility``.
         Safe to call multiple times; warns on each clamp.
         """
         if self.seqlen is None:
@@ -119,7 +119,7 @@ class CalibrationContext:
     #     - Otherwise, treats ``self.dataset`` as an already-iterable loader.
     #
     #     Mirrors the inline logic that previously lived in
-    #     ``DataDrivenCompressor._compute_imatrix`` and the calibrator subclasses.
+    #     ``Compressor._compute_imatrix`` and the calibrator subclasses.
     #     """
     #     if isinstance(self.dataset, str):
     #         tokenizer = getattr(model_context, "tokenizer", None)

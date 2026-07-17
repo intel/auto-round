@@ -59,7 +59,7 @@ class LLMCalibrator(Calibrator):
     def calibration(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Attempts to cache intermediate data on GPU; on OOM, falls back to CPU.
 
-        Verbatim port of the legacy ``DataDrivenCompressor.try_cache_inter_data_gpucpu``.
+        Verbatim port of the legacy ``Compressor.try_cache_inter_data_gpucpu``.
         """
         self.hook_handles = [] # clear origin handels
         self.inputs = {} # clear origin inputs
@@ -204,7 +204,7 @@ class LLMCalibrator(Calibrator):
     def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Replace forward, run :meth:`calib`, return cached ``inputs``.
 
-        Verbatim port of the legacy ``DataDrivenCompressor.cache_inter_data``.
+        Verbatim port of the legacy ``Compressor.cache_inter_data``.
         """
 
         if layer_names is None:
@@ -300,7 +300,7 @@ class LLMCalibrator(Calibrator):
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the model with text data so block hooks fire.
 
-        Verbatim port of the legacy ``DataDrivenCompressor.calib`` (LLM path only).
+        Verbatim port of the legacy ``Compressor.calib`` (LLM path only).
         """
         from auto_round.calib_dataset import get_dataloader
 
@@ -451,7 +451,7 @@ class LLMCalibrator(Calibrator):
     def _make_block_forward_func(self, name: str) -> Callable:
         """Build a ``forward`` replacement that captures inputs for *block* ``name``.
 
-        Mirrors the legacy ``DataDrivenCompressor._get_block_forward_func`` exactly.
+        Mirrors the legacy ``Compressor._get_block_forward_func`` exactly.
         The returned function expects to be bound as ``module.forward = partial(fn, module)``.
         """
 
@@ -574,7 +574,7 @@ class LLMCalibrator(Calibrator):
     def make_layer_cache_hook(self, name: str) -> Callable:
         """Build a forward-hook that captures inputs for *layer* ``name``.
 
-        Mirrors the legacy ``DataDrivenCompressor._get_cache_data_hook_for_layer`` exactly.
+        Mirrors the legacy ``Compressor._get_cache_data_hook_for_layer`` exactly.
         """
 
         def cache_input_hook(module, inputs, outputs):
@@ -594,7 +594,7 @@ class LLMCalibrator(Calibrator):
     def replace_forward_with_hooks(self) -> None:
         """Install block-forward replacements and layer hooks via ``model_context.replace_forward``.
 
-        Mirrors the legacy ``DataDrivenCompressor._replace_forward`` exactly. The
+        Mirrors the legacy ``Compressor._replace_forward`` exactly. The
         ``state`` is expected to expose ``to_cached_layers`` / ``hook_handles`` /
         ``model_context`` and the two factory methods on its class
         (``_get_block_forward_func`` / ``_get_cache_data_hook_for_layer``) so
@@ -616,7 +616,7 @@ class LLMCalibrator(Calibrator):
     def _should_stop_cache_forward(self, name: str) -> bool:
         """Default early-stop policy for block input collection.
 
-        Mirrors the legacy ``DataDrivenCompressor._should_stop_cache_forward`` exactly.
+        Mirrors the legacy ``Compressor._should_stop_cache_forward`` exactly.
         Subclasses (e.g. ``DiffusionMixin``) override the method on the Compressor
         class to always return ``False``; this helper is only used by the default
         LLM path.

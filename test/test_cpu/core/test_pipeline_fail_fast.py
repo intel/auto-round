@@ -12,7 +12,7 @@ from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
-from auto_round.compressors.data_driven import DataDrivenCompressor
+from auto_round.compressors.compressor import Compressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.compressors.entry import _select_rtn_compressor_base_cls
 from auto_round.logger import logger
@@ -86,7 +86,7 @@ def test_new_entry_defaults_to_autoround_config(monkeypatch):
     def _fake_init(self, config, **kwargs):
         captured["config"] = config
 
-    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr(Compressor, "__init__", _fake_init)
     monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
 
     NewAutoRound("dummy-model", "W4A16", iters=1, seqlen=8, nsamples=1)
@@ -115,7 +115,7 @@ def test_compat_entry_preserves_spinquant_dict_config(monkeypatch):
     def _fake_init(self, config, **kwargs):
         captured["config"] = config
 
-    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr(Compressor, "__init__", _fake_init)
     monkeypatch.setattr("auto_round.utils.is_mllm_model", lambda *args, **kwargs: False)
     monkeypatch.setattr("auto_round.utils.is_diffusion_model", lambda *args, **kwargs: False)
     monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
