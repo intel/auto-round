@@ -420,7 +420,6 @@ class BaseCompressor(object):
 
         self.need_data = self._check_need_data()
 
-
     def _check_need_data(self) -> bool:
         """Whether this compressor instance actually needs calibration data.
 
@@ -445,15 +444,17 @@ class BaseCompressor(object):
         Otherwise, zero-shot (RTN/opt-RTN) quantization can proceed without data.
         """
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
         if any(getattr(config, "need_data", True) for config in self._alg_configs):
             return True
 
         # AutoScheme needs data for delta-loss scheme selection
-        if isinstance(self.scheme, AutoScheme): # TODO wenhuach check this one
+        if isinstance(self.scheme, AutoScheme):  # TODO wenhuach check this one
             return True
 
         # Check if activation calibration is needed
         from auto_round.compressors.utils import check_need_act_calibration
+
         _, _, final_attrs = parse_scheme(self.scheme, {})
         act_bits = final_attrs["act_bits"]
         act_data_type = final_attrs["act_data_type"]

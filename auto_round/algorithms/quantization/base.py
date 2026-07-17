@@ -81,7 +81,6 @@ class BaseQuantizer(BasePipelineMember):
     def calibration_state(self) -> Any:  # TODO later decouple it from compressor this one could be deleted?
         return self._calibration_state
 
-
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
 

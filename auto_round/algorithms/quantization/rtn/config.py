@@ -19,6 +19,7 @@ from auto_round.logger import logger
 
 class RTNConfig(QuantizationConfig):
     need_data = False
+
     def __init__(
         self,
         *,
