@@ -2054,75 +2054,17 @@ def _moe_gemm_prefill_int_pertensor(
     return outputs
 
 
-def _moe_prefill_workspace_headroom() -> int:
-    """Return the ``[E, K, N]`` workspace headroom multiplier (default 2).
-
-    Diagnostic knob. The generic dequant kernels only ever touch the first
-    ``E * K * N`` elements of the workspace; anything past that is spare
-    capacity that absorbs a tile-padded over-read by the downstream
-    Grouped-GEMM. Widening the multiplier lets us probe how far past the
-    nominal extent a consumer reads: if a previously-failing shape starts
-    passing (or a NaN poison, see below, stops leaking into the output) only
-    once the multiplier is raised, the failure is an over-read whose depth
-    scales with the GEMM tile size rather than a logic error in the ref or the
-    dequant write.
-
-    Set ``ARK_MOE_PREFILL_WORKSPACE_HEADROOM`` to an integer >= 1. Invalid or
-    unset values fall back to the historical default of 2.
-    """
-    env = os.environ.get("ARK_MOE_PREFILL_WORKSPACE_HEADROOM")
-    if env is None:
-        return 2
-    try:
-        mult = int(env.strip())
-    except (TypeError, ValueError):
-        return 2
-    return mult if mult >= 1 else 2
-
-
-def _moe_prefill_workspace_poison_enabled() -> bool:
-    """Return True when the workspace headroom should be NaN-poisoned.
-
-    Diagnostic knob (default OFF). When enabled, the trailing headroom of the
-    ``[E, K, N * headroom]`` dequant workspace is filled with NaN while the
-    valid ``[E, K, N]`` region keeps its deterministic zero-init. Any
-    tile-padded over-read by the downstream Grouped-GEMM then pulls NaN into
-    the kernel output, turning an otherwise size-dependent, allocator-sensitive
-    corruption into a deterministic, attributable NaN. If failures become
-    deterministic and the output contains NaN once this is on, the root cause
-    is an over-read into workspace headroom (not the ref, and not the dequant
-    write which stays inside the valid region).
-
-    Enable with ``ARK_MOE_PREFILL_WORKSPACE_POISON=1`` (case-insensitive truthy
-    values: "1", "true", "on", "yes").
-    """
-    env = os.environ.get("ARK_MOE_PREFILL_WORKSPACE_POISON")
-    if env is None:
-        return False
-    return env.strip().lower() in ("1", "true", "on", "yes")
-
-
 def _alloc_moe_prefill_workspace(num_experts: int, K: int, N: int, device, dtype) -> torch.Tensor:
-    """Allocate the ``[E, K, N * headroom]`` dequant workspace.
+    """Allocate the ``[E, K, N]`` dequant workspace, fully zero-initialised.
 
-    The valid ``[E, K, N]`` region (the first ``N`` columns of every row) is
-    always zero-initialised so zero-token experts and unwritten slices read
-    back as deterministic zeros. The trailing headroom is either zeroed
-    (default) or NaN-poisoned for diagnostics; see
-    ``_moe_prefill_workspace_poison_enabled`` and
-    ``_moe_prefill_workspace_headroom``.
+    The generic dequant kernels write only the first ``N`` columns of every row
+    and the downstream Grouped-GEMM reads exactly that ``[E, K, N]`` region --
+    it never over-reads past the nominal extent (confirmed by NaN-poisoning the
+    trailing capacity and widening it: the poison never leaked into the output).
+    Zero-initialising (rather than ``torch.empty``) keeps zero-token experts and
+    unwritten slices reading back as deterministic zeros.
     """
-    headroom = _moe_prefill_workspace_headroom()
-    if not _moe_prefill_workspace_poison_enabled():
-        # Historical behaviour: fully zeroed buffer, default headroom of 2.
-        return torch.zeros((num_experts, K, N * headroom), device=device, dtype=dtype)
-
-    # Diagnostic path: poison the headroom with NaN, keep the valid region zeroed.
-    workspace = torch.empty((num_experts, K, N * headroom), device=device, dtype=dtype)
-    poison = float("nan") if dtype.is_floating_point else torch.iinfo(dtype).max
-    workspace.fill_(poison)
-    workspace[:, :, :N] = 0
-    return workspace
+    return torch.zeros((num_experts, K, N), device=device, dtype=dtype)
 
 
 def moe_gemm_prefill(
@@ -2290,17 +2232,13 @@ def moe_gemm_prefill(
         # slice of the workspace; leaving that slice uninitialised exposes stale
         # allocator memory to any consumer that still reads those rows.
         #
-        # Allocate ``headroom``× the ``[E, K, N]`` footprint (trailing headroom
-        # along N; default 2×). The native kernels address the buffer as a flat
-        # ``E * K * N`` region via ``workspace_ptr`` (stride N), so only the first
-        # ``E * K * N`` elements are ever read/written; the extra capacity is
-        # spare headroom that guards any consumer path that over-reads past the
-        # nominal ``[E, K, N]`` extent. The headroom multiplier and an optional
-        # NaN-poison of the headroom are controlled by
-        # ``ARK_MOE_PREFILL_WORKSPACE_HEADROOM`` /
-        # ``ARK_MOE_PREFILL_WORKSPACE_POISON`` for diagnosing over-reads; by
-        # default the buffer is fully zeroed with a 2× footprint (unchanged
-        # behaviour).
+        # Allocate exactly the ``[E, K, N]`` footprint. The native kernels
+        # address the buffer as a flat ``E * K * N`` region via ``workspace_ptr``
+        # (stride N) and the downstream Grouped-GEMM reads only that region --
+        # it does not over-read past the nominal extent. (A previous 2× headroom
+        # plus NaN-poison diagnostic confirmed this: poisoning and widening the
+        # trailing capacity never leaked NaN into the output, so the extra
+        # padding was unnecessary and has been removed.)
         dequant_workspace = _alloc_moe_prefill_workspace(
             num_experts, K, N, device=activations.device, dtype=activations.dtype
         )
