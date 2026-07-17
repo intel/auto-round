@@ -352,7 +352,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
-        valid_token_mask:list[torch.Tensor]|None = None,
+        valid_token_mask: list[torch.Tensor] | None = None,
     ):
         if self._use_outlier_suppressed_loss:
             loss_diff = torch.abs(pred_output - ref_output)

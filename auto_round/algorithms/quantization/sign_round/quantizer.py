@@ -286,7 +286,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 pred_output = block_fwd.forward(block, active_inputs, input_others, indices)
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
-                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device,valid_token_mask)
+                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
