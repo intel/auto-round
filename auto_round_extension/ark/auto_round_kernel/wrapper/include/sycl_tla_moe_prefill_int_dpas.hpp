@@ -584,13 +584,12 @@ CUTE_DEVICE void MoEGEMM_int(const ElementA* Activations,
   int group_range = item.get_group_range(1);
   int local_id = item.get_local_linear_id();
 
-  if (group_id == 0 && local_id == 0) {
-    auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
-        atomic_buffer[0]);
-    atm.store(0);
-  }
+  // NOTE: `atomic_buffer[0]` is zero-initialized on the host (via a queued
+  // `memset` that the kernel depends on) before launch. It must NOT be reset
+  // here: an in-kernel `store(0)` by a single work-group has no grid-level
+  // synchronization, so other work-groups could read an uninitialized/stale
+  // value or have this late store clobber an already-advanced counter, both of
+  // which corrupt tile scheduling.
 
   int pre_rows = 0;
   int pre_tiles = 0;
@@ -713,8 +712,11 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
                                       SGLayout>::TiledMMA;
   auto mma = MMA{};
 
+  // Query the EU count from the queue's own device (see sycl_tla_moe.hpp): on
+  // multi-card systems a hardcoded ordinal 0 can name a different device than
+  // the one `stream` runs on, mis-sizing the grid and corrupting results.
   int sm_count =
-      cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+      stream.get_device().get_info<sycl::info::device::max_compute_units>();
   auto MaxThreadsPerWorkgroup = size(mma);
 
   static constexpr int MaxThreadsPerSM = 512;
@@ -737,7 +739,14 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyB = typename policy::GmemTiledCopyB;
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
+  // Zero-init the persistent-scheduler tile counter on the host before launch.
+  // Doing it here (rather than inside the kernel) removes the cross-work-group
+  // race: the kernel below is made to depend on this memset event, so every
+  // work-group observes a fully initialized counter.
+  auto init_event = stream.memset(atomic_buffer, 0, sizeof(int32_t));
+
   auto event = stream.submit([&](sycl::handler& cgh) {
+    cgh.depends_on(init_event);
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmIntName<ElementA, ElementB, ElementS, ElementD,
                                      layoutA, layoutB, policy, Mode>>(
@@ -882,6 +891,37 @@ inline bool moe_prefill_dpas_int_enabled() {
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   if (s == "0" || s == "false" || s == "off" || s == "no") return false;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_LOWBIT` (default OFF).
+//
+// Gates the low-bit (S4-sym / S2-sym) -> INT8 upcast two-pass path that
+// reuses this INT8 DPAS mainloop (see `sycl_tla_moe_mixed.hpp`). Decoupled
+// from `ARK_MOE_PREFILL_DPAS_INT8` (which gates the *genuine* INT8-weight
+// DPAS path) so the low-bit two-pass can be toggled without disturbing the
+// validated INT8 path.
+//
+// STATUS: default OFF. The two-pass S4->S8 upcast + INT8 DPAS path still
+// miscomputes a fraction of outputs on production-scale prefill shapes
+// (observed: max abs diff ~70 on the `medium E=8`, K=14336 int4-sym + fp16
+// accuracy case) -- the same defect that led `ARK_MOE_PREFILL_DPAS_S4` to be
+// defaulted OFF. Until the low-bit DPAS pipeline is root-caused and fixed on
+// hardware, int4-sym / int2-sym prefill falls through to the bit-exact
+// generic dequant path by default; the two-pass path stays available behind
+// `ARK_MOE_PREFILL_DPAS_LOWBIT=1` for continued debugging.
+//
+// Truthy values (case-insensitive): "1", "true", "on", "yes" enable.
+// Anything else (including unset) leaves the path disabled. Re-read on every
+// call so benchmarks / tests can toggle the path in-process.
+// ---------------------------------------------------------------------------
+inline bool moe_prefill_dpas_lowbit_enabled() {
+  const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_LOWBIT");
+  if (env == nullptr) return false;  // default OFF
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------

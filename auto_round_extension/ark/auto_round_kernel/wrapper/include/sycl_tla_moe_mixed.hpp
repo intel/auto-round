@@ -876,16 +876,23 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // reads packed `[E, N, K/2]` uint8_t nibbles directly and folds the
   // upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)`, so
   // the B-side global traffic is halved vs. the S4->S8 upcast branch
-  // below. Opt-in default via `ARK_MOE_PREFILL_DPAS_S4` (default ON);
+  // below. Opt-in via `ARK_MOE_PREFILL_DPAS_S4=1` (default OFF);
   // silent fallback to the S4->S8 upcast branch (which is itself gated
   // by `ARK_MOE_PREFILL_DPAS_INT8`) or to the generic dequant path if
   // the shape gate rejects the tile geometry.
   //
+  // The single-pass mainloop decodes each packed `int4b_t` fragment into
+  // an `int8_t` staging fragment in registers and reuses the validated
+  // `int8_t -> ElementA` reorder (see `xe_gemm_s4_pergroup`), so it no
+  // longer routes through the interleaved
+  // `NumericArrayConverter<ElementA, int4b_t, N>` that previously
+  // miscomputed a fraction of outputs. int4-sym is routed here only when
+  // `ARK_MOE_PREFILL_DPAS_S4=1` is set (default OFF); otherwise it falls
+  // through to the S4->S8 upcast + INT8 DPAS branch below.
+  //
   // STATUS: NEEDS-HARDWARE-VALIDATION. See
   // `sycl_tla_moe_prefill_s4_dpas.hpp` for the port's provenance & the
-  // on-hardware TODOs (chief among them: `NumericArrayConverter
-  // <ElementA, cutlass::int4b_t, N>` availability in the pinned
-  // cutlass-sycl).
+  // remaining on-hardware TODOs.
   if (weight_dtype == BTLA_DTYPE::S4_CLIP && !asym &&
       moe_dpas_s4::moe_prefill_dpas_s4_enabled() &&
       moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size) &&
@@ -917,15 +924,23 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // and the DPAS mainloop then folds the per-K-group scale exactly the
   // same way as the S8-sym path -- reusing the packed scale tensor
   // unmodified. Silent fallback to the generic dequant path if the shape
-  // predicate rejects the tile geometry, if `asym=true`, or if the caller
-  // opted out via `ARK_MOE_PREFILL_DPAS_INT8=0`.
+  // predicate rejects the tile geometry, if `asym=true`, if the caller
+  // opted out via `ARK_MOE_PREFILL_DPAS_INT8=0`, or (the default) unless
+  // the caller opts in via `ARK_MOE_PREFILL_DPAS_LOWBIT=1`.
   //
   // For S4-sym specifically this branch is the *fallback* for the
   // single-pass S4 DPAS path above -- callers who disable
-  // `ARK_MOE_PREFILL_DPAS_S4` land here instead of on the generic
-  // dequant path, so the two-pass INT4->INT8 pipeline stays available
-  // as a runtime kill-switch until the single-pass mainloop is
-  // hardware-validated.
+  // `ARK_MOE_PREFILL_DPAS_S4` land here only when they *also* opt into
+  // `ARK_MOE_PREFILL_DPAS_LOWBIT=1`; otherwise int4-sym / int2-sym fall
+  // through to the generic bit-exact dequant path below. The two-pass
+  // INT4/INT2->INT8 pipeline stays available as a runtime opt-in until the
+  // low-bit DPAS numerics are hardware-validated.
+  //
+  // STATUS: default OFF (`ARK_MOE_PREFILL_DPAS_LOWBIT`). The upcast +
+  // INT8 DPAS pipeline still miscomputes a fraction of outputs on
+  // production-scale prefill shapes (observed: max abs diff ~70 on the
+  // `medium E=8`, K=14336 int4-sym + fp16 accuracy case), so it is not
+  // taken by default. See `moe_prefill_dpas_lowbit_enabled()`.
   //
   // The dequant workspace pointer we reinterpret as `int8_t*` is the same
   // caller-owned buffer used by the bf16/fp16 dequant fallback: since it
@@ -934,6 +949,7 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
   // safe and does not require a separate allocation.
   if ((weight_dtype == BTLA_DTYPE::S4_CLIP || weight_dtype == BTLA_DTYPE::S2_CLIP) && !asym &&
       moe_dpas_int::moe_prefill_dpas_int_enabled() &&
+      moe_dpas_int::moe_prefill_dpas_lowbit_enabled() &&
       moe_dpas_int::moe_prefill_dpas_int_pergroup_shape_ok(N, K, group_size) &&
       dequant_workspace != nullptr &&
       (act_dtype == BTLA_DTYPE::F16 || act_dtype == BTLA_DTYPE::BF16)) {
@@ -947,6 +963,14 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
           q, static_cast<const uint8_t*>(weights), upcast_i8, num_experts, N, K,
           num_tokens_per_expert);
     }
+    // The upcast kernel above is submitted asynchronously and captures no
+    // event, while the DPAS dispatch below reads the same `upcast_i8`
+    // workspace. On an out-of-order stream (PyTorch XPU queues are
+    // out-of-order) submission order alone does not serialise the two, so the
+    // GEMM could read the workspace before the upcast finishes writing it --
+    // a read-before-write race that yields localized garbage. Block until the
+    // upcast writes are visible before the GEMM consumes them.
+    q->wait();
     if (act_dtype == BTLA_DTYPE::F16) {
       using ScalarT = sycl::half;
       moe_dpas_int::moe_prefill_int_dpas_per_group_dispatch<ScalarT>(
@@ -1083,12 +1107,26 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
     auto* w_kn = static_cast<sycl::half*>(dequant_workspace);
     moe_mixed_detail::dequant_to_KN<sycl::half>(q, weights, scales, zeros, w_kn, weight_dtype, num_experts, N, K,
                                                 group_size, asym, num_tokens_per_expert);
+    // The dequant kernels are submitted asynchronously and capture no event,
+    // whereas `moe_gemm` reads the `[E, K, N]` workspace they just wrote. On an
+    // out-of-order stream (PyTorch XPU queues are out-of-order) submission order
+    // does not serialise the two launches, so the grouped GEMM can read the
+    // workspace before the dequant pass has finished writing it -- a
+    // read-before-write race that surfaces as a handful of localized, wildly
+    // wrong outputs whose values depend on the workspace's prior contents.
+    // Wait for the dequant writes to become visible before the GEMM consumes
+    // them.
+    q->wait();
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else if (act_dtype == BTLA_DTYPE::BF16) {
     using BF = sycl::ext::oneapi::bfloat16;
     auto* w_kn = static_cast<BF*>(dequant_workspace);
     moe_mixed_detail::dequant_to_KN<BF>(q, weights, scales, zeros, w_kn, weight_dtype, num_experts, N, K, group_size,
                                         asym, num_tokens_per_expert);
+    // See the F16 branch above: serialise the async dequant writes before the
+    // grouped GEMM reads the workspace to avoid a read-before-write race on
+    // out-of-order streams.
+    q->wait();
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else {
     throw std::invalid_argument("moe_gemm_prefill: act_dtype must be F16 or BF16");

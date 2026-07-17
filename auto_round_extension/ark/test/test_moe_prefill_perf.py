@@ -489,6 +489,34 @@ def _xpu_cleanup_between_tests():
         _release_xpu_memory()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_ark_moe_env():
+    """Guarantee ``ARK_MOE_PREFILL_*`` flags never leak out of a perf test.
+
+    The perf sweeps toggle ``ARK_MOE_PREFILL_*`` flags per shape to attribute
+    each timing column to a specific dispatch path, restoring the prior value
+    only after the last measurement in the loop body. If a measurement raises
+    (OOM, kernel error, assertion) the manual restore is skipped and the flag
+    -- e.g. ``ARK_MOE_PREFILL_DPAS_S4=1``, which routes int4-sym through a
+    kernel with a known large-M defect -- leaks into subsequent tests. Those
+    tests then fail only when run after this one (i.e. only in the full
+    suite), while passing in isolation.
+
+    Snapshot the flags at setup and restore them unconditionally at teardown so
+    a leak can never escape a single test, regardless of exceptions.
+    """
+    prefix = "ARK_MOE_PREFILL_"
+    saved = {k: v for k, v in os.environ.items() if k.startswith(prefix)}
+    for k in saved:
+        del os.environ[k]
+    try:
+        yield
+    finally:
+        for k in [k for k in os.environ if k.startswith(prefix)]:
+            del os.environ[k]
+        os.environ.update(saved)
+
+
 def _print_header(title: str) -> None:
     """Print a benchmark header.
 
@@ -668,15 +696,16 @@ class TestMoEGemmPrefillPerf:
                 deq_ms = _xpu_time_ms(lambda: _dequant_int4_sym(packed, scales, group_size).to(dtype))
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
-            # Default ARK path (dequant + GEMM). INT4-sym is DPAS-accelerated
-            # via TWO independent branches inside `moe_gemm_prefill`:
-            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default ON) -- single-pass
-            #      mainloop reading packed nibbles directly via CuTe's
-            #      `NumericArrayConverter<ElementA, int4b_t, N>` in
-            #      `reorder(tBrB, tCrB)`. Preferred; the new hot path.
-            #   2. `ARK_MOE_PREFILL_DPAS_INT8=1` (default ON) -- two-pass
-            #      S4->S8 upcast into workspace + shared INT8 DPAS
-            #      mainloop. Fallback for when (1) is disabled.
+            # Default ARK path (dequant + GEMM). INT4-sym has TWO opt-in DPAS
+            # branches inside `moe_gemm_prefill`, both default OFF (int4-sym
+            # prefill defaults to the bit-exact dequant + GEMM path):
+            #   1. `ARK_MOE_PREFILL_DPAS_S4=1` (default OFF) -- single-pass
+            #      mainloop reading packed nibbles directly, decoding each
+            #      `int4b_t` fragment to `int8_t` in registers and reusing
+            #      the validated `int8_t -> act` reorder. Opt-in for debugging.
+            #   2. `ARK_MOE_PREFILL_DPAS_LOWBIT=1` (default OFF) -- two-pass
+            #      S4->S8 upcast into workspace + shared INT8 DPAS mainloop.
+            #      Opt-in for debugging.
             # Force BOTH off for this measurement so the `ark(ms)` column
             # reflects the legacy dequant + BF16 GEMM path independently
             # of the `dpas(ms)` column below.

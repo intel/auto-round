@@ -244,6 +244,7 @@ void sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O
   options.vscale = vscale;
   options.lse = lse;
   compat::set_default_queue(*q);
+  options.queue = q;
 
   KernelLauncher launcher = select_sage_prefill_launcher(q_dtype, pv_dtype, head_dim, use_int8_pv);
   if (launcher == nullptr) {
@@ -268,6 +269,7 @@ void flash_attn_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, v
               num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale, is_causal);
   options.lse = lse;
   compat::set_default_queue(*q);
+  options.queue = q;
 
   KernelLauncher launcher = select_prefill_launcher(q_dtype, head_dim);
   if (launcher == nullptr) {
@@ -292,6 +294,7 @@ void flash_attn_decode(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, vo
               num_heads_kv, 1, seq_len_kv, head_dim, softmax_scale, is_causal);
   options.lse = lse;
   compat::set_default_queue(*q);
+  options.queue = q;
 
   KernelLauncher launcher = select_decode_launcher(q_dtype, head_dim);
   if (launcher == nullptr) {
@@ -448,6 +451,7 @@ void sage_prefill_varlen(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   options.lse = lse;
 
   compat::set_default_queue(*q);
+  options.queue = q;
 
   // Zero-filled workspace for cu_seqlens_kv_cache via DnnlContext scratch pool.
   int* zero_cu_buf = static_cast<int*>(
@@ -509,6 +513,7 @@ void sdpa_varlen_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, voi
   options.lse = lse;
 
   compat::set_default_queue(*q);
+  options.queue = q;
 
   // When isVarLen=true, the kernel's apply_variable_length accesses
   // cumulative_length for ALL three fields.  Even with max_seqlen_kv_cache=0,

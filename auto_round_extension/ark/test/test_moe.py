@@ -408,7 +408,10 @@ def _moe_decode_reference(activations, dequant_weights, num_tokens_per_expert):
     """Reference: each token is matmul'd against its routed expert's weights."""
     total_tokens, K = activations.shape
     E, N, _ = dequant_weights.shape
-    out = torch.empty(total_tokens, N, dtype=activations.dtype, device=activations.device)
+    # Zero-initialise (not ``torch.empty``) so any row the per-expert loop does
+    # not cover (zero-token experts, or a short ``num_tokens_per_expert`` sum)
+    # reads back as deterministic zeros instead of stale allocator memory.
+    out = torch.zeros(total_tokens, N, dtype=activations.dtype, device=activations.device)
     offset = 0
     for e in range(E):
         n_tokens = int(num_tokens_per_expert[e].item())
@@ -739,7 +742,9 @@ class TestMoEGemmPrefill:
         """Reference: per-expert ``A @ W.T`` over ``[E, N, K]`` weights."""
         total_tokens, _ = activations.shape
         E, N, _ = weights_NK.shape
-        out = torch.empty(total_tokens, N, dtype=activations.dtype, device=activations.device)
+        # Zero-initialise (not ``torch.empty``) so any uncovered row reads back
+        # as deterministic zeros rather than stale allocator memory.
+        out = torch.zeros(total_tokens, N, dtype=activations.dtype, device=activations.device)
         offset = 0
         for e in range(E):
             n_tokens = int(num_tokens_per_expert[e].item())

@@ -62,6 +62,17 @@ namespace detail {
 
 using namespace cute;
 
+// Query the multiprocessor (Xe-core / EU) count directly from the *launch
+// queue's own device*. The kernel is launched on this same queue, so this
+// reports the count for the device the kernel actually runs on. Reading it from
+// a hardcoded ordinal 0 or from syclcompat's implicit current device instead can
+// name a different device on multi-card systems, mis-sizing the
+// persistent-scheduler grid and producing wrong results that only manifest when
+// more than one device is visible.
+inline int query_queue_sm_count(const sycl::queue& q) {
+  return q.get_device().get_info<sycl::info::device::max_compute_units>();
+}
+
 // Command line options parsing
 struct Options {
    const void *q = nullptr, *k = nullptr, *v = nullptr;
@@ -89,6 +100,11 @@ struct Options {
   float softmax_scale = 0.0f;
   float* lse = nullptr;  // LSE output buffer (null = skip)
   bool persistent = false;
+  /// SYCL queue used to launch the kernel. Transient device allocations
+  /// (kernel workspace, zero-filled kv_cache scratch) are made on this queue so
+  /// they bind to its device instead of syclcompat's implicit current device.
+  /// Must be non-null whenever a launcher is invoked (see sdpa.cpp).
+  sycl::queue* queue = nullptr;
 
   void print(std::ostream& os = std::cout) const {
     os << std::boolalpha << "Options {\n"
@@ -174,12 +190,43 @@ struct KernelRunner {
   StrideV stride_V_cache;
   StrideO stride_O;
   uint64_t seed = 0;
-  /// Scratch buffer for zero-filled kv_cache cumulative_length.
-  cutlass::device_memory::allocation<int> zero_cu_cache_;
+  /// Scratch buffer for zero-filled kv_cache cumulative_length, allocated on the
+  /// launch queue's device (see make_zero_cu_cache).
+  int* zero_cu_cache_ = nullptr;
+  sycl::queue* zero_cu_cache_queue_ = nullptr;
 
   //
   // Methods
   //
+
+  KernelRunner() = default;
+  KernelRunner(const KernelRunner&) = delete;
+  KernelRunner& operator=(const KernelRunner&) = delete;
+  ~KernelRunner() {
+    if (zero_cu_cache_ != nullptr) {
+      sycl::free(zero_cu_cache_, *zero_cu_cache_queue_);
+    }
+  }
+
+  // Allocate (or grow) the zero-filled kv_cache cumulative_length scratch on the
+  // launch queue's device and return a device pointer usable by the kernel. Using
+  // sycl::malloc_device on *options.queue avoids syclcompat's implicit current
+  // device, which can point at a different device under a full test run.
+  int* make_zero_cu_cache(const Options& options, int count) {
+    sycl::queue* q = options.queue;
+    if (zero_cu_cache_ != nullptr) {
+      sycl::free(zero_cu_cache_, *zero_cu_cache_queue_);
+      zero_cu_cache_ = nullptr;
+    }
+    zero_cu_cache_queue_ = q;
+    zero_cu_cache_ = sycl::malloc_device<int>(count, *q);
+    if (zero_cu_cache_ == nullptr) {
+      throw std::runtime_error("KernelRunner: failed to allocate zero_cu_cache scratch (" +
+                               std::to_string(count * sizeof(int)) + " bytes)");
+    }
+    q->memset(zero_cu_cache_, 0, count * sizeof(int)).wait();
+    return zero_cu_cache_;
+  }
 
   // Note that the GemmUniversalAdapter currently doesn't support flash attention, which is why this
   // secondary `run` function is required to launch the kernel.
@@ -228,9 +275,7 @@ struct KernelRunner {
     if (options.cu_seqlens_kv_cache) {
       problem_size_for_launch.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
     } else {
-      zero_cu_cache_.reset(options.batch + 1);
-      std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
-      problem_size_for_launch.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = make_zero_cu_cache(options, options.batch + 1);
     }
     problem_size_for_launch.head_size_qk = get<6>(problem_size);
     problem_size_for_launch.head_size_vo = get<7>(problem_size);
@@ -288,9 +333,7 @@ struct KernelRunner {
       if (options.cu_seqlens_kv_cache) {
         shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
       } else {
-        zero_cu_cache_.reset(options.batch + 1);
-        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
-        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+        shape.seq_len_kv_cache.cumulative_length = make_zero_cu_cache(options, options.batch + 1);
       }
     }
     return shape;
@@ -321,9 +364,7 @@ struct KernelRunner {
          options.use_paged_kv ? options.num_pages_per_seq : nullptr},
         {},
         hw_info};
-    // Define device-global scratch memory
-    size_t workspace_size = FMHAKernel::get_workspace_size(arguments);
-    cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+    sycl::queue* q = options.queue;
     if (!FMHAKernel::can_implement(arguments)) {
       std::cout << "Invalid Problem Size: " << options.batch << 'x' << options.num_heads_q << 'x' << options.seq_len_qo
                 << 'x' << options.seq_len_kv << 'x' << options.head_size_qk << 'x' << options.head_size_vo
@@ -331,13 +372,33 @@ struct KernelRunner {
       return cutlass::Status::kErrorInvalidProblem;
     }
 
+    // Define device-global scratch memory on the same queue that launches the
+    // kernel so the allocation binds to that queue's device rather than
+    // syclcompat's implicit current device.
+    size_t workspace_size = FMHAKernel::get_workspace_size(arguments);
+    uint8_t* workspace = nullptr;
+    if (workspace_size > 0) {
+      workspace = sycl::malloc_device<uint8_t>(workspace_size, *q);
+      if (workspace == nullptr) {
+        throw std::runtime_error("KernelRunner: failed to allocate kernel workspace (" +
+                                 std::to_string(workspace_size) + " bytes)");
+      }
+    }
+
     // Initialize the workspace
-    CUTLASS_CHECK(FMHAKernel::initialize_workspace(arguments, workspace.get()));
+    CUTLASS_CHECK(FMHAKernel::initialize_workspace(arguments, workspace));
 
     // Convert host-side arguments to device-side arguments to be passed to the kernel
-    auto params = FMHAKernel::to_underlying_arguments(arguments, workspace.get());
+    auto params = FMHAKernel::to_underlying_arguments(arguments, workspace);
 
     run(params);
+
+    // The launch above is asynchronous; wait for it on the launch queue before
+    // releasing the workspace the kernel is still reading from.
+    q->wait();
+    if (workspace != nullptr) {
+      sycl::free(workspace, *q);
+    }
 
     return cutlass::Status::kSuccess;
   }
@@ -371,9 +432,10 @@ struct FMHAConfig {
     //
 
     // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
-    // information is used by the underlying kernel.
+    // information is used by the underlying kernel. Derive it from the launch queue's own device so
+    // the grid is sized for the device the kernel actually runs on (see query_queue_sm_count).
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
+    hw_info.sm_count = query_queue_sm_count(*options.queue);
 
     using ProblemShapeType = cutlass::fmha::kernel::FMHAProblemShape<isVarLen>;
 
@@ -531,12 +593,43 @@ struct SageKernelRunner {
   StrideV stride_V_cache;
   StrideO stride_O;
   uint64_t seed = 0;
-  /// Scratch buffer for zero-filled kv_cache cumulative_length.
-  cutlass::device_memory::allocation<int> zero_cu_cache_;
+  /// Scratch buffer for zero-filled kv_cache cumulative_length, allocated on the
+  /// launch queue's device (see make_zero_cu_cache).
+  int* zero_cu_cache_ = nullptr;
+  sycl::queue* zero_cu_cache_queue_ = nullptr;
 
   //
   // Methods
   //
+
+  SageKernelRunner() = default;
+  SageKernelRunner(const SageKernelRunner&) = delete;
+  SageKernelRunner& operator=(const SageKernelRunner&) = delete;
+  ~SageKernelRunner() {
+    if (zero_cu_cache_ != nullptr) {
+      sycl::free(zero_cu_cache_, *zero_cu_cache_queue_);
+    }
+  }
+
+  // Allocate (or grow) the zero-filled kv_cache cumulative_length scratch on the
+  // launch queue's device and return a device pointer usable by the kernel. Using
+  // sycl::malloc_device on *options.queue avoids syclcompat's implicit current
+  // device, which can point at a different device under a full test run.
+  int* make_zero_cu_cache(const Options& options, int count) {
+    sycl::queue* q = options.queue;
+    if (zero_cu_cache_ != nullptr) {
+      sycl::free(zero_cu_cache_, *zero_cu_cache_queue_);
+      zero_cu_cache_ = nullptr;
+    }
+    zero_cu_cache_queue_ = q;
+    zero_cu_cache_ = sycl::malloc_device<int>(count, *q);
+    if (zero_cu_cache_ == nullptr) {
+      throw std::runtime_error("KernelRunner: failed to allocate zero_cu_cache scratch (" +
+                               std::to_string(count * sizeof(int)) + " bytes)");
+    }
+    q->memset(zero_cu_cache_, 0, count * sizeof(int)).wait();
+    return zero_cu_cache_;
+  }
 
   // Note that the GemmUniversalAdapter currently doesn't support flash attention, which is why this
   // secondary `run` function is required to launch the kernel.
@@ -585,9 +678,7 @@ struct SageKernelRunner {
     if (options.cu_seqlens_kv_cache) {
       problem_size_for_launch.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
     } else {
-      zero_cu_cache_.reset(options.batch + 1);
-      std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
-      problem_size_for_launch.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+      problem_size_for_launch.seq_len_kv_cache.cumulative_length = make_zero_cu_cache(options, options.batch + 1);
     }
     problem_size_for_launch.head_size_qk = get<6>(problem_size);
     problem_size_for_launch.head_size_vo = get<7>(problem_size);
@@ -645,9 +736,7 @@ struct SageKernelRunner {
       if (options.cu_seqlens_kv_cache) {
         shape.seq_len_kv_cache.cumulative_length = const_cast<int*>(options.cu_seqlens_kv_cache);
       } else {
-        zero_cu_cache_.reset(options.batch + 1);
-        std::fill_n(zero_cu_cache_.get(), options.batch + 1, 0);
-        shape.seq_len_kv_cache.cumulative_length = zero_cu_cache_.get();
+        shape.seq_len_kv_cache.cumulative_length = make_zero_cu_cache(options, options.batch + 1);
       }
     }
     return shape;
@@ -680,9 +769,7 @@ struct SageKernelRunner {
          options.use_paged_kv ? options.num_pages_per_seq : nullptr},
         {},
         hw_info};
-    // Define device-global scratch memory
-    size_t workspace_size = FMHAKernel::get_workspace_size(arguments);
-    cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+    sycl::queue* q = options.queue;
     if (!FMHAKernel::can_implement(arguments)) {
       std::cout << "Invalid Problem Size: " << options.batch << 'x' << options.num_heads_q << 'x' << options.seq_len_qo
                 << 'x' << options.seq_len_kv << 'x' << options.head_size_qk << 'x' << options.head_size_vo
@@ -690,13 +777,33 @@ struct SageKernelRunner {
       return cutlass::Status::kErrorInvalidProblem;
     }
 
+    // Define device-global scratch memory on the same queue that launches the
+    // kernel so the allocation binds to that queue's device rather than
+    // syclcompat's implicit current device.
+    size_t workspace_size = FMHAKernel::get_workspace_size(arguments);
+    uint8_t* workspace = nullptr;
+    if (workspace_size > 0) {
+      workspace = sycl::malloc_device<uint8_t>(workspace_size, *q);
+      if (workspace == nullptr) {
+        throw std::runtime_error("KernelRunner: failed to allocate kernel workspace (" +
+                                 std::to_string(workspace_size) + " bytes)");
+      }
+    }
+
     // Initialize the workspace
-    CUTLASS_CHECK(FMHAKernel::initialize_workspace(arguments, workspace.get()));
+    CUTLASS_CHECK(FMHAKernel::initialize_workspace(arguments, workspace));
 
     // Convert host-side arguments to device-side arguments to be passed to the kernel
-    auto params = FMHAKernel::to_underlying_arguments(arguments, workspace.get());
+    auto params = FMHAKernel::to_underlying_arguments(arguments, workspace);
 
     run(params);
+
+    // The launch above is asynchronous; wait for it on the launch queue before
+    // releasing the workspace the kernel is still reading from.
+    q->wait();
+    if (workspace != nullptr) {
+      sycl::free(workspace, *q);
+    }
 
     return cutlass::Status::kSuccess;
   }
@@ -733,9 +840,10 @@ struct SageConfig {
     //
 
     // The KernelHardwareInfo struct holds the number of EUs on the GPU with a given device ID. This
-    // information is used by the underlying kernel.
+    // information is used by the underlying kernel. Derive it from the launch queue's own device so
+    // the grid is sized for the device the kernel actually runs on (see query_queue_sm_count).
     cutlass::KernelHardwareInfo hw_info;
-    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
+    hw_info.sm_count = query_queue_sm_count(*options.queue);
 
     using ProblemShapeType = cutlass::fmha::kernel::SageProblemShape<isVarLen>;
 

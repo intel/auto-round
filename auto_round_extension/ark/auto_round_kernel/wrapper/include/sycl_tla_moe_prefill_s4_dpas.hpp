@@ -1,10 +1,22 @@
 // SYCL MoE Prefill — S4 (sym) mixed-input DPAS Grouped GEMM (Variant B)
 // (Fork of `sycl_tla_moe_prefill_int_dpas.hpp` per-group mainloop)
 //
-// STATUS: NEEDS-HARDWARE-VALIDATION -- untested single-pass port. Precedence
-// and gating in `sycl_tla_moe_mixed.hpp` fall back to the S4->S8 upcast +
-// INT8 DPAS path when this header's env gate is off, so a regression can
-// be neutralised at runtime without a rebuild.
+// STATUS: NEEDS-HARDWARE-VALIDATION -- single-pass port. The env gate
+// `ARK_MOE_PREFILL_DPAS_S4` defaults OFF (see `moe_prefill_dpas_s4_enabled()`
+// below); set `ARK_MOE_PREFILL_DPAS_S4=1` to opt in. The previously observed
+// gross-outlier defect on the large-M `medium E=8`, K=14336 shape (max abs diff
+// ~70) was traced to the bespoke large-M policy breaking the packed-nibble
+// decode's `SG_N = 16` invariant (it used `SG_N = 64`); large-M now reuses the
+// validated `m_32` geometry (see the dispatch below), matching the sub-group
+// fragment shape every passing S4 shape exercises. The packed-nibble mainloop decodes each `int4b_t`
+// B fragment into an `int8_t` staging fragment in registers and then reuses
+// the SAME validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group
+// path uses (see `xe_gemm_s4_pergroup`). This avoids the interleaved
+// `NumericArrayConverter<ElementA, cutlass::int4b_t, N>` fast path, whose
+// pre-shuffled-B-layout assumption previously miscomputed a fraction of
+// outputs on production-scale prefill shapes. Precedence and gating in
+// `sycl_tla_moe_mixed.hpp` fall back to the S4->S8 upcast + INT8 DPAS
+// path whenever the gate is not explicitly enabled (the default).
 // ---------------------------------------------------------------------------
 // Design rationale
 // ----------------
@@ -19,13 +31,23 @@
 //
 // This header removes the round-trip: the mainloop reads packed
 // `[E, N, K/2]` `uint8_t` (two nibbles per byte, sym-signed [-8, 7]) and
-// upcasts to the activation dtype in registers via the same
-// `cute::reorder(tBrB, tCrB)` machinery the INT8 header uses -- the only
-// substantive difference is that CuTe/cutlass-sycl's
-// `NumericArrayConverter<ElementA, cutlass::int4b_t, N>` unpacks 4-bit
-// fields two-per-byte from the loaded fragment. The B-side global load
-// is halved (bytes, not int8 elements) so the mainloop is bandwidth-
-// bound on `E * N * K / 2` instead of `E * N * K`.
+// upcasts to the activation dtype in registers. Each `int4b_t` copy
+// fragment is decoded into an `int8_t` staging fragment (sign-extended
+// [-8, 7], reproducing `decode_int4_pair`) and then handed to the SAME
+// `cute::reorder(tBrB_i8, tCrB)` machinery the INT8 header uses. The
+// B-side global load is halved (bytes, not int8 elements) so the mainloop
+// is bandwidth-bound on `E * N * K / 2` instead of `E * N * K`.
+//
+// NOTE: the decode deliberately does NOT feed the packed nibbles straight
+// into `reorder(tBrB, tCrB)` via
+// `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`. In the pinned
+// cutlass-sycl that converter is the *interleaved* mixed-input variant --
+// it assumes the B weights were pre-shuffled into the DPAS fragment's
+// interleave order. Auto-round ships sequential packing with no shuffle,
+// so the fast path permuted a fraction of the B lanes and produced large
+// outliers. Staging through `int8_t` keeps the value decode explicit and
+// layout-preserving, deferring the register remap to the validated
+// `int8_t -> ElementA` reorder.
 //
 // Design choice: "option (a) -- halve tile_k at the launcher level"
 // -----------------------------------------------------------------
@@ -72,17 +94,17 @@
 // path in `sycl_tla_moe_mixed.hpp`.
 //
 // On-hardware open questions (must be resolved on first build):
-//   1. Whether the pinned cutlass-sycl exposes a
-//      `NumericArrayConverter<half_t / bfloat16_t, int4b_t, N>`
-//      specialisation. Upstream cutlass 3.5+ ships this converter under
-//      `cutlass/numeric_conversion.h`; cutlass-sycl may need the same
-//      pull-in. If the converter is missing, `reorder(tBrB, tCrB)` will
-//      fail to instantiate at compile time -- the failure mode is a
-//      "no matching function" error localised to line ~200 below.
+//   1. Whether `reorder(tBrB_i8, tCrB)` -- the `int8_t -> ElementA`
+//      converter shared with the validated INT8 per-group mainloop --
+//      instantiates cleanly here. It should: the source dtype and
+//      fragment layout are identical to the INT8 path (only the upstream
+//      decode differs), so if the INT8 header builds this one does too.
+//      The previous `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`
+//      dependency (and its interleaved-B assumption) is no longer used.
 //   2. Whether `XE_DPAS_TT<8, float, ElementA, ElementA>` (the atom used
 //      by the FP8 / INT8 headers, keeping A/B as the SAME activation
 //      dtype after the upcast) is still the right atom here. It should
-//      be -- once `reorder` has upcast the packed-nibble fragment to
+//      be -- once the staged decode + reorder has upcast the fragment to
 //      `ElementA` the atom's operand dtypes match A exactly.
 //
 // Copyright (C) 2026 Intel Corporation
@@ -135,17 +157,44 @@ using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
 
 // ---------------------------------------------------------------------------
+// Large-M policy for the S4 packed-nibble path.
+//
+// There is NO bespoke large-M policy: the `A_avg_M > 32` range reuses the
+// validated `dpas_w8a16_policy_m_32` geometry (see the dispatch in
+// `moe_prefill_s4_dpas_per_group_dispatch` below). The packed-nibble decode
+// (`tBrB` -> `int8_t` staging -> `reorder(tBrB_i8, tCrB)`) is only correct for
+// the SUB-GROUP fragment shape the `m_16` / `m_32` policies use, i.e.
+// `tile_k = 32` AND `SG_N = tile_n / ATOM_N = 64 / 4 = 16` (`tile_n = 64`,
+// `SGLayout<1,4,1>` -> `ATOM_N = 4`).
+//
+// A previous attempt introduced a wider `<128, 128, 32>` large-M policy with
+// `SGLayout<4,2,1>`. That kept `tile_k = 32` but changed `ATOM_N` to 2, so
+// `SG_N` became `128 / 2 = 64` (and `sg_n_strides` became 4). At that sub-group
+// width the block-2d copy atom derives a B fragment TV-layout that no longer
+// lines up with the element-wise `int8_t` staging decode, so a fraction of B
+// lanes decode from the wrong nibble and whole output tiles come out grossly
+// wrong (observed: max abs diff ~70 on the `medium E=8`, K=14336 prefill shape,
+// which routes to the large-M branch because `A_avg_M = 66 > 32`). Pinning
+// `tile_k = 32` alone was therefore insufficient -- `SG_N` must also stay 16.
+// Large-M reuses `m_32` (more M-tiles at the same validated per-tile decode /
+// reorder geometry) rather than a wider, unvalidated tile.
+// ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
 //
 // Adapted from `moe_dpas_int::xe_gemm_int_pergroup<>`. Structural
 // differences vs. the INT8 per-group mainloop:
 //
 //   * `ElementB` is required to be `cutlass::int4b_t`. The 4-bit-per-
-//     element storage triggers CuTe's packed-nibble copy atom and the
-//     `NumericArrayConverter<ElementA, int4b_t, N>` specialisation
-//     inside `reorder(tBrB, tCrB)`, which decodes each byte into two
-//     sign-extended `ElementA` (bf16/fp16) values in-register. Match
-//     for match the encoding produced by `moe_dequant::decode_int4_pair
+//     element storage triggers CuTe's packed-nibble copy atom that loads
+//     the packed `[N, K/2]` weights into an `int4b_t` register fragment
+//     (`tBrB`). The mainloop then decodes each `int4b_t` field into an
+//     `int8_t` staging fragment (`tBrB_i8`) and reorders THAT into the
+//     `ElementA` (bf16/fp16) MMA fragment via the validated `int8_t ->
+//     ElementA` `reorder(...)` from the INT8 header -- rather than routing
+//     the packed nibbles through the interleaved
+//     `NumericArrayConverter<ElementA, int4b_t, N>` fast path, which
+//     assumes a pre-shuffled B layout auto-round does not produce. The
+//     per-element decode matches `moe_dequant::decode_int4_pair
 //     <Asym=false>` on the auto-round side: byte low nibble decodes to
 //     `q_lo` (K = 2i), byte high nibble to `q_hi` (K = 2i+1), both
 //     sign-extended from [-8, 7].
@@ -268,6 +317,26 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
   // per-group path.
   float sg_scale[sg_n_strides];
 
+  // Scratch int8 fragment, same subgroup TV-layout as the packed int4 copy
+  // fragment `tBrB`. Each mainloop iteration decodes the just-loaded packed
+  // nibbles into this buffer (sign-extended [-8, 7]) and then hands it to the
+  // SAME validated `int8_t -> ElementA` `reorder(...)` the INT8 per-group path
+  // uses. See the reorder site below for the rationale -- this avoids the
+  // `NumericArrayConverter<ElementA, cutlass::int4b_t, N>` fast path, whose
+  // interleaved-B-layout assumption miscomputed a fraction of outputs.
+  //
+  // NOTE: `make_fragment_like<int8_t>(tBrB)` cannot be used directly. `tBrB`
+  // is a `SubgroupTensor` of the subbyte `cutlass::int4b_t` copy fragment, and
+  // its work-item layout is not fully static for subbyte types -- feeding it to
+  // `make_fragment_like` builds a *dynamic owning* tensor, which CuTe rejects
+  // (`static_assert(is_static ...)` in `cute/tensor_impl.hpp`). Mirror the
+  // validated SAGE mainloop instead: allocate a like-fragment of the underlying
+  // register tensor (`tBrB.tensor()`, static) and re-wrap it as a subgroup
+  // tensor carrying `tBrB`'s TV-layout so the `reorder(tBrB_i8, tCrB)` below
+  // resolves to the subgroup-cooperative overload.
+  auto tBrB_i8 = make_subgroup_tensor(
+      make_fragment_like<int8_t>(tBrB.tensor()), tBrB.tv_layout());
+
   CUTE_UNROLL
   for (; k_tile_prefetch < prefetch_dist; k_tile_prefetch++) {
     prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
@@ -331,15 +400,33 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
       prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
     }
 
-    // `reorder` performs the in-register `int4b_t -> ElementA` unpack
-    // + sign-extend + cast via `cutlass::NumericArrayConverter<
-    // ElementA, cutlass::int4b_t, N>`. Once `tCrB` carries bf16/fp16
-    // values it is compatible with the same DPAS atom used by the FP8
-    // / INT8 per-group paths. See the header preamble open-question
-    // (1) -- if the pinned cutlass-sycl is missing this converter
-    // specialisation this line is where the build fails.
+    // Decode the packed `int4b_t` B fragment into an `int8_t` staging
+    // fragment (`tBrB_i8`), then reuse the SAME `int8_t -> ElementA`
+    // `reorder(...)` the validated INT8 per-group mainloop uses. The
+    // per-element decode reproduces `decode_int4_pair`'s sign-extension
+    // exactly: `cutlass::int4b_t` is a signed 4-bit field, so converting
+    // it to `int` yields the value already sign-extended into [-8, 7].
+    //
+    // This deliberately does NOT call `reorder(tBrB, tCrB)` directly on the
+    // packed nibbles. That path routes through
+    // `NumericArrayConverter<ElementA, cutlass::int4b_t, N>`, which in the
+    // pinned cutlass-sycl is the *interleaved* mixed-input converter: it
+    // assumes the B weights were pre-shuffled into the DPAS fragment's
+    // interleave order. Auto-round ships sequential `[E, N, K/2]` packing
+    // with no such shuffle, so the fast path permuted a fraction of the
+    // B lanes and produced large outliers. Staging through `int8_t` keeps
+    // the value decode explicit (layout-preserving, one element per
+    // element of `tBrB`) and defers the register remap to the validated
+    // `int8_t -> ElementA` reorder -- the fragment layout of `tBrB_i8`
+    // matches `tBrB`, so this is bit-identical to the INT8 path modulo the
+    // narrower source dtype.
     reorder(tArA, tCrA);
-    reorder(tBrB, tCrB);
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < tBrB.size(); ++i) {
+      cutlass::int4b_t packed_nibble = tBrB(i);
+      tBrB_i8(i) = static_cast<int8_t>(static_cast<int>(packed_nibble));
+    }
+    reorder(tBrB_i8, tCrB);
 
     // HOT MAINLOOP -- MMA accumulates into `tCrC_group`. Per-N scale
     // is applied ONCE at the end of the group in the fold block below.
@@ -423,13 +510,12 @@ CUTE_DEVICE void MoEGEMM_s4(const ElementA* Activations,
   int group_range = item.get_group_range(1);
   int local_id = item.get_local_linear_id();
 
-  if (group_id == 0 && local_id == 0) {
-    auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
-        atomic_buffer[0]);
-    atm.store(0);
-  }
+  // NOTE: `atomic_buffer[0]` is zero-initialized on the host (via a queued
+  // `memset` that the kernel depends on) before launch. It must NOT be reset
+  // here: an in-kernel `store(0)` by a single work-group has no grid-level
+  // synchronization, so other work-groups could read an uninitialized/stale
+  // value or have this late store clobber an already-advanced counter, both of
+  // which corrupt tile scheduling.
 
   int pre_rows = 0;
   int pre_tiles = 0;
@@ -537,9 +623,9 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                         const int group_size, int32_t* atomic_buffer) {
   using ElementA_non_CV = cutlass::platform::remove_cv_t<ElementA>;
   // DPAS atom keeps its bf16/fp16 x bf16/fp16 -> fp32 shape; the S4 B
-  // tensor is upcast to ElementA in `reorder(tBrB, tCrB)` in the
-  // mainloop before entering the MMA atom. See open question #2 in
-  // the header preamble.
+  // tensor is decoded to int8 and then upcast to ElementA via
+  // `reorder(tBrB_i8, tCrB)` in the mainloop before entering the MMA
+  // atom. See open question #2 in the header preamble.
   auto op = XE_DPAS_TT<8, float, ElementA_non_CV, ElementA_non_CV>{};
 
   using WGTile = typename policy::WGTile;
@@ -548,8 +634,11 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                                       SGLayout>::TiledMMA;
   auto mma = MMA{};
 
+  // Query the EU count from the queue's own device (see sycl_tla_moe.hpp): on
+  // multi-card systems a hardcoded ordinal 0 can name a different device than
+  // the one `stream` runs on, mis-sizing the grid and corrupting results.
   int sm_count =
-      cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+      stream.get_device().get_info<sycl::info::device::max_compute_units>();
   auto MaxThreadsPerWorkgroup = size(mma);
 
   static constexpr int MaxThreadsPerSM = 512;
@@ -572,7 +661,14 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
   using GmemTiledCopyB = typename policy::GmemTiledCopyB;
   using GmemTiledCopyD = typename policy::GmemTiledCopyD;
 
+  // Zero-init the persistent-scheduler tile counter on the host before launch.
+  // Doing it here (rather than inside the kernel) removes the cross-work-group
+  // race: the kernel below is made to depend on this memset event, so every
+  // work-group observes a fully initialized counter.
+  auto init_event = stream.memset(atomic_buffer, 0, sizeof(int32_t));
+
   auto event = stream.submit([&](sycl::handler& cgh) {
+    cgh.depends_on(init_event);
     sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
     cgh.parallel_for<DpasGemmS4Name<ElementA, ElementB, ElementS, ElementD,
                                     layoutA, layoutB, policy>>(
@@ -651,10 +747,21 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 
   if (A_avg_M <= 8) {
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
   } else {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    // Both the mid-M (`A_avg_M <= 32`) and large-M (`> 32`) ranges use the
+    // validated `dpas_w8a16_policy_m_32` geometry. The packed-nibble B copy
+    // fragment + `int8_t` staging + `reorder(tBrB_i8, tCrB)` is only correct
+    // for the `(tile_k = 32, SG_N = 16)` fragment shape the `m_16` / `m_32`
+    // policies use (`tile_n = 64`, `SGLayout<1,4,1>` -> `ATOM_N = 4` ->
+    // `SG_N = tile_n / ATOM_N = 16`). A bespoke large-M policy that widened the
+    // WG tile to `<128, 128, 32>` (`SGLayout<4,2,1>`) kept `tile_k = 32` but
+    // changed `SG_N` to `128 / 2 = 64`, which re-broke the nibble<->lane mapping
+    // for a fraction of B lanes and produced gross outliers (max abs diff ~70 on
+    // `medium E=8`, K=14336). Pinning `tile_k = 32` alone was insufficient --
+    // `SG_N` must also stay 16 -- so large-M reuses the validated `m_32`
+    // geometry (more M-tiles, identical per-tile decode / reorder) rather than a
+    // wider, unvalidated tile. See the `Large-M policy` note above.
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
 
@@ -662,24 +769,33 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 }
 
 // ---------------------------------------------------------------------------
-// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default ON, semantics
-// identical to `moe_prefill_dpas_int_enabled` / `moe_prefill_dpas_fp8
-// _enabled`). Decoupled from `ARK_MOE_PREFILL_DPAS_INT8` so this new
-// single-pass path can be disabled in isolation if it regresses --
-// switching S4 off falls back to the S4->S8 upcast + INT8 DPAS path
-// which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`.
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default OFF). Decoupled
+// from `ARK_MOE_PREFILL_DPAS_INT8` so this single-pass path can be
+// enabled in isolation for A/B validation -- with S4 off (the default)
+// int4-sym falls back to the bit-exact generic dequant path (the two-pass
+// S4->S8 upcast + INT8 DPAS path is itself default OFF behind
+// `ARK_MOE_PREFILL_DPAS_LOWBIT`, since it exhibits the same numeric defect).
 //
-// Truthy values (case-insensitive): "1", "true", "on", "yes".
-// Explicit "0" / "false" / "off" / "no" disable. Re-read on every
-// call so benchmarks / tests can toggle the path in-process.
+// STATUS: default OFF pending on-hardware validation. The large-M
+// gross-outlier defect (observed: max abs diff ~70 on the `medium E=8`,
+// K=14336 int4-sym + fp16 accuracy case) was root-caused to the bespoke
+// large-M policy breaking the packed-nibble decode's `SG_N = 16` invariant
+// (it used `SG_N = 64`); large-M now reuses the validated `m_32` geometry.
+// The gate stays default OFF until the fix is confirmed on hardware; callers
+// get the bit-exact generic dequant path by default, and the single-pass
+// path stays available behind `ARK_MOE_PREFILL_DPAS_S4=1`.
+//
+// Truthy values (case-insensitive): "1", "true", "on", "yes" enable.
+// Anything else (including unset) leaves the path disabled. Re-read on
+// every call so benchmarks / tests can toggle the path in-process.
 // ---------------------------------------------------------------------------
 inline bool moe_prefill_dpas_s4_enabled() {
   const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
-  if (env == nullptr) return true;  // default ON
+  if (env == nullptr) return false;  // default OFF
   std::string s(env);
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return true;
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
