@@ -217,12 +217,13 @@ class BaseCompressor(object):
         # the rest of ``__init__`` only ever interacts with the state object
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
-        from auto_round.calibration.state import CalibrationContext  # TODO delete wenhuach
+        from auto_round.calibration.state import CalibrationContext
 
-        self._calibration_state = CalibrationContext(
+        self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
-            batch_size=kwargs.pop("batch_size", 8),
+            batch_size=min(kwargs.pop("batch_size", 8),nsamples),
+            orig_batch_size=min(kwargs.pop("batch_size", 8), nsamples),
         )
 
         # ``dataset`` is not a named __init__ parameter – it arrives via
@@ -265,7 +266,7 @@ class BaseCompressor(object):
 
         # Compressor-level layer params (do not live in QuantizationConfig).
         # Calibration params (nsamples/seqlen/batch_size) are owned by
-        # ``self._calibration_state`` (seeded above) and exposed via
+        # ``self.calibration_context`` (seeded above) and exposed via
         # ``@property`` forwarders.
         self.layer_config = layer_config
         self.scale_dtype = scale_dtype
@@ -409,7 +410,7 @@ class BaseCompressor(object):
         self._precheck_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
-        # ``self._calibration_state`` was created at the top of __init__ so
+        # ``self.calibration_context`` was created at the top of __init__ so
         # all calibration-related property writes above (nsamples / seqlen /
         # batch_size from kwargs) have already routed through it.
 
@@ -862,7 +863,7 @@ class BaseCompressor(object):
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
-        dataset = self._calibration_state.dataset
+        dataset = self.calibration_context.dataset
         if dataset is not None:
             return dataset
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -986,6 +987,7 @@ class BaseCompressor(object):
         from auto_round.algorithms.pipeline import QuantizationPipeline
 
         self._pipeline = QuantizationPipeline.from_configs(self._alg_configs, compressor=self)
+
 
     @property
     def quantizer(self) -> BaseQuantizer:
@@ -1217,27 +1219,6 @@ class BaseCompressor(object):
         # (AutoScheme path) runs delta-loss forward+backward passes.
         self._scheme_post_init()
 
-        # # Sync the fully-resolved scheme state to the quantizer so that
-        # # quantization methods (quantize_block, quantize_layer, etc.) have
-        # # access to layer_config, scale_dtype, quant_block_list, etc.
-        # self.quantizer.layer_config = self.layer_config
-        # self.quantizer.has_qlayer_outside_block = self.has_qlayer_outside_block
-        # self.quantizer.regex_config = self.regex_config
-        # self.quantizer.quant_block_list = self.quant_block_list
-        # self.quantizer.to_quant_block_names = self.to_quant_block_names
-        # self.quantizer.scale_dtype = self.scale_dtype
-        # self.quantizer.ignore_layers = self.ignore_layers
-
-        # from auto_round.algorithms.config_resolver import sync_shared_config_from
-        #
-        # sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
-        #
-        # # Also sync runtime-only state to all preprocessors in the pipeline so
-        # # they have access to per-layer quant config during pre-processing (e.g.
-        # # AWQ grid search uses layer_config to look up bits/group_size for each layer).
-        # for pre in self._pipeline.preprocessors:
-        #     pre.layer_config = self.layer_config
-        #     pre.scale_dtype = self.scale_dtype
 
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
@@ -1341,118 +1322,8 @@ class BaseCompressor(object):
     def device_map(self) -> Any:
         return device_manager.device_map
 
-    # ── Forwarding properties to ``self._calibration_state`` ──────────────────
     @property
-    def calibration_state(self) -> Any:
-        return self._calibration_state
-
-    @calibration_state.setter
-    def calibration_state(self, value: Any) -> None:
-        self._calibration_state = value
-        # Re-wire quantizer if it already exists so they keep sharing.
-        # quantizer is now a @property forwarding to _pipeline.block_quantizer;
-        # use _pipeline directly to avoid triggering __getattr__ loops.
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
-            _pipeline.block_quantizer.calibration_state = value
-
-    @property
-    def inputs(self) -> dict:
-        return self._calibration_state.inputs
-
-    @inputs.setter
-    def inputs(self, value: dict) -> None:
-        self._calibration_state.inputs = value if value is not None else {}
-
-    @property
-    def to_cached_layers(self) -> list:
-        return self._calibration_state.to_cached_layers
-
-    @to_cached_layers.setter
-    def to_cached_layers(self, value: list) -> None:
-        self._calibration_state.to_cached_layers = value if value is not None else []
-
-    @to_cached_layers.deleter
-    def to_cached_layers(self) -> None:
-        self._calibration_state.to_cached_layers = []
-
-    @property
-    def last_cache_name(self) -> Optional[str]:
-        return self._calibration_state.last_cache_name
-
-    @last_cache_name.setter
-    def last_cache_name(self, value: Optional[str]) -> None:
-        self._calibration_state.last_cache_name = value
-
-    @last_cache_name.deleter
-    def last_cache_name(self) -> None:
-        self._calibration_state.last_cache_name = None
-
-    @property
-    def blocks_requiring_input_ids(self) -> list:
-        return self._calibration_state.blocks_requiring_input_ids
-
-    @blocks_requiring_input_ids.setter
-    def blocks_requiring_input_ids(self, value: list) -> None:
-        self._calibration_state.blocks_requiring_input_ids = value if value is not None else []
-
-    @property
-    def batch_size(self) -> int:
-        return self._calibration_state.batch_size
-
-    @batch_size.setter
-    def batch_size(self, value: int) -> None:
-        self._calibration_state.batch_size = value
-
-    # @property
-    # def gradient_accumulate_steps(self) -> int:
-    #     return self._calibration_state.gradient_accumulate_steps
-    #
-    # @gradient_accumulate_steps.setter
-    # def gradient_accumulate_steps(self, value: int) -> None:
-    #     if value is not None:
-    #         self._calibration_state.gradient_accumulate_steps = value
-
-    @property
-    def nsamples(self) -> int:
-        return self._calibration_state.nsamples
-
-    @nsamples.setter
-    def nsamples(self, value: int) -> None:
-        if value is not None:
-            self._calibration_state.nsamples = value
-
-    @property
-    def seqlen(self) -> int:
-        return self._calibration_state.seqlen
-
-    @seqlen.setter
-    def seqlen(self, value: int) -> None:
-        if value is not None:
-            self._calibration_state.seqlen = value
-
-    @property
-    def dataset(self) -> Any:
-        return self._calibration_state.dataset
-
-    @dataset.setter
-    def dataset(self, value: Any) -> None:
-        self._calibration_state.dataset = value
-
-    @property
-    def dataloader(self) -> Any:
-        return self._calibration_state.dataloader
-
-    @dataloader.setter
-    def dataloader(self, value: Any) -> None:
-        self._calibration_state.dataloader = value
-
-    @dataloader.deleter
-    def dataloader(self) -> None:
-        self._calibration_state.dataloader = None
-
-    @property
-    def optimizer(self) -> Any:
+    def optimizer(self) -> Any: #TODO wenhuach delete
         """Return the actual optimizer class, converting string to class for backward compat.
 
         Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).

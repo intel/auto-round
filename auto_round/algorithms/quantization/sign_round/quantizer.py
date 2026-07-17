@@ -85,7 +85,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 device_manager.device_list,
                 input_ids,
                 self.compress_context.low_gpu_mem_usage,
-                self._calibration_state.batch_size,
+                self.calibration_context.batch_size,
                 device_manager.device,
             )
             if len(device_manager.device_list) > 1:
@@ -142,6 +142,15 @@ class SignRoundQuantizer(BaseQuantizer):
 
         return loss
 
+    def _count_samples(self, inputs: Any) -> int:
+        if isinstance(inputs, dict):
+            hs = inputs.get("hidden_states")
+            return len(hs) if isinstance(hs, list) else hs.shape[self.calibration_context.batch_dim]
+        elif isinstance(inputs, list):
+            return len(inputs)
+        else:
+            return inputs.shape[self.calibration_context.batch_dim]
+
     def quantize_block(
         self,
         block,
@@ -191,7 +200,7 @@ class SignRoundQuantizer(BaseQuantizer):
         nsamples = (
             len(active_inputs)
             if isinstance(active_inputs, list)
-            else self.compressor.block_forward._count_samples(active_inputs)
+            else self._count_samples(active_inputs)
         )
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
@@ -259,7 +268,7 @@ class SignRoundQuantizer(BaseQuantizer):
         init_loss = None
         best_params = {}
         total_loss = 0
-        batch_size = self._calibration_state.batch_size  # TODO delete wenhuach
+        batch_size = self.calibration_context.batch_size
         global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
@@ -449,8 +458,8 @@ class SignRoundQuantizer(BaseQuantizer):
         best_params = None
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        batch_size = self._calibration_state.batch_size
-        gradient_accumulate_steps = batch_size  # Force to low gpu
+
+        gradient_accumulate_steps = self.calibration_context.batch_size * self.gradient_accumulate_steps  # Force to low gpu
 
         total_loss = 0
         num_elm = 1
@@ -459,9 +468,9 @@ class SignRoundQuantizer(BaseQuantizer):
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         batch_size = 1  # Force to low gpu
-        global_batch_size = batch_size * gradient_accumulate_steps
+        global_batch_size = gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
-        if gradient_accumulate_steps != 1 and not self.attention_mask:
+        if gradient_accumulate_steps != 1 and not valid_token_mask:
             whole_indices = torch.arange(global_batch_size).tolist()
             if q_input is not None:
                 num_elm = self._count_layer_input_elements(q_input, whole_indices)
@@ -495,15 +504,15 @@ class SignRoundQuantizer(BaseQuantizer):
                     else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
                 )
                 if valid_token_mask:
-                    tmp_attention_mask = [valid_token_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-                    tmp_attention_mask.unsqueeze_(-1)
+                    tmp_valid_mask = [valid_token_mask[i] for i in indices]
+                    tmp_valid_mask = torch.cat(tmp_valid_mask, dim=0).to(device)
+                    tmp_valid_mask.unsqueeze_(-1)
 
                     with autocast_ctx:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
-                            (output_q * tmp_attention_mask).to(torch.float32),
-                            (current_output * tmp_attention_mask).to(torch.float32),
+                            (output_q * tmp_valid_mask).to(torch.float32),
+                            (current_output * tmp_valid_mask).to(torch.float32),
                         )
 
                 else:

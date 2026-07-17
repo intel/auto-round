@@ -343,6 +343,15 @@ class BlockForward:
                 0,
             )
 
+    def _count_samples(self, inputs: Any) -> int:
+        if isinstance(inputs, dict):
+            hs = inputs.get("hidden_states")
+            return len(hs) if isinstance(hs, list) else hs.shape[self.batch_dim]
+        elif isinstance(inputs, list):
+            return len(inputs)
+        else:
+            return inputs.shape[self.batch_dim]
+
     def _normalize_output(self, output: Any, block: "torch.nn.Module" = None) -> torch.Tensor:
         """Normalize block output to a single tensor."""
         if isinstance(output, torch.Tensor):
@@ -375,14 +384,6 @@ class BlockForward:
             return first
         raise TypeError(f"Block output[0] must be tensor, got {type(first).__name__}.")
 
-    def _count_samples(self, inputs: Any) -> int:
-        if isinstance(inputs, dict):
-            hs = inputs.get("hidden_states")
-            return len(hs) if isinstance(hs, list) else hs.shape[self.batch_dim]
-        elif isinstance(inputs, list):
-            return len(inputs)
-        else:
-            return inputs.shape[self.batch_dim]
 
     def _select_batch(self, inputs, input_others, indices):
         """Select a subset of inputs by indices."""

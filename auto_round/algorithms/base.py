@@ -16,7 +16,6 @@
 from typing import Any
 
 from auto_round.algorithms.registry import resolve_pipeline_member
-from auto_round.schemes import QuantizationScheme
 
 
 # TODO later wenhuach may be deleted
@@ -40,7 +39,7 @@ class BasePipelineMember:
 
     def bind(self, compressor: Any) -> None:
         """Wire shared context from the owning compressor."""
-        self.compressor = compressor
+        # self.compressor = compressor
         self.model_context = compressor.model_context
         self.compress_context = compressor.compress_context
         self.scheme = getattr(compressor, "scheme_context", None)

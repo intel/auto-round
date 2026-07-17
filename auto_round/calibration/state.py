@@ -57,7 +57,8 @@ class CalibrationContext:
     nsamples: int = 128
     seqlen: int = 2048
     dataset: Any = None
-    dataloader: Any = None
+    is_only_supported_bs1: bool = False
+    orig_batch_size: int = 8 # some models only support batch_size 1,we need keep this info to set grad_accumulate_step
 
     # ── Compressor / quantizer round-tripping ──────────────────────────────
 
@@ -70,7 +71,7 @@ class CalibrationContext:
         no longer required.  We still allow it for safety in case a custom
         subclass forgets to call ``super().__init__``.
         """
-        live = getattr(compressor, "_calibration_state", None)
+        live = getattr(compressor, "calibration_context", None)
         if isinstance(live, cls):
             return live
         # Legacy fallback (no shared instance wired yet).
@@ -83,7 +84,7 @@ class CalibrationContext:
             nsamples=getattr(compressor, "nsamples", 128) or 128,
             seqlen=getattr(compressor, "seqlen", 2048) or 2048,
             dataset=getattr(compressor, "dataset", None),
-            dataloader=getattr(compressor, "dataloader", None),
+            orig_batch_size=getattr(compressor, "batch_size", 8) or 8,
         )
 
     # ── Behavioural helpers ────────────────────────────────────────────────

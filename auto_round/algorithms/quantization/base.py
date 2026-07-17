@@ -66,7 +66,7 @@ class BaseQuantizer(BasePipelineMember):
         # writes during construction don't blow up.
         from auto_round.calibration.state import CalibrationContext
 
-        self._calibration_state = CalibrationContext()
+        self.calibration_context = CalibrationContext() #TODO delete wenhuach
         # Whether to feed quantized-block outputs as inputs to the next block.
         # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
         # override this from their config.  Defaults to False for zero-shot algorithms
@@ -76,10 +76,6 @@ class BaseQuantizer(BasePipelineMember):
     def is_support_compile_block(self):  # TODO support compile block
         return True
 
-    # ── Shared CalibrationContext forwarders ───────────────────────────────────────
-    @property
-    def calibration_state(self) -> Any:  # TODO later decouple it from compressor this one could be deleted?
-        return self._calibration_state
 
     def bind(self, compressor: Any) -> None:
         """Wire shared state from the owning compressor.
@@ -95,7 +91,7 @@ class BaseQuantizer(BasePipelineMember):
         self.scale_dtype = compressor.scale_dtype  # TODO better move to scheme? wenhuach
         self.block_forward = compressor.block_forward
         # Share the compressor's CalibrationContext instance.
-        self._calibration_state = compressor._calibration_state
+        self.calibration_context = compressor.calibration_context
 
     @property
     def model(self) -> torch.nn.Module | None:

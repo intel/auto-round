@@ -447,6 +447,9 @@ class LLMCalibrator(Calibrator):
                 f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
                 f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
             )
+        if total_cnt < self.batch_size:
+            logger.warning(f"force the batch size to the number of total samples {total_cnt}")
+            self.batch_size = total_cnt
 
     def _make_block_forward_func(self, name: str) -> Callable:
         """Build a ``forward`` replacement that captures inputs for *block* ``name``.

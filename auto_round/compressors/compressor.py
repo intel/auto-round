@@ -22,6 +22,7 @@ import torch
 from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
+from auto_round.algorithms import pipeline
 from auto_round.calibration.utils import (
     _update_inputs,
 )
@@ -88,7 +89,7 @@ class Compressor(BaseCompressor):
             low_cpu_mem_usage=low_cpu_mem_usage,
             **kwargs,
         )
-        # Routed to ``self._calibration_state.dataset`` via @property.
+        # Routed to ``self._calibration_context.dataset`` via @property.
         # Set after ``super().__init__()`` because the state object is created there.
         self.dataset = dataset
 
@@ -117,7 +118,7 @@ class Compressor(BaseCompressor):
         return "llm"
 
     @torch.no_grad()
-    def cache_data(  # TODO the following two should have some differences wenhuach
+    def cache_data(
         self,
         block_names: list,
         nsamples: int,
@@ -131,21 +132,30 @@ class Compressor(BaseCompressor):
         """
         if self.calibration is None:
             self.post_init()
-        # TODO wenhuach reset calibratin state
-        return self.calibration(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
 
-    # @torch.no_grad()
-    # def calib(self, nsamples: int, bs: int) -> Any:
-    #     """Thin wrapper around ``self.calibration.calib``.
-    #
-    #     ``MLLMMixin`` and ``DiffusionMixin`` override this method directly via
-    #     Python MRO; for plain LLM models this routes into ``LLMCalibrator.calib``.
-    #     """
-    #     if self.calibration is None:
-    #         self.post_init()
-    #     return self.calibration.calib(nsamples, bs)
+        res = self.calibration(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
+        # Sync batch_size back in case calibration clamped it due to insufficient samples
+        self.calibration_context.batch_size = self.calibration.batch_size
+        self.calibration_context.seqlen = self.calibration.seqlen
+        self.calibration_context.batch_dim = self.calibration.batch_dim
+        self.calibration_context.dataset = self.calibration.dataset
+        self.calibration_context.is_only_supported_bs1 = self.calibration.is_only_supported_bs1
+        # Reset gradient_accumulate_steps in case batch_size was clamped to 1 for some models
+        if self.calibration_context.is_only_supported_bs1:
+            compressors = self.pipeline.block_quantizer
+            if not isinstance(compressors,(list,tuple)):
+                compressors = [compressors]
+            else:
+                compressors=list(compressors)
+            compressors.extend(self.pipeline.preprocessors)
+            for compressor in compressors:
+                if hasattr(compressor,"gradient_accumulate_steps"):
+                    compressor.gradient_accumulate_steps = (
+                            compressor.gradient_accumulate_steps*self.calibration_context.orig_batch_size)
 
-    # ── Hook registration API (explicit register/remove pattern) ──────────────
+        
+        return res
+
 
     def get_preprocessor_fp_hooks(self, block: torch.nn.Module) -> list:
         """Register preprocessor hooks for the FP-input reference forward pass.
@@ -347,7 +357,7 @@ class Compressor(BaseCompressor):
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
-            bs = self.batch_size  # TODO add infer_bs_coeff
+            bs = self.calibration_context.batch_size # #TODO change to calib wenhuach
 
             ctx = BlockContext(
                 model=model,
@@ -675,13 +685,15 @@ class Compressor(BaseCompressor):
             logger.info("start to cache block inputs")
         all_inputs = self.cache_data(
             to_cache_block_names,
-            self.nsamples,
+            self.calibration_context.nsamples,
             to_cache_layer_names,
             last_cache_name=_last_cache_name,
         )
-        # whether the token is pad token or not. For signround, the pad token should not be taken into account in loss
+        # Whether the token is pad token or not. For signround, the pad token should not be taken into account in loss
         valid_token_mask = all_inputs.pop("valid_token_mask", None)
         self.inputs = all_inputs
+
+
         all_q_inputs = None
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
@@ -736,18 +748,6 @@ class Compressor(BaseCompressor):
 
             clear_memory(self.inputs)
 
-            if "input_ids" in inputs.keys():
-                total_samples = len(inputs["input_ids"])
-                if getattr(self.calibration_state, "batch_size", None):
-                    if total_samples < self.batch_size:
-                        self.batch_size = total_samples
-                        self.calibration_state.batch_size = total_samples
-                        logger.warning(f"force the train batch size to {total_samples}")
-                else:
-                    if total_samples < self.calibration_state.batch_size:
-                        self.batch_size = total_samples
-                        self.calibration_state.batch_size = total_samples
-                        logger.warning(f"force the train batch size to {total_samples}")
 
             self._quantize_blocks(
                 self.model_context.model,
@@ -974,7 +974,7 @@ class Compressor(BaseCompressor):
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
         # ``seqlen`` clamping is owned by ``CalibrationState``.
-        self.calibration_state.clamp_seqlen(self.model_context)
+        self.calibration_context.clamp_seqlen(self.model_context)
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
@@ -1122,7 +1122,7 @@ class Compressor(BaseCompressor):
             # ``Calibrator.collect``).  Bind it as the authoritative store so
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
             # ``batch_dim``.
-            self.calibration_state = inputs  # TODO wenhuach this has issues, calibraion state no longer hold much info
+            self.calibration_context = inputs  # TODO wenhuach this has issues, calibraion state no longer hold much info
         else:
             self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.inputs[self.quant_block_list[0][0]]  # TODO we have wenhuach
@@ -1145,7 +1145,7 @@ class Compressor(BaseCompressor):
                     device_manager.device_list,
                     input_ids,
                     self.compress_context.low_gpu_mem_usage,
-                    self.calibration_state.batch_size,
+                    self.calibration_context.batch_size,
                     device,
                 )
             else:
@@ -1164,7 +1164,7 @@ class Compressor(BaseCompressor):
 
         blk_name = self.quant_block_list[0][0]
         # bs = self.batch_size * self.quantizer.infer_bs_coeff
-        bs = self.calibration_state.batch_size  # TODO wenhuach add infer_bs_coeff
+        bs = self.calibration_context.batch_size  # TODO wenhuach add infer_bs_coeff
 
         from auto_round.algorithms.pipeline import BlockContext
 
