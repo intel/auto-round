@@ -197,11 +197,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
         # Use quantized inputs if available and enabled
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
-        nsamples = (
-            len(active_inputs)
-            if isinstance(active_inputs, list)
-            else self._count_samples(active_inputs)
-        )
+        nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -459,7 +455,9 @@ class SignRoundQuantizer(BaseQuantizer):
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
 
-        gradient_accumulate_steps = self.calibration_context.batch_size * self.gradient_accumulate_steps  # Force to low gpu
+        gradient_accumulate_steps = (
+            self.calibration_context.batch_size * self.gradient_accumulate_steps
+        )  # Force to low gpu
 
         total_loss = 0
         num_elm = 1

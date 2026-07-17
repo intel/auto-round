@@ -58,7 +58,7 @@ class CalibrationContext:
     seqlen: int = 2048
     dataset: Any = None
     is_only_supported_bs1: bool = False
-    orig_batch_size: int = 8 # some models only support batch_size 1,we need keep this info to set grad_accumulate_step
+    orig_batch_size: int = 8  # some models only support batch_size 1,we need keep this info to set grad_accumulate_step
 
     # ── Compressor / quantizer round-tripping ──────────────────────────────
 

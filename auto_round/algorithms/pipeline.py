@@ -384,7 +384,6 @@ class BlockForward:
             return first
         raise TypeError(f"Block output[0] must be tensor, got {type(first).__name__}.")
 
-
     def _select_batch(self, inputs, input_others, indices):
         """Select a subset of inputs by indices."""
         batch_dim = self.batch_dim

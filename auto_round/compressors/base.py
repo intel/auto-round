@@ -222,7 +222,7 @@ class BaseCompressor(object):
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
-            batch_size=min(kwargs.pop("batch_size", 8),nsamples),
+            batch_size=min(kwargs.pop("batch_size", 8), nsamples),
             orig_batch_size=min(kwargs.pop("batch_size", 8), nsamples),
         )
 
@@ -988,7 +988,6 @@ class BaseCompressor(object):
 
         self._pipeline = QuantizationPipeline.from_configs(self._alg_configs, compressor=self)
 
-
     @property
     def quantizer(self) -> BaseQuantizer:
         """Transparent forwarder to ``self.pipeline.block_quantizer``.
@@ -1219,7 +1218,6 @@ class BaseCompressor(object):
         # (AutoScheme path) runs delta-loss forward+backward passes.
         self._scheme_post_init()
 
-
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
 
@@ -1323,7 +1321,7 @@ class BaseCompressor(object):
         return device_manager.device_map
 
     @property
-    def optimizer(self) -> Any: #TODO wenhuach delete
+    def optimizer(self) -> Any:  # TODO wenhuach delete
         """Return the actual optimizer class, converting string to class for backward compat.
 
         Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).

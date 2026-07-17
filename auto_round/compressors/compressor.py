@@ -143,19 +143,18 @@ class Compressor(BaseCompressor):
         # Reset gradient_accumulate_steps in case batch_size was clamped to 1 for some models
         if self.calibration_context.is_only_supported_bs1:
             compressors = self.pipeline.block_quantizer
-            if not isinstance(compressors,(list,tuple)):
+            if not isinstance(compressors, (list, tuple)):
                 compressors = [compressors]
             else:
-                compressors=list(compressors)
+                compressors = list(compressors)
             compressors.extend(self.pipeline.preprocessors)
             for compressor in compressors:
-                if hasattr(compressor,"gradient_accumulate_steps"):
+                if hasattr(compressor, "gradient_accumulate_steps"):
                     compressor.gradient_accumulate_steps = (
-                            compressor.gradient_accumulate_steps*self.calibration_context.orig_batch_size)
+                        compressor.gradient_accumulate_steps * self.calibration_context.orig_batch_size
+                    )
 
-        
         return res
-
 
     def get_preprocessor_fp_hooks(self, block: torch.nn.Module) -> list:
         """Register preprocessor hooks for the FP-input reference forward pass.
@@ -357,7 +356,7 @@ class Compressor(BaseCompressor):
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
             # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
-            bs = self.calibration_context.batch_size # #TODO change to calib wenhuach
+            bs = self.calibration_context.batch_size  # #TODO change to calib wenhuach
 
             ctx = BlockContext(
                 model=model,
@@ -693,7 +692,6 @@ class Compressor(BaseCompressor):
         valid_token_mask = all_inputs.pop("valid_token_mask", None)
         self.inputs = all_inputs
 
-
         all_q_inputs = None
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
@@ -747,7 +745,6 @@ class Compressor(BaseCompressor):
             inputs, q_inputs = _update_inputs(inputs, q_inputs)
 
             clear_memory(self.inputs)
-
 
             self._quantize_blocks(
                 self.model_context.model,
@@ -1122,7 +1119,9 @@ class Compressor(BaseCompressor):
             # ``Calibrator.collect``).  Bind it as the authoritative store so
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
             # ``batch_dim``.
-            self.calibration_context = inputs  # TODO wenhuach this has issues, calibraion state no longer hold much info
+            self.calibration_context = (
+                inputs  # TODO wenhuach this has issues, calibraion state no longer hold much info
+            )
         else:
             self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.inputs[self.quant_block_list[0][0]]  # TODO we have wenhuach
