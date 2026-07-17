@@ -39,19 +39,22 @@ separate AWQ transform in the same pipeline.
 
 ## Architecture
 
-### Shared AWQ Search Service
+### Shared AWQ Search Infrastructure
 
-Extract the reusable parts of `AWQTransform` into an internal activation-aware
-scale search service. The service owns:
+The shared infrastructure consists of a new internal activation-aware scale
+search service and AWQ's existing `QDQTool`. The scale search service owns:
 
 - candidate ratio generation;
 - activation and weight scale construction;
-- per-layer quantization parameter resolution;
-- dispatch through AWQ's existing `QDQTool`;
 - candidate output-error evaluation; and
 - best-candidate selection.
 
-The service accepts a consumer-provided candidate evaluator and scale consumer.
+`QDQTool` remains the single owner of per-layer quantization parameter
+resolution and quantization-function dispatch. Both AWQ and SVDQuant configure
+and call it rather than wrapping or duplicating it.
+
+The scale search service accepts a consumer-provided candidate evaluator and
+scale consumer.
 It must not mutate upstream normalization layers or assume AWQ scale folding.
 `AWQTransform` continues to use the service and applies its selected scale by
 folding it into the smooth and balance layers as it does today.
@@ -169,4 +172,3 @@ FLUX validation then uses the existing CLI and Nunchaku export/load smoke path.
 - AWQ clipping as part of SVDQuant smooth search.
 - Fixed-alpha compatibility behavior.
 - Changes to residual iteration, low-rank rank selection, or Nunchaku kernels.
-
