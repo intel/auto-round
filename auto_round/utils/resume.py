@@ -141,9 +141,9 @@ class ResumeState:
 
     def mark_block_done(self, block_name: str, q_input, input_ids) -> None:
         expected = self.block_names[len(self.completed_blocks)]
-        assert block_name == expected, (
-            f"ResumeState.mark_block_done called out of order: expected {expected!r}, got {block_name!r}"
-        )
+        assert (
+            block_name == expected
+        ), f"ResumeState.mark_block_done called out of order: expected {expected!r}, got {block_name!r}"
         if q_input is not None:
             torch.save(_to_cpu_recursive(q_input), self.q_input_path)
         elif self.q_input_path.exists():

@@ -1283,9 +1283,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             # quality sweep shares it, so each candidate silently resumed the
             # previous one's 40/40-complete state and saved an output with no
             # layer tensors (see layer_config_fingerprint docstring).
-            scheme_desc = (
-                "rtn_with_imatrix|"
-                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
+            scheme_desc = "rtn_with_imatrix|" + layer_config_fingerprint(
+                getattr(getattr(self, "quantizer", None), "layer_config", None)
             )
             resume_states = []
             for group_idx, block_names in enumerate(all_blocks):
