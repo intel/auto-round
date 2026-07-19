@@ -1107,7 +1107,11 @@ def get_score_for_scheme(
             try:
                 dataloader = _build_calib_dataloader()
                 model_forward_low_gpu(
-                    model, dataloader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag,
+                    model,
+                    dataloader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
                     disk_index=disk_index,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -1122,7 +1126,11 @@ def get_score_for_scheme(
                 if mllm_loader is None:
                     raise
                 model_forward_low_gpu(
-                    model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag,
+                    model,
+                    mllm_loader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
                     disk_index=disk_index,
                 )
     else:
