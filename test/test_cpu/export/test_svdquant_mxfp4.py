@@ -20,10 +20,7 @@ from auto_round.export.svdquant_mxfp4 import (
     unpack_nibbles,
 )
 
-
-E2M1_CODEBOOK = torch.tensor(
-    [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0]
-)
+E2M1_CODEBOOK = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0])
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -102,9 +99,7 @@ def test_pack_unpack_residual_matches_autoround_rtn_qdq(shape):
     packer = NunchakuMXFP4Packer()
 
     packed = packer.pack_residual(weight)
-    actual = packer.unpack_residual(
-        packed.qweight, packed.wscales, packed.logical_shape, dtype=torch.float32
-    )
+    actual = packer.unpack_residual(packed.qweight, packed.wscales, packed.logical_shape, dtype=torch.float32)
 
     assert actual.shape == shape
     assert actual.dtype == torch.float32
@@ -136,11 +131,24 @@ def test_physical_reorders_roundtrip_exact_codes_and_match_reference_fixture():
         "13ec93403839f512d4300d813bd160f63940363868fba69034c01142595d7340"
     )
     assert qweight.view(torch.uint8).flatten()[:16].tolist() == [
-        80, 250, 148, 62, 130, 45, 199, 97, 233, 131, 45, 199, 27, 182, 80, 250
+        80,
+        250,
+        148,
+        62,
+        130,
+        45,
+        199,
+        97,
+        233,
+        131,
+        45,
+        199,
+        27,
+        182,
+        80,
+        250,
     ]
-    assert wscales.flatten()[:16].tolist() == [
-        127, 138, 96, 107, 65, 76, 34, 45, 183, 194, 152, 163, 121, 132, 90, 101
-    ]
+    assert wscales.flatten()[:16].tolist() == [127, 138, 96, 107, 65, 76, 34, 45, 183, 194, 152, 163, 121, 132, 90, 101]
     assert torch.equal(packer._unpack_weight_codes(qweight), logical_codes)
     assert torch.equal(packer._unpack_scale_codes(wscales), logical_scales)
 
@@ -213,9 +221,7 @@ def test_e2m1_roundtrips_every_logical_code():
 
 
 def test_e2m1_raw_values_follow_autoround_rounding_and_saturate():
-    normalized = torch.tensor(
-        [0.25, 0.4, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0, 5.1, 100.0]
-    )
+    normalized = torch.tensor([0.25, 0.4, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0, 5.1, 100.0])
     normalized = torch.cat((normalized, -normalized))
     scales = torch.tensor(2.0)
     values = normalized * scales

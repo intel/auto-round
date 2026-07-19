@@ -88,8 +88,7 @@ def rtn_qdq_residual(weight: torch.Tensor, scheme: ResidualQuantScheme) -> torch
         or values["group_size"] != 32
     ):
         raise ValueError(
-            "Deployable MXFP4 residual QDQ requires scalar group_size=32; "
-            f"got group_size={values['group_size']!r}."
+            "Deployable MXFP4 residual QDQ requires scalar group_size=32; " f"got group_size={values['group_size']!r}."
         )
 
     qdq, _, _ = quant_func(

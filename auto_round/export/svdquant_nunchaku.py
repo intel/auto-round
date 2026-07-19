@@ -25,7 +25,6 @@ from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.export.svdquant_mxfp4 import NunchakuMXFP4Packer, pack_lowrank_weight
 from auto_round.wrapper import WrapperWALayer
 
-
 _DEPLOYABLE_E2M1_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
 NUNCHAKU_WEIGHT_FILENAME = "diffusion_pytorch_model.safetensors"
 
@@ -292,11 +291,7 @@ def _validate_selected_scheme(scheme: SVDQuantLinearScheme, prefix: str) -> tupl
         )
     if isinstance(scheme.bits, bool) or not isinstance(scheme.bits, int) or scheme.bits != 4:
         raise ValueError(f"{prefix} residual scheme requires bits=4, got {scheme.bits!r}")
-    if (
-        isinstance(scheme.group_size, bool)
-        or not isinstance(scheme.group_size, int)
-        or scheme.group_size != 32
-    ):
+    if isinstance(scheme.group_size, bool) or not isinstance(scheme.group_size, int) or scheme.group_size != 32:
         raise ValueError(f"{prefix} residual scheme requires scalar group_size=32, got {scheme.group_size!r}")
     if scheme.sym is not True:
         raise ValueError(f"{prefix} residual scheme requires sym=True, got {scheme.sym!r}")

@@ -11,9 +11,9 @@ from auto_round.export.svdquant_adapters.flux import (
 )
 from auto_round.export.svdquant_nunchaku import (
     IdentitySVDQuantModelAdapter,
+    SourceLinearRecord,
     SVDQuantExportConfig,
     SVDQuantLinearScheme,
-    SourceLinearRecord,
     collect_svdquant_tensors,
     save_svdquant_nunchaku_safetensors,
 )
@@ -531,8 +531,9 @@ def test_adapter_sources_have_no_external_runtime_imports():
 
 
 def test_partial_flux_collect_and_save_roundtrip(tmp_path):
-    from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
     from safetensors import safe_open
+
+    from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 
     residual = torch.nn.Linear(32, 8)
     residual.data_type, residual.bits, residual.group_size, residual.sym = "mx_fp4", 4, 32, True
