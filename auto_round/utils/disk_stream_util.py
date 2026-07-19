@@ -79,9 +79,7 @@ class SafetensorsIndex:
         return [n for n in self.weight_map if n == prefix or n.startswith(dotted)]
 
 
-def materialize_module(
-    module: nn.Module, module_name: str, index: SafetensorsIndex, device: str
-) -> None:
+def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIndex, device: str) -> None:
     """Populate `module`'s (currently meta) parameters/buffers with real data read
     directly from the checkpoint, onto `device`. `module_name` is `module`'s dotted
     path in the full model (used as the tensor-name prefix in the checkpoint).
