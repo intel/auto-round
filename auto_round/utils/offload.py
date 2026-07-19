@@ -785,7 +785,23 @@ class OffloadManager:
 
             base_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
             os.makedirs(base_dir, exist_ok=True)
-            self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
+            if envs.AR_RESUME_DIR:
+                # Local addition (not upstream): a fresh tempfile.mkdtemp()
+                # directory is unique to this process and can never be found
+                # again by a resumed run in a new process -- that's the whole
+                # reason bare in-memory .quantize() (no format=) resumability
+                # didn't actually work: ResumeState correctly skipped
+                # re-tuning already-done blocks, but their quantized weights,
+                # offloaded here, were unreachable from the resumed process,
+                # leaving those blocks on meta in the returned model. Use a
+                # stable, deterministic path instead whenever AR_RESUME_DIR is
+                # set, so a resumed process's OffloadManager can find (see
+                # _reload()'s discovery check below) and reuse what a prior
+                # crashed process already saved here. See LOCAL_PATCHES.md.
+                self._tempdir = os.path.join(base_dir, f"{self._prefix}_resume")
+                os.makedirs(self._tempdir, exist_ok=True)
+            else:
+                self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
             logger.info(f"OffloadManager ({self._prefix}): tempdir = {self._tempdir}")
         return self._tempdir
 
