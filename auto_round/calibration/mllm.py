@@ -108,27 +108,50 @@ class MLLMCalibrator(LLMCalibrator):
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            orig_bs = self.batch_size
-            (
-                self.dataloader,
-                self.batch_size,
-                self.seqlen,
-            ) = get_mllm_dataloader(
-                template=template_obj,
-                model=self.model,
-                tokenizer=tokenizer,
-                processor=self.processor,
-                image_processor=image_processor,
-                dataset=dataset,
-                extra_data_dir=self.extra_data_dir,
-                seqlen=self.seqlen,
-                bs=bs,
-                seed=self.seed,
-                nsamples=nsamples,
-                quant_nontext_module=self.quant_nontext_module,
-            )
-            if orig_bs != 1 and self.batch_size == 1:
-                self.is_only_supported_bs1 = True
+            from auto_round.compressors.mllm.dataset import MLLM_DATASET
+
+            if not self.quant_nontext_module and dataset not in MLLM_DATASET:
+                # Local patch (see LOCAL_PATCHES.md, "Text-only calibration of
+                # multimodal checkpoints"): a local text dataset (file/dir/HF
+                # text set) is valid calibration for a VLM whose non-text
+                # modules are NOT being quantized -- the full-model forward
+                # runs text-only and the generic-dict branch of the loop below
+                # feeds model(**batch). Upstream instead falls through to
+                # get_mllm_dataloader, which KeyErrors on any dataset not in
+                # its MLLM_DATASET registry (its `os.path.isfile(dataset) or
+                # dataset in MLLM_DATASET` guard still indexes MLLM_DATASET
+                # with the file path).
+                from auto_round.calib_dataset import get_dataloader
+
+                logger.info(
+                    f"Multimodal model with non-MLLM calibration dataset {dataset!r} and "
+                    "quant_nontext_module=False: using the standard text dataloader "
+                    "(vision/audio towers are not being quantized, so text-only "
+                    "calibration through the full-model forward is sufficient)."
+                )
+                self.dataloader = get_dataloader(tokenizer, self.seqlen, dataset, self.seed, bs, nsamples)
+            else:
+                orig_bs = self.batch_size
+                (
+                    self.dataloader,
+                    self.batch_size,
+                    self.seqlen,
+                ) = get_mllm_dataloader(
+                    template=template_obj,
+                    model=self.model,
+                    tokenizer=tokenizer,
+                    processor=self.processor,
+                    image_processor=image_processor,
+                    dataset=dataset,
+                    extra_data_dir=self.extra_data_dir,
+                    seqlen=self.seqlen,
+                    bs=bs,
+                    seed=self.seed,
+                    nsamples=nsamples,
+                    quant_nontext_module=self.quant_nontext_module,
+                )
+                if orig_bs != 1 and self.batch_size == 1:
+                    self.is_only_supported_bs1 = True
         else:
             self.dataloader = self.dataset
 
