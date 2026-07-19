@@ -557,7 +557,19 @@ class DataDrivenCompressor(BaseCompressor):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            if self.compress_context.low_cpu_mem_usage:
+            # Local addition (not upstream): also reload when `AR_DISK_STREAM_MODEL`
+            # is set even if `low_cpu_mem_usage` has been forced False (e.g. GGUF
+            # export -- see base.py's `_finalize_compress_context`, which disables
+            # `low_cpu_mem_usage` for gguf formats for reasons unrelated to disk
+            # streaming). Under streaming, a block starts on the meta device
+            # regardless of `low_cpu_mem_usage`, which only ever controlled whether
+            # to *free* it again after use -- without this, the block below is never
+            # materialized at all and `m.to(device)` crashes with "Cannot copy out
+            # of meta tensor". The block intentionally stays real afterward (no
+            # matching post-tune offload runs when `low_cpu_mem_usage` is False --
+            # see the `is_immediate_saving`-adjacent offload call further down),
+            # matching upstream's own choice not to cycle blocks for these formats.
+            if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL:
                 if nblocks == 1:
                     self._offloader.reload(model, n)
                 else:
@@ -803,6 +815,18 @@ class DataDrivenCompressor(BaseCompressor):
                 )
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
+            elif self.model_context._disk_stream_index is not None:
+                # Local addition (not upstream): dense (non-MoE-patched) models
+                # normally get low_cpu_mem_usage disabled here because the
+                # per-block offload/reload dance is pointless when the whole
+                # model is already CPU-resident from the initial full load --
+                # there's no memory to save. That assumption doesn't hold when
+                # the model started as a meta skeleton (AR_DISK_STREAM_MODEL=1):
+                # blocks are still on meta and must go through the same
+                # reload()-before/offload()-after cycle (data_driven.py:560-564,
+                # 709-714) to get materialized from disk one at a time and freed
+                # again, so keep it enabled here. See LOCAL_PATCHES.md.
+                pass
             else:
                 self.compress_context.low_cpu_mem_usage = False
         if len(all_blocks) > 1:
@@ -1225,12 +1249,21 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             dispatch_model(model, model.hf_device_map)
 
+        # Local addition (not upstream): under AR_DISK_STREAM_MODEL, decoder
+        # blocks are deliberately left on meta (materialized/freed one at a
+        # time inside _quantize_via_rtn_blockwise's per-block loop). A plain
+        # safe_to_cpu_()->model.to("cpu") here would try to move those meta
+        # blocks for real, which is exactly the "Cannot copy out of meta
+        # tensor" error this guard avoids -- and would defeat disk streaming
+        # even if it didn't crash. See LOCAL_PATCHES.md.
+        skip_consolidate = envs.AR_DISK_STREAM_MODEL
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                 import accelerate
 
                 accelerate.hooks.remove_hook_from_submodules(model)
-            safe_to_cpu_(model)
+            if not skip_consolidate:
+                safe_to_cpu_(model)
             clear_memory(device_list=device_manager.device_list)
             self._quantize_via_rtn_blockwise()
         except torch.OutOfMemoryError:
@@ -1241,7 +1274,8 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                     "Fallback to CPU. "
                     "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
                 )
-                safe_to_cpu_(model)
+                if not skip_consolidate:
+                    safe_to_cpu_(model)
                 clear_memory(device_list=device_manager.device_list)
                 if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
                     import accelerate
