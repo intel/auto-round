@@ -391,6 +391,9 @@ class BlockIO:
                     current_input_others[key] = val[idx] if idx < len(val) else val[0]
                 else:
                     current_input_others[key] = val
+            elif isinstance(input_others[key], torch.Tensor):
+                val = input_others[key]
+                current_input_others[key] = val.index_select(self.batch_dim, indices.to(val.device))
             elif not isinstance(input_others[key], (str, bool, type(None))):
                 current_input_others[key] = [input_others[key][i] for i in indices]
                 if len(current_input_others[key]) == 1:

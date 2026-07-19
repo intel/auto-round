@@ -1,6 +1,7 @@
 """Fast unit tests for algorithm registry and pipeline construction."""
 
 import pytest
+import torch
 
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
 from auto_round.algorithms.config_resolver import (
@@ -9,13 +10,14 @@ from auto_round.algorithms.config_resolver import (
     split_quantization_configs,
     sync_shared_config_from,
 )
-from auto_round.algorithms.pipeline import QuantizationPipeline
+from auto_round.algorithms.pipeline import DiffusionBlockIO, QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.compressors.entry import _select_rtn_compressor_base_cls
+from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
@@ -49,6 +51,17 @@ def test_svdquant_plus_rtn_pipeline_uses_svdquant_as_preprocessor():
 
     assert type(pipeline.preprocessors[0]).__name__ == "SVDQuantTransform"
     assert isinstance(pipeline.block_quantizer, RTNQuantizer)
+
+
+def test_diffusion_block_io_preserves_single_sample_tensor_batch_dimension():
+    io = DiffusionBlockIO(
+        _fp_inputs={"hidden_states": [torch.zeros(1, 4, 8)]},
+        _input_others={"positional_inputs": [], "temb": torch.zeros(1, 32)},
+    )
+
+    _, input_others = io._select_inputs(io._fp_inputs, io._input_others, torch.tensor([0]))
+
+    assert input_others["temb"].shape == (1, 32)
 
 
 def test_pipeline_duplicate_preprocessor_rejected():
@@ -179,6 +192,28 @@ def test_compat_entry_forwards_disabled_svdquant_smoothing(monkeypatch):
     configs = captured["config"] if isinstance(captured["config"], list) else [captured["config"]]
     svdquant_config = next(config for config in configs if isinstance(config, SVDQuantConfig))
     assert svdquant_config.smooth_enabled is False
+
+
+def test_data_free_svdquant_rtn_routes_to_zero_shot(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(ZeroShotCompressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    result = NewAutoRound(
+        "dummy-model",
+        "MXFP4",
+        [SVDQuantConfig(smooth_enabled=False), RTNConfig(disable_opt_rtn=True)],
+        format="svdquant_nunchaku",
+    )
+
+    assert isinstance(result, ZeroShotCompressor)
+    assert captured["config"][0].requires_calibration is False
 
 
 def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):

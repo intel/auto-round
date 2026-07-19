@@ -38,10 +38,28 @@ With smoothing disabled, `smooth` and `smooth_orig` are exact identity vectors.
   the current residual, computes the remaining error, and updates a fixed-rank SVD
   branch.
 
-The outer loop currently supports RTN only. SignRound remains usable as the normal
-downstream residual quantizer, but SignRound-aware outer iteration is not implemented.
+Residual outer iteration uses RTN QDQ by design for both RTN and SignRound pipelines.
+`--algorithm` independently selects the final downstream residual quantizer: RTN or
+SignRound. SignRound is not an outer-iteration method.
 
 ## Smoothing and Calibration
+
+`SVDQuantConfig.smooth_enabled` and the CLI both default to `False`. The CLI enables
+smoothing only when `--enable_svdquant_smooth` is present.
+
+The enabled mode is a low-rank-aware output grid search, not a fixed-alpha formula.
+`--svdquant_smooth_num_grids 20` evaluates 39 ordered `(alpha, beta)` candidates per
+search group. Each candidate uses one shared truncated SVD, deployment-dtype low-rank
+rounding, residual RTN QDQ, and the registered parent module's output MSE. Flux Q/K/V
+projections share one input scale and one low-rank down factor; single-stream Q/K/V and
+`proj_mlp` are searched together because they consume the same normalized input.
+
+The search captures all samples already scheduled by the current AutoRound block
+calibration context and replays the existing block batches. Its buffers live only for
+the current block and are released after scale selection or on failure. The selected
+runtime tensor is `smooth = 1 / scale`. Flux export preserves shared QKV down/smooth
+tensors directly, and splits single-stream `proj_out` residual/down/smooth tensors by
+input columns without replacing the selected scale with identity.
 
 `smooth_enabled=False` is a strict no-smoothing mode:
 
@@ -52,31 +70,72 @@ downstream residual quantizer, but SignRound-aware outer iteration is not implem
 
 This is the mode used for the validated rank-32 artifact.
 
+For a quality-oriented smooth run, add:
+
+```text
+--nsamples 32
+--batch_size 1
+--dataset coco2014
+--num_inference_steps 10
+--enable_svdquant_smooth
+--svdquant_smooth_num_grids 20
+```
+
+For diffusion calibration this schedules roughly `nsamples * num_inference_steps`
+block inputs, so the command above evaluates about 320 inputs. Use a smaller grid,
+sample count, and denoising-step count only for smoke validation. Smooth search performs
+`2 * num_grids - 1` temporary grouped decompositions in addition to the final
+`svdquant_residual_iters` decomposition loop, so it is substantially slower than the
+no-smooth command.
+
 ## FLUX Export Command
 
-The repository contains a reproducible blockwise runner. It keeps only one FLUX block
-on the decomposition GPU and moves completed blocks back to CPU.
+The standard CLI loads the complete Diffusers pipeline, quantizes only its Transformer,
+and exports a self-contained hybrid pipeline. Auxiliary components remain BF16 and the
+Transformer is a Nunchaku MXFP4 onefile:
 
 ```bash
 cd /home/user2/data/xixi/auto-round-svdquant
-source /home/user2/data/xixi/.venv/bin/activate
-export UV_CACHE_DIR=/home/user2/data/xixi/.cache/uv
+source /home/user2/data/xixi/torch213-cu130-env/.venv/bin/activate
+export UV_CACHE_DIR=/home/user2/data/xixi/torch213-cu130-env/.uv-cache
 export CUDA_VISIBLE_DEVICES=0
 
-python -u scripts/quantize_flux_svdquant_nunchaku.py \
-  --model /home/user2/data/xixi/FLUX.1-dev/transformer \
-  --output /home/user2/data/xixi/flux.1-dev-autoround-mxfp4-r32-nosmooth.safetensors \
-  --rank 32 \
-  --device cuda:0 2>&1 | tee /home/user2/data/xixi/flux-autoround-full.log
+python -u -m auto_round \
+  --model /home/user2/data/xixi/FLUX.1-dev \
+  --model_dtype bf16 \
+  --scheme MXFP4 \
+  --algorithm rtn \
+  --iters 0 \
+  --disable_opt_rtn \
+  --enable_svdquant \
+  --svdquant_rank 32 \
+  --svdquant_residual_iters 1 \
+  --svdquant_residual_quant_method rtn \
+  --svdquant_model_adapter flux \
+  --format svdquant_nunchaku \
+  --device 0 \
+  --disable_low_cpu_mem_usage \
+  --output_dir /home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth-pipeline \
+  2>&1 | tee /home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth-pipeline.log
 ```
 
-The output is written to a temporary safetensors file and atomically renamed only
-after a complete export. A failure does not leave a partial model at the final path.
+The output is a standard Diffusers component tree. Its packed Transformer is written to:
 
-The high-level language-model CLI is not used here. A standalone Diffusers
-`FluxTransformer2DModel` is otherwise classified through the language-model path and
-requests a tokenizer/text calibration dataset. The blockwise runner is the validated
-no-calibration path for a transformer-only FLUX checkpoint.
+```text
+/home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth-pipeline/transformer/diffusion_pytorch_model.safetensors
+```
+
+The existing AutoRound diffusion backend loads the pipeline and selects only
+`pipe.transformer` for quantization. Smoothing is disabled by default; omit
+`--enable_svdquant_smooth` for a strictly data-free run, and do not pass a calibration
+dataset or cache. The exporter saves VAE, text encoders, tokenizers, and scheduler through
+their normal `save_pretrained` paths, but never saves BF16 Transformer weights. On hosts with
+enough RAM, `--disable_low_cpu_mem_usage` keeps the working model in memory and avoids
+creating a large disk-offload workspace. The validated run used about 64 GB peak RSS,
+4 GB peak VRAM, and took about 51 minutes including FLUX fusion/export on one RTX 5090D.
+
+For exporter debugging, `scripts/quantize_flux_svdquant_nunchaku.py` remains available
+as a lower-level blockwise runner. New reproductions should use the standard CLI.
 
 ## Nunchaku Onefile Layout
 
@@ -117,16 +176,18 @@ then compute a new configured-rank SVD. It does not concatenate LoRA ranks.
 
 ## Static Artifact Verification
 
-The validated AutoRound artifact is:
+The following transformer-only artifact was generated and validated before the workspace
+cleanup; the path is retained here as a historical reproducibility record and is no longer
+present in the current workspace:
 
 ```text
-/home/user2/data/xixi/flux.1-dev-autoround-mxfp4-r32-nosmooth.safetensors
+/home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth/transformer/diffusion_pytorch_model.safetensors
 size: 6.4 GiB
 keys: 2604
-sha256: 075452388daa609777ce2b27abbce45aa5fa4a15b398119477e040c96286df52
+sha256: 445b481e934679ea128bf0a78ebf83b45da19e9579fc289928884a1edbe76ea3
 ```
 
-Compared with the known-good DeepCompressor artifact:
+It was compared with the historical known-good DeepCompressor artifact:
 
 ```text
 /home/user2/data/xixi/flux.1-dev-mxfp4-lowrank32-nosmooth.safetensors
@@ -137,12 +198,12 @@ contains no unpacked `residual.weight` or float residual copy.
 
 ## Kernel Versus QDQ Gate
 
-The external validation script requires the local Nunchaku and DeepCompressor source
-trees only to decode and run the reference kernel:
+After a new pipeline export, the external validation script requires the local Nunchaku
+and DeepCompressor source trees only to decode and run the reference kernel:
 
 ```bash
 export PYTHONPATH=/home/user2/data/xixi/deepcompressor:/home/user2/data/xixi/nunchaku
-export MODEL=/home/user2/data/xixi/flux.1-dev-autoround-mxfp4-r32-nosmooth.safetensors
+export MODEL=/home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth-pipeline/transformer/diffusion_pytorch_model.safetensors
 export CUDA_VISIBLE_DEVICES=0
 
 PREFIX=transformer_blocks.0.mlp_fc1 \
@@ -157,7 +218,7 @@ Results on RTX 5090D, SM120:
 
 | Layer | Relative MAE | Max relative error | Correlation |
 | --- | ---: | ---: | ---: |
-| `transformer_blocks.0.mlp_fc1` | 0.109740 | 0.112090 | 0.994051 |
+| `transformer_blocks.0.mlp_fc1` (CLI, M=16) | 0.110075 | 0.112626 | 0.993992 |
 | `transformer_blocks.0.qkv_proj` | 0.131848 | 0.109775 | 0.989319 |
 | `single_transformer_blocks.0.out_proj` | 0.113137 | 0.110838 | 0.993579 |
 
@@ -166,14 +227,40 @@ packing, scale, or metadata layout mismatch.
 
 ## Nunchaku Load and Image Gate
 
-Load the transformer directly:
+Load a newly exported self-contained pipeline directly. No BF16 base pipeline or manual
+Transformer replacement is needed:
+
+```python
+import torch
+from diffusers import FluxPipeline
+
+pipe = FluxPipeline.from_pretrained(
+    "/home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth-pipeline",
+    torch_dtype=torch.bfloat16,
+)
+pipe.enable_model_cpu_offload()
+image = pipe(
+    "A cat holding a sign that says Hello world",
+    num_inference_steps=20,
+    generator=torch.Generator(device="cpu").manual_seed(0),
+).images[0]
+image.save("flux-mxfp4.png")
+```
+
+The root `model_index.json` entry is
+`["nunchaku", "NunchakuFluxTransformer2dModel"]`. Diffusers therefore calls Nunchaku
+with the `transformer/` directory, and Nunchaku resolves its
+`diffusion_pytorch_model.safetensors` onefile.
+
+The following direct onefile path remains useful for isolated kernel debugging and records
+the previously validated transformer-only artifact:
 
 ```python
 import torch
 from nunchaku import NunchakuFluxTransformer2dModel
 
 transformer = NunchakuFluxTransformer2dModel.from_pretrained(
-    "/home/user2/data/xixi/flux.1-dev-autoround-mxfp4-r32-nosmooth.safetensors",
+    "/home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth/transformer/diffusion_pytorch_model.safetensors",
     torch_dtype=torch.bfloat16,
     precision="mxfp4",
     device="cuda:0",
@@ -184,7 +271,7 @@ Generate the validated 20-step image:
 
 ```bash
 export PYTHONPATH=/home/user2/data/xixi/nunchaku
-export MXFP4_MODEL=/home/user2/data/xixi/flux.1-dev-autoround-mxfp4-r32-nosmooth.safetensors
+export MXFP4_MODEL=/home/user2/data/xixi/autoround-cli-flux-mxfp4-r32-nosmooth/transformer/diffusion_pytorch_model.safetensors
 export CUDA_VISIBLE_DEVICES=0
 
 python /home/user2/data/xixi/generate_flux_compare.py \
@@ -193,12 +280,24 @@ python /home/user2/data/xixi/generate_flux_compare.py \
   --height 512 \
   --width 512 \
   --offload \
-  --out /home/user2/data/xixi/flux-dev-autoround-mxfp4-r32-nosmooth-20steps.png
+  --out /home/user2/data/xixi/flux-dev-autoround-cli-mxfp4-r32-nosmooth-torch213-cu130-20steps.png
 ```
 
-The generated image is coherent and not noise. It contains a clear cat holding a
-readable "hello world" sign. Its SHA256 is
-`329053d804dea15a8bdb13198bd6653553016cfa53e877fcd55c174c7ff66edf`.
+The historical generated image was coherent and not noise. It contained a clear cat
+holding a readable "HeLLo world" sign, validating the transformer-only CLI onefile with
+Nunchaku on the torch 2.13 + cu130 branch. The image has since been removed. SHA256:
+`f98c58dae0f7fc985fc894f12d6fb64b50590aca7bb4e21957ae922b38245ce4`.
+
+For the residual-iters=2 full-pipeline run, use:
+
+```bash
+bash /home/user2/data/xixi/run_autoround_flux_mxfp4_r32_r2_rtn.sh
+```
+
+That runner quantizes the complete source pipeline and then calls
+`torch213-cu130-env/generate_flux_mxfp4_pipeline.py`. The smoke script loads only the
+export directory through `FluxPipeline.from_pretrained`; it does not load the original
+BF16 pipeline or inject a Transformer manually.
 
 ## Test Coverage and Dependency Boundary
 
@@ -207,10 +306,11 @@ export validation, format registration, W4A16 packing, and FLUX mapping. Runtime
 Nunchaku checks remain external so that AutoRound does not acquire an inference
 runtime dependency.
 
-Final focused result:
+Final focused results:
 
 ```text
-272 passed, 4 warnings in 11.19s
+278 SVDQuant/core/export tests passed, 4 warnings
+17 targeted CLI tests passed, 2 warnings
 ```
 
 Audit command:
@@ -225,9 +325,10 @@ Expected result: no matches.
 
 ## Limitations
 
-- The validated no-smoothing runner is transformer-specific at the orchestration
-  layer; the SVDQuant core, codec, exporter, and adapter interface remain generic.
-- RTN is the only implemented residual outer-loop method.
+- The CLI loader is generic for standalone Diffusers transformer classes. FLUX naming
+  and projection fusion remain isolated in the explicit `flux` model adapter.
+- Residual outer iteration is fixed to RTN QDQ by design; RTN and SignRound remain
+  available as downstream final quantizers.
 - The tested Nunchaku MXFP4 kernel branch targets SM120/SM121. B200 is SM100 and
   requires separate Nunchaku build/kernel support before runtime validation.
 - The artifact path name does not contain Nunchaku's expected precision token, so

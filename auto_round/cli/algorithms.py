@@ -129,11 +129,14 @@ class AlgorithmHandler(ABC):
                 0,
                 SVDQuantConfig(
                     rank=getattr(args, "svdquant_rank", 32),
-                    smooth_enabled=getattr(args, "svdquant_smooth_enabled", True),
-                    smooth_alpha=getattr(args, "svdquant_smooth_alpha", 0.5),
+                    smooth_enabled=getattr(args, "svdquant_smooth_enabled", False),
+                    smooth_num_grids=getattr(args, "svdquant_smooth_num_grids", 20),
                     target_modules=getattr(args, "svdquant_target_modules", None),
                     exclude_modules=getattr(args, "svdquant_exclude_modules", None),
                     low_rank_dtype=getattr(args, "svdquant_low_rank_dtype", "bf16"),
+                    residual_iters=getattr(args, "svdquant_residual_iters", 1),
+                    residual_early_stop=getattr(args, "svdquant_residual_early_stop", False),
+                    residual_quant_method=getattr(args, "svdquant_residual_quant_method", "rtn"),
                 ),
             )
         return configs

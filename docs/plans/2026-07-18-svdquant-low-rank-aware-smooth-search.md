@@ -4,7 +4,7 @@
 
 **Goal:** Replace fixed-alpha SVDQuant smoothing with a layer-output grid search that evaluates every scale using a low-rank branch plus QDQ residual.
 
-**Architecture:** SVDQuant collects bounded per-Linear calibration inputs, generates the reference alpha/beta grid from AbsMax spans, and scores each scale after one temporary rank decomposition and residual QDQ. The winning scale is stored in the existing runtime-smooth direction, after which the existing final residual-iteration path runs unchanged.
+**Architecture:** SVDQuant discovers projection groups, captures bounded shared-projection and parent-module calibration inputs, generates the alpha/beta grid from AbsMax spans, and scores each scale after one temporary shared low-rank decomposition plus per-projection residual QDQ. The winning scale is stored in the existing runtime-smooth direction, then grouped final residual iteration produces shared-down/split-up branches for export.
 
 **Tech Stack:** Python 3.12, PyTorch, AutoRound quantization pipeline, pytest, ruff, uv environment at `/home/user2/data/xixi/torch213-cu130-env/.venv`.
 
@@ -116,8 +116,8 @@ w_span = weight.abs().amax(dim=0)
 scale = x_span.pow(alpha) / w_span.pow(beta)
 ```
 
-Cover zero-to-one normalization, identity candidate, non-finite rejection, and
-first-minimum tie selection.
+Cover zero-to-one normalization, identity candidate, whole-scale identity
+fallback for NaN/Inf, and later-minimum tie selection.
 
 **Step 2: Confirm import failure**
 
@@ -295,7 +295,7 @@ Also assert:
 - parent-module output determines the winner even when isolated Linear MSE would
   choose another candidate;
 - temporary weights, hooks, and branches are restored after every candidate;
-- first candidate wins equal finite error;
+- later candidate wins equal finite layer error;
 - invalid candidates are skipped; and
 - all-candidate failure names the global Linear.
 

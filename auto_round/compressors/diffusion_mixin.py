@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import inspect
+import json
 import os
+from pathlib import Path
 from typing import Any, Optional, Union
 
 import torch
@@ -27,6 +29,106 @@ from auto_round.utils.device import (
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
 from auto_round.utils.model import rename_weights_files
+
+
+def _is_nunchaku_pipeline_export(formats) -> bool:
+    """Whether the diffusion pipeline uses Nunchaku onefiles for its transformers."""
+
+    return len(formats) == 1 and formats[0].format_name == "svdquant_nunchaku"
+
+
+def _pipeline_needs_dtype_alignment(pipe, target_dtype: torch.dtype) -> bool:
+    """Whether a pipeline has a torch component whose public dtype differs from the target."""
+
+    for name in pipe.components:
+        component = getattr(pipe, name, None)
+        if isinstance(component, torch.nn.Module):
+            component_dtype = getattr(component, "dtype", None)
+            if component_dtype is None:
+                parameter = next(component.parameters(), None)
+                component_dtype = target_dtype if parameter is None else parameter.dtype
+            if component_dtype != target_dtype:
+                return True
+    return False
+
+
+def _move_pipeline_to_model_device_for_calibration(pipe, model) -> bool:
+    """Align an undispatched pipeline without invalidating Accelerate hooks.
+
+    Returns whether the pipeline was already aligned or was moved. A model with
+    a multi-entry ``hf_device_map`` must retain its dispatch hooks; calling
+    ``pipe.to(accelerator)`` in that state is rejected by Diffusers and would
+    collapse the intended multi-device placement.
+    """
+
+    model_device = torch.device(model.device)
+    is_dispatched = hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1
+    if is_dispatched and pipe.device != model_device and model_device.type in {"cuda", "xpu"}:
+        logger.warning(
+            "Diffusion transformer is already dispatched across devices; "
+            "preserving its Accelerate hooks during calibration."
+        )
+        return False
+    if pipe.device != model_device:
+        pipe.to(model_device)
+    return True
+
+
+def _prepare_single_device_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage: bool) -> str | None:
+    """Use Diffusers component offload for memory-constrained single-device calibration."""
+
+    if not low_gpu_mem_usage:
+        pipe.to(target_device)
+        return None
+    if not hasattr(pipe, "enable_model_cpu_offload"):
+        raise ValueError("The diffusion pipeline does not support component-level model CPU offload.")
+    pipe.enable_model_cpu_offload(device=target_device)
+    return "model"
+
+
+def _rewrite_nunchaku_pipeline_index(output_dir: str | os.PathLike, transformer_names: list[str]) -> None:
+    """Point exported transformer components at their Nunchaku runtime classes."""
+
+    from safetensors import safe_open
+
+    from auto_round.export.svdquant_nunchaku import NUNCHAKU_WEIGHT_FILENAME
+
+    output_path = Path(output_dir)
+    model_index_path = output_path / "model_index.json"
+    with model_index_path.open(encoding="utf-8") as handle:
+        model_index = json.load(handle)
+
+    for name in transformer_names:
+        onefile_path = output_path / name / NUNCHAKU_WEIGHT_FILENAME
+        with safe_open(onefile_path, framework="pt", device="cpu") as handle:
+            metadata = handle.metadata() or {}
+        model_class = metadata.get("model_class")
+        if not model_class:
+            raise ValueError(f"Nunchaku onefile {onefile_path} is missing required 'model_class' metadata")
+        model_index[name] = ["nunchaku", model_class]
+
+    temporary_path = model_index_path.with_suffix(".json.tmp")
+    with temporary_path.open("w", encoding="utf-8") as handle:
+        json.dump(model_index, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary_path, model_index_path)
+
+
+def _save_diffusion_component_config(component, output_dir: str | os.PathLike) -> None:
+    """Save a quantized component's Diffusers config without saving its full-precision weights."""
+
+    os.makedirs(output_dir, exist_ok=True)
+    if hasattr(component, "save_config"):
+        component.save_config(output_dir)
+    elif hasattr(getattr(component, "config", None), "save_pretrained"):
+        component.config.save_pretrained(output_dir)
+    else:
+        config = getattr(component, "config", None)
+        if config is None:
+            raise ValueError(f"quantized diffusion component {type(component).__name__} has no serializable config")
+        with open(os.path.join(output_dir, "config.json"), "w", encoding="utf-8") as handle:
+            json.dump(dict(config), handle, indent=2, sort_keys=True)
+            handle.write("\n")
 
 
 class DiffusionMixin:
@@ -115,7 +217,7 @@ class DiffusionMixin:
         model = getattr(self.model_context, "model", None)
         if pipe is not None and model is not None:
             is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-            if not is_nextstep:
+            if not is_nextstep and _pipeline_needs_dtype_alignment(pipe, model.dtype):
                 pipe.to(model.dtype)
 
     def _get_calibrator_kind(self) -> str:
@@ -139,6 +241,11 @@ class DiffusionMixin:
                 else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
             ),
         }
+        try:
+            if "output_type" in inspect.signature(pipe.__call__).parameters:
+                call_kwargs["output_type"] = "latent"
+        except (TypeError, ValueError):
+            pass
         call_kwargs.update(self.pipeline_call_kwargs)
 
         if self._requires_calibration_image():
@@ -207,7 +314,7 @@ class DiffusionMixin:
 
         # Cast full pipeline to transformer's dtype
         is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-        if not is_nextstep:
+        if not is_nextstep and _pipeline_needs_dtype_alignment(pipe, model.dtype):
             pipe.to(model.dtype)
 
         # Dispatch secondary transformer to GPU(s)
@@ -280,20 +387,7 @@ class DiffusionMixin:
         # already be dispatched to multi-device in a prior calib call.  The dispatch
         # state is preserved across calls, so re-dispatching or moving is unnecessary and
         # would break the existing placement.
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 1
-            and pipe.device != self.model.device
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.warning(
-                "Diffusion model is activated sequential model offloading. "
-                "Pipe may already be dispatched from a prior calib call. "
-                "Skipping re-dispatch to avoid breaking the existing placement."
-            )
-
-        if pipe.device != self.model.device:
-            pipe.to(self.model.device)
+        _move_pipeline_to_model_device_for_calibration(pipe, self.model)
 
         device_map = getattr(self.compress_context, "device_map", None)
         device_list = getattr(self.compress_context, "device_list", [])
@@ -404,7 +498,8 @@ class DiffusionMixin:
             # Single-transformer path: let calib() own pipeline dispatch.
             pipe = self.model_context.pipe
             device_map = getattr(self.compress_context, "device_map", None)
-            if device_map is not None and not is_auto_device_mapping(device_map) and not isinstance(device_map, int):
+            cpu_offload_mode = None
+            if device_map is not None and not is_auto_device_mapping(device_map):
                 target_device = get_major_device(device_map)
                 # Skip if the transformer is already on the target device to avoid
                 # redundant full-model transfer that exhausts GPU memory.
@@ -412,7 +507,11 @@ class DiffusionMixin:
                 param = next(transformer.parameters(), None) if transformer else None
                 skip_move = param is not None and get_major_device(str(param.device)) == target_device
                 if not skip_move:
-                    pipe.to(target_device)
+                    cpu_offload_mode = _prepare_single_device_pipeline_for_calibration(
+                        pipe,
+                        target_device,
+                        low_gpu_mem_usage=self.compress_context.low_gpu_mem_usage,
+                    )
 
             logger.info("start to cache block inputs")
             all_inputs = self.try_cache_inter_data_gpucpu(
@@ -421,6 +520,10 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
+            if cpu_offload_mode == "model":
+                from accelerate.hooks import remove_hook_from_submodules
+
+                remove_hook_from_submodules(self.model_context.model)
             clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
             return super().quantize()
@@ -570,6 +673,8 @@ class DiffusionMixin:
             from auto_round.formats import get_formats
 
             _format = get_formats(_format, self)
+        nunchaku_pipeline_export = _is_nunchaku_pipeline_export(_format)
+        nunchaku_transformer_names = []
 
         for name in pipe.components.keys():
             val = getattr(pipe, name)
@@ -578,9 +683,15 @@ class DiffusionMixin:
             )
             target_output_dir = (
                 sub_module_path
-                if has_multiple_quantized_transformers or not self.compress_context.is_immediate_saving
+                if (
+                    nunchaku_pipeline_export
+                    or has_multiple_quantized_transformers
+                    or not self.compress_context.is_immediate_saving
+                )
                 else output_dir
             )
+            saved_quantized_component = False
+            saved_component = val
             if name in quantized_transformers:
                 # Save secondary quantized transformer
                 saved_model = self.model_context.model
@@ -604,7 +715,9 @@ class DiffusionMixin:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
                 self.model_context.model = saved_model
                 self.layer_config = saved_lc
-            elif val is self.model_context.model:
+                saved_quantized_component = True
+                saved_component = val
+            elif name == "transformer" or val is self.model_context.model:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
@@ -622,12 +735,21 @@ class DiffusionMixin:
                 self.compress_context.is_immediate_saving = saved_immediate_saving
                 if saved_subfolder is not None:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                saved_quantized_component = True
+                saved_component = self.model_context.model
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
+                folders.append(sub_module_path)
+                continue
+            else:
                 continue
 
-            if name.startswith("transformer"):
-                rename_weights_files(target_output_dir)
+            if saved_quantized_component:
+                if nunchaku_pipeline_export:
+                    _save_diffusion_component_config(saved_component, target_output_dir)
+                    nunchaku_transformer_names.append(name)
+                elif name.startswith("transformer"):
+                    rename_weights_files(target_output_dir)
 
             folders.append(target_output_dir)
 
@@ -637,11 +759,12 @@ class DiffusionMixin:
             pipe.config.save_pretrained(output_dir)
         else:
             # FrozenDict / plain dict — write model_index.json manually
-            import json
-
             model_index_path = os.path.join(output_dir, "model_index.json")
             with open(model_index_path, "w", encoding="utf-8") as f:
                 f.write(json.dumps(dict(pipe.config), indent=2, sort_keys=True) + "\n")
+
+        if nunchaku_pipeline_export:
+            _rewrite_nunchaku_pipeline_index(output_dir, nunchaku_transformer_names)
 
         if return_folders:
             return compressed_model, folders

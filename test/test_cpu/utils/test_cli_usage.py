@@ -3,6 +3,7 @@ import shutil
 import sys
 
 import pytest
+import torch
 
 from auto_round.utils import parse_layer_config_arg
 
@@ -13,7 +14,6 @@ AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
 
 
 class TestAutoRoundCmd:
-
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):
         self.save_dir = str(tmp_path / "saved")
@@ -262,7 +262,22 @@ def test_rtn_accepts_disable_opt_rtn_flag():
     assert configs[0].disable_opt_rtn is True
 
 
-def test_cli_builds_svdquant_config_with_smoothing_disabled():
+def test_cli_builds_svdquant_config_with_smoothing_disabled_by_default():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "dummy-model", "--algorithm", "rtn", "--enable_svdquant"])
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert args.svdquant_smooth_enabled is False
+    assert args.svdquant_smooth_num_grids == 20
+    assert isinstance(configs[0], SVDQuantConfig)
+    assert configs[0].smooth_enabled is False
+    assert configs[0].smooth_num_grids == 20
+
+
+def test_cli_enables_svdquant_smoothing_explicitly():
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
     from auto_round.cli.algorithms import AlgorithmHandler
     from auto_round.cli.parser import build_quantize_parser
@@ -274,11 +289,153 @@ def test_cli_builds_svdquant_config_with_smoothing_disabled():
             "--algorithm",
             "rtn",
             "--enable_svdquant",
-            "--no-svdquant-smooth-enabled",
+            "--enable_svdquant_smooth",
+            "--svdquant_smooth_num_grids",
+            "8",
         ]
     )
     configs = AlgorithmHandler.build_configs(args, {})
 
-    assert args.svdquant_smooth_enabled is False
+    assert args.svdquant_smooth_enabled is True
     assert isinstance(configs[0], SVDQuantConfig)
-    assert configs[0].smooth_enabled is False
+    assert configs[0].smooth_enabled is True
+    assert configs[0].smooth_num_grids == 8
+
+
+def test_cli_builds_svdquant_residual_iteration_config():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--algorithm",
+            "rtn",
+            "--enable_svdquant",
+            "--svdquant_residual_iters",
+            "3",
+            "--enable_svdquant_residual_early_stop",
+            "--svdquant_residual_quant_method",
+            "rtn",
+            "--svdquant_model_adapter",
+            "flux",
+        ]
+    )
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert isinstance(configs[0], SVDQuantConfig)
+    assert configs[0].residual_iters == 3
+    assert configs[0].residual_early_stop is True
+    assert configs[0].residual_quant_method == "rtn"
+    assert args.svdquant_model_adapter == "flux"
+
+
+def test_svdquant_nunchaku_cli_passes_model_adapter_to_exporter():
+    from auto_round.cli.main import _build_save_kwargs
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--enable_svdquant",
+            "--format",
+            "svdquant_nunchaku",
+            "--svdquant_model_adapter",
+            "flux",
+        ]
+    )
+
+    assert _build_save_kwargs(args, ["svdquant_nunchaku"]) == {"model_adapter": "flux"}
+
+
+def test_svdquant_nunchaku_cli_requires_transform():
+    from auto_round.cli.main import _build_save_kwargs
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "dummy-model", "--format", "svdquant_nunchaku"])
+
+    with pytest.raises(ValueError, match="requires --enable_svdquant"):
+        _build_save_kwargs(args, ["svdquant_nunchaku"])
+
+
+def test_flux_adapter_supplies_svdquant_target_modules():
+    from auto_round.cli.main import _apply_svdquant_adapter_defaults
+    from auto_round.cli.parser import build_quantize_parser
+    from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+    args = build_quantize_parser().parse_args(
+        ["--model", "dummy", "--enable_svdquant", "--svdquant_model_adapter", "flux"]
+    )
+    _apply_svdquant_adapter_defaults(args)
+
+    assert args.svdquant_target_modules.split(",") == list(FLUX_SVDQUANT_TARGET_MODULES)
+
+
+def test_svdquant_cli_help_uses_underscore_option_names():
+    from auto_round.cli.parser import build_quantize_parser
+
+    help_text = build_quantize_parser().format_help()
+
+    for option in (
+        "--enable_svdquant_smooth",
+        "--svdquant_smooth_num_grids",
+        "--enable_svdquant_residual_early_stop",
+        "--svdquant_rank",
+        "--svdquant_residual_iters",
+        "--svdquant_residual_quant_method",
+        "--svdquant_model_adapter",
+    ):
+        assert option in help_text
+    assert "--svdquant-rank" not in help_text
+
+
+@pytest.mark.parametrize(
+    "legacy_option",
+    [
+        "--svdquant-rank",
+        "--svdquant-smooth-enabled",
+        "--no-svdquant-smooth-enabled",
+        "--svdquant_smooth_alpha",
+        "--svdquant-residual-iters",
+        "--svdquant-residual-early-stop",
+        "--no-svdquant-residual-early-stop",
+        "--svdquant-residual-quant-method",
+        "--svdquant-model-adapter",
+    ],
+)
+def test_svdquant_cli_rejects_removed_hyphen_options(legacy_option):
+    from auto_round.cli.parser import build_quantize_parser
+
+    with pytest.raises(SystemExit):
+        build_quantize_parser().parse_args([legacy_option])
+
+
+def test_auto_adapter_detects_flux_target_modules_from_loaded_transformer():
+    from types import SimpleNamespace
+
+    from auto_round.cli.main import _apply_svdquant_adapter_defaults
+    from auto_round.cli.parser import build_quantize_parser
+    from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+    args = build_quantize_parser().parse_args(["--model", "dummy", "--enable_svdquant"])
+    model = SimpleNamespace(transformer=SimpleNamespace(config={"_class_name": "FluxTransformer2DModel"}))
+
+    _apply_svdquant_adapter_defaults(args, model)
+
+    assert args.svdquant_target_modules.split(",") == list(FLUX_SVDQUANT_TARGET_MODULES)
+
+
+def test_auto_adapter_detects_flux_target_modules_from_local_pipeline(tmp_path):
+    from auto_round.cli.main import _apply_svdquant_adapter_defaults
+    from auto_round.cli.parser import build_quantize_parser
+    from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+    (tmp_path / "model_index.json").write_text('{"_class_name": "FluxPipeline"}', encoding="utf-8")
+    args = build_quantize_parser().parse_args(["--model", str(tmp_path), "--enable_svdquant"])
+
+    _apply_svdquant_adapter_defaults(args, str(tmp_path))
+
+    assert args.svdquant_target_modules.split(",") == list(FLUX_SVDQUANT_TARGET_MODULES)

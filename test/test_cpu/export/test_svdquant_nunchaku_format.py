@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from safetensors.torch import save_file
 
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.compressors.base import BaseCompressor
@@ -57,6 +60,167 @@ def test_get_formats_resolves_svdquant_nunchaku():
 
     assert len(formats) == 1
     assert formats[0].format_name == "svdquant_nunchaku"
+
+
+def test_nunchaku_pipeline_export_uses_full_diffusers_layout():
+    from auto_round.compressors.diffusion_mixin import _is_nunchaku_pipeline_export
+
+    formats = [SimpleNamespace(format_name="svdquant_nunchaku")]
+
+    assert _is_nunchaku_pipeline_export(formats) is True
+    assert _is_nunchaku_pipeline_export([SimpleNamespace(format_name="auto_round")]) is False
+
+
+def test_nunchaku_pipeline_index_uses_onefile_model_class(tmp_path):
+    from auto_round.compressors.diffusion_mixin import _rewrite_nunchaku_pipeline_index
+
+    transformer_dir = tmp_path / "transformer"
+    transformer_dir.mkdir()
+    save_file(
+        {"probe": torch.zeros(1)},
+        transformer_dir / "diffusion_pytorch_model.safetensors",
+        metadata={"model_class": "NunchakuFluxTransformer2dModel"},
+    )
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "FluxPipeline",
+                "transformer": ["diffusers", "FluxTransformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKL"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _rewrite_nunchaku_pipeline_index(tmp_path, ["transformer"])
+
+    model_index = json.loads((tmp_path / "model_index.json").read_text(encoding="utf-8"))
+    assert model_index["transformer"] == ["nunchaku", "NunchakuFluxTransformer2dModel"]
+    assert model_index["vae"] == ["diffusers", "AutoencoderKL"]
+
+
+def test_nunchaku_pipeline_index_requires_model_class_metadata(tmp_path):
+    from auto_round.compressors.diffusion_mixin import _rewrite_nunchaku_pipeline_index
+
+    transformer_dir = tmp_path / "transformer"
+    transformer_dir.mkdir()
+    save_file({"probe": torch.zeros(1)}, transformer_dir / "diffusion_pytorch_model.safetensors")
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"_class_name": "FluxPipeline", "transformer": ["diffusers", "FluxTransformer2DModel"]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="model_class"):
+        _rewrite_nunchaku_pipeline_index(tmp_path, ["transformer"])
+
+
+def test_diffusion_save_exports_self_contained_nunchaku_pipeline(tmp_path):
+    from auto_round.compressors.diffusion_mixin import DiffusionMixin
+
+    class QuantizedTransformer(torch.nn.Module):
+        def save_config(self, output_dir):
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "config.json").write_text('{"_class_name": "FluxTransformer2DModel"}', encoding="utf-8")
+
+    class Bf16Component:
+        def save_pretrained(self, output_dir):
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "config.json").write_text("{}", encoding="utf-8")
+            (output_dir / "diffusion_pytorch_model.safetensors").touch()
+
+    transformer = QuantizedTransformer()
+    source_transformer = Bf16Component()
+    vae = Bf16Component()
+
+    class Pipeline:
+        def __init__(self):
+            self.transformer = source_transformer
+            self.vae = vae
+            self.components = {"transformer": source_transformer, "vae": vae}
+
+        def save_config(self, output_dir):
+            output_dir = Path(output_dir)
+            (output_dir / "model_index.json").write_text(
+                json.dumps(
+                    {
+                        "_class_name": "FluxPipeline",
+                        "transformer": ["diffusers", "FluxTransformer2DModel"],
+                        "vae": ["diffusers", "AutoencoderKL"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    class ExportParent:
+        def save_quantized(self, output_dir, **kwargs):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            save_file(
+                {"probe": torch.zeros(1)},
+                f"{output_dir}/diffusion_pytorch_model.safetensors",
+                metadata={"model_class": "NunchakuFluxTransformer2dModel"},
+            )
+            return self.model_context.model
+
+    class Compressor(DiffusionMixin, ExportParent):
+        pass
+
+    compressor = Compressor.__new__(Compressor)
+    compressor.model_context = SimpleNamespace(pipe=Pipeline(), model=transformer)
+    compressor.compress_context = SimpleNamespace(is_immediate_saving=False)
+
+    compressor.save_quantized(
+        tmp_path,
+        format=[SimpleNamespace(format_name="svdquant_nunchaku")],
+    )
+
+    assert (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").is_file()
+    assert not (tmp_path / "transformer" / "model.safetensors").exists()
+    assert (tmp_path / "transformer" / "config.json").is_file()
+    assert (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").is_file()
+    model_index = json.loads((tmp_path / "model_index.json").read_text(encoding="utf-8"))
+    assert model_index["transformer"] == ["nunchaku", "NunchakuFluxTransformer2dModel"]
+
+
+def test_svdquant_nunchaku_resolves_flux_adapter_name(monkeypatch, tmp_path):
+    import auto_round.export.svdquant_nunchaku as exporter
+    from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
+
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    model = torch.nn.Module()
+    model.config = {"_class_name": "FluxTransformer2DModel", "num_layers": 0, "num_single_layers": 0}
+    captured = {}
+
+    def fake_export(model, output_path, *, config, residual_provider, adapter):
+        captured["adapter"] = adapter
+        captured["runtime_loadable"] = config.runtime_loadable
+
+    monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
+    output_format.save_quantized(str(tmp_path), model=model, model_adapter="flux", device="cpu")
+
+    assert isinstance(captured["adapter"], FluxSVDQuantNunchakuAdapter)
+    assert captured["runtime_loadable"] is True
+
+
+def test_svdquant_nunchaku_auto_detects_flux_adapter(monkeypatch, tmp_path):
+    import auto_round.export.svdquant_nunchaku as exporter
+    from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
+
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    model = torch.nn.Module()
+    model.config = {"_class_name": "FluxTransformer2DModel", "num_layers": 0, "num_single_layers": 0}
+    captured = {}
+
+    def fake_export(model, output_path, *, config, residual_provider, adapter):
+        captured["adapter"] = adapter
+        captured["runtime_loadable"] = config.runtime_loadable
+
+    monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
+    output_format.save_quantized(str(tmp_path), model=model, model_adapter="auto", device="cpu")
+
+    assert isinstance(captured["adapter"], FluxSVDQuantNunchakuAdapter)
+    assert captured["runtime_loadable"] is True
 
 
 def test_svdquant_nunchaku_rejects_incompatible_structured_scheme():
@@ -200,7 +364,7 @@ def test_save_quantized_exports_real_tiny_svd_model(tmp_path):
     result = output_format.save_quantized(tmp_path, model=model)
 
     assert result is model
-    assert (tmp_path / "model.safetensors").is_file()
+    assert (tmp_path / "diffusion_pytorch_model.safetensors").is_file()
 
 
 def test_save_quantized_delegates_only_explicit_exporter_kwargs(monkeypatch, tmp_path):
@@ -239,7 +403,7 @@ def test_save_quantized_delegates_only_explicit_exporter_kwargs(monkeypatch, tmp
     assert result is model
     assert captured == {
         "model": model,
-        "output_path": str(output_dir / "model.safetensors"),
+        "output_path": str(output_dir / "diffusion_pytorch_model.safetensors"),
         "kwargs": {
             "config": config,
             "residual_provider": residual_provider,

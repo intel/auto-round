@@ -457,15 +457,20 @@ class SVDQuantNunchakuFormat(OutputFormat):
         group_size: int | None = None,
         model_adapter=None,
     ) -> torch.nn.Module:
-        """Export one deterministic ``model.safetensors`` file below ``output_dir``."""
+        """Export one deterministic Diffusers-compatible safetensors file below ``output_dir``."""
         if output_dir is None:
             return model
 
         from auto_round.export.svdquant_nunchaku import (
+            NUNCHAKU_WEIGHT_FILENAME,
             SVDQuantExportConfig,
             save_svdquant_nunchaku_safetensors,
         )
 
+        if isinstance(model_adapter, str):
+            from auto_round.export.svdquant_adapters import resolve_svdquant_model_adapter
+
+            model_adapter = resolve_svdquant_model_adapter(model_adapter, model, decomposition_device=device)
         if model_adapter is not None:
             if adapter is not None:
                 raise TypeError("pass only one of model_adapter and adapter")
@@ -482,10 +487,12 @@ class SVDQuantNunchakuFormat(OutputFormat):
                 runtime_loadable=adapter is not None,
             )
         elif model_adapter is not None and config is None:
-            config = SVDQuantExportConfig(runtime_loadable=True)
+            from auto_round.export.svdquant_nunchaku import IdentitySVDQuantModelAdapter
+
+            config = SVDQuantExportConfig(runtime_loadable=not isinstance(model_adapter, IdentitySVDQuantModelAdapter))
 
         self._validate_svd_layer_overrides(model, layer_config)
-        output_path = os.path.join(os.fspath(output_dir), "model.safetensors")
+        output_path = os.path.join(os.fspath(output_dir), NUNCHAKU_WEIGHT_FILENAME)
         save_svdquant_nunchaku_safetensors(
             model,
             output_path,

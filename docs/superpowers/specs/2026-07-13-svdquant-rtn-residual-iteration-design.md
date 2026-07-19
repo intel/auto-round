@@ -56,7 +56,7 @@ residual_quant_method: str = "rtn"
 Validation rules:
 
 - `residual_iters >= 1`.
-- The first version accepts only `residual_quant_method="rtn"` when `residual_iters > 1`.
+- `residual_quant_method` is a compatibility argument fixed to `"rtn"` by design.
 - `residual_iters=1` does not require an outer-loop quantizer call during the transform. This preserves the existing pipeline: SVDQuant creates the residual Linear, then the configured downstream RTN or SignRound quantizer processes it.
 - For `residual_iters>1`, the layer must have a quantizable weight scheme. MXFP4 deployment requires group size 32.
 
@@ -225,12 +225,16 @@ The feature is not complete merely because safetensors writing succeeds. Complet
 4. A Nunchaku Linear kernel agrees with unpacked QDQ within the established BF16 tolerance.
 5. A supported model adapter completes an end-to-end inference comparison without noise.
 
-## Future SignRound Support
+## SignRound Boundary
 
-SignRound outer iteration requires block calibration and optimization, not just a stateless layer QDQ call. It should later be implemented as a pipeline-level alternating coordinator:
+SignRound is deliberately not an outer-iteration method. Residual outer iteration is
+always the stateless RTN QDQ operation, regardless of whether the downstream pipeline
+uses RTN or SignRound for final residual quantization:
 
 ```text
-update low-rank factors -> optimize residual block with SignRound -> evaluate -> repeat
+SVDQuant RTN residual outer iteration -> downstream RTN or SignRound quantizer
 ```
 
-That work must reuse SignRound's existing wrapper, calibration IO, optimizer, and best-parameter collection. It should not be simulated by embedding a second SignRound implementation inside SVDQuant.
+This keeps low-rank/residual decomposition independent of block calibration and leaves
+SignRound's existing wrapper, optimizer, and best-parameter collection as the sole
+owners of final SignRound quantization.

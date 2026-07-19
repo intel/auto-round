@@ -86,8 +86,9 @@ For candidate `(alpha, beta)`:
 scale = x_span**alpha / w_span**beta
 ```
 
-`(0, 0)` produces identity scale. Zero span entries are normalized to one, and
-non-finite scales invalidate the candidate.
+`(0, 0)` produces identity scale. Zero scale entries are replaced with one. If
+scale construction produces any NaN or infinity, the entire candidate scale is
+replaced with identity, matching the reference numerical fallback.
 
 The equivalent transformed Linear is:
 
@@ -171,10 +172,11 @@ AWQ behavior and public configuration remain unchanged.
 ## Calibration Lifetime
 
 Projection inputs, parent evaluation inputs, kwargs, and floating-point outputs
-are retained only for the current block. Capture is deterministic, CPU-backed
-where practical, and bounded by explicit sample/token limits. Buffers and all
-temporary module patches are released after scale selection and on every
-exception path.
+are retained only for the current block. Capture is deterministic and CPU-backed.
+Its upper bound is the current `BlockContext.num_samples`, replayed using the
+existing block batch size; this matches the all-sample search setting while keeping
+the lifetime block-local. Buffers and all temporary module patches are released
+after scale selection and on every exception path.
 
 When smoothing is disabled, SVDQuant installs no calibration hooks and allocates
 no input buffers.
@@ -182,8 +184,9 @@ no input buffers.
 ## Selection And Failure Behavior
 
 - Evaluate candidates in the exact order specified above.
-- Select the first candidate with strictly lowest finite layer output error.
-- A non-finite candidate is skipped with debug-level context.
+- Update the winner when candidate error is less than or equal to the current
+  layer error, so the later candidate wins exact ties.
+- A candidate with non-finite output/error is skipped with debug-level context.
 - If no candidate is valid, fail with the global module name and reason.
 - Missing calibration inputs are an error when smoothing is enabled; never
   silently fall back to identity or the removed fixed formula.
@@ -193,7 +196,10 @@ no input buffers.
 
 Nunchaku tensor names, shapes, metadata, and runtime direction do not change.
 The selected `smooth = 1 / scale` is exported through the existing adapter.
-Residual MXFP4 tensors and BF16 low-rank branches use the existing exporter.
+Compatible grouped QKV records are concatenated without re-decomposition so their
+shared down/smooth tensors survive export. Single-stream `proj_out` records are split
+by input columns together with residual/down/smooth tensors. Legacy independent QKV
+records retain the effective-weight reconstruction fallback.
 
 ## Testing
 
@@ -211,7 +217,7 @@ Unit coverage must verify:
 - low-rank dtype rounding is included in candidate error;
 - residual candidate QDQ receives the resolved MXFP4 scheme;
 - a constructed case selects the independently computed minimum-error candidate;
-- first-candidate tie behavior;
+- later-candidate tie behavior at layer granularity;
 - non-finite candidate skipping and all-candidate failure;
 - missing calibration input failure;
 - input buffer cleanup on success and failure;

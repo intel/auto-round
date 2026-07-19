@@ -63,7 +63,7 @@ _COMPAT_KWARGS = {
     "enable_svdquant",
     "svdquant_rank",
     "svdquant_smooth_enabled",
-    "svdquant_smooth_alpha",
+    "svdquant_smooth_num_grids",
     "svdquant_target_modules",
     "svdquant_exclude_modules",
     "svdquant_low_rank_dtype",

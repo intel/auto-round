@@ -23,9 +23,11 @@ import torch
 
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.export.svdquant_mxfp4 import NunchakuMXFP4Packer, pack_lowrank_weight
+from auto_round.wrapper import WrapperWALayer
 
 
 _DEPLOYABLE_E2M1_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+NUNCHAKU_WEIGHT_FILENAME = "diffusion_pytorch_model.safetensors"
 
 
 class ResidualTensorProvider(Protocol):
@@ -244,27 +246,28 @@ def _source_records(model: torch.nn.Module) -> tuple[SourceLinearRecord, ...]:
     for name, module in model.named_modules():
         if not isinstance(module, SVDQuantLinear):
             continue
+        residual_linear = module.residual_linear
+        while isinstance(residual_linear, WrapperWALayer):
+            residual_linear = residual_linear.orig_layer
         records.append(
             SourceLinearRecord(
                 name=name,
-                residual_weight=module.residual_linear.weight.detach(),
+                residual_weight=residual_linear.weight.detach(),
                 lora_down=module.lora_down.weight.detach(),
                 lora_up=module.lora_up.weight.detach(),
                 smooth=module.smooth.detach(),
                 smooth_orig=getattr(module, "smooth_orig", module.smooth).detach(),
-                bias=None
-                if module.residual_linear.bias is None
-                else module.residual_linear.bias.detach(),
+                bias=None if residual_linear.bias is None else residual_linear.bias.detach(),
                 scheme=SVDQuantLinearScheme(
-                    data_type=getattr(module.residual_linear, "data_type", None),
-                    bits=getattr(module.residual_linear, "bits", None),
-                    group_size=getattr(module.residual_linear, "group_size", None),
-                    sym=getattr(module.residual_linear, "sym", None),
-                    act_data_type=getattr(module.residual_linear, "act_data_type", None),
-                    act_bits=getattr(module.residual_linear, "act_bits", None),
-                    act_group_size=getattr(module.residual_linear, "act_group_size", None),
-                    act_sym=getattr(module.residual_linear, "act_sym", None),
-                    act_dynamic=getattr(module.residual_linear, "act_dynamic", None),
+                    data_type=getattr(residual_linear, "data_type", None),
+                    bits=getattr(residual_linear, "bits", None),
+                    group_size=getattr(residual_linear, "group_size", None),
+                    sym=getattr(residual_linear, "sym", None),
+                    act_data_type=getattr(residual_linear, "act_data_type", None),
+                    act_bits=getattr(residual_linear, "act_bits", None),
+                    act_group_size=getattr(residual_linear, "act_group_size", None),
+                    act_sym=getattr(residual_linear, "act_sym", None),
+                    act_dynamic=getattr(residual_linear, "act_dynamic", None),
                 ),
             )
         )

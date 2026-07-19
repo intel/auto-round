@@ -1,6 +1,7 @@
-import inspect
+import ast
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 import torch
@@ -19,6 +20,7 @@ from auto_round.export.svdquant_nunchaku import (
     unpack_nunchaku_16bit_vector,
     save_svdquant_nunchaku_safetensors,
 )
+from auto_round.wrapper import WrapperLinear
 
 
 def _toy_model(*, rank=3, bias=True, in_features=65, out_features=7):
@@ -74,6 +76,30 @@ def test_default_collection_emits_runtime_layout_tensors_without_debug_residual(
         unpack_nunchaku_16bit_vector(tensors["0.bias"])[:7],
         model[0].residual_linear.bias.detach().to(torch.bfloat16),
     )
+
+
+def test_collection_reads_scheme_through_activation_quant_wrapper():
+    model = _toy_model()
+    residual = model[0].residual_linear
+    residual.scale_dtype = torch.float16
+    wrapped = WrapperLinear(
+        residual,
+        device="cpu",
+        enable_minmax_tuning=False,
+        enable_norm_bias_tuning=False,
+        enable_round_tuning=False,
+        disable_opt_rtn=True,
+        iters=0,
+    ).unwrapper({})
+    model[0].residual_linear = wrapped
+
+    assert not hasattr(wrapped, "bits")
+    assert wrapped.orig_layer.bits == 4
+
+    tensors = collect_svdquant_tensors(model)
+
+    assert tensors["0.qweight"].dtype == torch.int8
+    assert tensors["0.wscales"].dtype == torch.uint8
 
 
 def test_adapter_maps_all_logical_source_records_with_model_level_visibility():
@@ -537,11 +563,21 @@ def test_save_svdquant_nunchaku_safetensors_writes_metadata(tmp_path):
 
 
 def test_svdquant_nunchaku_exporter_has_no_runtime_project_imports():
-    import auto_round.export.svdquant_nunchaku as exporter
+    import auto_round
 
-    source = inspect.getsource(exporter)
+    forbidden = {"deepcompressor", "nunchaku"}
+    violations = []
+    source_root = Path(auto_round.__file__).parent
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = {alias.name.split(".", 1)[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = {node.module.split(".", 1)[0]}
+            else:
+                continue
+            if names & forbidden:
+                violations.append(f"{path.relative_to(source_root)}:{node.lineno}")
 
-    assert "import deepcompressor" not in source
-    assert "from deepcompressor" not in source
-    assert "import nunchaku" not in source
-    assert "from nunchaku" not in source
+    assert violations == []

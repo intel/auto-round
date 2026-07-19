@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
 
 from auto_round.cli.algorithms import AlgorithmHandler
@@ -106,6 +107,51 @@ def _to_autoround_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer
     kwargs.update(_build_entry_compressor_kwargs(args))
     kwargs.update(_build_entry_model_type_kwargs(args))
     return kwargs
+
+
+def _build_save_kwargs(args, formats: list[str]) -> dict:
+    """Build exporter-specific kwargs after validating their CLI contract."""
+
+    if "svdquant_nunchaku" not in formats:
+        return {}
+    if not args.enable_svdquant:
+        raise ValueError("--format svdquant_nunchaku requires --enable_svdquant")
+    return {"model_adapter": args.svdquant_model_adapter}
+
+
+def _apply_svdquant_adapter_defaults(args, model=None) -> None:
+    """Apply architecture-owned defaults without leaking them into SVDQuant core."""
+
+    if not args.enable_svdquant or args.svdquant_target_modules is not None:
+        return
+    adapter_name = args.svdquant_model_adapter
+    if adapter_name == "auto" and model is not None:
+        if isinstance(model, str) and os.path.isdir(model):
+            import json
+
+            config = {}
+            for filename in ("model_index.json", "config.json"):
+                config_path = os.path.join(model, filename)
+                if os.path.isfile(config_path):
+                    with open(config_path, encoding="utf-8") as handle:
+                        config = json.load(handle)
+                    break
+            class_name = config.get("_class_name", "")
+        else:
+            transformer = getattr(model, "transformer", model)
+            config = getattr(transformer, "config", None)
+            class_name = (
+                config.get("_class_name", type(transformer).__name__)
+                if hasattr(config, "get")
+                else type(transformer).__name__
+            )
+        adapter_name = "flux" if "fluxtransformer" in str(class_name).lower() else "identity"
+        if "fluxpipeline" in str(class_name).lower():
+            adapter_name = "flux"
+    if adapter_name == "flux":
+        from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+        args.svdquant_target_modules = ",".join(FLUX_SVDQUANT_TARGET_MODULES)
 
 
 RECIPES = {
@@ -349,6 +395,7 @@ def tune(args):
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
 
+    _apply_svdquant_adapter_defaults(args, model_name)
     common_kwargs = _extract_common_quantization_kwargs(args)
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
@@ -366,7 +413,10 @@ def tune(args):
         ),
     )
 
-    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=no-member
+    save_kwargs = _build_save_kwargs(args, formats)
+    model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
+        args.output_dir, format=args.format, **save_kwargs
+    )
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()
 

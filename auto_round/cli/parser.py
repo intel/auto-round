@@ -131,41 +131,65 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         action="store_true",
         help="Enable SVDQuant structural transform before RTN/SignRound quantization.",
     )
-    rt.add_argument("--svdquant-rank", dest="svdquant_rank", default=32, type=int, help="SVDQuant low-rank size.")
+    rt.add_argument("--svdquant_rank", default=32, type=int, help="SVDQuant low-rank size.")
     rt.add_argument(
-        "--svdquant-smooth-enabled",
+        "--enable_svdquant_smooth",
         dest="svdquant_smooth_enabled",
-        default=True,
-        action=argparse.BooleanOptionalAction,
+        default=False,
+        action="store_true",
         help="Enable SVDQuant activation-aware smoothing.",
     )
     rt.add_argument(
-        "--svdquant-smooth-alpha",
-        dest="svdquant_smooth_alpha",
-        default=0.5,
-        type=float,
-        help="SVDQuant smooth alpha in [0, 1].",
+        "--svdquant_smooth_num_grids",
+        default=20,
+        type=int,
+        help="Number of candidates per SVDQuant smooth search grid family.",
     )
     rt.add_argument(
-        "--svdquant-target-modules",
-        dest="svdquant_target_modules",
+        "--svdquant_target_modules",
         default=None,
         type=str,
         help="Comma-separated module name substrings to apply SVDQuant to.",
     )
     rt.add_argument(
-        "--svdquant-exclude-modules",
-        dest="svdquant_exclude_modules",
+        "--svdquant_exclude_modules",
         default=None,
         type=str,
         help="Comma-separated module name substrings to exclude from SVDQuant.",
     )
     rt.add_argument(
-        "--svdquant-low-rank-dtype",
-        dest="svdquant_low_rank_dtype",
+        "--svdquant_low_rank_dtype",
         default="bf16",
         choices=["bf16", "bfloat16", "fp16", "float16", "fp32", "float32"],
         help="Data type for SVDQuant low-rank branch.",
+    )
+    rt.add_argument(
+        "--svdquant_residual_iters",
+        default=1,
+        type=int,
+        help="Number of alternating low-rank and residual quantization iterations.",
+    )
+    rt.add_argument(
+        "--enable_svdquant_residual_early_stop",
+        dest="svdquant_residual_early_stop",
+        default=False,
+        action="store_true",
+        help="Stop residual iteration when reconstruction error no longer improves.",
+    )
+    rt.add_argument(
+        "--svdquant_residual_quant_method",
+        default="rtn",
+        choices=["rtn"],
+        help=(
+            "Compatibility option fixed to RTN: SVDQuant residual outer iteration always uses RTN QDQ, "
+            "independently of the final --algorithm quantizer."
+        ),
+    )
+    rt.add_argument(
+        "--svdquant_model_adapter",
+        default="auto",
+        choices=["auto", "identity", "flux"],
+        help="Architecture adapter used by the SVDQuant Nunchaku exporter.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")

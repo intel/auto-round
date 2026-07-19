@@ -28,25 +28,11 @@ sys.path.insert(0, os.fspath(Path(__file__).resolve().parents[1]))
 
 from auto_round import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
-from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
-from auto_round.export.svdquant_nunchaku import SVDQuantExportConfig, save_svdquant_nunchaku_safetensors
-
-TARGET_MODULES = (
-    "attn.to_q",
-    "attn.to_k",
-    "attn.to_v",
-    "attn.add_q_proj",
-    "attn.add_k_proj",
-    "attn.add_v_proj",
-    "attn.to_out.0",
-    "attn.to_add_out",
-    "ff.net.0.proj",
-    "ff.net.2",
-    "ff_context.net.0.proj",
-    "ff_context.net.2",
-    "proj_mlp",
-    "proj_out",
+from auto_round.export.svdquant_adapters.flux import (
+    FLUX_SVDQUANT_TARGET_MODULES,
+    FluxSVDQuantNunchakuAdapter,
 )
+from auto_round.export.svdquant_nunchaku import SVDQuantExportConfig, save_svdquant_nunchaku_safetensors
 
 
 def _set_mxfp4_scheme(module: torch.nn.Linear) -> None:
@@ -75,7 +61,7 @@ def _decompose_blocks(model: FluxTransformer2DModel, rank: int, device: torch.de
             rank=rank,
             smooth_enabled=False,
             residual_iters=1,
-            target_modules=list(TARGET_MODULES),
+            target_modules=list(FLUX_SVDQUANT_TARGET_MODULES),
             low_rank_dtype="bf16",
         )
     )

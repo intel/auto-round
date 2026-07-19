@@ -88,6 +88,36 @@ def test_double_context_qkv_reconstructs_effective_sources_with_runtime_name_and
     torch.testing.assert_close(record.bias, torch.cat([source.bias for source in sources]))
 
 
+def test_double_qkv_preserves_shared_low_rank_and_smooth_without_redecomposition():
+    shared_down = torch.randn(2, 8)
+    shared_smooth = torch.linspace(0.5, 1.5, 8)
+    shared_smooth_orig = torch.linspace(0.75, 1.75, 8)
+    sources = tuple(
+        _source(f"transformer_blocks.0.attn.to_{name}", seed=index + 21) for index, name in enumerate(("q", "k", "v"))
+    )
+    sources = tuple(
+        SourceLinearRecord(
+            name=source.name,
+            residual_weight=source.residual_weight,
+            lora_down=shared_down.clone(),
+            lora_up=source.lora_up,
+            smooth=shared_smooth.clone(),
+            smooth_orig=shared_smooth_orig.clone(),
+            bias=source.bias,
+            scheme=source.scheme,
+        )
+        for source in sources
+    )
+
+    (record,) = tuple(FluxSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(_model(), sources))
+
+    torch.testing.assert_close(record.residual_weight, torch.cat([source.residual_weight for source in sources]))
+    torch.testing.assert_close(record.lora_down, shared_down)
+    torch.testing.assert_close(record.lora_up, torch.cat([source.lora_up for source in sources]))
+    torch.testing.assert_close(record.smooth, shared_smooth)
+    torch.testing.assert_close(record.smooth_orig, shared_smooth_orig)
+
+
 def test_single_proj_out_splits_input_columns_and_keeps_bias_only_on_mlp():
     source = _source("single_transformer_blocks.0.proj_out", out_features=8, in_features=16, seed=10)
     model = _model({"num_layers": 0, "num_single_layers": 1, "num_attention_heads": 2, "attention_head_dim": 4})
@@ -100,12 +130,14 @@ def test_single_proj_out_splits_input_columns_and_keeps_bias_only_on_mlp():
         "single_transformer_blocks.0.mlp_fc2",
     )
     expected = _effective(source)
-    torch.testing.assert_close(
-        out_proj.residual_weight + out_proj.lora_up @ out_proj.lora_down, expected[:, :8], atol=2e-5, rtol=2e-5
-    )
-    torch.testing.assert_close(
-        mlp_fc2.residual_weight + mlp_fc2.lora_up @ mlp_fc2.lora_down, expected[:, 8:], atol=2e-5, rtol=2e-5
-    )
+    out_effective = (out_proj.residual_weight + out_proj.lora_up @ out_proj.lora_down) * out_proj.smooth
+    mlp_effective = (mlp_fc2.residual_weight + mlp_fc2.lora_up @ mlp_fc2.lora_down) * mlp_fc2.smooth
+    torch.testing.assert_close(out_effective, expected[:, :8], atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(mlp_effective, expected[:, 8:], atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(out_proj.lora_down, source.lora_down[:, :8])
+    torch.testing.assert_close(mlp_fc2.lora_down, source.lora_down[:, 8:])
+    torch.testing.assert_close(out_proj.smooth, source.smooth[:8])
+    torch.testing.assert_close(mlp_fc2.smooth, source.smooth[8:])
     assert out_proj.bias is None
     torch.testing.assert_close(mlp_fc2.bias, source.bias)
 
@@ -265,7 +297,7 @@ def test_cuda_decomposition_groups_return_cpu_and_release_cache_without_requirin
     )
 
 
-def test_cuda_single_split_releases_cache_once_after_both_cpu_records(monkeypatch):
+def test_cuda_single_split_avoids_redecomposition_and_releases_cache_once(monkeypatch):
     import auto_round.export.svdquant_adapters.flux as flux_module
 
     requested_devices = []
@@ -288,7 +320,7 @@ def test_cuda_single_split_releases_cache_once_after_both_cpu_records(monkeypatc
         )
     )
 
-    assert requested_devices == [torch.device("cuda")]
+    assert requested_devices == []
     assert empty_cache_calls == [True]
     assert len(records) == 2
     assert all(record.residual_weight.device.type == "cpu" for record in records)

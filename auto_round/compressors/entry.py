@@ -420,7 +420,7 @@ class AutoRound(object):
         # post_quantize_block) actually runs.  CalibratedRTNCompressor's
         # Preprocessor algorithms require DataDrivenCompressor for per-block lifecycle hooks.
         # The pipeline auto-appends RTN when no block_quantizer is supplied.
-        if preprocessor_configs:
+        if any(getattr(config, "requires_calibration", True) for config in preprocessor_configs):
             return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **ctor_kwargs)
 
         if isinstance(quant_config, SignRoundConfig):
@@ -562,20 +562,26 @@ class AutoRoundCompatible:
     def _pop_svdquant_config(kwargs: dict[str, Any]):
         enabled = kwargs.pop("enable_svdquant", False)
         rank = kwargs.pop("svdquant_rank", 32)
-        smooth_enabled = kwargs.pop("svdquant_smooth_enabled", True)
-        smooth_alpha = kwargs.pop("svdquant_smooth_alpha", 0.5)
+        smooth_enabled = kwargs.pop("svdquant_smooth_enabled", False)
+        smooth_num_grids = kwargs.pop("svdquant_smooth_num_grids", 20)
         target_modules = kwargs.pop("svdquant_target_modules", None)
         exclude_modules = kwargs.pop("svdquant_exclude_modules", None)
         low_rank_dtype = kwargs.pop("svdquant_low_rank_dtype", "bf16")
+        residual_iters = kwargs.pop("svdquant_residual_iters", 1)
+        residual_early_stop = kwargs.pop("svdquant_residual_early_stop", False)
+        residual_quant_method = kwargs.pop("svdquant_residual_quant_method", "rtn")
         if not enabled:
             return None
         return SVDQuantConfig(
             rank=rank,
             smooth_enabled=smooth_enabled,
-            smooth_alpha=smooth_alpha,
+            smooth_num_grids=smooth_num_grids,
             target_modules=target_modules,
             exclude_modules=exclude_modules,
             low_rank_dtype=low_rank_dtype,
+            residual_iters=residual_iters,
+            residual_early_stop=residual_early_stop,
+            residual_quant_method=residual_quant_method,
         )
 
     @staticmethod

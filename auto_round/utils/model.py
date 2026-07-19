@@ -813,6 +813,14 @@ def _attach_diffusion_pipeline_fn(pipe):
         pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
 
 
+def _resolve_diffusion_load_dtype(torch_dtype, model_dtype):
+    """Resolve a requested diffusion dtype before component weights are loaded."""
+
+    if model_dtype is not None:
+        return convert_dtype_str2torch(model_dtype)
+    return torch_dtype
+
+
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -836,7 +844,7 @@ def diffusion_load_model(
         )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
+    torch_dtype = _resolve_diffusion_load_dtype(torch_dtype, model_dtype)
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
@@ -868,7 +876,10 @@ def diffusion_load_model(
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                    component_dtype = component_config.get("torch_dtype")
+                    torch_dtype[k] = (
+                        torch.float32 if component_dtype in (None, "auto") else convert_dtype_str2torch(component_dtype)
+                    )
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
@@ -877,7 +888,9 @@ def diffusion_load_model(
 
     elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
         pipe = pretrained_model_name_or_path
-        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+        source_path = pipe.config.get("_name_or_path")
+        model_index = os.path.join(source_path, "model_index.json") if isinstance(source_path, str) else None
+        pipe_config = pipe.load_config(source_path) if model_index and os.path.isfile(model_index) else dict(pipe.config)
 
     else:
         raise ValueError(
@@ -889,7 +902,8 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    pipe = _to_model_dtype(pipe, model_dtype)
+    if not isinstance(pretrained_model_name_or_path, str):
+        pipe = _to_model_dtype(pipe, model_dtype)
     model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls

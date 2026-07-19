@@ -184,7 +184,11 @@ class ZeroShotCompressor(BaseCompressor):
                         io=self.quantizer.create_block_io(None, {}, None, block),
                         device=device_manager.device,
                     )
+                    for preprocessor in self._pipeline.preprocessors:
+                        preprocessor.pre_quantize_block(ctx)
                     self.quantizer.quantize_block(ctx)
+                    for preprocessor in self._pipeline.preprocessors:
+                        preprocessor.post_quantize_block(ctx)
                     ctx.finish()
 
                     # ── MoE scale alignment for FP8 dispatch efficiency ────────────────

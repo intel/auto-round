@@ -29,8 +29,8 @@ class SVDQuantConfig(QuantizationConfig):
         self,
         *,
         rank: int = 32,
-        smooth_enabled: bool = True,
-        smooth_alpha: float = 0.5,
+        smooth_enabled: bool = False,
+        smooth_num_grids: int = 20,
         target_modules: list[str] | tuple[str, ...] | str | None = None,
         exclude_modules: list[str] | tuple[str, ...] | str | None = None,
         low_rank_dtype: str = "bf16",
@@ -46,21 +46,23 @@ class SVDQuantConfig(QuantizationConfig):
             raise ValueError(f"`smooth_enabled` must be a bool, got {smooth_enabled!r}")
         if rank < 0:
             raise ValueError(f"`rank` must be non-negative, got {rank!r}")
-        if not 0.0 <= smooth_alpha <= 1.0:
-            raise ValueError(f"`smooth_alpha` must be in [0, 1], got {smooth_alpha!r}")
+        if type(smooth_num_grids) is not int or smooth_num_grids < 2:
+            raise ValueError(
+                f"`smooth_num_grids` must be an integer greater than or equal to 2, got {smooth_num_grids!r}"
+            )
         if smooth_eps <= 0:
             raise ValueError(f"`smooth_eps` must be positive, got {smooth_eps!r}")
         if type(residual_iters) is not int or residual_iters < 1:
             raise ValueError(f"`residual_iters` must be a positive integer, got {residual_iters!r}")
-        if residual_iters > 1 and residual_quant_method != "rtn":
+        if residual_quant_method != "rtn":
             raise ValueError(
-                "`residual_quant_method` must be 'rtn' when `residual_iters` is greater than 1, "
+                "`residual_quant_method` is fixed to 'rtn' by design for SVDQuant residual outer iteration, "
                 f"got {residual_quant_method!r}"
             )
 
         self.rank = rank
         self.smooth_enabled = smooth_enabled
-        self.smooth_alpha = smooth_alpha
+        self.smooth_num_grids = smooth_num_grids
         self.target_modules = _normalize_patterns(target_modules)
         self.exclude_modules = _normalize_patterns(exclude_modules)
         self.low_rank_dtype = low_rank_dtype
@@ -68,11 +70,12 @@ class SVDQuantConfig(QuantizationConfig):
         self.residual_iters = residual_iters
         self.residual_early_stop = residual_early_stop
         self.residual_quant_method = residual_quant_method
+        self.requires_calibration = smooth_enabled
 
     def __repr__(self) -> str:
         return (
             f"SVDQuantConfig(rank={self.rank}, smooth_enabled={self.smooth_enabled!r}, "
-            f"smooth_alpha={self.smooth_alpha}, "
+            f"smooth_num_grids={self.smooth_num_grids}, "
             f"low_rank_dtype={self.low_rank_dtype!r}, "
             f"target_modules={self.target_modules}, exclude_modules={self.exclude_modules}, "
             f"residual_iters={self.residual_iters}, residual_early_stop={self.residual_early_stop!r}, "

@@ -14,14 +14,23 @@ def test_svdquant_config_residual_iteration_defaults():
 
     config = SVDQuantConfig()
 
-    assert config.smooth_enabled is True
+    assert config.smooth_enabled is False
+    assert config.smooth_num_grids == 20
+    assert not hasattr(config, "smooth_alpha")
     assert config.residual_iters == 1
     assert config.residual_early_stop is False
     assert config.residual_quant_method == "rtn"
+    assert config.requires_calibration is False
     assert "residual_iters=1" in repr(config)
     assert "residual_early_stop=False" in repr(config)
     assert "residual_quant_method='rtn'" in repr(config)
-    assert "smooth_enabled=True" in repr(config)
+    assert "smooth_enabled=False" in repr(config)
+
+
+def test_svdquant_with_smoothing_requires_calibration():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    assert SVDQuantConfig(smooth_enabled=True).requires_calibration is True
 
 
 @pytest.mark.parametrize("value", [0, 1, None, "false"])
@@ -30,6 +39,14 @@ def test_svdquant_config_rejects_non_bool_smooth_enabled(value):
 
     with pytest.raises(ValueError, match="smooth_enabled"):
         SVDQuantConfig(smooth_enabled=value)
+
+
+@pytest.mark.parametrize("value", [True, 1, 1.5, None])
+def test_svdquant_config_rejects_invalid_smooth_num_grids(value):
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    with pytest.raises(ValueError, match="smooth_num_grids"):
+        SVDQuantConfig(smooth_num_grids=value)
 
 
 def test_svdquant_config_rejects_invalid_residual_iteration_count():
@@ -60,18 +77,11 @@ def test_svdquant_config_rejects_non_rtn_multi_round_method():
         SVDQuantConfig(residual_iters=2, residual_quant_method="signround")
 
 
-def test_svdquant_config_accepts_one_round_signround_and_normalizes_method():
+def test_svdquant_config_rejects_non_rtn_outer_method_fixed_by_design():
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 
-    config = SVDQuantConfig(
-        residual_iters=1,
-        residual_early_stop=True,
-        residual_quant_method="SignRound",
-    )
-
-    assert config.residual_iters == 1
-    assert config.residual_early_stop is True
-    assert config.residual_quant_method == "signround"
+    with pytest.raises(ValueError, match="fixed to 'rtn' by design"):
+        SVDQuantConfig(residual_iters=1, residual_quant_method="SignRound")
 
 
 def test_svdquant_config_is_pipeline_preprocessor():
@@ -115,7 +125,7 @@ def test_svdquant_transform_replaces_linear_with_residual_branch():
 
     block = torch.nn.Sequential(torch.nn.Linear(4, 3, bias=True))
     ctx = types.SimpleNamespace(block=block, block_name="model.layers.0")
-    transform = SVDQuantTransform(SVDQuantConfig(rank=2, smooth_alpha=0.5, low_rank_dtype="float32"))
+    transform = SVDQuantTransform(SVDQuantConfig(rank=2, low_rank_dtype="float32"))
 
     transform.pre_quantize_block(ctx)
 
@@ -154,9 +164,7 @@ def test_svdquant_disabled_smoothing_ignores_stale_act_max_and_preserves_forward
     x = torch.tensor([[1.0, -2.0, 3.0], [-0.5, 4.0, 2.0]])
     expected = layer(x)
     block = torch.nn.Sequential(layer)
-    transform = SVDQuantTransform(
-        SVDQuantConfig(rank=1, smooth_enabled=False, low_rank_dtype="float32")
-    )
+    transform = SVDQuantTransform(SVDQuantConfig(rank=1, smooth_enabled=False, low_rank_dtype="float32"))
     transform._act_max[id(layer)] = torch.tensor([100.0, 0.01, 7.0])
 
     transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))
@@ -168,28 +176,85 @@ def test_svdquant_disabled_smoothing_ignores_stale_act_max_and_preserves_forward
     torch.testing.assert_close(block(x), expected)
 
 
-def test_svdquant_default_smoothing_collects_act_max_and_uses_nonidentity_scale():
+def test_svdquant_enabled_smoothing_selects_low_rank_aware_grid_minimum(monkeypatch):
     from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.algorithms.transforms.svdquant.smooth import build_alpha_beta_candidates, build_smooth_scale
 
     layer = torch.nn.Linear(2, 2, bias=False)
     weight = torch.tensor([[4.0, 1.0], [-2.0, 0.5]])
     with torch.no_grad():
         layer.weight.copy_(weight)
+    layer.data_type = "int"
+    layer.bits = 4
+    layer.group_size = 2
+    layer.sym = True
+    layer.global_name = "model.layers.0.proj"
     x = torch.tensor([[1.0, -4.0], [-0.5, 2.0]])
     expected = layer(x)
     block = torch.nn.Sequential(layer)
+    block.global_name = "model.layers.0"
     ctx = types.SimpleNamespace(block=block, block_name="model.layers.0")
-    transform = SVDQuantTransform(SVDQuantConfig(rank=1, low_rank_dtype="float32"))
+    transform = SVDQuantTransform(
+        SVDQuantConfig(rank=1, smooth_enabled=True, smooth_num_grids=4, low_rank_dtype="float32")
+    )
+    x_span = x.abs().amax(dim=0)
+    w_span = weight.abs().amax(dim=0)
+    references = []
+    for alpha, beta in build_alpha_beta_candidates(4):
+        scale = build_smooth_scale(x_span, w_span, alpha, beta)
+        scaled_weight = weight * scale.reshape(1, -1)
+        u, singular_values, vh = torch.linalg.svd(scaled_weight, full_matrices=False)
+        low_rank = (u[:, :1] * singular_values[:1].reshape(1, -1)) @ vh[:1]
+        qdq_residual = torch.round(scaled_weight - low_rank)
+        actual = (x / scale) @ (qdq_residual + low_rank).T
+        references.append((scale, torch.sum((actual - expected).square()).item()))
+    expected_scale = None
+    best_error = float("inf")
+    for scale, error in references:
+        if error <= best_error:
+            expected_scale = scale
+            best_error = error
+
+    qdq_calls = []
+
+    def rounded_qdq(residual, _scheme):
+        qdq_calls.append(residual.clone())
+        return torch.round(residual)
+
+    monkeypatch.setattr(residual_module, "rtn_qdq_residual", rounded_qdq)
 
     with transform.block_forward_hooks(ctx) as handles:
         assert len(handles) == 1
         block(x)
     transform.pre_quantize_block(ctx)
 
-    torch.testing.assert_close(block[0].smooth, torch.tensor([2.0, 0.5]), rtol=0, atol=0)
+    assert expected_scale is not None
+    torch.testing.assert_close(block[0].smooth, expected_scale.reciprocal(), rtol=0, atol=1e-6)
+    assert len(qdq_calls) == 7
     assert id(layer) not in transform._act_max
+    assert transform._smooth_calibration == {}
     torch.testing.assert_close(block(x), expected)
+
+
+def test_svdquant_enabled_smoothing_requires_captured_inputs():
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    layer = torch.nn.Linear(2, 2, bias=False)
+    layer.data_type = "int"
+    layer.bits = 4
+    layer.group_size = 2
+    layer.sym = True
+    layer.global_name = "model.layers.0.proj"
+    block = torch.nn.Sequential(layer)
+    block.global_name = "model.layers.0"
+    transform = SVDQuantTransform(SVDQuantConfig(rank=1, smooth_enabled=True))
+
+    with pytest.raises(ValueError, match="calibration inputs.*model.layers.0.0"):
+        transform.pre_quantize_block(types.SimpleNamespace(block=block, block_name="model.layers.0"))
+
+    assert transform._smooth_calibration == {}
 
 
 def test_svdquant_consumes_act_max_when_decomposition_fails(monkeypatch):

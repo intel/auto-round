@@ -51,6 +51,22 @@ _RMS_MAP = {
     "attn.norm_added_k": "norm_added_k",
 }
 _TOP_LEVEL_PREFIXES = ("x_embedder.", "context_embedder.", "time_text_embed.", "norm_out.linear.", "proj_out.")
+FLUX_SVDQUANT_TARGET_MODULES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.add_q_proj",
+    "attn.add_k_proj",
+    "attn.add_v_proj",
+    "attn.to_out.0",
+    "attn.to_add_out",
+    "ff.net.0.proj",
+    "ff.net.2",
+    "ff_context.net.0.proj",
+    "ff_context.net.2",
+    "proj_mlp",
+    "proj_out",
+)
 FLUX_TOP_LEVEL_TENSOR_KEYS = frozenset(
     {
         "x_embedder.weight",
@@ -120,6 +136,39 @@ def _effective_weight(source: SourceLinearRecord, device: torch.device) -> torch
     down = source.lora_down.detach().to(device=device, dtype=torch.float32)
     smooth = source.smooth.detach().to(device=device, dtype=torch.float32)
     return (residual + up @ down) * smooth.reshape(1, -1)
+
+
+def _has_shared_input_decomposition(sources: tuple[SourceLinearRecord, ...]) -> bool:
+    first = sources[0]
+    return all(
+        source.scheme == first.scheme
+        and torch.equal(source.lora_down, first.lora_down)
+        and torch.equal(source.smooth, first.smooth)
+        and torch.equal(source.smooth_orig, first.smooth_orig)
+        for source in sources[1:]
+    )
+
+
+def _concatenate_shared_sources(
+    prefix: str,
+    sources: tuple[SourceLinearRecord, ...],
+) -> SVDQuantExportRecord:
+    first = sources[0]
+    biases = [source.bias for source in sources]
+    if any(bias is None for bias in biases) and not all(bias is None for bias in biases):
+        raise ValueError(f"{prefix} fused sources must either all have bias or all omit bias")
+    bias = None if biases[0] is None else torch.cat(biases).detach().cpu().contiguous()
+    return SVDQuantExportRecord(
+        prefix=prefix,
+        residual_weight=torch.cat([source.residual_weight for source in sources]).detach().cpu().contiguous(),
+        lora_down=first.lora_down.detach().cpu().contiguous(),
+        lora_up=torch.cat([source.lora_up for source in sources]).detach().cpu().contiguous(),
+        smooth=first.smooth.detach().cpu().contiguous(),
+        smooth_orig=first.smooth_orig.detach().cpu().contiguous(),
+        bias=bias,
+        scheme=first.scheme,
+        sources=sources,
+    )
 
 
 def _decompose(
@@ -221,6 +270,8 @@ class FluxSVDQuantNunchakuAdapter:
 
     def _fuse(self, prefix: str, sources: tuple[SourceLinearRecord, ...], rank: int) -> SVDQuantExportRecord:
         def operation() -> SVDQuantExportRecord:
+            if _has_shared_input_decomposition(sources):
+                return _concatenate_shared_sources(prefix, sources)
             effective = [_effective_weight(source, self.decomposition_device) for source in sources]
             input_dims = {weight.shape[1] for weight in effective}
             if len(input_dims) != 1:
@@ -241,30 +292,40 @@ class FluxSVDQuantNunchakuAdapter:
         self, model: torch.nn.Module, block_prefix: str, source: SourceLinearRecord, rank: int
     ) -> tuple[SVDQuantExportRecord, SVDQuantExportRecord]:
         def operation() -> tuple[SVDQuantExportRecord, SVDQuantExportRecord]:
-            weight = _effective_weight(source, self.decomposition_device)
             config = self._resolved_config(model)
             heads, head_dim = config.get("num_attention_heads"), config.get("attention_head_dim")
-            inner_dim = heads * head_dim if isinstance(heads, int) and isinstance(head_dim, int) else weight.shape[0]
-            if inner_dim <= 0 or inner_dim >= weight.shape[1]:
+            in_features = source.residual_weight.shape[1]
+            inner_dim = (
+                heads * head_dim
+                if isinstance(heads, int) and isinstance(head_dim, int)
+                else source.residual_weight.shape[0]
+            )
+            if inner_dim <= 0 or inner_dim >= in_features:
                 raise ValueError(
                     f"{block_prefix}.proj_out cannot split input columns at inner_dim={inner_dim} "
-                    f"for shape {tuple(weight.shape)}"
+                    f"for shape {tuple(source.residual_weight.shape)}"
                 )
-            out_proj = _decompose(
-                weight[:, :inner_dim].clone(),
-                rank=rank,
-                template=source,
+            out_proj = SVDQuantExportRecord(
                 prefix=f"{block_prefix}.out_proj",
-                sources=(source,),
+                residual_weight=source.residual_weight[:, :inner_dim].contiguous(),
+                lora_down=source.lora_down[:, :inner_dim].contiguous(),
+                lora_up=source.lora_up,
+                smooth=source.smooth[:inner_dim].contiguous(),
+                smooth_orig=source.smooth_orig[:inner_dim].contiguous(),
                 bias=None,
-            )
-            mlp_fc2 = _decompose(
-                weight[:, inner_dim:].clone(),
-                rank=rank,
-                template=source,
-                prefix=f"{block_prefix}.mlp_fc2",
+                scheme=source.scheme,
                 sources=(source,),
+            )
+            mlp_fc2 = SVDQuantExportRecord(
+                prefix=f"{block_prefix}.mlp_fc2",
+                residual_weight=source.residual_weight[:, inner_dim:].contiguous(),
+                lora_down=source.lora_down[:, inner_dim:].contiguous(),
+                lora_up=source.lora_up,
+                smooth=source.smooth[inner_dim:].contiguous(),
+                smooth_orig=source.smooth_orig[inner_dim:].contiguous(),
                 bias=source.bias,
+                scheme=source.scheme,
+                sources=(source,),
             )
             return out_proj, mlp_fc2
 

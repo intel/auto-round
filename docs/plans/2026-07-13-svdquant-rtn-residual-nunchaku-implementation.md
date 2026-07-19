@@ -33,7 +33,9 @@ with pytest.raises(ValueError, match="residual_quant_method"):
     SVDQuantConfig(residual_iters=2, residual_quant_method="signround")
 ```
 
-Also verify `residual_iters=1, residual_quant_method="signround"` is accepted because the outer loop is inactive and downstream SignRound remains supported.
+Also verify `residual_iters=1, residual_quant_method="signround"` is rejected. The
+compatibility parameter is fixed to `"rtn"` for every iteration count; downstream
+SignRound support is selected independently by the pipeline quantization algorithm.
 
 **Step 2: Run the focused test and verify failure**
 
