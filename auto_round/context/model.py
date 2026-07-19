@@ -14,6 +14,7 @@
 
 import gc
 import importlib
+import os
 from typing import Any, Callable, Optional, Union
 
 import torch
@@ -105,6 +106,12 @@ class ModelContext(BaseContext):
         self.need_calib = need_calib
         self.quant_nontext_module = quant_nontext_module
 
+        # Local addition (not upstream): remember the original string model name
+        # so OffloadManager can later materialize blocks directly from this
+        # checkpoint (see disk_stream_model_dir below and LOCAL_PATCHES.md).
+        self.disk_stream_model_dir = model if isinstance(model, str) else None
+        self._disk_stream_index = None
+
         # Load model and run basic initialization eagerly so the model is ready
         # by the time BaseCompressor.post_init() runs.
         self._load_model()
@@ -114,6 +121,8 @@ class ModelContext(BaseContext):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
+        if self._disk_stream_index is not None:
+            self._materialize_disk_stream_non_block_params()
         check_and_mark_quantized_module(self.model)
         self.model = self.model.eval()
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -148,9 +157,42 @@ class ModelContext(BaseContext):
         if is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
-                self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
-                    self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
-                )
+                # Local addition (not upstream): multimodal checkpoints used to
+                # bypass disk streaming entirely -- mllm_load_model fully
+                # materializes the checkpoint on CPU, infeasible for a 100B+
+                # VLM (e.g. Ornith). Build the same meta skeleton the text
+                # path uses (build_meta_model resolves the multimodal class
+                # from config.architectures) and load the processor stack
+                # cheaply; non-block params INCLUDING the whole vision tower
+                # (small, and needed real for calibration forwards and RTN)
+                # are materialized right after the meta-device guard in
+                # __init__, exactly like the text path. Falls back to the
+                # full mllm_load_model on any failure.
+                loaded_via_meta = False
+                if envs.AR_DISK_STREAM_MODEL and os.path.isdir(self.model):
+                    try:
+                        self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
+                            self.disk_stream_model_dir
+                        )
+                        from transformers import AutoProcessor
+
+                        self.processor = AutoProcessor.from_pretrained(
+                            self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
+                        )
+                        self.image_processor = getattr(self.processor, "image_processor", None)
+                        loaded_via_meta = True
+                    except Exception:
+                        logger.warning(
+                            "AR_DISK_STREAM_MODEL requested but building a multimodal meta "
+                            "skeleton for %s failed; falling back to a full CPU load.",
+                            self.disk_stream_model_dir,
+                            exc_info=True,
+                        )
+                        self._disk_stream_index = None
+                if not loaded_via_meta:
+                    self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
+                        self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                    )
         elif is_diffusion_model(self.model):
             self.is_diffusion = True
             self.pipe, self.model = diffusion_load_model(
@@ -197,17 +239,88 @@ class ModelContext(BaseContext):
             gc.collect()
             _force_trim_malloc()
 
-            self.model, self.tokenizer = llm_load_model(
-                self.model,
-                platform=self.platform,
-                device="cpu",  # always load cpu first
-                model_dtype=self.model_dtype,
-                trust_remote_code=self.trust_remote_code,
-            )
+            if envs.AR_DISK_STREAM_MODEL:
+                try:
+                    self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
+                        self.disk_stream_model_dir
+                    )
+                except Exception:
+                    logger.warning(
+                        "AR_DISK_STREAM_MODEL requested but building a meta skeleton for %s failed; "
+                        "falling back to a normal full CPU load.",
+                        self.disk_stream_model_dir,
+                        exc_info=True,
+                    )
+                    self._disk_stream_index = None
+                    self.model, self.tokenizer = llm_load_model(
+                        self.model,
+                        platform=self.platform,
+                        device="cpu",
+                        model_dtype=self.model_dtype,
+                        trust_remote_code=self.trust_remote_code,
+                    )
+            else:
+                self.model, self.tokenizer = llm_load_model(
+                    self.model,
+                    platform=self.platform,
+                    device="cpu",  # always load cpu first
+                    model_dtype=self.model_dtype,
+                    trust_remote_code=self.trust_remote_code,
+                )
         elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
             raise ValueError("A tokenizer must be set for non-str model input")
 
         self._model_loaded = True
+
+    def _build_disk_stream_model(self, model_name: str):
+        """Local addition (not upstream): build an all-meta skeleton instead of
+        fully materializing the checkpoint on CPU RAM. Left fully meta here
+        (not even embeddings/lm_head materialized yet) so it passes the
+        existing ``unsupported_meta_device`` guard, which only allows models
+        that are either fully real or fully meta (with ``model.path`` set).
+        Non-block params are materialized for real right after that guard
+        runs, in ``__init__``, via ``_materialize_disk_stream_non_block_params``.
+        See LOCAL_PATCHES.md.
+        """
+        from auto_round.utils.disk_stream_util import build_meta_model
+
+        model, tokenizer, index = build_meta_model(model_name, trust_remote_code=self.trust_remote_code)
+        model.path = model_name
+        # Local addition (not upstream): stash the index on the model object
+        # itself so downstream code that only has a reference to the model
+        # (not this ModelContext) -- e.g. AutoScheme's gen_layer_config, which
+        # runs after ModelContext has already turned the string into an object
+        # -- can still find it instead of re-scanning the checkpoint. See
+        # LOCAL_PATCHES.md.
+        model._disk_stream_index = index
+        return model, tokenizer, index
+
+    def _materialize_disk_stream_non_block_params(self) -> None:
+        """Materialize embeddings/lm_head/norm (everything outside the
+        quantizable decoder blocks) for real, leaving the (typically 100+GB
+        combined) decoder blocks on meta for later per-block materialize/free
+        by OffloadManager. No-op unless the model was built via
+        ``_build_disk_stream_model``. See LOCAL_PATCHES.md."""
+        if self._disk_stream_index is None:
+            return
+        from auto_round.utils import flatten_list, get_block_names
+        from auto_round.utils.disk_stream_util import materialize_non_block_params
+
+        block_prefixes = flatten_list(get_block_names(self.model, quant_vision=self.quant_nontext_module))
+        materialize_non_block_params(self.model, block_prefixes, self._disk_stream_index, device="cpu")
+
+        # Local addition (not upstream): tied output embeddings (e.g. lm_head.weight
+        # tied to embed_tokens.weight) have no entry of their own in the checkpoint's
+        # safetensors index -- the on-disk format only stores the input embedding and
+        # relies on the model re-establishing the tie at load time. A normal
+        # from_pretrained() handles this automatically; our meta-skeleton +
+        # per-tensor materialize path does not, so without this the tied output
+        # module is silently left on meta (materialize_non_block_params only logs a
+        # warning and moves on). Re-tying now, after the real input embedding has
+        # been materialized above, makes the tied module real too by sharing the
+        # same (now real) Parameter object. See LOCAL_PATCHES.md.
+        if hasattr(self.model, "tie_weights"):
+            self.model.tie_weights()
 
     def _import_custom_moe_replacements(self, model_or_config) -> None:
         model_type = getattr(model_or_config, "model_type", None)
