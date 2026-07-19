@@ -164,6 +164,18 @@ def pack_layer(layer_name, model, backend, device=None):
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
+    # Local addition (not upstream): a resumed disk-streamed run only
+    # materializes/quantizes the blocks it didn't already finish in a prior
+    # (crashed) process. Blocks it skipped are never touched in *this*
+    # process and stay on the meta device, while their packed weights
+    # already live in shard files the previous process flushed to disk (see
+    # ShardWriter._discover_existing_shards). There is nothing to pack here
+    # -- attempting to would fail (no real weight data to read `.scale`
+    # from) and would be redundant even if it didn't, since the on-disk
+    # export for this layer is already complete.
+    if layer.weight.device.type == "meta":
+        return
+
     if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
 
