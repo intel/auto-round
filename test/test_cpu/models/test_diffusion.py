@@ -8,9 +8,9 @@ from packaging import version
 from auto_round import AutoRound
 from auto_round.compressors.diffusion_mixin import (
     DiffusionMixin,
-    _prepare_single_device_pipeline_for_calibration,
     _move_pipeline_to_model_device_for_calibration,
     _pipeline_needs_dtype_alignment,
+    _prepare_single_device_pipeline_for_calibration,
 )
 from auto_round.utils.model import _resolve_diffusion_load_dtype
 

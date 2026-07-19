@@ -890,7 +890,9 @@ def diffusion_load_model(
         pipe = pretrained_model_name_or_path
         source_path = pipe.config.get("_name_or_path")
         model_index = os.path.join(source_path, "model_index.json") if isinstance(source_path, str) else None
-        pipe_config = pipe.load_config(source_path) if model_index and os.path.isfile(model_index) else dict(pipe.config)
+        pipe_config = (
+            pipe.load_config(source_path) if model_index and os.path.isfile(model_index) else dict(pipe.config)
+        )
 
     else:
         raise ValueError(
