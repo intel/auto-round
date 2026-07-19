@@ -13,11 +13,12 @@
 # limitations under the License.
 import copy
 import gc
+import os
 import time
 import traceback
 from contextlib import ExitStack
 from functools import partial
-from typing import Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import accelerate
 import torch
@@ -69,6 +70,9 @@ from auto_round.utils.device import (
 )
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
+
+if TYPE_CHECKING:
+    from auto_round.utils.resume import ResumeState
 
 
 class DataDrivenCompressor(BaseCompressor):
@@ -518,6 +522,8 @@ class DataDrivenCompressor(BaseCompressor):
         nblocks: int = 1,
         pbar: tqdm = None,
         input_others_extra_blocks: dict = None,
+        resume_state: Optional["ResumeState"] = None,
+        resume_input_ids=None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -527,6 +533,20 @@ class DataDrivenCompressor(BaseCompressor):
         block_names: The names of the blocks to be quantized and dequantized.
         nblocks: The number of blocks to quantize and dequantize.
         device: The device for quantization and dequantization.
+        resume_state: Local addition (not upstream) -- when set and already
+            partway through this block group (`resume_state.resume_index > 0`),
+            the caller has already substituted `inputs`/`q_input` for the first
+            not-yet-done block; this method just needs to start its loop there
+            instead of at index 0, and record each block as done afterward. See
+            auto_round/utils/resume.py.
+        resume_input_ids: Local addition (not upstream) -- the exact
+            `input_ids` value the interrupted run had live for the first
+            not-yet-done block (cached by `ResumeState.mark_block_done`).
+            `inputs` still supplies `input_others` (legitimately re-sourced
+            from the same pre-cache every iteration regardless of resuming),
+            but the chained hidden-state tensor itself must come from here,
+            not be re-derived from `inputs` -- see auto_round/utils/resume.py's
+            module docstring for why those two aren't interchangeable.
 
         Returns:
         None
@@ -536,11 +556,14 @@ class DataDrivenCompressor(BaseCompressor):
             m.requires_grad_(False)
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
+        if resume_input_ids is not None:
+            input_ids = resume_input_ids
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
-        for i in range(0, len(block_names), nblocks):
+        start_index = resume_state.resume_index if resume_state is not None and nblocks == 1 else 0
+        for i in range(start_index, len(block_names), nblocks):
             if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
                 input_others = input_others_extra_blocks[block_names[i]]
                 _, input_others = self._preprocess_block_inputs(input_others)
@@ -717,6 +740,19 @@ class DataDrivenCompressor(BaseCompressor):
 
             if self.compress_context.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)
+                # Local addition (not upstream): ShardWriter only actually
+                # flushes to disk once its shard-size budget is reached
+                # (`_flush_shard`, private but there's no public equivalent) --
+                # `write()` above may just buffer this block's tensors in
+                # memory. Force a flush here whenever resumability is active,
+                # since marking a block "done" in the resume manifest is a lie
+                # if a crash before the next natural flush would lose its
+                # tensors entirely (confirmed empirically: a simulated crash
+                # right after this point left zero files in output_dir before
+                # this fix). Only pay this extra small-shard-fragmentation cost
+                # when AR_RESUME_DIR is actually set.
+                if resume_state is not None:
+                    self.shard_writer._flush_shard()
 
             if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                 if nblocks == 1:
@@ -724,6 +760,19 @@ class DataDrivenCompressor(BaseCompressor):
                 else:
                     for name in names:
                         self._offloader(model, name, overwrite=True)
+
+            # Local addition (not upstream): record this block as durably done
+            # (its quantized weights are either flushed to a shard on disk via
+            # ShardWriter, or saved to the offloader's temp dir) only now,
+            # after that write has happened -- so a crash before this point
+            # correctly re-does the block on resume instead of skipping it
+            # with incomplete/missing output. See auto_round/utils/resume.py.
+            if resume_state is not None and nblocks == 1:
+                # `input_ids` was already reassigned to `next_input_ids` above
+                # (line ~713) -- it now holds the value the *next* block
+                # should use as its chained hidden-state input, which is
+                # exactly what needs to be persisted here.
+                resume_state.mark_block_done(n, q_input, input_ids)
         if pbar is not None:
             pbar.update(1)
 
@@ -839,8 +888,50 @@ class DataDrivenCompressor(BaseCompressor):
         for alg in self.pipeline.all():
             alg.prepare_run(self)
 
+        # Local addition (not upstream): build one ResumeState per block group
+        # (almost always just one group for text-only dense models) when
+        # AR_RESUME_DIR is set, so a crash/kill mid-tuning can resume from the
+        # first not-yet-quantized block instead of restarting from block 0.
+        # See auto_round/utils/resume.py and LOCAL_PATCHES.md.
+        resume_states = None
+        if envs.AR_RESUME_DIR:
+            if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
+                logger.warning(
+                    "AR_RESUME_DIR is set but neither immediate saving nor "
+                    "low_cpu_mem_usage is active. Without low_cpu_mem_usage, "
+                    "already-quantized blocks are never offloaded anywhere a "
+                    "resumed process could find them (see OffloadManager's "
+                    "deterministic resume directory in offload.py), so a "
+                    "resumed run's in-memory model will have meta/empty "
+                    "weights for blocks completed in a PRIOR process. Pass "
+                    "low_cpu_mem_usage=True (or a format= to quantize_and_save) "
+                    "for resumability to be meaningful here."
+                )
+            from auto_round.utils.resume import ResumeState, compute_run_signature, layer_config_fingerprint
+
+            model_dir = getattr(self.model_context, "disk_stream_model_dir", None) or getattr(
+                getattr(self.model_context.model, "config", None), "_name_or_path", None
+            )
+            dataset_desc = str(getattr(self, "dataset", None))
+            # str(self.scheme) alone is bits-blind for AutoScheme runs: two runs
+            # with different avg_bits share it, so include the resolved
+            # per-layer allocation (see layer_config_fingerprint docstring).
+            scheme_desc = (
+                str(self.scheme)
+                + "|"
+                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
+            )
+            resume_states = []
+            for group_idx, block_names in enumerate(all_blocks):
+                sig = compute_run_signature(
+                    model_dir, scheme_desc, dataset_desc, self.nsamples, self.seqlen, block_names
+                )
+                resume_states.append(
+                    ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
+                )
+
         try:
-            for block_names in all_blocks:
+            for group_idx, block_names in enumerate(all_blocks):
                 inputs = all_inputs[block_names[0]]
                 all_inputs.pop(block_names[0])
                 q_inputs = None
@@ -858,6 +949,39 @@ class DataDrivenCompressor(BaseCompressor):
                         self.quantizer.batch_size = total_samples
                         logger.warning(f"force the train batch size to {total_samples}")
 
+                resume_state = resume_states[group_idx] if resume_states is not None else None
+                resume_input_ids = None
+                if resume_state is not None and resume_state.resume_index > 0:
+                    if self.nblocks != 1:
+                        logger.warning(
+                            "AR_RESUME_DIR is set but nblocks != 1; resuming mid-group is only "
+                            "supported for nblocks=1 -- restarting this group from block 0."
+                        )
+                        resume_state = None
+                    else:
+                        resume_name = block_names[resume_state.resume_index]
+                        # Only used here for `input_others` (position/mask info,
+                        # which is legitimately re-sourced from this same cache
+                        # every iteration regardless of resuming -- see the
+                        # `input_others_extra_blocks` handling in
+                        # `_quantize_blocks`); the actual chained `input_ids`
+                        # comes from `resume_input_ids` below, not this cache
+                        # (see auto_round/utils/resume.py's module docstring
+                        # for why the two aren't interchangeable).
+                        if resume_name in all_inputs:
+                            inputs = all_inputs.pop(resume_name)
+                        q_inputs = resume_state.load_q_input()
+                        resume_input_ids = resume_state.load_input_ids()
+                        if resume_input_ids is None:
+                            logger.warning(
+                                "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
+                                "restarting this group from block 0 instead of resuming with a "
+                                "possibly-inconsistent chain value."
+                            )
+                            resume_state = None
+                        else:
+                            pbar.update(resume_state.resume_index)
+
                 self._quantize_blocks(
                     self.model_context.model,
                     inputs,
@@ -866,12 +990,30 @@ class DataDrivenCompressor(BaseCompressor):
                     nblocks=self.nblocks,
                     pbar=pbar,
                     input_others_extra_blocks=all_inputs,
+                    resume_state=resume_state,
+                    resume_input_ids=resume_input_ids,
                 )
                 if self.compress_context.is_immediate_packing and len(self.formats) != 1:
                     raise ValueError(
                         f"Expected exactly one packing format when 'immediate_packing' is True, "
                         f"but got {len(self.formats)} formats."
                     )
+            if resume_states is not None:
+                if self.compress_context.is_immediate_saving:
+                    # Local addition (not upstream): don't clear resume state
+                    # yet when exporting to shards -- a crash in the
+                    # save/export step that follows this method returning
+                    # (config writing, tokenizer copy, format-specific
+                    # global packing pass) would otherwise force a full
+                    # re-tune from block 0 on the next attempt, even though
+                    # every block's weights are already correctly flushed to
+                    # disk. quantize_and_save() clears these once
+                    # save_quantized() actually succeeds. See LOCAL_PATCHES.md
+                    # (found via a real crash-in-export test).
+                    self._resume_states = resume_states
+                else:
+                    for rs in resume_states:
+                        rs.clear()
         finally:
             # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
             for alg in self.pipeline.all():
@@ -883,7 +1025,31 @@ class DataDrivenCompressor(BaseCompressor):
         pbar.set_description("Quantizing done")
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
-            self._offloader.reload(self.model_context.model)
+            if envs.AR_RESUME_DIR and not self.compress_context.is_immediate_saving:
+                # Local addition (not upstream): `reload(names=None)` only
+                # reloads names in `self._offloader._saved` -- populated by
+                # THIS process's own offload() calls. A resumed process never
+                # touches blocks it skipped via ResumeState (they're left
+                # exactly as the meta skeleton started), so they'd never be in
+                # `_saved` and would stay meta in the returned model. Request
+                # every block explicitly so _reload()'s discovery check (see
+                # offload.py) gets a chance to pull each skipped block's real
+                # quantized weights back from a prior crashed process's
+                # offload dir. See LOCAL_PATCHES.md.
+                #
+                # Skipped entirely under is_immediate_saving: ShardWriter has
+                # already flushed every block's packed weights to disk (both
+                # this run's and, via its own discovery, a prior crashed run's),
+                # and the `shard_writer.write(is_finalize=True)` call right
+                # below would treat any block reloaded back to real memory here
+                # as newly-dirty and re-emit its raw, unpacked weight tensor
+                # alongside the already-packed one -- found via a real
+                # crash/resume test on a synthetic MoE fixture producing
+                # duplicate `.weight` tensors next to the correct
+                # `.qweight`/`.scales`/`.qzeros` ones. See LOCAL_PATCHES.md.
+                self._offloader.reload(self.model_context.model, flatten_list(all_blocks))
+            elif not self.compress_context.is_immediate_saving:
+                self._offloader.reload(self.model_context.model)
         self._quantize_layers(layer_names, all_inputs)
 
         convert_module_to_hp_if_necessary(
