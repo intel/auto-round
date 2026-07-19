@@ -1252,9 +1252,55 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
 
+        # Local addition (not upstream): mirrors the standard tuning loop's
+        # ResumeState wiring (see _quantize_blocks/quantize() above). Safe now
+        # that the block above forces per-block immediate_pack + shard_writer
+        # writes in this loop too (previously everything was only written in
+        # one bulk pass at the very end, which would have made marking a block
+        # "done" here a lie). Unlike the standard loop, this one never groups
+        # blocks (effectively always nblocks=1), so there's no nblocks!=1
+        # fallback needed. See LOCAL_PATCHES.md.
+        resume_states = None
+        if envs.AR_RESUME_DIR:
+            if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
+                logger.warning(
+                    "AR_RESUME_DIR is set but neither immediate saving nor "
+                    "low_cpu_mem_usage is active for this RTN run. Without "
+                    "low_cpu_mem_usage, already-quantized blocks are never "
+                    "offloaded anywhere a resumed process could find them, so "
+                    "a resumed run's in-memory model will have meta/empty "
+                    "weights for blocks completed in a PRIOR process. Pass "
+                    "low_cpu_mem_usage=True (or a format= to quantize_and_save) "
+                    "for resumability to be meaningful here."
+                )
+            from auto_round.utils.resume import ResumeState, compute_run_signature, layer_config_fingerprint
+
+            model_dir = getattr(self.model_context, "disk_stream_model_dir", None) or getattr(
+                getattr(self.model_context.model, "config", None), "_name_or_path", None
+            )
+            dataset_desc = str(getattr(self, "dataset", None))
+            # "rtn_with_imatrix" alone is bits-blind: every avg_bits target of a
+            # quality sweep shares it, so each candidate silently resumed the
+            # previous one's 40/40-complete state and saved an output with no
+            # layer tensors (see layer_config_fingerprint docstring).
+            scheme_desc = (
+                "rtn_with_imatrix|"
+                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
+            )
+            resume_states = []
+            for group_idx, block_names in enumerate(all_blocks):
+                sig = compute_run_signature(
+                    model_dir, scheme_desc, dataset_desc, self.nsamples, self.seqlen, block_names
+                )
+                resume_states.append(
+                    ResumeState(os.path.join(envs.AR_RESUME_DIR, f"rtn_group_{group_idx}"), sig, block_names)
+                )
+
         pbar = tqdm(range(sum(len(block) for block in all_blocks)))
 
-        for block_names in all_blocks:
+        for group_idx, block_names in enumerate(all_blocks):
+            resume_state = resume_states[group_idx] if resume_states is not None else None
+            resume_skip = resume_state.resume_index if resume_state is not None else 0
             first_block = block_names[0]
             inputs = all_inputs.pop(first_block)
             input_keys = [k for k in inputs if k.startswith("hidden_state")]
@@ -1276,6 +1322,19 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             input_ids = to_device(inputs.pop("input_ids"), self.compress_context.cache_device)
             input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
 
+            if resume_skip > 0:
+                resume_input_ids = resume_state.load_input_ids()
+                if resume_input_ids is None:
+                    logger.warning(
+                        "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
+                        "restarting this group from block 0 instead of resuming with a "
+                        "possibly-inconsistent chain value."
+                    )
+                    resume_skip = 0
+                else:
+                    input_ids = resume_input_ids
+                    pbar.update(resume_skip)
+
             def process_input_others(input_others):
                 input_others = to_device(input_others, self.compress_context.cache_device)
                 # Unwrap single-element list/tuple so they are passed as bare values.
@@ -1296,15 +1355,30 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
             input_others = inputs
             input_others = process_input_others(input_others)
-            for block_name in block_names:
+            for block_idx, block_name in enumerate(block_names):
                 if block_name in all_inputs.keys():
                     input_others = all_inputs[block_name]
                     input_others = process_input_others(input_others)
                     all_inputs.pop(block_name)
+                if resume_skip > 0 and block_idx < resume_skip:
+                    # Already quantized and durably flushed in a prior process --
+                    # skip re-tuning it. input_ids for the first not-yet-done
+                    # block was already seeded from resume_state above.
+                    continue
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model_context.model, block_name)
 
                 # ── Infrastructure: materialize, dtype convert, device placement ──
+                # Local addition (not upstream): mirrors the equivalent reload
+                # call in the main tuning loop (data_driven.py:582-584). Under
+                # AR_DISK_STREAM_MODEL this block's params are still on meta --
+                # materialize_model_() only rebuilds MoE ReplacementModuleBase
+                # wrappers, it doesn't know how to pull real weights from the
+                # disk-stream index, so without this reload() the later
+                # block.to("cpu") crashes with "Cannot copy out of meta
+                # tensor". See LOCAL_PATCHES.md.
+                if self.compress_context.low_cpu_mem_usage:
+                    self._offloader.reload(self.model_context.model, block_name)
                 materialize_model_(block)
                 block.to("cpu")
                 block = convert_module_to_hp_if_necessary(
@@ -1368,6 +1442,36 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 self.quantizer.quantize_block(ctx)
                 ctx.finish()
 
+                # ── Infrastructure: immediate_pack / shard write ──────────────────
+                # Local addition (not upstream): this loop previously left
+                # per-block packing/shard-writing entirely to the final
+                # `self.shard_writer.write(is_finalize=True)` call in
+                # `_quantize_impl` -- i.e. NOTHING was durably written until the
+                # *entire* RTN pass finished. That made ResumeState wiring here
+                # unsafe (a resumed run would skip blocks whose weights were
+                # never actually flushed to disk, silently producing a corrupt
+                # checkpoint) -- see LOCAL_PATCHES.md. Mirrors the standard
+                # tuning loop's equivalent block (data_driven.py ~711-727).
+                if self.compress_context.is_immediate_packing:
+                    for _n, _mod in block.named_modules():
+                        if hasattr(_mod, "bits") and check_to_quantized(_mod):
+                            module_name = getattr(_mod, "global_name", None)
+                            if module_name is None and _n:
+                                module_name = f"{block_name}.{_n}"
+                            if module_name is None:
+                                continue
+                            immediate_pack(module_name, self.quantizer.layer_config)
+
+                if self.compress_context.is_immediate_saving:
+                    self.shard_writer.write(block, is_finalize=False)
+                    # See the matching comment in the standard tuning loop
+                    # (data_driven.py ~728-740): write() may only buffer this
+                    # block's tensors in memory until the shard-size budget is
+                    # hit -- force a real flush whenever resumability is active,
+                    # since marking a block "done" below is a lie otherwise.
+                    if resume_state is not None:
+                        self.shard_writer._flush_shard()
+
                 # ── Infrastructure: cleanup ───────────────────────────────────
                 mv_module_from_gpu(block)
 
@@ -1380,6 +1484,9 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
 
                 memory_monitor.log_summary()
                 pbar.update(1)
+
+                if resume_state is not None:
+                    resume_state.mark_block_done(block_name, None, input_ids)
         pbar.close()
         # Process remaining layers not in blocks
         # Collect names of quantizable layers not belonging to any block
@@ -1511,7 +1618,21 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             device_manager.device,
         )
         if self.compress_context.low_cpu_mem_usage:
-            self._offloader.reload(self.model_context.model)
+            if envs.AR_RESUME_DIR and not self.compress_context.is_immediate_saving:
+                # Local addition (not upstream): see the matching comment in
+                # DataDrivenCompressor.quantize() (~line 1005) for why
+                # `reload(names=None)` isn't enough when resuming -- it only
+                # reloads names this process itself offloaded, never blocks
+                # skipped via ResumeState. See LOCAL_PATCHES.md.
+                #
+                # Skipped under is_immediate_saving for the same reason as the
+                # matching branch in DataDrivenCompressor.quantize(): it would
+                # make the following `shard_writer.write(is_finalize=True)`
+                # re-emit already-flushed blocks' raw weights. See LOCAL_PATCHES.md.
+                all_blocks = self.quantizer.quant_block_list or get_block_names(self.model_context.model)
+                self._offloader.reload(self.model_context.model, flatten_list(all_blocks))
+            elif not self.compress_context.is_immediate_saving:
+                self._offloader.reload(self.model_context.model)
         if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
 
