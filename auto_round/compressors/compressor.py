@@ -22,7 +22,6 @@ import torch
 from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
-from auto_round.algorithms import pipeline
 from auto_round.calibration import CalibrationContext
 from auto_round.calibration.utils import (
     _update_inputs,
@@ -730,7 +729,7 @@ class Compressor(BaseCompressor):
 
         start_time = time.time()
 
-        for alg in self.pipeline.all():
+        for alg in self.pipeline.members():
             alg.prepare_run(self)
 
         for block_names in all_blocks:
@@ -762,7 +761,7 @@ class Compressor(BaseCompressor):
                 )
 
         # ── Pipeline lifecycle: finalize_quantization (model-level teardown) ─
-        for alg in self.pipeline.all():
+        for alg in self.pipeline.members():
             alg.finalize_run(self)
 
         pbar.set_description("Quantizing done")

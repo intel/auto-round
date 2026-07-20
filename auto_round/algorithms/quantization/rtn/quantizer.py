@@ -76,7 +76,7 @@ class RTNQuantizer(BaseQuantizer):
         if dtype is not None:
             layer = get_module(self.model, name)
             set_module(self.model, name, layer.to(dtype))
-        self.quantize_layer_via_rtn(name, disable_opt_rtn=True)
+        self._quantize_layer_via_rtn(name, disable_opt_rtn=True)
 
 
 @register_pipeline_member(OptimizedRTNConfig)

@@ -436,8 +436,8 @@ class TestGGUF:
             quant_nontext_module=False,
         )
         ar.post_init()
-        assert ar.quantizer.layer_config["model.language_model.embed_tokens"]["bits"] == 6
-        assert ar.quantizer.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
+        assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
+        assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path

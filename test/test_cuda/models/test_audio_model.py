@@ -260,10 +260,10 @@ class TestStableAudioRegistration:
     """Verify StableAudio-specific registrations."""
 
     def test_config_and_special_registered(self):
-        from auto_round.algorithms.pipeline import BlockForward
+        from auto_round.algorithms.pipeline import _DIFFUSION_OUTPUT_REGISTRY
 
-        assert "StableAudioDiTBlock" in BlockForward.DIFFUSION_OUTPUT_CONFIGS
-        assert BlockForward.DIFFUSION_OUTPUT_CONFIGS["StableAudioDiTBlock"] == ["hidden_states"]
+        assert "StableAudioDiTBlock" in _DIFFUSION_OUTPUT_REGISTRY
+        assert _DIFFUSION_OUTPUT_REGISTRY["StableAudioDiTBlock"] == ["hidden_states"]
 
         assert "StableAudioDiTModel" in SPECIAL_SHARED_CACHE_KEYS
         assert "encoder_hidden_states" in SPECIAL_SHARED_CACHE_KEYS["StableAudioDiTModel"]

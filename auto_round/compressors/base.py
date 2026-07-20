@@ -28,7 +28,7 @@ from auto_round.algorithms.transforms import (
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import ShardWriter
-from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config
+from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config, is_act_static
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
 from auto_round.formats import OutputFormat, get_formats
@@ -795,26 +795,20 @@ class BaseCompressor(object):
         raw_scheme_upper = raw_scheme.upper()
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
-        is_raw_fp8 = (
-            "fp8" in raw_dt
-            or "fp8" in raw_adt
-            or "FP8" in raw_scheme_upper
-            or ("fp" in raw_dt and getattr(cfg, "bits", 16) == 8)
-            or ("fp" in raw_adt and getattr(cfg, "act_bits", 16) == 8)
-        )
+        is_valid_act_static = cfg.act_dynamic==False and (getattr(cfg, "act_bits", 16) or 16)<=8
 
-        act_bits = getattr(cfg, "act_bits", 16) or 16
-        return is_raw_fp8, is_raw_nv_fp, act_bits
+        return is_raw_nv_fp, is_valid_act_static
 
     def _maybe_log_torch_compile_default_hint(self) -> None:
         """Log the default torch.compile hint once final config state is available."""
-        is_raw_fp8, _, act_bits = self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+
         if (
             not self.enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
-            and act_bits > 8
             and not is_debug_mode()
-            and not is_raw_fp8
+            and not is_raw_nv_fp
+            and not is_valid_act_static
             and self.need_data
         ):
             logger.info(
@@ -826,24 +820,17 @@ class BaseCompressor(object):
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        cfg = self.quantize_config
-        is_raw_fp8, is_raw_nv_fp, _ = self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static= self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
+        if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
+            logger.warning_once("reset enable_torch_compile to `False` as activation is static")
         # TODO: fix https://github.com/intel/auto-round/issues/1109
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-        # super_group_size = getattr(cfg, "super_group_size", None)
-        # enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
-        # if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
-        #     self.enable_torch_compile = False
-        #     logger.warning_once(
-        #         "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
-        #     )
+
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
@@ -918,13 +905,21 @@ class BaseCompressor(object):
         self._hardware_setup()
 
         # Create the shared block-forward engine (used by both compressor and quantizer).
-        from auto_round.algorithms.pipeline import BlockForward
+        from auto_round.algorithms.pipeline import BlockForwardRunner
 
-        self.block_forward = BlockForward.from_compressor(self)
+        # Must before _build_quantizer, because BlockForwardRunner is used in QuantizationPipeline
+        self.block_forward = BlockForwardRunner.from_compressor(self)
 
-        # Must place at the end
+        # Must place after block foward
         self._build_quantizer()
 
+
+        # Not a good design, reset torch compile setting in block_forward
+        if self.enable_torch_compile:
+            if not self.quantizer.is_support_compile_block(): # TODO support multiple quantizer later
+                self.block_forward.is_support_compile_block = True
+
+        # Set block_forward torch compile for block forward
         # Final trim after all init phases.
         gc.collect()
         _force_trim_malloc()

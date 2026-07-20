@@ -27,14 +27,11 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
   ``QuantizationPipeline(preprocessors=[], block_quantizer=q)``, which is
   semantically identical to the current direct-quantizer path.
 """
-
 from __future__ import annotations
+import torch
 
 from dataclasses import dataclass, field
-from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Union
-
-import torch
+from typing import TYPE_CHECKING, Any, Union
 
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
@@ -46,171 +43,103 @@ from auto_round.logger import logger
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
-    import torch
-
-    from auto_round.algorithms.base import BasePipelineMember
+    from auto_round.algorithms.base import BaseAlgorithm
     from auto_round.algorithms.quantization.base import BaseQuantizer
     from auto_round.algorithms.quantization.config import QuantizationConfig
-    from auto_round.algorithms.transforms.base import BaseWeightTransformer
-
-# ---------------------------------------------------------------------------
-# Policy
-# ---------------------------------------------------------------------------
-
-
-class CalibTiming(IntEnum):
-    """When to run the activation calibration hook forward pass.
-
-    SKIP:
-        No activation calibration needed (e.g. AWQ W4A16 pure weight-only smooth).
-    WITH_REFERENCE:
-        Register act-calib hook and run together with the FP reference forward
-        (RTN / AutoRound default).  When ``source == InputSource.QUANTIZED_INPUT``, a
-        separate hook-only forward is run with ``quantized_input`` instead.
-    AFTER_PREPROCESS:
-        Run a dedicated forward pass *after* all ``pre_quantize_block`` calls
-        complete (i.e. after smooth/rotation transforms are applied).  Used for
-        AWQ W8A8 / static-activation quantization where the activation
-        distribution changes after smoothing.
-    """
-
-    SKIP = 0
-    WITH_REFERENCE = 1
-    AFTER_PREPROCESS = 2
-
-
-class InputSource(IntEnum):
-    """Which tensor to use as the block input for the act-calib forward pass.
-
-    FP_CACHE:
-        The original FP calibration activations cached at the start of the run
-        (``enable_quanted_input=False`` path, RTN default).
-    QUANTIZED_INPUT:
-        The quantized output of the previous block used as the next block's input
-        (``enable_quanted_input=True`` path, SignRound / AutoRound).
-    """
-
-    FP_CACHE = 0
-    QUANTIZED_INPUT = 1
-
-
-@dataclass
-class ActCalibPolicy:
-    """Activation calibration policy: when and from what inputs to collect act stats.
-
-    Attributes:
-        when:   ``CalibTiming`` — controls the scheduling phase.
-        source: ``InputSource`` — which tensor feeds the calibration forward.
-                Ignored when ``when == CalibTiming.SKIP``.
-    """
-
-    when: CalibTiming = CalibTiming.WITH_REFERENCE
-    source: InputSource = InputSource.FP_CACHE
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.when, CalibTiming):
-            try:
-                self.when = CalibTiming(self.when)
-            except ValueError as exc:
-                raise ValueError(f"ActCalibPolicy.when must be a CalibTiming, got {self.when!r}") from exc
-        if not isinstance(self.source, InputSource):
-            try:
-                self.source = InputSource(self.source)
-            except ValueError as exc:
-                raise ValueError(f"ActCalibPolicy.source must be an InputSource, got {self.source!r}") from exc
-
-    @classmethod
-    def no_collection(cls) -> "ActCalibPolicy":
-        """Convenience factory: no activation calibration."""
-        return cls(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
-
-
-def merge_policies(policies: list["ActCalibPolicy"]) -> "ActCalibPolicy":
-    """Merge act-calib policies from multiple pipeline members.
-
-    Rules:
-    - ``when``:   take the *latest* timing (``SKIP < WITH_REFERENCE < AFTER_PREPROCESS``).
-    - ``source``: when two policies share the same ``when`` but differ in ``source``,
-                  that is a compatibility conflict → raise ``ValueError`` fail-fast.
-    - Policies with ``when == CalibTiming.SKIP`` do **not** contribute a source
-      constraint.
-
-    Returns:
-        A merged :class:`ActCalibPolicy`.
-    """
-    if not policies:
-        return ActCalibPolicy.no_collection()
-
-    merged_when = max(policies, key=lambda p: p.when).when
-
-    if merged_when == CalibTiming.SKIP:
-        return ActCalibPolicy.no_collection()
-
-    contributing = [p for p in policies if p.when == merged_when]
-    sources = {p.source for p in contributing}
-    if len(sources) > 1:
-        raise ValueError(
-            f"Incompatible act-calib policies: multiple algorithms request "
-            f"when={merged_when.name!r} but with different input sources: "
-            f"{[s.name for s in sources]}. "
-            "Use a compatible combination of algorithms or file an issue."
-        )
-
-    return ActCalibPolicy(when=merged_when, source=contributing[0].source)
+    from auto_round.algorithms.transforms.base import BasePreprocessor
 
 
 # ---------------------------------------------------------------------------
-# Context dataclasses
+# Diffusion block output registry  (建议5 / Suggestion 5)
 # ---------------------------------------------------------------------------
 
+#: Maps block class name → ordered list of output tensor keys.
+#: Register new diffusion architectures with :func:`register_diffusion_output`.
+_DIFFUSION_OUTPUT_REGISTRY: dict[str, list[str]] = {}
 
-# TODO better to follow heng's imp to decouple llm/diffusion
-@dataclass
-class BlockForward:
+
+def register_diffusion_output(block_cls_name: str, output_keys: list[str]) -> None:
+    """Register the output key order for a diffusion transformer block class.
+
+    Args:
+        block_cls_name: The ``__class__.__name__`` of the diffusion block
+            (e.g. ``"FluxTransformerBlock"``).
+        output_keys: Ordered list of tensor keys returned by the block's
+            forward pass (e.g. ``["encoder_hidden_states", "hidden_states"]``).
+            ``"hidden_states"`` must be present.
+
+    Example::
+
+        register_diffusion_output("MyDiTBlock", ["hidden_states"])
+    """
+    _DIFFUSION_OUTPUT_REGISTRY[block_cls_name] = output_keys
+
+
+# Built-in diffusion block registrations.
+# Add new architectures here instead of editing BlockRunner internals.
+register_diffusion_output("FluxTransformerBlock", ["encoder_hidden_states", "hidden_states"])
+register_diffusion_output("FluxSingleTransformerBlock", ["encoder_hidden_states", "hidden_states"])
+register_diffusion_output("OvisImageTransformerBlock", ["encoder_hidden_states", "hidden_states"])
+register_diffusion_output("OvisImageSingleTransformerBlock", ["encoder_hidden_states", "hidden_states"])
+register_diffusion_output("StableAudioDiTBlock", ["hidden_states"])
+register_diffusion_output("WanTransformerBlock", ["hidden_states"])
+
+
+# ---------------------------------------------------------------------------
+# BlockRunner  (建议3 / Suggestion 3)
+# ---------------------------------------------------------------------------
+
+# TODO wenhuach better follow heng's imp to decouple llm/diffusion
+class BlockForwardRunner:
     """Stateless block-forward execution engine shared across quantizer & compressor.
 
-    Created **once** by the compressor at init time. Quantizer accesses via
-    ``self.compressor.block_forward``.
+    Created **once** by the compressor at init time and shared with quantizers
+    via :class:`QuantizationRunContext`.
 
     Usage::
 
         # Compressor creates once:
-        self.block_forward = BlockForward.from_compressor(self)
+        self.block_forward = BlockForwardRunner.from_compressor(self)
 
-        # Quantizer (after bind):
-        output = self.compressor.block_forward(block, inputs, others, indices)
+        # Quantizer (via _run_ctx):
+        output = self._run_ctx.block_forward_runner(block, inputs, others, indices)
+
+    To register a new diffusion block output layout::
+
+        from auto_round.algorithms.pipeline import register_diffusion_output
+        register_diffusion_output("MyDiTBlock", ["hidden_states"])
     """
 
-    batch_dim: int = 0
-    batch_size: int = 8
-    device: Union[str, torch.device] = "cpu"
-    cache_device: Union[str, torch.device] = "cpu"
-    amp: bool = True
-    amp_dtype: torch.dtype = torch.bfloat16
-    is_diffusion: bool = False
-    shared_cache_keys: tuple = ()
-    output_config: list[str] | None = None
+    # Class-level reference to the module-level registry — read-only view for
+    # tests and introspection (e.g. ``BlockForwardRunner.DIFFUSION_OUTPUT_CONFIGS``).
+    DIFFUSION_OUTPUT_CONFIGS = _DIFFUSION_OUTPUT_REGISTRY
 
-    # Map block class name → list of output tensor keys returned by that block.
-    # The order of keys must match the order of tensors in the block's return tuple.
-    # Extend this dict to register new diffusion architectures.
-    DIFFUSION_OUTPUT_CONFIGS: ClassVar[dict] = {
-        "FluxTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "FluxSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "OvisImageTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "OvisImageSingleTransformerBlock": ["encoder_hidden_states", "hidden_states"],
-        "StableAudioDiTBlock": ["hidden_states"],
-        "WanTransformerBlock": ["hidden_states"],
-    }
-
-    def __post_init__(self) -> None:
-        if self.output_config is None:
-            self.output_config = ["hidden_states"]
+    def __init__(
+        self,
+        batch_dim: int = 0,
+        batch_size: int = 8,
+        device: Union[str, "torch.device"] = "cpu",
+        cache_device: Union[str, "torch.device"] = "cpu",
+        amp: bool = True,
+        amp_dtype: "torch.dtype" = None,
+        is_diffusion: bool = False,
+        shared_cache_keys: tuple = (),
+        output_config: "list[str] | None" = None,
+    ) -> None:
+        self.batch_dim = batch_dim
+        self.batch_size = batch_size
+        self.device = device
+        self.cache_device = cache_device
+        self.amp = amp
+        self.amp_dtype = amp_dtype if amp_dtype is not None else torch.bfloat16
+        self.is_diffusion = is_diffusion
+        self.shared_cache_keys = shared_cache_keys
+        self.output_config = output_config if output_config is not None else ["hidden_states"]
 
     # ── Factory ──────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_compressor(cls, compressor: Any) -> "BlockForward":
+    def from_compressor(cls, compressor: Any) -> "BlockForwardRunner":
         """Create from a compressor instance (called once at compressor init)."""
         model_ctx = getattr(compressor, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False
@@ -265,7 +194,7 @@ class BlockForward:
             device = inputs.device
 
         if indices is None:
-            indices = torch.arange(num_samples, dtype=torch.long, device=device)
+             indices = torch.arange(num_samples, dtype=torch.long, device=device)
         elif not isinstance(indices, torch.Tensor):
             indices = torch.tensor(indices, dtype=torch.long, device=device)
         else:
@@ -285,7 +214,7 @@ class BlockForward:
             outputs.extend(output)
 
         if not outputs:
-            raise RuntimeError("BlockForward.forward: no outputs collected.")
+            raise RuntimeError("BlockForwardRunner.forward: no outputs collected.")
 
         if is_returned_list:
             return outputs
@@ -364,10 +293,11 @@ class BlockForward:
             raise ValueError("Block output is an empty tuple/list.")
 
         if self.is_diffusion:
-            # Look up per-block-type output config; fall back to instance-level config.
+            # Look up per-block-type output config from the module-level registry;
+            # fall back to instance-level output_config.
             block_cls_name = block.__class__.__name__ if block is not None else None
             oc = (
-                self.DIFFUSION_OUTPUT_CONFIGS.get(block_cls_name, self.output_config)
+                _DIFFUSION_OUTPUT_REGISTRY.get(block_cls_name, self.output_config)
                 if block_cls_name
                 else self.output_config
             )
@@ -441,6 +371,11 @@ class BlockForward:
         return selected_inputs, selected_others
 
 
+# Backward-compat aliases — remove after all call sites are updated.
+BlockForward = BlockForwardRunner
+BlockRunner = BlockForwardRunner
+
+
 # ---------------------------------------------------------------------------
 # Context dataclasses
 # ---------------------------------------------------------------------------
@@ -481,10 +416,9 @@ class BlockContext:
 # QuantizationPipeline
 # ---------------------------------------------------------------------------
 
-
 @dataclass
 class QuantizationPipeline:
-    """An ordered composition of pre-processing quantizers + one block quantizer.
+    """An ordered composition of pre-processors + one block quantizer.
 
     The ``preprocessors`` list is order-sensitive: algorithms are applied in
     the listed order (e.g. ``[Rotation, AWQ]``).  There must be **exactly one**
@@ -497,19 +431,19 @@ class QuantizationPipeline:
         forwarded to ``block_quantizer`` via a ``@property``.
     """
 
-    preprocessors: list["BaseWeightTransformer"] = field(default_factory=list)
+    preprocessors: list["BasePreprocessor"] = field(default_factory=list)
     block_quantizer: "BaseQuantizer" = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.block_quantizer is None:
             raise ValueError("QuantizationPipeline requires a non-None block_quantizer.")
         from auto_round.algorithms.quantization.base import BaseQuantizer
-        from auto_round.algorithms.transforms.base import BaseWeightTransformer
+        from auto_round.algorithms.transforms.base import BasePreprocessor
 
         for q in self.preprocessors:
-            if not isinstance(q, BaseWeightTransformer):
+            if not isinstance(q, BasePreprocessor):
                 raise TypeError(
-                    f"{type(q).__name__} is listed as a preprocessor but does not " f"inherit BaseWeightTransformer."
+                    f"{type(q).__name__} is listed as a preprocessor but does not inherit BasePreprocessor."
                 )
         if not isinstance(self.block_quantizer, BaseQuantizer):
             raise TypeError(
@@ -517,7 +451,7 @@ class QuantizationPipeline:
                 f"inherit BaseQuantizer."
             )
 
-    def all(self) -> "list[BasePipelineMember]":
+    def members(self) -> "list[BaseAlgorithm]":
         """Return all members in pipeline order: preprocessors then block_quantizer."""
         return [*self.preprocessors, self.block_quantizer]
 
@@ -528,14 +462,14 @@ class QuantizationPipeline:
         Resolution rules:
         1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in *configs*,
            a default :class:`RTNConfig` is appended automatically.
-        2. Instances of ``BaseWeightTransformer`` go into ``preprocessors`` (in order).
+        2. Instances of ``BasePreprocessor`` go into ``preprocessors`` (in order).
         3. Exactly one ``BaseQuantizer`` becomes ``block_quantizer``.
         4. Multiple block-quantization configs raise ``ValueError``.
         5. If ``compressor`` is provided, every member is bound to it.
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.quantization.config import QuantizationConfig
-        from auto_round.algorithms.transforms.base import BaseWeightTransformer
+        from auto_round.algorithms.transforms.base import BasePreprocessor
 
         configs = list(configs)
 
@@ -568,13 +502,14 @@ class QuantizationPipeline:
             q = alg_cls(cfg)
             if compressor is not None:
                 q.bind(compressor)
-            if isinstance(q, BaseWeightTransformer):
+            if isinstance(q, BasePreprocessor):
                 preprocessors.append(q)
             elif isinstance(q, BaseQuantizer):
                 block_quantizers.append(q)
             else:
                 raise TypeError(
-                    f"Algorithm class {type(q).__name__} must inherit either " "BaseWeightTransformer or BaseQuantizer."
+                    f"Algorithm class {type(q).__name__} must inherit either "
+                    "BasePreprocessor or BaseQuantizer."
                 )
 
         if len(block_quantizers) > 1:
@@ -609,7 +544,7 @@ class QuantizationPipeline:
         from auto_round.algorithms.quantization.base import BaseQuantizer
 
         overriders = []
-        for member in self.all():
+        for member in self.members():
             if not hasattr(member, "dispatch_block"):
                 continue
             # Check if the member overrides the base default

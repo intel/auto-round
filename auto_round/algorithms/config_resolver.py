@@ -28,11 +28,11 @@ def get_algorithm_class(config: Any):
 
 
 def is_preprocessor_config(config: Any) -> bool:
-    """Whether *config* resolves to a BaseWeightTransformer implementation."""
-    from auto_round.algorithms.transforms.base import BaseWeightTransformer
+    """Whether *config* resolves to a BasePreprocessor implementation."""
+    from auto_round.algorithms.transforms.base import BasePreprocessor
 
     alg_cls = get_algorithm_class(config)
-    return alg_cls is not None and issubclass(alg_cls, BaseWeightTransformer)
+    return alg_cls is not None and issubclass(alg_cls, BasePreprocessor)
 
 
 def is_block_quantizer_config(config: Any) -> bool:

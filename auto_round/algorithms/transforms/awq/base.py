@@ -44,7 +44,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
-from auto_round.algorithms.transforms.base import BaseWeightTransformer
+from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.data_type.utils import (
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
@@ -103,10 +103,10 @@ def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
 
 
 @register_pipeline_member(AWQConfig)
-class AWQTransform(BaseWeightTransformer):
+class AWQTransform(BasePreprocessor):
     """AWQ transform: activation-aware weight smoothing pre-processor.
 
-    Inherits :class:`~auto_round.algorithms.transforms.base.BaseWeightTransformer`.
+    Inherits :class:`~auto_round.algorithms.transforms.base.BasePreprocessor`.
     It smooths block weights in-place; actual weight compression (RTN /
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """

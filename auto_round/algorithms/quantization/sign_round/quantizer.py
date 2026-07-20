@@ -394,7 +394,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if dtype is not None:
                 layer = get_module(self.model, layer_name)
                 set_module(self.model, layer_name, layer.to(dtype))
-            self.quantize_layer_via_rtn(
+            self._quantize_layer_via_rtn(
                 layer_name,
                 disable_opt_rtn=kwargs.get("disable_opt_rtn", getattr(self.config, "disable_opt_rtn", True)),
             )

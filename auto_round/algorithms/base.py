@@ -13,24 +13,67 @@
 # limitations under the License.
 
 
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+import torch
 
 from auto_round.algorithms.registry import resolve_pipeline_member
 
+if TYPE_CHECKING:
+    from auto_round.algorithms.pipeline import BlockForwardRunner
+    from auto_round.calibration.state import CalibrationContext
+    from auto_round.context.compress import CompressContext
+    from auto_round.context.model import ModelContext
+    from auto_round.schemes import QuantizationScheme
 
-# TODO later wenhuach may be deleted
-class BasePipelineMember:
-    """Shared interface for all members of a quantization pipeline."""
 
-    model_context = None
-    compress_context = None
+@dataclass(frozen=True)
+class QuantizationRunContext:
+    """Compressor-owned state shared with an algorithm for one compression run.
+    Created once in :meth:`BaseAlgorithm.bind` and stored as ``self.__run_ctx``
+    (name-mangled so subclasses cannot accidentally overwrite it).
+    All fields are exposed as read-only properties on :class:`BaseAlgorithm` so
+    subclass code (``self.model_context``, ``self.block_forward``, …) continues
+    to work without modification.
+    This dataclass is **frozen**: the pointers to context objects do not change
+    after :meth:`~BaseAlgorithm.bind` is called.  Mutable run-time state lives
+    *inside* the referenced objects (e.g. ``calibration_context.batch_size``).
+    Attributes:
+        model_context:        Model-level metadata (architecture, amp, dtype, …).
+        compress_context:     Compression settings (torch compile, packing, …).
+        calibration_context:  Calibration state; ``None`` for non-quantizer algorithms.
+        block_forward_runner: Shared :class:`~auto_round.algorithms.pipeline.BlockForwardRunner`;
+                              ``None`` for non-quantizer algorithms.
+        scale_dtype:          Dtype for scales/zero-points; ``None`` for non-quantizer algorithms.
+        scheme:               Active :class:`~auto_round.schemes.QuantizationScheme`,
+                              or ``None`` before scheme resolution.
+    """
+
+    model_context: "ModelContext"
+    compress_context: "CompressContext"
+    calibration_context: "CalibrationContext | None" = None
+    block_forward_runner: "BlockForwardRunner | None" = None
+    scale_dtype: "torch.dtype | None" = None
+    scheme: "QuantizationScheme | None" = None
+
+
+class BaseAlgorithm:
+    """Shared interface for all algorithms in a quantization pipeline.
+
+    Subclass either :class:`~auto_round.algorithms.quantization.base.BaseQuantizer`
+    (terminal weight-compression) or
+    :class:`~auto_round.algorithms.transforms.base.BasePreprocessor`
+    (pre-quantization weight/activation transform).
+    """
 
     def __init__(self, config: Any = None) -> None:
         self.config = config
-        self.scheme = getattr(config, "scheme", None)
+        # Name-mangled so subclasses cannot accidentally overwrite the run context.
+        self.__run_ctx: QuantizationRunContext | None = None
 
     @classmethod
-    def from_config(cls, config: Any) -> "BasePipelineMember":
+    def from_config(cls, config: Any) -> "BaseAlgorithm":
         """Instantiate the registered implementation class for ``config``."""
         alg_cls = resolve_pipeline_member(config)
         if cls is alg_cls:
@@ -38,11 +81,57 @@ class BasePipelineMember:
         return alg_cls(config)
 
     def bind(self, compressor: Any) -> None:
-        """Wire shared context from the owning compressor."""
-        # self.compressor = compressor
-        self.model_context = compressor.model_context
-        self.compress_context = compressor.compress_context
-        self.scheme = getattr(compressor, "scheme_context", None)
+        """Wire compressor-owned state into a frozen :class:`QuantizationRunContext`.
+        Called once before block iteration starts.  Fields not present on the
+        compressor (e.g. ``calibration_context`` for preprocessors) default to ``None``.
+        """
+        self.__run_ctx = QuantizationRunContext(
+            model_context=compressor.model_context,
+            compress_context=compressor.compress_context,
+            calibration_context=getattr(compressor, "calibration_context", None),
+            block_forward_runner=getattr(compressor, "block_forward", None),
+            scale_dtype=getattr(compressor, "scale_dtype", None),
+            scheme=getattr(compressor, "scheme_context", None),
+        )
+
+    # ── Read-only context accessors ───────────────────────────────────────────
+    @property
+    def model_context(self) -> "ModelContext | None":
+        return self.__run_ctx.model_context if self.__run_ctx is not None else None
+
+    @property
+    def compress_context(self) -> "CompressContext | None":
+        return self.__run_ctx.compress_context if self.__run_ctx is not None else None
+
+    @property
+    def calibration_context(self) -> "CalibrationContext | None":
+        return self.__run_ctx.calibration_context if self.__run_ctx is not None else None
+
+    @property
+    def block_forward(self) -> "BlockForwardRunner | None":
+        """The shared :class:`~auto_round.algorithms.pipeline.BlockForwardRunner` instance."""
+        return self.__run_ctx.block_forward_runner if self.__run_ctx is not None else None
+
+    @property
+    def scale_dtype(self) -> "torch.dtype | None":
+        return self.__run_ctx.scale_dtype if self.__run_ctx is not None else None
+
+    @property
+    def scheme(self) -> "QuantizationScheme | None":
+        return self.__run_ctx.scheme if self.__run_ctx is not None else None
+
+    # ── Derived convenience properties ────────────────────────────────────────
+    @property
+    def model(self) -> "torch.nn.Module | None":
+        return self.model_context.model if self.model_context is not None else None
+
+    @property
+    def amp(self) -> bool:
+        return getattr(self.model_context, "amp", False)
+
+    @property
+    def amp_dtype(self) -> torch.dtype:
+        return getattr(self.model_context, "amp_dtype", torch.float32)
 
     def prepare_run(self, compressor: Any) -> None:
         """Model-level preparation called once before block iteration starts."""
