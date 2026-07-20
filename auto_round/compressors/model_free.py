@@ -1501,12 +1501,16 @@ def _looks_like_auto_scheme(scheme: Any) -> bool:
 
 
 def _validate_auto_scheme_options(auto_scheme: Any) -> str:
-    """Validate that every AutoScheme option is model-free-packable.
+    """Validate AutoScheme options for model-free packing.
 
-    Returns the single data-type family shared by all options
-    (``"int"`` or ``"mx_fp"``).  Raises ``ValueError`` when any option is
-    unsupported or when INT and MXFP options are mixed (they use different
-    packing formats and cannot be produced in one model-free run).
+    Returns the single quantized data-type family shared by all options
+    (``"int"`` or ``"mx_fp"``). ``BF16`` (or any >=16-bit no-op scheme) is
+    allowed and treated as "keep layer in full precision" during conversion,
+    so it does not contribute to the returned family.
+
+    Raises ``ValueError`` when any non-BF16 option is unsupported or when INT
+    and MXFP options are mixed (they use different packing formats and cannot
+    be produced in one model-free run).
     """
     options = list(getattr(auto_scheme, "options", []) or [])
     if not options:
@@ -1526,6 +1530,14 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
             scheme_obj = opt
         else:
             scheme_obj = None
+
+        # AutoScheme may include BF16/no-op options. In model-free flow these
+        # layers become ignore_layers entries (full precision), so they are
+        # allowed and excluded from family checks.
+        if scheme_obj is not None:
+            act_bits = scheme_obj.act_bits if scheme_obj.act_bits is not None else 16
+            if (scheme_obj.bits or 0) >= 16 and act_bits >= 16:
+                continue
 
         # GGUF k-quants carry super_bits and are not packable by the model-free
         # RTN kernel even though their data_type is nominally "int".

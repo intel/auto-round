@@ -1400,6 +1400,11 @@ class TestModelFreeAutoScheme:
 
         assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16"))) == "int"
 
+    def test_validate_options_int_family_with_bf16(self):
+        from auto_round import AutoScheme
+
+        assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))) == "int"
+
     def test_validate_options_mxfp_family(self):
         from auto_round import AutoScheme
 
@@ -1439,6 +1444,22 @@ class TestModelFreeAutoScheme:
         assert per_layer["model.layers.0.k_proj"]["bits"] == 2
         assert "model.embed_tokens" not in per_layer
         assert fp16_layers == ["model.embed_tokens"]
+
+    def test_convert_layer_config_infers_mxfp_bits_from_dtype_alias(self):
+        generated = {
+            "model.layers.0.q_proj": {"group_size": 32, "sym": True, "data_type": "mxfp8"},
+            "model.layers.0.k_proj": {"group_size": 32, "sym": True, "data_type": "MXFP4"},
+        }
+
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
+
+        assert fp16_layers == []
+        assert per_layer["model.layers.0.q_proj"]["bits"] == 8
+        assert per_layer["model.layers.0.q_proj"]["data_type"] == "mx_fp"
+        assert per_layer["model.layers.0.k_proj"]["bits"] == 4
+        assert per_layer["model.layers.0.k_proj"]["data_type"] == "mx_fp"
+        assert base_scheme.data_type == "mx_fp"
+        assert base_scheme.bits in (4, 8)
 
     def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
         from auto_round import AutoScheme
