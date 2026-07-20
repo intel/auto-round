@@ -49,10 +49,6 @@ class BaseQuantizer(BaseAlgorithm):
         - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
         - :meth:`finalize_run`                 – model-level teardown (once after all blocks)
     """
-
-    # Class-level attribute declarations for convenient access in quantization methods.
-    enable_alg_ext = False  # TODO delete later wenhuach
-
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
         # Whether to feed quantized-block outputs as inputs to the next block.
@@ -275,30 +271,30 @@ class BaseQuantizer(BaseAlgorithm):
         block = block.to(device_manager.device)
         return block, False, device_manager.device
 
-    def _resolve_block_forward(self):
-        """Resolve and cache the low-level block forward function once.
-        Avoids repeated attribute checks in the hot training loop.
-        Uses plain ``block_forward`` (no compile) when act-quant hooks,
-        alg-ext, or optimized RTN are active.
-        """
-        cached = self.__dict__.get("_resolved_block_forward")
-        if cached is not None:
-            return cached
-        if (
-            (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
-            or self.enable_alg_ext
-            or not getattr(self.config, "disable_opt_rtn", True)
-        ):
-            self._resolved_block_forward = block_forward
-        elif self.compress_context.enable_torch_compile:
-            compiled = self.__dict__.get("_compiled_block_forward")
-            if compiled is None:
-                compiled = compile_func(block_forward, device_manager.device)
-                self._compiled_block_forward = compiled
-            self._resolved_block_forward = compiled
-        else:
-            self._resolved_block_forward = block_forward
-        return self._resolved_block_forward
+    # def _resolve_block_forward(self):
+    #     """Resolve and cache the low-level block forward function once.
+    #     Avoids repeated attribute checks in the hot training loop.
+    #     Uses plain ``block_forward`` (no compile) when act-quant hooks,
+    #     alg-ext, or optimized RTN are active.
+    #     """
+    #     cached = self.__dict__.get("_resolved_block_forward")
+    #     if cached is not None:
+    #         return cached
+    #     if (
+    #         (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
+    #         or self.enable_alg_ext
+    #         or not getattr(self.config, "disable_opt_rtn", True)
+    #     ):
+    #         self._resolved_block_forward = block_forward
+    #     elif self.compress_context.enable_torch_compile:
+    #         compiled = self.__dict__.get("_compiled_block_forward")
+    #         if compiled is None:
+    #             compiled = compile_func(block_forward, device_manager.device)
+    #             self._compiled_block_forward = compiled
+    #         self._resolved_block_forward = compiled
+    #     else:
+    #         self._resolved_block_forward = block_forward
+    #     return self._resolved_block_forward
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     def prepare_run(self, compressor: Any) -> None:

@@ -16,15 +16,15 @@
 This module defines the core data structures and utilities for composing
 pre-processing algorithms (AWQ smooth, SmoothQuant, Rotation…) with a
 block-quantization algorithm (RTN, SignRound/AutoRound…) into a single
-shared-calibration pipeline.
+shared-calibration bundle.
 
 Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
-- ``QuantizationPipeline`` is the *first-class abstraction*; it is NOT just
+- ``AlgorithmComposer`` is the *first-class abstraction*; it is NOT just
   AWQ's helper.
 - All block-wise scheduling in ``Compressor`` operates against
-  ``QuantizationPipeline``, never against a concrete ``AWQTransform``.
+  ``AlgorithmComposer``, never against a concrete ``AWQTransform``.
 - Single-algorithm use is expressed as
-  ``QuantizationPipeline(preprocessors=[], block_quantizer=q)``, which is
+  ``AlgorithmComposer(preprocessors=[], block_quantizer=q)``, which is
   semantically identical to the current direct-quantizer path.
 """
 from __future__ import annotations
@@ -371,16 +371,9 @@ class BlockForwardRunner:
         return selected_inputs, selected_others
 
 
-# Backward-compat aliases — remove after all call sites are updated.
-BlockForward = BlockForwardRunner
-BlockRunner = BlockForwardRunner
-
-
 # ---------------------------------------------------------------------------
 # Context dataclasses
 # ---------------------------------------------------------------------------
-
-
 @dataclass
 class BlockContext:
     """Per-block context threaded through the lifecycle hooks.
@@ -413,19 +406,24 @@ class BlockContext:
 
 
 # ---------------------------------------------------------------------------
-# QuantizationPipeline
+# AlgorithmComposer
 # ---------------------------------------------------------------------------
 
+#TODO move the pipeline to here
 @dataclass
-class QuantizationPipeline:
+class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer.
 
     The ``preprocessors`` list is order-sensitive: algorithms are applied in
     the listed order (e.g. ``[Rotation, AWQ]``).  There must be **exactly one**
     ``block_quantizer`` (the terminal weight-compression step).
 
+    The bundle is a *declaration* of which algorithms to apply and in what order;
+    the actual execution (block iteration, ``prepare_run`` calls, etc.) is
+    orchestrated by the :class:`~auto_round.compressors.base.Compressor`.
+
     Single-algorithm use:
-        ``QuantizationPipeline(preprocessors=[], block_quantizer=rtn_quantizer)``
+        ``AlgorithmComposer(preprocessors=[], block_quantizer=rtn_quantizer)``
         is semantically equivalent to the current direct-quantizer path; the
         compressor's existing ``self.quantizer`` call-sites are transparently
         forwarded to ``block_quantizer`` via a ``@property``.
@@ -436,7 +434,7 @@ class QuantizationPipeline:
 
     def __post_init__(self) -> None:
         if self.block_quantizer is None:
-            raise ValueError("QuantizationPipeline requires a non-None block_quantizer.")
+            raise ValueError("AlgorithmComposer requires a non-None block_quantizer.")
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.transforms.base import BasePreprocessor
 
@@ -456,8 +454,8 @@ class QuantizationPipeline:
         return [*self.preprocessors, self.block_quantizer]
 
     @classmethod
-    def from_configs(cls, configs: list, compressor: Any = None) -> "QuantizationPipeline":
-        """Construct a ``QuantizationPipeline`` from a list of algorithm config instances.
+    def from_configs(cls, configs: list, compressor: Any = None) -> "AlgorithmComposer":
+        """Construct an ``AlgorithmComposer`` from a list of algorithm config instances.
 
         Resolution rules:
         1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in *configs*,
@@ -514,7 +512,7 @@ class QuantizationPipeline:
 
         if len(block_quantizers) > 1:
             raise ValueError(
-                f"QuantizationPipeline allows exactly one block-quantization config, "
+                f"AlgorithmComposer allows exactly one block-quantization config, "
                 f"but got {len(block_quantizers)}: "
                 f"{[type(q).__name__ for q in block_quantizers]}. "
                 "Ensure only one of RTNConfig / SignRoundConfig / etc. is in the pipeline."
@@ -525,7 +523,7 @@ class QuantizationPipeline:
             name = type(preprocessor).__name__
             if name in seen_preprocessors:
                 raise ValueError(
-                    f"Duplicate preprocessor {name} in QuantizationPipeline. "
+                    f"Duplicate preprocessor {name} in AlgorithmComposer. "
                     "Repeated instances of the same preprocessor are not supported yet."
                 )
             seen_preprocessors.add(name)

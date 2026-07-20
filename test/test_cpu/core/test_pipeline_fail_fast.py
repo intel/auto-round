@@ -1,4 +1,4 @@
-"""Fast unit tests for algorithm registry and pipeline construction."""
+"""Fast unit tests for algorithm registry and bundle construction."""
 
 import pytest
 
@@ -8,7 +8,7 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
-from auto_round.algorithms.pipeline import QuantizationPipeline
+from auto_round.algorithms.pipeline import AlgorithmComposer
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
@@ -36,19 +36,19 @@ def test_split_awq_plus_rtn():
 
 
 def test_pipeline_preprocessor_only_auto_appends_rtn():
-    pipeline = QuantizationPipeline.from_configs([AWQConfig()])
+    pipeline = AlgorithmComposer.from_configs([AWQConfig()])
     assert type(pipeline.preprocessors[0]).__name__ == "AWQTransform"
     assert isinstance(pipeline.block_quantizer, RTNQuantizer)
 
 
 def test_pipeline_duplicate_preprocessor_rejected():
     with pytest.raises(ValueError, match="Duplicate preprocessor"):
-        QuantizationPipeline.from_configs([AWQConfig(), AWQConfig()])
+        AlgorithmComposer.from_configs([AWQConfig(), AWQConfig()])
 
 
 def test_pipeline_multiple_block_quantizers_rejected():
     with pytest.raises(ValueError, match="exactly one block-quantization config"):
-        QuantizationPipeline.from_configs([RTNConfig(), SignRoundConfig()])
+        AlgorithmComposer.from_configs([RTNConfig(), SignRoundConfig()])
 
 
 def test_registry_builtin_aliases_and_unknown():

@@ -907,7 +907,7 @@ class BaseCompressor(object):
         # Create the shared block-forward engine (used by both compressor and quantizer).
         from auto_round.algorithms.pipeline import BlockForwardRunner
 
-        # Must before _build_quantizer, because BlockForwardRunner is used in QuantizationPipeline
+        # Must before _build_quantizer, because BlockForwardRunner is used in AlgorithmComposer
         self.block_forward = BlockForwardRunner.from_compressor(self)
 
         # Must place after block foward
@@ -964,8 +964,8 @@ class BaseCompressor(object):
 
         Work performed:
           - Constructs the block_quantizer from the resolved config.
-          - Wraps it in a :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`
-            so that the entire compressor operates through the pipeline abstraction.
+          - Wraps it in a :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`
+            so that the entire compressor operates through the bundle abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
             ``CalibrationContext`` from this compressor.  ``quantizer.model``
@@ -975,13 +975,13 @@ class BaseCompressor(object):
             existing call-sites continue to work without modification.
 
         Postconditions:
-          - ``self.pipeline`` is a ``QuantizationPipeline`` wrapping the block quantizer.
+          - ``self.pipeline`` is an ``AlgorithmComposer`` wrapping the block quantizer.
           - ``self.quantizer`` (via property) is ready and shares ``CalibrationContext``
             with the compressor.
         """
-        from auto_round.algorithms.pipeline import QuantizationPipeline
+        from auto_round.algorithms.pipeline import AlgorithmComposer
 
-        self._pipeline = QuantizationPipeline.from_configs(self._alg_configs, compressor=self)
+        self._pipeline = AlgorithmComposer.from_configs(self._alg_configs, compressor=self)
 
     @property
     def quantizer(self) -> BaseQuantizer:
@@ -1006,7 +1006,7 @@ class BaseCompressor(object):
 
     @property
     def pipeline(self) -> Any:
-        """The active :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`."""
+        """The active :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`."""
         return self._pipeline
 
     def _resolve_formats(self) -> None:
