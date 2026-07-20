@@ -32,7 +32,6 @@ from auto_round.utils import (
     get_module,
     set_module,
 )
-
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear
 
@@ -49,6 +48,7 @@ class BaseQuantizer(BaseAlgorithm):
         - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
         - :meth:`finalize_run`                 – model-level teardown (once after all blocks)
     """
+
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
         # Whether to feed quantized-block outputs as inputs to the next block.
@@ -59,7 +59,6 @@ class BaseQuantizer(BaseAlgorithm):
 
     def is_support_compile_block(self):  # TODO support compile block
         return True
-
 
     # ── Calibration hook registration ─────────────────────────────────────────
     def register_fp_input_forward_hooks(self, block: "torch.nn.Module") -> list:
