@@ -187,8 +187,7 @@ class AWQTransform(BasePreprocessor):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-
-        #TODO wenhuach
+        # TODO wenhuach
         # self._qdq_tool.configure(compressor)
 
         # if compressor.compress_context is not None:

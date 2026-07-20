@@ -62,7 +62,7 @@ class QDQTool:
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
 
-    #TODO wenhuach better one
+    # TODO wenhuach better one
     # # ── runtime wiring ────────────────────────────────────────────────────────
     # def configure(self, compressor) -> None:
     #     """Derive QDQ behaviour from the run's block quantizer."""
