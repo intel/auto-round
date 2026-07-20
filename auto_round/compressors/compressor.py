@@ -256,7 +256,10 @@ class Compressor(BaseCompressor):
 
             # ── Run block pipeline (calibration → quantization → collection) ──
             new_q_input, reference_output = self.alg_composer.compress_block(
-                m, input_ids, input_others, ctx,
+                m,
+                input_ids,
+                input_others,
+                ctx,
                 q_input=q_input,
                 valid_token_mask=valid_token_mask,
             )
@@ -746,7 +749,6 @@ class Compressor(BaseCompressor):
             clear_memory(q_layer_input)
             memory_monitor.log_summary()
 
-
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
         # ``seqlen`` clamping is owned by ``CalibrationState``.
@@ -958,10 +960,12 @@ class Compressor(BaseCompressor):
 
         # ── Run block pipeline (calibration → quantization → collection) ──────
         new_q_input, reference_output = self.alg_composer.compress_block(
-            block, input_ids, input_others, ctx,
+            block,
+            input_ids,
+            input_others,
+            ctx,
             q_input=q_input,
         )
-
 
         # ── Cleanup ───────────────────────────────────────────────────────────
         if q_input is not None:

@@ -3,12 +3,12 @@
 import pytest
 
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
+from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
 )
-from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides

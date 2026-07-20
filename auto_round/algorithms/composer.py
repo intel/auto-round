@@ -27,11 +27,13 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
   ``AlgorithmComposer(preprocessors=[], block_quantizer=q)``, which is
   semantically identical to the current direct-quantizer path.
 """
+
 from __future__ import annotations
-import torch
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Union
+
+import torch
 
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
@@ -88,6 +90,7 @@ register_diffusion_output("WanTransformerBlock", ["hidden_states"])
 # ---------------------------------------------------------------------------
 # BlockRunner  (建议3 / Suggestion 3)
 # ---------------------------------------------------------------------------
+
 
 # TODO wenhuach better follow heng's imp to decouple llm/diffusion
 class BlockForwardRunner:
@@ -194,7 +197,7 @@ class BlockForwardRunner:
             device = inputs.device
 
         if indices is None:
-             indices = torch.arange(num_samples, dtype=torch.long, device=device)
+            indices = torch.arange(num_samples, dtype=torch.long, device=device)
         elif not isinstance(indices, torch.Tensor):
             indices = torch.tensor(indices, dtype=torch.long, device=device)
         else:
@@ -399,7 +402,6 @@ class BlockContext:
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
 
-
     # def mark_modified_fp_params(self, param_names: list[str]) -> None:
     #     """Called by preprocessors to declare which FP params were modified in-place."""
     #     self.modified_fp_params.extend(param_names)
@@ -408,6 +410,7 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
+
 
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
@@ -452,6 +455,7 @@ class AlgorithmComposer:
         _, block_quantizer_configs = split_quantization_configs(configs)
         if not block_quantizer_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
             configs = configs + [RTNConfig()]
 
         configs = resolve_shared_config_values(configs)
@@ -463,6 +467,7 @@ class AlgorithmComposer:
             if not isinstance(cfg, QuantizationConfig):
                 continue
             from auto_round.algorithms.registry import normalize_algorithm_config
+
             cfg = normalize_algorithm_config(cfg)
             alg_cls = get_algorithm_class(cfg)
             if alg_cls is None:
@@ -476,8 +481,7 @@ class AlgorithmComposer:
                 block_quantizers.append(q)
             else:
                 raise TypeError(
-                    f"Algorithm class {type(q).__name__} must inherit either "
-                    "BasePreprocessor or BaseQuantizer."
+                    f"Algorithm class {type(q).__name__} must inherit either " "BasePreprocessor or BaseQuantizer."
                 )
 
         if len(block_quantizers) > 1:
@@ -501,7 +505,7 @@ class AlgorithmComposer:
             seen.add(name)
 
         self.preprocessors = preprocessors
-        #TODO wenhuach support multi quantizers
+        # TODO wenhuach support multi quantizers
         self.block_quantizer = block_quantizers[0]
 
         # Bind compressor-level infrastructure (set before _build_quantizer is called).
@@ -551,8 +555,8 @@ class AlgorithmComposer:
                     and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
                     and check_to_quantized(module)
                 )
-            if hasattr(module,"bits"):
-                act_dynamic = getattr(module,"act_dynamic", True)
+            if hasattr(module, "bits"):
+                act_dynamic = getattr(module, "act_dynamic", True)
                 act_data_type = getattr(module, "act_data_type", None)
                 act_bits = getattr(module, "act_bits", 16)
                 return (
@@ -595,10 +599,10 @@ class AlgorithmComposer:
             q_input: Optional list of quantized input tensors; used instead of
                 ``fp_input`` when provided.
         """
-        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
         from auto_round.compressors.utils import is_nv_fp
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
-        target_input = q_input if q_input else fp_input
+        target_input = q_input or fp_input
         act_group_size = getattr(layer, "act_group_size", -1)
         act_data_type = getattr(layer, "act_data_type", None)
         is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
@@ -624,7 +628,6 @@ class AlgorithmComposer:
                 layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
             else:
                 layer.act_max = torch.max(act_max, layer.act_max)
-
 
     def compress_embedding_layer(self):
         self.block_quantizer.quantize_embedding_layer()
@@ -725,7 +728,12 @@ class AlgorithmComposer:
         # otherwise fall back to the FP input.
         effective_input = q_input if q_input is not None else input_ids
         self.block_quantizer.quantize_block(
-            block, effective_input, input_others, reference_output, q_input, ctx,
+            block,
+            effective_input,
+            input_others,
+            reference_output,
+            q_input,
+            ctx,
             valid_token_mask=valid_token_mask,
         )
 
@@ -748,7 +756,7 @@ class AlgorithmComposer:
         fp_input=None,
         q_input=None,
         valid_token_mask=None,
-        disable_opt_rtn=None, #TODO wenhuach rename this to search_init_scale
+        disable_opt_rtn=None,  # TODO wenhuach rename this to search_init_scale
     ) -> None:
         """Quantize a single layer that lives outside transformer blocks.
 
@@ -777,7 +785,7 @@ class AlgorithmComposer:
                 self._attach_act_max_for_outside_layer(layer, fp_input, q_input)
 
         # Infrastructure: move layer to the tuning device before handing off to the quantizer.
-        device = getattr(layer, "tuning_device", device_manager.device)#TODO this should be handled by compressor
+        device = getattr(layer, "tuning_device", device_manager.device)  # TODO this should be handled by compressor
         layer = layer.to(device)
 
         self.block_quantizer.quantize_layer_outside_block(
@@ -825,7 +833,6 @@ class AlgorithmComposer:
     def prepare_run(self):
         for alg in self.members():
             alg.prepare_run(self)
-
 
     def finalize_run(self):
         for alg in self.members():
