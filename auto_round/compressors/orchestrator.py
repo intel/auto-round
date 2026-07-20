@@ -966,4 +966,3 @@ class CompressionOrchestrator(BaseOrchestrator):
         mv_module_from_gpu(block)
         self.model_context.is_mllm = orig_is_mllm
         return new_q_input, reference_output
-
