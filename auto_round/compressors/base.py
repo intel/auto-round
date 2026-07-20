@@ -28,7 +28,7 @@ from auto_round.algorithms.transforms import (
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import ShardWriter
-from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config, is_act_static
+from auto_round.compressors.utils import _get_save_folder_name, is_act_static, is_mx_fp, is_nv_fp, set_layer_config
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
 from auto_round.formats import OutputFormat, get_formats
@@ -795,7 +795,7 @@ class BaseCompressor(object):
         raw_scheme_upper = raw_scheme.upper()
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
-        is_valid_act_static = cfg.act_dynamic==False and (getattr(cfg, "act_bits", 16) or 16)<=8
+        is_valid_act_static = cfg.act_dynamic == False and (getattr(cfg, "act_bits", 16) or 16) <= 8
 
         return is_raw_nv_fp, is_valid_act_static
 
@@ -820,7 +820,7 @@ class BaseCompressor(object):
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        is_raw_nv_fp, is_valid_act_static= self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_valid_act_static:
@@ -830,7 +830,6 @@ class BaseCompressor(object):
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
@@ -910,13 +909,12 @@ class BaseCompressor(object):
         # Must before _build_quantizer, because BlockForwardRunner is used in AlgorithmComposer
         self.block_forward = BlockForwardRunner.from_compressor(self)
 
-        # Must place after block foward
+        # Must place after block forward
         self._build_quantizer()
-
 
         # Not a good design, reset torch compile setting in block_forward
         if self.enable_torch_compile:
-            if not self.quantizer.is_support_compile_block(): # TODO support multiple quantizer later
+            if not self.quantizer.is_support_compile_block():  # TODO support multiple quantizer later
                 self.block_forward.is_support_compile_block = True
 
         # Set block_forward torch compile for block forward

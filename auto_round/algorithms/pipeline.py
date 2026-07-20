@@ -27,11 +27,13 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
   ``AlgorithmComposer(preprocessors=[], block_quantizer=q)``, which is
   semantically identical to the current direct-quantizer path.
 """
+
 from __future__ import annotations
-import torch
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Union
+
+import torch
 
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
@@ -88,6 +90,7 @@ register_diffusion_output("WanTransformerBlock", ["hidden_states"])
 # ---------------------------------------------------------------------------
 # BlockRunner  (建议3 / Suggestion 3)
 # ---------------------------------------------------------------------------
+
 
 # TODO wenhuach better follow heng's imp to decouple llm/diffusion
 class BlockForwardRunner:
@@ -194,7 +197,7 @@ class BlockForwardRunner:
             device = inputs.device
 
         if indices is None:
-             indices = torch.arange(num_samples, dtype=torch.long, device=device)
+            indices = torch.arange(num_samples, dtype=torch.long, device=device)
         elif not isinstance(indices, torch.Tensor):
             indices = torch.tensor(indices, dtype=torch.long, device=device)
         else:
@@ -409,7 +412,8 @@ class BlockContext:
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
 
-#TODO move the pipeline to here
+
+# TODO move the pipeline to here
 @dataclass
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer.
@@ -506,8 +510,7 @@ class AlgorithmComposer:
                 block_quantizers.append(q)
             else:
                 raise TypeError(
-                    f"Algorithm class {type(q).__name__} must inherit either "
-                    "BasePreprocessor or BaseQuantizer."
+                    f"Algorithm class {type(q).__name__} must inherit either " "BasePreprocessor or BaseQuantizer."
                 )
 
         if len(block_quantizers) > 1:
