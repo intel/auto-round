@@ -52,7 +52,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockContext
+    from auto_round.algorithms.composer import BlockContext
 
 
 # Known normalization classes whose ``forward`` computes

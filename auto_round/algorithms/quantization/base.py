@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockContext
+    from auto_round.algorithms.composer import BlockContext
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -183,34 +183,28 @@ class BaseQuantizer(BaseAlgorithm):
 
     def quantize_layer_outside_block(
         self,
-        layer_name: str,
+        layer: "torch.nn.Module",
         fp_input: "list[torch.Tensor] | None" = None,
         q_input: "list[torch.Tensor] | None" = None,
         disable_opt_rtn: "bool | None" = None,
         valid_token_mask: "list[torch.Tensor] | None" = None,
-        **kwargs,
     ) -> None:
         """Quantize a single layer outside a transformer block using RTN fallback.
         Args:
-            layer_name:       Fully-qualified module name (e.g. ``"model.lm_head"``).
+            layer:            The layer module to quantize.  Must have a
+                              ``global_name`` attribute for model re-insertion.
             fp_input:         Optional FP calibration inputs; unused in base RTN.
             q_input:          Optional quantized activations; unused in base RTN.
             disable_opt_rtn:  ``True`` skips optimized-RTN scale/zp search.
                               ``None`` defers to ``self.config.disable_opt_rtn``.
             valid_token_mask: Per-sample masks; unused in base RTN.
-            **kwargs:         Recognized key: ``dtype`` (torch.dtype) to cast the
-                              layer before quantization.
         """
-        dtype = kwargs.pop("dtype", None)
-        if dtype is not None:
-            layer = get_module(self.model, layer_name)
-            set_module(self.model, layer_name, layer.to(dtype))
-        self._quantize_layer_via_rtn(layer_name, disable_opt_rtn=disable_opt_rtn)
+        self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
     @torch.no_grad()
-    def _quantize_layer_via_rtn(self, layer_name: str, disable_opt_rtn: "bool | None" = None) -> None:
+    def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
         """Quantize one layer with RTN (with optional optimized scale/zp search)."""
-        layer = get_module(self.model, layer_name)
+        layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device

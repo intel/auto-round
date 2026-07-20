@@ -85,7 +85,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
         if (
-            hasattr(self, "scheme")
+            self.scheme is not None
             and self.scheme.data_type
             and ("nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type)
         ):
@@ -161,4 +161,4 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer_outside_block(m.global_name)
+                self.quantize_layer_outside_block(m)

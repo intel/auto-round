@@ -21,7 +21,7 @@ import torch
 from auto_round.algorithms.registry import resolve_pipeline_member
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockForwardRunner
+    from auto_round.algorithms.composer import BlockForwardRunner
     from auto_round.calibration.state import CalibrationContext
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
@@ -53,7 +53,6 @@ class QuantizationRunContext:
     model_context: "ModelContext"
     compress_context: "CompressContext"
     calibration_context: "CalibrationContext | None" = None
-    block_forward_runner: "BlockForwardRunner | None" = None
     scale_dtype: "torch.dtype | None" = None
     scheme: "QuantizationScheme | None" = None
 
@@ -71,6 +70,7 @@ class BaseAlgorithm:
         self.config = config
         # Name-mangled so subclasses cannot accidentally overwrite the run context.
         self.__run_ctx: QuantizationRunContext | None = None
+        self.__block_forward_runner: BlockForwardRunner | None = None
 
     @classmethod
     def from_config(cls, config: Any) -> "BaseAlgorithm":
@@ -89,10 +89,15 @@ class BaseAlgorithm:
             model_context=compressor.model_context,
             compress_context=compressor.compress_context,
             calibration_context=getattr(compressor, "calibration_context", None),
-            block_forward_runner=getattr(compressor, "block_forward", None),
             scale_dtype=getattr(compressor, "scale_dtype", None),
             scheme=getattr(compressor, "scheme_context", None),
         )
+
+    def bind_block_forward_runner(self, block_forward_runner: "type[BlockForwardRunner]") -> None:
+        """Bind a shared :class:`~auto_round.algorithms.pipeline.BlockForwardRunner`
+        class to the algorithm.  Called once before block iteration starts.
+        """
+        self.__block_forward_runner = block_forward_runner
 
     # ── Read-only context accessors ───────────────────────────────────────────
     @property
@@ -110,7 +115,7 @@ class BaseAlgorithm:
     @property
     def block_forward(self) -> "BlockForwardRunner | None":
         """The shared :class:`~auto_round.algorithms.pipeline.BlockForwardRunner` instance."""
-        return self.__run_ctx.block_forward_runner if self.__run_ctx is not None else None
+        return self.__block_forward_runner if self.__block_forward_runner is not None else None
 
     @property
     def scale_dtype(self) -> "torch.dtype | None":

@@ -904,20 +904,14 @@ class BaseCompressor(object):
 
         self._hardware_setup()
 
-        # Create the shared block-forward engine (used by both compressor and quantizer).
-        from auto_round.algorithms.pipeline import BlockForwardRunner
-
-        # Must before _build_quantizer, because BlockForwardRunner is used in AlgorithmComposer
-        self.block_forward = BlockForwardRunner.from_compressor(self)
-
-        # Must place after block foward
-        self._build_quantizer()
-
+        # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
+        # so _build_composer must run first.
+        self._build_composer()
 
         # Not a good design, reset torch compile setting in block_forward
         if self.enable_torch_compile:
-            if not self.quantizer.is_support_compile_block(): # TODO support multiple quantizer later
-                self.block_forward.is_support_compile_block = True
+            if not self.quantizer.is_support_compile_block():  # TODO support multiple quantizer later
+                self.pipeline.block_forward.is_support_compile_block = True
 
         # Set block_forward torch compile for block forward
         # Final trim after all init phases.
@@ -953,7 +947,7 @@ class BaseCompressor(object):
             dataset=self._get_calibration_dataset(),
         )
 
-    def _build_quantizer(self) -> None:
+    def _build_composer(self) -> None:
         """Phase 1b – Quantizer construction and wiring.
 
         Preconditions:
@@ -979,35 +973,15 @@ class BaseCompressor(object):
           - ``self.quantizer`` (via property) is ready and shares ``CalibrationContext``
             with the compressor.
         """
-        from auto_round.algorithms.pipeline import AlgorithmComposer
+        from auto_round.algorithms.composer import AlgorithmComposer
 
-        self._pipeline = AlgorithmComposer.from_configs(self._alg_configs, compressor=self)
+        self._alg_composer = AlgorithmComposer(self._alg_configs, compressor=self)
 
-    @property
-    def quantizer(self) -> BaseQuantizer:
-        """Transparent forwarder to ``self.pipeline.block_quantizer``.
-
-        All existing ``self.quantizer.xxx`` call-sites continue to work
-        unchanged.  New code should prefer ``self.pipeline`` for pipeline-aware
-        operations.
-        """
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
-            return _pipeline.block_quantizer
-        return self.__dict__["_quantizer"]
-
-    @quantizer.setter
-    def quantizer(self, value: BaseQuantizer) -> None:
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
-            _pipeline.block_quantizer = value
-        else:
-            self.__dict__["_quantizer"] = value
 
     @property
-    def pipeline(self) -> Any:
+    def alg_composer(self) -> Any:
         """The active :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`."""
-        return self._pipeline
+        return self._alg_composer
 
     def _resolve_formats(self) -> None:
         """Phase 2 – Format resolution and config attr sync.

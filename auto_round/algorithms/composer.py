@@ -389,7 +389,7 @@ class BlockContext:
     """
 
     model: "torch.nn.Module"
-    block: "torch.nn.Module"
+    # block: "torch.nn.Module"
     block_names: list[str]  # scheduling group; len > 1 when nblocks > 1
     block_name: str  # = block_names[0] for single-block; descriptive label for multi
     block_index: int  # 0-based index within the current all_blocks group
@@ -398,72 +398,50 @@ class BlockContext:
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
-    modified_fp_params: list = field(default_factory=list)
 
-    def mark_modified_fp_params(self, param_names: list[str]) -> None:
-        """Called by preprocessors to declare which FP params were modified in-place."""
-        self.modified_fp_params.extend(param_names)
+
+    # def mark_modified_fp_params(self, param_names: list[str]) -> None:
+    #     """Called by preprocessors to declare which FP params were modified in-place."""
+    #     self.modified_fp_params.extend(param_names)
 
 
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
 
-#TODO move the pipeline to here
-@dataclass
 class AlgorithmComposer:
-    """An ordered composition of pre-processors + one block quantizer.
+    """An ordered composition of pre-processors + one block quantizer, built from
+    a list of algorithm config objects and an optional compressor.
 
     The ``preprocessors`` list is order-sensitive: algorithms are applied in
     the listed order (e.g. ``[Rotation, AWQ]``).  There must be **exactly one**
     ``block_quantizer`` (the terminal weight-compression step).
 
-    The bundle is a *declaration* of which algorithms to apply and in what order;
-    the actual execution (block iteration, ``prepare_run`` calls, etc.) is
-    orchestrated by the :class:`~auto_round.compressors.base.Compressor`.
+    Usage::
 
-    Single-algorithm use:
-        ``AlgorithmComposer(preprocessors=[], block_quantizer=rtn_quantizer)``
-        is semantically equivalent to the current direct-quantizer path; the
-        compressor's existing ``self.quantizer`` call-sites are transparently
-        forwarded to ``block_quantizer`` via a ``@property``.
+        composer = AlgorithmComposer(configs, compressor=self)
     """
 
-    preprocessors: list["BasePreprocessor"] = field(default_factory=list)
-    block_quantizer: "BaseQuantizer" = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.block_quantizer is None:
-            raise ValueError("AlgorithmComposer requires a non-None block_quantizer.")
-        from auto_round.algorithms.quantization.base import BaseQuantizer
-        from auto_round.algorithms.transforms.base import BasePreprocessor
-
-        for q in self.preprocessors:
-            if not isinstance(q, BasePreprocessor):
-                raise TypeError(
-                    f"{type(q).__name__} is listed as a preprocessor but does not inherit BasePreprocessor."
-                )
-        if not isinstance(self.block_quantizer, BaseQuantizer):
-            raise TypeError(
-                f"{type(self.block_quantizer).__name__} is used as block_quantizer but does not "
-                f"inherit BaseQuantizer."
-            )
-
-    def members(self) -> "list[BaseAlgorithm]":
-        """Return all members in pipeline order: preprocessors then block_quantizer."""
-        return [*self.preprocessors, self.block_quantizer]
-
-    @classmethod
-    def from_configs(cls, configs: list, compressor: Any = None) -> "AlgorithmComposer":
-        """Construct an ``AlgorithmComposer`` from a list of algorithm config instances.
+    def __init__(self, configs: list, compressor: Any = None) -> None:
+        """Build the pipeline from a list of algorithm config instances.
 
         Resolution rules:
-        1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in *configs*,
-           a default :class:`RTNConfig` is appended automatically.
-        2. Instances of ``BasePreprocessor`` go into ``preprocessors`` (in order).
+
+        1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in
+           *configs*, a default :class:`RTNConfig` is appended automatically.
+        2. ``BasePreprocessor`` instances go into ``preprocessors`` (in order).
         3. Exactly one ``BaseQuantizer`` becomes ``block_quantizer``.
         4. Multiple block-quantization configs raise ``ValueError``.
-        5. If ``compressor`` is provided, every member is bound to it.
+        5. If *compressor* is provided, every member is bound to it and
+           ``block_forward`` / quantization metadata are extracted from it.
+
+        Args:
+            configs:    List of algorithm config objects (``QuantizationConfig``
+                        subclasses such as :class:`RTNConfig`, :class:`SignRoundConfig`,
+                        :class:`AWQConfig`, …).
+            compressor: The :class:`~auto_round.compressors.base.BaseCompressor`
+                        instance driving this pipeline.  When supplied, members are
+                        bound to it and ``block_forward`` is taken from it.
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -471,32 +449,24 @@ class AlgorithmComposer:
 
         configs = list(configs)
 
-        # Ensure at least one terminal block quantizer is present; fall back to RTN.
         _, block_quantizer_configs = split_quantization_configs(configs)
-        has_quantizer = bool(block_quantizer_configs)
-        if not has_quantizer:
+        if not block_quantizer_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig
-
-            configs = list(configs) + [RTNConfig()]
+            configs = configs + [RTNConfig()]
 
         configs = resolve_shared_config_values(configs)
 
-        def _resolve_cls(cfg):
-            alg_cls = get_algorithm_class(cfg)
-            if alg_cls is None:
-                raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
-            return alg_cls
-
-        preprocessors = []
-        block_quantizers = []
+        preprocessors: list = []
+        block_quantizers: list = []
 
         for cfg in configs:
             if not isinstance(cfg, QuantizationConfig):
                 continue
             from auto_round.algorithms.registry import normalize_algorithm_config
-
             cfg = normalize_algorithm_config(cfg)
-            alg_cls = _resolve_cls(cfg)
+            alg_cls = get_algorithm_class(cfg)
+            if alg_cls is None:
+                raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
             q = alg_cls(cfg)
             if compressor is not None:
                 q.bind(compressor)
@@ -517,20 +487,312 @@ class AlgorithmComposer:
                 f"{[type(q).__name__ for q in block_quantizers]}. "
                 "Ensure only one of RTNConfig / SignRoundConfig / etc. is in the pipeline."
             )
+        if len(block_quantizers) == 0:
+            raise ValueError("No block quantizer found in configs.")
 
-        seen_preprocessors = set()
-        for preprocessor in preprocessors:
-            name = type(preprocessor).__name__
-            if name in seen_preprocessors:
+        seen = set()
+        for pre in preprocessors:
+            name = type(pre).__name__
+            if name in seen:
                 raise ValueError(
                     f"Duplicate preprocessor {name} in AlgorithmComposer. "
                     "Repeated instances of the same preprocessor are not supported yet."
                 )
-            seen_preprocessors.add(name)
+            seen.add(name)
 
-        return cls(preprocessors=preprocessors, block_quantizer=block_quantizers[0])
+        self.preprocessors = preprocessors
+        #TODO wenhuach support multi quantizers
+        self.block_quantizer = block_quantizers[0]
+
+        # Bind compressor-level infrastructure (set before _build_quantizer is called).
+        # TODO wenhuach refine
+        self.block_forward = BlockForwardRunner.from_compressor(compressor) if compressor is not None else None
+        # A little tricky
+        self.block_quantizer.bind_block_forward_runner(self.block_forward)
+        self.scheme = getattr(compressor, "scheme_context", None)
+
+    # ── Internal hook helpers (act_max calibration) ───────────────────────────
+
+    def _register_act_max_hooks(self, block: "torch.nn.Module") -> list:
+        """Register per-module act_max tracking hooks for static activation quantization.
+
+        Returns a list of hook handles that the caller must remove when done.
+        """
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+
+        is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
+
+        def collect_act_max(module, input, output):
+            input = input[0] if isinstance(input, (tuple, list)) else input
+            if input.numel() == 0:
+                return
+            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+                if is_act_nv_fp:
+                    max_val = act_max.max()
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                return
+            act_max = act_max.to(module.act_max.device)
+            if is_act_nv_fp:
+                max_val = torch.max(act_max.max(), module.act_max.max())
+                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                module.act_max = torch.max(act_max, module.act_max)
+
+        def should_collect(name, module):
+            from auto_round.compressors.utils import check_need_act_calibration
+            from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
+
+            if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
+                return (
+                    hasattr(module, "act_dynamic")
+                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+                    and check_to_quantized(module)
+                )
+            if hasattr(module,"bits"):
+                act_dynamic = getattr(module,"act_dynamic", True)
+                act_data_type = getattr(module, "act_data_type", None)
+                act_bits = getattr(module, "act_bits", 16)
+                return (
+                    module.bits <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                    and check_to_quantized(module)
+                )
+            return False
+
+        handles = []
+        if should_collect("", block):
+            handles.append(block.register_forward_hook(collect_act_max))
+            return handles
+        for name, module in block.named_modules():
+            if name and should_collect(name, module):
+                handles.append(module.register_forward_hook(collect_act_max))
+        return handles
+
+    def _get_fp_act_hooks(self, block: "torch.nn.Module") -> list:
+        """Register FP-input act_max + quantizer forward hooks."""
+        handles = self._register_act_max_hooks(block)
+        handles.extend(self.block_quantizer.register_fp_input_forward_hooks(block))
+        return handles
+
+    def _get_q_act_hooks(self, block: "torch.nn.Module") -> list:
+        """Register Q-input act_max + quantizer forward hooks."""
+        handles = self._register_act_max_hooks(block)
+        handles.extend(self.block_quantizer.register_qinput_forward_hooks(block))
+        return handles
+
+    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_input, q_input) -> None:
+        """Compute and attach act_max for an outside-block layer from cached inputs.
+
+        Mirrors the hook-based act_max collection done for in-block layers, but
+        iterates over already-cached tensors directly instead of running a forward pass.
+
+        Args:
+            layer: The layer module to attach act_max to.
+            fp_input: List of FP input tensors collected during calibration.
+            q_input: Optional list of quantized input tensors; used instead of
+                ``fp_input`` when provided.
+        """
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.compressors.utils import is_nv_fp
+
+        target_input = q_input if q_input else fp_input
+        act_group_size = getattr(layer, "act_group_size", -1)
+        act_data_type = getattr(layer, "act_data_type", None)
+        is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
+
+        for inp in target_input:
+            if isinstance(inp, (tuple, list)):
+                inp = inp[0]
+            if inp.numel() == 0:
+                continue
+            inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
+            act_max = torch.max(torch.abs(inp), dim=-1).values
+
+            if not hasattr(layer, "act_max") or layer.act_max.numel() == 0:
+                layer.act_max = act_max
+                if is_act_nv_fp_flag:
+                    max_val = act_max.max()
+                    layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                continue
+
+            act_max = act_max.to(layer.act_max.device)
+            if is_act_nv_fp_flag:
+                max_val = torch.max(act_max.max(), layer.act_max.max())
+                layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                layer.act_max = torch.max(act_max, layer.act_max)
+
+
+    def compress_embedding_layer(self):
+        self.block_quantizer.quantize_embedding_layer()
+
+    # ── Per-block pipeline orchestration ─────────────────────────────────────
+
+    def compress_block(
+        self,
+        block: "torch.nn.Module",
+        input_ids,
+        input_others: dict,
+        ctx: "BlockContext",
+        *,
+        q_input=None,
+        valid_token_mask=None,
+    ) -> tuple:
+        """Run the full per-block algorithm pipeline: calibration → quantization → collection.
+
+        Orchestrates preprocessors, quantizer calibration, and block quantization in
+        the canonical order.  Infrastructure concerns (device management, memory cleanup,
+        q_input variable reassignment) remain the caller's responsibility.
+
+        The interface mirrors :meth:`~auto_round.algorithms.quantization.base.BaseQuantizer.quantize_block`
+        but covers the entire multi-step pipeline including preprocessor calibration and
+        output collection.
+
+        Args:
+            block: The transformer block to process.
+            input_ids: Full-precision (FP) cached inputs.
+            input_others: Auxiliary kwargs (attention_mask, position_ids, …).
+            ctx: Per-block lifecycle context (:class:`BlockContext`).
+            q_input: Quantized-input tensors from the previous block, or ``None``.
+            valid_token_mask: Optional mask for per-token loss weighting.
+
+        Returns:
+            ``(new_q_input, reference_output)``:
+
+            - *new_q_input*: block output after quantization (``None`` when
+              ``enable_quanted_input`` is ``False``).
+            - *reference_output*: FP reference output collected before optimization.
+        """
+        block_forward_fn = self.block_forward
+
+        # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
+        with torch.no_grad():
+            pre_hooks = []
+            for pre in self.preprocessors:
+                pre_hooks.extend(pre.register_fp_input_forward_hooks(block))
+            if pre_hooks:
+                block_forward_fn(block, input_ids, input_others)
+            for h in pre_hooks:
+                h.remove()
+
+            pre_q_hooks = []
+            for pre in self.preprocessors:
+                if hasattr(pre, "register_qinput_forward_hooks"):
+                    pre_q_hooks.extend(pre.register_qinput_forward_hooks(block))
+            if pre_q_hooks:
+                block_forward_fn(block, q_input if q_input is not None else input_ids, input_others)
+            for h in pre_q_hooks:
+                h.remove()
+
+        # ── Step 2: pre_quantize_block (stats consolidation + weight transforms) ──
+        for pre in self.preprocessors:
+            pre.pre_quantize_block(ctx)
+
+        # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
+        with torch.no_grad():
+            quant_hooks = self._get_fp_act_hooks(block)
+            reference_output = block_forward_fn(block, input_ids, input_others)
+            for h in quant_hooks:
+                h.remove()
+
+            if self.block_quantizer.enable_quanted_input:
+                q_hooks = self._get_q_act_hooks(block)
+                if q_hooks:
+                    block_forward_fn(block, q_input if q_input is not None else input_ids, input_others)
+                    for h in q_hooks:
+                        h.remove()
+
+        # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
+        # Must run after calibration hooks (act_max collected) and before quantize_block.
+        act_data_type = self.scheme.act_data_type if self.scheme else None
+        act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
+        data_type = self.scheme.data_type if self.scheme else None
+        group_size = self.scheme.group_size if self.scheme else -1
+        if act_data_type is not None or not act_dynamic:
+            from auto_round.compressors.utils import is_nv_fp
+            from auto_round.data_type.utils import update_block_global_scale_if_needed
+            from auto_round.utils import set_amax_for_all_moe_layers
+
+            if is_nv_fp(act_data_type) or not act_dynamic:
+                set_amax_for_all_moe_layers(block, attr_name="act_max")
+            update_block_global_scale_if_needed(ctx.model, data_type, group_size)
+
+        # ── Step 4: quantize_block ──────────────────────────────────────────────
+        # When quantized input is available from the previous block, use it;
+        # otherwise fall back to the FP input.
+        effective_input = q_input if q_input is not None else input_ids
+        self.block_quantizer.quantize_block(
+            block, effective_input, input_others, reference_output, q_input, ctx,
+            valid_token_mask=valid_token_mask,
+        )
+
+        # ── Step 5: post_quantize_block ─────────────────────────────────────────
+        for pre in self.preprocessors:
+            pre.post_quantize_block(ctx)
+
+        # ── Step 6: Collect quantized-block outputs for the next block ──────────
+        if self.block_quantizer.enable_quanted_input:
+            with torch.no_grad():
+                new_q_input = block_forward_fn(block, effective_input, input_others)
+        else:
+            new_q_input = None
+
+        return new_q_input, reference_output
+
+    def compress_layer_outside_block(
+        self,
+        layer: "torch.nn.Module",
+        fp_input=None,
+        q_input=None,
+        valid_token_mask=None,
+        disable_opt_rtn=None, #TODO wenhuach rename this to search_init_scale
+    ) -> None:
+        """Quantize a single layer that lives outside transformer blocks.
+
+        Mirrors :meth:`compress_block` for the outside-block case: attaches
+        act_max calibration when static activation quantization is required,
+        then delegates to the block quantizer.
+
+        Args:
+            layer: The layer module to quantize. Must have a ``global_name``
+                attribute.
+            fp_input: Per-sample FP activations for calibration, or ``None``
+                to fall back to zero-shot RTN.
+            q_input: Optional quantized activations from a previous stage.
+            valid_token_mask: Per-sample token masks for loss weighting.
+            disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
+        """
+        # Attach act_max for static activation quantization when inputs are available.
+        if fp_input is not None:
+            from auto_round.compressors.utils import is_nv_fp
+
+            act_data_type = getattr(layer, "act_data_type")
+            if act_data_type is None:
+                act_data_type = "fp"
+            act_dynamic = getattr(layer, "act_dynamic", True)
+            if is_nv_fp(act_data_type) or not act_dynamic:
+                self._attach_act_max_for_outside_layer(layer, fp_input, q_input)
+
+        # Infrastructure: move layer to the tuning device before handing off to the quantizer.
+        device = getattr(layer, "tuning_device", device_manager.device)#TODO this should be handled by compressor
+        layer = layer.to(device)
+
+        self.block_quantizer.quantize_layer_outside_block(
+            layer,
+            fp_input=fp_input,
+            q_input=q_input,
+            valid_token_mask=valid_token_mask,
+            disable_opt_rtn=disable_opt_rtn,
+        )
 
     # ── Convenience act-calib helpers ────────────────────────────────────────
+
+    def members(self) -> list:
+        """Return all algorithm members: preprocessors followed by the block quantizer."""
+        return list(self.preprocessors) + [self.block_quantizer]
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Dispatch block to device(s) via the pipeline's algorithms.
@@ -559,3 +821,12 @@ class AlgorithmComposer:
         if overriders:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
+
+    def prepare_run(self):
+        for alg in self.members():
+            alg.prepare_run(self)
+
+
+    def finalize_run(self):
+        for alg in self.members():
+            alg.finalize_run(self)

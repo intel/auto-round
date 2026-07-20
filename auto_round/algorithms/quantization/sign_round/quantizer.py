@@ -41,7 +41,7 @@ from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockContext
+    from auto_round.algorithms.composer import BlockContext
 
 
 @register_pipeline_member(SignRoundConfig)
@@ -353,13 +353,11 @@ class SignRoundQuantizer(BaseQuantizer):
 
     def quantize_layer_outside_block(
         self,
-        layer_name: str,
+        layer: "torch.nn.Module",
         fp_input: Optional[list[torch.Tensor]] = None,
         q_input: Optional[list[torch.Tensor]] = None,
-        device: str = "cpu",
-        dtype: Optional[torch.dtype] = None,
         valid_token_mask: Optional[list[torch.Tensor]] = None,
-        **kwargs,
+        disable_opt_rtn: Optional[bool] = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
@@ -368,8 +366,8 @@ class SignRoundQuantizer(BaseQuantizer):
         ``fp_input`` is ``None`` the method falls back to zero-shot RTN.
 
         Args:
-            layer_name: Fully-qualified module name of the layer to quantize
-                (e.g. ``"model.lm_head"``).
+            layer: The layer module to quantize.  Must have a ``global_name``
+                attribute for model re-insertion and logging.
             fp_input: Per-sample FP activations fed into this layer, used as
                 calibration inputs during optimization. ``None`` triggers RTN
                 fallback.
@@ -377,37 +375,26 @@ class SignRoundQuantizer(BaseQuantizer):
                 used instead of ``fp_input`` during the forward pass when
                 cascaded quantized-input is enabled. ``None`` means use
                 ``fp_input`` for both reference and tuning forward.
-            device: Target device string for running the optimization
-                (e.g. ``"cuda:0"``). Defaults to ``"cpu"``.
-            dtype: Optional dtype to cast the layer to before quantization.
-                ``None`` keeps the existing dtype.
             valid_token_mask: Per-sample boolean/int masks of shape
                 ``[1, seq_len]`` indicating valid (non-padding) token positions.
                 ``1`` means valid, ``0`` means padding. ``None`` if no masking
                 is needed. Forwarded to the loss computation to weight out
                 padding tokens.
-            **kwargs: Additional keyword arguments forwarded to
-                :meth:`quantize_layer_via_rtn` (e.g. ``disable_opt_rtn``).
+            disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
         """
+
+        layer_name = layer.global_name
         if fp_input is None:
             logger.info(f"using rtn to quantize {layer_name}")
-            if dtype is not None:
-                layer = get_module(self.model, layer_name)
-                set_module(self.model, layer_name, layer.to(dtype))
             self._quantize_layer_via_rtn(
-                layer_name,
-                disable_opt_rtn=kwargs.get("disable_opt_rtn", getattr(self.config, "disable_opt_rtn", True)),
+                layer,
+                disable_opt_rtn=disable_opt_rtn if disable_opt_rtn is not None else getattr(self.config, "disable_opt_rtn", True),
             )
             return
 
         logger.info(f"quantizing layer {layer_name}")
-        layer = get_module(self.model, layer_name)
-        if dtype is not None:
-            layer = layer.to(dtype)
-        if hasattr(layer, "tuning_device"):
-            device = layer.tuning_device
-
-        layer = layer.to(device)
+        # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
+        device = layer.weight.device if hasattr(layer, "weight") else device_manager.device
         for i in range(len(fp_input)):
             fp_input[i] = fp_input[i].to(layer.weight.dtype)
             if q_input is not None:
