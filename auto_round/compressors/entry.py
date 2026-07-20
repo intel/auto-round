@@ -471,16 +471,11 @@ class PipelineCompressor(object):
 
         # Preprocessor algorithms (AWQ, …) require a data-driven host so that
         # the per-block preprocessor lifecycle (prepare_block_group ->
-        # block_forward_hooks -> pre_quantize_block -> pre_quantize_block ->
-        # post_quantize_block) actually runs.  CalibratedRTNCompressor's
-        # Preprocessor algorithms require DataDrivenCompressor for per-block lifecycle hooks.
-        # The pipeline auto-appends RTN when no block_quantizer is supplied.
-        if preprocessor_configs:
+        # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
+        # actually runs; the pipeline auto-appends RTN when no block_quantizer
+        # is supplied. SignRound is itself data-driven and shares the same host.
+        if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
             return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **ctor_kwargs)
-
-        if isinstance(quant_config, SignRoundConfig):
-            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **ctor_kwargs)
-
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
             return _get_compressor_class(model_type, base_cls)(alg_configs, **local_args, **ctor_kwargs)
