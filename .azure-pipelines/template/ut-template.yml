@@ -32,6 +32,9 @@ parameters:
   - name: buildARKWheel
     type: string
     default: "false"
+  - name: failureLogArtifactPrefix
+    type: string
+    default: "ut-failure-log"
 
 
 steps:
@@ -112,14 +115,22 @@ steps:
       artifact: ${{ parameters.utArtifact }}_coverage
       publishLocation: "pipeline"
     displayName: "Publish UT coverage artifact"
-
-  - task: PublishPipelineArtifact@1
+  
+  - script: |
+      if [ -d "${{ parameters.uploadPath }}/failure_logs_dir" ]; then
+        echo "##vso[task.setvariable variable=FailureLogsExist]true"
+      else
+        echo "##vso[task.setvariable variable=FailureLogsExist]false"
+      fi
+    displayName: "Check failure logs directory"
     condition: failed()
+  
+  - task: PublishPipelineArtifact@1
+    condition: and(failed(), eq(variables['FailureLogsExist'], 'true'))
     inputs:
-      targetPath: ${{ parameters.uploadPath }}
-      artifact: "${{ parameters.utArtifact }}-$(System.JobAttempt)"
+      targetPath: ${{ parameters.uploadPath }}/failure_logs_dir
+      artifact: "${{ parameters.failureLogArtifactPrefix }}-${{ parameters.utTestMode }}-$(System.JobAttempt)"
       publishLocation: "pipeline"
-    displayName: "Publish UT logs for debugging"
 
   - task: Bash@3
     condition: always()

@@ -32,6 +32,7 @@ ba = "ba"
 ue = "ue"
 endianess = "endianess"
 thw = "thw"
+mis = "mis"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

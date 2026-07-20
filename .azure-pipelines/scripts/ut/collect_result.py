@@ -1,7 +1,10 @@
 """Log analyzer for test results with summary generation."""
 
 import argparse
+import json
+import os
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -210,12 +213,131 @@ class ReportGenerator:
         )
 
 
+class FailureContextWriter:
+    """Extract compact failure context for downstream AI analysis."""
+
+    TRACEBACK_MARKERS = ("Traceback", "== FAILURES ==", "== ERRORS ==", "core dumped", "Killed")
+
+    def __init__(self, log_dir: Path, max_lines: int = 200):
+        self.log_dir = Path(log_dir)
+        self.max_lines = max_lines
+
+    def write(
+        self,
+        output_path: Path,
+        results: list[TestResult],
+        test_type: str,
+        failure_log_dir: Path | None = None,
+    ) -> None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        failed_results = [r for r in results if r.status == TestStatus.FAILED]
+        failures = [self._to_failure_entry(result) for result in failed_results]
+
+        payload = {
+            "schema_version": "1.0",
+            "test_type": test_type,
+            "build": {
+                "build_id": os.environ.get("BUILD_BUILDID", ""),
+                "build_number": os.environ.get("BUILD_BUILDNUMBER", ""),
+                "source_commit": os.environ.get(
+                    "SYSTEM_PULLREQUEST_SOURCECOMMITID", os.environ.get("BUILD_SOURCEVERSION", "")
+                ),
+                "pr_number": os.environ.get("SYSTEM_PULLREQUEST_PULLREQUESTNUMBER", ""),
+            },
+            "stats": {
+                "total": len(results),
+                "failed": len(failed_results),
+            },
+            "failures": failures,
+        }
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        print(f"Failure context written to: {output_path.absolute()}", file=sys.stderr)
+
+        target_log_dir = Path(failure_log_dir) if failure_log_dir else output_path.parent / "failure_logs_dir"
+        self._collect_failure_logs(target_log_dir, failed_results)
+
+    def _to_failure_entry(self, result: TestResult) -> dict:
+        log_path = self.log_dir / result.filename
+        content = self._read_file(log_path)
+        lines = content.splitlines()
+        excerpt = self._extract_excerpt(lines)
+
+        return {
+            "test_name": result.name,
+            "status": result.status.name,
+            "log_file": result.filename,
+            "duration": result.duration,
+            "excerpt": excerpt,
+        }
+
+    def _read_file(self, path: Path) -> str:
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    def _extract_excerpt(self, lines: list[str]) -> str:
+        if not lines:
+            return ""
+
+        selected = []
+        for marker in self.TRACEBACK_MARKERS:
+            for idx, line in enumerate(lines):
+                if marker in line:
+                    if marker == "Traceback":
+                        start = max(0, idx - 10)
+                        max_end = min(len(lines) - 1, idx + 80)
+                        scan_end = min(len(lines), idx + 80)
+                        failed_end = None
+                        for j in range(idx, scan_end):
+                            if "FAILED" in lines[j]:
+                                failed_end = j + 1
+                                break
+                        end = min(max_end, failed_end) if failed_end is not None else max_end
+                    else:
+                        start = max(0, idx)
+                        end = min(len(lines) - 1, idx + 80)
+                    selected = lines[start:end]
+                    break
+            if selected:
+                break
+
+        if not selected:
+            selected = lines[-self.max_lines : -1]
+
+        return "\n".join(selected[: self.max_lines])
+
+    def _collect_failure_logs(
+        self,
+        target_dir: Path,
+        failed_results: list[TestResult],
+    ) -> None:
+        if not failed_results:
+            return
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        for result in failed_results:
+            src_log = self.log_dir / result.filename
+            if src_log.exists():
+                shutil.copy2(src_log, target_dir / result.filename)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze test logs and generate summary")
     parser.add_argument("--test-type", required=True, help="Type of tests")
     parser.add_argument("--log-dir", required=True, type=Path, help="Directory with logs")
     parser.add_argument("--summary-log", required=True, type=Path, help="Output file")
     parser.add_argument("--log-pattern", default="*.log", help="Glob pattern")
+    parser.add_argument("--failure-context-file", type=Path, help="Optional output file for failure context JSON")
+    parser.add_argument("--failure-context-max-lines", type=int, default=200, help="Max lines per failed case")
+    parser.add_argument("--failure-log-dir", type=Path, help="Optional output folder for failed logs package")
 
     args = parser.parse_args()
 
@@ -235,7 +357,18 @@ def main():
             "passed": sum(1 for r in results if r.status == TestStatus.PASSED),
             "failed": sum(1 for r in results if r.status == TestStatus.FAILED),
         }
+
         print(f"Done: {stats['total']} tests, {stats['passed']} passed, {stats['failed']} failed")
+
+        if args.failure_context_file and stats["failed"] > 0:
+            print("Generating failure context used for AI analysis", file=sys.stderr)
+            context_writer = FailureContextWriter(args.log_dir, max_lines=args.failure_context_max_lines)
+            context_writer.write(
+                args.failure_context_file,
+                results,
+                test_type=args.test_type,
+                failure_log_dir=args.failure_log_dir,
+            )
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

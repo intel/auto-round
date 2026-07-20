@@ -1,13 +1,28 @@
 #!/bin/bash
-set -e
+set -ex
 
 test_part=$1
-
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 
 LOG_DIR=/auto-round/log_dir
+FAILURE_LOG_DIR=/auto-round/log_dir/failure_logs_dir
 mkdir -p "${LOG_DIR}"
+mkdir -p "${FAILURE_LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+
+function setup_inc_environment() {
+    echo "##[group]set up INC UT env..."
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt
+    echo "##[endgroup]"
+}
+
+function setup_llmc_environment() {
+    echo "##[group]set up LLMC UT env..."
+    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt
+    uv pip uninstall auto-round
+    cd /auto-round && uv pip install .
+    echo "##[endgroup]"
+}
 
 function setup_environment() {
     echo "##[group]set up UT env..."
@@ -62,11 +77,40 @@ function check_storage_usage() {
     echo "##[endgroup]"
 }
 
+function run_test_cases() {
+    local tests=("$@")
+    if [[ ${#tests[@]} -eq 0 ]]; then
+        return
+    fi
+
+    cd /auto-round || exit 1
+
+    for test_case in "${tests[@]}"; do
+        if [[ -z "${test_case}" ]]; then
+            continue
+        fi
+
+        local test_path
+        test_path="${test_case%%::*}"
+        local test_basename
+        test_basename=$(basename "${test_path}" .py)
+        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
+
+        echo "##[group]Running ${test_case}..."
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            python -m pytest --cov=auto_round --cov-report= --cov-append \
+                -vs --disable-warnings "${test_case}" 2>&1 | tee "${ut_log_name}"
+        echo "##[endgroup]"
+    done
+}
+
 function run_unit_test() {
-    cd /auto-round/test || exit 1
+    local -a selected_cases=()
+
+    cd /auto-round || exit 1
 
     # Split test files into 5 parts
-    find ./test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
+    find ./test/test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=5
     q=$(( total_lines / NUM_CHUNKS ))
@@ -79,65 +123,46 @@ function run_unit_test() {
         start_line=$(( r * (q + 1) + (test_part - r - 1) * q + 1 ))
     fi
     end_line=$(( start_line + chunk_size - 1 ))
-    selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
-
-    for test_file in ${selected_files}; do
-        echo "##[group]Running ${test_file}..."
-        local test_basename=$(basename ${test_file} .py)
-        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
-
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
-                -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
-    done
+    mapfile -t selected_cases < <(sed -n "${start_line},${end_line}p" all_tests.txt)
+    run_test_cases "${selected_cases[@]}"
 }
 
 function run_inc_unit_test() {
-    echo "##[group]set up INC UT env..."
-    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
-    echo "##[endgroup]"
+    local -a inc_cases=("$@")
+    if [[ ${#inc_cases[@]} -eq 0 ]]; then
+        mapfile -t inc_cases < <(find /auto-round/test/test_cpu -name "test_inc*.py" | sort)
+    fi
 
-    cd /auto-round/test || exit 1
-
-    for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
-        local test_basename=$(basename ${test_file} .py)
-        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
-
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
-                -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
-    done
+    setup_inc_environment
+    run_test_cases "${inc_cases[@]}"
 }
 
 function run_llmc_unit_test() {
-    echo "##[group]set up LLMC UT env..."
-    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
-    uv pip uninstall auto-round
-    cd /auto-round && uv pip install .
-    echo "##[endgroup]"
+    local -a llmc_cases=("$@")
+    if [[ ${#llmc_cases[@]} -eq 0 ]]; then
+        mapfile -t llmc_cases < <(find /auto-round/test/test_cpu -name "test_llmc*.py" | sort)
+    fi
 
-    cd /auto-round/test || exit 1
-
-    for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
-        local test_basename=$(basename ${test_file} .py)
-        local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
-
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
-                -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
-    done
+    setup_llmc_environment
+    run_test_cases "${llmc_cases[@]}"
 }
 
 function collect_log() {
-    python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
-        --test-type "Unit Tests" --log-pattern "unittest_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+    collect_cmd=(
+        python /auto-round/.azure-pipelines/scripts/ut/collect_result.py
+        --test-type "Unit Tests"
+        --log-pattern "unittest_test_*.log"
+        --log-dir "${LOG_DIR}"
+        --summary-log "${SUMMARY_LOG}"
+        --failure-log-dir "${FAILURE_LOG_DIR}"
+        --failure-context-file "${FAILURE_LOG_DIR}/failure_context_part${test_part}.json"
+    )
 
-    cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+    "${collect_cmd[@]}"
+
+    if [[ -f .coverage ]]; then
+        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+    fi
 }
 
 function main() {
