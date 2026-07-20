@@ -61,7 +61,7 @@ stages:
         - ${{ each torchVersion in split(parameters.torchVersions, ',') }}:
           - job: TestArk_py${{ replace(trim(pythonVersion), '.', '') }}_torch${{ replace(replace(trim(torchVersion), '.', ''), '+', '_') }}
             displayName: "Test py${{ trim(pythonVersion) }} torch${{ trim(torchVersion) }}"
-            pool: INTEL-CPU
+            pool: B60
             variables:
               condaName: "kernel_binary_test_py${{ replace(trim(pythonVersion), '.', '') }}$(NODE_LABEL)"
             steps:
@@ -107,7 +107,7 @@ stages:
     jobs:
       - job: PublishDist
         displayName: Publish all dist to ${{ parameters.publishTarget }}
-        pool: B60
+        pool: INTEL-CPU
         steps:
           - checkout: none
 
