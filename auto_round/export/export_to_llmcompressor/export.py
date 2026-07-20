@@ -19,6 +19,13 @@ from typing import Callable, Union
 import torch
 
 from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
+
+# Lazy import: vLLM LinearBase (None when vLLM is not installed).
+_VLLMLinearBase = None
+try:
+    from vllm.model_executor.layers.linear import LinearBase as _VLLMLinearBase
+except Exception:
+    pass
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -101,6 +108,137 @@ def _get_quant_format(model):
     return None
 
 
+def _unfuse_integer_vllm_layer(name: str, model: torch.nn.Module, layer, output_sizes) -> bool:
+    """Split a compressed-tensors integer-packed fused vLLM layer
+    (qkv_proj / gate_up_proj) into separate nn.Linear sub-layers stored
+    under the corresponding HF-checkpoint key names.
+
+    For qkv_proj   → injects q_proj / k_proj / v_proj into the parent module.
+    For gate_up_proj → injects gate_proj / up_proj into the parent module.
+
+    Returns True if the layer was unfused, False otherwise.
+    """
+    layer_base = name.rsplit(".", 1)[-1]
+
+    if layer_base == "qkv_proj":
+        sub_names = ["q_proj", "k_proj", "v_proj"]
+    elif layer_base == "gate_up_proj":
+        sub_names = ["gate_proj", "up_proj"]
+    else:
+        return False
+
+    if len(output_sizes) != len(sub_names):
+        logger.warning(
+            "Cannot unfuse integer vLLM layer %s: output_sizes length mismatch "
+            "(expected %d, got %d). Saving as fused.",
+            name,
+            len(sub_names),
+            len(output_sizes),
+        )
+        return False
+
+    # Compute cumulative offsets
+    offsets = [0]
+    for s in output_sizes:
+        offsets.append(offsets[-1] + s)
+
+    # After _compress_and_set_format: weight becomes weight_packed (int4 → uint8)
+    # or remains as weight for non-pack-quantized formats.
+    if hasattr(layer, "weight_packed"):
+        fused_weight = layer.weight_packed
+        weight_attr = "weight_packed"
+    else:
+        fused_weight = layer.weight
+        weight_attr = "weight"
+
+    fused_scale = layer.weight_scale
+    # weight_zero_point may be deleted by compress_module for symmetric quantization
+    fused_zp = getattr(layer, "weight_zero_point", None)
+    fused_bias = getattr(layer, "bias", None)
+    q_scheme = layer.quantization_scheme
+
+    # Determine in_features for creating sub nn.Linear shells
+    if weight_attr == "weight_packed":
+        in_features = fused_weight.shape[1] * 2
+    else:
+        in_features = fused_weight.shape[1]
+
+    # Resolve parent module
+    parts = name.rsplit(".", 1)
+    parent_path = parts[0] if len(parts) == 2 else ""
+    parent = get_module(model, parent_path) if parent_path else model
+
+    for i, sub_name in enumerate(sub_names):
+        row_start, row_end = offsets[i], offsets[i + 1]
+        sub_out = row_end - row_start
+
+        # Slice all attributes along output dimension (dim=0)
+        sub_weight = fused_weight[row_start:row_end, :].contiguous()
+        sub_scale = fused_scale[row_start:row_end, :].contiguous()
+        sub_bias = fused_bias[row_start:row_end].contiguous() if fused_bias is not None else None
+
+        # Create a minimal nn.Linear shell with compressed-tensors attributes
+        sub_layer = torch.nn.Linear(in_features, sub_out, bias=sub_bias is not None)
+        # Remove default float weight (will be replaced by packed tensor)
+        del sub_layer.weight
+        setattr(sub_layer, weight_attr, torch.nn.Parameter(sub_weight, requires_grad=False))
+        sub_layer.weight_scale = torch.nn.Parameter(sub_scale, requires_grad=False)
+        if fused_zp is not None:
+            sub_zp = fused_zp[row_start:row_end, :].contiguous()
+            sub_layer.weight_zero_point = torch.nn.Parameter(sub_zp, requires_grad=False)
+        sub_layer.quantization_scheme = q_scheme
+        if sub_bias is not None:
+            sub_layer.bias = torch.nn.Parameter(sub_bias, requires_grad=False)
+
+        setattr(parent, sub_name, sub_layer)
+
+    delattr(parent, layer_base)
+    logger.info("Unfused integer vLLM layer %s → %s", name, sub_names)
+    return True
+
+
+def _vllm_to_linear(name: str, model: torch.nn.Module, vllm_layer) -> torch.nn.Linear:
+    """Replace a vLLM LinearBase layer in the model with an equivalent nn.Linear.
+
+    compress_module from compressed-tensors produces 'pack-quantized' format for
+    nn.Linear but falls back to 'dense' for unrecognised types (such as vLLM's
+    LinearBase subclasses).  Converting to nn.Linear first guarantees the correct
+    format and targets=["Linear"] in quantization_config.json.
+
+    The returned nn.Linear has the same weight/bias data and all quantization
+    attributes (bits, scale, zp, …) copied from the original vLLM layer.
+    """
+    in_features = getattr(vllm_layer, "input_size", vllm_layer.weight.shape[1])
+    out_features = getattr(vllm_layer, "output_size", vllm_layer.weight.shape[0])
+    has_bias = isinstance(getattr(vllm_layer, "bias", None), torch.Tensor)
+
+    linear = torch.nn.Linear(in_features, out_features, bias=has_bias)
+    # Replace the randomly-initialised weight with the actual (fake-quantised) weight
+    linear.weight = torch.nn.Parameter(vllm_layer.weight.data.clone())
+    if has_bias:
+        linear.bias = torch.nn.Parameter(vllm_layer.bias.data.clone())
+
+    # Copy all quantisation attributes expected by construct_ct_scheme / pack_layer
+    for attr in (
+        "bits",
+        "sym",
+        "group_size",
+        "data_type",
+        "act_bits",
+        "act_data_type",
+        "act_sym",
+        "act_dynamic",
+        "act_group_size",
+        "scale",
+        "zp",
+    ):
+        if hasattr(vllm_layer, attr):
+            setattr(linear, attr, getattr(vllm_layer, attr))
+
+    set_module(model, name, linear)
+    return linear
+
+
 def _compress_and_set_format(layer, scheme, device=None):
     """Compress a layer and set its quantization format.
 
@@ -130,19 +268,31 @@ def pack_layer(name, model, device=None):
     from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
 
     layer = get_module(model, name)
-    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
-        return
+    _is_vllm_linear = _VLLMLinearBase is not None and isinstance(layer, _VLLMLinearBase)
+    if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer) and not _is_vllm_linear:
+        return  ##already packed
 
     if hasattr(layer, "orig_layer"):  # revert WrapperWALayer for offline usage
         wp_layer = layer
         layer = wp_layer.orig_layer
         set_module(model, name, layer)
+        _is_vllm_linear = _VLLMLinearBase is not None and isinstance(layer, _VLLMLinearBase)
 
     if not check_to_quantized(layer):
         return
 
     if hasattr(layer, "quantization_status") and layer.quantization_status == QuantizationStatus.COMPRESSED:
         return
+
+    # Save vLLM fused-layer output_sizes and convert to nn.Linear before packing.
+    # compress_module produces 'pack-quantized' for nn.Linear but falls back to
+    # 'dense' for unrecognised types (vLLM LinearBase subclasses), so the
+    # conversion must happen before _compress_and_set_format is called.
+    vllm_output_sizes = None
+    if _is_vllm_linear:
+        if hasattr(layer, "output_sizes"):
+            vllm_output_sizes = list(layer.output_sizes)
+        layer = _vllm_to_linear(name, model, layer)
 
     # explicitly obtain the underlying device to prevent RuntimeError mismatched tensors
     weight_device = layer.weight.device
@@ -162,6 +312,10 @@ def pack_layer(name, model, device=None):
     delattr(layer, "scale")
 
     _compress_and_set_format(layer, scheme, device)
+
+    # Unfuse vLLM fused layers (qkv_proj → q_proj/k_proj/v_proj, gate_up_proj → gate_proj/up_proj)
+    if _is_vllm_linear and vllm_output_sizes is not None:
+        _unfuse_integer_vllm_layer(name, model, layer, vllm_output_sizes)
 
 
 @torch.no_grad()

@@ -40,8 +40,14 @@ _ENTRY_BASE_KWARGS = {
 }
 _ENTRY_MLLM_KWARGS = {"processor", "image_processor", "template", "extra_data_dir", "quant_nontext_module"}
 _ENTRY_DIFFUSION_KWARGS = {"guidance_scale", "num_inference_steps", "generator_seed"}
+_ENTRY_VLLM_KWARGS = {"enable_vllm_loading", "vllm_model_kwargs"}
 _ENTRY_ALLOWED_KWARGS = (
-    _ENTRY_ROUTE_KWARGS | _ENTRY_COMPRESSOR_KWARGS | _ENTRY_BASE_KWARGS | _ENTRY_MLLM_KWARGS | _ENTRY_DIFFUSION_KWARGS
+    _ENTRY_ROUTE_KWARGS
+    | _ENTRY_COMPRESSOR_KWARGS
+    | _ENTRY_BASE_KWARGS
+    | _ENTRY_MLLM_KWARGS
+    | _ENTRY_DIFFUSION_KWARGS
+    | _ENTRY_VLLM_KWARGS
 )
 
 
@@ -78,6 +84,7 @@ def _split_entry_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "base": {},
         "mllm": {},
         "diffusion": {},
+        "vllm": {},
     }
     for key, value in kwargs.items():
         if key in _ENTRY_ROUTE_KWARGS:
@@ -90,6 +97,8 @@ def _split_entry_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
             buckets["mllm"][key] = value
         elif key in _ENTRY_DIFFUSION_KWARGS:
             buckets["diffusion"][key] = value
+        elif key in _ENTRY_VLLM_KWARGS:
+            buckets["vllm"][key] = value
     return buckets
 
 
@@ -179,6 +188,10 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
         from auto_round.compressors.diffusion_mixin import DiffusionMixin
 
         mixin = DiffusionMixin
+    elif model_type == "vllm":
+        from auto_round.compressors.vllm_mixin import VLLMMixin
+
+        mixin = VLLMMixin
     else:
         return base_cls
     combined = type(f"{model_type.capitalize()}{base_cls.__name__}", (mixin, base_cls), {})
@@ -233,12 +246,26 @@ def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, Quantiza
     )
 
 
-def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs) -> tuple[str, dict[str, Any]]:
+def _build_model_type_ctor_kwargs(
+    model,
+    base_kwargs,
+    mllm_kwargs,
+    diffusion_kwargs,
+    vllm_kwargs,
+) -> tuple[str, dict[str, Any]]:
     from auto_round.utils.model import detect_model_type
 
-    model_type = detect_model_type(model)
+    enable_vllm_loading = bool(vllm_kwargs.get("enable_vllm_loading", False))
+    detected_model_type = detect_model_type(model)
+    if enable_vllm_loading and detected_model_type in {"mllm", "diffusion"}:
+        raise ValueError(
+            "`enable_vllm_loading=True` conflicts with detected model type "
+            f"`{detected_model_type}`. Please disable vllm loading for multimodal/diffusion models."
+        )
+
+    model_type = "vllm" if enable_vllm_loading else detected_model_type
     has_multimodal_assets = mllm_kwargs.get("processor") is not None or mllm_kwargs.get("image_processor") is not None
-    if has_multimodal_assets and model_type != "mllm":
+    if has_multimodal_assets and not enable_vllm_loading and model_type != "mllm":
         model_type = "mllm"
 
     ctor_kwargs = dict(base_kwargs)
@@ -246,6 +273,8 @@ def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwa
         ctor_kwargs.update(mllm_kwargs)
     if model_type == "diffusion":
         ctor_kwargs.update(diffusion_kwargs)
+    if model_type == "vllm":
+        ctor_kwargs.update(vllm_kwargs)
     return model_type, ctor_kwargs
 
 
@@ -350,6 +379,7 @@ class AutoRound(object):
         base_kwargs = dict(split_kwargs["base"])
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
+        vllm_kwargs = dict(split_kwargs["vllm"])
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
@@ -411,7 +441,13 @@ class AutoRound(object):
             seqlen=seqlen,
             **compressor_kwargs,
         )
-        model_type, ctor_kwargs = _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs)
+        model_type, ctor_kwargs = _build_model_type_ctor_kwargs(
+            model,
+            base_kwargs,
+            mllm_kwargs,
+            diffusion_kwargs,
+            vllm_kwargs,
+        )
 
         # Preprocessor algorithms (AWQ, …) require a data-driven host so that
         # the per-block preprocessor lifecycle (prepare_block_group ->
@@ -648,11 +684,16 @@ class AutoRoundCompatible:
             "num_inference_steps": kwargs.pop("num_inference_steps", 50),
             "generator_seed": kwargs.pop("generator_seed", None),
         }
+        vllm_kwargs = {
+            "enable_vllm_loading": kwargs.pop("enable_vllm_loading", False),
+            "vllm_model_kwargs": kwargs.pop("vllm_model_kwargs", None),
+        }
         return {
             "format": format_name,
             "rotation_config": rotation_config,
             **mllm_kwargs,
             **diffusion_kwargs,
+            **vllm_kwargs,
             **kwargs,
         }
 

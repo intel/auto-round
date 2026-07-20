@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import sys
 
 from auto_round.cli.algorithms import AlgorithmHandler
@@ -85,6 +86,26 @@ def _build_entry_compressor_kwargs(args) -> dict:
 
 
 def _build_entry_model_type_kwargs(args) -> dict:
+    vllm_model_kwargs = None
+    if args.vllm_model_kwargs is not None:
+        try:
+            parsed = json.loads(args.vllm_model_kwargs)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"Invalid --vllm_model_kwargs JSON: {err}") from err
+        if not isinstance(parsed, dict):
+            raise ValueError("--vllm_model_kwargs must be a JSON object.")
+        vllm_model_kwargs = parsed
+
+    if args.enable_vllm_loading and vllm_model_kwargs is not None:
+        tp = vllm_model_kwargs.get("tensor_parallel_size", 1)
+        if tp != 1:
+            raise ValueError(
+                f"--enable_vllm_loading only supports single-GPU quantization "
+                f"(tensor_parallel_size=1), but got tensor_parallel_size={tp}. "
+                "Multi-GPU TP is not supported: the wrapper forward, unfuse logic, "
+                "and act_max collection all assume TP=1."
+            )
+
     return {
         "quant_nontext_module": args.quant_nontext_module,
         "extra_data_dir": args.extra_data_dir,
@@ -92,6 +113,8 @@ def _build_entry_model_type_kwargs(args) -> dict:
         "guidance_scale": args.guidance_scale,
         "num_inference_steps": args.num_inference_steps,
         "generator_seed": args.generator_seed,
+        "enable_vllm_loading": args.enable_vllm_loading,
+        "vllm_model_kwargs": vllm_model_kwargs,
     }
 
 

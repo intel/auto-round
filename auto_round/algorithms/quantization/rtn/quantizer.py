@@ -77,7 +77,7 @@ class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             # stays aligned across experts.
             set_amax_for_all_moe_layers(block, attr_name="act_max")
 
-        for _name, m in block.named_modules():
+        for _name, m in list(block.named_modules()):
             if hasattr(m, "global_name") and check_to_quantized(m):
                 self.quantize_layer(m.global_name)
         return {}
@@ -154,8 +154,12 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         ):
             # enable moe experts act_max automatic generation for Linear
             set_amax_for_all_moe_layers(block, attr_name="act_max")
-        # Normalize imatrix and quantize layers
-        for name, m in block.named_modules():
+        # Normalize imatrix and quantize layers.
+        # Snapshot named_modules() before iterating: unfuse (e.g. qkv_proj →
+        # q_proj/k_proj/v_proj) inside quantize_layer_outside_block modifies
+        # the block's _modules dict and would raise RuntimeError if we iterated
+        # a live generator.
+        for name, m in list(block.named_modules()):
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):

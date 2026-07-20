@@ -123,6 +123,11 @@ class RTNLayerFallbackMixin:
             set_module(self.model, module_name, module)
         if self.compress_context.is_immediate_saving:
             module = get_module(self.model, module_name)
+            if module is None:
+                # Module was replaced or unfused under a new name during packing
+                # (e.g. vLLM qkv_proj → q_proj/k_proj/v_proj). Sub-modules are
+                # included in the enclosing block's shard write; skip here.
+                return
             module.to("cpu")
             shard_writer.write(module, module_name, False)
             module.to("meta")

@@ -305,6 +305,8 @@ class BaseCompressor(object):
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
+        enable_vllm_loading = kwargs.pop("enable_vllm_loading", False)
+        vllm_model_kwargs = kwargs.pop("vllm_model_kwargs", None)
         device = kwargs.pop("device", None)
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
@@ -388,6 +390,8 @@ class BaseCompressor(object):
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
+            enable_vllm_loading=enable_vllm_loading,
+            vllm_model_kwargs=vllm_model_kwargs,
         )
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(

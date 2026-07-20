@@ -145,6 +145,17 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--layer_config", default=None, type=str, help="Per-layer quantization overrides encoded as JSON-like text."
     )
     rt.add_argument(
+        "--enable_vllm_loading",
+        action="store_true",
+        help="Load model via vLLM engine before entering AutoRound compressor flow.",
+    )
+    rt.add_argument(
+        "--vllm_model_kwargs",
+        default=None,
+        type=str,
+        help="JSON string of extra kwargs forwarded to vLLM LLM(...), e.g. '{\"tensor_parallel_size\":1}'.",
+    )
+    rt.add_argument(
         "--shared_layers",
         type=str,
         nargs="+",

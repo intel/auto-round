@@ -20,7 +20,6 @@ from collections import UserDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
-import psutil
 import torch
 import transformers
 from packaging import version
@@ -190,6 +189,16 @@ def check_diffusers_installed():  # pragma: no cover
         return True
     except ImportError:
         logger.error("Please install diffusers via 'pip install diffusers'" " to run diffusion model")
+        exit(-1)
+
+
+def check_vllm_installed():  # pragma: no cover
+    try:
+        from vllm import LLM, SamplingParams  # noqa: F401
+
+        return True
+    except ImportError:
+        logger.error("Please install vllm via 'pip install vllm'" " to run vllm model")
         exit(-1)
 
 
@@ -925,6 +934,94 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def vllm_load_model(
+    pretrained_model_name_or_path: str,
+    **kwargs,
+):
+    check_vllm_installed()
+    from transformers import AutoConfig, AutoTokenizer
+    from vllm import LLM
+
+    tp = kwargs.get("tensor_parallel_size", 1)
+    if tp != 1:
+        raise ValueError(
+            f"vllm_load_model only supports single-GPU quantization "
+            f"(tensor_parallel_size=1), but got tensor_parallel_size={tp}. "
+            "Multi-GPU TP is not supported: the wrapper forward, unfuse logic, "
+            "and act_max collection all assume TP=1."
+        )
+
+    if isinstance(pretrained_model_name_or_path, str):
+
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+        logger.warning("VLLM_ENABLE_V1_MULTIPROCESSING is set to 0 for vllm model quantization")
+
+        # Keep max_model_len consistent with model config by default to avoid
+        # vLLM validation errors on short-context models.
+        user_max_model_len = kwargs.pop("max_model_len", None)
+        gpu_memory_utilization = kwargs.pop("gpu_memory_utilization", 0.8)
+
+        _CALIB_MAX_LEN = 4096
+        if user_max_model_len is not None:
+            max_model_len = min(user_max_model_len, _CALIB_MAX_LEN)
+        else:
+            max_model_len = _CALIB_MAX_LEN
+
+        llm = LLM(
+            pretrained_model_name_or_path,
+            enforce_eager=True,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            # Reserve a fixed KV cache so vLLM's memory profiler does not
+            # try to allocate a large KV cache and OOM during calibration.
+            # 1 GB accommodates max_model_len up to ~7K (typical calibration
+            # needs are ≤ 4096 tokens).
+            kv_cache_memory_bytes=1024 * 1024 * 1024,
+            **kwargs,
+        )
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    elif isinstance(pretrained_model_name_or_path, LLM):
+        llm = pretrained_model_name_or_path
+        model = llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model
+    else:
+        raise ValueError(f"Only support str or LLM class for model, but get {type(model)}")
+
+    tokenizer = AutoTokenizer.from_pretrained(llm.llm_engine.model_config.model)
+
+    # Attach the HF config to the raw vLLM nn.Module so that export functions
+    # (save_quantized_as_llmcompressor etc.) can write config.json and embed
+    # quantization_config without AttributeError on model.config.
+    if not hasattr(model, "config"):
+        _hf_model_name = llm.llm_engine.model_config.model
+        try:
+            model.config = AutoConfig.from_pretrained(_hf_model_name, trust_remote_code=True)
+        except Exception as _e:
+            logger.warning(
+                "Could not attach HF config to vLLM model from %r: %s. "
+                "The export step may fail to write config.json.",
+                _hf_model_name,
+                _e,
+            )
+
+    if not hasattr(model.__class__, "dtype"):
+
+        @property
+        def dtype(self):
+            return self.lm_head.weight.dtype
+
+        setattr(model.__class__, "dtype", dtype)
+
+    if not hasattr(model.__class__, "device"):
+
+        @property
+        def device(self):
+            return self.lm_head.weight.device
+
+        setattr(model.__class__, "device", device)
+
+    return llm, model, tokenizer
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -1055,7 +1152,7 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
                 index_file = hf_hub_download(model_or_path, "model_index.json")
                 check_diffusers_installed()
             except Exception as e:
-                print(e)
+                logger.debug(f"model_index.json not found for {model_or_path}: {e}")
                 index_file = None
 
         elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
@@ -1070,16 +1167,39 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
         return False
 
 
+def is_vllm_model(model_or_path: object) -> bool:
+    if "vllm" in str(type(model_or_path)):
+        check_vllm_installed()
+        if not isinstance(model_or_path, torch.nn.Module):
+            attr = get_nested_attr(
+                model_or_path,
+                "llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner.model",
+            )
+            if attr is None:
+                raise ValueError(
+                    "Please add VLLM_ENABLE_V1_MULTIPROCESSING=0 and use enforce_eager=True to load vllm model"
+                )
+            return True
+        else:
+            return True
+    else:
+        return False
+
+
 def detect_model_type(model):
-    """Detect the type of model (LLM, MLLM, or Diffusion).
+    """Detect the type of model (LLM, MLLM, Diffusion, or vLLM based).
 
     Args:
         model: Model instance or model path string
 
     Returns:
-        str: "mllm", "diffusion", or "llm"
+        str: "mllm", "diffusion", "llm", or "vllm"
     """
-    # Check if it's a diffusion model first (more specific)
+    # Check if it's a vLLM based model first (based on class name)
+    if is_vllm_model(model):
+        return "vllm"
+
+    # Check if it's a diffusion model (more specific)
     if is_diffusion_model(model):
         return "diffusion"
 
@@ -1222,6 +1342,15 @@ def get_expert_linear_names(module: torch.nn.Module) -> list[str]:
         return ["linear_fc1", "linear_fc2"]
     elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
         return ["w1_linear", "w2_linear", "v1_linear"]
+    elif module_match_name_list(module, ["LinearizedVLLMFusedMoE"]):
+        # Infer linear names from the first per-expert child (numbered "0", "1", …).
+        first_expert = next((m for n, m in module._modules.items() if n.isdigit()), None)
+        if first_expert is not None:
+            names = [n for n, m in first_expert.named_children() if isinstance(m, torch.nn.Linear)]
+            if names:
+                return names
+        # Fallback for standard MLP-style experts
+        return ["gate_proj", "down_proj", "up_proj"]
     else:
         # assuming w1, w2, w3 by default
         return ["w1", "w2", "w3"]
@@ -1265,6 +1394,14 @@ def get_expert_input_proj_names(module: torch.nn.Module) -> list[str]:
     elif module_match_name_list(module, ["DBRXMoeSparseMoeBlock"]):
         # w1_linear and v1_linear are input projections, w2_linear is output
         return ["w1_linear", "v1_linear"]
+    elif module_match_name_list(module, ["LinearizedVLLMFusedMoE"]):
+        # Infer input projection names: all linear children of the first expert except down_proj.
+        first_expert = next((m for n, m in module._modules.items() if n.isdigit()), None)
+        if first_expert is not None:
+            linear_names = [n for n, m in first_expert.named_children() if isinstance(m, torch.nn.Linear)]
+            # Exclude the output projection (commonly "down_proj" or "w2")
+            return [n for n in linear_names if n not in ("down_proj", "w2", "linear_fc2")]
+        return ["gate_proj", "up_proj"]
     else:
         logger.warning_once("Using default input projection names ['w1', 'w3'] for MoE expert alignment. ")
         # Default: w1 and w3 are input projections, w2 is output
@@ -1337,10 +1474,18 @@ def get_layer_names_in_block(
         list: A list of strings, where each string is the name of a layer
               within a block of the model.
     """
+    # Lazy import for vLLM LinearBase support (None when vLLM not installed).
+    _vllm_linear_base = None
+    try:
+        from vllm.model_executor.layers.linear import LinearBase as _vllm_linear_base
+    except Exception:
+        pass
+
     if class_names is None:
         class_names = []
     for n, m in model.named_modules():
-        if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names):
+        is_vllm = _vllm_linear_base is not None and isinstance(m, _vllm_linear_base)
+        if type(m) in supported_types or (class_names is not None and m.__class__.__name__ in class_names) or is_vllm:
             m.bk_global_name = n
     layers_in_block = []
     if bool(quant_block_list):
@@ -1817,8 +1962,25 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                 f"fused experts use parent module's act_max"
             )
             continue
+        elif "LinearizedVLLMFusedMoE" in type(sub_module.experts).__name__:
+            # LinearizedVLLMFusedMoE stores per-expert modules as numbered children.
+            # It is itself a named submodule and will appear as `sub_module` in a later
+            # iteration of this loop, at which point its `experts` property returns a
+            # plain list that passes the isinstance(…, Iterable) check below.  Skip here
+            # to avoid the "Unknown experts structure" warning on the outer MLP wrapper.
+            logger.debug(
+                f"Skipping '{name}' ({type(sub_module).__name__}): its experts "
+                f"(LinearizedVLLMFusedMoE) will be processed as a direct submodule."
+            )
+            continue
         elif isinstance(sub_module.experts, collections.abc.Iterable):
             # Iterable experts: list of expert modules (e.g., Mixtral)
+            logger.debug(
+                f"set_amax_for_all_moe_layers: processing '{name}' "
+                f"(type={type(sub_module).__name__}) with "
+                f"{len(list(sub_module.experts))} experts, "
+                f"linear_names={expert_linear_names}"
+            )
             for linear_name in expert_linear_names:
                 try:
                     # Determine if this is an input projection that needs scale unification
@@ -1875,8 +2037,16 @@ def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: s
     # Collect all Linear layers that have act_bits set but missing act_max
     layers_needing_amax = []
 
-    # Check gate (router) layer - it's typically a Linear layer for token routing
-    if hasattr(moe_module, "gate") and isinstance(moe_module.gate, torch.nn.Linear):
+    # Lazy import for vLLM LinearBase (ReplicatedLinear, ColumnParallelLinear, etc.)
+    _LinearBase = None
+    try:
+        from vllm.model_executor.layers.linear import LinearBase as _LinearBase
+    except Exception:
+        pass
+    _linear_types = (torch.nn.Linear,) if _LinearBase is None else (torch.nn.Linear, _LinearBase)
+
+    # Check gate (router) layer - it may be nn.Linear or a vLLM LinearBase subclass
+    if hasattr(moe_module, "gate") and isinstance(moe_module.gate, _linear_types):
         gate = moe_module.gate
         if hasattr(gate, "act_bits") and gate.act_bits < 8:
             if get_nested_attr(gate, attr_name) is None:
@@ -1887,7 +2057,7 @@ def _set_amax_for_moe_auxiliary_layers(moe_module: torch.nn.Module, attr_name: s
         shared_experts = moe_module.shared_experts
         if shared_experts is not None:
             for child_name, child in shared_experts.named_modules():
-                if isinstance(child, torch.nn.Linear):
+                if isinstance(child, _linear_types):
                     if hasattr(child, "act_bits") and child.act_bits < 8:
                         if get_nested_attr(child, attr_name) is None:
                             layers_needing_amax.append(child)
@@ -1931,10 +2101,21 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 
     experts = moe_module.experts
 
+    # Handle LinearizedVLLMFusedMoE: .experts is a module with its own .experts property
+    # returning the list of per-expert modules.  Resolve the actual expert list and use
+    # the inner module (not the outer MLP) to look up correct linear names.
+    actual_experts = None
+    expert_linear_source = moe_module  # used for get_expert_linear_names()
+    if hasattr(experts, "experts") and isinstance(getattr(experts, "experts"), list):
+        actual_experts = experts.experts
+        expert_linear_source = experts  # LinearizedVLLMFusedMoE knows its own linear names
+    elif isinstance(experts, collections.abc.Iterable):
+        actual_experts = list(experts)
+
     # Handle iterable experts (list of modules)
-    if isinstance(experts, collections.abc.Iterable):
-        expert_linear_names = get_expert_linear_names(moe_module)
-        for expert in experts:
+    if actual_experts is not None:
+        expert_linear_names = get_expert_linear_names(expert_linear_source)
+        for expert in actual_experts:
             for linear_name in expert_linear_names:
                 layer = getattr(expert, linear_name, None)
                 if layer is not None:
@@ -1964,7 +2145,6 @@ _EXTRA_MODEL_FILES = {
 
 def _copy_extra_model_files(src_dir: str, dst_dir: str):
     """Copy known extra model files from *src_dir* to *dst_dir* if they exist."""
-    import os
     import shutil
 
     for file in os.listdir(src_dir):
@@ -2203,13 +2383,31 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
                 sig = inspect.signature(sig_target)
                 _param_names_cache[m_id] = [p for p in sig.parameters.keys() if p != "self"]
             _param_names = _param_names_cache[m_id]
-            for i, val in enumerate(positional_inputs):
-                param_idx = i + 1  # hidden_states is params[0]
-                if param_idx < len(_param_names):
-                    param_name = _param_names[param_idx]
-                    if param_name not in kwargs:
-                        kwargs[param_name] = val
-            positional_inputs = ()
+
+            # If the original forward's first parameter is NOT "hidden_states" (e.g.,
+            # vLLM's DecoderLayer uses ``(positions, hidden_states, residual)``), then
+            # what arrived in the ``hidden_states`` slot is actually the first positional
+            # arg.  Re-map all positional args according to the true signature.
+            if _param_names and _param_names[0] != "hidden_states":
+                all_args = (hidden_states,) + tuple(positional_inputs)
+                hidden_states = None
+                positional_inputs = ()
+                for i, val in enumerate(all_args):
+                    if i >= len(_param_names):
+                        break
+                    pname = _param_names[i]
+                    if pname == "hidden_states":
+                        hidden_states = val
+                    elif pname not in kwargs:
+                        kwargs[pname] = val
+            else:
+                for i, val in enumerate(positional_inputs):
+                    param_idx = i + 1  # hidden_states is params[0]
+                    if param_idx < len(_param_names):
+                        param_name = _param_names[param_idx]
+                        if param_name not in kwargs:
+                            kwargs[param_name] = val
+                positional_inputs = ()
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
@@ -2233,8 +2431,6 @@ def config_save_pretrained(config, file_name, save_directory, model=None):
 def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     """Rename weight files for diffusion models."""
     import glob
-    import json
-    import os
 
     # rename safetensors
     files = sorted(glob.glob(f"{path}/*.safetensors"))

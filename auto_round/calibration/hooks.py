@@ -150,7 +150,10 @@ def make_block_forward_func(state, name: str) -> Callable:
                 if positional_inputs:
                     return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
                 else:
-                    return m.orig_forward(hidden_states, **kwargs)
+                    # Use keyword argument to support models where hidden_states is not
+                    # the first parameter (e.g., vLLM's DecoderLayer uses
+                    # ``forward(positions, hidden_states, residual)``).
+                    return m.orig_forward(hidden_states=hidden_states, **kwargs)
             else:
                 # Currently only for Llama-3.2-Vision-Instruct Series
                 return m.orig_forward(*positional_inputs, **kwargs)
@@ -193,7 +196,12 @@ def replace_forward_with_hooks(state) -> None:
     """
 
     def register_hook(n, m, hook_handles):
-        if n in state.to_cached_layers and type(m) not in SUPPORTED_LAYER_TYPES:  # block
+        from auto_round.wrapper import _VLLMLinearBase
+
+        is_linear = isinstance(m, SUPPORTED_LAYER_TYPES) or (
+            _VLLMLinearBase is not None and isinstance(m, _VLLMLinearBase)
+        )
+        if n in state.to_cached_layers and not is_linear:  # block
             m.orig_forward = m.forward
             m.forward = partial(state._get_block_forward_func(n), m)
         elif n in state.to_cached_layers:  # linear / conv1d layer

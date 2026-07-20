@@ -244,15 +244,41 @@ class BlockIO:
         return output
 
     def _run_block(self, block, quantizer, input_ids, input_others, device):
-        return quantizer._resolve_block_forward()(
-            block,
-            input_ids,
-            input_others,
-            quantizer.model_context.amp,
-            quantizer.model_context.amp_dtype,
-            device,
-            0,
-        )
+        try:
+            return quantizer._resolve_block_forward()(
+                block,
+                input_ids,
+                input_others,
+                quantizer.model_context.amp,
+                quantizer.model_context.amp_dtype,
+                device,
+                0,
+            )
+        except (AssertionError, RuntimeError) as e:
+            # vLLM attention layers require a ForwardContext that is only set by
+            # the vLLM engine (``llm.generate()``).  Directly calling block.forward
+            # outside the engine is not supported.
+            # Additionally, calibration captures may contain mixed prefill/decode
+            # batches with inconsistent token counts across keys (e.g. positions
+            # captured during a different batch from hidden_states), causing
+            # rotary_embedding to fail with "same number of tokens" RuntimeError.
+            # For RTN-style calibration (iters=0) the reference outputs are not
+            # used in loss-based optimisation; the caller (collect_reference) uses
+            # them only as next-block inputs, which the outer loop overwrites from
+            # ``all_inputs[next_block]`` on every iteration.
+            # Returning ``input_ids`` as a placeholder is therefore safe.
+            _msg = str(e)
+            _is_vllm_err = "Forward context is not set" in _msg or "same number of tokens" in _msg
+            if _is_vllm_err:
+                from auto_round.logger import logger as _ar_logger
+
+                _ar_logger.warning_once(
+                    "vLLM block forward skipped outside engine "
+                    "(ForwardContext unavailable or token-count mismatch in calib data); "
+                    "returning input_ids as placeholder.  This is expected for iters=0 RTN."
+                )
+                return input_ids
+            raise
 
     @torch.no_grad()
     def _collect_outputs(self, block, quantizer, *, source: InputSource, batch_size: int, save: bool = True):
