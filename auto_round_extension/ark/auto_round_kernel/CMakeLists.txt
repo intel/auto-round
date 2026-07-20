@@ -84,10 +84,26 @@ if(ARK_XPU AND ARK_SYCL_TLA)
   set(SYCL_TLA_GIT_REPOSITORY "https://github.com/luoyu-intel/sycl-tla.git" CACHE STRING "sycl-tla git repository")
   set(SYCL_TLA_GIT_TAG "260630" CACHE STRING "sycl-tla git tag/commit")
 
+  # Patch the pinned sycl-tla tree to break an infinite template recursion in
+  # cute::reorder for sub-byte weight types (e.g. int4/uint4 MoE dequant). Without
+  # this, the identity-relayout "convert" step re-selects ReorderDispatchConvertRelayout
+  # for a sub-byte source and the SYCL device compiler rejects it with
+  # "SYCL kernel cannot call a recursive function". Keeping the fix as an in-repo patch
+  # lets us stay on the reproducible pinned tag until it is fixed upstream.
+  find_package(Git REQUIRED)
+  set(SYCL_TLA_PATCH
+      "${CMAKE_CURRENT_LIST_DIR}/patches/sycl_tla_fix_subbyte_reorder_recursion.patch")
+
   FetchContent_Declare(
     sycl_tla
     GIT_REPOSITORY ${SYCL_TLA_GIT_REPOSITORY}
     GIT_TAG ${SYCL_TLA_GIT_TAG}
+    # Apply the patch only when it has not already been applied, so re-configuring an
+    # existing build tree does not fail with "patch does not apply".
+    PATCH_COMMAND ${CMAKE_COMMAND}
+                  -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+                  -DPATCH_FILE=${SYCL_TLA_PATCH}
+                  -P "${CMAKE_CURRENT_LIST_DIR}/patches/apply_patch.cmake"
   )
 
   # Map target to device name for -Xs flag

@@ -298,7 +298,54 @@ which forces `ARK_MOE_PREFILL_DPAS_S4=1` +
 exclusively exercised, at the same production shapes as
 `test_accuracy_int4`, with tolerance `rtol=atol=1e-1`.
 
-## FP8 per-expert (per-tensor) perf tests
+## INT2-sym Prefill Paths (opt-in env flags)
+
+The INT2 sym prefill path mirrors the INT4-sym design one bit-width down:
+weights are packed `[E, N, K/4]` `uint8_t` (four 2-bit sym-signed fields
+per byte, `[-2, 1]`). A single-pass **DPAS S2** mainloop folds the
+crumb→`act_dtype` upcast into the DPAS pipeline so the standalone dequant
+pass is eliminated. asym S2 always falls through to the dequant path.
+
+| Precedence  | Env flag                                                              | Kernel                                                                                                                                                                                                                                                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 (highest) | `ARK_MOE_PREFILL_DPAS_S2` unset or truthy (**default ON**)            | **S2-sym single-pass DPAS mixed-input mainloop.** Reads packed `[E, N, K/4]` `uint8_t` crumbs directly and folds the S2→`act_dtype` upcast into the DPAS mainloop via CuTe's `reorder(tBrB, tCrB)` (which relies on `NumericArrayConverter<ElementA, cutlass::int2b_t, N>`). B-side global traffic is a quarter of the S8 path. Per-K-group scale is applied through the same deferred group-boundary fold as INT4/INT8. Implemented in `sycl_tla_moe_prefill_s2_dpas.hpp`. **Status: NEEDS-HARDWARE-VALIDATION** (untested port). |
+| 2 (fallback)| `ARK_MOE_PREFILL_DPAS_S2=0` and `ARK_MOE_PREFILL_DPAS_INT8` truthy (**default ON**) | **S2→S8 upcast + shared INT8 DPAS mainloop.** Two-pass: `launch_upcast_int2_sym_to_int8` writes an `[E, N, K]` `int8_t` view of the dequant workspace, then the standard INT8 per-group DPAS mainloop consumes it. Robust but pays the ~E·N·K byte round-trip vs. path 1. Implemented in `sycl_tla_moe_mixed.hpp` + `sycl_tla_moe_prefill_int_dpas.hpp`. |
+| 3 (default) | `ARK_MOE_PREFILL_DPAS_S2=0` and `ARK_MOE_PREFILL_DPAS_INT8=0`         | v1 dequant kernel (`sycl_tla_moe_mixed.hpp::launch_dequant_int2`) followed by the stock bf16/fp16 grouped GEMM. Handles both sym and asym.                                                                                                                                                                                                                                                                                                                     |
+
+**S2 DPAS path shape preconditions** — the `moe_gemm_prefill` dispatcher
+silently falls back to precedence 2 (then 3) whenever any of these fail:
+
+- `N % 64 == 0` (BN)
+- `K % 32 == 0` (BK)
+- `K % 4 == 0` (four crumbs per packed byte never straddle a byte boundary)
+- `K % group_size == 0`
+- `group_size % 4 == 0` (crumb quad never straddles a group boundary)
+- `group_size ∈ {32, 64, 128, 256}`
+- `asym == false` (asym S2 is out of scope for the DPAS path)
+
+Accuracy parity is covered by
+`test_moe_prefill_accuracy.py::test_accuracy_int2_dpas_per_group`, which
+forces `ARK_MOE_PREFILL_DPAS_S2=1` + `ARK_MOE_PREFILL_DPAS_INT8=0` so the
+single-pass mainloop is exclusively exercised, at the same production
+shapes as `test_accuracy_int2`, with tolerance `rtol=atol=1.5e-1`.
+
+## Decode weight-reuse (multi-token, opt-in)
+
+The packed INT4/INT2 **decode** (GEMV) kernels already fuse dequant inline
+(no separate dequant pass), so their throughput is dominated by packed
+weight bandwidth. When more than one token is being decoded,
+`ARK_MOE_DECODE_MULTI_TOKEN=1` selects a 2-tokens-per-sub-group variant:
+each sub-group lane owns one output N-column for a *pair* of tokens and
+streams the packed weight row once per iteration for both tokens. When
+both tokens route to the same expert the second token's weight load hits
+L1 (same address), roughly halving real weight traffic; when the pair
+straddles an expert boundary the second load is a real fetch of that
+expert's row, keeping the result numerically identical to the one-token
+kernel. Default **OFF** (the win depends on decode batch shape / routing);
+covered by `sycl_tla_moe_decode.hpp::launch_int4_multitoken` /
+`launch_int2_multitoken`.
+
+
 
 `test_perf_fp8_per_tensor` benchmarks the Variant A DPAS path against
 the single-`torch.bmm` baseline for the **one-FP32-scalar-per-expert**
@@ -363,5 +410,7 @@ the same production shapes, with the standard INT8 tolerance
 (`rtol=atol=1e-1`).
 
 **Status: NEEDS-HARDWARE-VALIDATION** (untested port; sym-only for
-Phase 1 — per-group and asym INT4 / INT2 DPAS are follow-up phases
-that will reuse the same mainloop skeleton with an added unpack step).
+Phase 1. Per-group INT4 (S4) and INT2 (S2) DPAS now exist as single-pass
+paths — see the "INT4-sym / INT2-sym Prefill Paths" sections above. asym
+INT4 / INT2 DPAS remain follow-up phases that will reuse the same
+mainloop skeleton with an added activation-sum precompute).

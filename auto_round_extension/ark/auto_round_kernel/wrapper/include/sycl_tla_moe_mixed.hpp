@@ -45,6 +45,7 @@
 #include "sycl_tla_moe_prefill_fp8_dpas.hpp"
 #include "sycl_tla_moe_prefill_int_dpas.hpp"
 #include "sycl_tla_moe_prefill_s4_dpas.hpp"
+#include "sycl_tla_moe_prefill_s2_dpas.hpp"
 #include "sycl_tla_moe_prefill_fp8_native.hpp"
 #include "sycl_tla_moe_prefill_fused.hpp"
 
@@ -908,6 +909,43 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
     return;
   }
 
+  // S2-sym single-pass DPAS grouped GEMM (Variant B: per-K-group scale,
+  // in-register crumb->act upcast, XMX MMA). Reads packed `[E, N, K/4]`
+  // uint8_t crumbs directly and folds the upcast into the DPAS mainloop
+  // via CuTe's `reorder(tBrB, tCrB)`, so the B-side global traffic is a
+  // quarter of the S2->S8 upcast branch below. Opt-in default via
+  // `ARK_MOE_PREFILL_DPAS_S2` (default ON); silent fallback to the
+  // S2->S8 upcast branch (which is itself gated by
+  // `ARK_MOE_PREFILL_DPAS_INT8`) or to the generic dequant path if the
+  // shape gate rejects the tile geometry.
+  //
+  // STATUS: NEEDS-HARDWARE-VALIDATION. See
+  // `sycl_tla_moe_prefill_s2_dpas.hpp` for the port's provenance & the
+  // on-hardware TODOs (chief among them: `NumericArrayConverter
+  // <ElementA, cutlass::int2b_t, N>` availability in the pinned
+  // cutlass-sycl).
+  if (weight_dtype == BTLA_DTYPE::S2_CLIP && !asym &&
+      moe_dpas_s2::moe_prefill_dpas_s2_enabled() &&
+      moe_dpas_s2::moe_prefill_dpas_s2_pergroup_shape_ok(N, K, group_size) &&
+      (act_dtype == BTLA_DTYPE::F16 || act_dtype == BTLA_DTYPE::BF16)) {
+    if (act_dtype == BTLA_DTYPE::F16) {
+      using ScalarT = sycl::half;
+      moe_dpas_s2::moe_prefill_s2_dpas_per_group_dispatch<ScalarT>(
+          q, static_cast<const ScalarT*>(activations),
+          static_cast<const uint8_t*>(weights),
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
+    } else {
+      using ScalarT = sycl::ext::oneapi::bfloat16;
+      moe_dpas_s2::moe_prefill_s2_dpas_per_group_dispatch<ScalarT>(
+          q, static_cast<const ScalarT*>(activations),
+          static_cast<const uint8_t*>(weights),
+          static_cast<const ScalarT*>(scales), static_cast<ScalarT*>(outputs),
+          num_tokens_per_expert, num_experts, N, K, group_size, total_tokens);
+    }
+    return;
+  }
+
   // INT4-sym / INT2-sym via INT8 DPAS. Rather than dequantise packed
   // nibbles/crumbs into a bf16/fp16 `[E, K, N]` workspace and then run a
   // bf16 x bf16 GEMM, we upcast the low-bit-width weights to `int8_t` in
@@ -1092,6 +1130,42 @@ inline void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, v
     moe_gemm(q, activations, w_kn, /*scales=*/nullptr, outputs, act_dtype, N, K, num_tokens_per_expert, num_experts);
   } else {
     throw std::invalid_argument("moe_gemm_prefill: act_dtype must be F16 or BF16");
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Weight-dequant-only entry point for `moe_gemm_prefill`.
+//
+// Runs *only* the internal weight-dequantization stage that
+// `moe_gemm_prefill` performs on its generic (non-DPAS) path -- i.e. it
+// materialises the `[E, K, N]` act-dtype weights into `dequant_workspace`
+// via `dequant_to_KN` and returns without launching the subsequent Grouped
+// GEMM. This exists so callers can benchmark the interface's internal
+// dequant throughput in isolation (the fused `moe_gemm_prefill` call cannot
+// expose the dequant time on its own because the GEMM immediately consumes
+// the workspace). The dequant numerics are bit-identical to the generic
+// path of `moe_gemm_prefill`.
+//
+// Weight/scale/zero layouts match `moe_gemm_prefill` (decode-style
+// `[E, N, K_packed]` weights, `[E, N, K/group_size]` scales/zeros). The
+// destination `dequant_workspace` must be an `[E, K, N]` act-dtype buffer.
+// ----------------------------------------------------------------------------
+inline void moe_gemm_prefill_dequant(sycl::queue* q, void* weights, void* scales, void* zeros,
+                                     void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N,
+                                     int K, int group_size, int* num_tokens_per_expert, int num_experts, bool asym) {
+  if (dequant_workspace == nullptr) {
+    throw std::invalid_argument("moe_gemm_prefill_dequant: dequant_workspace must be non-null");
+  }
+  if (act_dtype == BTLA_DTYPE::F16) {
+    moe_mixed_detail::dequant_to_KN<sycl::half>(q, weights, scales, zeros, static_cast<sycl::half*>(dequant_workspace),
+                                                weight_dtype, num_experts, N, K, group_size, asym,
+                                                num_tokens_per_expert);
+  } else if (act_dtype == BTLA_DTYPE::BF16) {
+    using BF = sycl::ext::oneapi::bfloat16;
+    moe_mixed_detail::dequant_to_KN<BF>(q, weights, scales, zeros, static_cast<BF*>(dequant_workspace), weight_dtype,
+                                        num_experts, N, K, group_size, asym, num_tokens_per_expert);
+  } else {
+    throw std::invalid_argument("moe_gemm_prefill_dequant: act_dtype must be F16 or BF16");
   }
 }
 

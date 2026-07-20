@@ -1,0 +1,40 @@
+diff --git a/include/cute/algorithm/reorder.hpp b/include/cute/algorithm/reorder.hpp
+index 4c5ae1a..827aa4f 100644
+--- a/include/cute/algorithm/reorder.hpp
++++ b/include/cute/algorithm/reorder.hpp
+@@ -227,7 +227,18 @@ reorder_impl(ReorderDispatchConvertRelayout const&,
+   using NewSrcType = conditional_t<is_subbyte_v<SrcType>, upcast_subbyte_t<SrcType>, DstType>;
+   auto src_c = make_fragment_like<NewSrcType>(src);
+ 
+-  reorder(src, src_c, slayout, slayout);
++  // The convert step passes identical source/destination TV-layouts (slayout, slayout),
++  // so the reorder degenerates to a pure element-wise type conversion with no layout
++  // transformation; a direct static_cast over the fragment is therefore semantically
++  // equivalent. Doing it directly (instead of recursing through reorder() /
++  // choose_xe_reorder_impl()) avoids an infinite template recursion: for a sub-byte
++  // SrcType the identity relayout would re-select ReorderDispatchConvertRelayout and call
++  // reorder() with the same sub-byte source again, which the SYCL device compiler rejects
++  // as a recursive kernel.
++  CUTE_UNROLL
++  for (int _ri = 0; _ri < int(size(src)); ++_ri) {
++    src_c(_ri) = static_cast<NewSrcType>(src(_ri));
++  }
+   reorder(src_c, dst, slayout, dlayout);
+ }
+ 
+@@ -248,7 +259,14 @@ reorder_impl(ReorderDispatchRelayoutConvert const&,
+   auto dst_c = make_fragment_like<NewDstType>(dst);
+ 
+   reorder(src, dst_c, slayout, dlayout);
+-  reorder(dst_c, dst, dlayout, dlayout);
++  // The convert step passes identical TV-layouts (dlayout, dlayout), so it is a pure
++  // element-wise type conversion; see the note in
++  // reorder_impl(ReorderDispatchConvertRelayout, ...). Doing it directly avoids the
++  // sub-byte DstType path re-selecting ReorderDispatchRelayoutConvert and recursing.
++  CUTE_UNROLL
++  for (int _ri = 0; _ri < int(size(dst)); ++_ri) {
++    dst(_ri) = static_cast<DstType>(dst_c(_ri));
++  }
+ }
+ 
+ 
