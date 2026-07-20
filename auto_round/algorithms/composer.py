@@ -836,8 +836,8 @@ class AlgorithmComposer:
 
     def prepare_run(self):
         for alg in self.members():
-            alg.prepare_run(self)
+            alg.prepare_run()
 
     def finalize_run(self):
         for alg in self.members():
-            alg.finalize_run(self)
+            alg.finalize_run()

@@ -317,9 +317,9 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         self._use_outlier_suppressed_loss = False
         logger.info("using algorithm extension for quantization.")
 
-    def prepare_run(self, compressor) -> None:
+    def prepare_run(self) -> None:
         """Model-level setup: initialise scheme-dependent state once before block iteration."""
-        super().prepare_run(compressor)
+        super().prepare_run()
 
         if (
             self.scheme.sym

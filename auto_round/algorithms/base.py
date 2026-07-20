@@ -138,10 +138,10 @@ class BaseAlgorithm:
     def amp_dtype(self) -> torch.dtype:
         return getattr(self.model_context, "amp_dtype", torch.float32)
 
-    def prepare_run(self, compressor: Any) -> None:
+    def prepare_run(self) -> None:
         """Model-level preparation called once before block iteration starts."""
         return
 
-    def finalize_run(self, compressor: Any) -> None:
+    def finalize_run(self) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return

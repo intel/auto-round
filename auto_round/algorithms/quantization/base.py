@@ -290,11 +290,11 @@ class BaseQuantizer(BaseAlgorithm):
     #     return self._resolved_block_forward
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
-    def prepare_run(self, compressor: Any) -> None:
+    def prepare_run(self) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return
 
-    def finalize_run(self, compressor: Any) -> None:
+    def finalize_run(self) -> None:
         """Model-level teardown (called once after all blocks are processed).
         Must be idempotent — the Compressor calls this inside a ``try/finally``.
         """

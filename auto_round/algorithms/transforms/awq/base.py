@@ -158,15 +158,15 @@ class AWQTransform(BasePreprocessor):
         super().bind(compressor)
         nblocks = getattr(compressor, "nblocks", 1)
         if nblocks > 1:
-            logger.warning(
-                "AWQ does not support nblocks > 1 (got nblocks=%s). " "Falling back to nblocks=1.",
+            logger.error(
+                "AWQ does not support nblocks > 1 (got nblocks=%s). ",
                 nblocks,
             )
-            compressor.nblocks = 1
+            exit(-1)
 
-    def prepare_run(self, compressor) -> None:
+    def prepare_run(self) -> None:
         """Validate compatibility, resolve model-wide mappings, and group by block prefix."""
-        model = compressor.model_context.model
+        model = self.model
         report = check_model_compatibility(model, self._user_mappings)
         for warning in report["warnings"]:
             logger.warning(warning)
@@ -187,10 +187,12 @@ class AWQTransform(BasePreprocessor):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        self._qdq_tool.configure(compressor)
 
-        if compressor.compress_context is not None:
-            compressor.compress_context.cache_device = torch.device("cpu")
+        #TODO wenhuach
+        # self._qdq_tool.configure(compressor)
+
+        # if compressor.compress_context is not None:
+        #     compressor.compress_context.cache_device = torch.device("cpu")
 
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",
@@ -235,7 +237,6 @@ class AWQTransform(BasePreprocessor):
         for mapping in block_mappings:
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
-        ctx.mark_modified_fp_params(modified)
 
     def post_quantize_block(self, ctx: "BlockContext") -> None:
         """Release per-block AWQ caches to free memory."""
@@ -257,7 +258,7 @@ class AWQTransform(BasePreprocessor):
                 seen_parents.add(pid)
                 self._parent_args_cache.pop(m.parent, None)
 
-    def finalize_run(self, compressor) -> None:
+    def finalize_run(self) -> None:
         """Idempotent global teardown.  Safe to call inside try/finally."""
         if self._finalized:
             return
