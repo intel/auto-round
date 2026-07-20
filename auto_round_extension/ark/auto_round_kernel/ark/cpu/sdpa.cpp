@@ -45,6 +45,19 @@ size_t bestla_attn_workspace_size(const attn_shape_t& shape, int num_threads) {
   return layout.thread_stride_bytes * static_cast<size_t>(std::max(1, num_threads));
 }
 
+size_t bestla_route4_workspace_size(const attn_shape_t& shape, int num_threads) {
+  // Route 4 (homogeneous bf16 over mha_interface_t) follows Neural Speed's
+  // compact scratch contract: one bf16 tile buffer per thread, sized only for
+  // the route's QK exp-sum tile. It does not need the shared prefix-based
+  // layout used by the stable routes.
+  constexpr int kRoute4MTile = 16;
+  constexpr int kRoute4NTile = 64;
+  const size_t thread_bytes = static_cast<size_t>(kRoute4MTile) *
+                              static_cast<size_t>(bestla::utils::padto(std::max(1, shape.sl_kv), kRoute4NTile)) *
+                              sizeof(bestla::utils::bf16);
+  return thread_bytes * static_cast<size_t>(std::max(1, num_threads));
+}
+
 char* aligned_bestla_tmp(bestla::utils::aligned_vector<float>& workspace, const attn_shape_t& shape, size_t bytes) {
   const size_t total_floats = (bytes + sizeof(float) - 1) / sizeof(float);
   workspace.resize(total_floats);
@@ -507,25 +520,26 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
         "ark::cpu::bestla_sdpa_forward: head_num must be a positive multiple of heads_kv (GQA groups)");
   }
 
-  // Runtime capability gate: the wired weight prologues are ISA-specialized and
-  // return BTLA_CODE::NotSupport (silently, behind asserts) on hardware that
-  // lacks the needed extension. Detect that up front and raise a clear error
-  // naming the dtype/layout/ISA condition instead of relying on assert (which is
-  // a no-op in release builds) or producing wrong results:
-  //   * F16 K/V  -> NTILE24_ROWPACK1, fp16->fp32 via F16C, needs AVX2.
-  //   * BF16 K/V -> NTILE48_ROWPACK2, bf16->fp32,         needs AVX512F.
-  {
-    auto* cpu = bestla::device::CpuDevice::getInstance();
-    if (kv_dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
-      throw std::runtime_error(
-          "ark::cpu::bestla_sdpa_forward: fp16 K/V (NTILE24_ROWPACK1) mixed SDPA requires AVX2; "
-          "this CPU/build does not provide it");
-    }
-    if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
-      throw std::runtime_error(
-          "ark::cpu::bestla_sdpa_forward: bf16 K/V (NTILE48_ROWPACK2) mixed SDPA requires AVX512F; "
-          "this CPU/build does not provide it");
-    }
+  auto* cpu = bestla::device::CpuDevice::getInstance();
+  const bool fp16_plain_avx512 =
+      kv_dtype == BTLA_DTYPE::F16 && bestla_mha::MHA_PREFER_AVX512FP16 && cpu->AVX512_FP16() && local.step_k_sl == 1;
+  const bool fp16_plain_amx_features_ok =
+      (local.attn_flags & (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_PREFER_FP32)) ==
+          0 &&
+      local.head_num == local.heads_kv;
+  const bool fp16_plain_amx = kv_dtype == BTLA_DTYPE::F16 && cpu->AMX_BF16() &&
+                              local.K_layout == ATTN_FWD_LAYOUT_PLAIN && local.V_layout == ATTN_FWD_LAYOUT_PLAIN &&
+                              (local.step_k_head_size == 1 || local.step_k_sl == 1) && fp16_plain_amx_features_ok;
+
+  if (kv_dtype == BTLA_DTYPE::F16 && !(cpu->AVX2() || fp16_plain_avx512 || fp16_plain_amx)) {
+    throw std::runtime_error(
+        "ark::cpu::bestla_sdpa_forward: fp16 mixed SDPA requires AVX2 packed K/V, "
+        "or AVX512-FP16 plain K/V with step_k_sl == 1, or the AMX-BF16 plain route");
+  }
+  if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
+    throw std::runtime_error(
+        "ark::cpu::bestla_sdpa_forward: bf16 K/V (NTILE48_ROWPACK2) mixed SDPA requires AVX512F; "
+        "this CPU/build does not provide it");
   }
 
   // Threading is supplied by the caller (ARK reuses CpuWrapper::get_threading()),
@@ -547,6 +561,12 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
     const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
     local.tmp = aligned_bestla_tmp(workspace, shape, bytes);
+  }
+
+  if (kv_dtype == BTLA_DTYPE::F16 && (fp16_plain_avx512 || fp16_plain_amx)) {
+    const auto typed = make_typed_attn_args<bestla::utils::fp16>(local);
+    bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::fp16, bestla::utils::fp16, float>(typed, *th);
+    return;
   }
 
   // Phase 4 Step 1: bridge raw PLAIN HND/NHD K/V into the Neural-Speed-style
@@ -669,19 +689,14 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
   }
   auto* th = static_cast<bestla::parallel::IThreading*>(local.threading);
   attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
-  const size_t workspace_bytes = bestla_attn_workspace_size(shape, th->num_threads());
+  const size_t workspace_bytes =
+      dtype == BTLA_DTYPE::BF16 ? bestla_route4_workspace_size(shape, th->num_threads())
+                                : bestla_attn_workspace_size(shape, th->num_threads());
 
-  // Allocate the wrapper scratch when the caller did not provide one, using the
-  // same 64B-aligned + prefixed layout as the mixed path above.
+  // Allocate the wrapper scratch when the caller did not provide one.
   bestla::utils::aligned_vector<float> workspace;
   if (local.tmp == nullptr) {
     local.tmp = aligned_bestla_tmp(workspace, shape, workspace_bytes);
-  }
-  if (dtype == BTLA_DTYPE::BF16) {
-    // The migrated non-stable homogeneous bf16 path does not overwrite every
-    // byte of its scratch on small-shape tiles; zero the workspace so repeated
-    // calls cannot pick up stale heap contents.
-    std::memset(local.tmp, 0, workspace_bytes);
   }
 
   // No raw->packed reorder bridge here (unlike the mixed route): the homogeneous
@@ -696,30 +711,9 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
       break;
     }
     case BTLA_DTYPE::BF16: {
-      // The migrated AMX-BF16 non-stable homogeneous path is not yet reliable
-      // across repeated public calls. Preserve homogeneous bf16 sdpa() semantics
-      // by routing through the stable dense kernel while keeping route selection
-      // and external dtype/layout contracts unchanged.
-      MhaDenseArgs dense{};
-      dense.query = local.Q;
-      dense.key = local.K;
-      dense.value = local.V;
-      dense.output = local.dst;
-      dense.q_strides = {local.step_q_sl, 1, local.step_q_head_num, local.step_q_bs};
-      dense.k_strides = {local.step_k_sl, local.step_k_head_size, local.step_k_head_num, local.step_k_bs};
-      dense.v_strides = {local.step_v_head_size, local.step_v_sl, local.step_v_head_num, local.step_v_bs};
-      dense.o_strides = {local.step_dst_sl, 1, local.step_dst_head_num, local.step_dst_bs};
-      dense.dtype = BTLA_DTYPE::BF16;
-      dense.batch = local.batch_size;
-      dense.num_heads_q = local.head_num;
-      dense.num_heads_kv = local.heads_kv;
-      dense.seq_len_q = local.sl_q;
-      dense.seq_len_kv = local.sl_kv;
-      dense.head_dim = local.head_size;
-      dense.softmax_scale = local.QK_scale;
-      dense.is_causal = (local.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0;
-      dense.workspace = nullptr;
-      mha_dense_forward(dense);
+      const auto typed = make_typed_attn_args_homogeneous<bestla::utils::bf16>(local);
+      bestla_mha::bestla_fusion_attn_forward<bestla::utils::bf16, bestla::utils::bf16, bestla::utils::bf16,
+                                             bestla::utils::bf16>(typed, *th);
       break;
     }
     default:
@@ -1177,48 +1171,6 @@ void shift_packed_k_cache_rope(void* cache_k, const void* cossin, const ReorderK
           shape.k_head_size_pad, seq_keep);
     }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Debug-only: call the raw Route 4 kernel directly, bypassing the public
-// mitigation.  This is the same code path that the mitigation replaces with
-// mha_dense_forward, exposed so we can reproduce the NaN bug in isolation.
-// Set ARK_DEBUG_ROUTE4_NAN=1 to enable NaN instrumentation printouts.
-// ---------------------------------------------------------------------------
-void debug_bestla_sdpa_forward_route4_raw(const attn_fwd_args_t& args) {
-  if (!args.Q || !args.K || !args.V || !args.dst) {
-    throw std::invalid_argument("debug_route4_raw: Q/K/V/dst pointers must be non-null");
-  }
-  attn_fwd_args_t local = args;
-  std::vector<int> n_padding_storage;
-  prepare_forward_padding(local, n_padding_storage, "debug_route4_raw", /*padding_supported=*/false);
-  validate_homogeneous_bf16_nonstable_route(local);
-
-  {
-    auto* cpu = bestla::device::CpuDevice::getInstance();
-    if (!cpu->AMX_BF16()) {
-      throw std::runtime_error("debug_route4_raw: requires AMX-BF16 CPU");
-    }
-  }
-
-  if (local.threading == nullptr) {
-    throw std::invalid_argument("debug_route4_raw: threading pool must be provided");
-  }
-  auto* th = static_cast<bestla::parallel::IThreading*>(local.threading);
-  attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
-  const size_t workspace_bytes = bestla_attn_workspace_size(shape, th->num_threads());
-
-  bestla::utils::aligned_vector<float> workspace;
-  if (local.tmp == nullptr) {
-    local.tmp = aligned_bestla_tmp(workspace, shape, workspace_bytes);
-  }
-  // Zero workspace (same as the mitigated path does for BF16)
-  std::memset(local.tmp, 0, workspace_bytes);
-
-  // Directly call the REAL Route 4 kernel (NOT mitigated through mha_dense_forward)
-  const auto typed = make_typed_attn_args_homogeneous<bestla::utils::bf16>(local);
-  bestla_mha::bestla_fusion_attn_forward<bestla::utils::bf16, bestla::utils::bf16, bestla::utils::bf16,
-                                         bestla::utils::bf16>(typed, *th);
 }
 
 }  // namespace ark::cpu

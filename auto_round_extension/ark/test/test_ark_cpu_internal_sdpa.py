@@ -139,10 +139,6 @@ def _packed_sdpa(q_f32, k, v, scale, *, is_causal=False, n_padding=None):
     return handle.forward(q_f32, cache_k, cache_v, seq_kv, is_causal=is_causal, scale=scale, n_padding=n_padding)
 
 
-def _route4_raw_sdpa(q, k, v, scale, *, is_causal=False, layout="HND"):
-    return INTERNAL_CPU.debug_route4_raw(q, k, v, scale=scale, is_causal=is_causal, tensor_layout=layout)
-
-
 @pytest.mark.parametrize(
     ("dtype", "feature_kwargs", "kwarg_name"),
     [
@@ -472,69 +468,3 @@ def test_debug_route_ignores_nonstandard_kwargs_for_homogeneous_paths():
     assert _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16, use_alibi=True) == _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16)
     assert _resolved_cpu_sdpa_route(q_bf16, k_bf16, v_bf16, prefer_fp32=True) == _resolved_cpu_sdpa_route(q_bf16, k_bf16, v_bf16)
     assert _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16, n_padding=[seq]) == _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16)
-
-
-def test_debug_route4_raw_causal_smoke_matches_reference():
-    if not (HAS_AMX_BF16 and BUILD_HAS_BF16_ROUTE):
-        pytest.skip("Raw Route 4 requires AMX-BF16 hardware and a BF16 build")
-
-    torch.manual_seed(9100)
-    batch, heads, seq, head_dim = 1, 4, 32, 16
-    scale = 1.0 / math.sqrt(head_dim)
-    q = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    k = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    v = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        q.float(), k.float(), v.float(), scale=scale, is_causal=True
-    )
-
-    outs = []
-    for _ in range(3):
-        out = _route4_raw_sdpa(q, k, v, scale, is_causal=True)
-        assert out.dtype == torch.bfloat16
-        assert not torch.isnan(out).any().item()
-        torch.testing.assert_close(out.float(), expected, atol=2e-2, rtol=2e-2)
-        outs.append(out)
-
-    torch.testing.assert_close(outs[0].float(), outs[1].float(), atol=0, rtol=0)
-    torch.testing.assert_close(outs[0].float(), outs[2].float(), atol=0, rtol=0)
-
-
-@pytest.mark.xfail(strict=True, reason="Raw Route 4 remains unstable on some causal seeds")
-def test_debug_route4_raw_causal_repeated_call_regression():
-    if not (HAS_AMX_BF16 and BUILD_HAS_BF16_ROUTE):
-        pytest.skip("Raw Route 4 requires AMX-BF16 hardware and a BF16 build")
-
-    torch.manual_seed(9000)
-    batch, heads, seq, head_dim = 1, 4, 32, 16
-    scale = 1.0 / math.sqrt(head_dim)
-    q = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    k = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    v = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        q.float(), k.float(), v.float(), scale=scale, is_causal=True
-    )
-
-    for _ in range(3):
-        out = _route4_raw_sdpa(q, k, v, scale, is_causal=True)
-        torch.testing.assert_close(out.float(), expected, atol=2e-2, rtol=2e-2)
-
-
-@pytest.mark.xfail(strict=True, reason="Raw Route 4 still regresses on single-head causal workloads")
-def test_debug_route4_raw_single_head_causal_regression():
-    if not (HAS_AMX_BF16 and BUILD_HAS_BF16_ROUTE):
-        pytest.skip("Raw Route 4 requires AMX-BF16 hardware and a BF16 build")
-
-    torch.manual_seed(9004)
-    batch, heads, seq, head_dim = 1, 1, 32, 16
-    scale = 1.0 / math.sqrt(head_dim)
-    q = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    k = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    v = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        q.float(), k.float(), v.float(), scale=scale, is_causal=True
-    )
-
-    for _ in range(3):
-        out = _route4_raw_sdpa(q, k, v, scale, is_causal=True)
-        torch.testing.assert_close(out.float(), expected, atol=2e-2, rtol=2e-2)

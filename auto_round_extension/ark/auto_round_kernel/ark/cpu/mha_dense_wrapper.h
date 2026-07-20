@@ -107,6 +107,7 @@ using namespace bestla;  // NOLINT(build/namespaces): match Neural Speed wrapper
 #ifndef ARK_MHA_2ND_EXP
 #define ARK_MHA_2ND_EXP 1
 #endif
+constexpr bool MHA_PREFER_AVX512FP16 = true;
 
 inline float mha_exp_ref(float x) {
 #if ARK_MHA_2ND_EXP
@@ -205,26 +206,6 @@ class scale_write_back_t {
     const auto dst = p.dst + M_offset * p.ld_dst + N_offset;
     const auto scale = p.scale + M_offset;
 
-    // DEBUG Route4: check PV gemm fp32 output for NaN BEFORE scale+writeback
-    if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
-      if (env[0] == '1') {
-        bool has_nan = false;
-        int first_row = -1, first_col = -1;
-        for (int i = 0; i < M && !has_nan; ++i) {
-          for (int j = 0; j < N; ++j) {
-            if (std::isnan(src[i * src_step + j])) {
-              has_nan = true; first_row = i; first_col = j; break;
-            }
-          }
-        }
-        if (has_nan) {
-          std::fprintf(stderr, "[ROUTE4_DEBUG] PV_GEMM_OUTPUT(raw fp32): NaN at (row=%d,col=%d) "
-                       "M=%d N=%d M_offset=%d N_offset=%d\n",
-                       first_row, first_col, M, N, M_offset, N_offset);
-        }
-      }
-    }
-
     for (int i = 0; i < M; ++i)
       for (int j = 0; j < N; ++j)  //
         dst[i * p.ld_dst + j] = static_cast<DType>(scale[i] * src[i * src_step + j]);
@@ -260,35 +241,24 @@ class scale_exp_acc_sum_fp32_t {
     float scale;
     int causal_offset;  // offset for causal mask; negative disables causal mask
     float alibi_slope;  // m-factor in the alibi paper (https://arxiv.org/abs/2108.12409)
+    int valid_n = -1;   // number of logical score columns before padded tail
   };
   template <BTLA_ISA ISA_T>
   static inline BTLA_CODE forward(const float* src, const int src_step, const int M_offset, const int N_offset,
                                   const int M, const int N, const Param& p, void* tmpcache, size_t cachesize) {
     assert(("alibi not supported!", p.alibi_slope == 0.f));
+    const int valid_n = p.valid_n >= 0 ? std::min(p.valid_n, N) : N;
 
-    // DEBUG Route4 NaN: check raw QK gemm output (fp32) before exp-sum epilogue
-    if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
-      if (env[0] == '1') {
-        bool has_nan = false;
-        int first_row = -1, first_col = -1;
-        for (int i = 0; i < M && !has_nan; ++i) {
-          for (int j = 0; j < N; ++j) {
-            if (std::isnan(src[i * src_step + j])) {
-              has_nan = true; first_row = i; first_col = j; break;
-            }
-          }
-        }
-        if (has_nan) {
-          std::fprintf(stderr, "[ROUTE4_DEBUG] QK_GEMM_OUTPUT(raw fp32): NaN at (row=%d,col=%d) "
-                       "M=%d N=%d M_offset=%d N_offset=%d\n",
-                       first_row, first_col, M, N, M_offset, N_offset);
-        }
+    const auto ret = bestla::kernel::wrapper::ScaleExpAccSumFp32<T_DST>::template forward<ISA_T>(
+        src, src_step, p.dst, p.ld_dst, p.dst_sum, M_offset, N_offset, M, valid_n, p.scale, p.causal_offset, tmpcache,
+        cachesize);
+    if (ret == BTLA_CODE::Success && valid_n < N) {
+      auto* dst = p.dst + static_cast<size_t>(M_offset) * p.ld_dst + N_offset;
+      for (int i = 0; i < M; ++i) {
+        std::fill_n(dst + static_cast<size_t>(i) * p.ld_dst + valid_n, N - valid_n, T_DST{});
       }
     }
-
-    return bestla::kernel::wrapper::ScaleExpAccSumFp32<T_DST>::template forward<ISA_T>(
-        src, src_step, p.dst, p.ld_dst, p.dst_sum, M_offset, N_offset, M, N, p.scale, p.causal_offset, tmpcache,
-        cachesize);
+    return ret;
   }
 };
 using ScaleExpAccSumFp32Bf16 = scale_exp_acc_sum_fp32_t<utils::bf16>;
@@ -615,10 +585,12 @@ class launcher_base_off_t                  //
     tmpB = utils::cpu_pointer_align(tmpB);
     auto tmpA = reinterpret_cast<AType*>(tmpB + static_cast<size_t>(_config.block[1]) * _config.block[2]);
     tmpA = utils::cpu_pointer_align(tmpA);
+    std::memset(tmpA, 0, static_cast<size_t>(GemmCore::MTILE) * _config.block[2] * sizeof(AType));
     auto tmpC = reinterpret_cast<CType*>(tmpA + static_cast<size_t>(GemmCore::MTILE) * _config.block[2]);
     tmpC = utils::cpu_pointer_align(tmpC);
     auto tmpCache = tmpC + _config.block[0] * _config.block[1];
     tmpCache = utils::cpu_pointer_align(tmpCache);
+    std::memset(tmpC, 0, static_cast<size_t>(_config.block[0]) * _config.block[1] * sizeof(CType));
 
     for (int itern = 0; itern < _config.size[1]; itern += _config.block[1]) {
       int n_remain = utils::remainsize(itern, _config.size[1], _config.block[1]);
@@ -706,10 +678,12 @@ class launcher_base_weight_t               //
     tmpB = utils::cpu_pointer_align(tmpB);
     auto tmpA = reinterpret_cast<AType*>(tmpB + static_cast<size_t>(_config.block[1]) * _config.block[2]);
     tmpA = utils::cpu_pointer_align(tmpA);
+    std::memset(tmpA, 0, static_cast<size_t>(GemmCore::MTILE) * _config.block[2] * sizeof(AType));
     auto tmpC = reinterpret_cast<CType*>(tmpA + static_cast<size_t>(GemmCore::MTILE) * _config.block[2]);
     tmpC = utils::cpu_pointer_align(tmpC);
     auto tmpCache = tmpC + _config.block[0] * _config.block[1];
     tmpCache = utils::cpu_pointer_align(tmpCache);
+    std::memset(tmpC, 0, static_cast<size_t>(_config.block[0]) * _config.block[1] * sizeof(CType));
 
     for (int itern = 0; itern < _config.size[1]; itern += _config.block[1]) {
       int n_remain = utils::remainsize(itern, _config.size[1], _config.block[1]);
@@ -1318,9 +1292,8 @@ class mha_interface_t {
       // calculate mm + softmax + mm
       {
         const int tmp_exp_size = M_TILE * utils::padto(p.sl_kv, GemmQK::NTILE) * static_cast<int>(sizeof(utils::bf16));
-        const auto tmp_layout = bestla_tmp_layout(p.sl_q, p.sl_kv);
-        const auto thread_tmp = p.tmp + static_cast<size_t>(tid) * tmp_layout.thread_stride_bytes;
-        const auto tmp = thread_tmp + tmp_layout.prefix_bytes;
+        const auto thread_tmp = p.tmp + static_cast<size_t>(tid) * static_cast<size_t>(tmp_exp_size);
+        const auto tmp = thread_tmp;
         ThreadProblem2D thdp{tid};
         parl.getIndex(thdp);
         const auto [task_start, _assert0] = thdp.loc;
@@ -1381,60 +1354,13 @@ class mha_interface_t {
                       /* .scale = */ p.QK_scale,
                       /* .causal_offset = */ is_causal ? sl_diff : -1,
                       /* .alibi_slope = */ 0.f,
+                      /* .valid_n = */ unmasked_size,
                   },
               },
               tpQK, /* w_offset */ ibat * K_pack_batch_off);
 
-          // DEBUG Route4 NaN instrumentation: checkpoint 1 — after QK exp-sum
-          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
-            if (env[0] == '1') {
-              static int call_count = 0;
-              bool has_nan_p = false, has_nan_sum = false;
-              int first_nan_p_row = -1, first_nan_p_col = -1;
-              for (int ii = 0; ii < m_size && !has_nan_p; ++ii) {
-                for (int jj = 0; jj < unmasked_size_pad_qk; ++jj) {
-                  auto val = bf16_tmp[ii * ld_tmp_exp + jj];
-                  if (std::isnan(static_cast<float>(val))) {
-                    has_nan_p = true; first_nan_p_row = ii; first_nan_p_col = jj; break;
-                  }
-                }
-              }
-              for (int ii = 0; ii < m_size; ++ii) {
-                if (std::isnan(exp_sum[ii])) { has_nan_sum = true; break; }
-              }
-              if (has_nan_p || has_nan_sum) {
-                std::fprintf(stderr, "[ROUTE4_DEBUG] call=%d tid=%d ibat=%d ihn=%d i_m=%d "
-                             "CKPT1(after QK exp-sum): NaN_P=%d(first@row=%d,col=%d) NaN_exp_sum=%d "
-                             "m_size=%d unmasked=%d\n",
-                             call_count, tid, ibat, ihn, i_m,
-                             has_nan_p, first_nan_p_row, first_nan_p_col, has_nan_sum,
-                             m_size, unmasked_size);
-              }
-              ++call_count;
-            }
-          }
-
           for (int ii = 0; ii < m_size; ++ii) exp_sum[ii] = 1.f / exp_sum[ii];
           for (int ii = m_size; ii < M_TILE; ++ii) exp_sum[ii] = 0.f;
-
-          // DEBUG Route4 NaN instrumentation: checkpoint 2 — after reciprocal
-          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
-            if (env[0] == '1') {
-              bool has_nan = false, has_inf = false;
-              for (int ii = 0; ii < m_size; ++ii) {
-                if (std::isnan(exp_sum[ii])) has_nan = true;
-                if (std::isinf(exp_sum[ii])) has_inf = true;
-              }
-              if (has_nan || has_inf) {
-                std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ibat=%d ihn=%d i_m=%d "
-                             "CKPT2(after 1/exp_sum): NaN=%d Inf=%d m_size=%d exp_sum=[",
-                             tid, ibat, ihn, i_m, has_nan, has_inf, m_size);
-                for (int ii = 0; ii < m_size; ++ii)
-                  std::fprintf(stderr, "%a ", static_cast<double>(exp_sum[ii]));
-                std::fprintf(stderr, "]\n");
-              }
-            }
-          }
 
           // Release AMX tile state before the PV gemm to prevent AVX-512
           // register aliasing with tile registers from the QK+exp-sum stage.
@@ -1446,49 +1372,6 @@ class mha_interface_t {
 #ifdef __x86_64__
           __asm__ __volatile__(".byte 0xc4, 0xe2, 0x78, 0x49, 0xc0" ::: "memory");
 #endif
-
-          // DEBUG Route4: dump V packed data for head 3 to check for corruption
-          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
-            if (env[0] == '1' && ihn == 3) {
-              const auto* vpack = reinterpret_cast<const utils::bf16*>(
-                  V_pack.template WPtr<typename GemmPV::BType>());
-              const int v_kpad = V_pack.mKPad;  // = head_size padded
-              const int v_npad = V_pack.mNPad;  // = sl_kv padded
-              bool v_has_nan = false, v_has_inf = false;
-              int v_nan_k = -1, v_nan_n = -1;
-              // Check head 3's V data (ibus=0, ihn=3 → ibat=3)
-              const int ibat3 = 3;
-              for (int kk = 0; kk < v_kpad && !v_has_nan; ++kk) {
-                for (int nn = 0; nn < v_npad && !v_has_nan; ++nn) {
-                  auto vv = vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad +
-                                   static_cast<size_t>(kk) * v_npad + nn];
-                  if (std::isnan(static_cast<float>(vv))) {
-                    v_has_nan = true; v_nan_k = kk; v_nan_n = nn;
-                  }
-                  if (std::isinf(static_cast<float>(vv))) {
-                    v_has_inf = true;
-                  }
-                }
-              }
-              if (v_has_nan || v_has_inf) {
-                std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ihn=%d V_pack_HEAD3: NaN=%d Inf=%d "
-                             "(first_nan@k=%d,n=%d) v_kpad=%d v_npad=%d head_size=%d sl_kv=%d\n",
-                             tid, ihn, v_has_nan, v_has_inf, v_nan_k, v_nan_n,
-                             v_kpad, v_npad, p.head_size, p.sl_kv);
-              }
-              // Also dump a few samples of V data for head 3
-              std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ihn=%d V_pack_HEAD3_sample: "
-                           "v[0,0]=%f v[0,1]=%f v[1,0]=%f v[15,31]=%f "
-                           "KPad=%d NPad=%d mK=%d mN=%d\n",
-                           tid, ihn,
-                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad]),
-                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad + 1]),
-                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad + v_npad]),
-                           static_cast<float>(vpack[static_cast<size_t>(ibat3) * v_kpad * v_npad +
-                                                        15 * v_npad + 31]),
-                           v_kpad, v_npad, V_pack.mK, V_pack.mN);
-            }
-          }
 
           typename parallel::gemm::ThreadProblemBase tpPV{
               /* ThreadProblem2D */ {tid, {}, {0, 0}, {m_size, p.head_size}, true},
@@ -1514,29 +1397,6 @@ class mha_interface_t {
                   },
               },
               tpPV, /* w_offset */ ibat * V_pack_batch_off);
-
-          // DEBUG Route4 NaN instrumentation: checkpoint 3 — after PV write-back
-          if (const char* env = std::getenv("ARK_DEBUG_ROUTE4_NAN")) {
-            if (env[0] == '1') {
-              bool has_nan = false;
-              int first_row = -1, first_col = -1;
-              for (int ii = 0; ii < m_size && !has_nan; ++ii) {
-                for (int jj = 0; jj < p.head_size; ++jj) {
-                  auto val = head_dst[ii * p.step_dst_sl + jj];
-                  if (std::isnan(static_cast<float>(val))) {
-                    has_nan = true; first_row = ii; first_col = jj; break;
-                  }
-                }
-              }
-              if (has_nan) {
-                std::fprintf(stderr, "[ROUTE4_DEBUG] tid=%d ibat=%d ihn=%d i_m=%d "
-                             "CKPT3(after PV writeback): NaN in dst first@(row=%d,col=%d) "
-                             "m_size=%d head_size=%d\n",
-                             tid, ibat, ihn, i_m,
-                             first_row, first_col, m_size, p.head_size);
-              }
-            }
-          }
         }
 
         // Release AMX tile state at end of this thread's work to prevent
@@ -1587,15 +1447,79 @@ template <typename Q_T, typename K_T, typename V_T, typename DST_T>
 inline void bestla_fusion_attn_forward(const attn_fwd_args_t<Q_T, K_T, V_T, DST_T>& params,
                                        parallel::IThreading& th) = delete;
 
-// fp32 Q, fp16 K/V (NTILE24 row-packed), fp32 dst. ARK wires only the AVX2
-// stable-interface branch: Neural Speed's AVX512-FP16 branch needs the
-// avx512fp16 GemmCore and its AMX-BF16 branch needs the non-stable
-// `mha_interface_t` / `ScaleExpAccSumFp32Bf16`, neither migrated yet.
+template <class GEMM_T>
+using WeightPackBatchFp16Bf16NonTr = weight_pack_batch_bf16_non_tr_t<GEMM_T, utils::fp16>;
+template <class GEMM_T>
+using WeightPackBatchFp16Bf16Trans = weight_pack_batch_bf16_trans_t<GEMM_T, utils::fp16>;
+
+// fp32 Q, fp16 K/V, fp32 dst. This mirrors Neural Speed's three-way dispatch:
+//   * AVX512-FP16 stable path over raw plain K/V when K is seq-contiguous
+//   * AMX-BF16 non-stable exp-sum path over raw plain K/V
+//   * AVX2 stable path over NTILE24 packed/reordered K/V
 template <>
 inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
     const attn_fwd_args_t<float, utils::fp16, utils::fp16, float>& params, parallel::IThreading& th) {
   GetCPUDevice();
-  if (_cd->AVX2() &&                                          //
+  if (MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() && params.step_k_sl == 1) {
+#if CompileFP16()
+    using GemmKernelFP16TrackMax = launcher_base_weight_t<  //
+        gemm::HCoreRowNAvx512fp16<64, 8>,                   //
+        prologue_a::gemm::ActivationConverterFp32,          //
+        weight_base_t,                                      //
+        ScaleTrackMaxFp16Fp32>;
+    using GemmKernelFP16 = launcher_base_weight_t<          //
+        gemm::HCoreRowNAvx512fp16<64, 8>,                   //
+        prologue_a::gemm::ActivationBase,                   //
+        weight_base_t,                                      //
+        bestla::epilogue::gemm::AccumulatorWriteBackFp16Fp32>;
+    static mha_stable_interface_t<GemmKernelFP16TrackMax, GemmKernelFP16> mha;
+    [[maybe_unused]] const auto ret = mha.compute(params, th);
+    assert(ret == BTLA_CODE::Success);
+#else
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32/fp16 AVX512-FP16 attention requires CompileFP16");
+#endif
+  } else if (_cd->AMX_BF16() && params.K_layout == ATTN_FWD_LAYOUT_PLAIN && params.V_layout == ATTN_FWD_LAYOUT_PLAIN) {
+#if CompileBF16()
+    if (params.step_k_head_size == 1) {
+      using GemmKernelFP32FP16BF16ExpSum = launcher_base_off_t<  //
+          gemm::HCoreRowNAmxbf16<64, 16>,                        //
+          prologue_a::gemm::ActivationConverterFp32,             //
+          WeightPackBatchFp16Bf16Trans,                          //
+          ScaleExpAccSumFp32Bf16>;
+      using GemmKernelBF16FP16FP32 = launcher_base_off_t<        //
+          gemm::HCoreRowNAmxbf16<64, 16>,                        //
+          prologue_a::gemm::ActivationBase,                      //
+          WeightPackBatchFp16Bf16NonTr,                          //
+          ScaleWriteBackFp32Fp32>;
+      static mha_interface_t<GemmKernelFP32FP16BF16ExpSum, GemmKernelBF16FP16FP32> mha;
+      [[maybe_unused]] const auto ret = mha.compute(params, th);
+      assert(ret == BTLA_CODE::Success);
+    } else if (params.step_k_sl == 1) {
+      using GemmKernelFP32FP16BF16ExpSum = launcher_base_off_t<  //
+          gemm::HCoreRowNAmxbf16<64, 16>,                        //
+          prologue_a::gemm::ActivationConverterFp32,             //
+          WeightPackBatchFp16Bf16NonTr,                          //
+          ScaleExpAccSumFp32Bf16>;
+      using GemmKernelBF16FP16FP32 = launcher_base_off_t<        //
+          gemm::HCoreRowNAmxbf16<64, 16>,                        //
+          prologue_a::gemm::ActivationBase,                      //
+          WeightPackBatchFp16Bf16NonTr,                          //
+          ScaleWriteBackFp32Fp32>;
+      static mha_interface_t<GemmKernelFP32FP16BF16ExpSum, GemmKernelBF16FP16FP32> mha;
+      [[maybe_unused]] const auto ret = mha.compute(params, th);
+      assert(ret == BTLA_CODE::Success);
+    } else {
+      throw std::runtime_error(
+          "ark::cpu::bestla_fusion_attn_forward: fp32/fp16 AMX mixed attention over plain K/V requires "
+          "step_k_head_size == 1 or step_k_sl == 1");
+    }
+#else
+    throw std::runtime_error(
+        "ark::cpu::bestla_fusion_attn_forward: fp32/fp16 AMX attention requires an AMX-BF16 build "
+        "(CompileBF16 disabled)");
+#endif
+  } else if (_cd->AVX2() &&                                          //
       params.K_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1 &&  //
       params.V_layout == ATTN_FWD_LAYOUT_NTILE24_ROWPACK1) {
 #if CompileAVX2()
@@ -1619,8 +1543,8 @@ inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
 #endif
   } else {
     throw std::runtime_error(
-        "ark::cpu::bestla_fusion_attn_forward: fp32 Q + fp16 K/V is only wired for AVX2 CPUs with "
-        "NTILE24 row-packed K/V; raw PLAIN (HND/NHD) K/V is not supported yet (Phase 4)");
+        "ark::cpu::bestla_fusion_attn_forward: fp32 Q + fp16 K/V requires one of: "
+        "AVX512-FP16 with step_k_sl == 1, AMX-BF16 over plain K/V, or AVX2 with NTILE24 row-packed K/V");
   }
 }
 
@@ -1818,13 +1742,8 @@ inline void bestla_fusion_attn_forward<utils::bf16, utils::bf16, utils::bf16, ut
 // ---------------------------------------------------------------------------
 using PackedWeightBatch = storage_packed_weight_batch_t;
 
-// bf16 packers on the AMX bf16 core (BType == utils::bf16) are declared above,
-// immediately before the homogeneous bf16 overload that composes them
-// (WeightPackBatchBf16Bf16NonTr / WeightPackBatchBf16Bf16Trans).
-template <class GEMM_T>
-using WeightPackBatchFp16Bf16NonTr = weight_pack_batch_bf16_non_tr_t<GEMM_T, utils::fp16>;
-template <class GEMM_T>
-using WeightPackBatchFp16Bf16Trans = weight_pack_batch_bf16_trans_t<GEMM_T, utils::fp16>;
+// bf16/fp16 packers on the AMX bf16 core are declared above, near the mixed
+// route specializations that compose them.
 
 namespace instantiation_check {
 // AVX2 fp32 core (SCoreRowNAvx2<24, 4>): drives the fp16->fp32 N-tile-24 path.

@@ -214,9 +214,4 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 // otherwise silently falls back to Tier-0 scalar.
 void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dtype);
 
-// Debug-only: call the raw Route 4 (mha_interface_t + AMX-BF16) kernel directly,
-// bypassing the public mitigation that redirects to mha_dense_forward.
-// Requires ARK_DEBUG_ROUTE4_NAN=1 to enable NaN instrumentation printouts.
-void debug_bestla_sdpa_forward_route4_raw(const attn_fwd_args_t& args);
-
 }  // namespace ark::cpu

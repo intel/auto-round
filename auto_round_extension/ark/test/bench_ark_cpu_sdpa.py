@@ -287,7 +287,7 @@ def run_packed_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, warmup
 def _print_public_rows(rows):
     header = (
         f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'dtype':>10}{'route':>12}{'ark(ms)':>11}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
+        f"{'dtype':>10}{'route':>22}{'ark(ms)':>11}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
     )
     print("\n[public sdpa — homogeneous/input-matched dtypes]")
     print(header)
@@ -295,7 +295,7 @@ def _print_public_rows(rows):
     for row in rows:
         print(
             f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
-            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['route']:>12}"
+            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['route']:>22}"
             f"{row['ark_ms']:>11.3f}{row['ref_ms']:>11.3f}"
             f"{row['speedup']:>9.2f}{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
         )
@@ -310,7 +310,7 @@ def _print_public_rows(rows):
 def _print_mixed_rows(rows, title, latency_key, latency_label):
     header = (
         f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'q_dtype':>10}{'kv_dtype':>10}{'route':>12}{latency_label:>12}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
+        f"{'q_dtype':>10}{'kv_dtype':>10}{'route':>22}{latency_label:>12}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
     )
     print(f"\n[{title}]")
     print(header)
@@ -318,7 +318,7 @@ def _print_mixed_rows(rows, title, latency_key, latency_label):
     for row in rows:
         print(
             f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
-            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['q_dtype']:>10}{row['kv_dtype']:>10}{row['route']:>12}"
+            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['q_dtype']:>10}{row['kv_dtype']:>10}{row['route']:>22}"
             f"{row[latency_key]:>12.3f}{row['ref_ms']:>11.3f}{row['speedup']:>9.2f}"
             f"{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
         )

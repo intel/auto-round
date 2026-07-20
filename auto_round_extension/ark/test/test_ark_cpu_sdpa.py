@@ -8,6 +8,7 @@ scale, dtype, GQA, prefill/decode behavior, and homogeneous route
 hit/fallback without touching internal mixed-route-only features.
 """
 
+import inspect
 import math
 import sys
 from pathlib import Path
@@ -31,6 +32,27 @@ ROUTE_HOMOGENEOUS_FP16 = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOU
 ROUTE_HOMOGENEOUS_BF16 = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16
 
 
+def test_public_xpu_attention_api_keeps_return_lse_kwargs():
+    for fn in (
+        auto_round_kernel.sdpa,
+        auto_round_kernel.sagev1,
+        auto_round_kernel.sagev1_pvi8,
+        auto_round_kernel.sageattn,
+    ):
+        param = inspect.signature(fn).parameters["return_lse"]
+        assert param.default is False
+
+
+def test_ark_cpu_sdpa_rejects_return_lse():
+    torch.manual_seed(2036)
+    q = torch.randn(1, 2, 4, 8, dtype=torch.float32)
+    k = torch.randn(1, 2, 4, 8, dtype=torch.float32)
+    v = torch.randn(1, 2, 4, 8, dtype=torch.float32)
+
+    with pytest.raises(NotImplementedError, match="return_lse is not supported on CPU"):
+        auto_round_kernel.sdpa(q, k, v, return_lse=True)
+
+
 def _to_layout(tensor_hnd, layout):
     if layout == "HND":
         return tensor_hnd.contiguous()
@@ -45,6 +67,10 @@ def _to_hnd(tensor, layout):
 
 def _resolved_cpu_sdpa_route(query, key, value, **kwargs):
     return auto_round_kernel.internal.cpu.debug_resolve_sdpa_route(query, key, value, **kwargs)
+
+
+def _public_fp16_hom_route_expected():
+    return ROUTE_HOMOGENEOUS_FP16 if (HAS_AVX512_FP16 and BUILD_HAS_FP16_ROUTE) else ROUTE_SCALAR
 
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
 def test_ark_cpu_sdpa_decode_matches_torch_for_layout(layout):
@@ -257,7 +283,7 @@ def test_fp16_homogeneous_route_resolution_prefill_causal(layout):
         is_causal=True,
         tensor_layout=layout,
     )
-    assert route == (ROUTE_HOMOGENEOUS_FP16 if HAS_AVX512_FP16 and BUILD_HAS_FP16_ROUTE else ROUTE_SCALAR)
+    assert route == _public_fp16_hom_route_expected()
 
 
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
@@ -274,7 +300,7 @@ def test_fp16_homogeneous_route_resolution_decode_gqa(layout):
         _to_layout(v_hnd, layout),
         tensor_layout=layout,
     )
-    assert route == (ROUTE_HOMOGENEOUS_FP16 if HAS_AVX512_FP16 and BUILD_HAS_FP16_ROUTE else ROUTE_SCALAR)
+    assert route == _public_fp16_hom_route_expected()
 
 
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
@@ -312,3 +338,50 @@ def test_homogeneous_bf16_gqa_falls_back_without_changing_semantics():
 
     assert actual.dtype == torch.bfloat16
     torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
+
+
+def test_public_mixed_sdpa_reuses_hidden_packed_kv_cache(monkeypatch):
+    torch.manual_seed(4110)
+    q = torch.randn(1, 8, 1, 16, dtype=torch.float32)
+    k = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+    v = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+
+    call_count = 0
+    original = auto_round_kernel.ark_cpu_update_packed_kv_from_descriptor
+
+    def counted_update(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(auto_round_kernel, "ark_cpu_update_packed_kv_from_descriptor", counted_update)
+
+    out1 = auto_round_kernel.sdpa(q, k, v)
+    out2 = auto_round_kernel.sdpa(q, k, v)
+
+    assert call_count == 1
+    torch.testing.assert_close(out1, out2, atol=0, rtol=0)
+
+
+def test_public_mixed_sdpa_refreshes_hidden_packed_kv_cache_after_mutation(monkeypatch):
+    torch.manual_seed(4111)
+    q = torch.randn(1, 8, 1, 16, dtype=torch.float32)
+    k = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+    v = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+
+    call_count = 0
+    original = auto_round_kernel.ark_cpu_update_packed_kv_from_descriptor
+
+    def counted_update(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(auto_round_kernel, "ark_cpu_update_packed_kv_from_descriptor", counted_update)
+
+    out1 = auto_round_kernel.sdpa(q, k, v)
+    k.add_(0.25)
+    out2 = auto_round_kernel.sdpa(q, k, v)
+
+    assert call_count == 2
+    assert not torch.equal(out1, out2)
