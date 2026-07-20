@@ -847,13 +847,12 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             ctx = BlockContext(
                 model=self.model_context.model,
-                block=block,
                 block_names=[getattr(block, "global_name", "")],
                 block_name=getattr(block, "global_name", ""),
                 block_index=0,
                 device=device,
             )
-            self.alg_composer.quantize_block(block, None, {}, None, None, ctx)
+            self.alg_composer.compress_block(block, None, {}, None, None, ctx)
 
             mv_module_from_gpu(block)
             return None, None
@@ -934,7 +933,6 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         ctx = BlockContext(
             model=self.model_context.model,
-            block=block,
             block_names=[blk_name],
             block_name=blk_name,
             block_index=0,
@@ -965,3 +963,5 @@ class CompressionOrchestrator(BaseOrchestrator):
         mv_module_from_gpu(block)
         self.model_context.is_mllm = orig_is_mllm
         return new_q_input, reference_output
+
+
