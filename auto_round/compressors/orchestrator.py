@@ -26,7 +26,7 @@ from auto_round.calibration import CalibrationContext
 from auto_round.calibration.utils import (
     _update_inputs,
 )
-from auto_round.compressors.base import BaseCompressor
+from auto_round.compressors.base import BaseOrchestrator
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     immediate_pack,
@@ -59,7 +59,7 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
 
-class Compressor(BaseCompressor):
+class CompressionOrchestrator(BaseOrchestrator):
 
     def __init__(
         self,
@@ -97,7 +97,7 @@ class Compressor(BaseCompressor):
         """Run base post-init then attach the registered calibrator strategy.
 
         Subclasses (MLLM/Diffusion) override ``calib`` directly on the
-        Compressor; the calibrator owns ``try_cache_inter_data_gpucpu`` /
+        CompressionOrchestrator; the calibrator owns ``try_cache_inter_data_gpucpu`` /
         ``cache_inter_data`` orchestration plus the LLM ``calib`` body.
         """
         if self._post_init_done:
@@ -746,7 +746,6 @@ class Compressor(BaseCompressor):
             clear_memory(q_layer_input)
             memory_monitor.log_summary()
 
-
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""
         # ``seqlen`` clamping is owned by ``CalibrationState``.
@@ -754,15 +753,6 @@ class Compressor(BaseCompressor):
 
         if self.group_size == 0 and "fp8" not in self.data_type:
             logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
-
-        # if ( # TODO wenhuach add this log
-        #     self.bits <= 2
-        #     and (self.iters < 1000 or not getattr(self.quantize_config, "enable_alg_ext", False))
-        #     and self.super_group_size is None
-        # ):
-        #     logger.warning(
-        #         "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
-        #     )
 
     # This is also for llmc
     def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
@@ -863,10 +853,6 @@ class Compressor(BaseCompressor):
             )
             self.alg_composer.quantize_block(block, None, {}, None, None, ctx)
 
-            # # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-            # if is_nv_fp(self.act_data_type) or not self.act_dynamic:
-            #     set_amax_for_all_moe_layers(block, attr_name="act_max")
-
             mv_module_from_gpu(block)
             return None, None
 
@@ -962,7 +948,6 @@ class Compressor(BaseCompressor):
             q_input=q_input,
         )
 
-
         # ── Cleanup ───────────────────────────────────────────────────────────
         if q_input is not None:
             if input_ids is not q_input:
@@ -975,3 +960,4 @@ class Compressor(BaseCompressor):
         mv_module_from_gpu(block)
         self.model_context.is_mllm = orig_is_mllm
         return new_q_input, reference_output
+

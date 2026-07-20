@@ -599,8 +599,12 @@ class AlgorithmComposer:
         from auto_round.compressors.utils import is_nv_fp
 
         target_input = q_input if q_input else fp_input
-        act_group_size = getattr(layer, "act_group_size", -1)
-        act_data_type = getattr(layer, "act_data_type", None)
+        act_group_size = getattr(layer, "act_group_size")
+        if act_group_size is None:
+            act_group_size = layer.group_size
+        act_data_type = getattr(layer, "act_data_type")
+        if act_data_type is None:
+            act_data_type = layer.data_type
         is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
 
         for inp in target_input:

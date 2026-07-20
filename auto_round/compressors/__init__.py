@@ -17,15 +17,16 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.compressor import Compressor
+    from auto_round.compressors.base import BaseOrchestrator, BaseCompressor
+    from auto_round.compressors.orchestrator import CompressionOrchestrator
     from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
     from auto_round.compressors.model_free import ModelFreeCompressor
 
 __all__ = [
     "AutoRound",
-    "BaseCompressor",
-    "Compressor",
+    "BaseOrchestrator",
+    "BaseCompressor",  # backward-compat alias
+    "CompressionOrchestrator",
     "AutoRoundCompatible",
     "ModelFreeCompressor",
 ]
@@ -33,25 +34,25 @@ __all__ = [
 
 def __getattr__(name):
     """Lazy import to avoid circular dependencies."""
-    if name == "AutoRound" or name == "AutoRoundCompatible":
+    if name in ("AutoRound", "AutoRoundCompatible"):
         from auto_round.compressors.entry import AutoRound, AutoRoundCompatible
 
         if name == "AutoRound":
             return AutoRound
         return AutoRoundCompatible
-    elif name == "BaseCompressor":
-        from auto_round.compressors.base import BaseCompressor
+    elif name in ("BaseOrchestrator", "BaseCompressor"):
+        from auto_round.compressors.base import BaseOrchestrator
 
-        return BaseCompressor
-    elif name == "Compressor":
-        from auto_round.compressors.compressor import Compressor
+        return BaseOrchestrator
+    elif name == "CompressionOrchestrator":
+        from auto_round.compressors.orchestrator import CompressionOrchestrator
 
-        return Compressor
-    elif name == "ZeroShotCompressor":
-        # Backward-compat aliases for Compressor
-        from auto_round.compressors.compressor import Compressor
+        return CompressionOrchestrator
+    elif name in ("Compressor", "ZeroShotCompressor"):
+        # Backward-compat aliases
+        from auto_round.compressors.orchestrator import CompressionOrchestrator
 
-        return Compressor
+        return CompressionOrchestrator
     elif name == "ModelFreeCompressor":
         from auto_round.compressors.model_free import ModelFreeCompressor
 

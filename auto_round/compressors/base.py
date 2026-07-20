@@ -148,7 +148,7 @@ def _make_compressor_scheme_property(name):
     return property(getter, setter)
 
 
-class BaseCompressor(object):
+class BaseOrchestrator(object):
     need_data: bool = True
     compress_context: CompressContext = None
     model_context: ModelContext = None
@@ -1637,3 +1637,7 @@ class BaseCompressor(object):
         memory_monitor.log_summary()
 
         return model, folders
+
+
+#: Backward-compatible alias — prefer ``BaseOrchestrator`` in new code.
+BaseCompressor = BaseOrchestrator

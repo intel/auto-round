@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Callable
 import torch
 
 if TYPE_CHECKING:
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
 
 class Calibrator(ABC):

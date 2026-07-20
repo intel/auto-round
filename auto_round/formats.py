@@ -79,7 +79,7 @@ class AutoRoundExportFormat(str, Enum):
 
 
 if TYPE_CHECKING:
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
 
 def _check_compatibility(formats: list[str], ar: BaseCompressor):

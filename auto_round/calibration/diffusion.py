@@ -29,7 +29,7 @@ from tqdm import tqdm
 
 from auto_round.calibration.llm import LLMCalibrator
 from auto_round.calibration.register import register_calibrator
-from auto_round.compressors import BaseCompressor
+from auto_round.compressors import BaseOrchestrator as BaseCompressor
 from auto_round.logger import logger
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import wrap_block_forward_positional_to_kwargs

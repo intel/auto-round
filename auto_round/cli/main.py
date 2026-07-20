@@ -291,7 +291,7 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
     from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:

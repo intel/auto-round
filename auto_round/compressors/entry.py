@@ -15,8 +15,8 @@ from auto_round.algorithms.transforms import normalize_rotation_config as _norma
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig as _NewArchRotationConfig
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.compressor import Compressor
+from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
+from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, parse_scheme

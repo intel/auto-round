@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import torch
 
-from auto_round.compressors.compressor import Compressor
+from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 
 
 class _QuantizerStub:
