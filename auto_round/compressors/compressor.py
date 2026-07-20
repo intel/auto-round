@@ -701,7 +701,10 @@ class Compressor(BaseCompressor):
                 all_inputs = copy.deepcopy(self.inputs)
                 clear_memory(self.inputs)
                 all_q_inputs = self.cache_data(
-                    to_cache_block_names, self.calibration_context.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
+                    to_cache_block_names,
+                    self.calibration_context.nsamples,
+                    to_cache_layer_names,
+                    last_cache_name=_last_cache_name,
                 )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
