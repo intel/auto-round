@@ -350,7 +350,7 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         formats = self.formats if isinstance(self.formats, list) else []
         if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
-            self.alg_composer.quantize_embedding_layer()  # leave to gguf itself to handle
+            self.alg_composer.compress_embedding_layer()  # leave to gguf itself to handle
 
         # Release memory
         clear_memory()
@@ -386,7 +386,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # ── Pure algorithm ────────────────────────────────────────
                 ctx = BlockContext(
                     model=self.model_context.model,
-                    block=block,
                     block_names=[block_name],
                     block_name=block_name,
                     block_index=0,

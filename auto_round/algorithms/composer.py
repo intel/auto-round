@@ -711,10 +711,10 @@ class AlgorithmComposer:
 
         # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
         # Must run after calibration hooks (act_max collected) and before quantize_block.
-        act_data_type = self.scheme.act_data_type if self.scheme else None
         act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
-        data_type = self.scheme.data_type if self.scheme else None
+        data_type = self.scheme.data_type if self.scheme else "int"
         group_size = self.scheme.group_size if self.scheme else -1
+        act_data_type = self.scheme.act_data_type if self.scheme else data_type
         if act_data_type is not None or not act_dynamic:
             from auto_round.compressors.utils import is_nv_fp
             from auto_round.data_type.utils import update_block_global_scale_if_needed
