@@ -256,7 +256,10 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             # ── Run block pipeline (calibration → quantization → collection) ──
             new_q_input, reference_output = self.alg_composer.compress_block(
-                m, input_ids, input_others, ctx,
+                m,
+                input_ids,
+                input_others,
+                ctx,
                 q_input=q_input,
                 valid_token_mask=valid_token_mask,
             )
@@ -944,7 +947,10 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         # ── Run block pipeline (calibration → quantization → collection) ──────
         new_q_input, reference_output = self.alg_composer.compress_block(
-            block, input_ids, input_others, ctx,
+            block,
+            input_ids,
+            input_others,
+            ctx,
             q_input=q_input,
         )
 

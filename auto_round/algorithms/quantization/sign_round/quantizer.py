@@ -388,7 +388,9 @@ class SignRoundQuantizer(BaseQuantizer):
             logger.info(f"using rtn to quantize {layer_name}")
             self._quantize_layer_via_rtn(
                 layer,
-                disable_opt_rtn=disable_opt_rtn if disable_opt_rtn is not None else getattr(self.config, "disable_opt_rtn", True),
+                disable_opt_rtn=(
+                    disable_opt_rtn if disable_opt_rtn is not None else getattr(self.config, "disable_opt_rtn", True)
+                ),
             )
             return
 
