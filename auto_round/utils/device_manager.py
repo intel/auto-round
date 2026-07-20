@@ -410,9 +410,33 @@ class ARDevice:
         return _DeviceIndexContext(self, index)
 
     def total_memory(self, index: int = 0) -> int:
-        fn = getattr(self._module, "get_memory_info", None)
+        if self._module is None:
+            return 0
 
-        return fn(index)[1] if callable(fn) else None  # pylint: disable=E1102
+        fn = getattr(self._module, "get_memory_info", None)
+        if callable(fn):
+            try:
+                return int(fn(index)[1])  # pylint: disable=E1102
+            except Exception:
+                pass
+
+        # torch.cuda / torch.xpu commonly expose mem_get_info instead of get_memory_info.
+        fn = getattr(self._module, "mem_get_info", None)
+        if callable(fn):
+            try:
+                return int(fn(index)[1])  # pylint: disable=E1102
+            except Exception:
+                pass
+
+        # Generic fallback: read total memory from device properties.
+        fn = getattr(self._module, "get_device_properties", None)
+        if callable(fn):
+            try:
+                return int(fn(index).total_memory)  # pylint: disable=E1102
+            except Exception:
+                pass
+
+        return 0
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
@@ -1055,7 +1079,15 @@ def get_device_memory(i: int = 0) -> int:
     dev_mgr = get_current_device_manager()
     if not dev_mgr.is_available() or dev_mgr.type == "cpu":
         raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
-    return dev_mgr.total_memory(i) / 1024 / 1024 / 1024
+
+    total_memory = dev_mgr.total_memory(i)
+    if total_memory is None:
+        raise RuntimeError(f"Failed to query total memory for device index {i} on backend {dev_mgr.type}.")
+    if total_memory <= 0:
+        raise RuntimeError(
+            f"Detected non-positive total memory ({total_memory}) for device index {i} on backend {dev_mgr.type}."
+        )
+    return total_memory / 1024 / 1024 / 1024
 
 
 def _clear_memory_for_cpu_and_cuda(
