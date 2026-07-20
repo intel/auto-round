@@ -102,7 +102,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--model_name",
         "--model",
         "--model_name_or_path",
-        default="facebook/opt-125m",
+        dest="model_name",
+        default=None,
         help="Path to the pre-trained model or Hugging Face model id.",
     )
     rt.add_argument("--model_dtype", default=None, help="Model dtype used when loading the model.")

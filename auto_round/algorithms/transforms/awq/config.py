@@ -47,7 +47,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_grid: int = 20,
         clip_max_shrink: float = 0.5,
         clip_n_sample_token: int = 512,
-        mappings: list[dict] | None = None,
+        awq_mappings: list[dict] | None = None,
         **kwargs,
     ):
         """Initialize an AWQ configuration.
@@ -104,7 +104,7 @@ class AWQConfig(QuantizationConfig):
             clip_n_sample_token: Maximum number of calibration tokens used per
                 balance layer when searching the clip threshold (subsampled to
                 bound memory).
-            mappings: Optional explicit AWQ smooth/balance mappings. Each
+            awq_mappings: Optional explicit AWQ smooth/balance mappings. Each
                 item should contain ``smooth_layer`` and
                 ``balance_layers`` entries. If None, mappings are inferred
                 automatically from the model structure.
@@ -138,7 +138,7 @@ class AWQConfig(QuantizationConfig):
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
         self.clip_n_sample_token = clip_n_sample_token
-        self.mappings = mappings
+        self.mappings = awq_mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
 

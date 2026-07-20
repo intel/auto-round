@@ -21,7 +21,7 @@ class RTNConfig(QuantizationConfig):
     def __init__(
         self,
         *,
-        disable_opt_rtn: bool = None,
+        disable_opt_rtn: bool | None = None,
         **kwargs,
     ) -> None:
         """Initialize an RTN configuration.

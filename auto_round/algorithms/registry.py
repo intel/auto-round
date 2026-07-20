@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import copy
 import importlib
+import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from auto_round.algorithms.base import BasePipelineMember
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 class AlgRegistryEntry:
     name: str
     aliases: tuple[str, ...] = ()
-    config_factory: Callable[[], object] | None = None
+    config_factory: Callable[[], object] | type | None = None
     cli_handler: type | None = None
     summary: str = ""
     alias_factories: dict[str, Callable[[], object]] = field(default_factory=dict)
@@ -52,11 +53,11 @@ def _ensure_pipeline_members_registered() -> None:
     _pipeline_members_registered = True
 
 
-def register_algorithm(
+def _register_algorithm_entry(
     name: str,
     *,
     aliases: tuple[str, ...] = (),
-    config_factory: Callable[[], object] | None = None,
+    config_factory: Callable[[], object] | type | None = None,
     cli_handler: type | None = None,
     summary: str = "",
     alias_factories: dict[str, Callable[[], object]] | None = None,
@@ -109,14 +110,14 @@ def resolve_alg_config(alias: str) -> object:
     if canonical is None:
         raise ValueError(
             f"Unknown algorithm alias '{alias}'. Supported aliases: {sorted(_ALIAS_TO_NAME.keys())}. "
-            "If you are adding a new algorithm, register it via auto_round.algorithms.registry.register_algorithm()."
+            "If you are adding a new algorithm, register its CLI/config entry in auto_round.cli.algorithms."
         )
 
     entry = _ALG_REGISTRY[canonical]
     factory = entry.alias_factories.get(alias.strip().lower(), entry.config_factory)
     if factory is None:
         raise ValueError(f"Algorithm alias '{alias}' is registered but has no config factory.")
-    return factory()
+    return factory() if callable(factory) else factory
 
 
 def list_registered_algorithms() -> list[str]:
@@ -124,22 +125,47 @@ def list_registered_algorithms() -> list[str]:
     return sorted(_ALIAS_TO_NAME.keys())
 
 
-def register_pipeline_member(config_cls: type):
+def register_algorithm(config_cls: type):
     def _decorator(member_cls: type["BasePipelineMember"]) -> type["BasePipelineMember"]:
+        raw_names = getattr(member_cls, "algorithm_names", None)
+        if raw_names is None:
+            raw_names = getattr(member_cls, "algorithm_name", None)
+        if raw_names is None:
+            raise TypeError(f"{member_cls.__name__} must define 'algorithm_names' (str or tuple/list[str]).")
+        if isinstance(raw_names, str):
+            names = (raw_names,)
+        elif isinstance(raw_names, (tuple, list)) and all(isinstance(n, str) and n.strip() for n in raw_names):
+            names = tuple(n.strip() for n in raw_names)
+        else:
+            raise TypeError(
+                f"{member_cls.__name__}.algorithm_names must be str or tuple/list[str], got {type(raw_names).__name__}."
+            )
+        member_cls.algorithm_names = names
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
 
     return _decorator
 
 
-def resolve_pipeline_member(config: object) -> type["BasePipelineMember"]:
+def resolve_quantizer_by_config(config: object) -> type["BasePipelineMember"]:
     _ensure_pipeline_members_registered()
-    config_cls = type(config)
-    for cls in config_cls.__mro__:
-        member_cls = _CONFIG_IMPL_REGISTRY.get(cls)
+    normalized_config = normalize_algorithm_config(config)
+    config_type = type(normalized_config)
+    for candidate_cls in inspect.getmro(config_type):
+        member_cls = _CONFIG_IMPL_REGISTRY.get(candidate_cls)
         if member_cls is not None:
             return member_cls
-    raise ValueError(f"Unknown algorithm config type {config_cls.__name__!r}.")
+    raise ValueError(f"Unknown algorithm config type {config_type.__name__!r}.")
+
+
+def resolve_quantizer_by_name(name: str) -> type["BasePipelineMember"]:
+    config = resolve_alg_config(name)
+    return resolve_quantizer_by_config(config)
+
+
+# Backward-compatible aliases during migration.
+register_pipeline_member = register_algorithm
+resolve_pipeline_member = resolve_quantizer_by_config
 
 
 def coerce_config_class(config: object, target_cls: type) -> object:
