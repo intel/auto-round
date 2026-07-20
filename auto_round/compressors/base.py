@@ -907,11 +907,6 @@ class BaseOrchestrator(object):
         # so _build_composer must run first.
         self._build_composer()
 
-        # Not a good design, reset torch compile setting in block_forward
-        if self.enable_torch_compile:
-            if not self.quantizer.is_support_compile_block():  # TODO support multiple quantizer later
-                self.pipeline.block_forward.is_support_compile_block = True
-
         # Set block_forward torch compile for block forward
         # Final trim after all init phases.
         gc.collect()

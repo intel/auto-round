@@ -396,7 +396,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-                self.alg_composer.quantize_block(block, None, {}, None, None, ctx)
+                self.alg_composer.compress_block(block, None, {}, ctx)
                 if self.compress_context.is_immediate_packing:
                     for _n, _mod in block.named_modules():
                         if hasattr(_mod, "bits") and check_to_quantized(_mod):
