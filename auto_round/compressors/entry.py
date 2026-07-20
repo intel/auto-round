@@ -301,13 +301,18 @@ def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwa
 
 def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, base_kwargs) -> type:
     enable_imatrix = False
-    resolved_attrs = {}
     disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
 
-    # If disable_opt_rtn was not explicitly set and scheme is W8A16/W8A8,
-    # auto-disable optimization to improve efficiency.
+    # Preview resolved scheme attrs once (authoritative resolution happens later).
+    resolved_attrs = _preview_resolved_attrs(quant_config, scheme)
+
+    # Auto-disable rtn optimization for W8A16/W8A8-equivalent resolved schemes,
+    # unless the user already set disable_opt_rtn explicitly.
     if getattr(quant_config, "orig_disable_opt_rtn", None) is None:
-        if isinstance(scheme, str) and scheme.upper() in ["W8A16", "W8A8"]:
+        bits = resolved_attrs.get("bits", getattr(quant_config, "bits", None))
+        act_bits = resolved_attrs.get("act_bits", getattr(quant_config, "act_bits", None))
+        data_type = resolved_attrs.get("data_type", getattr(quant_config, "data_type", None))
+        if bits is not None and bits >= 8 and act_bits is not None and act_bits >= 8 and data_type == "int":
             logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
             disable_opt_rtn = True
             quant_config.disable_opt_rtn = True

@@ -123,6 +123,7 @@ def get_formats(
     quant_nontext_module: bool = False,
     quant_block_list: list = None,
     platform: str = None,
+    is_auto_scheme: bool = False,
 ) -> tuple[list[OutputFormat], QuantizationScheme, dict, object, list]:
     """Get the list of OutputFormat instances based on the provided name.
 
@@ -145,6 +146,7 @@ def get_formats(
         quant_nontext_module=quant_nontext_module,
         quant_block_list=quant_block_list,
         platform=platform,
+        is_auto_scheme=is_auto_scheme,
     )
 
     formats = format.lower().replace("q*_", f"q{scheme.bits}_").replace(" ", "").split(",")
@@ -242,6 +244,7 @@ class OutputFormat(ABC):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         """Initialize the OutputFormat class."""
         self.output_format = format
@@ -317,6 +320,7 @@ class OutputFormat(ABC):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ) -> tuple[str, QuantizationScheme, dict, list]:
         fwd_kwargs = dict(
             model=model,
@@ -328,6 +332,7 @@ class OutputFormat(ABC):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
         if self.backend is not None:
             new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(
@@ -473,6 +478,7 @@ class LLMCompressorFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         fwd_kwargs = dict(
             model=model,
@@ -484,6 +490,7 @@ class LLMCompressorFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
         if not self.is_support_scheme(scheme):
             logger.error(
@@ -582,6 +589,7 @@ class LLMCompressorFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ) -> tuple[str, QuantizationScheme, dict, list]:
         fwd_kwargs = dict(
             model=model,
@@ -593,6 +601,7 @@ class LLMCompressorFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
         if self.backend is not None:
             new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(
@@ -708,6 +717,7 @@ class AutoGPTQFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         if not scheme.sym:
             logger.warning(
@@ -729,6 +739,7 @@ class AutoGPTQFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
 
     @classmethod
@@ -870,6 +881,7 @@ class AutoAWQFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         awq_supported, info = self.check_awq_gemm_compatibility(
             model, scheme.bits, scheme.group_size, scheme.sym, layer_config
@@ -893,6 +905,7 @@ class AutoAWQFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
 
     def pack_layer(self, layer_name, model, device=None, **kwargs):
@@ -969,7 +982,9 @@ class GGUFFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
+        self.is_auto_scheme = is_auto_scheme
         fwd_kwargs = dict(
             model=model,
             layer_config=layer_config,
@@ -980,6 +995,7 @@ class GGUFFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
         if format.startswith("gguf:"):
             self._original_format = format  # preserve "gguf:q2_k_mixed" etc. for Phase 2b
@@ -1069,6 +1085,7 @@ class GGUFFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         if iters != 0 and scheme.bits != 3 and not enable_alg_ext:
             logger.warning_once(
@@ -1095,6 +1112,7 @@ class GGUFFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
 
     def pack_layer(
@@ -1125,6 +1143,7 @@ class GGUFFormat(OutputFormat):
             model_type,
             device,
             quant_nontext_module,
+            is_auto_scheme=self.is_auto_scheme,
         )
 
     def save_quantized(
@@ -1149,6 +1168,7 @@ class GGUFFormat(OutputFormat):
             mllm=self.mllm,
             device=device,
             serialization_dict=serialization_dict,
+            is_auto_scheme=self.is_auto_scheme,
             **kwargs,
         )
 
@@ -1430,6 +1450,7 @@ class AutoRoundFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         fwd_kwargs = dict(
             model=model,
@@ -1441,6 +1462,7 @@ class AutoRoundFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
         self.output_format = "auto_round"
         self.backend = None
@@ -1504,6 +1526,7 @@ class AutoRoundFormat(OutputFormat):
         quant_nontext_module: bool = False,
         quant_block_list: list = None,
         platform: str = None,
+        is_auto_scheme: bool = False,
     ):
         fwd_kwargs = dict(
             model=model,
@@ -1515,6 +1538,7 @@ class AutoRoundFormat(OutputFormat):
             quant_nontext_module=quant_nontext_module,
             quant_block_list=quant_block_list,
             platform=platform,
+            is_auto_scheme=is_auto_scheme,
         )
         if self.backend is not None:
             new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(

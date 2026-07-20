@@ -946,6 +946,34 @@ def _select_gguf_layer_type(
     return new_type
 
 
+def _resolve_gguf_n_layers(config, model_type=ModelType.TEXT):
+    """Resolve text (and vision) layer counts from a model config.
+
+    Multimodal configs (e.g. Qwen3.5, Qwen3-VL) keep the text hparams only in
+    ``config.text_config``, so both it and the top-level config must be checked.
+    """
+    n_layer = None
+    n_layer_vision = None
+    text_config = getattr(config, "text_config", None)
+    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
+        if hasattr(config, name):
+            n_layer = getattr(config, name)
+        if text_config is not None and hasattr(text_config, name):
+            # the text hparams in text_config are authoritative for multimodal models;
+            # for text-only usage they still fill in when the top-level config lacks them
+            if model_type != ModelType.TEXT or n_layer is None:
+                n_layer = getattr(text_config, name)
+        if model_type != ModelType.TEXT:
+            for config_name in ["vision_config", "vision_encoder"]:
+                if hasattr(config, config_name):
+                    if hasattr(getattr(config, config_name), name):
+                        n_layer_vision = getattr(getattr(config, config_name), name)
+                        break
+            if n_layer and n_layer_vision:
+                break
+    return n_layer, n_layer_vision
+
+
 ##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
 def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model, model_type=ModelType.TEXT):
     import gguf  # pylint: disable=E0401
@@ -974,23 +1002,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     except NotImplementedError:
         return layer_config, {}
 
-    n_layer = None
-    if model_type != ModelType.TEXT:
-        n_layer_vision = None
-    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
-        if hasattr(model.config, name):
-            n_layer = getattr(model.config, name)
-        if model_type != ModelType.TEXT:
-            if n_layer is not None and hasattr(model.config, "text_config"):
-                if hasattr(getattr(model.config, "text_config"), name):
-                    n_layer = getattr(getattr(model.config, "text_config"), name)
-            for config_name in ["vision_config", "vision_encoder"]:
-                if hasattr(model.config, config_name):
-                    if hasattr(getattr(model.config, config_name), name):
-                        n_layer_vision = getattr(getattr(model.config, config_name), name)
-                        break
-            if n_layer and n_layer_vision:
-                break
+    n_layer, n_layer_vision = _resolve_gguf_n_layers(model.config, model_type)
 
     if n_layer is None:
         return layer_config, {}

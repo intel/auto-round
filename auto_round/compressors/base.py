@@ -990,6 +990,7 @@ class BaseCompressor(object):
             quant_nontext_module=self.quant_nontext_module,
             quant_block_list=self.quant_block_list,
             platform=self.platform,
+            is_auto_scheme=self.is_auto_scheme,
         )
         self.scheme_context = scheme
         for config in self._alg_configs:
