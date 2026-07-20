@@ -1480,8 +1480,8 @@ class BaseCompressor(object):
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
-            if serialization_dict.get("to_quant_block_names") is None and self.quantizer.quant_block_list:
-                serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quantizer.quant_block_list)
+            if serialization_dict.get("to_quant_block_names") is None and self.quant_block_list:
+                serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quant_block_list)
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 

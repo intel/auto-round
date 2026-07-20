@@ -102,7 +102,7 @@ class TestGGUF:
             model_name,
             layer_config=layer_config,
             iters=0,
-            seqlen=1,
+            seqlen=16,
             nsamples=8,
             dataset=dataloader,
             disable_opt_rtn=True,

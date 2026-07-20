@@ -209,7 +209,7 @@ class AWQTransform(BaseWeightTransformer):
         block_name = getattr(block, "global_name", "")
         block_mappings = self._block_mappings.get(block_name, [])
         if block_mappings:
-            return self._register_awq_hooks(self.compressor.model_context.model, block, block_name)
+            return self._register_awq_hooks(self.model_context.model, block, block_name)
         return []
 
     def pre_quantize_block(self, ctx: "BlockContext") -> None:

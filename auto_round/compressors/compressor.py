@@ -23,6 +23,7 @@ from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
 from auto_round.algorithms import pipeline
+from auto_round.calibration import CalibrationContext
 from auto_round.calibration.utils import (
     _update_inputs,
 )
@@ -136,6 +137,7 @@ class Compressor(BaseCompressor):
         res = self.calibration(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
         # Sync batch_size back in case calibration clamped it due to insufficient samples
         self.calibration_context.batch_size = self.calibration.batch_size
+        self.block_forward.batch_size = self.calibration_context.batch_size
         self.calibration_context.seqlen = self.calibration.seqlen
         self.calibration_context.batch_dim = self.calibration.batch_dim
         self.calibration_context.dataset = self.calibration.dataset
@@ -374,21 +376,20 @@ class Compressor(BaseCompressor):
             # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──
             with torch.no_grad():
                 pre_hooks = self.get_preprocessor_fp_hooks(m)
-                try:
-                    if pre_hooks:
-                        self.block_forward(m, input_ids, input_others)
-                finally:
-                    for h in pre_hooks:
-                        h.remove()
+                if pre_hooks:
+                    self.block_forward(m, input_ids, input_others)
+
+                for h in pre_hooks:
+                    h.remove()
 
                 # Preprocessor qinput hooks: use q_input if available, otherwise fp input
                 pre_q_hooks = self.get_preprocessor_qinput_hooks(m)
-                try:
-                    if pre_q_hooks:
-                        self.block_forward(m, q_input if q_input is not None else input_ids, input_others)
-                finally:
-                    for h in pre_q_hooks:
-                        h.remove()
+
+                if pre_q_hooks:
+                    self.block_forward(m, q_input if q_input is not None else input_ids, input_others)
+
+                for h in pre_q_hooks:
+                    h.remove()
 
             # ── Step 2: pre_quantize_block (preprocessor stats consolidation + weight transforms) ──
             for pre in self.pipeline.preprocessors:
@@ -397,19 +398,17 @@ class Compressor(BaseCompressor):
             # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ────────
             with torch.no_grad():
                 quant_hooks = self.get_quantizer_fp_hooks(m)
-                try:
-                    reference_output = self.block_forward(m, input_ids, input_others)
-                finally:
-                    for h in quant_hooks:
-                        h.remove()
+
+                reference_output = self.block_forward(m, input_ids, input_others)
+
+                for h in quant_hooks:
+                    h.remove()
 
                 # Quantizer qinput hooks: use q_input if available, otherwise fp input
                 if self.pipeline.block_quantizer.enable_quanted_input:
                     q_hooks = self.get_quantizer_qinput_hooks(m)
-                    try:
-                        if q_hooks:
-                            self.block_forward(m, q_input if q_input is not None else input_ids, input_others)
-                    finally:
+                    if q_hooks:
+                        self.block_forward(m, q_input if q_input is not None else input_ids, input_others)
                         for h in q_hooks:
                             h.remove()
 
@@ -702,7 +701,7 @@ class Compressor(BaseCompressor):
                 all_inputs = copy.deepcopy(self.inputs)
                 clear_memory(self.inputs)
                 all_q_inputs = self.cache_data(
-                    to_cache_block_names, self.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
+                    to_cache_block_names, self.calibration_context.nsamples, to_cache_layer_names, last_cache_name=_last_cache_name
                 )
         # Remove accelerate dispatch hooks before moving parameters.
         # hf_device_map is kept for reference but hooks are no longer needed.
@@ -1056,8 +1055,6 @@ class Compressor(BaseCompressor):
             full-precision reference output collected before optimization.
         """
 
-        from auto_round.calibration.state import CalibrationState
-
         if self.diffusion:
             raise NotImplementedError(
                 f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
@@ -1114,7 +1111,7 @@ class Compressor(BaseCompressor):
         orig_is_mllm = self.model_context.is_mllm
         self.model_context.is_mllm = False
 
-        if isinstance(inputs, CalibrationState):
+        if isinstance(inputs, CalibrationContext):
             # Caller already produced a CalibrationState (typically via
             # ``Calibrator.collect``).  Bind it as the authoritative store so
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
@@ -1181,21 +1178,20 @@ class Compressor(BaseCompressor):
 
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──
         pre_hooks = self.get_preprocessor_fp_hooks(block)
-        try:
-            if pre_hooks:
-                self.block_forward(block, input_ids, input_others)
-        finally:
-            for h in pre_hooks:
-                h.remove()
+        if pre_hooks:
+            self.block_forward(block, input_ids, input_others)
+
+        for h in pre_hooks:
+            h.remove()
 
         # Preprocessor qinput hooks: use q_input if available, otherwise fp input
         pre_q_hooks = self.get_preprocessor_qinput_hooks(block)
-        try:
-            if pre_q_hooks:
-                self.block_forward(block, q_input if q_input is not None else input_ids, input_others)
-        finally:
-            for h in pre_q_hooks:
-                h.remove()
+
+        if pre_q_hooks:
+            self.block_forward(block, q_input if q_input is not None else input_ids, input_others)
+
+        for h in pre_q_hooks:
+            h.remove()
 
         # ── Step 2: pre_quantize_block (preprocessor stats consolidation + weight transforms) ──
         for pre in self.pipeline.preprocessors:
@@ -1212,12 +1208,12 @@ class Compressor(BaseCompressor):
         # Quantizer qinput hooks: use q_input if available, otherwise fp input
         if self.pipeline.block_quantizer.enable_quanted_input:
             q_hooks = self.get_quantizer_qinput_hooks(block)
-            try:
-                if q_hooks:
-                    self.block_forward(block, q_input if q_input is not None else input_ids, input_others)
-            finally:
-                for h in q_hooks:
-                    h.remove()
+
+            if q_hooks:
+                self.block_forward(block, q_input if q_input is not None else input_ids, input_others)
+
+            for h in q_hooks:
+                h.remove()
 
         if q_input is not None:
             if input_ids is not q_input:

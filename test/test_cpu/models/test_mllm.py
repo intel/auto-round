@@ -132,7 +132,7 @@ class TestAutoRound:
             batch_size=1,
             iters=2,
             dataset=dataset,
-            seqlen=1,
+            seqlen=16,
         )
         autoround.quantize()
 

@@ -262,7 +262,7 @@ class TestAutoRound:
             group_size=group_size,
             sym=sym,
             iters=1,
-            seqlen=1,
+            seqlen=10,
             dataset=dataloader,
             layer_config=layer_config,
         )
