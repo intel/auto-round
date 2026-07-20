@@ -12,9 +12,9 @@ from auto_round.algorithms.config_resolver import (
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
-from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.compressors.entry import _select_rtn_compressor_base_cls
+from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
