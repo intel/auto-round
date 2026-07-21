@@ -104,7 +104,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         if self._post_init_done:
             return
         super().post_init()
-        if self.need_data and self.calibration is None:
+        if self.need_calib and self.calibration is None:
             from auto_round.calibration import get_calibrator
 
             kind = self._get_calibrator_kind()
@@ -249,7 +249,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_name=current_block_name,
                 block_index=i,
                 bs=bs,
-                device=device_manager.device,
                 is_mllm=self.model_context.is_mllm,
                 is_diffusion=self.model_context.is_diffusion,
                 pbar=pbar,
@@ -335,7 +334,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         """
         self.post_init()
 
-        if not self.need_data:
+        if not self.need_calib:
             return self._quantize_zero_shot()
 
         return self._quantize_data_driven()
@@ -386,11 +385,10 @@ class CompressionOrchestrator(BaseOrchestrator):
 
                 # ── Pure algorithm ────────────────────────────────────────
                 ctx = BlockContext(
-                    model=self.model_context.model,
+                    model=self.model,
                     block_names=[block_name],
                     block_name=block_name,
                     block_index=0,
-                    device=device_manager.device,
                 )
                 # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                 if is_nv_fp(self.act_data_type) or not self.act_dynamic:
@@ -838,7 +836,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             self.post_init()
 
         # ── Zero-shot (RTN) path: no calibration data needed ──────────────────
-        if not self.need_data:
+        if not self.need_calib:
             from auto_round.algorithms.composer import BlockContext
 
             materialize_model_(block)
@@ -850,7 +848,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_names=[getattr(block, "global_name", "")],
                 block_name=getattr(block, "global_name", ""),
                 block_index=0,
-                device=device,
             )
             self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None, valid_token_mask=None)
 
@@ -884,11 +881,11 @@ class CompressionOrchestrator(BaseOrchestrator):
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
             # ``batch_dim``.
             self.calibration_context = (
-                inputs  # TODO wenhuach this has issues, calibraion state no longer hold much info
+                inputs
             )
         else:
             self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]]  # TODO we have wenhuach
+        block_inputs = self.inputs[self.quant_block_list[0][0]]
         input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
 
         # ── Infrastructure: materialize, dtype convert, device placement ──────
@@ -926,18 +923,17 @@ class CompressionOrchestrator(BaseOrchestrator):
                 add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
 
         blk_name = self.quant_block_list[0][0]
-        # bs = self.batch_size * self.quantizer.infer_bs_coeff
-        bs = self.calibration_context.batch_size  # TODO wenhuach add infer_bs_coeff
+
+        bs = self.calibration_context.batch_size
 
         from auto_round.algorithms.composer import BlockContext
 
         ctx = BlockContext(
-            model=self.model_context.model,
+            model=self.model,
             block_names=[blk_name],
             block_name=blk_name,
             block_index=0,
             bs=bs,
-            device=device,
             is_mllm=False,
             is_diffusion=False,
         )

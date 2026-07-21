@@ -21,7 +21,8 @@ import torch
 from auto_round.algorithms.registry import resolve_pipeline_member
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.composer import AlgorithmComposer, BlockForwardRunner
+    from auto_round.algorithms.block_runner import BlockForwardRunner
+    from auto_round.algorithms.composer import AlgorithmComposer
     from auto_round.calibration.state import CalibrationContext
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext

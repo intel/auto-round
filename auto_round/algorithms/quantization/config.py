@@ -46,7 +46,7 @@ class QuantizationConfig:
         super_group_size: Group size used for double quantization metadata.
     """
 
-    need_data = True
+    need_calib = True
 
     _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
 

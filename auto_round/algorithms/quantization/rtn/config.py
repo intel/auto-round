@@ -18,7 +18,7 @@ from auto_round.logger import logger
 
 
 class RTNConfig(QuantizationConfig):
-    need_data = False
+    need_calib = False
 
     def __init__(
         self,
@@ -57,4 +57,4 @@ class RTNConfig(QuantizationConfig):
 
 
 class OptimizedRTNConfig(RTNConfig):
-    need_data = True
+    need_calib = True

@@ -149,7 +149,7 @@ def _make_compressor_scheme_property(name):
 
 
 class BaseOrchestrator(object):
-    need_data: bool = True
+    need_calib: bool = True
     compress_context: CompressContext = None
     model_context: ModelContext = None
     shard_writer: ShardWriter = None
@@ -380,7 +380,7 @@ class BaseOrchestrator(object):
             trust_remote_code=trust_remote_code,
             config=model_config,
             amp=amp,
-            need_data=self.need_data,
+            need_calib=self.need_calib,
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
@@ -415,9 +415,9 @@ class BaseOrchestrator(object):
         for key, value in fixed_attr.items():
             setattr(self, key, value)
 
-        self.need_data = self._check_need_data()
+        self.need_calib = self._check_need_calib()
 
-    def _check_need_data(self) -> bool:
+    def _check_need_calib(self) -> bool:
         """Whether this compressor instance actually needs calibration data.
 
         Returns True when imatrix/opt-rtn is enabled, activation calibration is
@@ -442,7 +442,7 @@ class BaseOrchestrator(object):
         """
         from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
-        if any(getattr(config, "need_data", True) for config in self._alg_configs):
+        if any(getattr(config, "need_calib", True) for config in self._alg_configs):
             return True
 
         # AutoScheme needs data for delta-loss scheme selection
@@ -802,7 +802,7 @@ class BaseOrchestrator(object):
             and not is_debug_mode()
             and not is_raw_nv_fp
             and not is_valid_act_static
-            and self.need_data
+            and self.need_calib
         ):
             logger.info(
                 "%s",
@@ -1207,7 +1207,7 @@ class BaseOrchestrator(object):
         # gguf lm-head used rtn in version>=0.13
         if (
             self.has_qlayer_outside_block
-            and self.need_data
+            and self.need_calib
             and (
                 self.compress_context.formats is None
                 or "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
@@ -1307,7 +1307,7 @@ class BaseOrchestrator(object):
         if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
             self.compress_context.is_immediate_packing = True
 
-        if self.has_qlayer_outside_block and self.need_data and not has_single_gguf_format:
+        if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
             self.compress_context.is_immediate_packing = False
         if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this
