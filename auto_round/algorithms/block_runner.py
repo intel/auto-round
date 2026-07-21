@@ -355,4 +355,3 @@ class BlockForwardRunner:
             else:
                 selected_others[key] = val
         return selected_inputs, selected_others
-
