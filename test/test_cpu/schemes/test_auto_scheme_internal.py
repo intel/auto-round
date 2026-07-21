@@ -114,3 +114,103 @@ def test_build_expert_groups_skips_fixed_layers():
 
     groups = build_expert_groups(model, quant_layer_names, fixed_layer_scheme)
     assert len(groups) == 0
+
+
+def test_autoscheme_cache_key_different_for_different_schemes():
+    """Per-scheme cache: different schemes should produce different cache keys."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    key_w4 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.0"],
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+    )
+    key_w8 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.0"],
+        fixed_layer_scheme={},
+        scheme="W8A16",
+        force_mllm=False,
+    )
+    assert key_w4 != key_w8
+    assert len(key_w4) == 16  # sha256 truncated to 16 chars
+
+
+def test_autoscheme_cache_key_insensitive_to_layer_order():
+    """Per-scheme cache: layer order should not affect the key (internally sorted)."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    key1 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.0", "layer.1"],
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+    )
+    key2 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.1", "layer.0"],  # Different order
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+    )
+    assert key1 == key2  # Should match after internal sorting
+
+
+def test_autoscheme_cache_save_and_load():
+    """Per-scheme cache: scores can be saved and loaded correctly."""
+    import tempfile
+
+    from auto_round.auto_scheme.delta_loss import (
+        _load_autoscheme_scores,
+        _save_autoscheme_scores,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Manually create cache path in temp dir
+        cache_key = "test_key_123"
+        cache_path = os.path.join(tmpdir, f"scheme_00_{cache_key}.json")
+
+        scheme_dict = {"bits": 4, "act_bits": 16}
+        layer_scores = {
+            "layer.0": [4, 1.2],
+            "layer.1": [4, 0.9],
+        }
+        total_loss = 2.1
+        total_params = 1000000
+
+        # Save
+        _save_autoscheme_scores(
+            cache_path,
+            cache_key,
+            0,
+            scheme_dict,
+            layer_scores,
+            total_loss,
+            total_params,
+        )
+
+        # Load and verify
+        loaded = _load_autoscheme_scores(cache_path)
+        assert loaded is not None
+        assert loaded["layer_scores"] == layer_scores
+        assert loaded["total_loss_for_scheme"] == total_loss
+        assert loaded["total_params"] == total_params
