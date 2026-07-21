@@ -57,13 +57,10 @@ class HFCheckpointRestorer:
         moe_views = iter_moe_fusion_views(self.model) if hasattr(self.model, "named_modules") else ()
         for view in moe_views:
             hf_names = tuple(name for source in view.sources for name in source.hf_names)
-            missing = [name for name in hf_names if name not in source_order]
-            if missing:
-                raise ValueError(
-                    f"Cannot restore {view.checkpoint_name}; missing state-dict sources: {', '.join(missing)}"
-                )
             completed = [name for name in hf_names if name in self.completed_hf_names]
             if len(completed) == len(hf_names):
+                # Already packed (and freed) by a previous block; the sources are
+                # expected to be gone from state_dict, so skip the presence check.
                 moe_source_names.update(hf_names)
                 continue
             if completed:
@@ -71,6 +68,11 @@ class HFCheckpointRestorer:
                 raise ValueError(
                     f"Cannot restore {view.checkpoint_name} from partially completed sources; "
                     f"incomplete sources: {', '.join(incomplete)}"
+                )
+            missing = [name for name in hf_names if name not in source_order]
+            if missing:
+                raise ValueError(
+                    f"Cannot restore {view.checkpoint_name}; missing state-dict sources: {', '.join(missing)}"
                 )
             moe_source_names.update(hf_names)
             ordered_tensors.append(

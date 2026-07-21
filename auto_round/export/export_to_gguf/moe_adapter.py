@@ -20,9 +20,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import gguf
 import numpy as np
 import torch
+
+from auto_round.utils import LazyImport
+
+gguf = LazyImport("gguf")
 
 _PROJECTION_ALIASES = {
     gguf.MODEL_TENSOR.FFN_GATE_EXP: ("gate_proj", "w1", "linear"),
