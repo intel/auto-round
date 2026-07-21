@@ -164,11 +164,136 @@ def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
     print(f"[Performance] Time: {dur*1000:.4f} ms, GFLOPS: {gflops:.2f}, Bandwidth: {bandwidth:.2f} GB/s")
 
 
-@pytest.mark.parametrize("m", [1, 8, 32, 128, 1024, 4096])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 256, 1024, 2048, 3072, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dt", [torch.float16, torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("runs", [1000])
-def test_woqgemm_s8_joint_matrix_vs_sycl_tla_perf(m, k, n, dt, runs, record_property):
+def test_igemm_s8s8_joint_matrix_vs_sycl_tla(m, k, n, dt, runs, record_property):
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    if not hasattr(ark, "dyn_quant_s8"):
+        pytest.skip("Low-level igemm benchmark APIs are not available")
+
+    torch.manual_seed(0)
+    A = torch.rand(m, k, dtype=dt, device="xpu") - 0.5
+    B = torch.randint(-128, 127, (n, k), dtype=torch.int8, device="xpu")
+    scaleB = torch.rand(n, 1, dtype=dt, device="xpu") / 100
+    bias = torch.rand(1, n, dtype=dt, device="xpu") + 2
+
+    qA, scaleA = ark.dyn_quant_s8(A)
+    torch.xpu.synchronize()
+
+    out_joint = torch.empty(m, n, dtype=dt, device="xpu")
+    out_tla = torch.empty(m, n, dtype=dt, device="xpu")
+
+    ark.igemm_s8s8_joint_matrix(qA, B, scaleA, scaleB, bias, out_joint)
+    ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_tla)
+    torch.xpu.synchronize()
+
+    diff = (out_joint - out_tla).abs()
+    print(f"\n  Max Diff igemm joint_matrix vs sycl_tla: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}")
+    assert torch.allclose(out_tla, out_joint, atol=1, rtol=0.1)
+
+    def bench(op, out):
+        warmup = 200
+        for _ in range(warmup):
+            op(qA, B, scaleA, scaleB, bias, out)
+        torch.xpu.synchronize()
+
+        st = time.perf_counter()
+        for _ in range(runs):
+            op(qA, B, scaleA, scaleB, bias, out)
+        torch.xpu.synchronize()
+        return (time.perf_counter() - st) / runs
+
+    joint_dur = min(bench(ark.igemm_s8s8_joint_matrix, out_joint) for _ in range(3))
+    tla_dur = min(bench(ark.igemm_s8s8_sycl_tla, out_tla) for _ in range(3))
+
+    ops = m * n * k * 2
+    joint_tflops = ops / joint_dur / 1e12
+    tla_tflops = ops / tla_dur / 1e12
+    speedup = joint_dur / tla_dur
+
+    print(f"  [igemm joint_matrix] : {joint_dur * 1000:8.4f} ms  {joint_tflops:7.3f} TFLOPS")
+    print(f"  [igemm sycl_tla]     : {tla_dur * 1000:8.4f} ms  {tla_tflops:7.3f} TFLOPS  speedup={speedup:5.2f}x")
+
+    record_property("igemm_joint_matrix_time_ms", round(joint_dur * 1000, 4))
+    record_property("igemm_sycl_tla_time_ms", round(tla_dur * 1000, 4))
+    record_property("igemm_speedup", round(speedup, 4))
+
+
+@pytest.mark.parametrize("m", [1024, 2048, 3072, 4096])
+@pytest.mark.parametrize("k, n", [(4096, 4096)])
+@pytest.mark.parametrize("dt", [torch.float16, torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("runs", [1000])
+def test_sycl_tla_igemm_accum_vs_dequant_perf(m, k, n, dt, runs, record_property):
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    if not hasattr(ark, "igemm_s8s8_sycl_tla_accum"):
+        pytest.skip("SYCL-TLA accum-only igemm API is not available")
+
+    torch.manual_seed(0)
+    A = torch.rand(m, k, dtype=dt, device="xpu") - 0.5
+    B = torch.randint(-128, 127, (n, k), dtype=torch.int8, device="xpu")
+    scaleB = torch.rand(n, 1, dtype=dt, device="xpu") / 100
+    bias = torch.rand(1, n, dtype=dt, device="xpu") + 2
+
+    qA, scaleA = ark.dyn_quant_s8(A)
+    torch.xpu.synchronize()
+
+    out_accum = torch.empty(m, n, dtype=torch.int32, device="xpu")
+    out_dequant = torch.empty(m, n, dtype=dt, device="xpu")
+
+    ark.igemm_s8s8_sycl_tla_accum(qA, B, out_accum)
+    ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_dequant)
+    torch.xpu.synchronize()
+
+    def bench_accum():
+        warmup = 200
+        for _ in range(warmup):
+            ark.igemm_s8s8_sycl_tla_accum(qA, B, out_accum)
+        torch.xpu.synchronize()
+
+        st = time.perf_counter()
+        for _ in range(runs):
+            ark.igemm_s8s8_sycl_tla_accum(qA, B, out_accum)
+        torch.xpu.synchronize()
+        return (time.perf_counter() - st) / runs
+
+    def bench_dequant():
+        warmup = 200
+        for _ in range(warmup):
+            ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_dequant)
+        torch.xpu.synchronize()
+
+        st = time.perf_counter()
+        for _ in range(runs):
+            ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_dequant)
+        torch.xpu.synchronize()
+        return (time.perf_counter() - st) / runs
+
+    accum_dur = min(bench_accum() for _ in range(3))
+    dequant_dur = min(bench_dequant() for _ in range(3))
+
+    ops = m * n * k * 2
+    accum_tflops = ops / accum_dur / 1e12
+    dequant_tflops = ops / dequant_dur / 1e12
+    epilogue_ms = (dequant_dur - accum_dur) * 1000
+
+    print(f"\n  [sycl_tla accum-only] : {accum_dur * 1000:8.4f} ms  {accum_tflops:7.3f} TFLOPS")
+    print(f"  [sycl_tla dequant]    : {dequant_dur * 1000:8.4f} ms  {dequant_tflops:7.3f} TFLOPS")
+    print(f"  [delta]               : {epilogue_ms:8.4f} ms")
+
+    record_property("sycl_tla_accum_time_ms", round(accum_dur * 1000, 4))
+    record_property("sycl_tla_dequant_time_ms", round(dequant_dur * 1000, 4))
+    record_property("sycl_tla_epilogue_delta_ms", round(epilogue_ms, 4))
+
+
+@pytest.mark.parametrize("m", [1, 8, 32, 128, 1024, 2048, 3072, 4096])
+@pytest.mark.parametrize("k, n", [(4096, 4096)])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("runs", [1000])
+def test_woqgemm_s8_joint_matrix_vs_sycl_tla(m, k, n, dt, runs, record_property):
     if not torch.xpu.is_available():
         pytest.skip("No XPU Device")
     if not hasattr(ark, "woqgemm_s8_joint_matrix") or not hasattr(ark, "woqgemm_s8_sycl_tla"):
@@ -200,8 +325,8 @@ def test_woqgemm_s8_joint_matrix_vs_sycl_tla_perf(m, k, n, dt, runs, record_prop
         torch.xpu.synchronize()
         return (time.perf_counter() - st) / runs
 
-    joint_dur = bench(ark.woqgemm_s8_joint_matrix)
-    tla_dur = bench(ark.woqgemm_s8_sycl_tla)
+    joint_dur = min(bench(ark.woqgemm_s8_joint_matrix) for _ in range(3))
+    tla_dur = min(bench(ark.woqgemm_s8_sycl_tla) for _ in range(3))
 
     ops = m * n * k * 2
     joint_tflops = ops / joint_dur / 1e12

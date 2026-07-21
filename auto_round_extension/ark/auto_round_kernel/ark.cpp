@@ -60,6 +60,33 @@ static void matmul(torch_ptr stream, int m, int n, int k, torch_ptr A, int Adt, 
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 
+static void dyn_quant_s8(torch_ptr stream, int m, int k, torch_ptr A, int Adt,
+                         torch_ptr QA, torch_ptr scaleA) {
+  ark::SyclS8Wrapper::dyn_quant_s8((sycl::queue*)stream, m, k, (void*)A, (BTLA_DTYPE)Adt,
+                                   (int8_t*)QA, (void*)scaleA, 0);
+}
+
+static void igemm_s8s8_joint_matrix(torch_ptr stream, int m, int n, int k, torch_ptr QA,
+                                    torch_ptr B, torch_ptr C, int Cdt, torch_ptr scaleA,
+                                    torch_ptr scaleB, torch_ptr bias, int blocksize) {
+  ark::SyclS8Wrapper::igemm_s8s8_joint_matrix((sycl::queue*)stream, m, n, k, (void*)QA, (void*)B,
+                                              true, (void*)C, (BTLA_DTYPE)Cdt, (void*)scaleA,
+                                              (void*)scaleB, (void*)bias, blocksize);
+}
+
+static void igemm_s8s8_sycl_tla(torch_ptr stream, int m, int n, int k, torch_ptr QA,
+                                torch_ptr B, torch_ptr C, int Cdt, torch_ptr scaleA,
+                                torch_ptr scaleB, torch_ptr bias, int blocksize) {
+  ark::SyclS8Wrapper::igemm_s8s8_sycl_tla((sycl::queue*)stream, m, n, k, (void*)QA, (void*)B,
+                                          true, (void*)C, (BTLA_DTYPE)Cdt, (void*)scaleA,
+                                          (void*)scaleB, (void*)bias, blocksize);
+}
+
+static void igemm_s8s8_sycl_tla_accum(torch_ptr stream, int m, int n, int k, torch_ptr QA, torch_ptr B,
+                                      torch_ptr C) {
+  ark::sycl_tla_igemm_s8s8_accum((sycl::queue*)stream, m, n, k, (void*)QA, (void*)B, (void*)C);
+}
+
 static void woqgemm_s8_joint_matrix(torch_ptr stream, int m, int n, int k, torch_ptr A, int ACdt,
                                     torch_ptr B, torch_ptr C, torch_ptr bias, bool BT, torch_ptr scaleb) {
   ark::SyclS8Wrapper::woq_s8_joint_matrix((sycl::queue*)stream, m, n, k, (void*)A, (void*)B, BT, (void*)C,
@@ -712,5 +739,9 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
   m.def("woqgemm_s8_joint_matrix", &ark::woqgemm_s8_joint_matrix);
   m.def("woqgemm_s8_sycl_tla", &ark::woqgemm_s8_sycl_tla);
+  m.def("dyn_quant_s8", &ark::dyn_quant_s8);
+  m.def("igemm_s8s8_joint_matrix", &ark::igemm_s8s8_joint_matrix);
+  m.def("igemm_s8s8_sycl_tla", &ark::igemm_s8s8_sycl_tla);
+  m.def("igemm_s8s8_sycl_tla_accum", &ark::igemm_s8s8_sycl_tla_accum);
 #endif
 }

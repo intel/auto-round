@@ -393,6 +393,106 @@ def woqgemm_s8_sycl_tla(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, 
     return C
 
 
+def dyn_quant_s8(A: torch.Tensor):
+    m = A.shape[0]
+    k = A.shape[1]
+    lib = get_lib(A)
+
+    A_arg = A.contiguous()
+    qA = torch.empty(m, k, dtype=torch.int8, device=A.device)
+    scaleA = torch.empty(m, dtype=A.dtype, device=A.device)
+
+    stream = get_stream(A)
+    lib.dyn_quant_s8(
+        stream,
+        m,
+        k,
+        A_arg.data_ptr(),
+        cvt_dtype(A.dtype),
+        qA.data_ptr(),
+        scaleA.data_ptr(),
+    )
+    return qA, scaleA
+
+
+def igemm_s8s8_joint_matrix(qA, B, scaleA, scaleB, bias, out=None, blocksize=None):
+    m = qA.shape[0]
+    k = qA.shape[1]
+    n = B.shape[0]
+    blocksize = k if blocksize is None else blocksize
+
+    if out is None:
+        out = torch.empty(m, n, dtype=scaleB.dtype, device=qA.device)
+
+    lib = get_lib(qA)
+    stream = get_stream(qA)
+    lib.igemm_s8s8_joint_matrix(
+        stream,
+        m,
+        n,
+        k,
+        qA.contiguous().data_ptr(),
+        B.contiguous().data_ptr(),
+        out.data_ptr(),
+        cvt_dtype(out.dtype),
+        scaleA.contiguous().data_ptr(),
+        scaleB.contiguous().data_ptr(),
+        bias.contiguous().data_ptr(),
+        blocksize,
+    )
+    return out
+
+
+def igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out=None, blocksize=None):
+    m = qA.shape[0]
+    k = qA.shape[1]
+    n = B.shape[0]
+    blocksize = k if blocksize is None else blocksize
+
+    if out is None:
+        out = torch.empty(m, n, dtype=scaleB.dtype, device=qA.device)
+
+    lib = get_lib(qA)
+    stream = get_stream(qA)
+    lib.igemm_s8s8_sycl_tla(
+        stream,
+        m,
+        n,
+        k,
+        qA.contiguous().data_ptr(),
+        B.contiguous().data_ptr(),
+        out.data_ptr(),
+        cvt_dtype(out.dtype),
+        scaleA.contiguous().data_ptr(),
+        scaleB.contiguous().data_ptr(),
+        bias.contiguous().data_ptr(),
+        blocksize,
+    )
+    return out
+
+
+def igemm_s8s8_sycl_tla_accum(qA, B, out=None):
+    m = qA.shape[0]
+    k = qA.shape[1]
+    n = B.shape[0]
+
+    if out is None:
+        out = torch.empty(m, n, dtype=torch.int32, device=qA.device)
+
+    lib = get_lib(qA)
+    stream = get_stream(qA)
+    lib.igemm_s8s8_sycl_tla_accum(
+        stream,
+        m,
+        n,
+        k,
+        qA.contiguous().data_ptr(),
+        B.contiguous().data_ptr(),
+        out.data_ptr(),
+    )
+    return out
+
+
 # A: mxk:DT,  B: nxk:s8, scaleB: n:DT
 # return: mxn:DT
 def woqgemm_s8_joint_matrix(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor):

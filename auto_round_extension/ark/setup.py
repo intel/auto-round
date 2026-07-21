@@ -48,7 +48,10 @@ def get_build_version():
 def fetch_requirements(path):
     requirements = []
     with open(path, "r") as fd:
-        requirements = [r.strip() for r in fd]
+        for r in fd:
+            line = r.strip()
+            if line and not line.startswith("-"):
+                requirements.append(line)
     return requirements
 
 
