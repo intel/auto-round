@@ -205,6 +205,11 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     def __init__(self, original: torch.nn.Module):
         super().__init__()
+        if any(
+            parameter.ndim == 3 and name.rsplit(".", 1)[-1] in {"gate_up_proj", "down_proj"}
+            for name, parameter in original.named_parameters()
+        ):
+            self._auto_round_replaced_fused_moe = True
         _global_tracker.register_replacement(
             name=str(id(self)),
             original=original,

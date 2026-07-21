@@ -48,6 +48,12 @@ from transformers import AutoConfig
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector
 from auto_round.export.export_to_gguf.hf_checkpoint_restorer import HFCheckpointRestorer, RestoredTensor
+from auto_round.export.export_to_gguf.moe_adapter import (
+    pack_moe_output,
+    resolve_moe_output,
+    validate_moe_imatrices,
+    validate_moe_source_qtypes,
+)
 from auto_round.export.export_to_gguf.packing import ggml_quant
 from auto_round.utils import (
     LazyImport,
@@ -192,6 +198,7 @@ def get_restored_tensors(cls) -> Iterator[RestoredTensor]:
             lambda tensor=tensor: tensor,
             restored.hf_names,
             restored.transform_kind,
+            restored.moe_sources,
         )
 
     for name, tensor in _iter_extra_tensors(cls):
@@ -199,7 +206,13 @@ def get_restored_tensors(cls) -> Iterator[RestoredTensor]:
         if pending is None:
             yield RestoredTensor(name, lambda tensor=tensor: tensor, (name,), "extra")
         else:
-            yield RestoredTensor(name, lambda tensor=tensor: tensor, pending.hf_names, pending.transform_kind)
+            yield RestoredTensor(
+                name,
+                lambda tensor=tensor: tensor,
+                pending.hf_names,
+                pending.transform_kind,
+                pending.moe_sources,
+            )
 
 
 def _quant_data_with_args(
@@ -448,14 +461,14 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
     module = get_module(cls.model, layer_name)
     kwargs = {"scale": None, "zp": None, "d_scale": None, "d_wmin": None, "wmin": None, "imatrix": None}
     source_qtype = get_qtype_by_layer_config(cls.layer_config, name, data_qtype, explicit_only=True)
-    use_layer_attrs = use_layer_attrs and source_qtype == data_qtype
     if use_layer_attrs:
+        compatible_stored_qtype = source_qtype == data_qtype
         kwargs = {
-            "scale": module.scale if hasattr(module, "scale") else None,
-            "zp": module.zp if hasattr(module, "zp") else None,
-            "d_scale": module.w_d_scale if hasattr(module, "w_d_scale") else None,
-            "d_wmin": module.w_d_wmin if hasattr(module, "w_d_wmin") else None,
-            "wmin": module.w_wmin if hasattr(module, "w_wmin") else None,
+            "scale": module.scale if compatible_stored_qtype and hasattr(module, "scale") else None,
+            "zp": module.zp if compatible_stored_qtype and hasattr(module, "zp") else None,
+            "d_scale": module.w_d_scale if compatible_stored_qtype and hasattr(module, "w_d_scale") else None,
+            "d_wmin": module.w_d_wmin if compatible_stored_qtype and hasattr(module, "w_d_wmin") else None,
+            "wmin": module.w_wmin if compatible_stored_qtype and hasattr(module, "w_wmin") else None,
             "imatrix": module.imatrix if hasattr(module, "imatrix") else None,
         }
         if any(isinstance(v, torch.Tensor) for v in kwargs.values()):
@@ -489,6 +502,23 @@ def _quant_data(cls, data_torch, data_qtype, name, modify_name, new_name, bid, d
     #     data_qtype = gguf.GGMLQuantizationType.F32  ##FP16 has issues at inference
     #     data = data_torch.to(torch.float32).squeeze().cpu().numpy()
     return data, data_qtype
+
+
+def _pack_spec_moe_output(cls, data_torch, data_qtype, moe_output, modify_name, new_name, bid, device=None, context=""):
+    def quantize_expert(arr, source_name):
+        return _quant_data(
+            cls,
+            arr,
+            data_qtype,
+            source_name,
+            modify_name,
+            new_name,
+            bid,
+            device=device,
+            use_layer_attrs=True,
+        )
+
+    return pack_moe_output(data_torch, data_qtype, moe_output, quantize_expert, context=context)
 
 
 def get_qtype_by_layer_config(layer_config, name, data_qtype, *, explicit_only=False):
@@ -704,7 +734,7 @@ def filter_restored_tensor(cls, restored):
     filtered = cls.filter_tensors((restored.checkpoint_name, restored.tensor_fn))
     if filtered is None:
         return None
-    return RestoredTensor(filtered[0], filtered[1], restored.hf_names, restored.transform_kind)
+    return RestoredTensor(filtered[0], filtered[1], restored.hf_names, restored.transform_kind, restored.moe_sources)
 
 
 def _gguf_writer_has_tensor(gguf_writer, tensor_name):
@@ -725,6 +755,8 @@ def _count_attention_wv_tensors(cls):
     count = 0
     for item in chain(cls.generate_extra_tensors(), cls.get_tensors()):
         restored = _to_restored_tensor(item)
+        if restored.moe_sources:
+            continue
         filtered = filter_restored_tensor(cls, restored)
         if filtered is None:
             continue
@@ -775,12 +807,6 @@ def prepare_tensors(cls):
             for hf_name in restored.hf_names
         ):
             continue
-        data_torch = restored.tensor_fn()
-        if data_torch is None or data_torch.numel() == 0:
-            continue
-        # we don't need these
-        if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
-            continue
         if hasattr(cls, "current_packing_block") and cls.current_packing_block is not None:  # pylint: disable=E1101
             current_packing_block_split = cls.current_packing_block.split(".")  # pylint: disable=E1101
             name_split = name.split(".")
@@ -789,7 +815,12 @@ def prepare_tensors(cls):
                 or name_split[: len(current_packing_block_split)] != current_packing_block_split
             ):
                 continue
-
+        data_torch = restored.tensor_fn()
+        if data_torch is None or data_torch.numel() == 0:
+            continue
+        # we don't need these
+        if name.endswith((".attention.masked_bias", ".attention.bias", ".rotary_emb.inv_freq")):
+            continue
         filtered = filter_restored_tensor(cls, restored)
         if filtered is None:
             continue
@@ -825,6 +856,7 @@ def prepare_tensors(cls):
             data_qtype: gguf.GGMLQuantizationType | bool = cls.tensor_force_quant(
                 checkpoint_name, new_name, bid, n_dims
             )
+            moe_output = resolve_moe_output(cls, filtered, new_name, bid)
 
             # Most of the codebase that takes in 1D tensors or norms only handles F32 tensors
             if n_dims <= 1 or new_name.endswith("_norm.weight"):
@@ -887,14 +919,29 @@ def prepare_tensors(cls):
                 data_qtype = gguf.GGMLQuantizationType.F32
                 layer_config_names = hf_names
             else:
-                # get name by new_name (for experts),
-                layer_config_names = tuple(get_moe_name(cls, source_name, new_name) for source_name in hf_names)
-                # get data_qtype by layer_config
                 fallback_qtype = (
                     cls._gguf_dtype_selector.select_qtype(new_name, n_dims)
                     if isinstance(data_qtype, bool)
                     else data_qtype
                 )
+                if moe_output is not None:
+                    layer_config_names = moe_output.hf_names
+                    validate_moe_source_qtypes(
+                        layer_config_names,
+                        fallback_qtype,
+                        lambda source_name: get_qtype_by_layer_config(
+                            cls.layer_config, source_name, fallback_qtype, explicit_only=True
+                        ),
+                        f"{checkpoint_name} -> {new_name}",
+                    )
+                    validate_moe_imatrices(
+                        layer_config_names,
+                        lambda source_name: get_module(cls.model, source_name.removesuffix(".weight")),
+                        f"{checkpoint_name} -> {new_name}",
+                    )
+                else:
+                    # Native fused tensors without source metadata retain the legacy name heuristic.
+                    layer_config_names = tuple(get_moe_name(cls, source_name, new_name) for source_name in hf_names)
                 layer_config_qtype = resolve_restored_qtype(
                     cls.layer_config,
                     layer_config_names,
@@ -982,7 +1029,19 @@ def prepare_tensors(cls):
                     pre_quant_shape,
                 )
 
-            if isinstance(data_qtype, bool) or data_qtype in [
+            if moe_output is not None:
+                data, data_qtype = _pack_spec_moe_output(
+                    cls,
+                    data_torch,
+                    data_qtype,
+                    moe_output,
+                    modify_name,
+                    new_name,
+                    bid,
+                    device=device,
+                    context=f"{checkpoint_name} -> {new_name}",
+                )
+            elif isinstance(data_qtype, bool) or data_qtype in [
                 gguf.GGMLQuantizationType.F16,
                 gguf.GGMLQuantizationType.BF16,
                 gguf.GGMLQuantizationType.F32,
@@ -1030,7 +1089,8 @@ def prepare_tensors(cls):
                     data = _quant_data_with_args(data_torch, data_qtype, device=device, **attr_list)
 
                 # for MOE model
-                elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", hf_name)) == 2:
+                # Spec-backed models must not enter this native-fused fallback.
+                elif not restored.moe_sources and len(data_torch.shape) == 3 and len(re.findall(r"\d+", hf_name)) == 2:
                     new_data = []
                     for idx, arr in enumerate(data_torch):
                         arr_name = hf_name.split(".")

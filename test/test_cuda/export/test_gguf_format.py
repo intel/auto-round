@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import shutil
 import sys
@@ -9,9 +10,17 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.modeling.fused_moe.fusion_spec import get_moe_fusion_spec
 
 from ...envs import require_gguf
-from ...helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, save_tiny_model
+from ...helpers import (
+    check_version,
+    eval_generated_prompt,
+    evaluate_accuracy,
+    generate_prompt,
+    get_model_path,
+    save_tiny_model,
+)
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
@@ -36,6 +45,71 @@ class TestAutoRound:
         self.save_dir = str(tmp_path / "saved")
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def _export_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path):
+        import gguf
+
+        from auto_round.modeling.fused_moe.qwen3_5_moe import SequentialQwen3_5MoeExperts
+
+        autoround = AutoRound(tiny_qwen35_moe_model_path, iters=0, nsamples=1, seqlen=8)
+        quantized_model, _ = autoround.quantize()
+        expert_count = quantized_model.config.get_text_config().num_experts
+        live_expert_containers = [
+            module for module in quantized_model.modules() if isinstance(module, SequentialQwen3_5MoeExperts)
+        ]
+        assert live_expert_containers, "Qwen3.5 quantization must retain live routed expert containers"
+        expected_projections = {
+            "gate_up_proj": ("gate_proj", "up_proj"),
+            "down_proj": ("down_proj",),
+        }
+        for experts in live_expert_containers:
+            fusion_spec = get_moe_fusion_spec(experts)
+            assert fusion_spec is not None, "Qwen3.5 live experts must carry a registered MoEFusionSpec"
+            assert fusion_spec.num_experts == expert_count
+            assert {
+                projection.checkpoint_projection: projection.source_projections
+                for projection in fusion_spec.projections
+            } == expected_projections
+            assert len(experts) == expert_count
+            assert all(
+                all(hasattr(expert, projection) for projection in ("gate_proj", "up_proj", "down_proj"))
+                for expert in experts
+            )
+
+        autoround.save_quantized(output_dir=self.save_dir, format="gguf:q4_0")
+        text_gguf_files = [
+            os.path.join(self.save_dir, filename)
+            for filename in os.listdir(self.save_dir)
+            if filename.endswith(".gguf") and "mmproj" not in filename
+        ]
+        assert len(text_gguf_files) == 1
+        gguf_path = text_gguf_files[0]
+
+        reader = gguf.GGUFReader(gguf_path)
+        for projection in ("gate", "up", "down"):
+            tensors = [tensor for tensor in reader.tensors if tensor.name.endswith(f".ffn_{projection}_exps.weight")]
+            assert tensors, f"missing fused expert {projection} tensor"
+            assert all(len(tensor.shape) == 3 for tensor in tensors)
+            assert all(int(tensor.shape[-1]) == expert_count for tensor in tensors)
+            assert all(tensor.tensor_type == gguf.GGMLQuantizationType.Q4_0 for tensor in tensors)
+        return gguf_path
+
+    @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    @require_gguf
+    def test_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path):
+        self._export_qwen35_moe_gguf(tiny_qwen35_moe_model_path)
+
+    @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    @pytest.mark.skipif(importlib.util.find_spec("llama_cpp") is None, reason="requires llama_cpp")
+    @require_gguf
+    def test_qwen35_moe_llama_cpp_load(self, tiny_qwen35_moe_model_path):
+        import llama_cpp
+
+        gguf_path = self._export_qwen35_moe_gguf(tiny_qwen35_moe_model_path)
+        model = llama_cpp.Llama(model_path=gguf_path, n_ctx=32, logits_all=False)
+        assert model is not None
 
     @require_gguf
     def test_gguf_format(self, tiny_qwen_model_path, dataloader):

@@ -34,6 +34,7 @@ Usage:
 import torch
 from torch import nn
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
 
@@ -519,6 +520,13 @@ def _unfuse_experts_weights_inplace(
         dim1, dim2 = first_param.shape[1], first_param.shape[2]
         is_transposed = dim1 < dim2
 
+    fusion_spec = build_standard_moe_fusion_spec(
+        detected_projections={name: config.copy() for name, config in detected_projections.items()},
+        num_experts=num_experts,
+        checkpoint_transposed=is_transposed,
+        module=module,
+    )
+
     dtype = first_param.dtype
     target_device = first_param.device if first_param.device.type != "meta" else "cpu"
 
@@ -590,6 +598,8 @@ def _unfuse_experts_weights_inplace(
     # Ensure num_experts is set
     if not hasattr(module, "num_experts"):
         module.num_experts = num_experts
+
+    register_moe_fusion_spec(module, fusion_spec)
 
     # Mark as unfused for detection during save
     module._unfused_experts = True

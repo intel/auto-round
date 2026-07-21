@@ -4,6 +4,11 @@ from torch import nn
 from transformers.core_model_loading import Chunk, PrefixChange, WeightConverter
 
 from auto_round.export.export_to_gguf.hf_checkpoint_restorer import HFCheckpointRestorer
+from auto_round.modeling.fused_moe.fusion_spec import (
+    MoEFusionSpec,
+    ProjectionFusionSpec,
+    register_moe_fusion_spec,
+)
 
 
 class _DummyConfig:
@@ -19,6 +24,85 @@ class _DummyModel:
 
     def state_dict(self):
         return self._state_dict
+
+
+class _MoEModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.ModuleList([nn.Module()])
+        self.layers[0].experts = nn.ModuleList(
+            [
+                nn.ModuleDict(
+                    {
+                        "gate_proj": nn.Linear(2, 2, bias=False),
+                        "up_proj": nn.Linear(2, 2, bias=False),
+                        "down_proj": nn.Linear(2, 2, bias=False),
+                    }
+                )
+                for _ in range(2)
+            ]
+        )
+        register_moe_fusion_spec(
+            self.layers[0].experts,
+            MoEFusionSpec(
+                num_experts=2,
+                projections=(
+                    ProjectionFusionSpec(
+                        checkpoint_projection="gate_up_proj",
+                        source_projections=("gate_proj", "up_proj"),
+                        concat_dim=1,
+                    ),
+                    ProjectionFusionSpec(
+                        checkpoint_projection="down_proj",
+                        source_projections=("down_proj",),
+                        concat_dim=None,
+                    ),
+                ),
+            ),
+        )
+
+
+def test_restorer_emits_moe_refusion_view_with_complete_source_lineage():
+    restored = list(HFCheckpointRestorer(_MoEModel()).iter_tensors())
+    by_name = {item.checkpoint_name: item for item in restored}
+    gate_up = by_name["layers.0.experts.gate_up_proj"]
+
+    assert gate_up.transform_kind == "moe_refusion"
+    assert gate_up.hf_names == (
+        "layers.0.experts.0.gate_proj.weight",
+        "layers.0.experts.1.gate_proj.weight",
+        "layers.0.experts.0.up_proj.weight",
+        "layers.0.experts.1.up_proj.weight",
+    )
+    assert [source.projection for source in gate_up.moe_sources] == ["gate_proj", "up_proj"]
+    assert not any(item.checkpoint_name.endswith("0.gate_proj.weight") for item in restored)
+
+
+def test_restorer_rejects_partially_completed_moe_refusion_view():
+    model = _MoEModel()
+    completed = {"layers.0.experts.0.gate_proj.weight"}
+
+    with pytest.raises(ValueError, match="layers.0.experts.gate_up_proj.*incomplete sources"):
+        list(HFCheckpointRestorer(model, completed_hf_names=completed).iter_tensors())
+
+
+def test_get_and_filter_restored_tensor_preserve_moe_sources():
+    from auto_round.export.export_to_gguf.convert import filter_restored_tensor, get_restored_tensors
+
+    class Converter:
+        @staticmethod
+        def filter_tensors(item):
+            return item
+
+    converter = Converter()
+    converter.model = _MoEModel()
+    restored = next(
+        item for item in get_restored_tensors(converter) if item.checkpoint_name == "layers.0.experts.gate_up_proj"
+    )
+    filtered = filter_restored_tensor(converter, restored)
+
+    assert [source.projection for source in restored.moe_sources] == ["gate_proj", "up_proj"]
+    assert filtered.moe_sources == restored.moe_sources
 
 
 def test_restorer_reverses_transformers_prefix_change():
