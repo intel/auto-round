@@ -640,13 +640,13 @@ class AlgorithmComposer:
 
     def compress_block(
         self,
-        block: "torch.nn.Module",
-        input_ids,
-        input_others: dict,
-        ctx: "BlockContext",
-        *,
-        q_input=None,
+        block,
+        fp_inputs,
+        input_others,
+        block_ctx: BlockContext,
+        q_inputs=None,
         valid_token_mask=None,
+        **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
 
@@ -681,7 +681,7 @@ class AlgorithmComposer:
             for pre in self.preprocessors:
                 pre_hooks.extend(pre.register_fp_input_forward_hooks(block))
             if pre_hooks:
-                block_forward_fn(block, input_ids, input_others)
+                block_forward_fn(block, fp_inputs, input_others)
             for h in pre_hooks:
                 h.remove()
 
@@ -690,60 +690,62 @@ class AlgorithmComposer:
                 if hasattr(pre, "register_qinput_forward_hooks"):
                     pre_q_hooks.extend(pre.register_qinput_forward_hooks(block))
             if pre_q_hooks:
-                block_forward_fn(block, q_input if q_input is not None else input_ids, input_others)
+                block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
             for h in pre_q_hooks:
                 h.remove()
 
         # ── Step 2: pre_quantize_block (stats consolidation + weight transforms) ──
         for pre in self.preprocessors:
-            pre.pre_quantize_block(ctx)
+            pre.pre_quantize_block(block_ctx)
 
+        reference_output=None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
-        with torch.no_grad():
-            quant_hooks = self._get_fp_act_hooks(block)
-            reference_output = block_forward_fn(block, input_ids, input_others)
-            for h in quant_hooks:
-                h.remove()
+        if fp_inputs is not None:
+            with torch.no_grad():
+                quant_hooks = self._get_fp_act_hooks(block)
+                reference_output = block_forward_fn(block, fp_inputs, input_others)
+                for h in quant_hooks:
+                    h.remove()
 
-            if self.block_quantizer.enable_quanted_input:
-                q_hooks = self._get_q_act_hooks(block)
-                if q_hooks:
-                    block_forward_fn(block, q_input if q_input is not None else input_ids, input_others)
-                    for h in q_hooks:
-                        h.remove()
+                if self.block_quantizer.enable_quanted_input:
+                    q_hooks = self._get_q_act_hooks(block)
+                    if q_hooks:
+                        block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
+                        for h in q_hooks:
+                            h.remove()
 
-        # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
-        # Must run after calibration hooks (act_max collected) and before quantize_block.
-        act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
-        data_type = self.scheme.data_type if self.scheme else "int"
-        group_size = self.scheme.group_size if self.scheme else -1
-        act_data_type = self.scheme.act_data_type if self.scheme else data_type
-        if act_data_type is not None or not act_dynamic:
-            from auto_round.compressors.utils import is_nv_fp
-            from auto_round.data_type.utils import update_block_global_scale_if_needed
-            from auto_round.utils import set_amax_for_all_moe_layers
+            # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
+            # Must run after calibration hooks (act_max collected) and before quantize_block.
+            act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
+            data_type = self.scheme.data_type if self.scheme else "int"
+            group_size = self.scheme.group_size if self.scheme else -1
+            act_data_type = self.scheme.act_data_type if self.scheme else data_type
+            if act_data_type is not None or not act_dynamic:
+                from auto_round.compressors.utils import is_nv_fp
+                from auto_round.data_type.utils import update_block_global_scale_if_needed
+                from auto_round.utils import set_amax_for_all_moe_layers
 
-            if is_nv_fp(act_data_type) or not act_dynamic:
-                set_amax_for_all_moe_layers(block, attr_name="act_max")
-            update_block_global_scale_if_needed(ctx.model, data_type, group_size)
+                if is_nv_fp(act_data_type) or not act_dynamic:
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+                update_block_global_scale_if_needed(block_ctx.model, data_type, group_size)
 
         # ── Step 4: quantize_block ──────────────────────────────────────────────
         # When quantized input is available from the previous block, use it;
         # otherwise fall back to the FP input.
-        effective_input = q_input if q_input is not None else input_ids
+        effective_input = q_inputs if q_inputs is not None else fp_inputs
         self.block_quantizer.quantize_block(
             block,
             effective_input,
             input_others,
             reference_output,
-            q_input,
-            ctx,
+            q_inputs,
+            block_ctx,
             valid_token_mask=valid_token_mask,
         )
 
         # ── Step 5: post_quantize_block ─────────────────────────────────────────
         for pre in self.preprocessors:
-            pre.post_quantize_block(ctx)
+            pre.post_quantize_block(block_ctx)
 
         # ── Step 6: Collect quantized-block outputs for the next block ──────────
         if self.block_quantizer.enable_quanted_input:

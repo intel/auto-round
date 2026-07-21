@@ -259,7 +259,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 m,
                 input_ids,
                 input_others,
-                ctx,
+                block_ctx=ctx,
                 q_input=q_input,
                 valid_token_mask=valid_token_mask,
             )
@@ -396,7 +396,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-                self.alg_composer.compress_block(block, None, {}, ctx)
+                self.alg_composer.compress_block(block, fp_inputs=None, input_others={}, block_ctx=ctx)
                 if self.compress_context.is_immediate_packing:
                     for _n, _mod in block.named_modules():
                         if hasattr(_mod, "bits") and check_to_quantized(_mod):
@@ -523,7 +523,8 @@ class CompressionOrchestrator(BaseOrchestrator):
         all_q_inputs = None
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
-        if has_gguf and (hasattr(self.quantizer, "iters") or self.quantizer.iters > 0):  # pylint: disable=E1101
+        # change to enable_quanted_input
+        if has_gguf and (hasattr(self.alg_composer.block_quantizer, "iters") or self.alg_composer.block_quantizer.iters > 0):  # pylint: disable=E1101
             is_quantized_embedding = self.quantizer.quantize_embedding_layer()
             clear_memory()
             if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none exits, no need to run
@@ -846,13 +847,13 @@ class CompressionOrchestrator(BaseOrchestrator):
             block = block.to(device)
 
             ctx = BlockContext(
-                model=self.model_context.model,
+                model=self.model,
                 block_names=[getattr(block, "global_name", "")],
                 block_name=getattr(block, "global_name", ""),
                 block_index=0,
                 device=device,
             )
-            self.alg_composer.compress_block(block, None, {}, None, None, ctx)
+            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx,q_inputs=None, valid_token_mask=None)
 
             mv_module_from_gpu(block)
             return None, None
@@ -947,7 +948,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             block,
             input_ids,
             input_others,
-            ctx,
+            block_ctx=ctx,
             q_input=q_input,
         )
 

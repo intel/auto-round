@@ -67,16 +67,16 @@ class RTNQuantizer(BaseQuantizer):
         """
 
         for _name, m in block.named_modules():
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer(m.global_name)
+            if check_to_quantized(m):
+                self._quantize_layer_via_rtn(m,disable_opt_rtn=True)
         return {}
 
-    @torch.no_grad()
-    def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
-        if dtype is not None:
-            layer = get_module(self.model, name)
-            set_module(self.model, name, layer.to(dtype))
-        self._quantize_layer_via_rtn(name, disable_opt_rtn=True)
+    # @torch.no_grad()
+    # def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
+    #     if dtype is not None:
+    #         layer = get_module(self.model, name)
+    #         set_module(self.model, name, layer.to(dtype))
+    #     self._quantize_layer_via_rtn(name, disable_opt_rtn=True)
 
 
 @register_pipeline_member(OptimizedRTNConfig)
