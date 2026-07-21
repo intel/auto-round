@@ -979,11 +979,10 @@ class TestLLMCompressorMXFPSource:
 # ===========================================================================
 
 
-_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8"]
+_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8", "BF16"]
 _UNSUPPORTED = [
     "W3A16",
     "FPW8A16",
-    "BF16",
     "MXINT4",
     "NVFP4",
     "FP8_BLOCK",
@@ -1022,11 +1021,16 @@ class TestSchemeValidation:
             layer_config=core.layer_config,
             ignore_patterns=core.ignore_patterns,
         )
-        assert "model.layers.0.mlp.fc1" in quantized
-        if name.startswith("MXFP"):
-            assert "model.layers.0.mlp.fc1.weight_scale" in output
+        if name == "BF16":
+            # BF16 default: no weights quantized; the layer is kept in full precision.
+            assert len(quantized) == 0
+            assert "model.layers.0.mlp.fc1.weight" in output
         else:
-            assert "model.layers.0.mlp.fc1.qweight" in output
+            assert "model.layers.0.mlp.fc1" in quantized
+            if name.startswith("MXFP"):
+                assert "model.layers.0.mlp.fc1.weight_scale" in output
+            else:
+                assert "model.layers.0.mlp.fc1.qweight" in output
 
     @pytest.mark.parametrize("name", _UNSUPPORTED)
     def test_unsupported_raises(self, tmp_path, name):
