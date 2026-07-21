@@ -39,8 +39,8 @@ class TestCounts:
 
     def format(self) -> str:
         return (
-            f"passed: {self.passed}, failed: {self.failed}, "
-            f"skipped: {self.skipped}, total: {self.total}"
+            f"total: {self.total}, passed: {self.passed}, "
+            f"failed: {self.failed}, skipped: {self.skipped}"
         )
 
 
@@ -50,7 +50,6 @@ class TestResult:
 
     name: str
     status: TestStatus
-    filename: str
     duration: str
     counts: TestCounts
 
@@ -92,7 +91,6 @@ class XmlAnalyzer:
         return TestResult(
             name=self._extract_test_name(log_file),
             status=self._determine_status(counts, xml_file),
-            filename=log_file.name,
             duration=duration,
             counts=counts if counts is not None else TestCounts(),
         )
@@ -159,8 +157,8 @@ class XmlAnalyzer:
 class ReportGenerator:
     """Generates formatted test summary reports."""
 
-    WIDTHS = {"name": 35, "status": 10, "counts": 45, "file": 50, "time": 10}
-    SEPARATOR = "=" * 150
+    WIDTHS = {"name": 35, "status": 10, "counts": 45, "time": 10}
+    SEPARATOR = "=" * 100
 
     def __init__(self, output_path: Path):
         self.output_path = Path(output_path)
@@ -209,7 +207,6 @@ class ReportGenerator:
             f"{'Test Case':<{self.WIDTHS['name']}} "
             f"{'Result':<{self.WIDTHS['status']}} "
             f"{'Counts':<{self.WIDTHS['counts']}} "
-            f"{'Log File':<{self.WIDTHS['file']}} "
             f"{'Time':<{self.WIDTHS['time']}}"
         )
 
@@ -218,7 +215,6 @@ class ReportGenerator:
             f"{'-' * 10:<{self.WIDTHS['name']}} "
             f"{'-' * 6:<{self.WIDTHS['status']}} "
             f"{'-' * 6:<{self.WIDTHS['counts']}} "
-            f"{'-' * 8:<{self.WIDTHS['file']}} "
             f"{'-' * 4:<{self.WIDTHS['time']}}"
         )
 
@@ -227,7 +223,6 @@ class ReportGenerator:
             f"{result.name:<{self.WIDTHS['name']}} "
             f"{result.status.name:<{self.WIDTHS['status']}} "
             f"{result.counts.format():<{self.WIDTHS['counts']}} "
-            f"{result.filename:<{self.WIDTHS['file']}} "
             f"{result.duration:<{self.WIDTHS['time']}}"
         )
 
