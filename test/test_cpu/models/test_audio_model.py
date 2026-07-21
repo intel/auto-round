@@ -194,7 +194,7 @@ class TestStableAudioRegistration:
     """Verify StableAudio-specific registrations."""
 
     def test_config_and_special_registered(self):
-        from auto_round.algorithms.composer import _DIFFUSION_OUTPUT_REGISTRY
+        from auto_round.algorithms.block_runner import _DIFFUSION_OUTPUT_REGISTRY
 
         assert "StableAudioDiTBlock" in _DIFFUSION_OUTPUT_REGISTRY
         assert _DIFFUSION_OUTPUT_REGISTRY["StableAudioDiTBlock"] == ["hidden_states"]

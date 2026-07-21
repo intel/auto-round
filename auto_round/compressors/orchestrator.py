@@ -780,8 +780,8 @@ class CompressionOrchestrator(BaseOrchestrator):
         fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
         fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
 
-        self.inputs = {}
-        self.last_cache_name = None
+        self.calibration.inputs = {}
+        self.calibration.last_cache_name = None
         for step_input in decoding_layer_inputs:
             args, kwargs = step_input[0]
             fake_layer(*args, **kwargs)
@@ -792,7 +792,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         block: torch.nn.Module,
         inputs: Any,
         q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",  # TODO Delete wenhuach
+        device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
     ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
@@ -885,7 +885,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             )
         else:
             self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]]
+        block_inputs = self.calibration.inputs[self.quant_block_list[0][0]]
         input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
 
         # ── Infrastructure: materialize, dtype convert, device placement ──────

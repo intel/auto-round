@@ -30,12 +30,12 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.block_runner import BlockForwardRunner, register_diffusion_output
+from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -45,7 +45,6 @@ from auto_round.logger import logger
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
-    from auto_round.algorithms.base import BaseAlgorithm
     from auto_round.algorithms.quantization.base import BaseQuantizer
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.transforms.base import BasePreprocessor
@@ -247,7 +246,8 @@ class AlgorithmComposer:
     def _get_fp_act_hooks(self, block: "torch.nn.Module") -> list:
         """Register FP-input act_max + quantizer forward hooks."""
         if not self.need_quanted_input():
-            # If having q_input, act_max will be collected in q_input forward hook, no need to collect in fp_input forward hook
+            # If having q_input, act_max will be collected in q_input forward hook,
+            # no need to collect in fp_input forward hook
             handles = self._register_act_max_hooks(block)
         else:
             handles = []

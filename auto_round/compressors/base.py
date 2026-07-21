@@ -221,6 +221,8 @@ class BaseOrchestrator(object):
         from auto_round.calibration.state import CalibrationContext
 
         self.dataset = dataset
+        if self.dataset is None:
+            self.dataset = "NeelNanda/pile-10k"
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
