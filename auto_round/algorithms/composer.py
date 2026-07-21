@@ -50,8 +50,6 @@ if TYPE_CHECKING:  # avoid circular imports at runtime
     from auto_round.algorithms.transforms.base import BasePreprocessor
 
 
-
-
 # ---------------------------------------------------------------------------
 # Context dataclasses
 # ---------------------------------------------------------------------------
@@ -77,6 +75,7 @@ class BlockContext:
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
+
 
 # ---------------------------------------------------------------------------
 # AlgorithmComposer

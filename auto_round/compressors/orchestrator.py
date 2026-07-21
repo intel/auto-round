@@ -880,9 +880,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             # ``Calibrator.collect``).  Bind it as the authoritative store so
             # the quantizer reads the same ``inputs`` / ``attention_mask`` /
             # ``batch_dim``.
-            self.calibration_context = (
-                inputs
-            )
+            self.calibration_context = inputs
         else:
             self.normalize_decoding_layer_inputs_(inputs)
         block_inputs = self.calibration.inputs[self.quant_block_list[0][0]]
