@@ -17,6 +17,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from auto_round.autoround import AutoRoundCompatible
     from auto_round.compressors.base import BaseCompressor
     from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
     from auto_round.compressors.entry import PipelineCompressor
