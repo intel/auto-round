@@ -40,7 +40,7 @@ function run_unit_test() {
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -51,7 +51,7 @@ function run_unit_test() {
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
@@ -71,7 +71,7 @@ function run_unit_test_vllm() {
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }

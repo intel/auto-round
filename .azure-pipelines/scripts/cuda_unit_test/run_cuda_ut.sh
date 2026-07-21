@@ -99,7 +99,7 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -129,7 +129,7 @@ function run_unit_test_llmc() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -159,7 +159,7 @@ function run_unit_test_sglang() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -189,7 +189,7 @@ function run_unit_test_vllm() {
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest -m "not skip_ci" -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
