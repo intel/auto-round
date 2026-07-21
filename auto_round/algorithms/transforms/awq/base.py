@@ -52,7 +52,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.composer import BlockContext
+    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
 
 
 # Known normalization classes whose ``forward`` computes
@@ -164,7 +164,7 @@ class AWQTransform(BasePreprocessor):
             )
             exit(-1)
 
-    def prepare_run(self) -> None:
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Validate compatibility, resolve model-wide mappings, and group by block prefix."""
         model = self.model
         report = check_model_compatibility(model, self._user_mappings)
@@ -187,11 +187,9 @@ class AWQTransform(BasePreprocessor):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        # TODO wenhuach
-        # self._qdq_tool.configure(compressor)
+        if composer is not None:
+            self._qdq_tool.configure(composer)
 
-        # if compressor.compress_context is not None:
-        #     compressor.compress_context.cache_device = torch.device("cpu")
 
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",

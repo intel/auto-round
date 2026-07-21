@@ -633,6 +633,15 @@ class AlgorithmComposer:
             else:
                 layer.act_max = torch.max(act_max, layer.act_max)
 
+    def need_quanted_input(self):
+        for preprocessor in self.preprocessors:
+            if getattr(preprocessor, "enable_quanted_input", False):
+                return True
+        if getattr(self.block_quantizer, "enable_quanted_input", False):
+            return True
+        return False
+
+
     def compress_embedding_layer(self):
         self.block_quantizer.quantize_embedding_layer()
 
@@ -836,9 +845,9 @@ class AlgorithmComposer:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
-    def prepare_run(self):
+    def prepare_run(self, composer: "AlgorithmComposer" = None):
         for alg in self.members():
-            alg.prepare_run()
+            alg.prepare_run(composer=self)
 
     def finalize_run(self):
         for alg in self.members():

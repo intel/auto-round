@@ -14,7 +14,7 @@
 
 from contextlib import nullcontext
 from functools import partial
-from typing import Callable, Union
+from typing import TYPE_CHECKING, Callable, Union
 
 import torch
 import transformers
@@ -22,6 +22,9 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
@@ -317,9 +320,9 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         self._use_outlier_suppressed_loss = False
         logger.info("using algorithm extension for quantization.")
 
-    def prepare_run(self) -> None:
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level setup: initialise scheme-dependent state once before block iteration."""
-        super().prepare_run()
+        super().prepare_run(composer=composer)
 
         if (
             self.scheme.sym

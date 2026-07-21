@@ -21,7 +21,7 @@ import torch
 from auto_round.algorithms.registry import resolve_pipeline_member
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.composer import BlockForwardRunner
+    from auto_round.algorithms.composer import AlgorithmComposer, BlockForwardRunner
     from auto_round.calibration.state import CalibrationContext
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
@@ -138,7 +138,7 @@ class BaseAlgorithm:
     def amp_dtype(self) -> torch.dtype:
         return getattr(self.model_context, "amp_dtype", torch.float32)
 
-    def prepare_run(self) -> None:
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation called once before block iteration starts."""
         return
 

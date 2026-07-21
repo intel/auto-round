@@ -522,12 +522,10 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         all_q_inputs = None
         # Leave it to gguf itself to handle
-        # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
-        # change to enable_quanted_input
-        if has_gguf and (hasattr(self.alg_composer.block_quantizer, "iters") or self.alg_composer.block_quantizer.iters > 0):  # pylint: disable=E1101
-            is_quantized_embedding = self.quantizer.quantize_embedding_layer()
+        if has_gguf and self.alg_composer.need_quanted_input():  # pylint: disable=E1101
+            is_quantized_embedding = self.alg_composer.quantize_embedding_layer() #
             clear_memory()
-            if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none exits, no need to run
+            if is_quantized_embedding:
                 all_inputs = copy.deepcopy(self.inputs)
                 clear_memory(self.inputs)
                 all_q_inputs = self.cache_data(
@@ -710,7 +708,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             memory_monitor.log_summary()
             return
         q_layer_inputs = None
-        enable_quanted_input = self.enable_quanted_input
+        enable_quanted_input = self.alg_composer.need_quanted_input()
         has_gguf = False
 
         if hasattr(self, "formats") and self.formats is not None:

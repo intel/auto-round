@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.composer import BlockContext
+    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -290,7 +290,7 @@ class BaseQuantizer(BaseAlgorithm):
     #     return self._resolved_block_forward
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
-    def prepare_run(self) -> None:
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return
 
