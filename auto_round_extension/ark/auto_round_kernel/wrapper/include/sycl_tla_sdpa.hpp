@@ -23,23 +23,18 @@
 #include "cutlass/gemm/device/gemm_universal_adapter.h"
 #include "cutlass/util/packed_stride.hpp"
 #include "stla/xe_sdpa_fwd_mainloop.hpp"
+#include "stla/xe_sage_fp8_fwd_kernel.hpp"
 #include "stla/xe_sagev1_fwd_mainloop.hpp"
 #include "stla/xe_sage_fwd_kernel.hpp"
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_fmha_fwd_kernel.hpp"
 #include "flash_attention_v2/kernel/xe_tile_scheduler.hpp"
-#include "cutlass/util/GPU_Clock.hpp"
 #include "cutlass/util/sycl_event_manager.hpp"
 #include <cute/tensor.hpp>
-#include <random>
 
 #include "helper.h"
-#include "cutlass/util/command_line.h"
 #include "cutlass/util/device_memory.h"
-#include "cutlass/util/reference/device/gemm_complex.h"
-#include "cutlass/util/reference/device/tensor_compare.h"
-#include "sycl_common.hpp"
 
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 
@@ -69,6 +64,9 @@ struct Options {
    void* o = nullptr;
   int scale_block_size = 0;
   const void *qscale = nullptr, *kscale = nullptr, *vscale = nullptr;
+  const float* vmean = nullptr;
+  const float *q_scale_device = nullptr, *k_scale_device = nullptr, *v_scale_device = nullptr;
+  float q_scale = 1.0f, k_scale = 1.0f, v_scale = 1.0f;
   const void *block_K = nullptr, *block_V = nullptr;
   const int *page_table = nullptr, *num_pages_per_seq = nullptr;
   bool is_causal = false;
@@ -302,21 +300,21 @@ struct KernelRunner {
     typename FMHAKernel::Arguments arguments{
         {
             shape,
-            static_cast<const FMHAKernel::ElementQ*>(options.q),
+            static_cast<const typename FMHAKernel::ElementQ*>(options.q),
             stride_Q,
-            static_cast<const FMHAKernel::ElementK*>(options.k),
+            static_cast<const typename FMHAKernel::ElementK*>(options.k),
             stride_K,
-            static_cast<const FMHAKernel::ElementV*>(options.v),
+            static_cast<const typename FMHAKernel::ElementV*>(options.v),
             stride_V,
-            static_cast<FMHAKernel::ElementO*>(options.o),
+            static_cast<typename FMHAKernel::ElementO*>(options.o),
             stride_O,
-            static_cast<const FMHAKernel::ElementK*>(options.block_K),
+            static_cast<const typename FMHAKernel::ElementK*>(options.block_K),
             stride_K_cache,
-            static_cast<const FMHAKernel::ElementV*>(options.block_V),
+            static_cast<const typename FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
             static_cast<float*>(options.lse),
         },
-        {options.softmax_scale, static_cast<FMHAKernel::ElementQ*>(options.mask),
+        {options.softmax_scale, static_cast<typename FMHAKernel::ElementQ*>(options.mask),
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
          options.use_paged_kv ? options.num_pages_per_seq : nullptr},
         {},
@@ -340,6 +338,120 @@ struct KernelRunner {
     run(params);
 
     return cutlass::Status::kSuccess;
+  }
+};
+
+template <class SageKernel, class BaseKernel>
+struct SageFP8KernelRunner : KernelRunner<BaseKernel, false> {
+  static void launch(typename SageKernel::Params params) {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    namespace intelex = sycl::ext::intel::experimental;
+
+    dim3 const block = SageKernel::get_block_shape();
+    dim3 const grid = SageKernel::get_grid_shape(params);
+    compat::experimental::launch_properties launch_props{
+        syclex::work_group_scratch_size(SageKernel::SharedStorageSize),
+    };
+    compat::experimental::kernel_properties kernel_props{
+        syclex::sub_group_size<cute::intel::sg_size>, intelex::grf_size<256>};
+    compat::experimental::launch_policy policy{
+        compat::dim3(grid.x, grid.y, grid.z), compat::dim3(block.x, block.y, block.z),
+        launch_props, kernel_props};
+    auto event = compat::experimental::launch<cutlass::device_kernel<SageKernel>, SageKernel>(policy, params);
+    EventManager::getInstance().addEvent(event);
+  }
+
+  cutlass::Status run(const Options& options, const cutlass::KernelHardwareInfo& hw_info) {
+    auto shape = this->initialize(options);
+    typename BaseKernel::Arguments fa2_arguments{
+        {
+            shape,
+            static_cast<const typename BaseKernel::ElementQ*>(options.q), this->stride_Q,
+            static_cast<const typename BaseKernel::ElementK*>(options.k), this->stride_K,
+            static_cast<const typename BaseKernel::ElementV*>(options.v), this->stride_V,
+            static_cast<typename BaseKernel::ElementO*>(options.o), this->stride_O,
+            nullptr, {}, nullptr, {}, nullptr, {},
+            options.k_scale, options.v_scale, options.q_scale, options.scale_block_size,
+            static_cast<const typename BaseKernel::ElementK*>(options.block_K), this->stride_K_cache,
+            static_cast<const typename BaseKernel::ElementV*>(options.block_V), this->stride_V_cache,
+        },
+        {options.softmax_scale,
+         options.use_paged_kv ? options.page_table : nullptr,
+         options.use_paged_kv ? options.page_size : 0,
+         options.use_paged_kv ? options.num_pages_per_seq : nullptr},
+        {},
+        hw_info};
+    typename SageKernel::Arguments arguments{
+      fa2_arguments, options.vmean,
+      options.q_scale_device, options.k_scale_device, options.v_scale_device};
+
+    size_t workspace_size = SageKernel::get_workspace_size(arguments);
+    cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+    if (!SageKernel::can_implement(arguments)) {
+      return cutlass::Status::kErrorInvalidProblem;
+    }
+    CUTLASS_CHECK(SageKernel::initialize_workspace(arguments, workspace.get()));
+    auto params = SageKernel::to_underlying_arguments(arguments, workspace.get());
+    launch(params);
+    return cutlass::Status::kSuccess;
+  }
+};
+
+template <bool Causal, bool SmoothV, typename TileShapeQK, typename TileShapePV, typename TileShapeOutput,
+          typename SubgroupLayoutQK, int PipelineStages, typename ElementScale = float>
+struct SageFP8Config {
+  using ElementQ = cutlass::float_e4m3_t;
+  using ElementK = cutlass::float_e4m3_t;
+  using ElementV = cutlass::float_e4m3_t;
+  using ElementO = cutlass::bfloat16_t;
+  using StrideQ = Stride<int, _1, int, int>;
+  using StrideK = Stride<int, _1, int, int>;
+  using StrideV = Stride<_1, int, int, int>;
+  using StrideO = Stride<int, _1, int, int>;
+  using StrideScale = Stride<_1, int, int, int>;
+
+  static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
+#if !(defined(SYCL_INTEL_TARGET) && (SYCL_INTEL_TARGET == 35))
+  using MMAOperation = XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, half_t>;
+#else
+  using MMAOperation = XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementQ>;
+#endif
+  using SubgroupLayoutPV = decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{}));
+  using TiledMMAQK = typename TiledMMAHelper<MMA_Atom<MMAOperation>, Layout<TileShapeQK>,
+                                              SubgroupLayoutQK>::TiledMMA;
+  using TiledMMAPV = typename TiledMMAHelper<MMA_Atom<MMAOperation>, Layout<TileShapePV>,
+                                              SubgroupLayoutPV>::TiledMMA;
+  static_assert(get<0>(TileShapeOutput{}) == get<0>(TileShapePV{}));
+  static constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
+
+  template <typename Element, typename TensorStride>
+  static constexpr auto make_dummy_tensor(Element value, TensorStride stride) {
+    return make_tensor(make_gmem_ptr(&value), make_layout(repeat<rank_v<TensorStride>>(1), stride));
+  }
+
+  using TensorQ = decltype(make_dummy_tensor(ElementQ{}, StrideQ{}));
+  using TensorK = decltype(make_dummy_tensor(ElementK{}, StrideK{}));
+  using TensorV = decltype(make_dummy_tensor(ElementV{}, StrideV{}));
+  using TensorO = decltype(make_dummy_tensor(ElementO{}, StrideO{}));
+  using TensorScale = decltype(make_dummy_tensor(ElementScale{}, StrideScale{}));
+  using Mainloop = cutlass::fmha::collective::FMHAFwdMainloop<
+      cutlass::fmha::XeDefault<PipelineStages>, Causal,
+      false, false, true, false, false,
+      TiledMMAQK, TiledMMAPV, VTiles,
+      TensorQ, TensorK, TensorV, TensorScale, TensorScale, TensorScale,
+      TensorK, TensorV>;
+  using Epilogue = cutlass::fmha::collective::FMHAFwdEpilogue<Mainloop, TileShapeOutput, TensorO>;
+  using ProblemShape = cutlass::fmha::kernel::FMHAProblemShape<false>;
+  using Scheduler = cutlass::fmha::kernel::XeFHMAIndividualTileScheduler<>;
+  using BaseKernel = cutlass::fmha::kernel::XeFMHAFwdKernel<ProblemShape, Mainloop, Epilogue, Scheduler>;
+  using Kernel = cutlass::fmha::kernel::XeSageFP8FwdKernel<ProblemShape, Mainloop, Epilogue, Scheduler, SmoothV>;
+
+  static int run(const Options& options) {
+    cutlass::KernelHardwareInfo hw_info;
+    hw_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hw_info.device_id);
+    SageFP8KernelRunner<Kernel, BaseKernel> runner;
+    CUTLASS_CHECK(runner.run(options, hw_info));
+    return 0;
   }
 };
 
@@ -486,9 +598,9 @@ struct FMHAConfig {
       throw std::runtime_error("Paged KV without varlen is not supported yet");
       // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler<>>(options);
     } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
-      return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler<>>(options);
     } else if (!options.use_paged_kv && options.varlen && cached_kv) {
       throw std::runtime_error("Varlen with cached KV but without paged KV is not supported yet");
       // return run<true, true, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
@@ -659,17 +771,17 @@ struct SageKernelRunner {
     typename FMHAKernel::Arguments arguments{
         {
             shape,
-            static_cast<const FMHAKernel::ElementQ*>(options.q),
+            static_cast<const typename FMHAKernel::ElementQ*>(options.q),
             stride_Q,
-            static_cast<const FMHAKernel::ElementK*>(options.k),
+            static_cast<const typename FMHAKernel::ElementK*>(options.k),
             stride_K,
-            static_cast<const FMHAKernel::ElementV*>(options.v),
+            static_cast<const typename FMHAKernel::ElementV*>(options.v),
             stride_V,
-            static_cast<FMHAKernel::ElementO*>(options.o),
+            static_cast<typename FMHAKernel::ElementO*>(options.o),
             stride_O,
-            static_cast<const FMHAKernel::ElementK*>(options.block_K),
+            static_cast<const typename FMHAKernel::ElementK*>(options.block_K),
             stride_K_cache,
-            static_cast<const FMHAKernel::ElementV*>(options.block_V),
+            static_cast<const typename FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
             static_cast<float*>(options.lse),
         },
@@ -839,9 +951,9 @@ struct SageConfig {
       throw std::runtime_error("Paged KV without varlen is not supported yet");
       // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler<>>(options);
     } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
-      return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler<>>(options);
     } else if (!options.use_paged_kv && options.varlen && cached_kv) {
       throw std::runtime_error("Varlen with cached KV but without paged KV is not supported yet");
       // return run<true, true, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
@@ -858,6 +970,75 @@ struct SageConfig {
 // ========================================================================
 // Prefill Kernel Launch
 // ========================================================================
+
+template <typename ElementScale, bool Causal, typename ShapeQK, typename ShapePV, typename ShapeOut,
+          typename SubgroupLayoutQK, int PipelineStages>
+inline int run_sage_fp8_kernel(Options const& options) {
+  if (options.vmean) {
+    return SageFP8Config<Causal, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
+                         PipelineStages, ElementScale>::run(options);
+  }
+  return SageFP8Config<Causal, false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
+                       PipelineStages, ElementScale>::run(options);
+}
+
+template <typename ElementScale, typename ShapeQK, typename ShapePV, typename ShapeOut,
+          typename SubgroupLayoutQK, int PipelineStages>
+inline int dispatch_sage_fp8_kernel(Options const& options) {
+  return options.is_causal
+             ? run_sage_fp8_kernel<ElementScale, true, ShapeQK, ShapePV, ShapeOut,
+                                   SubgroupLayoutQK, PipelineStages>(options)
+             : run_sage_fp8_kernel<ElementScale, false, ShapeQK, ShapePV, ShapeOut,
+                                   SubgroupLayoutQK, PipelineStages>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_prefill_kernel_64(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_128, _64, _32>, Shape<_128, _32, _64>,
+                                   Shape<_128, _64>, Layout<Shape<_8, _1, _1>>, 2>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_prefill_kernel_96(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_128, _64, _32>, Shape<_128, _32, _64>,
+                                   Shape<_128, _96>, Layout<Shape<_8, _1, _1>>, 2>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_prefill_kernel_128(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_128, _64, _32>, Shape<_128, _32, _64>,
+                                   Shape<_128, _128>, Layout<Shape<_16, _1, _1>>, 2>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_prefill_kernel_192(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_256, _64, _32>, Shape<_256, _32, _64>,
+                                   Shape<_256, _192>, Layout<Shape<_16, _1, _1>>, 2>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_decode_kernel_64(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_1, _512, _64>, Shape<_1, _32, _512>,
+                                   Shape<_1, _64>, Layout<Shape<_1, _8, _1>>, 1>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_decode_kernel_96(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_1, _512, _32>, Shape<_1, _32, _512>,
+                                   Shape<_1, _96>, Layout<Shape<_1, _8, _1>>, 1>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_decode_kernel_128(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_1, _512, _64>, Shape<_1, _32, _512>,
+                                   Shape<_1, _128>, Layout<Shape<_1, _8, _1>>, 1>(options);
+}
+
+template <typename ElementScale>
+inline int launch_sage_fp8_decode_kernel_192(Options const& options) {
+  return dispatch_sage_fp8_kernel<ElementScale, Shape<_1, _512, _64>, Shape<_1, _32, _512>,
+                                   Shape<_1, _192>, Layout<Shape<_1, _8, _1>>, 1>(options);
+}
 
 template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
 inline int launch_prefill_kernel_128(Options const& options) {

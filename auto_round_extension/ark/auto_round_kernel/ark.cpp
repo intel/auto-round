@@ -404,6 +404,40 @@ static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, t
                            is_causal, (BTLA_DTYPE)o_dtype, (float*)lse);
 }
 
+static void sage_fp8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O,
+                     float q_scale, float k_scale, float v_scale, torch_ptr vmean,
+                     int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                     int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+                     int tensor_layout) {
+  int q_stride_s, q_stride_d, q_stride_h, q_stride_b;
+  int k_stride_s, k_stride_d, k_stride_h, k_stride_b;
+  int v_stride_d, v_stride_s, v_stride_h, v_stride_b;
+  int o_stride_s, o_stride_d, o_stride_h, o_stride_b;
+  if (tensor_layout == TENSOR_LAYOUT_HND) {
+    int q_sh = seq_len_q * head_dim;
+    int kv_sh = seq_len_kv * head_dim;
+    q_stride_s = head_dim; q_stride_d = 1; q_stride_h = q_sh; q_stride_b = num_heads_q * q_sh;
+    k_stride_s = head_dim; k_stride_d = 1; k_stride_h = kv_sh; k_stride_b = num_heads_kv * kv_sh;
+    v_stride_d = 1; v_stride_s = head_dim; v_stride_h = kv_sh; v_stride_b = num_heads_kv * kv_sh;
+    o_stride_s = head_dim; o_stride_d = 1; o_stride_h = q_sh; o_stride_b = num_heads_q * q_sh;
+  } else {
+    int q_hd = num_heads_q * head_dim;
+    int kv_hd = num_heads_kv * head_dim;
+    q_stride_s = q_hd; q_stride_d = 1; q_stride_h = head_dim; q_stride_b = seq_len_q * q_hd;
+    k_stride_s = kv_hd; k_stride_d = 1; k_stride_h = head_dim; k_stride_b = seq_len_kv * kv_hd;
+    v_stride_d = 1; v_stride_s = kv_hd; v_stride_h = head_dim; v_stride_b = seq_len_kv * kv_hd;
+    o_stride_s = q_hd; o_stride_d = 1; o_stride_h = head_dim; o_stride_b = seq_len_q * q_hd;
+  }
+  ark::sdpa_impl_fp8((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O,
+                      q_scale, k_scale, v_scale, vmean ? (const float*)vmean : nullptr,
+                      q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+                      k_stride_s, k_stride_d, k_stride_h, k_stride_b,
+                      v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                      o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                      batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
+                      head_dim, softmax_scale, is_causal);
+}
+
 static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
                              torch_ptr outputs, int dtype, int N, int K, torch_ptr num_tokens_per_expert,
                              int num_experts) {
@@ -719,6 +753,13 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
+  m.def("sage_fp8", &ark::sage_fp8,
+        pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"), pybind11::arg("V"),
+        pybind11::arg("O"), pybind11::arg("q_scale"), pybind11::arg("k_scale"),
+        pybind11::arg("v_scale"), pybind11::arg("vmean"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"), pybind11::arg("head_dim"),
+        pybind11::arg("softmax_scale"), pybind11::arg("is_causal"), pybind11::arg("tensor_layout"));
   m.def("sage_dynamic_quant", &ark::sage_dynamic_quant);
   m.def("sage_compute_seq_mean_bias_layout", &ark::sage_compute_seq_mean_bias_layout);
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);

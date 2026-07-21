@@ -13,6 +13,28 @@ from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
 build_mode = os.environ.get("BUILD_MODE", "dev").lower()
+
+
+def is_simulator_environment():
+    explicit = os.environ.get("ARK_SIMULATOR")
+    if explicit is not None:
+        return explicit == "1"
+    conda_prefix = Path(os.environ.get("CONDA_PREFIX", "")).name.lower()
+    return (
+        "simulator" in conda_prefix
+        or bool(os.environ.get("TbxPort"))
+        or os.environ.get("SetCommandStreamReceiver") == "2"
+    )
+
+
+simulator_build = is_simulator_environment()
+print(f"Simulator-only Sage FP8 build: {'enabled' if simulator_build else 'disabled'}")
+sycl_tla_repository = os.environ.get(
+    "SYCL_TLA_GIT_REPOSITORY", "https://github.com/intel-innersource/libraries.ai.cutlass.internal.git"
+)
+sycl_tla_revision = os.environ.get(
+    "SYCL_TLA_GIT_TAG", "bf8db07f06f8b82b4d4ecd4122df36695e6e0a32"
+)
 try:
     file_path = "./auto_round_kernel/version.py"
     with open(file_path) as version_file:
@@ -145,32 +167,26 @@ XBUILD_DIR = ROOT / "xbuild"
 
 class CMakeBuild(build_ext):
     def run(self):
-        cmake_cmd = [
-            "cmake",
-            "-S",
-            str(SRC_DIR),
-            "-B",
-            str(BUILD_DIR),
-            "-DCMAKE_BUILD_TYPE=Release",
-        ]
-        if sys.platform == "win32":
-            cmake_cmd.append("-GNinja")
-        subprocess.check_call(cmake_cmd)
-
         n_job = os.cpu_count() or 2
         n_job = n_job // 2
-        subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
-
         ext = "pyd" if sys.platform == "win32" else "so"
-
-        so_files = list(BUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
-        if not so_files:
-            raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{BUILD_DIR}'")
-
         target = Path(self.build_lib) / "auto_round_kernel"
         target.mkdir(parents=True, exist_ok=True)
-        for so in so_files:
-            self.copy_file(str(so), str(target / so.name))
+
+        if not simulator_build:
+            cmake_cmd = [
+                "cmake", "-S", str(SRC_DIR), "-B", str(BUILD_DIR), "-DCMAKE_BUILD_TYPE=Release",
+            ]
+            if sys.platform == "win32":
+                cmake_cmd.append("-GNinja")
+            subprocess.check_call(cmake_cmd)
+            subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
+
+            so_files = list(BUILD_DIR.rglob(f"auto_round_kernel*.{ext}"))
+            if not so_files:
+                raise RuntimeError(f"Can't find auto_round_kernel*.{ext} in '{BUILD_DIR}'")
+            for so in so_files:
+                self.copy_file(str(so), str(target / so.name))
 
         cmake_cmd = [
             "cmake",
@@ -182,6 +198,9 @@ class CMakeBuild(build_ext):
             "-DCMAKE_CXX_COMPILER=icx",
             "-DARK_XPU=ON",
             f"-DARK_SYCL_TLA={'ON' if enable_sycl_tla else 'OFF'}",
+            f"-DARK_SIMULATOR={'ON' if simulator_build else 'OFF'}",
+            f"-DSYCL_TLA_GIT_REPOSITORY={sycl_tla_repository}",
+            f"-DSYCL_TLA_GIT_TAG={sycl_tla_revision}",
         ]
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")

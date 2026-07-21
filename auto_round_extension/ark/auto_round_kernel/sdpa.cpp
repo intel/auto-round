@@ -147,6 +147,25 @@ KernelLauncher select_prefill_launcher(BTLA_DTYPE dtype, int head_dim) {
   }
 }
 
+KernelLauncher select_sage_fp8_launcher(bool decode, int head_dim) {
+  if (decode) {
+    switch (head_dim) {
+      case 64: return detail::launch_sage_fp8_decode_kernel_64;
+      case 96: return detail::launch_sage_fp8_decode_kernel_96;
+      case 128: return detail::launch_sage_fp8_decode_kernel_128;
+      case 192: return detail::launch_sage_fp8_decode_kernel_192;
+      default: return nullptr;
+    }
+  }
+  switch (head_dim) {
+    case 64: return detail::launch_sage_fp8_prefill_kernel_64;
+    case 96: return detail::launch_sage_fp8_prefill_kernel_96;
+    case 128: return detail::launch_sage_fp8_prefill_kernel_128;
+    case 192: return detail::launch_sage_fp8_prefill_kernel_192;
+    default: return nullptr;
+  }
+}
+
 KernelLauncher select_decode_launcher(BTLA_DTYPE dtype, int head_dim) {
   switch (dtype) {
     case BTLA_DTYPE::F16:
@@ -251,6 +270,45 @@ void sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O
         "Unsupported dtype or head dimension for sage_prefill / SAGE (only F16/BF16 PV and 64/128 are supported)");
   }
 
+  launcher(options);
+}
+
+void sdpa_impl_fp8(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr,
+                    float q_scale, float k_scale, float v_scale, const float* vmean,
+                    int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                    int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b,
+                    int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
+                    int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b,
+                    int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
+                    int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+  if (seq_len_q <= 0 || seq_len_kv <= 0) {
+    throw std::invalid_argument("sdpa_impl_fp8: sequence lengths must be greater than zero");
+  }
+  if (num_heads_q % num_heads_kv != 0) {
+    throw std::invalid_argument("sdpa_impl_fp8: num_heads_q must be divisible by num_heads_kv");
+  }
+  if (!(q_scale > 0.0f) || !(k_scale > 0.0f) || !(v_scale > 0.0f)) {
+    throw std::invalid_argument("sdpa_impl_fp8: dequantization scales must be positive");
+  }
+
+  detail::Options options =
+      make_common_options(Q_ptr, K_ptr, V_ptr, O_ptr, nullptr,
+                          q_stride_s, q_stride_d, q_stride_h, q_stride_b,
+                          k_stride_s, k_stride_d, k_stride_h, k_stride_b,
+                          v_stride_d, v_stride_s, v_stride_h, v_stride_b,
+                          o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                          batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv,
+                          head_dim, softmax_scale, is_causal);
+  options.q_scale = q_scale;
+  options.k_scale = k_scale;
+  options.v_scale = v_scale;
+  options.vmean = vmean;
+  compat::set_default_queue(*q);
+
+  KernelLauncher launcher = select_sage_fp8_launcher(seq_len_q == 1, head_dim);
+  if (launcher == nullptr) {
+    throw std::runtime_error("sdpa_impl_fp8: supported head dimensions are 64, 96, 128, and 192");
+  }
   launcher(options);
 }
 
