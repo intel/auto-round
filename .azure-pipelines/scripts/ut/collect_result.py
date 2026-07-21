@@ -37,9 +37,6 @@ class TestCounts:
     skipped: int = 0
     total: int = 0
 
-    def format(self) -> str:
-        return f"total: {self.total}, passed: {self.passed}, " f"failed: {self.failed}, skipped: {self.skipped}"
-
 
 @dataclass(frozen=True)
 class TestResult:
@@ -154,7 +151,7 @@ class XmlAnalyzer:
 class ReportGenerator:
     """Generates formatted test summary reports."""
 
-    WIDTHS = {"name": 35, "status": 10, "counts": 45, "time": 10}
+    WIDTHS = {"name": 35, "status": 10, "passed": 9, "failed": 9, "skipped": 9, "time": 10}
     SEPARATOR = "=" * 100
 
     def __init__(self, output_path: Path):
@@ -203,7 +200,9 @@ class ReportGenerator:
         return (
             f"{'Test Case':<{self.WIDTHS['name']}} "
             f"{'Result':<{self.WIDTHS['status']}} "
-            f"{'Counts':<{self.WIDTHS['counts']}} "
+            f"{'Passed':<{self.WIDTHS['passed']}} "
+            f"{'Failed':<{self.WIDTHS['failed']}} "
+            f"{'Skipped':<{self.WIDTHS['skipped']}} "
             f"{'Time':<{self.WIDTHS['time']}}"
         )
 
@@ -211,7 +210,9 @@ class ReportGenerator:
         return (
             f"{'-' * 10:<{self.WIDTHS['name']}} "
             f"{'-' * 6:<{self.WIDTHS['status']}} "
-            f"{'-' * 6:<{self.WIDTHS['counts']}} "
+            f"{'-' * 6:<{self.WIDTHS['passed']}} "
+            f"{'-' * 6:<{self.WIDTHS['failed']}} "
+            f"{'-' * 6:<{self.WIDTHS['skipped']}} "
             f"{'-' * 4:<{self.WIDTHS['time']}}"
         )
 
@@ -219,7 +220,9 @@ class ReportGenerator:
         return (
             f"{result.name:<{self.WIDTHS['name']}} "
             f"{result.status.name:<{self.WIDTHS['status']}} "
-            f"{result.counts.format():<{self.WIDTHS['counts']}} "
+            f"{result.counts.passed:<{self.WIDTHS['passed']}} "
+            f"{result.counts.failed:<{self.WIDTHS['failed']}} "
+            f"{result.counts.skipped:<{self.WIDTHS['skipped']}} "
             f"{result.duration:<{self.WIDTHS['time']}}"
         )
 

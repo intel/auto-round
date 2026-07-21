@@ -226,7 +226,7 @@ stages:
       vmImage: "ubuntu-latest"
     dependsOn:
       - ${{ each pair in parameters.matrix }}:
-          - GPU_Test_${{ pair.key }}
+          - Cleanup_Verification_${{ pair.key }}
     variables:
       UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
       DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir

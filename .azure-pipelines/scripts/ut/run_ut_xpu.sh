@@ -56,8 +56,8 @@ function run_unit_test() {
     done
 }
 
-function run_unit_test_vllm() {
-    echo "##[group]set up vllm UT env..."
+function run_unit_test_llmc() {
+    echo "##[group]set up llmc UT env..."
     BUILD_TYPE="nightly" uv pip install -r ./test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
@@ -67,7 +67,7 @@ function run_unit_test_vllm() {
     for test_file in $(find ./test_xpu -name "test_llmc_integration.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
-        echo "##[group]Running xpu vLLM ${test_file}..."
+        echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
@@ -110,7 +110,7 @@ function print_coverage() {
 function main() {
     setup_environment
     run_unit_test
-    run_unit_test_vllm
+    run_unit_test_llmc
     collect_log
     print_coverage
     print_summary
