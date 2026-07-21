@@ -524,7 +524,9 @@ class CompressionOrchestrator(BaseOrchestrator):
         # Leave it to gguf itself to handle
         # TODO wenhuach quantizer can be a sub quantizer or a pipeline,
         # change to enable_quanted_input
-        if has_gguf and (hasattr(self.alg_composer.block_quantizer, "iters") or self.alg_composer.block_quantizer.iters > 0):  # pylint: disable=E1101
+        if has_gguf and (
+            hasattr(self.alg_composer.block_quantizer, "iters") or self.alg_composer.block_quantizer.iters > 0
+        ):  # pylint: disable=E1101
             is_quantized_embedding = self.quantizer.quantize_embedding_layer()
             clear_memory()
             if is_quantized_embedding:  # TODO wenhuach check enable_quantized_input, if none exits, no need to run
@@ -853,7 +855,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_index=0,
                 device=device,
             )
-            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx,q_inputs=None, valid_token_mask=None)
+            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None, valid_token_mask=None)
 
             mv_module_from_gpu(block)
             return None, None

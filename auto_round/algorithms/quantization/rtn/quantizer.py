@@ -68,7 +68,7 @@ class RTNQuantizer(BaseQuantizer):
 
         for _name, m in block.named_modules():
             if check_to_quantized(m):
-                self._quantize_layer_via_rtn(m,disable_opt_rtn=True)
+                self._quantize_layer_via_rtn(m, disable_opt_rtn=True)
         return {}
 
     # @torch.no_grad()
