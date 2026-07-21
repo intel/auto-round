@@ -523,7 +523,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         all_q_inputs = None
         # Leave it to gguf itself to handle
         if has_gguf and self.alg_composer.need_quanted_input():  # pylint: disable=E1101
-            is_quantized_embedding = self.alg_composer.quantize_embedding_layer()  #
+            is_quantized_embedding = self.alg_composer.compress_embedding_layer()  #
             clear_memory()
             if is_quantized_embedding:
                 all_inputs = copy.deepcopy(self.inputs)

@@ -642,7 +642,7 @@ class AlgorithmComposer:
         return False
 
     def compress_embedding_layer(self):
-        self.block_quantizer.quantize_embedding_layer()
+        return self.block_quantizer.quantize_embedding_layer()
 
     # ── Per-block pipeline orchestration ─────────────────────────────────────
 
@@ -802,7 +802,7 @@ class AlgorithmComposer:
         device = getattr(layer, "tuning_device", device_manager.device)  # TODO this should be handled by compressor
         layer = layer.to(device)
 
-        self.block_quantizer.quantize_layer_outside_block(
+        return self.block_quantizer.quantize_layer_outside_block(
             layer,
             fp_input=fp_input,
             q_input=q_input,
