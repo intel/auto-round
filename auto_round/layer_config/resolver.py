@@ -159,6 +159,11 @@ def _resolve_layer_config_presets(
     # 4. fill defaults
     if isinstance(default_scheme, str):
         default_dict = asdict(preset_name_to_scheme(default_scheme.upper()))
+    elif default_scheme is None:
+        # Defensive fallback: callers that build/patch layer configs without a resolved
+        # scheme (e.g. external integrations invoking configure_layer_config() out of the
+        # normal init sequence) would otherwise crash `asdict(None)` below.
+        default_dict = asdict(QuantizationScheme())
     else:
         default_dict = asdict(default_scheme)
     default_dict["scale_dtype"] = default_scale_dtype

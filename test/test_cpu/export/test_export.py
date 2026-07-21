@@ -389,7 +389,12 @@ class TestAutoRound:
             scheme="FP8_STATIC",
         )
         autoround.post_init()
-        format_list = get_formats("auto_round, llm_compressor, auto_round:llm_compressor", autoround)
+        format_list, _, _, _, _ = get_formats(
+            "auto_round, llm_compressor, auto_round:llm_compressor",
+            autoround.scheme_context,
+            model=autoround.model_context.model,
+            scale_dtype=autoround.scale_dtype,
+        )
         assert len(format_list) == 3
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:fp8_static"
@@ -403,7 +408,12 @@ class TestAutoRound:
             scheme="W4A16",
         )
         autoround.post_init()
-        format_list = get_formats("auto_round:auto_awq, auto_gptq", autoround)
+        format_list, _, _, _, _ = get_formats(
+            "auto_round:auto_awq, auto_gptq",
+            autoround.scheme_context,
+            model=autoround.model_context.model,
+            scale_dtype=autoround.scale_dtype,
+        )
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:auto_awq"
         assert format_list[1].output_format == "auto_gptq"
@@ -414,7 +424,12 @@ class TestAutoRound:
             scheme="INT8",
         )
         autoround.post_init()
-        format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
+        format_list, _, _, _, _ = get_formats(
+            "llm_compressor, auto_round:llm_compressor",
+            autoround.scheme_context,
+            model=autoround.model_context.model,
+            scale_dtype=autoround.scale_dtype,
+        )
         assert format_list[0].output_format == "llm_compressor"
         assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list[1].output_format == "auto_round"
@@ -426,7 +441,12 @@ class TestAutoRound:
             scheme="INT8_W8A8",
         )
         autoround_old.post_init()
-        format_list_old = get_formats("llm_compressor, auto_round:llm_compressor", autoround_old)
+        format_list_old, _, _, _, _ = get_formats(
+            "llm_compressor, auto_round:llm_compressor",
+            autoround_old.scheme_context,
+            model=autoround_old.model_context.model,
+            scale_dtype=autoround_old.scale_dtype,
+        )
         assert format_list_old[0].output_format == "llm_compressor"
         assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list_old[1].output_format == "auto_round"
@@ -444,10 +464,14 @@ class TestAutoRound:
         )
         ar.post_init()
         with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
-            get_formats("auto_round:auto_awq", ar)
+            get_formats(
+                "auto_round:auto_awq", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype
+            )
 
         with pytest.raises(ValueError, match="but got bits=2, data_type=int"):
-            get_formats("auto_round:llm_compressor", ar)
+            get_formats(
+                "auto_round:llm_compressor", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype
+            )
 
         ar = AutoRound(
             model=tiny_qwen_model_path,
@@ -458,7 +482,9 @@ class TestAutoRound:
         )
         ar.post_init()
         with pytest.raises(ValueError, match="but got data_type=fp, bits=4"):
-            get_formats("auto_round:llm_compressor", ar)
+            get_formats(
+                "auto_round:llm_compressor", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype
+            )
 
         ar = AutoRound(
             model=tiny_qwen_model_path,
@@ -468,7 +494,7 @@ class TestAutoRound:
             sym=True,
         )
         ar.post_init()
-        get_formats("auto_round:auto_awq", ar)
+        get_formats("auto_round:auto_awq", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype)
 
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")

@@ -25,6 +25,21 @@ LayerConfig = Mapping[str, Mapping[str, Any]]
 BlockGroups = Tuple[Tuple[str, ...], ...]
 
 
+def _deepcopy_mapping_proxy(value: MappingProxyType, memo: dict) -> MappingProxyType:
+    """``copy.deepcopy`` has no built-in support for ``types.MappingProxyType`` (it isn't
+    picklable), so any object graph that happens to contain one -- e.g. a
+    ``CompressionPlan``/``FormatResolution`` nested inside something a caller deep-copies
+    wholesale -- would otherwise raise ``TypeError: cannot pickle 'mappingproxy' object``.
+    Registering a dispatch entry here teaches ``copy.deepcopy`` to handle it everywhere,
+    instead of requiring every call site that might transitively touch one of our frozen
+    mappings to know about this quirk.
+    """
+    return MappingProxyType(copy.deepcopy(dict(value), memo))
+
+
+copy._deepcopy_dispatch[MappingProxyType] = _deepcopy_mapping_proxy
+
+
 def freeze_mapping(value: Optional[LayerConfig]) -> LayerConfig:
     """Return an isolated, read-only snapshot of a layer configuration mapping.
 

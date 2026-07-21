@@ -774,6 +774,13 @@ class BaseCompressor(object):
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
         """Build ``self.layer_config`` from the resolved scheme on the patched model."""
+        # External callers (e.g. llm-compressor's AutoRoundModifier) may invoke this
+        # method directly without going through the normal post_init()/_scheme_post_init()
+        # sequence. Make sure the scheme is resolved first so `self.scheme_context` (and
+        # everything derived from it below) is never None -- resolve_scheme() is a no-op
+        # if it already ran.
+        if not self._scheme_resolved and hasattr(self, "_alg_configs"):
+            self.resolve_scheme()
         _formats = getattr(self.compress_context, "formats", None)
         is_gguf_format = _formats is not None and any(
             "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats

@@ -123,12 +123,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         return stub
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_kimi_k25_ignore_layers_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """KIMI K2.5: vision_tower and mm_projector must end up in ignore_layers."""
         mock_get_predefined.return_value = ["vision_tower", "mm_projector"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["vision_tower", "mm_projector"],
@@ -144,13 +144,13 @@ class TestPredefinedIgnoreLayersBlockFilter:
         ), f"mm_projector should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_step3p5_ignore_layers_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """step3p5: short pattern names must not be dropped by block filter."""
         predefined = ["g_proj", "moe.gate", "eh_proj", "shared_head", "layers.45"]
         mock_get_predefined.return_value = predefined
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=predefined,
@@ -162,12 +162,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
             assert name in stub.ignore_layers, f"'{name}' should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_longcat_classifier_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """Longcat: 'classifier' must not be dropped."""
         mock_get_predefined.return_value = ["classifier"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["classifier"],
@@ -178,12 +178,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         assert "classifier" in stub.ignore_layers, f"classifier should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_glm_flash_full_path_inside_block_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """GLM Flash: model.layers.0.mlp (full path inside block) must be kept."""
         mock_get_predefined.return_value = ["model.layers.0.mlp"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["model.layers.0.mlp"],
@@ -196,12 +196,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         ), f"model.layers.0.mlp should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_mllm_with_multiple_block_groups(self, mock_handle, mock_set_lc, mock_get_predefined):
         """MLLM with vision + language blocks: ignore layers outside both are preserved."""
         mock_get_predefined.return_value = ["vision_tower", "mm_projector"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["vision_tower", "mm_projector"],
