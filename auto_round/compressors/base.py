@@ -219,13 +219,14 @@ class BaseOrchestrator(object):
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
+
         self.dataset = dataset
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
             batch_size=min(kwargs.pop("batch_size", 8), nsamples),
             orig_batch_size=min(kwargs.pop("batch_size", 8), nsamples),
-            dataset = self.dataset
+            dataset=self.dataset,
         )
 
         self.quantize_config = None
