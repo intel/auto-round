@@ -252,12 +252,18 @@ def main():
         reporter = ReportGenerator(args.summary_log)
         reporter.generate(args.test_type, results)
 
+        passed = sum(1 for r in results if r.status == TestStatus.PASSED)
+        failed = sum(1 for r in results if r.status == TestStatus.FAILED)
         stats = {
             "total": len(results),
-            "passed": sum(1 for r in results if r.status == TestStatus.PASSED),
-            "failed": sum(1 for r in results if r.status == TestStatus.FAILED),
+            "passed": passed,
+            "failed": failed,
+            "skipped": len(results) - passed - failed,
         }
-        print(f"Done: {stats['total']} tests, {stats['passed']} passed, {stats['failed']} failed")
+        print(
+            f"Done: {stats['total']} tests, {stats['passed']} passed, "
+            f"{stats['failed']} failed, {stats['skipped']} skipped"
+        )
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
