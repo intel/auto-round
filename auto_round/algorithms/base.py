@@ -81,17 +81,17 @@ class BaseAlgorithm:
             return cls(config)
         return alg_cls(config)
 
-    def bind(self, compressor: Any) -> None:
+    def bind(self, orchestrator: "BaseOrchestrator" ) -> None:
         """Wire compressor-owned state into a frozen :class:`QuantizationRunContext`.
         Called once before block iteration starts.  Fields not present on the
         compressor (e.g. ``calibration_context`` for preprocessors) default to ``None``.
         """
         self.__run_ctx = QuantizationRunContext(
-            model_context=compressor.model_context,
-            compress_context=compressor.compress_context,
-            calibration_context=getattr(compressor, "calibration_context", None),
-            scale_dtype=getattr(compressor, "scale_dtype", None),
-            scheme=getattr(compressor, "scheme_context", None),
+            model_context=orchestrator.model_context,
+            compress_context=orchestrator.compress_context,
+            calibration_context=getattr(orchestrator, "calibration_context", None),
+            scale_dtype=getattr(orchestrator, "scale_dtype", None),
+            scheme=getattr(orchestrator, "scheme_context", None),
         )
 
     def bind_block_forward_runner(self, block_forward_runner: "type[BlockForwardRunner]") -> None:

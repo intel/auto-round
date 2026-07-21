@@ -349,7 +349,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         if self.scheme.data_type.endswith("dq"):
             self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
-    def is_support_compile_block(self):
+    def can_compile_block_forward(self):
         return False
 
     def _get_loss(

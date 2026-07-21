@@ -963,7 +963,7 @@ class BaseOrchestrator(object):
         """
         from auto_round.algorithms.composer import AlgorithmComposer
 
-        self._alg_composer = AlgorithmComposer(self._alg_configs, compressor=self)
+        self._alg_composer = AlgorithmComposer(self._alg_configs, orchestrator=self)
 
     @property
     def alg_composer(self) -> Any:

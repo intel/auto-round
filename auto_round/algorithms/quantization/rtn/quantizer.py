@@ -94,7 +94,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
                 "Please use RTN instead."
             )
 
-    def is_support_compile_block(self):
+    def can_compile_block_forward(self):
         return False
 
     def register_fp_input_forward_hooks(self, block):

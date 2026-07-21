@@ -31,7 +31,7 @@ from auto_round.compressors.utils import block_forward
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:
-    pass
+    from auto_round.compressors.base import BaseOrchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,8 @@ class BlockForwardRunner:
 
     Usage::
 
-        # Compressor creates once:
-        self.block_forward = BlockForwardRunner.from_compressor(self)
+        # Orchestrator creates once:
+        self.block_forward = BlockForwardRunner.from_orchestrator(self)
 
         # Quantizer (via _run_ctx):
         output = self._run_ctx.block_forward_runner(block, inputs, others, indices)
@@ -107,10 +107,11 @@ class BlockForwardRunner:
         device: Union[str, "torch.device"] = "cpu",
         cache_device: Union[str, "torch.device"] = "cpu",
         amp: bool = True,
-        amp_dtype: "torch.dtype" = None,
+        amp_dtype: torch.dtype|None = None,
         is_diffusion: bool = False,
         shared_cache_keys: tuple = (),
-        output_config: "list[str] | None" = None,
+        output_config: list[str] | None = None,
+        enable_torch_compile:bool=False
     ) -> None:
         self.batch_dim = batch_dim
         self.batch_size = batch_size
@@ -121,26 +122,32 @@ class BlockForwardRunner:
         self.is_diffusion = is_diffusion
         self.shared_cache_keys = shared_cache_keys
         self.output_config = output_config if output_config is not None else ["hidden_states"]
+        self.enable_torch_compile = enable_torch_compile
+        self.block_forward = block_forward
+        if self.enable_torch_compile:
+            from auto_round.utils import compile_func
+            self.block_forward = compile_func(self.block_forward,device)
 
     # ── Factory ──────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_compressor(cls, compressor: Any) -> "BlockForwardRunner":
-        """Create from a compressor instance (called once at compressor init)."""
-        model_ctx = getattr(compressor, "model_context", None)
+    def from_orchestrator(cls, orchestrator: "BaseOrchestrator",enable_torch_compile=False) -> "BlockForwardRunner":
+        """Create from an orchestrator instance (called once at orchestrator init)."""
+        model_ctx = getattr(orchestrator, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False
         output_config = getattr(model_ctx, "output_config", None) if model_ctx else None
 
         return cls(
-            batch_dim=getattr(compressor, "batch_dim", 0),
-            batch_size=getattr(compressor, "batch_size", 8),
+            batch_dim=getattr(orchestrator, "batch_dim", 0),
+            batch_size=getattr(orchestrator, "batch_size", 8),
             device=device_manager.device,
-            cache_device=getattr(compressor, "cache_device", "cpu"),
-            amp=getattr(compressor, "amp", True),
-            amp_dtype=getattr(compressor, "amp_dtype", torch.bfloat16),
+            cache_device=getattr(orchestrator, "cache_device", "cpu"),
+            amp=getattr(orchestrator, "amp", True),
+            amp_dtype=getattr(orchestrator, "amp_dtype", torch.bfloat16),
             is_diffusion=is_diffusion,
-            shared_cache_keys=getattr(compressor, "shared_cache_keys", ()),
+            shared_cache_keys=getattr(orchestrator, "shared_cache_keys", ()),
             output_config=output_config,
+            enable_torch_compile=enable_torch_compile,
         )
 
     # ── Core forward ─────────────────────────────────────────────────────────

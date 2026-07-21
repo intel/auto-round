@@ -29,7 +29,10 @@ The dataclass also provides a behavioural helper:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from auto_round.compressors.base import BaseOrchestrator
 
 from auto_round.logger import logger
 
@@ -63,28 +66,28 @@ class CalibrationContext:
     # ── Compressor / quantizer round-tripping ──────────────────────────────
 
     @classmethod
-    def from_compressor(cls, compressor: Any) -> "CalibrationContext":
-        """Return the live shared instance held by ``compressor``.
+    def from_orchestrator(cls, orchestrator: "BaseOrchestrator") -> "CalibrationContext":
+        """Return the live shared instance held by ``orchestrator``.
 
-        The compressor always owns a ``_calibration_state`` after
-        ``BaseCompressor.__init__``, so the legacy "snapshot" fallback is
+        The orchestrator always owns a ``_calibration_state`` after
+        ``BaseOrchestrator.__init__``, so the legacy "snapshot" fallback is
         no longer required.  We still allow it for safety in case a custom
         subclass forgets to call ``super().__init__``.
         """
-        live = getattr(compressor, "calibration_context", None)
+        live = getattr(orchestrator, "calibration_context", None)
         if isinstance(live, cls):
             return live
         # Legacy fallback (no shared instance wired yet).
         return cls(
-            # inputs=getattr(compressor, "inputs", {}) or {},
-            # to_cached_layers=getattr(compressor, "to_cached_layers", []) or [],
-            # last_cache_name=getattr(compressor, "last_cache_name", None),
-            # blocks_requiring_input_ids=getattr(compressor, "blocks_requiring_input_ids", []) or [],
-            batch_size=getattr(compressor, "batch_size", 8) or 8,
-            nsamples=getattr(compressor, "nsamples", 128) or 128,
-            seqlen=getattr(compressor, "seqlen", 2048) or 2048,
-            dataset=getattr(compressor, "dataset", None),
-            orig_batch_size=getattr(compressor, "batch_size", 8) or 8,
+            # inputs=getattr(orchestrator, "inputs", {}) or {},
+            # to_cached_layers=getattr(orchestrator, "to_cached_layers", []) or [],
+            # last_cache_name=getattr(orchestrator, "last_cache_name", None),
+            # blocks_requiring_input_ids=getattr(orchestrator, "blocks_requiring_input_ids", []) or [],
+            batch_size=getattr(orchestrator, "batch_size", 8) or 8,
+            nsamples=getattr(orchestrator, "nsamples", 128) or 128,
+            seqlen=getattr(orchestrator, "seqlen", 2048) or 2048,
+            dataset=getattr(orchestrator, "dataset", None),
+            orig_batch_size=getattr(orchestrator, "batch_size", 8) or 8,
         )
 
     # ── Behavioural helpers ────────────────────────────────────────────────

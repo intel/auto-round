@@ -94,7 +94,7 @@ class AlgorithmComposer:
         composer = AlgorithmComposer(configs, compressor=self)
     """
 
-    def __init__(self, configs: list, compressor: Any = None) -> None:
+    def __init__(self, configs: list, orchestrator:"BaseOrchestrator"= None) -> None:
         """Build the pipeline from a list of algorithm config instances.
 
         Resolution rules:
@@ -142,8 +142,8 @@ class AlgorithmComposer:
             if alg_cls is None:
                 raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
             q = alg_cls(cfg)
-            if compressor is not None:
-                q.bind(compressor)
+            if orchestrator is not None:
+                q.bind(orchestrator)
             if isinstance(q, BasePreprocessor):
                 preprocessors.append(q)
             elif isinstance(q, BaseQuantizer):
@@ -174,14 +174,19 @@ class AlgorithmComposer:
             seen.add(name)
 
         self.preprocessors = preprocessors
+
         # TODO wenhuach support multi quantizers
+        can_compile_block_forward=False
         self.block_quantizer = block_quantizers[0]
+        if orchestrator.compress_context.enable_torch_compile:
+            if self.block_quantizer.can_compile_block_forward():
+                can_compile_block_forward=True
 
         # Bind compressor-level infrastructure (set before _build_quantizer is called).
-        self.block_forward = BlockForwardRunner.from_compressor(compressor) if compressor is not None else None
+        self.block_forward = BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward) if orchestrator is not None else None
         # A little tricky
         self.block_quantizer.bind_block_forward_runner(self.block_forward)
-        self.scheme = getattr(compressor, "scheme_context", None)
+        self.scheme = getattr(orchestrator, "scheme_context", None)
 
     # ── Internal hook helpers (act_max calibration) ───────────────────────────
 

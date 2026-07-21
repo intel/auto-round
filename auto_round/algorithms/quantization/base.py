@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -21,15 +21,12 @@ if TYPE_CHECKING:
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.compressors.utils import block_forward
 from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
     clear_memory,
-    compile_func,
     convert_module_to_hp_if_necessary,
-    get_module,
     set_module,
 )
 from auto_round.utils.device_manager import device_manager
@@ -57,11 +54,11 @@ class BaseQuantizer(BaseAlgorithm):
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
-    def is_support_compile_block(self):  # TODO support compile block
+    def can_compile_block_forward(self):  # TODO support compile block
         return True
 
     # ── Calibration hook registration ─────────────────────────────────────────
-    def register_fp_input_forward_hooks(self, block: "torch.nn.Module") -> list:
+    def register_fp_input_forward_hooks(self, block: torch.nn.Module) -> list:
         """Register hooks that fire during the reference (FP-input) block forward.
         Subclasses override to add statistics collection hooks (e.g. imatrix).
         Returns a list of hook handles that the caller must remove when done.
@@ -69,7 +66,7 @@ class BaseQuantizer(BaseAlgorithm):
         """
         return []
 
-    def register_qinput_forward_hooks(self, block: "torch.nn.Module") -> list:
+    def register_qinput_forward_hooks(self, block: torch.nn.Module) -> list:
         """Register hooks that fire during the quantized-input block forward.
         Used when act-calib policy requires collecting stats from quantized
         activations. Returns a list of hook handles that the caller must remove.
@@ -264,30 +261,6 @@ class BaseQuantizer(BaseAlgorithm):
         block = block.to(device_manager.device)
         return block, False, device_manager.device
 
-    # def _resolve_block_forward(self):
-    #     """Resolve and cache the low-level block forward function once.
-    #     Avoids repeated attribute checks in the hot training loop.
-    #     Uses plain ``block_forward`` (no compile) when act-quant hooks,
-    #     alg-ext, or optimized RTN are active.
-    #     """
-    #     cached = self.__dict__.get("_resolved_block_forward")
-    #     if cached is not None:
-    #         return cached
-    #     if (
-    #         (self.config.is_act_quantize and (not self.config.act_dynamic or self.config.is_act_nv_fp))
-    #         or self.enable_alg_ext
-    #         or not getattr(self.config, "disable_opt_rtn", True)
-    #     ):
-    #         self._resolved_block_forward = block_forward
-    #     elif self.compress_context.enable_torch_compile:
-    #         compiled = self.__dict__.get("_compiled_block_forward")
-    #         if compiled is None:
-    #             compiled = compile_func(block_forward, device_manager.device)
-    #             self._compiled_block_forward = compiled
-    #         self._resolved_block_forward = compiled
-    #     else:
-    #         self._resolved_block_forward = block_forward
-    #     return self._resolved_block_forward
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
