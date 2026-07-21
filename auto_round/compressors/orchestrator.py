@@ -523,7 +523,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         all_q_inputs = None
         # Leave it to gguf itself to handle
         if has_gguf and self.alg_composer.need_quanted_input():  # pylint: disable=E1101
-            is_quantized_embedding = self.alg_composer.quantize_embedding_layer() #
+            is_quantized_embedding = self.alg_composer.quantize_embedding_layer()  #
             clear_memory()
             if is_quantized_embedding:
                 all_inputs = copy.deepcopy(self.inputs)
@@ -851,7 +851,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_index=0,
                 device=device,
             )
-            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx,q_inputs=None, valid_token_mask=None)
+            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None, valid_token_mask=None)
 
             mv_module_from_gpu(block)
             return None, None

@@ -641,7 +641,6 @@ class AlgorithmComposer:
             return True
         return False
 
-
     def compress_embedding_layer(self):
         self.block_quantizer.quantize_embedding_layer()
 

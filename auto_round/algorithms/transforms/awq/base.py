@@ -190,7 +190,6 @@ class AWQTransform(BasePreprocessor):
         if composer is not None:
             self._qdq_tool.configure(composer)
 
-
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",
             len(self._resolved_mappings),
