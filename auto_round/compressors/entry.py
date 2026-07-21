@@ -14,80 +14,12 @@ from auto_round.algorithms.registry import normalize_algorithm_config, resolve_a
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+from auto_round.compressors.entry_contract import filter_supported_entry_kwargs, split_entry_kwargs
 from auto_round.compressors.utils import check_need_act_calibration
 from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.device_manager import normalize_default_device_map
-
-_ENTRY_ROUTE_KWARGS = {"model_free", "disable_model_free", "disable_opt_rtn"}
-_ENTRY_COMPRESSOR_KWARGS = {"scale_dtype", "ignore_layers", "quant_lm_head", "to_quant_block_names"}
-_ENTRY_BASE_KWARGS = {
-    "format",
-    "dataset",
-    "batch_size",
-    "model_dtype",
-    "trust_remote_code",
-    "amp",
-    "nblocks",
-    "disable_deterministic_algorithms",
-    "enable_deterministic_algorithms",
-    "static_kv_dtype",
-    "static_attention_dtype",
-}
-_ENTRY_MLLM_KWARGS = {"processor", "image_processor", "template", "extra_data_dir", "quant_nontext_module"}
-_ENTRY_DIFFUSION_KWARGS = {"guidance_scale", "num_inference_steps", "generator_seed"}
-_ENTRY_ALLOWED_KWARGS = (
-    _ENTRY_ROUTE_KWARGS | _ENTRY_COMPRESSOR_KWARGS | _ENTRY_BASE_KWARGS | _ENTRY_MLLM_KWARGS | _ENTRY_DIFFUSION_KWARGS
-)
-
-
-def filter_supported_entry_kwargs(kwargs: dict[str, Any], *, context: str) -> dict[str, Any]:
-    """Return only kwargs supported by the new entry API.
-
-    Unsupported kwargs are ignored with a warning so callers can cleanly migrate
-    without leaking old-API parameters into compressor constructors.
-    """
-
-    supported = {}
-    unknown = []
-    for key, value in kwargs.items():
-        if key in _ENTRY_ALLOWED_KWARGS:
-            supported[key] = value
-        else:
-            unknown.append(key)
-    if unknown:
-        logger.warning_once(
-            "%s received unsupported kwargs %s. They will be ignored.",
-            context,
-            ", ".join(sorted(unknown)),
-        )
-    return supported
-
-
-def _split_entry_kwargs(kwargs: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Partition new-entry kwargs by ownership."""
-
-    kwargs = filter_supported_entry_kwargs(kwargs, context="AutoRound entry")
-    buckets = {
-        "route": {},
-        "compressor": {},
-        "base": {},
-        "mllm": {},
-        "diffusion": {},
-    }
-    for key, value in kwargs.items():
-        if key in _ENTRY_ROUTE_KWARGS:
-            buckets["route"][key] = value
-        elif key in _ENTRY_COMPRESSOR_KWARGS:
-            buckets["compressor"][key] = value
-        elif key in _ENTRY_BASE_KWARGS:
-            buckets["base"][key] = value
-        elif key in _ENTRY_MLLM_KWARGS:
-            buckets["mllm"][key] = value
-        elif key in _ENTRY_DIFFUSION_KWARGS:
-            buckets["diffusion"][key] = value
-    return buckets
 
 
 def _collect_config_scheme_overrides(config) -> dict:
@@ -303,15 +235,18 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     enable_imatrix = False
     disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
 
-    # Preview resolved scheme attrs once (authoritative resolution happens later).
+    # Single resolved-scheme source for routing (SchemeMixin does the authoritative
+    # resolution later; this preview only chooses the class). Computed once: neither
+    # `quant_config`'s scheme fields nor `scheme` itself change within this function,
+    # so the result is invariant across every use below — no need to recompute it.
     resolved_attrs = _preview_resolved_attrs(quant_config, scheme)
 
     # Auto-disable rtn optimization for W8A16/W8A8-equivalent resolved schemes,
     # unless the user already set disable_opt_rtn explicitly.
     if getattr(quant_config, "orig_disable_opt_rtn", None) is None:
-        bits = resolved_attrs.get("bits", getattr(quant_config, "bits", None))
-        act_bits = resolved_attrs.get("act_bits", getattr(quant_config, "act_bits", None))
-        data_type = resolved_attrs.get("data_type", getattr(quant_config, "data_type", None))
+        bits = resolved_attrs.get("bits")
+        act_bits = resolved_attrs.get("act_bits")
+        data_type = resolved_attrs.get("data_type")
         if bits is not None and bits >= 8 and act_bits is not None and act_bits >= 8 and data_type == "int":
             logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
             disable_opt_rtn = True
@@ -322,11 +257,6 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
         if has_gguf_k:
             enable_imatrix = True
         else:
-            # Single resolved-scheme source for routing. SchemeMixin does the
-            # authoritative resolution later; this preview only chooses the class.
-            # _preview_resolved_attrs already folds the config's explicit overrides
-            # into the scheme, so we never re-read raw quant_config scheme fields.
-            resolved_attrs = _preview_resolved_attrs(quant_config, scheme)
             sym = resolved_attrs.get("sym")
             data_type = resolved_attrs.get("data_type") or ""
             bits = resolved_attrs.get("bits")
@@ -337,7 +267,6 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
             elif is_weight_scheme(scheme):
                 enable_imatrix = True
 
-    resolved_attrs = resolved_attrs if not disable_opt_rtn else _preview_resolved_attrs(quant_config, scheme)
     act_bits = resolved_attrs.get("act_bits")
     act_data_type = resolved_attrs.get("act_data_type")
     act_dynamic = resolved_attrs.get("act_dynamic")
@@ -409,7 +338,7 @@ class PipelineCompressor(object):
             alg_configs = "auto_round"
 
         device_map = normalize_default_device_map(device_map)
-        split_kwargs = _split_entry_kwargs(kwargs)
+        split_kwargs = split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])
         compressor_kwargs = dict(split_kwargs["compressor"])
         base_kwargs = dict(split_kwargs["base"])

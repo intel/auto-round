@@ -11,21 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import copy
-import json
 import os
 import random
 import re
-import sys
-from dataclasses import asdict, fields
 from typing import Union
 
 import torch
-import transformers
 from torch.amp import autocast
 
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
-from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector, gguf_format_to_ftype
 from auto_round.logger import logger
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
@@ -37,10 +30,8 @@ from auto_round.schemes import (
 )
 from auto_round.utils import (
     check_to_quantized,
-    compress_layer_names,
     get_layer_names_in_block,
     get_module,
-    to_standard_regex,
 )
 from auto_round.utils.device_manager import device_manager
 
@@ -249,355 +240,6 @@ def infer_bits_by_data_type(data_type: str):
     return None
 
 
-def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:
-    """Collect layer names from safetensor files that are not loaded into the model.
-
-    Some tensors (e.g. MTP layers) exist in the original checkpoint but are not
-    instantiated by ``transformers``.  This function discovers them so that regex
-    patterns in ``layer_config`` can still match them.
-
-    Returns:
-        List of layer names (the path without the ``.weight`` suffix) for weight
-        tensors present in the safetensor files but absent from *all_module_names*.
-    """
-    name_or_path = None
-    if hasattr(model, "config") and hasattr(model.config, "name_or_path"):
-        name_or_path = model.config.name_or_path
-    if not name_or_path:
-        return []
-
-    if not os.path.isdir(name_or_path):
-        try:
-            from auto_round.utils.model import download_hf_model
-
-            name_or_path = download_hf_model(name_or_path)
-        except Exception as e:
-            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
-            return []
-
-    try:
-        from safetensors import safe_open
-    except ImportError:
-        return []
-
-    # Build tensor-name list from the safetensors index or single file
-    source_index_file = os.path.join(name_or_path, "model.safetensors.index.json")
-    source_single_file = os.path.join(name_or_path, "model.safetensors")
-
-    tensor_names: list = []
-    if os.path.exists(source_index_file):
-        with open(source_index_file) as f:
-            src_index = json.load(f)
-        tensor_names = list(src_index["weight_map"].keys())
-    elif os.path.exists(source_single_file):
-        with safe_open(source_single_file, framework="pt", device="cpu") as f:
-            tensor_names = list(f.keys())
-    else:
-        return []
-
-    module_name_set = set(all_module_names)
-    extra_layer_names = []
-    for tensor_name in tensor_names:
-        if not tensor_name.endswith(".weight"):
-            continue
-        layer_name = tensor_name[: -len(".weight")]
-        if layer_name not in module_name_set:
-            extra_layer_names.append(layer_name)
-    return extra_layer_names
-
-
-def _resolve_layer_config_presets(
-    layer_config, model, ignore_layers, default_scheme, default_scale_dtype, fill_default_value
-) -> tuple[dict, dict, tuple[str, ...], set[str]]:
-    """Steps 1-4 of layer-config resolution: ignore-layer parsing, normalization,
-    bits-inference, and default-filling."""
-    from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
-
-    def normalize_item(item: Union[str, dict, "QuantizationScheme"], layer_name: str) -> dict:
-        """Convert config entry into dict and validate keys."""
-        if isinstance(item, str):
-            config = asdict(preset_name_to_scheme(item.upper()))
-        elif isinstance(item, QuantizationScheme):
-            config = asdict(item)
-        elif isinstance(item, dict):
-            # "in_blocks" is an internal bookkeeping key injected by LLM-Compressor;
-            # silently drop it before validation.
-            item = {k: v for k, v in item.items() if k != "in_blocks"}
-            scheme_name = item.pop("scheme", None)
-            config = asdict(preset_name_to_scheme(scheme_name.upper())) if scheme_name is not None else {}
-            invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
-            if invalid:
-                raise ValueError(
-                    f"Invalid keys {invalid} in layer_config for '{layer_name}'. " f"Allowed keys: {scheme_keys}"
-                )
-            config.update(item)
-        else:
-            raise TypeError(
-                f"Unsupported type for layer_config[{layer_name}]: {type(item)}. "
-                f"Expected str, dict, or QuantizationScheme."
-            )
-        # Clean up
-        config = {k: v for k, v in config.items() if v is not None}
-        config["fixed_by_user"] = True
-        return config
-
-    extra_scheme_keys = ("scale_dtype",)
-    scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
-    layer_config = copy.deepcopy(layer_config) or {}
-    ignore_layer_patterns = set()
-    if ignore_layers:
-        ignore_layers = ignore_layers.replace(" ", "").split(",")
-        ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
-        ignore_layer_patterns = set(ignore_layers)
-
-    # 1. ignore_layers -> force 16
-    for name in get_fp_layer_names(model, ignore_layers):
-        layer_config[name] = {
-            "bits": 16,
-            "act_bits": 16,
-            "data_type": "float",
-            "act_data_type": "float",
-            "fixed_by_user": True,
-        }
-
-    # 2. normalize
-    layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
-
-    # 3. infer missing bits
-    for cfg in layer_config.values():
-        if "data_type" in cfg and "bits" not in cfg:
-            if (b := infer_bits_by_data_type(cfg["data_type"])) is not None:
-                cfg["bits"] = b
-        if "act_data_type" in cfg and "act_bits" not in cfg:
-            if (b := infer_bits_by_data_type(cfg["act_data_type"])) is not None:
-                cfg["act_bits"] = b
-
-    # 4. fill defaults
-    if isinstance(default_scheme, str):
-        default_dict = asdict(preset_name_to_scheme(default_scheme.upper()))
-    else:
-        default_dict = asdict(default_scheme)
-    default_dict["scale_dtype"] = default_scale_dtype
-
-    # In AutoScheme with mixed gguf:q4_k_m, the super_group_size of gguf:q8_0 layer is None,
-    # which should not be filled by default q4km again
-    for cfg in layer_config.values():
-        for key in scheme_keys:
-            if fill_default_value:
-                cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
-            else:
-                if key in extra_scheme_keys:
-                    cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
-                else:
-                    cfg.setdefault(key, None)
-
-    return layer_config, default_dict, scheme_keys, ignore_layer_patterns
-
-
-def _traverse_and_expand_layer_config(
-    layer_config, model, supported_types, inner_supported_types, ignore_layer_patterns, scheme_keys, gguf_name
-) -> tuple[dict, dict, list[str], tuple]:
-    """Steps 5-6 of layer-config resolution: supported-module collection (incl. the
-    GGUF embedding-type-detection branch) and regex-config expansion."""
-    from auto_round.utils.model import get_module
-
-    # 5. collect supported modules
-    embedding_types = (torch.nn.Embedding,)
-    if gguf_name:
-        if torch.nn.Embedding not in supported_types:
-            supported_types = (*supported_types, torch.nn.Embedding)
-
-        # for some Embedding which type() is not torch.nn.Embedding
-        # for example: transformers.models.gemma3.modeling_gemma3.Gemma3TextScaledWordEmbedding
-        model_module_name = model.__class__.__module__
-        module_cls = sys.modules[model_module_name]
-        for name in module_cls.__dict__:
-            if name.endswith("Embedding") and not name.endswith("RotaryEmbedding"):
-                embedding_types = (*embedding_types, getattr(module_cls, name))
-        supported_types = (*supported_types, *embedding_types)
-
-    all_supported_layer_names, embedding_layer_names = [], []
-    all_module_names = []
-    for n, m in model.named_modules():
-        all_module_names.append(n)
-        # cleanup stale attributes
-        for key in scheme_keys:
-            # `rotation_config` on the root model carries the active
-            # Hadamard rotation state (weights + hooks)
-            if n == "" and key == "rotation_config":
-                continue
-            if hasattr(m, key):
-                delattr(m, key)
-        if type(m) not in supported_types and m.__class__.__name__ not in inner_supported_types:
-            continue
-        all_supported_layer_names.append(n)
-        if isinstance(m, embedding_types) or m.__class__.__name__.endswith("Embedding"):
-            embedding_layer_names.append(n)
-
-    # Also include layer names from safetensor files not loaded into the model
-    # (e.g. MTP layers that transformers does not instantiate).
-    safetensor_only_names = _get_safetensor_layer_names_not_in_model(model, all_module_names)
-
-    # 6. expand regex configs
-    regex_config = {}
-    for name in list(layer_config.keys()):
-        if name in all_supported_layer_names:
-            continue
-        if name in all_module_names:
-            m = get_module(model, name)
-            if len(list(m.children())) == 0 and type(m) not in supported_types:
-                val = layer_config.pop(name)
-                if name in ignore_layer_patterns:
-                    # Keep unsupported ignore_layers entries so export can serialize
-                    # them into regex-based extra_config for loaders like vLLM INC.
-                    regex_config[name] = val
-                else:
-                    logger.warning(
-                        f"'{name}' exists in the model but is not a supported quantization target "
-                        f"in the current scheme, ignoring its setting in `layer_config`"
-                    )
-                continue
-
-        regex = re.compile(to_standard_regex(name))
-        matched = [ln for ln in all_supported_layer_names if regex.search(ln)]
-        safetensor_only_matched = [ln for ln in safetensor_only_names if regex.search(ln)]
-        # skip it for mtp layers not loaded in transformers
-        if not matched and not safetensor_only_matched:
-            # type(mlp.gate) is Qwen3VLMoeTextTopKRouter instead of Linear
-            logger.warning_once(
-                f"Layer name or regex '{name}' in layer_config does not match any supported layers. "
-                + "Please check for typos or update the regex pattern, ignore it for now"
-            )
-        val = layer_config.pop(name)
-        regex_config[name] = val  # keep regex config
-        for match in matched:
-            layer_config[match] = val
-
-    return layer_config, regex_config, embedding_layer_names, supported_types
-
-
-def _apply_layer_config_special_cases(
-    layer_config,
-    model,
-    default_dict,
-    supported_types,
-    inner_supported_types,
-    quant_block_list,
-    quant_lm_head,
-    gguf_name,
-) -> tuple[dict, bool, str | None, bool]:
-    """Steps 7-9 of layer-config resolution: lm_head handling, shape-divisibility
-    enforcement (int weight-only + mxfp/nvfp), and block-membership marking."""
-    from auto_round.utils.model import get_layer_names_in_block, get_lm_head_name
-
-    # 7. lm_head
-    lm_head_name = get_lm_head_name(model)
-    tie_word_embeddings = False
-    if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
-        tie_word_embeddings = model.config.tie_word_embeddings
-
-    if lm_head_name in layer_config:
-        quant_lm_head = True
-
-    if quant_lm_head and tie_word_embeddings and not gguf_name:
-        quant_lm_head = False
-        logger.warning(
-            "reset `quant_lm_head` to false as quantizing " "lm_head with tied weights has not been supported currently"
-        )
-
-    if lm_head_name not in layer_config and quant_lm_head:
-        layer_config[lm_head_name] = copy.deepcopy(default_dict)
-
-    if not quant_lm_head and not gguf_name:
-        layer_config.pop(lm_head_name, None)
-
-    # 8. enforce shape divisibility for int weight-only
-    if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
-        for n, m in model.named_modules():
-            if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
-                if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
-                    layer_config.setdefault(n, copy.deepcopy(default_dict))
-                    layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
-                    # logger.warning_once(f"{n} skipped quantization (shape not divisible by 32).")
-    # enforce shape divisibility for mxfp/nvfp
-    if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
-        skipped_layers = []
-        for n, m in model.named_modules():
-            if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
-                if m.weight.shape[1] % default_dict["group_size"]:
-                    layer_config.setdefault(n, copy.deepcopy(default_dict))
-                    layer_config[n].update(
-                        {"bits": 16, "data_type": "fp", "act_bits": 16, "act_data_type": "fp", "fixed_by_user": True}
-                    )
-                    skipped_layers.append(n)
-
-        compressed_skipped_layers = compress_layer_names(skipped_layers)
-        if compressed_skipped_layers:
-            logger.warning_once(
-                f"some layers are skipped quantization (shape not divisible by {default_dict['group_size']}): "
-                f"{compressed_skipped_layers}"
-            )
-
-    # 9. block layers: mark as in_blocks=True
-    for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
-        if name not in layer_config:
-            layer_config[name] = copy.deepcopy(default_dict)
-            layer_config[name]["fixed_by_user"] = False
-        layer_config[name]["in_blocks"] = True
-
-    # ---- restore: ensure missing in_blocks are set to False and compute flag ----
-    has_qlayer_outside_block = False
-    for cfg in layer_config.values():
-        if "in_blocks" not in cfg:
-            cfg["in_blocks"] = False
-        # mark layer outside block
-        if not cfg["in_blocks"] and check_to_quantized(cfg):
-            has_qlayer_outside_block = True
-
-    return layer_config, has_qlayer_outside_block, lm_head_name, tie_word_embeddings
-
-
-def _apply_gguf_layer_defaults(
-    layer_config,
-    model,
-    gguf_name,
-    lm_head_name,
-    tie_word_embeddings,
-    embedding_layer_names,
-    default_scale_dtype,
-    enable_gguf_official_mixed,
-    is_mllm,
-    has_qlayer_outside_block,
-) -> tuple[dict, bool]:
-    """Step 10 of layer-config resolution: embed/lm_head GGUF defaults plus the
-    GGUF-format-specific per-layer mapping. Only called when `gguf_name` is truthy."""
-    from auto_round.utils.model import is_separate_lm_head
-
-    # embed + lm_head defaults for gguf
-    tie_word_embeddings &= not is_separate_lm_head(model)
-    if lm_head_name not in layer_config and not tie_word_embeddings:
-        cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
-        cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
-        layer_config[lm_head_name] = cfg
-        has_qlayer_outside_block = True
-    for emd_name in embedding_layer_names:
-        if emd_name in layer_config:
-            continue
-        if not tie_word_embeddings:
-            cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["embedding"]]
-        else:
-            cfg = GGUF_INNER_CONFIG[GGUF_CONFIG[gguf_name.lower()]["lm_head"]]
-        cfg = {**cfg, "fixed_by_user": False, "scale_dtype": default_scale_dtype}
-        layer_config[emd_name] = cfg
-
-    if enable_gguf_official_mixed:
-        model_type = ModelType.MMPROJ if is_mllm else ModelType.TEXT
-        layer_config, _ = get_layer_config_by_gguf_format(layer_config, gguf_name.lower(), model, model_type)
-
-    _apply_gguf_shape_fallback(layer_config, model)
-    return layer_config, has_qlayer_outside_block
-
-
 def set_layer_config(
     model: torch.nn.Module,
     layer_config: dict[str, Union[str, dict, "QuantizationScheme"]],
@@ -612,569 +254,84 @@ def set_layer_config(
     is_mllm: bool = False,
     fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
-    """
-    Normalize, validate, and expand layer-specific quantization configs.
-    Returns (final_layer_config, has_quant_layer_outside_block)
-    """
-
+    """Compatibility adapter for the pure layer-config resolver and explicit apply phase."""
+    from auto_round.formats.backends.gguf import GGUFLayerPolicy
+    from auto_round.layer_config import (
+        apply_plan_to_model,
+        extract_regex_config,
+        has_quantized_layer_outside_blocks,
+        resolve_layer_config,
+    )
+    from auto_round.planning import CompressionPlan, ResolvedScheme, resolve_scheme_value
     from auto_round.schemes import get_gguf_scheme
-    from auto_round.utils.model import get_module
 
-    gguf_name = get_gguf_scheme(default_scheme)
-
-    # ---- helpers -------------------------------------------------
-    def dispatch_layer_config(layer_config: dict[str, dict]) -> None:
-        """Assign scheme values as attributes to matched modules."""
-        for layer_name, scheme in layer_config.items():
-            module = get_module(model, layer_name)
-            if module is None:
-                # Layer exists in safetensor files but is not loaded into the model
-                # (e.g. MTP layers that transformers does not instantiate). Skip.
-                continue
-            for attr, value in scheme.items():
-                setattr(module, attr, value)
-
-    # ---- main logic ----------------------------------------------
-    layer_config, default_dict, scheme_keys, ignore_layer_patterns = _resolve_layer_config_presets(
-        layer_config,
-        model,
-        ignore_layers,
-        default_scheme,
-        default_scale_dtype,
-        fill_default_value,
-    )
-    layer_config, regex_config, embedding_layer_names, supported_types = _traverse_and_expand_layer_config(
-        layer_config,
-        model,
-        supported_types,
-        inner_supported_types,
-        ignore_layer_patterns,
-        scheme_keys,
-        gguf_name,
-    )
-    layer_config, has_qlayer_outside_block, lm_head_name, tie_word_embeddings = _apply_layer_config_special_cases(
-        layer_config,
-        model,
-        default_dict,
-        supported_types,
-        inner_supported_types,
-        quant_block_list,
-        quant_lm_head,
-        gguf_name,
-    )
-
-    # 10. GGUF handling
-    if not gguf_name:
-        dispatch_layer_config(layer_config)
-        return layer_config, has_qlayer_outside_block, regex_config
-
-    layer_config, has_qlayer_outside_block = _apply_gguf_layer_defaults(
-        layer_config,
-        model,
-        gguf_name,
-        lm_head_name,
-        tie_word_embeddings,
-        embedding_layer_names,
-        default_scale_dtype,
-        enable_gguf_official_mixed,
-        is_mllm,
-        has_qlayer_outside_block,
-    )
-    dispatch_layer_config(layer_config)
-    return layer_config, has_qlayer_outside_block, regex_config
-
-
-def _use_more_bits(i_layer: int, n_layer: int):
-    return (i_layer < n_layer // 8) or (i_layer >= 7 * n_layer // 8) or ((i_layer - n_layer // 8) % 3 == 2)
-
-
-def _search_gguf_type(gguf_type):
-    if gguf_type in GGUF_INNER_CONFIG:
-        return gguf_type
-    pattern = re.compile("gguf:q([0-9]{1,})_[01k]")
-    bits = re.search(pattern, gguf_type)
-    if not bits:
-        raise KeyError(f"{gguf_type} is not a correct gguf type, please check")
-
-    for suffix in ["_k", "_0", "_1"]:
-        if gguf_type.endswith(suffix):
-            continue
-        if (tmp_type := re.sub("_[01k]", suffix, gguf_type)) in GGUF_INNER_CONFIG:
-            return tmp_type
-    return None
-
-
-def gguf_type_fallback(gguf_type: str) -> str:
-    gguf_type = gguf_type.lower()
-    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
-        gguf_type = "gguf:q5_0"
-    elif gguf_type == "gguf:q5_k":
-        gguf_type = "gguf:q5_0"
-    elif gguf_type == "gguf:q6_k":
-        gguf_type = "gguf:q8_0"
-    return gguf_type
-
-
-def get_gguf_qtype_by_layer_config(layer_config):
-    import gguf  # pylint: disable=E0401
-
-    if layer_config["bits"] >= 16:
-        return None
-    bits = layer_config["bits"]
-    super_bits = layer_config.get("super_bits", None)
-    sym = layer_config["sym"]
-    group_size = layer_config.get("group_size", None)
-    super_group_size = layer_config.get("super_group_size", None)
-    if bits == 2 and super_bits == 4 and not sym and group_size == 16 and super_group_size == 16:
-        return gguf.GGMLQuantizationType.Q2_K
-    if bits == 3 and super_bits == 6 and sym and group_size == 16 and super_group_size == 16:
-        return gguf.GGMLQuantizationType.Q3_K
-    if bits == 4:
-        if super_bits is not None and super_bits == 6 and not sym and group_size == 32 and super_group_size == 8:
-            return gguf.GGMLQuantizationType.Q4_K
-        if super_bits is None and sym and group_size == 32:
-            return gguf.GGMLQuantizationType.Q4_0
-        if super_bits is None and not sym and group_size == 32:
-            return gguf.GGMLQuantizationType.Q4_1
-    if bits == 5:
-        if super_bits == 6 and not sym and group_size == 32 and super_group_size == 8:
-            return gguf.GGMLQuantizationType.Q5_K
-        if super_bits is None and sym and group_size == 32:
-            return gguf.GGMLQuantizationType.Q5_0
-        if super_bits is None and not sym and group_size == 32:
-            return gguf.GGMLQuantizationType.Q5_1
-    if bits == 6 and super_bits == 8 and group_size == 16 and super_group_size == 16:
-        return gguf.GGMLQuantizationType.Q6_K
-    if bits == 8 and sym and group_size == 32:
-        return gguf.GGMLQuantizationType.Q8_0
-    raise ValueError("Unknown layer config")
-
-
-def _apply_gguf_shape_fallback(layer_config, model):
-    from auto_round.utils.model import get_module
-
-    for layer_name, config in layer_config.items():
-        if not check_to_quantized(config):
-            continue
-        layer = get_module(model, layer_name)
-        if layer is None or not hasattr(layer, "weight"):
-            continue
-        try:
-            qtype = get_gguf_qtype_by_layer_config(config)
-        except ValueError:
-            continue
-        if qtype is None:
-            continue
-
-        gguf_type = f"gguf:{qtype.name.lower()}"
-        block_size = GGML_QUANT_SIZES[gguf_type.split(":")[-1]][0]
-        input_features = (
-            layer.weight.shape[0] if type(layer) == transformers.pytorch_utils.Conv1D else layer.weight.shape[-1]
+    if isinstance(default_scheme, ResolvedScheme):
+        resolved_scheme = default_scheme
+        gguf_name = resolved_scheme.preset_name or ""
+    elif isinstance(default_scheme, QuantizationScheme):
+        gguf_name = get_gguf_scheme(default_scheme) or ""
+        resolved_scheme = ResolvedScheme.from_scheme(
+            default_scheme,
+            preset_name=gguf_name or None,
         )
-        if input_features % block_size == 0:
-            continue
-
-        fallback_type = _gguf_type_fallback(gguf_type)
-        fallback_block_size = GGML_QUANT_SIZES[fallback_type.split(":")[-1]][0]
-        if input_features % fallback_block_size != 0:
-            fallback_type = "gguf:bf16"
-
-        preserved = {key: config[key] for key in ("fixed_by_user", "scale_dtype") if key in config}
-        config.update(GGUF_INNER_CONFIG[fallback_type])
-        config.update(preserved)
-        logger.warning(
-            "fallback %s to %s before quantization, because input_features(%s) is not divisible by %s block_size(%s)",
-            layer_name,
-            fallback_type,
-            input_features,
-            gguf_type,
-            block_size,
-        )
-
-
-def _get_digital_in_layer_name(layer_name):
-    pattern = re.compile(r"([a-zA-Z]+\.){1,}(\d+)")
-    res = re.search(pattern, layer_name)
-    if res:
-        return int(res[2])
     else:
-        return None
+        resolved_scheme = resolve_scheme_value(default_scheme, {})
+        gguf_name = get_gguf_scheme(default_scheme) or ""
 
-
-def _gguf_type_fallback(gguf_type: str) -> str:
-    gguf_type = gguf_type.lower()
-    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
-        gguf_type = "gguf:q5_0"
-    elif gguf_type == "gguf:q5_k":
-        gguf_type = "gguf:q5_0"
-    elif gguf_type == "gguf:q6_k":
-        gguf_type = "gguf:q8_0"
-    return gguf_type
-
-
-def _select_gguf_layer_type(
-    layer_name,
-    config,
-    layer,
-    model,
-    model_class,
-    *,
-    target_gguf_format,
-    lm_head_name,
-    tie_word_embeddings,
-    block_size,
-    base_target_bits,
-    dtype_selector,
-    gguf_name,
-    i_layer,
-) -> str | None:
-    """Per-layer GGUF-type-selection cascade extracted from
-    `get_layer_config_by_gguf_format`'s loop body.
-
-    Returns the selected gguf type string, or ``None`` as the sentinel for the
-    `lm_head_name == layer_name and tie_word_embeddings` skip case, which the
-    caller must handle with `continue`.
-    """
-    import gguf  # pylint: disable=E0401
-
-    from auto_round.schemes import QuantizationScheme, get_gguf_scheme
-
-    if type(layer) == transformers.pytorch_utils.Conv1D:
-        input_features = layer.weight.shape[0]
-    else:
-        input_features = layer.weight.shape[-1]
-
-    # Reset target_bits each iteration to prevent lm_head/embedding settings
-    # from bleeding into subsequent block layers and bypassing their special logic.
-    target_bits = base_target_bits
-    new_type = GGUF_CONFIG[target_gguf_format]["mostly"]
-
-    if lm_head_name is not None and layer_name == lm_head_name:
-        target_bits = int(re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format]["lm_head"]).group(1))
-    if isinstance(layer, torch.nn.Embedding):
-        embedding_format_key = "lm_head" if tie_word_embeddings else "embedding"
-        target_bits = int(
-            re.search("gguf:q([0-9]{1,})_[01k]", GGUF_CONFIG[target_gguf_format][embedding_format_key]).group(1)
-        )
-
-    bits_index = 6
-    if config.get("fixed_by_user", False):
-        if "bits" not in config:
-            logger.warning(
-                f"Setting layer_config requires providing bits, {layer_name} has not bits,"
-                f" using bits={target_bits} instead."
-            )
-            new_type = new_type[:bits_index] + str(target_bits) + new_type[bits_index + 1 :]
-        else:
-            config_tmp = config.copy()
-            scheme_keys = [f.name for f in fields(QuantizationScheme)]
-            for key in config.keys():
-                if key not in scheme_keys:
-                    config_tmp.pop(key, None)
-            matched_scheme = get_gguf_scheme(QuantizationScheme.from_dict(config_tmp))  # check matched
-            if not matched_scheme:
-                if config.get("super_group_size", None) is not None or config.get("super_bits", None) is not None:
-                    new_type = new_type[:bits_index] + str(config["bits"]) + "_k"
-                if new_type not in GGUF_INNER_CONFIG:
-                    prefix_idx = 0 if config.get("sym", True) else 1
-                    new_type = new_type[:bits_index] + str(config["bits"]) + f"_{prefix_idx}"
-                    if new_type not in GGUF_INNER_CONFIG:
-                        new_type = new_type[:bits_index] + str(config["bits"]) + f"_{1-prefix_idx}"
-                if new_type not in GGUF_INNER_CONFIG:
-                    raise ValueError(
-                        f"the setting in layer_config {layer_name} "
-                        f"could not match any supported gguf format, please have a check."
-                    )
-
-            new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
-        new_type = _search_gguf_type(new_type)
-        if new_type is None:
-            raise ValueError(f"invalid bit setting for {layer_name}")
-    elif lm_head_name is not None and layer_name == lm_head_name and not tie_word_embeddings:
-        if gguf.MODEL_ARCH.FALCON == model_class.model_arch or input_features % block_size != 0:
-            new_type = "gguf:q8_0"
-        elif "lm_head" in GGUF_CONFIG[target_gguf_format]:
-            new_type = GGUF_CONFIG[target_gguf_format]["lm_head"]
-        elif new_type != "gguf:q8_0":
-            new_type = "gguf:q6_k"
-    elif lm_head_name is not None and layer_name == lm_head_name and tie_word_embeddings:
-        return None
-    elif isinstance(layer, torch.nn.Embedding):
-        embedding_format_key = "lm_head" if tie_word_embeddings else "embedding"
-        if embedding_format_key in GGUF_CONFIG[target_gguf_format]:
-            new_type = GGUF_CONFIG[target_gguf_format][embedding_format_key]
-    elif target_bits is not None and "bits" in config and config["bits"] != target_bits:
-        new_type = new_type[:bits_index] + str(config["bits"]) + new_type[bits_index + 1 :]
-        new_type = _search_gguf_type(new_type)
-        if new_type is None:
-            raise ValueError(f"invalid bit setting for {layer_name}")
-    elif gguf_name is not None:
-        gguf_weight_name = gguf_name if gguf_name.endswith(".weight") else f"{gguf_name}.weight"
-        new_type = dtype_selector.select_gguf_type(gguf_weight_name, len(layer.weight.shape), i_layer or 0)
-    new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
-    if input_features % new_block_size != 0:
-        new_type = _gguf_type_fallback(new_type)
-        new_block_size = GGML_QUANT_SIZES[new_type.split(":")[-1].lower()][0]
-        if input_features % new_block_size != 0:
-            new_type = "gguf:bf16"
-        logger.warning(
-            f"fallback {layer_name} to {new_type}, "
-            f"because input_features({input_features}) % block_size({block_size}) != 0"
-        )
-    # for deepseek v2
-    if layer_name.endswith("kv_b_proj") and new_type.endswith("_k") and "Deepseek" in model.config.architectures[0]:
-        fallback = False
-
-        # calc if need fallback
-        qk_nope_head_dim = model.config.qk_nope_head_dim
-        kv_b_shape = get_module(model, layer_name).weight.shape
-
-        if (
-            qk_nope_head_dim < QK_K
-            or qk_nope_head_dim % QK_K != 0
-            or kv_b_shape[-1] < QK_K
-            or kv_b_shape[-1] % QK_K != 0
-        ):
-            fallback = True
-        if fallback:
-            tmp_type = _gguf_type_fallback(new_type)
-            logger.warning_once(
-                f"self_attn.kv_b_proj does not support the use of {new_type}, replace it with {tmp_type}"
-            )
-            new_type = tmp_type
-
-    return new_type
-
-
-def _infer_gguf_n_layers_from_model(model, model_type=ModelType.TEXT):
-    if model is None or not hasattr(model, "named_modules"):
-        return None, None
-
-    from auto_round.utils.common import MM_MODULE_KEYS
-
-    text_layer_ids = set()
-    vision_layer_ids = set()
-    layer_pattern = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
-    for module_name, _ in model.named_modules():
-        match = layer_pattern.search(module_name)
-        if match is None:
-            continue
-        layer_id = int(match.group(1))
-        if model_type != ModelType.TEXT and any(key in module_name.lower() for key in MM_MODULE_KEYS):
-            vision_layer_ids.add(layer_id)
-        else:
-            text_layer_ids.add(layer_id)
-
-    n_layer = max(text_layer_ids) + 1 if text_layer_ids else None
-    n_layer_vision = max(vision_layer_ids) + 1 if vision_layer_ids else None
-    return n_layer, n_layer_vision
-
-
-def _resolve_gguf_n_layers(config, model_type=ModelType.TEXT, model=None):
-    """Resolve text (and vision) layer counts from config, then model structure.
-
-    Multimodal configs (e.g. Qwen3.5, Qwen3-VL) keep the text hparams only in
-    ``config.text_config``, so both it and the top-level config must be checked.
-    If config naming changes, fall back to the loaded module hierarchy so GGUF
-    official mixed formats still receive a usable block count.
-    """
-    n_layer = None
-    n_layer_vision = None
-    text_config = getattr(config, "text_config", None)
-    vision_config = None
-    audio_config = getattr(config, "audio_config", None)
-    for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
-        if hasattr(config, name):
-            n_layer = getattr(config, name)
-        if text_config is not None and hasattr(text_config, name):
-            # the text hparams in text_config are authoritative for multimodal models;
-            # for text-only usage they still fill in when the top-level config lacks them
-            if model_type != ModelType.TEXT or n_layer is None:
-                n_layer = getattr(text_config, name)
-        if model_type != ModelType.TEXT:
-            for config_name in ["vision_config", "vision_encoder"]:
-                if hasattr(config, config_name):
-                    vision_config = getattr(config, config_name)
-                    if hasattr(vision_config, name):
-                        n_layer_vision = getattr(vision_config, name)
-                        break
-            if n_layer and n_layer_vision:
-                break
-
-    inferred_n_layer, inferred_n_layer_vision = _infer_gguf_n_layers_from_model(model, model_type)
-    n_layer = n_layer or inferred_n_layer
-    n_layer_vision = n_layer_vision or inferred_n_layer_vision
-
-    if (
-        model_type != ModelType.TEXT
-        and n_layer_vision is None
-        and vision_config is not None
-        and audio_config is not None
-    ):
-        # llama.cpp's Gemma4 mmproj converter uses a fixed tensor-name map size
-        # when vision and audio encoders coexist, because the two encoders do not
-        # expose a single transformer block count in config.json.
-        n_layer_vision = 128
-    return n_layer, n_layer_vision
-
-
-##https://github.com/ggml-org/llama.cpp/blob/9e31bec4fd53634c9e5b04650488a09a055f5dab/src/llama-quant.cpp#L129
-def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model, model_type=ModelType.TEXT):
-    import gguf  # pylint: disable=E0401
-
-    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
-    from auto_round.utils.common import MM_MODULE_KEYS
-    from auto_round.utils.model import get_lm_head_name, get_module, is_separate_lm_head
-
-    try:
-        hparams = model.config.to_dict()
-        conversion = get_conversion(hparams=hparams, model_type=model_type)
-        model_architecture = conversion.get_model_architecture(
-            hparams=hparams, model_type=conversion.model_type(model_type)
-        )
-    except AttributeError as e:
-        raise ImportError(
-            "Please use the latest gguf-py, you can use the following command to install it:\n"
-            "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py"
-            " && pip install . sentencepiece"
-        )
-    try:
-        if model_type != ModelType.TEXT:
-            model_class_vision = conversion.get_model_class(model_architecture, model_type=model_type)
-        model_class = conversion.get_model_class(model_architecture, model_type=ModelType.TEXT)
-
-    except NotImplementedError:
-        return layer_config, {}
-
-    n_layer, n_layer_vision = _resolve_gguf_n_layers(model.config, model_type, model=model)
-
-    if n_layer is None:
-        return layer_config, {}
-
-    tensor_map = gguf.get_tensor_name_map(model_class.model_arch, n_layer)
-    if model_type != ModelType.TEXT:
-        tensor_map_vision = gguf.get_tensor_name_map(model_class_vision.model_arch, n_layer_vision)
-
-    def _set_config(config, target_config):
-        for k, v in target_config.items():
-            if isinstance(config, dict):
-                config[k] = v
-            else:
-                setattr(config, k, v)
-        return config
-
-    gguf_format_config = {}
-    lm_head_name = get_lm_head_name(model)
-    inner_gguf_format = GGUF_CONFIG[target_gguf_format]["mostly"]
-    # ggml_type =  getattr(gguf.GGMLQuantizationType,inner_gguf_format.split(":")[-1].upper())
-    block_size = GGML_QUANT_SIZES[inner_gguf_format.split(":")[-1].lower()][0]
-    tie_word_embeddings = True
-    if hasattr(model, "config") and hasattr(model.config, "tie_word_embeddings"):
-        tie_word_embeddings = model.config.tie_word_embeddings
-    tie_word_embeddings &= not is_separate_lm_head(model)
-
-    dtype_selector = GGUFDTypeSelector(
-        hparams, gguf_format_to_ftype(target_gguf_format), model_class.model_arch, n_layer
+    layer_policy = GGUFLayerPolicy() if gguf_name.lower().startswith("gguf:") else None
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=resolved_scheme,
+        layer_config=layer_config,
+        scale_dtype=default_scale_dtype,
+        supported_types=supported_types,
+        inner_supported_types=inner_supported_types,
+        quant_block_list=quant_block_list,
+        ignore_layers=ignore_layers,
+        quant_lm_head=quant_lm_head,
+        enable_gguf_official_mixed=enable_gguf_official_mixed,
+        is_mllm=is_mllm,
+        fill_default_value=fill_default_value,
+        layer_policy=layer_policy,
     )
-    layer_config_copy = copy.deepcopy(layer_config)
-    base_target_bits = None
-    if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
-        base_target_bits = int(inner_gguf_format[6])
-
-    def _resolve_gguf_name(layer_name):
-        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
-            gguf_layer_name = tensor_map_vision.get_name(layer_name)
-            if gguf_layer_name is None:
-                for key in MM_MODULE_KEYS:
-                    gguf_layer_name = tensor_map_vision.get_name(layer_name.replace(f".{key}", ""))
-                    if gguf_layer_name is not None:
-                        break
-        else:
-            gguf_layer_name = tensor_map.get_name(layer_name)
-            if gguf_layer_name is None:
-                gguf_layer_name = tensor_map.get_name(layer_name.replace(".language_model", ""))
-        return gguf_layer_name
-
-    dtype_selector.n_attention_wv = sum(
-        1
-        for layer_name, config in layer_config_copy.items()
-        if check_to_quantized(config)
-        and (gguf_name := _resolve_gguf_name(layer_name))
-        and any(key in gguf_name for key in ("attn_v", "attn_qkv", "attn_kv_b"))
+    regex_config = extract_regex_config(
+        model=model,
+        scheme=resolved_scheme,
+        layer_config=layer_config,
+        scale_dtype=default_scale_dtype,
+        supported_types=supported_types,
+        inner_supported_types=inner_supported_types,
+        ignore_layers=ignore_layers,
+        fill_default_value=fill_default_value,
+    )
+    has_outside = has_quantized_layer_outside_blocks(resolved)
+    plan = CompressionPlan(
+        scheme=resolved_scheme,
+        formats=(),
+        layer_config=resolved,
+        regex_config=regex_config,
+        has_qlayer_outside_block=has_outside,
+        scale_dtype=default_scale_dtype,
+        quant_block_list=quant_block_list,
+    )
+    apply_plan_to_model(model, plan)
+    return (
+        {name: dict(config) for name, config in plan.layer_config.items()},
+        plan.has_qlayer_outside_block,
+        {name: dict(config) for name, config in plan.regex_config.items()},
     )
 
-    for layer_name, config in layer_config_copy.items():
-        if not check_to_quantized(config):
-            continue
-        layer = get_module(model, layer_name)
-        i_layer = _get_digital_in_layer_name(layer_name)
-        new_type = _select_gguf_layer_type(
-            layer_name,
-            config,
-            layer,
-            model,
-            model_class,
-            target_gguf_format=target_gguf_format,
-            lm_head_name=lm_head_name,
-            tie_word_embeddings=tie_word_embeddings,
-            block_size=block_size,
-            base_target_bits=base_target_bits,
-            dtype_selector=dtype_selector,
-            gguf_name=_resolve_gguf_name(layer_name),
-            i_layer=i_layer,
-        )
-        if new_type is None:
-            continue
 
-        target_config = GGUF_INNER_CONFIG[new_type]
-
-        _set_config(layer_config[layer_name], target_config)
-        _set_config(layer, target_config)
-        gguf_format_config[layer_name] = new_type
-
-    return layer_config, gguf_format_config
-
-
-def get_fp_layer_names(model: torch.nn.Module, ignore_layers: str):
-    """Identifies and returns layers in the model to exclude from quantization.
-
-    This function processes a comma-separated list of fully precision (FP) layers,
-    matches them to the names of layers in the model, and returns a list of such
-    layers to exclude from quantization.
-
-    Args:
-        model (torch.nn.Module): The model whose layers will be inspected.
-        ignore_layers (str): A comma-separated string of layer names to be excluded
-            from quantization. Whitespace is ignored in this string.
-
-    Returns:
-        list: A list of layer names that match the specified FP layers or are
-        subcomponents of those layers.
-    """
-    from auto_round.utils import SUPPORTED_LAYER_TYPES
-
-    if not ignore_layers:
-        return []
-
-    all_layer_names = []
-    for n, m in model.named_modules():
-        if type(m) in SUPPORTED_LAYER_TYPES:
-            all_layer_names.append(n)
-    not_to_quantized_layers = []
-
-    for fp_layer in ignore_layers:
-        if fp_layer == "":
-            continue
-        if fp_layer in all_layer_names:
-            not_to_quantized_layers.append(fp_layer)
-            continue
-        for name in all_layer_names:
-            if fp_layer in name:
-                not_to_quantized_layers.append(name)
-    not_to_quantized_layers.extend(ignore_layers)  # keep regex name for later use
-    if not_to_quantized_layers:
-        logger.info(f"Ignored layers: {compress_layer_names(not_to_quantized_layers)}")
-    return not_to_quantized_layers
+# Explicit compatibility exports for callers that historically imported GGUF and
+# ignore-layer helpers from compressors.utils.
+from auto_round.formats.backends.gguf import (
+    _apply_gguf_shape_fallback,
+    _infer_gguf_n_layers_from_model,
+    _resolve_gguf_n_layers,
+    get_layer_config_by_gguf_format,
+    gguf_type_fallback,
+)
+from auto_round.layer_config.resolver import get_fp_layer_names
 
 
 def get_shared_keys(model):

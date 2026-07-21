@@ -18,6 +18,9 @@ the resulting compressor-class routing — are identical whether the user passes
 ``scheme=`` alone or the equivalent bit/dtype overrides on the alg config.
 """
 
+import ast
+import inspect
+
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.compressors.data_driven import CalibratedRTNCompressor
 from auto_round.compressors.entry import (
@@ -26,6 +29,21 @@ from auto_round.compressors.entry import (
     _select_rtn_compressor_base_cls,
 )
 from auto_round.compressors.zero_shot import ZeroShotCompressor
+
+
+def test_rtn_routing_does_not_fallback_to_raw_config_scheme_fields():
+    tree = ast.parse(inspect.getsource(_select_rtn_compressor_base_cls))
+    forbidden_fields = {"bits", "act_bits", "data_type", "sym", "act_data_type", "act_dynamic"}
+    raw_reads = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+            continue
+        if len(node.args) < 2 or not isinstance(node.args[0], ast.Name) or node.args[0].id != "quant_config":
+            continue
+        if isinstance(node.args[1], ast.Constant) and node.args[1].value in forbidden_fields:
+            raw_reads.append(node.args[1].value)
+
+    assert raw_reads == []
 
 
 def test_collect_config_scheme_overrides_omits_unset_fields():

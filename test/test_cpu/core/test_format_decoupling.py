@@ -23,10 +23,16 @@ Two behaviors that must survive the scheme/format/compressor decoupling:
    disambiguation.
 """
 
+from types import SimpleNamespace
+
+import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.formats import get_formats
+from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.compressors.base import BaseCompressor
+from auto_round.formats import _check_compatibility, get_formats
+from auto_round.planning import FormatResolution, ResolvedScheme
 from auto_round.schemes import QuantizationScheme, parse_scheme
 
 
@@ -59,22 +65,77 @@ def test_format_selection_baseline():
     assert results == EXPECTED_FORMAT_SELECTION_BASELINE
 
 
-def test_gguf_correction_propagates_to_scheme_and_quantize_config(tiny_qwen_model_path):
+@pytest.mark.parametrize("other_format", ["auto_round", "llm_compressor"])
+def test_gguf_rejects_non_fake_companion_formats(other_format):
+    scheme = _resolved_scheme("W4A16")
+
+    with pytest.raises(ValueError, match="GGUF format is not compatible"):
+        _check_compatibility(["gguf:q4_k_m", other_format], scheme)
+
+
+def test_gguf_allows_fake_companion_format():
+    scheme = _resolved_scheme("W4A16")
+
+    assert _check_compatibility(["gguf:q4_k_m", "fake"], scheme) == ["gguf:q4_k_m", "fake"]
+
+
+def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
     # W4A16's plain int-woq fields don't match every field gguf_args_check enforces
     # for a GGUF target; after resolving "gguf:q4_k_m" the scheme-bearing objects
     # must all agree, and self.scheme must be pinned to the precise preset string so
     # get_gguf_scheme()'s string short-circuit can disambiguate Q4_K_S vs Q4_K_M.
-    from auto_round import AutoRound
     from auto_round.schemes import get_gguf_scheme
 
-    ar = AutoRound(model=tiny_qwen_model_path, scheme="W4A16", iters=0)
-    ar.quantize()
-    ar.formats = "gguf:q4_k_m"
-    ar._resolve_formats()
+    original_scheme = _resolved_scheme("W4A16")
+    corrected_scheme = _resolved_scheme("GGUF:Q4_K_M")
+    quantize_config = QuantizationConfig(scheme=original_scheme.copy())
+    alg_config = QuantizationConfig(scheme=original_scheme.copy())
+    resolved_format = SimpleNamespace(
+        is_gguf=lambda: True,
+        output_format="gguf",
+        backend=SimpleNamespace(output_format="gguf:q4_k_m"),
+    )
 
+    def fake_resolve_formats(*args, **kwargs):
+        return FormatResolution(
+            formats=(resolved_format,),
+            scheme=ResolvedScheme.from_scheme(corrected_scheme, preset_name="gguf:q4_k_m"),
+            layer_config_patch={"layer": {"bits": 4}},
+            scale_dtype=torch.float32,
+            quant_block_list=(("model.layers.0",),),
+        )
+
+    monkeypatch.setattr("auto_round.compressors.base.resolve_formats", fake_resolve_formats)
+
+    class FormatResolutionHost:
+        _resolve_gguf_preset_string = staticmethod(BaseCompressor._resolve_gguf_preset_string)
+        _resolve_format_string = BaseCompressor._resolve_format_string
+
+    ar = FormatResolutionHost()
+    ar.scheme_context = original_scheme
+    ar.scheme = original_scheme.copy()
+    ar.quantize_config = quantize_config
+    ar._alg_configs = [alg_config, quantize_config]
+    ar.model_context = SimpleNamespace(model=nn.Linear(1, 1), is_mllm=False)
+    ar.layer_config = None
+    ar.scale_dtype = torch.float16
+    ar.quant_nontext_module = False
+    ar.quant_block_list = None
+    ar.platform = "hf"
+    ar.is_auto_scheme = False
+
+    formats = ar._resolve_format_string("gguf:q4_k_m")
+
+    assert formats == [resolved_format]
     assert isinstance(ar.scheme, str)
     assert ar.scheme.lower() == "gguf:q4_k_m"
     assert get_gguf_scheme(ar.scheme) == ar.scheme  # short-circuit preserved
+    assert ar.scheme_context == corrected_scheme
+    assert alg_config.scheme is ar.scheme_context
+    assert quantize_config.scheme is ar.scheme_context
     assert ar.scheme_context.bits == ar.quantize_config.bits
     assert ar.scheme_context.data_type == ar.quantize_config.data_type
     assert ar.scheme_context.sym == ar.quantize_config.sym
+    assert ar.layer_config == {"layer": {"bits": 4}}
+    assert ar.scale_dtype is torch.float32
+    assert ar.quant_block_list == [["model.layers.0"]]
