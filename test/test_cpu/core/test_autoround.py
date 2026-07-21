@@ -169,9 +169,9 @@ class TestAutoRound:
             dataset=dataloader,
         )
         model, _ = autoround.quantize()
-        if bits ==3:
+        if bits == 3:
             evaluate_accuracy(model, self.tokenizer, threshold=0.15, batch_size="auto:8", limit=32)
-        elif bits ==4:
+        elif bits == 4:
             evaluate_accuracy(model, self.tokenizer, threshold=0.3, batch_size="auto:8", limit=32)
 
     def test_disable_quanted_input(self, dataloader):
