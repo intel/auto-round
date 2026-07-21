@@ -25,6 +25,7 @@ from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFI
 from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector, gguf_format_to_ftype
 from auto_round.formats.base import OutputFormat
 from auto_round.logger import logger
+from auto_round.planning.contracts import thaw_mapping
 from auto_round.planning.errors import FormatCompatibilityError
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_to_quantized, find_matching_blocks, get_block_names, get_module
@@ -734,7 +735,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     dtype_selector = GGUFDTypeSelector(
         hparams, gguf_format_to_ftype(target_gguf_format), model_class.model_arch, n_layer
     )
-    layer_config_copy = copy.deepcopy(layer_config)
+    layer_config_copy = thaw_mapping(layer_config)
     base_target_bits = None
     if inner_gguf_format.startswith("gguf:q") and len(inner_gguf_format) >= 7 and (inner_gguf_format[6]).isdigit():
         base_target_bits = int(inner_gguf_format[6])

@@ -26,6 +26,7 @@ import torch
 import transformers
 
 from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.planning.contracts import thaw_mapping
 from auto_round.planning.errors import FormatCompatibilityError
 from auto_round.schemes import (
     PRESET_SCHEMES,
@@ -145,7 +146,7 @@ def get_formats(
         ResolvedScheme.from_scheme(scheme),
         model=model,
     )
-    resolved_layer_config = {name: dict(config) for name, config in resolution.layer_config_patch.items()}
+    resolved_layer_config = thaw_mapping(resolution.layer_config_patch)
     if layer_config is None and not resolved_layer_config:
         resolved_layer_config = None
     resolved_blocks = (

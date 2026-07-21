@@ -105,6 +105,7 @@ import torch
 from auto_round import envs
 from auto_round.compressors.utils import is_mx_fp
 from auto_round.logger import logger
+from auto_round.planning import thaw_mapping
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
 from auto_round.utils.device import clear_memory, memory_monitor
@@ -2393,7 +2394,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             if not callable(post_init):
                 raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
             post_init()  # pylint: disable=E1102
-            layer_config = copy.deepcopy(getattr(compressor, "layer_config", {}) or {})
+            layer_config = thaw_mapping(getattr(compressor, "layer_config", {}) or {})
         finally:
             # Release the model that was loaded only for scoring so the
             # packing phase keeps model-free's low memory footprint.

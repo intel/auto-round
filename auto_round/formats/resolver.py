@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import copy
 from types import SimpleNamespace
 from typing import Iterable
 
@@ -22,7 +21,13 @@ import torch
 
 from auto_round.formats.backends.gguf import GGUFFormat, GGUFLayerPolicy
 from auto_round.formats.base import OutputFormat
-from auto_round.planning import CompressionIntent, FormatCompatibilityError, FormatResolution, ResolvedScheme
+from auto_round.planning import (
+    CompressionIntent,
+    FormatCompatibilityError,
+    FormatResolution,
+    ResolvedScheme,
+    thaw_mapping,
+)
 from auto_round.schemes import get_gguf_scheme
 from auto_round.utils import SUPPORTED_FORMATS, logger
 
@@ -98,7 +103,7 @@ def resolve_formats(intent: CompressionIntent, scheme: ResolvedScheme, *, model=
         if name not in SUPPORTED_FORMATS:
             raise ValueError(f"{name} is not supported, we only support {SUPPORTED_FORMATS}")
 
-    layer_config = {name: copy.deepcopy(dict(config)) for name, config in intent.layer_config.items()}
+    layer_config = thaw_mapping(intent.layer_config)
     quant_block_list = (
         [list(group) for group in intent.quant_block_list] if intent.quant_block_list is not None else None
     )

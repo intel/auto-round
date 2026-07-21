@@ -20,6 +20,7 @@ import torch
 from torch.amp import autocast
 
 from auto_round.logger import logger
+from auto_round.planning import LayerConfigResolutionError
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -455,8 +456,7 @@ def _get_quantized_layer_names_outside_blocks(model, layer_config, supported_typ
             continue
         layer = get_module(model, key)
         if layer is None:
-            logger.error(f"could not find layer {key} in the model, exit...")
-            exit(-1)
+            raise LayerConfigResolutionError(f"could not find layer '{key}' in the model")
         if type(layer) in supported_types and check_to_quantized(layer_config[key]):
             layer_names.append(key)
 

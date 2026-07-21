@@ -887,6 +887,8 @@ def _handle_special_schemes(
 
 
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+    if scheme is None:
+        return ""
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return scheme
     if isinstance(scheme, str):

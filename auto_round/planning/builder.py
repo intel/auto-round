@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.planning.contracts import CompressionPlan, FormatResolution, LayerConfig
+from auto_round.planning.contracts import CompressionPlan, FormatResolution, LayerConfig, thaw_mapping
 
 
 def build_compression_plan(
@@ -23,7 +23,7 @@ def build_compression_plan(
     has_qlayer_outside_block: bool = False,
 ) -> CompressionPlan:
     """Combine immutable resolution results into the compressor's authoritative plan."""
-    merged = {name: dict(config) for name, config in format_resolution.layer_config_patch.items()}
+    merged = thaw_mapping(format_resolution.layer_config_patch)
     for name, config in layer_config.items():
         merged.setdefault(name, {}).update(dict(config))
     return CompressionPlan(

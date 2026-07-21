@@ -39,7 +39,13 @@ from auto_round.layer_config import (
     resolve_layer_config,
 )
 from auto_round.logger import logger
-from auto_round.planning import CompressionIntent, FormatResolution, ResolvedScheme, build_compression_plan
+from auto_round.planning import (
+    CompressionIntent,
+    FormatResolution,
+    ResolvedScheme,
+    build_compression_plan,
+    thaw_mapping,
+)
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -669,7 +675,11 @@ class BaseCompressor(object):
             ignore_layers=self.ignore_layers,
         )
         discovery_plan = build_compression_plan(
-            format_resolution,
+            (
+                replace(format_resolution, layer_config_patch={})
+                if format_resolution.layer_config_patch
+                else format_resolution
+            ),
             resolved_layer_config,
             regex_config=regex_config,
             has_qlayer_outside_block=has_quantized_layer_outside_blocks(resolved_layer_config),
@@ -847,6 +857,14 @@ class BaseCompressor(object):
             ignore_layers=self.ignore_layers,
             fill_default_value=fill_default_value,
         )
+        # ``resolved_layer_config`` already descends from (and fully subsumes)
+        # ``format_resolution.layer_config_patch`` -- ``source_layer_config`` above was
+        # seeded from that same patch before ``resolve_layer_config()`` expanded any
+        # regex/partial keys (e.g. "self_attn") into concrete layer names. Re-merging the
+        # patch here would reintroduce those now-stale, unexpanded keys into the final
+        # plan, so drop it and rely solely on the fully-resolved layer configuration.
+        if format_resolution.layer_config_patch:
+            format_resolution = replace(format_resolution, layer_config_patch={})
         self.compression_plan = build_compression_plan(
             format_resolution,
             resolved_layer_config,
@@ -1156,7 +1174,7 @@ class BaseCompressor(object):
         )
         formats = list(self._format_resolution.formats)
         scheme = self._format_resolution.scheme.value
-        self.layer_config = {name: dict(config) for name, config in self._format_resolution.layer_config_patch.items()}
+        self.layer_config = thaw_mapping(self._format_resolution.layer_config_patch)
         self.scale_dtype = self._format_resolution.scale_dtype
         self.quant_block_list = (
             [list(group) for group in self._format_resolution.quant_block_list]
@@ -1309,6 +1327,14 @@ class BaseCompressor(object):
                 quant_block_list=self.quant_block_list,
             ),
         )
+        # ``self.layer_config`` (populated by ``_scheme_post_init()`` above) is already
+        # the fully-resolved, regex-expanded layer configuration. ``format_resolution``
+        # may still carry the *original*, unexpanded ``layer_config_patch`` (e.g. a raw
+        # regex key like "self_attn") from the earlier format-resolution phase; re-merging
+        # it here would reintroduce unresolved keys into the final plan. Clear it so
+        # ``build_compression_plan`` only sees the already-resolved layer configuration.
+        if format_resolution.layer_config_patch:
+            format_resolution = replace(format_resolution, layer_config_patch={})
         self.compression_plan = build_compression_plan(
             format_resolution,
             self.layer_config or {},

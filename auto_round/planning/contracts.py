@@ -26,9 +26,34 @@ BlockGroups = Tuple[Tuple[str, ...], ...]
 
 
 def freeze_mapping(value: Optional[LayerConfig]) -> LayerConfig:
-    """Return an isolated, read-only snapshot of a layer configuration mapping."""
-    frozen = {name: MappingProxyType(copy.deepcopy(dict(config))) for name, config in dict(value or {}).items()}
+    """Return an isolated, read-only snapshot of a layer configuration mapping.
+
+    Per-layer configuration values are usually dicts (e.g. ``{"bits": 4}``), but some
+    callers store non-mapping values (e.g. a GGUF preset name string). Only dict-like
+    values are deep-copied and wrapped in a read-only proxy; other values are copied
+    as-is since they are already immutable/opaque to us.
+    """
+    frozen = {}
+    for name, config in dict(value or {}).items():
+        if isinstance(config, Mapping):
+            frozen[name] = MappingProxyType(copy.deepcopy(dict(config)))
+        else:
+            frozen[name] = copy.deepcopy(config)
     return MappingProxyType(frozen)
+
+
+def thaw_mapping(value: Optional[LayerConfig]) -> dict:
+    """Return a fully mutable, deep-copyable plain-dict snapshot of a frozen mapping.
+
+    This is the inverse of :func:`freeze_mapping` and should be used instead of
+    ``copy.deepcopy`` whenever a caller needs to mutate a previously frozen layer
+    configuration mapping, since ``MappingProxyType`` instances cannot be deep-copied
+    directly.
+    """
+    result = {}
+    for name, config in dict(value or {}).items():
+        result[name] = copy.deepcopy(dict(config)) if isinstance(config, Mapping) else copy.deepcopy(config)
+    return result
 
 
 def freeze_block_groups(value: Optional[Tuple[Tuple[str, ...], ...]]) -> Optional[BlockGroups]:
