@@ -210,6 +210,7 @@ class BaseOrchestrator(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -218,20 +219,14 @@ class BaseOrchestrator(object):
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
-
+        self.dataset = dataset
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
             batch_size=min(kwargs.pop("batch_size", 8), nsamples),
             orig_batch_size=min(kwargs.pop("batch_size", 8), nsamples),
+            dataset = self.dataset
         )
-
-        # ``dataset`` is not a named __init__ parameter – it arrives via
-        # **kwargs from the compatibility layer.  Pop it early and route
-        # through the property setter so CalibrationContext owns it.
-        _dataset = kwargs.pop("dataset", None)
-        if _dataset is not None:
-            self.dataset = _dataset
 
         self.quantize_config = None
         self.rotation_configs: list[BaseRotationConfig] = []
@@ -485,7 +480,6 @@ class BaseOrchestrator(object):
         self,
         model_context: Optional[ModelContext] = None,
         compress_context: Optional[CompressContext] = None,
-        dataset: Optional[str] = None,
     ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
@@ -499,8 +493,6 @@ class BaseOrchestrator(object):
             self.model_context = model_context
         if compress_context is not None:
             self.compress_context = compress_context
-        if dataset is not None:
-            self.dataset = dataset
 
         user_scheme_overrides = collect_user_scheme_overrides(self._alg_configs)
         default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(self.scheme, user_scheme_overrides)
@@ -938,7 +930,6 @@ class BaseOrchestrator(object):
         self.resolve_scheme(
             model_context=self.model_context,
             compress_context=self.compress_context,
-            dataset=self._get_calibration_dataset(),
         )
 
     def _build_composer(self) -> None:

@@ -87,11 +87,12 @@ class CompressionOrchestrator(BaseOrchestrator):
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
+            dataset=dataset,
             **kwargs,
         )
-        # Routed to ``self._calibration_context.dataset`` via @property.
-        # Set after ``super().__init__()`` because the state object is created there.
-        self.dataset = dataset
+        # # Routed to ``self._calibration_context.dataset`` via @property.
+        # # Set after ``super().__init__()`` because the state object is created there.
+        # self.dataset = dataset
 
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
