@@ -38,10 +38,7 @@ class TestCounts:
     total: int = 0
 
     def format(self) -> str:
-        return (
-            f"total: {self.total}, passed: {self.passed}, "
-            f"failed: {self.failed}, skipped: {self.skipped}"
-        )
+        return f"total: {self.total}, passed: {self.passed}, " f"failed: {self.failed}, skipped: {self.skipped}"
 
 
 @dataclass(frozen=True)
