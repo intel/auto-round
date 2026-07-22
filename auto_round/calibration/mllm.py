@@ -108,8 +108,7 @@ class MLLMCalibrator(LLMCalibrator):
             from auto_round.compressors.mllm.dataset import MLLM_DATASET
 
             if not c.quant_nontext_module and dataset not in MLLM_DATASET:
-                # Local patch (see LOCAL_PATCHES.md, "Text-only calibration of
-                # multimodal checkpoints"): a local text dataset (file/dir/HF
+                # A local text dataset (file/dir/HF
                 # text set) is valid calibration for a VLM whose non-text
                 # modules are NOT being quantized -- the full-model forward
                 # runs text-only and the generic-dict branch of the loop below
