@@ -42,12 +42,14 @@ from auto_round.algorithms.config_resolver import (
     split_quantization_configs,
 )
 from auto_round.logger import logger
+from auto_round.utils import clear_memory
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
     from auto_round.algorithms.quantization.base import BaseQuantizer
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.transforms.base import BasePreprocessor
+    from auto_round.compressors import BaseOrchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +417,10 @@ class AlgorithmComposer:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
                 update_block_global_scale_if_needed(block_ctx.model, data_type, group_size)
 
+        if q_inputs is not None and fp_inputs is not q_inputs:
+            clear_memory(fp_inputs)
+        else:
+            clear_memory()
         # ── Step 4: quantize_block ──────────────────────────────────────────────
         # When quantized input is available from the previous block, use it;
         # otherwise fall back to the FP input.

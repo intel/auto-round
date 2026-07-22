@@ -54,7 +54,7 @@ class BaseQuantizer(BaseAlgorithm):
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
-    def can_compile_block_forward(self):  # TODO support compile block
+    def can_compile_block_forward(self):
         return True
 
     # ── Calibration hook registration ─────────────────────────────────────────

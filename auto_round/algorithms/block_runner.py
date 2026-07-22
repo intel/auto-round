@@ -211,7 +211,7 @@ class BlockForwardRunner:
             raise RuntimeError("BlockForwardRunner.forward: no outputs collected.")
 
         if is_returned_list:
-            return outputs
+            return [o.to(self.cache_device) for o in outputs]
         else:
             if self.batch_size == 1:
                 outputs = [output.unsqueeze(dim=self.batch_dim).to(self.cache_device) for output in outputs]
@@ -246,7 +246,7 @@ class BlockForwardRunner:
             batch_others = dict(batch_others)
             hidden_states = batch_inputs.pop("hidden_states")
             batch_others.update(batch_inputs)
-            return block_forward(
+            return self.block_forward(
                 block,
                 hidden_states,
                 batch_others,
@@ -256,7 +256,7 @@ class BlockForwardRunner:
                 None,
             )
         else:
-            return block_forward(  # TODO torch compile wenhuach
+            return self.block_forward(  # TODO torch compile wenhuach
                 block,
                 batch_inputs,
                 batch_others,
