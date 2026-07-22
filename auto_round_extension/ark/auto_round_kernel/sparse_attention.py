@@ -525,9 +525,7 @@ def _resolve_sparse_prefill_q_tile_override(
     if head_dim == 128:
         if sparse_q_block_tokens == 64:
             if q_tile_override not in (0, 64):
-                raise ValueError(
-                    "head_dim=128 with sparse_q_block_tokens=64 requires q_tile_override in {0, 64}"
-                )
+                raise ValueError("head_dim=128 with sparse_q_block_tokens=64 requires q_tile_override in {0, 64}")
             return 64
         if _is_sparse_qtile256_row64k_config(
             head_dim=head_dim,
