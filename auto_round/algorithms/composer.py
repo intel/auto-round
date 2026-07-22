@@ -93,7 +93,7 @@ class AlgorithmComposer:
         composer = AlgorithmComposer(configs, compressor=self)
     """
 
-    def __init__(self, configs: list, orchestrator:"BaseOrchestrator"= None) -> None:
+    def __init__(self, configs: list, orchestrator: "BaseOrchestrator" = None) -> None:
         """Build the pipeline from a list of algorithm config instances.
 
         Resolution rules:
@@ -175,14 +175,18 @@ class AlgorithmComposer:
         self.preprocessors = preprocessors
 
         # TODO wenhuach support multi quantizers
-        can_compile_block_forward=False
+        can_compile_block_forward = False
         self.block_quantizer = block_quantizers[0]
         if orchestrator is not None:
             if self.block_quantizer is not None and self.block_quantizer.can_compile_block_forward():
-                can_compile_block_forward=True
+                can_compile_block_forward = True
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
-            self.block_forward = BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward) if orchestrator is not None else None
+            self.block_forward = (
+                BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward)
+                if orchestrator is not None
+                else None
+            )
             # A little tricky
             if self.block_quantizer is not None:
                 self.block_quantizer.bind_block_forward_runner(self.block_forward)
