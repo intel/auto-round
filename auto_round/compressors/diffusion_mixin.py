@@ -130,7 +130,6 @@ class DiffusionMixin:
         ``_should_stop_cache_forward``.
         """
         return "diffusion"
-    
 
     def _find_additional_transformers(self):
         """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""
