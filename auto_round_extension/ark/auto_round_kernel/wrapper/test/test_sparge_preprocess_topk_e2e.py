@@ -269,6 +269,78 @@ def run_case(
         assert torch.equal(crafted_meta["block_map"], crafted_meta["raw_block_map"])
 
 
+def run_causal_decoupled_wrapper_case(*, tensor_layout: str) -> None:
+    device = torch.device("xpu")
+    batch = 1
+    head_dim = 128
+    num_heads_q = 32
+    num_heads_kv = 8
+    seq_len_q = 512
+    seq_len_kv = 512
+    scale = 1.0 / math.sqrt(head_dim)
+
+    torch.manual_seed(9017 + (13 if tensor_layout == "NHD" else 0))
+    query_hnd = torch.randn((batch, num_heads_q, seq_len_q, head_dim), dtype=torch.float16, device=device)
+    key_hnd = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.float16, device=device)
+    value_hnd = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.float16, device=device)
+
+    query = _to_layout(query_hnd, tensor_layout)
+    key = _to_layout(key_hnd, tensor_layout)
+    value = _to_layout(value_hnd, tensor_layout)
+
+    sparse_out, meta = ark.sparge_sage2_attn_meansim_topk_xpu(
+        query,
+        key,
+        value,
+        is_causal=True,
+        scale=scale,
+        smooth_k=True,
+        simthreshd1=-1.0,
+        topk=0.5,
+        attention_sink=False,
+        tensor_layout=tensor_layout,
+        query_tile_tokens=256,
+        q_tile_override=256,
+        sparse_q_block_tokens=256,
+        sparse_k_block_tokens=64,
+        return_metadata=True,
+    )
+
+    dense_mask = ark.sparge_block_map_to_mask(
+        meta["block_map"],
+        quant_block_size=meta["quant_block_size"],
+        q_block_tokens=meta["sparse_q_block_tokens"],
+        k_block_tokens=meta["sparse_k_block_tokens"],
+        seq_len_q=seq_len_q,
+        seq_len_kv=seq_len_kv,
+        is_causal=True,
+    )
+    dense_out = ark.sage(
+        meta["query_i8"],
+        meta["key_i8"],
+        value,
+        attn_mask=dense_mask,
+        is_causal=False,
+        scale=scale,
+        quant_block_size=meta["quant_block_size"],
+        qscale=meta["qscale"],
+        kscale=meta["kscale"],
+        tensor_layout=tensor_layout,
+    )
+    torch.xpu.synchronize()
+
+    diff = (dense_out.float() - sparse_out.float()).abs()
+    max_diff = float(diff.max().cpu())
+    mean_diff = float(diff.mean().cpu())
+    print(
+        f"[sparge_preprocess][causal_decoupled_{tensor_layout.lower()}] "
+        f"max_diff={max_diff:.6f} mean_diff={mean_diff:.6f} backend={meta['backend']}"
+    )
+    if max_diff > 5e-3 or mean_diff > 5e-4:
+        raise RuntimeError(f"causal decoupled wrapper mismatch for tensor_layout={tensor_layout}")
+    assert torch.isfinite(sparse_out).all()
+
+
 def main() -> None:
     ensure_sparse_binding()
     if not torch.xpu.is_available():
@@ -331,6 +403,7 @@ def main() -> None:
             num_heads_q=2,
             num_heads_kv=1,
         )
+        run_causal_decoupled_wrapper_case(tensor_layout=tensor_layout)
 
 
 if __name__ == "__main__":

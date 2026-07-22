@@ -3,6 +3,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,10 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auto_round_kernel.sparge_preprocess_triton import _fill_block_map_triton
 from auto_round_kernel.sparse_attention import (
+    _block_map_lut_torch,
     _build_block_causal_mask,
     _build_sparge_preprocess_context,
     _fill_block_map_torch,
+    _finalize_sparge_preprocess_outputs,
+    _get_sparse_preprocess_backend_preference,
     _kv_head_index_for_q_heads,
+    _select_blocks_for_cdf,
     _validate_gqa_head_config,
 )
 
@@ -56,6 +61,64 @@ def test_kv_head_index_for_q_heads_maps_32_query_heads_onto_8_kv_heads() -> None
 
     expected = torch.arange(8, dtype=torch.int64).repeat_interleave(4)
     assert torch.equal(indices.cpu(), expected)
+
+
+def test_explicit_protected_prefix_forces_torch_preprocess(monkeypatch) -> None:
+    monkeypatch.delenv("SPARGE_KEEP_PREFIX_ON_CROSS_ATTN", raising=False)
+    monkeypatch.delenv("SPARGE_PROTECTED_KV_BLOCKS", raising=False)
+    monkeypatch.setenv("SPARGE_PROTECTED_KV_TOKENS", "1390")
+    monkeypatch.setenv("SAGE_ATTN_SPARSE_PREPROCESS_BACKEND", "triton_xpu")
+
+    assert _get_sparse_preprocess_backend_preference() == "torch"
+
+
+def test_explicit_protected_prefix_rebuilds_stale_lut(monkeypatch) -> None:
+    monkeypatch.delenv("SPARGE_KEEP_PREFIX_ON_CROSS_ATTN", raising=False)
+    monkeypatch.delenv("SPARGE_PROTECTED_KV_BLOCKS", raising=False)
+    monkeypatch.setenv("SPARGE_PROTECTED_KV_TOKENS", "64")
+
+    raw_block_map = torch.zeros((1, 1, 1, 3), dtype=torch.bool)
+    stale_lut, stale_valid_block_num = _block_map_lut_torch(raw_block_map)
+    backend_result = {
+        "query_i8": torch.zeros((1,), dtype=torch.int8),
+        "key_i8": torch.zeros((1,), dtype=torch.int8),
+        "qscale": torch.ones((1,), dtype=torch.float32),
+        "kscale": torch.ones((1,), dtype=torch.float32),
+        "raw_block_map": raw_block_map,
+        "tile_block_map": raw_block_map.clone(),
+        "lut": stale_lut,
+        "valid_block_num": stale_valid_block_num,
+        "sim_qblocks": torch.ones((1,), dtype=torch.bool),
+        "sim_kblocks": torch.ones((1,), dtype=torch.bool),
+        "backend": "triton_xpu",
+    }
+    ctx = SimpleNamespace(
+        is_causal=False,
+        sparse_k_block_tokens=64,
+        k_route_block_tokens=64,
+        query_tile_tokens=64,
+        quant_block_size=64,
+        sparse_q_block_tokens=64,
+    )
+
+    metadata = _finalize_sparge_preprocess_outputs(ctx, backend_result)
+
+    assert metadata["backend"] == "triton_xpu"
+    assert metadata["raw_block_map"].tolist() == [[[[True, False, False]]]]
+    assert metadata["valid_block_num"].tolist() == [[[1]]]
+
+
+def test_select_blocks_for_cdf_keeps_smallest_prefix_reaching_mass() -> None:
+    sorted_prob = torch.tensor([[[[0.50, 0.30, 0.15, 0.05]]]])
+    sorted_indices = torch.tensor([[[[2, 0, 3, 1]]]])
+
+    selected = _select_blocks_for_cdf(
+        sorted_prob,
+        sorted_indices,
+        torch.tensor([[[[0.79]]]]),
+    )
+
+    assert selected.tolist() == [[[[True, False, True, False]]]]
 
 
 @pytest.mark.skipif(

@@ -35,6 +35,8 @@ def _get_xpu_sparse_kernel_backend() -> str:
 
 
 def _get_sparse_preprocess_backend_preference() -> str:
+    if _prefix_protection_requested():
+        return "torch"
     return os.getenv("SAGE_ATTN_SPARSE_PREPROCESS_BACKEND", "auto").strip().lower()
 
 
@@ -758,6 +760,18 @@ def _safe_softmax(scores: torch.Tensor) -> torch.Tensor:
     return torch.where(denom > 0, probs / denom, torch.zeros_like(probs))
 
 
+def _select_blocks_for_cdf(
+    sorted_prob: torch.Tensor,
+    sorted_indices: torch.Tensor,
+    target_mass: torch.Tensor,
+) -> torch.Tensor:
+    """Select the smallest sorted prefix whose probability reaches target_mass."""
+    cumulative_before = sorted_prob.cumsum(dim=-1) - sorted_prob
+    selected_sorted = cumulative_before < target_mass
+    selected = torch.zeros_like(selected_sorted, dtype=torch.bool)
+    return selected.scatter(-1, sorted_indices, selected_sorted)
+
+
 def _build_block_causal_mask(
     num_q_tiles: int,
     num_k_blocks: int,
@@ -804,6 +818,106 @@ def _block_map_lut_torch(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.T
     ) >= valid_block_num.unsqueeze(-1)
     lut = torch.where(invalid_mask, torch.zeros_like(lut), lut)
     return lut.to(torch.int32).contiguous(), valid_block_num.to(torch.int32).contiguous()
+
+
+def _prefix_keep_cross_attn_enabled() -> bool:
+    return os.getenv("SPARGE_KEEP_PREFIX_ON_CROSS_ATTN", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def _get_protected_kv_tokens() -> int:
+    value = os.getenv("SPARGE_PROTECTED_KV_TOKENS", "").strip()
+    if not value:
+        return 0
+    tokens = int(value)
+    if tokens < 0:
+        raise ValueError(f"SPARGE_PROTECTED_KV_TOKENS must be >= 0, got {tokens}")
+    return tokens
+
+
+def _get_protected_kv_blocks() -> int:
+    value = os.getenv("SPARGE_PROTECTED_KV_BLOCKS", "").strip()
+    if not value:
+        return 0
+    blocks = int(value)
+    if blocks < 0:
+        raise ValueError(f"SPARGE_PROTECTED_KV_BLOCKS must be >= 0, got {blocks}")
+    return blocks
+
+
+def _prefix_protection_requested() -> bool:
+    return (
+        _prefix_keep_cross_attn_enabled()
+        or _get_protected_kv_tokens() > 0
+        or _get_protected_kv_blocks() > 0
+    )
+
+
+def _get_explicit_protected_prefix(
+    ctx: "_SpargePreprocessContext",
+) -> tuple[int, int]:
+    protected_tokens = _get_protected_kv_tokens()
+    protected_sparse_blocks = _get_protected_kv_blocks()
+    protected_tile_blocks = 0
+    if protected_tokens > 0:
+        protected_sparse_blocks = max(
+            protected_sparse_blocks,
+            (protected_tokens + ctx.sparse_k_block_tokens - 1) // ctx.sparse_k_block_tokens,
+        )
+        protected_tile_blocks = max(
+            protected_tile_blocks,
+            (protected_tokens + ctx.k_route_block_tokens - 1) // ctx.k_route_block_tokens,
+        )
+    if protected_sparse_blocks > 0 and protected_tile_blocks == 0:
+        protected_tile_blocks = (
+            protected_sparse_blocks * ctx.sparse_k_block_tokens + ctx.k_route_block_tokens - 1
+        ) // ctx.k_route_block_tokens
+    return protected_sparse_blocks, protected_tile_blocks
+
+
+def _get_prefix_protection_blocks(
+    ctx: "_SpargePreprocessContext",
+    *,
+    raw_block_count: int,
+    tile_block_count: int,
+) -> tuple[int, int]:
+    explicit_sparse_blocks, explicit_tile_blocks = _get_explicit_protected_prefix(ctx)
+    if explicit_sparse_blocks > 0 or explicit_tile_blocks > 0:
+        return (
+            min(explicit_sparse_blocks, raw_block_count),
+            min(explicit_tile_blocks, tile_block_count),
+        )
+    if not _prefix_keep_cross_attn_enabled():
+        return 0, 0
+    if ctx.is_causal or ctx.seq_len_kv <= ctx.seq_len_q:
+        return 0, 0
+
+    prefix_tokens = ctx.seq_len_kv - ctx.seq_len_q
+    return (
+        min((prefix_tokens + ctx.sparse_k_block_tokens - 1) // ctx.sparse_k_block_tokens, raw_block_count),
+        min((prefix_tokens + ctx.k_route_block_tokens - 1) // ctx.k_route_block_tokens, tile_block_count),
+    )
+
+
+def _maybe_force_keep_prefix_blocks(
+    ctx: _SpargePreprocessContext,
+    raw_block_map: torch.Tensor,
+    tile_block_map: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    prefix_sparse_blocks, prefix_tile_blocks = _get_prefix_protection_blocks(
+        ctx,
+        raw_block_count=raw_block_map.shape[-1],
+        tile_block_count=tile_block_map.shape[-1],
+    )
+    if prefix_sparse_blocks <= 0 and prefix_tile_blocks <= 0:
+        return raw_block_map, tile_block_map
+
+    raw_block_map = raw_block_map.clone()
+    tile_block_map = tile_block_map.clone()
+    if prefix_sparse_blocks > 0:
+        raw_block_map[..., :prefix_sparse_blocks] = True
+    if prefix_tile_blocks > 0:
+        tile_block_map[..., :prefix_tile_blocks] = True
+    return raw_block_map, tile_block_map
 
 
 def _pool_sim_and_quant_torch(
@@ -904,6 +1018,7 @@ class _SpargePreprocessContext:
     smooth_k: bool
     simthreshd1: torch.Tensor
     topk: torch.Tensor
+    cdfthreshd: torch.Tensor | None
     attention_sink: bool
     quant_block_size: int
     tensor_layout: str
@@ -933,6 +1048,7 @@ def _build_sparge_preprocess_context(
     smooth_k: bool,
     simthreshd1: float | torch.Tensor,
     topk: float | torch.Tensor,
+    cdfthreshd: float | torch.Tensor | None = None,
     attention_sink: bool,
     quant_block_size: int,
     tensor_layout: str,
@@ -1017,6 +1133,11 @@ def _build_sparge_preprocess_context(
         smooth_k=smooth_k,
         simthreshd1=_normalize_per_head_hparam(simthreshd1, Hq, query.device, "simthreshd1"),
         topk=_normalize_per_head_hparam(topk, Hq, query.device, "topk").clamp_(0.0, 1.0),
+        cdfthreshd=(
+            None
+            if cdfthreshd is None
+            else _normalize_per_head_hparam(cdfthreshd, Hq, query.device, "cdfthreshd").clamp_(0.0, 1.0)
+        ),
         attention_sink=attention_sink,
         quant_block_size=quant_block_size,
         tensor_layout=tensor_layout,
@@ -1119,22 +1240,68 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
         causal_mask = None
 
     pooled_prob = _safe_softmax(pooled_score)
-    sorted_prob = torch.sort(pooled_prob, dim=-1, descending=True)
     _, _, _, num_k_route_blocks = pooled_prob.shape
-    num_to_select = (
-        (ctx.topk.view(1, ctx.num_heads_q, 1) * num_k_route_blocks)
-        .to(torch.int64)
-        .expand(ctx.batch, -1, ctx.num_q_tiles)
-        .contiguous()
+    prefix_sparse_blocks, prefix_route_blocks = _get_prefix_protection_blocks(
+        ctx,
+        raw_block_count=ctx.num_sparse_k_blocks,
+        tile_block_count=num_k_route_blocks,
     )
-    final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
-    final_tile_map[~sim_k_expand] = True
-    final_tile_map[~sim_q_expand] = True
-    final_tile_map = _fill_block_map_torch(final_tile_map, num_to_select, sorted_prob.indices)
+    del prefix_sparse_blocks
+    if prefix_route_blocks > 0:
+        final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
+        final_tile_map[..., :prefix_route_blocks] = True
+
+        tail_prob = pooled_prob[..., prefix_route_blocks:]
+        tail_sim_q_expand = sim_q_expand[..., prefix_route_blocks:]
+        tail_sim_k_expand = sim_k_expand[..., prefix_route_blocks:]
+        if tail_prob.size(-1) > 0:
+            tail_sorted_prob = torch.sort(tail_prob, dim=-1, descending=True)
+            num_tail_route_blocks = tail_prob.size(-1)
+            num_to_select_tail = (
+                (ctx.topk.view(1, ctx.num_heads_q, 1) * num_tail_route_blocks)
+                .to(torch.int64)
+                .expand(ctx.batch, -1, ctx.num_q_tiles)
+                .contiguous()
+            )
+            tail_map = torch.zeros_like(tail_prob, dtype=torch.bool)
+            tail_map[~tail_sim_k_expand] = True
+            tail_map[~tail_sim_q_expand] = True
+            tail_map = _fill_block_map_torch(tail_map, num_to_select_tail, tail_sorted_prob.indices)
+            if ctx.cdfthreshd is not None:
+                prefix_mass = pooled_prob[..., :prefix_route_blocks].sum(dim=-1, keepdim=True)
+                target_tail_mass = (
+                    ctx.cdfthreshd.view(1, ctx.num_heads_q, 1, 1) - prefix_mass
+                ).clamp_min_(0.0)
+                tail_map |= _select_blocks_for_cdf(
+                    tail_sorted_prob.values,
+                    tail_sorted_prob.indices,
+                    target_tail_mass,
+                )
+            final_tile_map[..., prefix_route_blocks:] = tail_map
+        if ctx.attention_sink:
+            final_tile_map[..., 0] = True
+    else:
+        sorted_prob = torch.sort(pooled_prob, dim=-1, descending=True)
+        num_to_select = (
+            (ctx.topk.view(1, ctx.num_heads_q, 1) * num_k_route_blocks)
+            .to(torch.int64)
+            .expand(ctx.batch, -1, ctx.num_q_tiles)
+            .contiguous()
+        )
+        final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
+        final_tile_map[~sim_k_expand] = True
+        final_tile_map[~sim_q_expand] = True
+        final_tile_map = _fill_block_map_torch(final_tile_map, num_to_select, sorted_prob.indices)
+        if ctx.cdfthreshd is not None:
+            final_tile_map |= _select_blocks_for_cdf(
+                sorted_prob.values,
+                sorted_prob.indices,
+                ctx.cdfthreshd.view(1, ctx.num_heads_q, 1, 1),
+            )
+        if ctx.attention_sink:
+            final_tile_map[..., 0] = True
     if causal_mask is not None:
         final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_route_blocks)
-    if ctx.attention_sink:
-        final_tile_map[..., 0] = True
 
     q_block_to_tile = (
         torch.arange(ctx.num_sparse_q_blocks, device=ctx.query.device, dtype=torch.int64)
@@ -1166,10 +1333,20 @@ def _finalize_sparge_preprocess_outputs(
     backend_result: dict[str, Any],
 ) -> dict[str, Any]:
     raw_block_map = backend_result["raw_block_map"].contiguous()
+    tile_block_map = backend_result["tile_block_map"].contiguous()
+    raw_block_map, tile_block_map = _maybe_force_keep_prefix_blocks(
+        ctx,
+        raw_block_map,
+        tile_block_map,
+    )
     block_map = raw_block_map
     lut = backend_result.get("lut")
     valid_block_num = backend_result.get("valid_block_num")
-    if lut is None or valid_block_num is None:
+    if (
+        lut is None
+        or valid_block_num is None
+        or _prefix_protection_requested()
+    ):
         lut, valid_block_num = _block_map_lut_torch(block_map)
     total_selected, total_candidates, selected_ratio, sparsity_ratio, selected_blocks_per_row = (
         _get_sparse_block_sparsity_stats(
@@ -1188,7 +1365,7 @@ def _finalize_sparge_preprocess_outputs(
         "valid_block_num": valid_block_num,
         "block_map": block_map,
         "raw_block_map": raw_block_map,
-        "tile_block_map": backend_result["tile_block_map"].contiguous(),
+        "tile_block_map": tile_block_map,
         "sim_qblocks": backend_result["sim_qblocks"].contiguous(),
         "sim_kblocks": backend_result["sim_kblocks"].contiguous(),
         "query_tile_tokens": ctx.query_tile_tokens,
@@ -1230,6 +1407,7 @@ def _sparge_preprocess_topk_torch(
     smooth_k: bool = True,
     simthreshd1: float | torch.Tensor = -0.1,
     topk: float | torch.Tensor = 0.5,
+    cdfthreshd: float | torch.Tensor | None = None,
     attention_sink: bool = False,
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
@@ -1244,6 +1422,7 @@ def _sparge_preprocess_topk_torch(
         smooth_k=smooth_k,
         simthreshd1=simthreshd1,
         topk=topk,
+        cdfthreshd=cdfthreshd,
         attention_sink=attention_sink,
         quant_block_size=quant_block_size,
         tensor_layout=tensor_layout,
@@ -1297,6 +1476,7 @@ def sparge_preprocess_topk(
     smooth_k: bool = True,
     simthreshd1: float | torch.Tensor = -0.1,
     topk: float | torch.Tensor = 0.5,
+    cdfthreshd: float | torch.Tensor | None = None,
     attention_sink: bool = False,
     quant_block_size: int = 64,
     tensor_layout: str = "HND",
@@ -1313,6 +1493,7 @@ def sparge_preprocess_topk(
         smooth_k=smooth_k,
         simthreshd1=simthreshd1,
         topk=topk,
+        cdfthreshd=cdfthreshd,
         attention_sink=attention_sink,
         quant_block_size=quant_block_size,
         tensor_layout=tensor_layout,
@@ -1323,7 +1504,11 @@ def sparge_preprocess_topk(
     )
     return _sparge_preprocess_topk_dispatch(
         ctx,
-        backend_preference=backend_preference or _get_sparse_preprocess_backend_preference(),
+        backend_preference=(
+            "torch"
+            if cdfthreshd is not None
+            else backend_preference or _get_sparse_preprocess_backend_preference()
+        ),
     )
 
 
@@ -1550,8 +1735,6 @@ def sparge_sage2_attn_meansim_topk_xpu(
 ) -> torch.Tensor | tuple[Any, ...]:
     if query.device.type != "xpu":
         raise NotImplementedError("sparge_sage2_attn_meansim_topk_xpu is only supported on XPU")
-    if cdfthreshd is not None:
-        raise NotImplementedError("cdfthreshd routing is not implemented yet; use topk for the first slice")
     if dropout_p != 0.0:
         raise NotImplementedError("dropout_p must be 0.0 for sparge_sage2_attn_meansim_topk_xpu")
     if attn_mask is not None and is_causal:
@@ -1601,6 +1784,7 @@ def sparge_sage2_attn_meansim_topk_xpu(
         smooth_k=smooth_k,
         simthreshd1=simthreshd1,
         topk=topk,
+        cdfthreshd=cdfthreshd,
         attention_sink=attention_sink,
         quant_block_size=64,
         tensor_layout=tensor_layout,

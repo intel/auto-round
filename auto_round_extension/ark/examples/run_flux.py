@@ -39,7 +39,7 @@ benchmark_block_index = int(os.getenv("FLUX_BENCHMARK_BLOCK_INDEX", "0"))
 benchmark_block_timestep_index = int(os.getenv("FLUX_BENCHMARK_BLOCK_TIMESTEP_INDEX", "0"))
 cpu_offload_enabled = env_flag("FLUX_ENABLE_CPU_OFFLOAD", "0" if benchmark_scope == "block" else "1")
 
-model_id = os.getenv("FLUX_MODEL", "black-forest-labs/FLUX.1-dev")
+model_id = os.getenv("FLUX_MODEL", "~/workspace/models/black-forest-labs/FLUX.1-dev/")
 pipe = FluxPipeline.from_pretrained(model_id, torch_dtype=dtype)
 if benchmark_scope != "block":
     pipe.to(device)
