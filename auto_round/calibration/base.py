@@ -163,7 +163,7 @@ class Calibrator(ABC):
         ``Calibrator.wrap_block_forward`` defaults to passthrough; the
         Diffusion calibrator overrides it to convert positional → kwargs.
         """
-        fn = self._make_block_forward_func(name)  # TODO have a double check wenhuach
+        fn = self._make_block_forward_func(name)
 
         fn = self._wrap_block_forward(fn)
         return fn

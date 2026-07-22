@@ -240,8 +240,8 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
             )
             current_block_name = current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
-            # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO change to calib wenhuach
-            bs = self.calibration_context.batch_size  # #TODO change to calib wenhuach
+            # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO recover infer_bs_coeff
+            bs = self.calibration_context.batch_size
 
             ctx = BlockContext(
                 model=model,

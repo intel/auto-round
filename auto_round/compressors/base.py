@@ -448,7 +448,7 @@ class BaseOrchestrator(object):
             return True
 
         # AutoScheme needs data for delta-loss scheme selection
-        if isinstance(self.scheme, AutoScheme):  # TODO wenhuach check this one
+        if isinstance(self.scheme, AutoScheme):
             return True
 
         # Check if activation calibration is needed

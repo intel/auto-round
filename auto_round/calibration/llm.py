@@ -394,10 +394,6 @@ class LLMCalibrator(Calibrator):
                     self.inputs["valid_token_mask"] = []
                 self.inputs["valid_token_mask"].extend(list(torch.split(new_attention_mask, 1, dim=0)))
 
-                # TODO wenhuach pass attention_mask to alg
-                # if not hasattr(c.quantizer, "attention_mask"):
-                #     c.quantizer.attention_mask = []
-                # c.quantizer.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
             else:
                 new_attention_mask = None
             try:
@@ -480,7 +476,7 @@ class LLMCalibrator(Calibrator):
                 self.batch_dim = 0
                 if hidden_states is not None and self.batch_size > 1:
                     if hidden_states.shape[0] > self.batch_size:
-                        self.batch_dim = 1  # TODO wenhuach this one should pass to algorithm
+                        self.batch_dim = 1
                         if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
                             logger.error(
                                 "this model has not been supported, "

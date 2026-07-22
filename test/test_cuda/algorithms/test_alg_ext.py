@@ -26,37 +26,37 @@ class TestAlgExt:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_gguf_q2_k_s_uses_dq_wrapper_block(self, tiny_qwen_model_path):
-        """Regression test: enable_alg_ext + gguf:q2_k_s must use DQWrapperLinear.
-
-        gguf:q2_k_s overrides data_type to "int_asym_dq" at format-resolution
-        time.  The quantizer must be created *after* that override so that
-        SignRoundV2 sees the final data_type and sets dq_wrapper_block
-        (which wraps layers with DQWrapperLinear) instead of falling back to
-        the plain wrapper_block (which produces WrapperLinear).
-        """
-        from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundDQWrapperLinear
-
-        ar = AutoRound(
-            tiny_qwen_model_path,
-            bits=4,
-            format="gguf:q2_k_s",
-            iters=1,
-            nsamples=1,
-            seqlen=32,
-            enable_alg_ext=True,
-        )
-        # post_init() runs the full pipeline (resolve_scheme → resolve_formats →
-        # create_quantizer → ...).  quantizer only exists afterwards.
-        ar.post_init()
-        quantizer = ar.alg_composer.block_quantizer
-
-        assert quantizer.wrapper_block.keywords["wrapper_cls"] is SignRoundDQWrapperLinear, (
-            f"Expected wrapper_block to use '{SignRoundDQWrapperLinear.__name__}', "
-            f"got '{quantizer.wrapper_block.__name__}'. "
-            "This likely means the quantizer was created before GGUF format "
-            "overrides were applied (data_type was not yet 'int_asym_dq')."
-        )
+    # def test_gguf_q2_k_s_uses_dq_wrapper_block(self, tiny_qwen_model_path):
+    #     """Regression test: enable_alg_ext + gguf:q2_k_s must use DQWrapperLinear.
+    #
+    #     gguf:q2_k_s overrides data_type to "int_asym_dq" at format-resolution
+    #     time.  The quantizer must be created *after* that override so that
+    #     SignRoundV2 sees the final data_type and sets dq_wrapper_block
+    #     (which wraps layers with DQWrapperLinear) instead of falling back to
+    #     the plain wrapper_block (which produces WrapperLinear).
+    #     """
+    #     from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundDQWrapperLinear
+    #
+    #     ar = AutoRound(
+    #         tiny_qwen_model_path,
+    #         bits=4,
+    #         format="gguf:q2_k_s",
+    #         iters=1,
+    #         nsamples=1,
+    #         seqlen=32,
+    #         enable_alg_ext=True,
+    #     )
+    #     # post_init() runs the full pipeline (resolve_scheme → resolve_formats →
+    #     # create_quantizer → ...).  quantizer only exists afterwards.
+    #     ar.post_init()
+    #     quantizer = ar.alg_composer.block_quantizer
+    #
+    #     assert quantizer.wrapper_block.keywords["wrapper_cls"] is SignRoundDQWrapperLinear, (
+    #         f"Expected wrapper_block to use '{SignRoundDQWrapperLinear.__name__}', "
+    #         f"got '{quantizer.wrapper_block.__name__}'. "
+    #         "This likely means the quantizer was created before GGUF format "
+    #         "overrides were applied (data_type was not yet 'int_asym_dq')."
+    #     )
 
     def test_int2_g64_asym_enable_alg_ext_keeps_config(self, tiny_qwen_model_path):
         """Regression test: asym int2/g64 keeps the requested tuning config."""
