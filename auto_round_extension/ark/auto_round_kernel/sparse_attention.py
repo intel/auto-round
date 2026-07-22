@@ -845,11 +845,7 @@ def _get_protected_kv_blocks() -> int:
 
 
 def _prefix_protection_requested() -> bool:
-    return (
-        _prefix_keep_cross_attn_enabled()
-        or _get_protected_kv_tokens() > 0
-        or _get_protected_kv_blocks() > 0
-    )
+    return _prefix_keep_cross_attn_enabled() or _get_protected_kv_tokens() > 0 or _get_protected_kv_blocks() > 0
 
 
 def _get_explicit_protected_prefix(
@@ -1269,9 +1265,7 @@ def _sparge_preprocess_topk_torch_impl(ctx: _SpargePreprocessContext) -> dict[st
             tail_map = _fill_block_map_torch(tail_map, num_to_select_tail, tail_sorted_prob.indices)
             if ctx.cdfthreshd is not None:
                 prefix_mass = pooled_prob[..., :prefix_route_blocks].sum(dim=-1, keepdim=True)
-                target_tail_mass = (
-                    ctx.cdfthreshd.view(1, ctx.num_heads_q, 1, 1) - prefix_mass
-                ).clamp_min_(0.0)
+                target_tail_mass = (ctx.cdfthreshd.view(1, ctx.num_heads_q, 1, 1) - prefix_mass).clamp_min_(0.0)
                 tail_map |= _select_blocks_for_cdf(
                     tail_sorted_prob.values,
                     tail_sorted_prob.indices,
@@ -1342,11 +1336,7 @@ def _finalize_sparge_preprocess_outputs(
     block_map = raw_block_map
     lut = backend_result.get("lut")
     valid_block_num = backend_result.get("valid_block_num")
-    if (
-        lut is None
-        or valid_block_num is None
-        or _prefix_protection_requested()
-    ):
+    if lut is None or valid_block_num is None or _prefix_protection_requested():
         lut, valid_block_num = _block_map_lut_torch(block_map)
     total_selected, total_candidates, selected_ratio, sparsity_ratio, selected_blocks_per_row = (
         _get_sparse_block_sparsity_stats(
@@ -1505,9 +1495,7 @@ def sparge_preprocess_topk(
     return _sparge_preprocess_topk_dispatch(
         ctx,
         backend_preference=(
-            "torch"
-            if cdfthreshd is not None
-            else backend_preference or _get_sparse_preprocess_backend_preference()
+            "torch" if cdfthreshd is not None else backend_preference or _get_sparse_preprocess_backend_preference()
         ),
     )
 
