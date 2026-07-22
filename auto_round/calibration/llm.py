@@ -76,16 +76,108 @@ class LLMCalibrator(Calibrator):
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer (also fast on CPU)
             calibrate_on_cpu = True
+            # When AR_DISK_STREAM_MODEL built a
+            # meta-device skeleton and to_quant_block_names restricts
+            # quant_block_list to fewer than all decoder blocks (a targeted
+            # re-quantization of specific blocks in an already-quantized
+            # checkpoint, not the normal full-model run), this forward pass
+            # still needs REAL weights in every block leading up to (and, when
+            # there's only one target block so last_cache_name ends up None
+            # and no early-stop applies, all the way through) the target
+            # block(s) -- but nothing else materializes blocks outside
+            # quant_block_list for this specific forward pass. They stay meta
+            # forever, and the forward silently propagates meta-ness through
+            # them until it collides with a genuinely-materialized module
+            # (the final norm, or any block actually in quant_block_list that
+            # already went through the compressor's own offload/reload cycle)
+            # -- confirmed via a reproduction against the tiny hybrid-MoE test
+            # fixture (checkpoint_full_arch_test, to_quant_block_names="model.
+            # layers.7"): "Tensor on device meta is not on the expected device
+            # cpu!" inside Qwen3_5MoeRMSNorm.forward. Full (unrestricted) runs
+            # never hit this: quant_block_list already covers every block in
+            # that case, so there's nothing left outside it to leave meta.
+            # Fix: stream-materialize (then free) any block that's still meta
+            # for the duration of this one forward pass, reusing the same
+            # stream_block_forward primitive _streaming_eval_model() already
+            # uses in bin/el_quantize_autoround_mixed.py for the analogous
+            # held-out-loss-eval case.
+            stream_ctx = None
+            _moved_tensors = []
+            if envs.AR_DISK_STREAM_MODEL:
+                disk_index = getattr(c.model_context.model, "_disk_stream_index", None)
+                if disk_index is not None:
+                    from auto_round.utils import get_block_names, get_module
+
+                    meta_block_names = [
+                        name
+                        for name in flatten_list(get_block_names(c.model_context.model))
+                        if any(p.device.type == "meta" for p in get_module(c.model_context.model, name).parameters())
+                    ]
+                    if meta_block_names:
+                        from auto_round.utils.disk_stream_util import stream_block_forward
+
+                        # This whole branch is calibrate_on_cpu -- every other
+                        # tensor in this forward pass (hidden states,
+                        # already-materialized non-block params) lives on cpu,
+                        # not device_manager.device (the GPU tuning device).
+                        # Materializing ONLY the streamed blocks on GPU caused
+                        # a real cuda:0/cpu mismatch crash the first time it
+                        # was tried against the full 397B-scale checkpoint --
+                        # hence the cpu default. But a cpu forward through
+                        # every pre-target block of a 100B+ model is unusably
+                        # slow for the targeted re-quantization use case, so
+                        # AR_CALIB_STREAM_DEVICE (set by el_requantize_blocks
+                        # .py) opts the WHOLE pass onto one device coherently:
+                        # every already-real (non-meta) param/buffer is moved
+                        # there for the duration (the same recipe bin/
+                        # el_quantize_autoround_mixed.py's _streaming_eval_
+                        # model() already proved at 207GB scale, including its
+                        # stray-buffer sweep for e.g. RoPE inv_freq), blocks
+                        # stream-materialize there, and calib() batches follow
+                        # model.device automatically. Everything is moved back
+                        # afterwards so the tuning phase sees the exact layout
+                        # it would have without this.
+                        calib_stream_device = envs.AR_CALIB_STREAM_DEVICE or "cpu"
+                        if calib_stream_device != "cpu":
+                            for module in c.model_context.model.modules():
+                                for _pname, _t in list(module.named_parameters(recurse=False)) + list(
+                                    module.named_buffers(recurse=False)
+                                ):
+                                    if _t.device.type != "meta" and str(_t.device) != calib_stream_device:
+                                        _moved_tensors.append((_t, str(_t.device)))
+                                        _t.data = _t.data.to(calib_stream_device)
+                            logger.info(
+                                "AR_CALIB_STREAM_DEVICE=%s: moved %d non-block tensors for the "
+                                "calibration forward; decoder blocks stream through the same device.",
+                                calib_stream_device,
+                                len(_moved_tensors),
+                            )
+
+                        stream_ctx = stream_block_forward(
+                            c.model_context.model,
+                            disk_index,
+                            device=calib_stream_device,
+                            block_names=meta_block_names,
+                        )
             try:
-                all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
-                )
+                if stream_ctx is not None:
+                    with stream_ctx:
+                        all_inputs = self.cache_inter_data(
+                            block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                        )
+                else:
+                    all_inputs = self.cache_inter_data(
+                        block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
+                    )
             except NotImplementedError as error:
                 error_msg = str(error)
                 if "flash_attn::" in error_msg and "CPU" in error_msg:
                     cannot_calibrate_on_cpu = True
                 else:
                     raise error
+            finally:
+                for _t, _orig_device in _moved_tensors:
+                    _t.data = _t.data.to(_orig_device)
 
         if not calibrate_on_cpu or cannot_calibrate_on_cpu:
             try:
