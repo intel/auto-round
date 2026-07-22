@@ -152,6 +152,7 @@ def make_row(
     num_heads_q: int,
     num_heads_kv: int,
     seq_len: int,
+    tensor_layout: str,
     head_dim: int,
     dtype: torch.dtype,
     is_causal: bool,
@@ -173,6 +174,7 @@ def make_row(
         "gqa_group_size": gqa_group_size,
         "attention_pattern": attention_pattern(num_heads_q, num_heads_kv),
         "seq_len": seq_len,
+        "tensor_layout": tensor_layout,
         "head_dim": head_dim,
         "dtype": str(dtype).replace("torch.", ""),
         "causal": is_causal,
@@ -195,6 +197,7 @@ def try_benchmark(
     num_heads_q: int,
     num_heads_kv: int,
     seq_len: int,
+    tensor_layout: str,
     head_dim: int,
     dtype: torch.dtype,
     is_causal: bool,
@@ -212,6 +215,7 @@ def try_benchmark(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             seq_len=seq_len,
+            tensor_layout=tensor_layout,
             head_dim=head_dim,
             dtype=dtype,
             is_causal=is_causal,
@@ -232,6 +236,7 @@ def try_benchmark(
             num_heads_q=num_heads_q,
             num_heads_kv=num_heads_kv,
             seq_len=seq_len,
+            tensor_layout=tensor_layout,
             head_dim=head_dim,
             dtype=dtype,
             is_causal=is_causal,
@@ -504,9 +509,9 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
 
 def print_summary(rows: list[dict[str, object]]) -> None:
     print(
-        "| mode | pattern | gqa_group | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |"
+        "| layout | seq_len | mode | pattern | gqa_group | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |"
     )
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         topk = "-" if row["requested_topk"] is None else f"{float(row['requested_topk']):.3f}"
         ratio = "-" if row["selected_ratio"] is None else f"{float(row['selected_ratio']):.6f}"
@@ -517,7 +522,7 @@ def print_summary(rows: list[dict[str, object]]) -> None:
         sp_torch = "-" if row.get("speedup_vs_torch") is None else f"{float(row['speedup_vs_torch']):.3f}"
         sp_sage = "-" if row.get("speedup_vs_sagev1") is None else f"{float(row['speedup_vs_sagev1']):.3f}"
         print(
-            f"| {row['mode']} | {row['attention_pattern']} | {row['gqa_group_size']} | {topk} | {ratio} | "
+            f"| {row['tensor_layout']} | {row['seq_len']} | {row['mode']} | {row['attention_pattern']} | {row['gqa_group_size']} | {topk} | {ratio} | "
             f"{blocks} | {latency} | {baseline_tflops} | {effective_tflops} | {row['status']} | {sp_torch} | "
             f"{sp_sage} |"
         )
@@ -536,16 +541,7 @@ def write_csv(rows: list[dict[str, object]], output_csv: Path) -> None:
         writer.writerows(rows)
 
 
-def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
-    ensure_sparse_binding(args)
-    if not is_xpu_available():
-        raise RuntimeError("XPU device is required")
-    if args.num_heads_q < args.num_heads_kv or args.num_heads_q % args.num_heads_kv != 0:
-        raise ValueError(
-            "Sparse benchmark requires num_heads_q >= num_heads_kv and num_heads_q divisible by num_heads_kv; "
-            f"got {args.num_heads_q} and {args.num_heads_kv}"
-        )
-
+def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layout: str) -> list[dict[str, object]]:
     device = torch.device("xpu")
     dtype = torch.float16
     scale = 1.0 / math.sqrt(args.head_dim)
@@ -554,7 +550,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
         args.batch,
         args.num_heads_q,
         args.num_heads_kv,
-        args.seq_len,
+        seq_len,
         args.head_dim,
         dtype,
         device,
@@ -562,7 +558,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
     q_nhd_src = hnd_to_nhd(q_hnd_src)
     k_nhd_src = hnd_to_nhd(k_hnd_src)
     v_nhd_src = hnd_to_nhd(v_hnd_src)
-    if args.tensor_layout == "NHD":
+    if tensor_layout == "NHD":
         q, k, v = q_nhd_src, k_nhd_src, v_nhd_src
         q_hnd, k_hnd, v_hnd = q_hnd_src, k_hnd_src, v_hnd_src
     else:
@@ -585,7 +581,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                         enable_gqa=enable_gqa,
                     )
                 )
-                if args.tensor_layout == "HND"
+                if tensor_layout == "HND"
                 else F.scaled_dot_product_attention(
                     q_hnd, k_hnd, v_hnd, dropout_p=0.0, is_causal=args.causal, scale=scale, enable_gqa=enable_gqa
                 )
@@ -593,7 +589,8 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
             batch=args.batch,
             num_heads_q=args.num_heads_q,
             num_heads_kv=args.num_heads_kv,
-            seq_len=args.seq_len,
+            seq_len=seq_len,
+            tensor_layout=tensor_layout,
             head_dim=args.head_dim,
             dtype=dtype,
             is_causal=args.causal,
@@ -616,7 +613,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                         tensor_layout="HND",
                     )
                 )
-                if args.tensor_layout == "HND"
+                if tensor_layout == "HND"
                 else ark.sagev1(
                     q,
                     k,
@@ -624,13 +621,14 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     scale=scale,
                     is_causal=args.causal,
                     quant_block_size=args.quant_block_size,
-                    tensor_layout=args.tensor_layout,
+                    tensor_layout=tensor_layout,
                 )
             ),
             batch=args.batch,
             num_heads_q=args.num_heads_q,
             num_heads_kv=args.num_heads_kv,
-            seq_len=args.seq_len,
+            seq_len=seq_len,
+            tensor_layout=tensor_layout,
             head_dim=args.head_dim,
             dtype=dtype,
             is_causal=args.causal,
@@ -654,7 +652,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                 topk=topk,
                 attention_sink=False,
                 quant_block_size=args.quant_block_size,
-                tensor_layout=args.tensor_layout,
+                tensor_layout=tensor_layout,
                 query_tile_tokens=args.q_tile_override or None,
                 sparse_q_block_tokens=args.sparse_q_block_tokens,
                 sparse_k_block_tokens=args.sparse_k_block_tokens,
@@ -671,7 +669,8 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     batch=args.batch,
                     num_heads_q=args.num_heads_q,
                     num_heads_kv=args.num_heads_kv,
-                    seq_len=args.seq_len,
+                    seq_len=seq_len,
+                    tensor_layout=tensor_layout,
                     head_dim=args.head_dim,
                     dtype=dtype,
                     is_causal=args.causal,
@@ -691,7 +690,8 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                     batch=args.batch,
                     num_heads_q=args.num_heads_q,
                     num_heads_kv=args.num_heads_kv,
-                    seq_len=args.seq_len,
+                    seq_len=seq_len,
+                    tensor_layout=tensor_layout,
                     head_dim=args.head_dim,
                     dtype=dtype,
                     is_causal=args.causal,
@@ -793,7 +793,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                             tensor_layout="HND",
                         )
                     )
-                    if args.tensor_layout == "HND"
+                    if tensor_layout == "HND"
                     else ark.sage_sparse(
                         preprocess["query_i8"],
                         preprocess["key_i8"],
@@ -808,13 +808,14 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                         q_tile_override=args.q_tile_override,
                         sparse_q_block_tokens=preprocess["sparse_q_block_tokens"],
                         sparse_k_block_tokens=preprocess["sparse_k_block_tokens"],
-                        tensor_layout=args.tensor_layout,
+                        tensor_layout=tensor_layout,
                     )
                 ),
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
                 num_heads_kv=args.num_heads_kv,
-                seq_len=args.seq_len,
+                seq_len=seq_len,
+                tensor_layout=tensor_layout,
                 head_dim=args.head_dim,
                 dtype=dtype,
                 is_causal=args.causal,
@@ -853,7 +854,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                             sparse_k_block_tokens=args.sparse_k_block_tokens,
                         )
                     )
-                    if args.tensor_layout == "HND"
+                    if tensor_layout == "HND"
                     else ark.sparge_sage2_attn_meansim_topk_xpu(
                         q,
                         k,
@@ -864,7 +865,7 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                         simthreshd1=-1.0,
                         topk=topk,
                         attention_sink=False,
-                        tensor_layout=args.tensor_layout,
+                        tensor_layout=tensor_layout,
                         q_tile_override=args.q_tile_override,
                         sparse_q_block_tokens=args.sparse_q_block_tokens,
                         sparse_k_block_tokens=args.sparse_k_block_tokens,
@@ -873,7 +874,8 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
                 batch=args.batch,
                 num_heads_q=args.num_heads_q,
                 num_heads_kv=args.num_heads_kv,
-                seq_len=args.seq_len,
+                seq_len=seq_len,
+                tensor_layout=tensor_layout,
                 head_dim=args.head_dim,
                 dtype=dtype,
                 is_causal=args.causal,
@@ -890,12 +892,29 @@ def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
     return summarize_speedups(rows)
 
 
+def run_benchmark(args: argparse.Namespace) -> list[dict[str, object]]:
+    ensure_sparse_binding(args)
+    if not is_xpu_available():
+        raise RuntimeError("XPU device is required")
+    if args.num_heads_q < args.num_heads_kv or args.num_heads_q % args.num_heads_kv != 0:
+        raise ValueError(
+            "Sparse benchmark requires num_heads_q >= num_heads_kv and num_heads_q divisible by num_heads_kv; "
+            f"got {args.num_heads_q} and {args.num_heads_kv}"
+        )
+
+    rows: list[dict[str, object]] = []
+    for tensor_layout in args.tensor_layout:
+        for seq_len in args.seq_len:
+            rows.extend(run_single_benchmark(args, seq_len=seq_len, tensor_layout=tensor_layout))
+    return rows
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark torch SDPA, sagev1, and sparse attention across top-k.")
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--num-heads-q", type=int, default=40)
     parser.add_argument("--num-heads-kv", type=int, default=40)
-    parser.add_argument("--seq-len", type=int, default=75600)
+    parser.add_argument("--seq-len", type=int, nargs="+", default=[75600])
     parser.add_argument("--head-dim", type=int, default=128)
     parser.add_argument("--topk", type=float, nargs="+", default=[1.0, 0.75, 0.5, 0.25, 0.125])
     parser.add_argument("--quant-block-size", type=int, default=64)
@@ -918,7 +937,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional sparse K logical-block granularity in tokens. Use 64 for the decoupled qtile256 path.",
     )
-    parser.add_argument("--tensor-layout", choices=("HND", "NHD"), default="HND")
+    parser.add_argument("--tensor-layout", choices=("HND", "NHD"), nargs="+", default=["HND"])
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument(
