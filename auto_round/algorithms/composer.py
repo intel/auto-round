@@ -181,7 +181,10 @@ class AlgorithmComposer:
         self.block_quantizer = block_quantizers[0]
         if orchestrator is not None:
             if self.block_quantizer is not None and self.block_quantizer.can_compile_block_forward():
-                can_compile_block_forward = True
+                user_torch_compile = getattr(
+                    getattr(orchestrator, "compress_context", None), "enable_torch_compile", False
+                )
+                can_compile_block_forward = bool(user_torch_compile)
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (

@@ -630,27 +630,27 @@ class CompressionOrchestrator(BaseOrchestrator):
         self.model_context.quantized = True
         return self.model_context.model, self.layer_config
 
-    def _immediate_pack_and_save_module(self, module_name):
-        from auto_round.compressors.shard_writer import ShardWriter
-
-        shard_writer = ShardWriter.get_shard_writer()
-        to_cpu = self.compress_context.low_gpu_mem_usage
-        module = get_module(self.model, module_name)
-        if self.compress_context.is_immediate_packing:
-            immediate_pack(module_name, self.layer_config)
-            if to_cpu:
-                module = module.to("cpu")
-                packed_module = get_module(self.model, module_name)
-                set_module(self.model, module_name, packed_module.to("cpu"))
-        else:
-            if to_cpu:
-                module = module.to("cpu")
-            set_module(self.model, module_name, module)
-        if self.compress_context.is_immediate_saving:
-            module = get_module(self.model, module_name)
-            module.to("cpu")
-            shard_writer.write(module, module_name, False)
-            module.to("meta")
+    # def _immediate_pack_and_save_module(self, module_name):
+    #     from auto_round.compressors.shard_writer import ShardWriter
+    #
+    #     shard_writer = ShardWriter.get_shard_writer()
+    #     to_cpu = self.compress_context.low_gpu_mem_usage
+    #     module = get_module(self.model, module_name)
+    #     if self.compress_context.is_immediate_packing:
+    #         immediate_pack(module_name, self.layer_config)
+    #         if to_cpu:
+    #             module = module.to("cpu")
+    #             packed_module = get_module(self.model, module_name)
+    #             set_module(self.model, module_name, packed_module.to("cpu"))
+    #     else:
+    #         if to_cpu:
+    #             module = module.to("cpu")
+    #         set_module(self.model, module_name, module)
+    #     if self.compress_context.is_immediate_saving:
+    #         module = get_module(self.model, module_name)
+    #         module.to("cpu")
+    #         shard_writer.write(module, module_name, False)
+    #         module.to("meta")
 
     def _quantize_layers_outside_blocks(
         self, layer_names: list, layer_inputs: dict, valid_token_mask: list[torch.Tensor] | None = None

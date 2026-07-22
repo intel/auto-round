@@ -1376,7 +1376,7 @@ class BaseOrchestrator(object):
     def _ensure_shard_writer(self):
         """Lazily create ShardWriter if it hasn't been created yet."""
         if self.shard_writer is None and self.formats is not None:
-            self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+            self.shard_writer = ShardWriter(self.model, bits=8)
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.

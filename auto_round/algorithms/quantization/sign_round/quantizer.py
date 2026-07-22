@@ -276,6 +276,20 @@ class SignRoundQuantizer(BaseQuantizer):
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
+
+        # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
+        # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
+        # through CPU (cache_device="cpu") and the very next line moves it back to
+        # loss_device — a wasteful GPU→CPU→GPU roundtrip on every batch × iteration.
+        # pred_output is a transient single-batch tensor consumed immediately for the
+        # loss and then freed, so keeping it on the compute device costs no persistent
+        # extra memory.  Pass it as a per-call override so self.cache_device is unchanged.
+        _fwd_cache_device = (
+            device
+            if getattr(self.compress_context, "low_gpu_mem_usage", False) and not str(device).startswith("cpu")
+            else None
+        )
+
         for i in range(self.iters):
             if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                 for n, m in block.named_modules():
@@ -288,7 +302,7 @@ class SignRoundQuantizer(BaseQuantizer):
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
                 ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                pred_output = block_fwd.forward(block, active_inputs, input_others, indices)
+                pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
                 loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
@@ -321,6 +335,7 @@ class SignRoundQuantizer(BaseQuantizer):
                     break
             sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
+
 
         last_loss = total_loss
         best_iter = self.iters

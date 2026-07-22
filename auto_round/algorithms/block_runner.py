@@ -162,6 +162,7 @@ class BlockForwardRunner:
         inputs: list[torch.Tensor] | dict,
         input_others: dict,
         indices: torch.Tensor | None = None,
+        cache_device=None,
     ) -> list[torch.Tensor] | torch.Tensor:
         """Run block forward with batching, output normalization, and cache transfer.
 
@@ -170,11 +171,15 @@ class BlockForwardRunner:
             inputs:       Cached inputs (list[Tensor] for LLM/MLLM, dict for diffusion).
             input_others: Auxiliary kwargs (attention_mask, position_ids, etc.).
             indices:      Sample indices to forward. None = all samples.
+            cache_device: Device for the returned tensor(s).  When ``None`` (default)
+                          ``self.cache_device`` is used.  Pass an explicit device to
+                          override for a single call without mutating shared state.
 
         Returns:
             if indices is not None, this func returns tensor, otherwise list
-            Normalized output tensor on ``self.cache_device``.
+            Normalized output tensor on ``cache_device`` (or ``self.cache_device``).
         """
+        out_device = cache_device if cache_device is not None else self.cache_device
         is_returned_list = True
         if indices is not None:
             is_returned_list = False
@@ -211,14 +216,14 @@ class BlockForwardRunner:
             raise RuntimeError("BlockForwardRunner.forward: no outputs collected.")
 
         if is_returned_list:
-            return [o.to(self.cache_device) for o in outputs]
+            return [o.to(out_device) for o in outputs]
         else:
             if self.batch_size == 1:
-                outputs = [output.unsqueeze(dim=self.batch_dim).to(self.cache_device) for output in outputs]
+                outputs = [output.unsqueeze(dim=self.batch_dim).to(out_device) for output in outputs]
 
-            outputs = torch.cat(outputs, dim=self.batch_dim).to(self.cache_device)
+            outputs = torch.cat(outputs, dim=self.batch_dim).to(out_device)
 
-        return outputs.to(self.cache_device)
+        return outputs.to(out_device)
 
     # ── Input selection ──────────────────────────────────────────────────────
 
@@ -256,7 +261,7 @@ class BlockForwardRunner:
                 None,
             )
         else:
-            return self.block_forward(  # TODO torch compile wenhuach
+            return self.block_forward(
                 block,
                 batch_inputs,
                 batch_others,
