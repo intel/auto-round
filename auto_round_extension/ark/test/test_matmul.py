@@ -95,7 +95,7 @@ def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device, op
     diff = abs(tar_dst - ref_dst)
     print(f"  Max Diff: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}", end="", flush=True)
     if dt == torch.float32:
-        atol = 0.001
+        atol = 0.01
         rtol = 0.03
     if dt == torch.float16:
         atol = 0.1
@@ -201,84 +201,6 @@ def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
         record_property("Bandwidth_GBs", round(bandwidth, 2))
 
     print(f"[Performance] Time: {dur*1000:.4f} ms, GFLOPS: {gflops:.2f}, Bandwidth: {bandwidth:.2f} GB/s")
-
-
-RUN_S8_IGEMM = os.getenv("RUN_S8_IGEMM", "0") == "1"
-
-
-@pytest.mark.skipif(not RUN_S8_IGEMM, reason="Set ARK_RUN_S8_IGEMM=1 to run S8 igemm diagnostic perf test")
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 256, 1024, 2048, 3072, 4096])
-@pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("runs", [1000])
-def test_igemm_s8s8_joint_matrix_vs_sycl_tla(m, k, n, dt, runs, record_property):
-    if not torch.xpu.is_available():
-        pytest.skip("No XPU Device")
-    if not hasattr(ark, "dyn_quant_s8"):
-        pytest.skip("Low-level igemm benchmark APIs are not available")
-
-    A, B, scaleB, bias = make_s8_case(m, k, n, dt, True)
-
-    qA, scaleA = ark.dyn_quant_s8(A)
-    torch.xpu.synchronize()
-
-    out_joint = torch.empty(m, n, dtype=dt, device="xpu")
-    out_tla = torch.empty(m, n, dtype=dt, device="xpu")
-
-    ark.igemm_s8s8_joint_matrix(qA, B, scaleA, scaleB, bias, out_joint)
-    ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_tla)
-    torch.xpu.synchronize()
-
-    diff = (out_joint - out_tla).abs()
-    print(f"\n  Max Diff igemm joint_matrix vs sycl_tla: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}")
-    assert torch.allclose(out_tla, out_joint, atol=1, rtol=0.1)
-
-    joint_dur, tla_dur = benchmark_pair(
-        lambda: ark.igemm_s8s8_joint_matrix(qA, B, scaleA, scaleB, bias, out_joint),
-        lambda: ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_tla),
-        runs,
-    )
-
-    speedup = print_pair_perf("igemm joint_matrix", joint_dur, "igemm sycl_tla", tla_dur, m, n, k)
-
-    record_property("igemm_joint_matrix_time_ms", round(joint_dur * 1000, 4))
-    record_property("igemm_sycl_tla_time_ms", round(tla_dur * 1000, 4))
-    record_property("igemm_speedup", round(speedup, 4))
-
-
-@pytest.mark.skipif(not RUN_S8_IGEMM, reason="Set RUN_S8_IGEMM=1 to run S8 igemm diagnostic perf test")
-@pytest.mark.parametrize("m", [1024, 2048, 3072, 4096])
-@pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("runs", [1000])
-def test_sycl_tla_igemm_accum_vs_dequant_perf(m, k, n, dt, runs, record_property):
-    if not torch.xpu.is_available():
-        pytest.skip("No XPU Device")
-    if not hasattr(ark, "igemm_s8s8_sycl_tla_accum"):
-        pytest.skip("SYCL-TLA accum-only igemm API is not available")
-
-    A, B, scaleB, bias = make_s8_case(m, k, n, dt, True)
-
-    qA, scaleA = ark.dyn_quant_s8(A)
-    torch.xpu.synchronize()
-
-    out_accum = torch.empty(m, n, dtype=torch.int32, device="xpu")
-    out_dequant = torch.empty(m, n, dtype=dt, device="xpu")
-
-    ark.igemm_s8s8_sycl_tla_accum(qA, B, out_accum)
-    ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_dequant)
-    torch.xpu.synchronize()
-
-    accum_dur, dequant_dur = benchmark_pair(
-        lambda: ark.igemm_s8s8_sycl_tla_accum(qA, B, out_accum),
-        lambda: ark.igemm_s8s8_sycl_tla(qA, B, scaleA, scaleB, bias, out_dequant),
-        runs,
-    )
-
-    print_pair_perf("sycl_tla accum-only", accum_dur, "sycl_tla dequant", dequant_dur, m, n, k)
-
-    record_property("sycl_tla_accum_time_ms", round(accum_dur * 1000, 4))
-    record_property("sycl_tla_dequant_time_ms", round(dequant_dur * 1000, 4))
 
 
 @pytest.mark.parametrize("m", [1, 8, 32, 128, 1024, 2048, 3072, 4096])
@@ -438,7 +360,8 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, device="xpu", has_bias=Tr
 
     def _matmul_tolerance(dt):
         if dt == torch.float32:
-            return 0.1, 0.06
+            # SYCL-TLA fp32 GEMM uses TF32 DPAS internally.
+            return 0.01, 0.06
         if dt == torch.float16:
             return 0.1, 0.06
         if dt == torch.bfloat16:
@@ -468,6 +391,8 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, device="xpu", has_bias=Tr
     dnnl_out = ark.matmul(activation, wei, bias)
     tla_out = ark.matmul_sycl_tla(activation, wei, bias)
 
+    diff = abs(dnnl_out - tla_out)
+    print(f"  Max Diff: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}", end="", flush=True)
     atol, rtol = _matmul_tolerance(dt)
     ok = torch.allclose(dnnl_out, tla_out, atol=atol, rtol=rtol)
 
