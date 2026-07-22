@@ -389,11 +389,11 @@ class BaseCompressor(object):
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
         )
-        # Local addition (not upstream): when the model was built as a meta
+        # When the model was built as a meta
         # skeleton (AR_DISK_STREAM_MODEL=1), give the offloader the original
         # checkpoint path so it can materialize each block on first touch
         # directly from disk instead of assuming blocks already hold real
-        # weights (see OffloadManager._reload / LOCAL_PATCHES.md).
+        # weights.
         if self.model_context.disk_stream_model_dir is not None:
             self._offloader.model_dir = self.model_context.disk_stream_model_dir
         # Alternatively, you can use CompressContext.create_context
@@ -406,7 +406,7 @@ class BaseCompressor(object):
             static_attention_dtype=self.static_attention_dtype,
         )
         self.shard_writer = None
-        # Local addition (not upstream): resumability state deferred from
+        # Resumability state deferred from
         # DataDrivenCompressor.quantize() until quantize_and_save()'s
         # save_quantized() call actually succeeds; see the comment in
         # quantize() near "is_immediate_saving" for why clearing is deferred.
@@ -1751,7 +1751,7 @@ class BaseCompressor(object):
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
         memory_monitor.log_summary()
 
-        # Local addition (not upstream): only now -- after the full export
+        # Only now -- after the full export
         # (packing pass, config/tokenizer writes) has actually succeeded --
         # is it safe to drop the resume manifest. See the deferral comment
         # in DataDrivenCompressor.quantize().

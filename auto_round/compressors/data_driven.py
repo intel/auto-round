@@ -557,7 +557,7 @@ class DataDrivenCompressor(BaseCompressor):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            # Local addition (not upstream): also reload when `AR_DISK_STREAM_MODEL`
+            # Also reload when `AR_DISK_STREAM_MODEL`
             # is set even if `low_cpu_mem_usage` has been forced False (e.g. GGUF
             # export -- see base.py's `_finalize_compress_context`, which disables
             # `low_cpu_mem_usage` for gguf formats for reasons unrelated to disk
@@ -816,7 +816,7 @@ class DataDrivenCompressor(BaseCompressor):
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
             elif self.model_context._disk_stream_index is not None:
-                # Local addition (not upstream): dense (non-MoE-patched) models
+                # Dense (non-MoE-patched) models
                 # normally get low_cpu_mem_usage disabled here because the
                 # per-block offload/reload dance is pointless when the whole
                 # model is already CPU-resident from the initial full load --
@@ -825,7 +825,7 @@ class DataDrivenCompressor(BaseCompressor):
                 # blocks are still on meta and must go through the same
                 # reload()-before/offload()-after cycle (data_driven.py:560-564,
                 # 709-714) to get materialized from disk one at a time and freed
-                # again, so keep it enabled here. See LOCAL_PATCHES.md.
+                # again, so keep it enabled here.
                 pass
             else:
                 self.compress_context.low_cpu_mem_usage = False
@@ -1249,13 +1249,13 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             dispatch_model(model, model.hf_device_map)
 
-        # Local addition (not upstream): under AR_DISK_STREAM_MODEL, decoder
+        # Under AR_DISK_STREAM_MODEL, decoder
         # blocks are deliberately left on meta (materialized/freed one at a
         # time inside _quantize_via_rtn_blockwise's per-block loop). A plain
         # safe_to_cpu_()->model.to("cpu") here would try to move those meta
         # blocks for real, which is exactly the "Cannot copy out of meta
         # tensor" error this guard avoids -- and would defeat disk streaming
-        # even if it didn't crash. See LOCAL_PATCHES.md.
+        # even if it didn't crash.
         skip_consolidate = envs.AR_DISK_STREAM_MODEL
         try:
             if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:

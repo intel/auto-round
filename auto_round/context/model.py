@@ -106,9 +106,9 @@ class ModelContext(BaseContext):
         self.need_calib = need_calib
         self.quant_nontext_module = quant_nontext_module
 
-        # Local addition (not upstream): remember the original string model name
+        # Remember the original string model name
         # so OffloadManager can later materialize blocks directly from this
-        # checkpoint (see disk_stream_model_dir below and LOCAL_PATCHES.md).
+        # checkpoint.
         self.disk_stream_model_dir = model if isinstance(model, str) else None
         self._disk_stream_index = None
 
@@ -157,7 +157,7 @@ class ModelContext(BaseContext):
         if is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
-                # Local addition (not upstream): multimodal checkpoints used to
+                # Multimodal checkpoints used to
                 # bypass disk streaming entirely -- mllm_load_model fully
                 # materializes the checkpoint on CPU, infeasible for a 100B+
                 # VLM (e.g. Ornith). Build the same meta skeleton the text
@@ -273,25 +273,23 @@ class ModelContext(BaseContext):
         self._model_loaded = True
 
     def _build_disk_stream_model(self, model_name: str):
-        """Local addition (not upstream): build an all-meta skeleton instead of
+        """Build an all-meta skeleton instead of
         fully materializing the checkpoint on CPU RAM. Left fully meta here
         (not even embeddings/lm_head materialized yet) so it passes the
         existing ``unsupported_meta_device`` guard, which only allows models
         that are either fully real or fully meta (with ``model.path`` set).
         Non-block params are materialized for real right after that guard
         runs, in ``__init__``, via ``_materialize_disk_stream_non_block_params``.
-        See LOCAL_PATCHES.md.
         """
         from auto_round.utils.disk_stream_util import build_meta_model
 
         model, tokenizer, index = build_meta_model(model_name, trust_remote_code=self.trust_remote_code)
         model.path = model_name
-        # Local addition (not upstream): stash the index on the model object
+        # Stash the index on the model object
         # itself so downstream code that only has a reference to the model
         # (not this ModelContext) -- e.g. AutoScheme's gen_layer_config, which
         # runs after ModelContext has already turned the string into an object
-        # -- can still find it instead of re-scanning the checkpoint. See
-        # LOCAL_PATCHES.md.
+        # -- can still find it instead of re-scanning the checkpoint.
         model._disk_stream_index = index
         return model, tokenizer, index
 
@@ -300,7 +298,7 @@ class ModelContext(BaseContext):
         quantizable decoder blocks) for real, leaving the (typically 100+GB
         combined) decoder blocks on meta for later per-block materialize/free
         by OffloadManager. No-op unless the model was built via
-        ``_build_disk_stream_model``. See LOCAL_PATCHES.md."""
+        ``_build_disk_stream_model``."""
         if self._disk_stream_index is None:
             return
         from auto_round.utils import flatten_list, get_block_names
@@ -309,7 +307,7 @@ class ModelContext(BaseContext):
         block_prefixes = flatten_list(get_block_names(self.model, quant_vision=self.quant_nontext_module))
         materialize_non_block_params(self.model, block_prefixes, self._disk_stream_index, device="cpu")
 
-        # Local addition (not upstream): tied output embeddings (e.g. lm_head.weight
+        # Tied output embeddings (e.g. lm_head.weight
         # tied to embed_tokens.weight) have no entry of their own in the checkpoint's
         # safetensors index -- the on-disk format only stores the input embedding and
         # relies on the model re-establishing the tie at load time. A normal
@@ -318,7 +316,7 @@ class ModelContext(BaseContext):
         # module is silently left on meta (materialize_non_block_params only logs a
         # warning and moves on). Re-tying now, after the real input embedding has
         # been materialized above, makes the tied module real too by sharing the
-        # same (now real) Parameter object. See LOCAL_PATCHES.md.
+        # same (now real) Parameter object.
         if hasattr(self.model, "tie_weights"):
             self.model.tie_weights()
 

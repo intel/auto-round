@@ -66,7 +66,7 @@ __all__ = ["OffloadManager"]
 
 
 def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) -> dict:
-    """Local addition (not upstream): a checkpoint whose on-disk MoE layout is
+    """A checkpoint whose on-disk MoE layout is
     the fused 3D one (``...experts.gate_up_proj [N, 2*inter, hidden]`` /
     ``...experts.down_proj``, e.g. the real qwen3.5-397b-base) cannot be
     assigned onto a module tree whose experts were already replaced by the
@@ -128,12 +128,12 @@ def _load_state_dict_into_module(state_dict: dict, module: torch.nn.Module) -> N
         if hasattr(target, param_name):
             old_param = getattr(target, param_name)
             if isinstance(old_param, torch.nn.Parameter):
-                # Local addition (not upstream): `old_param` is on meta when the
+                # `old_param` is on meta when the
                 # module started as a meta skeleton (AR_DISK_STREAM_MODEL=1) and
                 # is being materialized for the first time, rather than reloaded
                 # onto a previously-cleared real (cpu/cuda) tensor. Target "cpu"
                 # in that case instead of literally copying to meta (which would
-                # silently discard the just-read real data). See LOCAL_PATCHES.md.
+                # silently discard the just-read real data).
                 target_device = "cpu" if old_param.device.type == "meta" else old_param.device
                 param = param.to(dtype=old_param.dtype, device=target_device)
                 setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
@@ -553,7 +553,7 @@ class OffloadManager:
             return
         if self.mode == "offload":
             if name not in self._saved:
-                # Local addition (not upstream): before falling back to the
+                # Before falling back to the
                 # original checkpoint, check whether a *prior process* already
                 # offloaded this block to the deterministic resume directory
                 # (see _ensure_dir()) -- this is what makes bare in-memory
@@ -561,8 +561,7 @@ class OffloadManager:
                 # self._saved starts empty (it's an in-memory dict, not
                 # persisted), so without this check it would always look like
                 # nothing was ever offloaded, even when a crashed prior
-                # process's real work is sitting right there on disk. See
-                # LOCAL_PATCHES.md.
+                # process's real work is sitting right there on disk.
                 from auto_round import envs
 
                 if envs.AR_RESUME_DIR:
@@ -579,8 +578,7 @@ class OffloadManager:
                 # real to save), which happens when the model started as a
                 # meta skeleton (AR_DISK_STREAM_MODEL=1) instead of a full CPU
                 # load. There is nothing on the temp dir to load from -- read
-                # straight from the original checkpoint instead. See
-                # LOCAL_PATCHES.md.
+                # straight from the original checkpoint instead.
                 if self.model_dir is not None:
                     load_block_from_model_files(self.model_dir, name, module)
                 return
@@ -786,7 +784,7 @@ class OffloadManager:
             base_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
             os.makedirs(base_dir, exist_ok=True)
             if envs.AR_RESUME_DIR:
-                # Local addition (not upstream): a fresh tempfile.mkdtemp()
+                # A fresh tempfile.mkdtemp()
                 # directory is unique to this process and can never be found
                 # again by a resumed run in a new process -- that's the whole
                 # reason bare in-memory .quantize() (no format=) resumability
@@ -797,7 +795,7 @@ class OffloadManager:
                 # stable, deterministic path instead whenever AR_RESUME_DIR is
                 # set, so a resumed process's OffloadManager can find (see
                 # _reload()'s discovery check below) and reuse what a prior
-                # crashed process already saved here. See LOCAL_PATCHES.md.
+                # crashed process already saved here.
                 self._tempdir = os.path.join(base_dir, f"{self._prefix}_resume")
                 os.makedirs(self._tempdir, exist_ok=True)
             else:
@@ -820,13 +818,13 @@ class OffloadManager:
                 if isinstance(v, torch.Tensor) and v.device.type != "meta"
             }
             if not state_dict:
-                # Local addition (not upstream): nothing real to save -- the
+                # Nothing real to save -- the
                 # module was still on meta (e.g. the model started as a meta
                 # skeleton under AR_DISK_STREAM_MODEL=1 and this block hasn't
                 # been touched yet). Do NOT record it in self._saved: a later
                 # reload() must fall through to materializing straight from
                 # the original checkpoint (see _reload), not silently load an
-                # empty file and leave the block on meta. See LOCAL_PATCHES.md.
+                # empty file and leave the block on meta.
                 return
             safe_save_file(state_dict, save_path)
             self._saved[name] = {"save_path": save_path}
