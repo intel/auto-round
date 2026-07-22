@@ -336,7 +336,6 @@ class SignRoundQuantizer(BaseQuantizer):
             sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
 
-
         last_loss = total_loss
         best_iter = self.iters
         if not self.not_use_best_mse:
