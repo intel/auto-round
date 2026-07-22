@@ -238,7 +238,7 @@ def test_woqgemm_s8_joint_matrix_vs_sycl_tla(m, k, n, dt, has_bias, runs, record
 
 @pytest.mark.parametrize("m", [4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16], ids=["float32", "float16"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_woqgemm_xpu(m, k, n, dt, batch_size, runs, record_property):
@@ -251,7 +251,7 @@ def test_woqgemm_xpu(m, k, n, dt, batch_size, runs, record_property):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_xpu(m, k, n, dt, batch_size, runs, record_property):
@@ -264,7 +264,7 @@ def test_xpu(m, k, n, dt, batch_size, runs, record_property):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32])
+@pytest.mark.parametrize("dt", [torch.float32], ids=["float32"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_cpu(m, k, n, dt, batch_size, runs, record_property):
@@ -303,7 +303,7 @@ def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16], ids=["float16", "bfloat16"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
@@ -334,7 +334,7 @@ def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
 # pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
 def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
     warmup = 100
     runs = 1000
@@ -345,7 +345,7 @@ def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
 def test_xpu_compare_dnnl_vs_sycl_tla_no_bias(m, k, n, dt):
     warmup = 100
     runs = 1000

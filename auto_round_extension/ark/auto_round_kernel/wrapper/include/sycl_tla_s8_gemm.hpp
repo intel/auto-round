@@ -303,17 +303,6 @@ inline void sycl_tla_igemm_s8s8_dequant(sycl::queue* q, int m, int n, int k, con
   }
 }
 
-inline void sycl_tla_igemm_s8s8_accum(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c) {
-  if (!q) throw std::invalid_argument("sycl_tla_igemm_s8s8_accum: queue must not be null");
-  if (!a || !b || !c) {
-    throw std::invalid_argument("sycl_tla_igemm_s8s8_accum: input pointers must not be null");
-  }
-  if (m <= 0 || n <= 0 || k <= 0) return;
-
-  sycl_tla_s8_detail::launch_igemm_accum(q, m, n, k, static_cast<const int8_t*>(a),
-                                         static_cast<const int8_t*>(b), static_cast<int32_t*>(c));
-}
-
 #endif  // ARK_XPU && ARK_SYCL_TLA
 
 }  // namespace ark
