@@ -1,10 +1,10 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# Local addition (not upstream). Checkpoints the tuning loop's per-block
+# Checkpoints the tuning loop's per-block
 # progress to disk so a crash or kill mid-run doesn't require restarting from
 # block 0 -- important for large models where each block's tuning can take
-# minutes and a full run spans hours. See LOCAL_PATCHES.md.
+# minutes and a full run spans hours.
 #
 # What this caches and why: AutoRound's block-sequential tuning chains two
 # things forward from one block to the next -- ``input_ids`` (the current
