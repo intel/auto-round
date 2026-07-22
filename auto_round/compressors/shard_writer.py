@@ -97,7 +97,7 @@ class ShardWriter:
         self.total_param_size_bytes = 0
         self.skipped_meta_tensors = []
 
-        # Local addition (not upstream): when resumability is active
+        # When resumability is active
         # (AR_RESUME_DIR set), a fresh process's ShardWriter otherwise has no
         # idea a previous, crashed process already flushed some shards to
         # output_dir -- it would restart shard_counter at 0 and overwrite

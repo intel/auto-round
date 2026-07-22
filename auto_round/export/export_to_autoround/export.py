@@ -164,7 +164,7 @@ def pack_layer(layer_name, model, backend, device=None):
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
-    # Local addition (not upstream): a resumed disk-streamed run only
+    # A resumed disk-streamed run only
     # materializes/quantizes the blocks it didn't already finish in a prior
     # (crashed) process. Blocks it skipped are never touched in *this*
     # process and stay on the meta device, while their packed weights

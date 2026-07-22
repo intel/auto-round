@@ -533,13 +533,13 @@ class DataDrivenCompressor(BaseCompressor):
         block_names: The names of the blocks to be quantized and dequantized.
         nblocks: The number of blocks to quantize and dequantize.
         device: The device for quantization and dequantization.
-        resume_state: Local addition (not upstream) -- when set and already
+        resume_state: when set and already
             partway through this block group (`resume_state.resume_index > 0`),
             the caller has already substituted `inputs`/`q_input` for the first
             not-yet-done block; this method just needs to start its loop there
             instead of at index 0, and record each block as done afterward. See
             auto_round/utils/resume.py.
-        resume_input_ids: Local addition (not upstream) -- the exact
+        resume_input_ids: the exact
             `input_ids` value the interrupted run had live for the first
             not-yet-done block (cached by `ResumeState.mark_block_done`).
             `inputs` still supplies `input_others` (legitimately re-sourced
@@ -740,7 +740,7 @@ class DataDrivenCompressor(BaseCompressor):
 
             if self.compress_context.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)
-                # Local addition (not upstream): ShardWriter only actually
+                # ShardWriter only actually
                 # flushes to disk once its shard-size budget is reached
                 # (`_flush_shard`, private but there's no public equivalent) --
                 # `write()` above may just buffer this block's tensors in
@@ -761,7 +761,7 @@ class DataDrivenCompressor(BaseCompressor):
                     for name in names:
                         self._offloader(model, name, overwrite=True)
 
-            # Local addition (not upstream): record this block as durably done
+            # Record this block as durably done
             # (its quantized weights are either flushed to a shard on disk via
             # ShardWriter, or saved to the offloader's temp dir) only now,
             # after that write has happened -- so a crash before this point
@@ -888,11 +888,11 @@ class DataDrivenCompressor(BaseCompressor):
         for alg in self.pipeline.all():
             alg.prepare_run(self)
 
-        # Local addition (not upstream): build one ResumeState per block group
+        # Build one ResumeState per block group
         # (almost always just one group for text-only dense models) when
         # AR_RESUME_DIR is set, so a crash/kill mid-tuning can resume from the
         # first not-yet-quantized block instead of restarting from block 0.
-        # See auto_round/utils/resume.py and LOCAL_PATCHES.md.
+        #
         resume_states = None
         if envs.AR_RESUME_DIR:
             if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
@@ -1000,7 +1000,7 @@ class DataDrivenCompressor(BaseCompressor):
                     )
             if resume_states is not None:
                 if self.compress_context.is_immediate_saving:
-                    # Local addition (not upstream): don't clear resume state
+                    # Don't clear resume state
                     # yet when exporting to shards -- a crash in the
                     # save/export step that follows this method returning
                     # (config writing, tokenizer copy, format-specific
@@ -1008,7 +1008,7 @@ class DataDrivenCompressor(BaseCompressor):
                     # re-tune from block 0 on the next attempt, even though
                     # every block's weights are already correctly flushed to
                     # disk. quantize_and_save() clears these once
-                    # save_quantized() actually succeeds. See LOCAL_PATCHES.md
+                    # save_quantized() actually succeeds.
                     # (found via a real crash-in-export test).
                     self._resume_states = resume_states
                 else:
@@ -1026,7 +1026,7 @@ class DataDrivenCompressor(BaseCompressor):
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
             if envs.AR_RESUME_DIR and not self.compress_context.is_immediate_saving:
-                # Local addition (not upstream): `reload(names=None)` only
+                # `reload(names=None)` only
                 # reloads names in `self._offloader._saved` -- populated by
                 # THIS process's own offload() calls. A resumed process never
                 # touches blocks it skipped via ResumeState (they're left
@@ -1035,7 +1035,7 @@ class DataDrivenCompressor(BaseCompressor):
                 # every block explicitly so _reload()'s discovery check (see
                 # offload.py) gets a chance to pull each skipped block's real
                 # quantized weights back from a prior crashed process's
-                # offload dir. See LOCAL_PATCHES.md.
+                # offload dir.
                 #
                 # Skipped entirely under is_immediate_saving: ShardWriter has
                 # already flushed every block's packed weights to disk (both
@@ -1046,7 +1046,7 @@ class DataDrivenCompressor(BaseCompressor):
                 # alongside the already-packed one -- found via a real
                 # crash/resume test on a synthetic MoE fixture producing
                 # duplicate `.weight` tensors next to the correct
-                # `.qweight`/`.scales`/`.qzeros` ones. See LOCAL_PATCHES.md.
+                # `.qweight`/`.scales`/`.qzeros` ones.
                 self._offloader.reload(self.model_context.model, flatten_list(all_blocks))
             elif not self.compress_context.is_immediate_saving:
                 self._offloader.reload(self.model_context.model)
@@ -1252,14 +1252,14 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
 
-        # Local addition (not upstream): mirrors the standard tuning loop's
+        # Mirrors the standard tuning loop's
         # ResumeState wiring (see _quantize_blocks/quantize() above). Safe now
         # that the block above forces per-block immediate_pack + shard_writer
         # writes in this loop too (previously everything was only written in
         # one bulk pass at the very end, which would have made marking a block
         # "done" here a lie). Unlike the standard loop, this one never groups
         # blocks (effectively always nblocks=1), so there's no nblocks!=1
-        # fallback needed. See LOCAL_PATCHES.md.
+        # fallback needed.
         resume_states = None
         if envs.AR_RESUME_DIR:
             if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
@@ -1368,14 +1368,14 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 block = get_module(self.model_context.model, block_name)
 
                 # ── Infrastructure: materialize, dtype convert, device placement ──
-                # Local addition (not upstream): mirrors the equivalent reload
+                # mirrors the equivalent reload
                 # call in the main tuning loop (data_driven.py:582-584). Under
                 # AR_DISK_STREAM_MODEL this block's params are still on meta --
                 # materialize_model_() only rebuilds MoE ReplacementModuleBase
                 # wrappers, it doesn't know how to pull real weights from the
                 # disk-stream index, so without this reload() the later
                 # block.to("cpu") crashes with "Cannot copy out of meta
-                # tensor". See LOCAL_PATCHES.md.
+                # tensor".
                 if self.compress_context.low_cpu_mem_usage:
                     self._offloader.reload(self.model_context.model, block_name)
                 materialize_model_(block)
@@ -1442,14 +1442,14 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
                 ctx.finish()
 
                 # ── Infrastructure: immediate_pack / shard write ──────────────────
-                # Local addition (not upstream): this loop previously left
+                # this loop previously left
                 # per-block packing/shard-writing entirely to the final
                 # `self.shard_writer.write(is_finalize=True)` call in
                 # `_quantize_impl` -- i.e. NOTHING was durably written until the
                 # *entire* RTN pass finished. That made ResumeState wiring here
                 # unsafe (a resumed run would skip blocks whose weights were
                 # never actually flushed to disk, silently producing a corrupt
-                # checkpoint) -- see LOCAL_PATCHES.md. Mirrors the standard
+                # checkpoint) Mirrors the standard
                 # tuning loop's equivalent block (data_driven.py ~711-727).
                 if self.compress_context.is_immediate_packing:
                     for _n, _mod in block.named_modules():
@@ -1618,16 +1618,16 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
         )
         if self.compress_context.low_cpu_mem_usage:
             if envs.AR_RESUME_DIR and not self.compress_context.is_immediate_saving:
-                # Local addition (not upstream): see the matching comment in
+                # See the matching comment in
                 # DataDrivenCompressor.quantize() (~line 1005) for why
                 # `reload(names=None)` isn't enough when resuming -- it only
                 # reloads names this process itself offloaded, never blocks
-                # skipped via ResumeState. See LOCAL_PATCHES.md.
+                # skipped via ResumeState.
                 #
                 # Skipped under is_immediate_saving for the same reason as the
                 # matching branch in DataDrivenCompressor.quantize(): it would
                 # make the following `shard_writer.write(is_finalize=True)`
-                # re-emit already-flushed blocks' raw weights. See LOCAL_PATCHES.md.
+                # re-emit already-flushed blocks' raw weights.
                 all_blocks = self.quantizer.quant_block_list or get_block_names(self.model_context.model)
                 self._offloader.reload(self.model_context.model, flatten_list(all_blocks))
             elif not self.compress_context.is_immediate_saving:
