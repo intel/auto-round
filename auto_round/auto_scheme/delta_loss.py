@@ -156,7 +156,8 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 self.x_diff = None
                 return None
 
-            qdq_x.register_hook(save_grad)
+            if qdq_x.requires_grad:
+                qdq_x.register_hook(save_grad)
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
@@ -189,7 +190,8 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 self.mix_score = self.weight_score + self.act_score
                 return None
 
-            qdq_w.register_hook(save_grad)
+            if qdq_w.requires_grad:
+                qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
 
 
@@ -308,7 +310,8 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                 self.x_diff = None
                 return None
 
-            qdq_x.register_hook(save_grad)
+            if qdq_x.requires_grad:
+                qdq_x.register_hook(save_grad)
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
@@ -611,9 +614,13 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
                 if isinstance(result, torch.Tensor):
-                    result = result.requires_grad_(True)
+                    if result.is_floating_point():
+                        result = result.requires_grad_(True)
                 elif isinstance(result, tuple):
-                    result = tuple(r.requires_grad_(True) if isinstance(r, torch.Tensor) else r for r in result)
+                    result = tuple(
+                        r.requires_grad_(True) if isinstance(r, torch.Tensor) and r.is_floating_point() else r
+                        for r in result
+                    )
 
             pbar.update(1)
             return result
@@ -779,9 +786,12 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
             if isinstance(block_output, tuple):
                 # For tuple outputs, we usually care about the first element (hidden states)
                 main_output = block_output[0]
-                main_output = main_output.requires_grad_(True)
-            else:
+                if isinstance(main_output, torch.Tensor) and main_output.is_floating_point():
+                    main_output = main_output.requires_grad_(True)
+            elif isinstance(block_output, torch.Tensor) and block_output.is_floating_point():
                 main_output = block_output.requires_grad_(True)
+            else:
+                main_output = block_output
 
             # Backward pass for the current block
             torch.autograd.backward(
@@ -793,7 +803,11 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
 
             # Extract gradients w.r.t. the block input
             if block_input_args and isinstance(block_input_args[0], torch.Tensor):
-                current_grad = block_input_args[0].grad.detach().clone()
+                if block_input_args[0].grad is not None:
+                    current_grad = block_input_args[0].grad.detach().clone()
+                else:
+                    logger.warning(f"No gradient found for input of {block_name}, stopping backward replay")
+                    break
             else:
                 logger.warning(f"No suitable input gradient found for {block_name}")
                 break
