@@ -76,7 +76,7 @@ class LLMCalibrator(Calibrator):
         ):
             # low_gpu_mem_usage or calibrate only the embedding layer (also fast on CPU)
             calibrate_on_cpu = True
-            # Local addition (not upstream): when AR_DISK_STREAM_MODEL built a
+            # When AR_DISK_STREAM_MODEL built a
             # meta-device skeleton and to_quant_block_names restricts
             # quant_block_list to fewer than all decoder blocks (a targeted
             # re-quantization of specific blocks in an already-quantized
