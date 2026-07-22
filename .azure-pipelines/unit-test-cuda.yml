@@ -70,8 +70,6 @@ stages:
                 inputs:
                   targetType: "inline"
                   script: |
-                    export PYTHONUNBUFFERED=1
-                    cd ${BUILD_SOURCESDIRECTORY}
                     CUDA_VERSION="13.0"
 
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
@@ -82,6 +80,8 @@ stages:
                       --part ${{ pair.value.PART }} \
                       --cuda_version "${CUDA_VERSION}" \
                       --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
+                  env:
+                    PYTHONUNBUFFERED: '1'
 
               - task: Bash@3
                 displayName: "Wait for Pod to be Online"
@@ -89,12 +89,12 @@ stages:
                 inputs:
                   targetType: "inline"
                   script: |
-                    cd ${BUILD_SOURCESDIRECTORY}
-                    export PYTHONUNBUFFERED=1
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                       --action wait \
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}"
+                  env:
+                    PYTHONUNBUFFERED: '1'
 
               - task: Bash@3
                 displayName: "Wait for Agent to be Online"
@@ -102,14 +102,14 @@ stages:
                 inputs:
                   targetType: "inline"
                   script: |
-                    cd ${BUILD_SOURCESDIRECTORY}
-                    export PYTHONUNBUFFERED=1
                     python .azure-pipelines/scripts/cuda_unit_test/azure_agent.py \
                       --action wait \
                       --url "$(System.CollectionUri)" \
                       --pat "$(AZP_DEVOPS_PAT)" \
                       --pool "$(POOL_NAME)" \
                       --agent "$(AGENT_NAME)-part${{ pair.value.PART }}"
+                  env:
+                    PYTHONUNBUFFERED: '1'
 
       - stage: GPU_Test_${{ pair.key }}
         displayName: "GPU Test ${{ pair.value.PART }}"
@@ -153,7 +153,7 @@ stages:
                 displayName: "Run GPU Tests"
 
               - task: PublishPipelineArtifact@1
-                condition: succeededOrFailed()
+                condition: succeeded()
                 inputs:
                   targetPath: $(Build.SourcesDirectory)/log_dir
                   artifact: "ut-${{ pair.value.PART }}_coverage"
@@ -199,11 +199,12 @@ stages:
                   targetType: "inline"
                   script: |
                     echo "Terminating Pod: ci-$(Build.BuildId)-${{ pair.value.PART }}"
-                    export PYTHONUNBUFFERED=1
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                       --action terminate \
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}"
+                  env:
+                    PYTHONUNBUFFERED: '1'
 
               - task: Bash@3
                 displayName: "Deregister Agent from Pool"
@@ -212,13 +213,14 @@ stages:
                   targetType: "inline"
                   script: |
                     cd ${BUILD_SOURCESDIRECTORY}
-                    export PYTHONUNBUFFERED=1
                     python .azure-pipelines/scripts/cuda_unit_test/azure_agent.py \
                       --action deregister \
                       --url "$(System.CollectionUri)" \
                       --pat "$(AZP_DEVOPS_PAT)" \
                       --pool "$(POOL_NAME)" \
                       --agent "$(AGENT_NAME)-part${{ pair.value.PART }}"
+                  env:
+                    PYTHONUNBUFFERED: '1'
 
   - stage: Coverage
     displayName: "Collect Coverage"
@@ -226,6 +228,7 @@ stages:
       vmImage: "ubuntu-latest"
     dependsOn:
       - ${{ each pair in parameters.matrix }}:
+          - GPU_Test_${{ pair.key }}
           - Cleanup_Verification_${{ pair.key }}
     variables:
       UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
