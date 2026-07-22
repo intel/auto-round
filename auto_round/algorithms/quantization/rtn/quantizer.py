@@ -69,6 +69,7 @@ class RTNQuantizer(BaseQuantizer):
                 self._quantize_layer_via_rtn(m, disable_opt_rtn=True)
         return {}
 
+
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
