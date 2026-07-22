@@ -563,12 +563,12 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
     forward+backward -- the recorded ``block_inputs`` are what let the backward pass be
     replayed manually, one block at a time, without keeping every block resident on GPU.
 
-    Local addition: when ``disk_index`` is set (streaming mode -- the model is a
+    When ``disk_index`` is set (streaming mode -- the model is a
     meta-device skeleton, see gen_layer_config/disk_stream_util.py), each block's
     real weights are materialized from the checkpoint right before its own forward
     and released back to meta right after, instead of the original code's implicit
     assumption that the block already has real CPU-resident weights to shuffle to
-    GPU and back. See LOCAL_PATCHES.md.
+    GPU and back.
     """
     block_inputs.clear()
     for n, m in model.named_modules():
@@ -617,10 +617,9 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
                 import os as _os
 
                 if _os.environ.get("AR_STREAM_DEBUG"):
-                    print(
+                    logger.debug(
                         f"STREAM_DEBUG prepare_model_low_gpu after free({module_name}): "
-                        f"resident={total_resident_bytes(model) / 1e9:.2f}GB",
-                        flush=True,
+                        f"resident={total_resident_bytes(model) / 1e9:.2f}GB"
                     )
             else:
                 module.to("cpu")
@@ -704,11 +703,11 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
     (moving each block to ``major_device`` only for its own recompute + backward, then back
     to CPU) so only one block's weights need to be resident on GPU at a time.
 
-    Local addition: ``disk_index`` set means the model is a meta-device skeleton
+    ``disk_index`` set means the model is a meta-device skeleton
     (streaming mode) -- each block's real weights are materialized from the
     checkpoint right before use and released back to meta right after, both here
     (the manual reverse-order backward replay) and in ``prepare_model_low_gpu``
-    (the initial forward capture pass). See LOCAL_PATCHES.md.
+    (the initial forward capture pass).
     """
     block_inputs = {}
     total_batches = len(dataloader) if hasattr(dataloader, "__len__") else None
@@ -836,10 +835,9 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
                 import os as _os
 
                 if _os.environ.get("AR_STREAM_DEBUG"):
-                    print(
+                    logger.debug(
                         f"STREAM_DEBUG model_forward_low_gpu after free({block_name}): "
-                        f"resident={total_resident_bytes(model) / 1e9:.2f}GB",
-                        flush=True,
+                        f"resident={total_resident_bytes(model) / 1e9:.2f}GB"
                     )
             else:
                 block_module.to("cpu")
@@ -1530,14 +1528,13 @@ def _gen_layer_config(
     # Note: low_cpu_mem_usage only works when low_gpu_mem_usage is also enabled,
     # because it requires layer-by-layer processing
     #
-    # Local addition: when disk_index is set, gen_layer_config already built the
+    # When disk_index is set, gen_layer_config already built the
     # model as a meta-device skeleton and materialize_module/free_module (called
     # directly around each block's use, see get_score_for_scheme/
     # model_forward_low_gpu/prepare_model_low_gpu below) are the actual streaming
     # mechanism -- OffloadManager's hook-based approach doesn't apply to a model
     # that never had real CPU-resident weights to begin with, and empirically
-    # didn't bound memory during scoring even when otherwise enabled (see
-    # LOCAL_PATCHES.md).
+    # didn't bound memory during scoring even when otherwise enabled.
     offload_context = None
     if disk_index is None and auto_scheme.low_cpu_mem_usage and auto_scheme.low_gpu_mem_usage:
         _model_dir = model_name
@@ -2003,14 +2000,14 @@ def _gen_layer_config(
         model = None
         del model
     elif disk_index is not None:
-        # Local addition (not upstream): decoder blocks are already back on
+        # Decoder blocks are already back on
         # meta (freed by `free_module` after scoring each one); `.to("cpu")`
         # would fail the same way it does everywhere else in this file for a
         # meta model, and there's nothing to move -- the non-block params were
         # never moved off cpu in the first place. Still run the rest of the
         # cleanup below (scoring-only attributes left on wrapper modules),
         # since `model` is the same object the compressor's tuning phase
-        # reuses afterward. See LOCAL_PATCHES.md.
+        # reuses afterward.
         for n, m in model.named_modules():
             if hasattr(m, "scale_dtype"):  # TODO refine code
                 delattr(m, "scale_dtype")
@@ -2089,14 +2086,13 @@ def gen_layer_config(
                 use_auto_mapping=False,
             )
         elif auto_scheme.low_cpu_mem_usage and low_gpu_mem_usage:
-            # Local addition: disk-streamed load (meta-device skeleton + on-demand
+            # Disk-streamed load (meta-device skeleton + on-demand
             # per-block materialize/free, see disk_stream_util.py) instead of
             # llm_load_model(device_map="cpu")'s full-checkpoint CPU RAM load --
             # infeasible for a checkpoint bigger than available RAM (e.g. ~207GB
             # command-a-translate on a 190GB-RAM machine). Falls back to the
             # original full-CPU-load path below for anything build_meta_model
-            # doesn't cover (bagel/glm/mxfp4/HPU-specific loading). See
-            # LOCAL_PATCHES.md.
+            # doesn't cover (bagel/glm/mxfp4/HPU-specific loading).
             try:
                 from auto_round.utils.disk_stream_util import build_meta_model, materialize_non_block_params
 
@@ -2120,7 +2116,7 @@ def gen_layer_config(
             is_vlm = is_mllm_model(model)
         except Exception:  # noqa: BLE001
             is_vlm = False
-        # Local addition (not upstream): by the time AutoRound's compressor
+        # By the time AutoRound's compressor
         # calls into AutoScheme, ModelContext has already turned a string model
         # into a real object -- meaning the `isinstance(model, str)` branch
         # above never actually runs in the standard `AutoRound(model=path, ...)`
@@ -2128,7 +2124,7 @@ def gen_layer_config(
         # skeleton (AR_DISK_STREAM_MODEL=1), it stashes the SafetensorsIndex on
         # the model so we can pick it up here instead of re-detecting streaming
         # mode from scratch (or, worse, silently treating a meta model as if it
-        # were fully real). See LOCAL_PATCHES.md.
+        # were fully real).
         disk_index = getattr(model, "_disk_stream_index", None)
 
     if disk_index is None:
@@ -2170,12 +2166,12 @@ def gen_layer_config(
     else:
         if disk_index is None:
             model.to("cpu")
-        # Local addition (not upstream): skip `model.to("cpu")` in streaming mode
+        # Skip `model.to("cpu")` in streaming mode
         # -- decoder blocks are intentionally still on meta (to be
         # materialized/freed one at a time during scoring below), and `.to()`
         # cannot move a meta tensor to a real device (no data to copy). The
         # non-block params were already materialized for real onto cpu by
-        # ModelContext. See LOCAL_PATCHES.md.
+        # ModelContext.
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             import accelerate
 
