@@ -18,7 +18,6 @@ import sysconfig
 from pathlib import Path
 from typing import Iterable
 
-
 _DEFAULT_MODULE_NAME = "auto_round_kernel._local.auto_round_kernel_xpu"
 
 
