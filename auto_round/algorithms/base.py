@@ -24,10 +24,10 @@ if TYPE_CHECKING:
     from auto_round.algorithms.block_runner import BlockForwardRunner
     from auto_round.algorithms.composer import AlgorithmComposer
     from auto_round.calibration.state import CalibrationContext
+    from auto_round.compressors import BaseOrchestrator
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
     from auto_round.schemes import QuantizationScheme
-    from auto_round.compressors import BaseOrchestrator
 
 
 @dataclass(frozen=True)
