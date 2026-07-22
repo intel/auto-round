@@ -58,7 +58,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
-    # Local addition: device for the disk-streamed calibration forward pass in
+    # Device for the disk-streamed calibration forward pass in
     # LLMCalibrator.collect()'s calibrate_on_cpu branch (targeted block
     # re-quantization). Unset = upstream behavior (cpu). Set to e.g. "cuda:0"
     # to run the whole pass on GPU -- see el_requantize_blocks.py.

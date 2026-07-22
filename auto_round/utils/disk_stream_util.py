@@ -1,16 +1,13 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-# Local addition (not upstream AutoRound). Ported verbatim from this project's
-# vendor/reap/src/reap/disk_stream_util.py -- architecture-agnostic (only needs
-# module dotted names + accelerate's set_module_tensor_to_device), so it carries
-# over unchanged. Used by auto_round/auto_scheme/delta_loss.py's streaming scoring
-# path (get_score_for_scheme_streaming) to materialize one decoder block's real
-# tensors from the checkpoint's safetensors shards right before scoring it and
-# release them back to meta right after -- instead of AutoScheme's original
-# approach of loading the entire model onto CPU via llm_load_model(device_map="cpu")
-# (~207GB+ for a model like command-a-translate, not available on hardware with far
-# less RAM+VRAM combined than the checkpoint size). See LOCAL_PATCHES.md.
+# Lazy, mmap-backed reads of individual tensors by name straight from a
+# checkpoint's safetensors shards, plus meta<->real materialize/free for a
+# whole module. Used by auto_round/auto_scheme/delta_loss.py's streaming
+# scoring path (get_score_for_scheme_streaming) to materialize one decoder
+# block's real tensors right before scoring it and release them back to meta
+# right after -- instead of loading the entire model onto CPU up front, which
+# doesn't fit when the checkpoint is larger than available RAM+VRAM combined.
 from __future__ import annotations
 
 import json
@@ -84,7 +81,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
     directly from the checkpoint, onto `device`. `module_name` is `module`'s dotted
     path in the full model (used as the tensor-name prefix in the checkpoint).
 
-    Local addition (auto_round only, not in REAP's original): AutoScheme's scoring
+    AutoScheme's scoring
     wraps quantized layers in ``AutoSchemeWrapperLinear``, which replaces a plain
     ``nn.Linear`` with a wrapper holding the real layer at ``.orig_layer`` --
     inserting an extra ``.orig_layer`` path segment that doesn't exist in the
@@ -92,7 +89,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
     """
     import re as _re
 
-    # Local addition (not upstream): fused-MoE replacement modules
+    # Fused-MoE replacement modules
     # (SequentialQwen3_5MoeExperts and friends) expose UNFUSED per-expert
     # parameter names (experts.{i}.gate_proj.weight ...) that don't exist in a
     # checkpoint whose on-disk layout is the fused 3D one
@@ -122,7 +119,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         inter = fused.shape[0] // 2
         return (fused[:inter] if proj == "gate_proj" else fused[inter:]).contiguous()
 
-    targets = []  # (param_name, full_checkpoint_name)
+    targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
     for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
         if str(tensor.device) != "meta":
@@ -135,7 +132,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
                 continue
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
-        targets.append((name, full_name))
+        targets.append((name, full_name, tensor.dtype))
 
     for name, value in fused_targets:
         set_module_tensor_to_device(module, name, device, value=value, dtype=value.dtype)
@@ -143,20 +140,26 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
 
     if not targets:
         return
-    values = index.read_tensors([full_name for _, full_name in targets], device=device)
-    for name, full_name in targets:
-        # Local addition (not upstream): explicit dtype= is required here.
-        # accelerate's set_module_tensor_to_device(), when dtype isn't passed,
-        # casts `value` to the *existing* (meta) parameter's declared dtype --
-        # not the checkpoint's real dtype. A meta skeleton built without an
-        # enclosing dtype context (e.g. Qwen3_5MoeExperts' per-expert Linears,
-        # built under `torch.device("meta")` alone) defaults that declared
-        # dtype to float32 regardless of the checkpoint being bf16, so without
-        # this, real bf16 weights silently get upcast to float32 on
-        # materialization -- found via a real 8-layer MoE fixture crashing
-        # with "expected m1 and m2 to have the same dtype" inside AutoScheme
-        # scoring. The checkpoint's own dtype must always win.
-        set_module_tensor_to_device(module, name, device, value=values[full_name], dtype=values[full_name].dtype)
+    values = index.read_tensors([full_name for _, full_name, _ in targets], device=device)
+    for name, full_name, declared_dtype in targets:
+        # Prefer the meta parameter's already-declared dtype: it reflects
+        # whatever compute dtype the caller already promoted the (still-meta)
+        # model to (e.g. ModelContext._set_amp_dtype()'s `model.to(amp_dtype)`),
+        # and materializing to a different dtype than sibling non-block params
+        # that were promoted while still real breaks ops mixing the two (e.g.
+        # LayerNorm on bf16 activations with fp16 weight/bias). The one
+        # exception: a meta skeleton built without an enclosing dtype context
+        # (e.g. Qwen3_5MoeExperts' per-expert Linears, built under
+        # `torch.device("meta")` alone) defaults the declared dtype to
+        # float32 regardless of the checkpoint's real dtype -- found via a
+        # real 8-layer MoE fixture crashing with "expected m1 and m2 to have
+        # the same dtype" inside AutoScheme scoring. Detect that case (declared
+        # float32 but checkpoint isn't) and fall back to the checkpoint's own
+        # dtype instead.
+        target_dtype = declared_dtype
+        if declared_dtype == torch.float32 and values[full_name].dtype != torch.float32:
+            target_dtype = values[full_name].dtype
+        set_module_tensor_to_device(module, name, device, value=values[full_name], dtype=target_dtype)
 
 
 def free_module(module: nn.Module) -> None:
@@ -185,7 +188,7 @@ def build_meta_model(model_name: str, trust_remote_code: bool = True):
     checkpoint on CPU RAM in one shot. Deliberately narrower than ``llm_load_model``:
     only covers the common local-directory ``AutoModelForCausalLM`` case (no
     bagel/glm/mxfp4/HPU special-casing) -- callers should fall back to
-    ``llm_load_model`` for anything this doesn't handle. See LOCAL_PATCHES.md.
+    ``llm_load_model`` for anything this doesn't handle.
     """
     from accelerate import init_empty_weights
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
