@@ -72,7 +72,7 @@ class BaseAlgorithm:
         self.config = config
         # Name-mangled so subclasses cannot accidentally overwrite the run context.
         self.__run_ctx: QuantizationRunContext | None = None
-        self.__block_forward_runner: BlockForwardRunner | None = None
+        self.__block_forward_runner: "BlockForwardRunner | None" = None
 
     @classmethod
     def from_config(cls, config: Any) -> "BaseAlgorithm":

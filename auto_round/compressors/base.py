@@ -223,11 +223,12 @@ class BaseOrchestrator(object):
         self.dataset = dataset
         if self.dataset is None:
             self.dataset = "NeelNanda/pile-10k"
+        batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
-            batch_size=min(kwargs.pop("batch_size", 8), nsamples),
-            orig_batch_size=min(kwargs.pop("batch_size", 8), nsamples),
+            batch_size=batch_size,
+            orig_batch_size=batch_size,
             dataset=self.dataset,
         )
 
@@ -852,7 +853,7 @@ class BaseOrchestrator(object):
         dataset = self.calibration_context.dataset
         if dataset is not None:
             return dataset
-        
+
         return "NeelNanda/pile-10k"
 
     def post_init(self) -> None:
