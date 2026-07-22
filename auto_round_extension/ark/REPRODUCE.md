@@ -51,11 +51,11 @@ python \
 `q_tile=256`, decoupled sparse rows:
 
 ```bash
-ZE_AFFINITY_MASK=4 \
+ZE_AFFINITY_MASK=7 \
 python \
   test/bench_sparse_topk.py \
   --batch 1 --num-heads-q 40 --num-heads-kv 40 --seq-len 75600 --head-dim 128 \
-  --tensor-layout NHD --topk 0.5 0.3 \
+  --tensor-layout HND --topk 0.5 0.3 \
   --q-tile-override 256 \
   --sparse-q-block-tokens 256 \
   --sparse-k-block-tokens 64

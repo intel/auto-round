@@ -86,8 +86,6 @@ def sage_sparse(
         raise ValueError(f"V must be float16 or bfloat16, got {value.dtype}")
     if qscale is None or kscale is None:
         raise ValueError("qscale and kscale must be provided for sage_sparse")
-    if q_tile_override not in (0, 64, 128, 256):
-        raise ValueError(f"Unsupported q_tile_override={q_tile_override}; supported values: 0, 64, 128, 256")
     if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
         raise ValueError("lut and valid_block_num must be int32 tensors")
     if lut.device != query.device or valid_block_num.device != query.device:
@@ -110,8 +108,6 @@ def sage_sparse(
     _validate_gqa_head_config(Hq, Hkv, op_name="sage_sparse")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
-    _validate_sparse_q_tile_override_for_head_dim(D, q_tile_override)
-
     effective_sparse_q_block_tokens = quant_block_size if sparse_q_block_tokens is None else int(sparse_q_block_tokens)
     effective_sparse_k_block_tokens = quant_block_size if sparse_k_block_tokens is None else int(sparse_k_block_tokens)
     if effective_sparse_q_block_tokens <= 0 or effective_sparse_k_block_tokens <= 0:
@@ -124,9 +120,6 @@ def sage_sparse(
     kv_scale_blocks = (Skv + quant_block_size - 1) // quant_block_size
     q_sparse_blocks = (Sq + effective_sparse_q_block_tokens - 1) // effective_sparse_q_block_tokens
     kv_sparse_blocks = (Skv + effective_sparse_k_block_tokens - 1) // effective_sparse_k_block_tokens
-    decoupled_sparse_rows = (
-        effective_sparse_q_block_tokens != quant_block_size or effective_sparse_k_block_tokens != quant_block_size
-    )
     if tuple(lut.shape) != (B, Hq, q_sparse_blocks, kv_sparse_blocks):
         raise ValueError(f"lut must have shape {(B, Hq, q_sparse_blocks, kv_sparse_blocks)}, got {tuple(lut.shape)}")
     if tuple(valid_block_num.shape) != (B, Hq, q_sparse_blocks):
@@ -145,19 +138,15 @@ def sage_sparse(
         raise ValueError("valid_block_num entries must be non-negative")
     if torch.any(valid_block_num > kv_sparse_blocks).item():
         raise ValueError(f"valid_block_num entries must be <= {kv_sparse_blocks}")
-    if decoupled_sparse_rows and not _is_sparse_qtile256_row64k_config(
+
+    effective_q_tile_override = _resolve_sparse_prefill_q_tile_override(
         head_dim=D,
         quant_block_size=quant_block_size,
         q_tile_override=q_tile_override,
         sparse_q_block_tokens=effective_sparse_q_block_tokens,
         sparse_k_block_tokens=effective_sparse_k_block_tokens,
         tensor_layout=tensor_layout,
-    ):
-        raise ValueError(
-            "Only the decoupled sparse config "
-            "(head_dim=128, quant_block_size=64, q_tile_override=256, "
-            "sparse_q_block_tokens=256, sparse_k_block_tokens=64, tensor_layout in {'HND', 'NHD'}) is supported"
-        )
+    )
 
     lib = get_lib(query)
     stream = get_stream(query)
@@ -174,11 +163,9 @@ def sage_sparse(
     k_strides = _attention_strides_qko(key, tensor_layout)
     v_strides = _attention_strides_v(value, tensor_layout)
     o_strides = _attention_strides_qko(O, tensor_layout)
-    sparse_fn_name = "sage_sparse_qtile256_row64k" if decoupled_sparse_rows else "sage_sparse"
-    if not hasattr(lib, sparse_fn_name):
-        raise RuntimeError(f"Loaded XPU extension does not expose {sparse_fn_name}")
-    sparse_fn = getattr(lib, sparse_fn_name)
-    sparse_fn(
+    if not hasattr(lib, "sage_sparse"):
+        raise RuntimeError("Loaded XPU extension does not expose sage_sparse")
+    lib.sage_sparse(
         stream,
         query.data_ptr(),
         key.data_ptr(),
@@ -192,7 +179,7 @@ def sage_sparse(
         valid_block_num.data_ptr(),
         q_sparse_blocks,
         kv_sparse_blocks,
-        q_tile_override,
+        effective_q_tile_override,
         *q_strides,
         *k_strides,
         *v_strides,
@@ -229,235 +216,31 @@ def sage_sparse_row_linear(
     q_tile_override: int = 64,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
-    """Sparse SAGE prefill with one sparse row per workgroup via the q_tile=64 launcher."""
-    if quant_block_size != 64:
-        raise ValueError(f"sage_sparse_row_linear currently requires quant_block_size == 64, got {quant_block_size}")
-    if q_tile_override not in (0, 64):
-        raise ValueError(f"Unsupported q_tile_override={q_tile_override}; row-linear backend supports only 0 or 64")
-    if query.device.type != "xpu":
-        raise NotImplementedError("sage_sparse_row_linear is only supported on XPU")
-    if query.dtype != torch.int8 or key.dtype != torch.int8:
-        raise ValueError(f"Q/K must be int8, got Q={query.dtype}, K={key.dtype}")
-    if value.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"V must be float16 or bfloat16, got {value.dtype}")
-    if qscale is None or kscale is None:
-        raise ValueError("qscale and kscale must be provided for sage_sparse_row_linear")
-    if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
-        raise ValueError("lut and valid_block_num must be int32 tensors")
-    if lut.device != query.device or valid_block_num.device != query.device:
-        raise ValueError("lut and valid_block_num must be on the same XPU device as Q/K/V")
-    if qscale.device != query.device or kscale.device != query.device:
-        raise ValueError("qscale and kscale must be on the same XPU device as Q/K/V")
-
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
-
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
-    _validate_gqa_head_config(Hq, Hkv, op_name="sage_sparse_row_linear")
-    if D not in (64, 128):
-        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
-
-    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
-    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
-    if tuple(lut.shape) != (B, Hq, q_blocks, kv_blocks):
-        raise ValueError(f"lut must have shape {(B, Hq, q_blocks, kv_blocks)}, got {tuple(lut.shape)}")
-    if tuple(valid_block_num.shape) != (B, Hq, q_blocks):
-        raise ValueError(f"valid_block_num must have shape {(B, Hq, q_blocks)}, got {tuple(valid_block_num.shape)}")
-    if qscale.numel() != B * Hq * q_blocks:
-        raise ValueError(
-            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
-        )
-    if kscale.numel() != B * Hkv * kv_blocks:
-        raise ValueError(
-            f"kscale must have {B * Hkv * kv_blocks} elements for shape [B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
-        )
-    if torch.any(valid_block_num < 0).item():
-        raise ValueError("valid_block_num entries must be non-negative")
-    if torch.any(valid_block_num > kv_blocks).item():
-        raise ValueError(f"valid_block_num entries must be <= {kv_blocks}")
-
-    lib = get_lib(query)
-    stream = get_stream(query)
-    O = _empty_attention_output(
-        B,
-        Hq,
-        Sq,
-        D,
-        dtype=value.dtype,
-        device=query.device,
+    """Compatibility wrapper for the q-tile 64 sparse prefill path."""
+    warnings.warn(
+        "sage_sparse_row_linear is deprecated; use sage_sparse with sparse_q_block_tokens=64 and sparse_k_block_tokens=64",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return sage_sparse(
+        query=query,
+        key=key,
+        value=value,
+        lut=lut,
+        valid_block_num=valid_block_num,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+        enable_gqa=enable_gqa,
+        quant_block_size=quant_block_size,
+        qscale=qscale,
+        kscale=kscale,
+        q_tile_override=q_tile_override,
+        sparse_q_block_tokens=64,
+        sparse_k_block_tokens=64,
         tensor_layout=tensor_layout,
     )
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
-    lib.sage_sparse_row_linear(
-        stream,
-        query.data_ptr(),
-        key.data_ptr(),
-        value.data_ptr(),
-        O.data_ptr(),
-        attn_mask.data_ptr() if attn_mask is not None else 0,
-        quant_block_size,
-        qscale.data_ptr(),
-        kscale.data_ptr(),
-        lut.data_ptr(),
-        valid_block_num.data_ptr(),
-        q_blocks,
-        kv_blocks,
-        q_tile_override,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
-        cvt_dtype(query.dtype),
-        cvt_dtype(key.dtype),
-        cvt_dtype(O.dtype),
-        B,
-        Hq,
-        Hkv,
-        Sq,
-        Skv,
-        D,
-        float(scale) if scale is not None else 1.0 / (D**0.5),
-        bool(is_causal),
-    )
-    return O
-
-
-def sage_sparse_decode(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    key_cache: torch.Tensor,
-    value_cache: torch.Tensor,
-    lut: torch.Tensor,
-    valid_block_num: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-    enable_gqa: bool = False,
-    quant_block_size: int = 64,
-    qscale: torch.Tensor | None = None,
-    kscale: torch.Tensor | None = None,
-    kscale_cache: torch.Tensor | None = None,
-    tensor_layout: str = "HND",
-) -> torch.Tensor:
-    """Low-level sparse SAGE decode with pre-quantized INT8 Q/K and explicit KV cache."""
-    if query.device.type != "xpu":
-        raise NotImplementedError("sage_sparse_decode is only supported on XPU")
-    if dropout_p != 0.0:
-        raise NotImplementedError("dropout_p must be 0.0 for sage_sparse_decode")
-    if enable_gqa:
-        raise NotImplementedError("enable_gqa is not used by sage_sparse_decode; provide explicit Hq/Hkv tensors")
-    if query.dtype != torch.int8 or key.dtype != torch.int8 or key_cache.dtype != torch.int8:
-        raise ValueError(f"Q/K/K_cache must be int8, got Q={query.dtype}, K={key.dtype}, K_cache={key_cache.dtype}")
-    if value.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"V must be float16 or bfloat16, got {value.dtype}")
-    if value_cache.dtype != value.dtype:
-        raise ValueError(f"V_cache dtype must match V dtype, got {value_cache.dtype} vs {value.dtype}")
-    if qscale is None or kscale is None or kscale_cache is None:
-        raise ValueError("qscale, kscale, and kscale_cache must be provided for sage_sparse_decode")
-    if lut.dtype != torch.int32 or valid_block_num.dtype != torch.int32:
-        raise ValueError("lut and valid_block_num must be int32 tensors")
-    if quant_block_size <= 0:
-        raise ValueError(f"quant_block_size must be positive, got {quant_block_size}")
-
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
-    Bkc, Hkvc, Skvc, Dkc = _validate_attention_tensor(key_cache, "K_cache", tensor_layout)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
-    Bvc, Hkvc2, Skvc2, Dvc = _validate_attention_tensor(value_cache, "V_cache", tensor_layout)
-    if Bk != B or Bkc != B or Bv != B or Bvc != B:
-        raise ValueError("Batch size mismatch between Q/K/V/cache tensors")
-    if Hkv2 != Hkv or Hkvc != Hkv or Hkvc2 != Hkv:
-        raise ValueError("KV head-count mismatch")
-    if Skv2 != Skv or Skvc2 != Skvc:
-        raise ValueError("K/V sequence length mismatch")
-    if Dk != D or Dkc != D or Dv != D or Dvc != D:
-        raise ValueError("Head dim mismatch between Q/K/V/cache tensors")
-    if Sq != 1:
-        raise ValueError(f"sage_sparse_decode currently supports only seq_len_q == 1, got {Sq}")
-    if Skv <= 0 or Skvc <= 0:
-        raise ValueError("sage_sparse_decode requires both current-step KV and KV cache to be non-empty")
-    if D not in (64, 128):
-        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
-
-    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
-    cur_blocks = (Skv + quant_block_size - 1) // quant_block_size
-    cache_blocks = (Skvc + quant_block_size - 1) // quant_block_size
-    total_blocks = cur_blocks + cache_blocks
-    if tuple(lut.shape) != (B, Hq, q_blocks, total_blocks):
-        raise ValueError(f"lut must have shape {(B, Hq, q_blocks, total_blocks)}, got {tuple(lut.shape)}")
-    if tuple(valid_block_num.shape) != (B, Hq, q_blocks):
-        raise ValueError(f"valid_block_num must have shape {(B, Hq, q_blocks)}, got {tuple(valid_block_num.shape)}")
-    if qscale.numel() != B * Hq * q_blocks:
-        raise ValueError(f"qscale must have {B * Hq * q_blocks} elements, got {qscale.numel()}")
-    if kscale.numel() != B * Hkv * cur_blocks:
-        raise ValueError(f"kscale must have {B * Hkv * cur_blocks} elements, got {kscale.numel()}")
-    if kscale_cache.numel() != B * Hkv * cache_blocks:
-        raise ValueError(f"kscale_cache must have {B * Hkv * cache_blocks} elements, got {kscale_cache.numel()}")
-    if torch.any(valid_block_num < 0).item():
-        raise ValueError("valid_block_num entries must be non-negative")
-    if torch.any(valid_block_num > total_blocks).item():
-        raise ValueError(f"valid_block_num entries must be <= {total_blocks}")
-
-    q_hnd = _to_hnd(query, tensor_layout)
-    k_hnd = _to_hnd(key, tensor_layout)
-    v_hnd = _to_hnd(value, tensor_layout)
-    k_cache_hnd = _to_hnd(key_cache, tensor_layout)
-    v_cache_hnd = _to_hnd(value_cache, tensor_layout)
-    O_hnd = torch.empty((B, Hq, Sq, D), dtype=value.dtype, device=query.device)
-    q_strides = _attention_strides_qko(q_hnd, "HND")
-    k_strides = _attention_strides_qko(k_hnd, "HND")
-    v_strides = _attention_strides_v(v_hnd, "HND")
-    o_strides = _attention_strides_qko(O_hnd, "HND")
-    kscale_total = torch.cat(
-        [kscale_cache.reshape(B, Hkv, cache_blocks, 1), kscale.reshape(B, Hkv, cur_blocks, 1)], dim=2
-    )
-    lib = get_lib(query)
-    stream = get_stream(query)
-    lib.sage_sparse_decode(
-        stream,
-        q_hnd.data_ptr(),
-        k_hnd.data_ptr(),
-        v_hnd.data_ptr(),
-        k_cache_hnd.data_ptr(),
-        v_cache_hnd.data_ptr(),
-        O_hnd.data_ptr(),
-        attn_mask.data_ptr() if attn_mask is not None else 0,
-        quant_block_size,
-        qscale.data_ptr(),
-        kscale_total.data_ptr(),
-        lut.data_ptr(),
-        valid_block_num.data_ptr(),
-        q_blocks,
-        total_blocks,
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
-        cvt_dtype(q_hnd.dtype),
-        cvt_dtype(k_hnd.dtype),
-        cvt_dtype(O_hnd.dtype),
-        B,
-        Hq,
-        Hkv,
-        Sq,
-        Skv,
-        Skvc,
-        D,
-        float(scale) if scale is not None else 1.0 / (D**0.5),
-        bool(is_causal),
-    )
-    return _from_hnd(O_hnd, tensor_layout)
 
 
 def sagev1(
@@ -644,7 +427,7 @@ def _normalize_query_tile_tokens(
 
 def _validate_sparse_q_tile_override_for_head_dim(head_dim: int, q_tile_override: int) -> None:
     if head_dim == 128:
-        supported = (0, 64, 128, 256)
+        supported = (0, 64, 256)
     elif head_dim == 64:
         supported = (0, 128)
     else:
@@ -692,8 +475,8 @@ def _normalize_sparse_k_block_tokens(
     k_route_block_tokens: int,
 ) -> int:
     tokens = quant_block_size if sparse_k_block_tokens is None else int(sparse_k_block_tokens)
-    if tokens not in (64, 128):
-        raise ValueError(f"sparse_k_block_tokens={tokens} is not supported; supported values: 64, 128")
+    if tokens != 64:
+        raise ValueError(f"sparse_k_block_tokens={tokens} is not supported; supported value: 64")
     if tokens <= 0 or tokens % quant_block_size != 0:
         raise ValueError(
             f"sparse_k_block_tokens={tokens} must be a positive multiple of quant_block_size={quant_block_size}"
@@ -722,6 +505,53 @@ def _is_sparse_qtile256_row64k_config(
         and sparse_k_block_tokens == 64
         and _normalize_tensor_layout(tensor_layout) in {"HND", "NHD"}
     )
+
+
+def _resolve_sparse_prefill_q_tile_override(
+    *,
+    head_dim: int,
+    quant_block_size: int,
+    q_tile_override: int,
+    sparse_q_block_tokens: int,
+    sparse_k_block_tokens: int,
+    tensor_layout: str,
+) -> int:
+    _validate_sparse_q_tile_override_for_head_dim(head_dim, q_tile_override)
+    if quant_block_size != 64:
+        raise ValueError(f"Unsupported quant_block_size={quant_block_size}; supported value: 64")
+    if sparse_k_block_tokens != 64:
+        raise ValueError(f"Unsupported sparse_k_block_tokens={sparse_k_block_tokens}; supported value: 64")
+
+    if head_dim == 128:
+        if sparse_q_block_tokens == 64:
+            if q_tile_override not in (0, 64):
+                raise ValueError(
+                    "head_dim=128 with sparse_q_block_tokens=64 requires q_tile_override in {0, 64}"
+                )
+            return 64
+        if _is_sparse_qtile256_row64k_config(
+            head_dim=head_dim,
+            quant_block_size=quant_block_size,
+            q_tile_override=q_tile_override,
+            sparse_q_block_tokens=sparse_q_block_tokens,
+            sparse_k_block_tokens=sparse_k_block_tokens,
+            tensor_layout=tensor_layout,
+        ):
+            return 256
+        raise ValueError(
+            "Unsupported sparse prefill config for head_dim=128; supported configs are "
+            "(sparse_q_block_tokens=64, sparse_k_block_tokens=64, q_tile_override in {0, 64}) and "
+            "(sparse_q_block_tokens=256, sparse_k_block_tokens=64, q_tile_override=256)"
+        )
+
+    if head_dim == 64:
+        if sparse_q_block_tokens != 64:
+            raise ValueError(
+                "Unsupported sparse prefill config for head_dim=64; supported sparse_q_block_tokens value: 64"
+            )
+        return q_tile_override
+
+    raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
 
 
 def _sequence_mean_native_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
@@ -1498,203 +1328,6 @@ def sparge_preprocess_topk(
             "torch" if cdfthreshd is not None else backend_preference or _get_sparse_preprocess_backend_preference()
         ),
     )
-
-
-def sparge_preprocess_topk_decode(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    key_cache: torch.Tensor,
-    *,
-    smooth_k: bool = True,
-    simthreshd1: float | torch.Tensor = -0.1,
-    topk: float | torch.Tensor = 0.5,
-    attention_sink: bool = False,
-    quant_block_size: int = 64,
-    tensor_layout: str = "HND",
-) -> dict[str, Any]:
-    if query.device.type != "xpu":
-        raise NotImplementedError("sparge_preprocess_topk_decode is only supported on XPU")
-    if quant_block_size != 64:
-        raise ValueError("sparge_preprocess_topk_decode currently supports only quant_block_size=64")
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout, expected_dtype=query.dtype)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key.dtype)
-    Bkc, Hkvc, Skvc, Dkc = _validate_attention_tensor(
-        key_cache, "K_cache", tensor_layout, expected_dtype=key_cache.dtype
-    )
-    if Bk != B or Bkc != B:
-        raise ValueError("Batch size mismatch between Q/K/K_cache")
-    if Hkvc != Hkv:
-        raise ValueError("K and K_cache head-count mismatch")
-    if Dk != D or Dkc != D:
-        raise ValueError("Head dim mismatch between Q/K/K_cache")
-    if query.dtype != key.dtype or key_cache.dtype != query.dtype:
-        raise ValueError("Q/K/K_cache dtype must match")
-    if query.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"Q/K/K_cache must be float16 or bfloat16, got {query.dtype}")
-    if Sq != 1:
-        raise ValueError(f"sparge_preprocess_topk_decode currently supports only seq_len_q == 1, got {Sq}")
-    if Skv <= 0 or Skvc <= 0:
-        raise ValueError("sparge_preprocess_topk_decode requires non-empty current K and K_cache")
-    _validate_gqa_head_config(Hq, Hkv, op_name="sparge_preprocess_topk_decode")
-    if D not in (64, 128):
-        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
-
-    query_hnd = _to_hnd(query, tensor_layout)
-    key_hnd = _to_hnd(key, tensor_layout)
-    key_cache_hnd = _to_hnd(key_cache, tensor_layout)
-    key_total_hnd = torch.cat([key_cache_hnd, key_hnd], dim=2).contiguous()
-    total_seq = key_total_hnd.size(2)
-    num_k_blocks = (total_seq + quant_block_size - 1) // quant_block_size
-    simthreshd1_tensor = _normalize_per_head_hparam(simthreshd1, Hq, query.device, "simthreshd1")
-    topk_tensor = _normalize_per_head_hparam(topk, Hq, query.device, "topk").clamp_(0.0, 1.0)
-
-    _, _, q_int8_hnd, q_scale = _pool_sim_and_quant_torch(query_hnd, quant_block_size, simthreshd1_tensor, "HND")
-    pooled_q_route, sim_q_route, _, _ = _pool_sim_and_quant_torch(
-        query_hnd,
-        _query_tile_tokens_for_head_dim(D),
-        simthreshd1_tensor,
-        "HND",
-    )
-    key_mean = key_total_hnd.mean(dim=-2, keepdim=True) if smooth_k else None
-    pooled_k, sim_kblocks, key_i8_total_hnd, k_scale_total = _pool_sim_and_quant_torch(
-        key_total_hnd,
-        quant_block_size,
-        simthreshd1_tensor[:Hkv],
-        "HND",
-        key_mean,
-    )
-
-    kv_head_index = _kv_head_index_for_q_heads(Hq, Hkv, query.device)
-    pooled_k_for_q = pooled_k[:, kv_head_index]
-    sim_k_for_q = sim_kblocks[:, kv_head_index]
-    pooled_score = torch.matmul(
-        pooled_q_route[:, :, :1, :].to(torch.float32),
-        pooled_k_for_q.transpose(-1, -2).to(torch.float32),
-    )
-    pooled_score *= D**-0.5
-    pooled_score = pooled_score.masked_fill(~sim_k_for_q.unsqueeze(-2), -torch.inf)
-    pooled_prob = _safe_softmax(pooled_score)
-    sorted_prob = torch.sort(pooled_prob, dim=-1, descending=True)
-    num_to_select = (topk_tensor.view(1, Hq, 1) * num_k_blocks).to(torch.int64).expand(B, -1, 1).contiguous()
-    final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
-    final_tile_map[~sim_k_for_q.unsqueeze(-2)] = True
-    final_tile_map = _fill_block_map_torch(final_tile_map, num_to_select, sorted_prob.indices)
-    if attention_sink:
-        final_tile_map[..., 0] = True
-
-    raw_block_map = final_tile_map.contiguous()
-    block_map = raw_block_map
-    lut, valid_block_num = _block_map_lut_torch(block_map)
-    total_selected, total_candidates, selected_ratio, sparsity_ratio, selected_blocks_per_row = (
-        _get_sparse_block_sparsity_stats(
-            valid_block_num,
-            lut,
-            is_causal=False,
-        )
-    )
-    cache_blocks = (Skvc + quant_block_size - 1) // quant_block_size
-    cur_blocks = (Skv + quant_block_size - 1) // quant_block_size
-
-    return {
-        "query_i8": _from_hnd(q_int8_hnd, tensor_layout),
-        "key_i8": _from_hnd(key_i8_total_hnd[:, :, Skvc:, :].contiguous(), tensor_layout),
-        "key_cache_i8": _from_hnd(key_i8_total_hnd[:, :, :Skvc, :].contiguous(), tensor_layout),
-        "qscale": q_scale.contiguous(),
-        "kscale": k_scale_total[:, :, cache_blocks:, :].contiguous(),
-        "kscale_cache": k_scale_total[:, :, :cache_blocks, :].contiguous(),
-        "lut": lut,
-        "valid_block_num": valid_block_num,
-        "block_map": block_map,
-        "raw_block_map": raw_block_map,
-        "tile_block_map": final_tile_map.contiguous(),
-        "sim_qblocks": sim_q_route[:, :, :1].contiguous(),
-        "sim_kblocks": sim_kblocks.contiguous(),
-        "query_tile_tokens": _query_tile_tokens_for_head_dim(D),
-        "quant_block_size": quant_block_size,
-        "backend": "torch",
-        "kernel_compatibility_added_blocks": 0,
-        "stats": {
-            "total_selected": total_selected,
-            "total_candidates": total_candidates,
-            "selected_ratio": selected_ratio,
-            "sparsity_ratio": sparsity_ratio,
-            "selected_blocks_per_row": selected_blocks_per_row,
-        },
-    }
-
-
-def sparge_sage2_decode_meansim_topk_xpu(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    key_cache: torch.Tensor,
-    value_cache: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = True,
-    scale: float | None = None,
-    smooth_k: bool = True,
-    simthreshd1: float | torch.Tensor = -0.1,
-    cdfthreshd: float | torch.Tensor | None = None,
-    topk: float | torch.Tensor = 0.5,
-    pvthreshd: float | torch.Tensor = 50,
-    attention_sink: bool = False,
-    tensor_layout: str = "HND",
-    output_dtype: torch.dtype | None = None,
-    return_sparsity: bool = False,
-    return_metadata: bool = False,
-) -> torch.Tensor | tuple[Any, ...]:
-    if query.device.type != "xpu":
-        raise NotImplementedError("sparge_sage2_decode_meansim_topk_xpu is only supported on XPU")
-    if cdfthreshd is not None:
-        raise NotImplementedError("cdfthreshd routing is not implemented yet; use topk for the first slice")
-    if dropout_p != 0.0:
-        raise NotImplementedError("dropout_p must be 0.0 for sparge_sage2_decode_meansim_topk_xpu")
-    if attn_mask is not None and is_causal:
-        raise ValueError("attn_mask and is_causal cannot both be set")
-    if output_dtype is not None and output_dtype != value.dtype:
-        raise ValueError(
-            f"output_dtype must match value.dtype in the current implementation, got {output_dtype} vs {value.dtype}"
-        )
-    if pvthreshd not in (None, 50):
-        warnings.warn("pvthreshd is not supported by the current ARK sparse kernel and is ignored", stacklevel=2)
-
-    metadata = sparge_preprocess_topk_decode(
-        query,
-        key,
-        key_cache,
-        smooth_k=smooth_k,
-        simthreshd1=simthreshd1,
-        topk=topk,
-        attention_sink=attention_sink,
-        quant_block_size=64,
-        tensor_layout=tensor_layout,
-    )
-    out = sage_sparse_decode(
-        metadata["query_i8"],
-        metadata["key_i8"],
-        value,
-        metadata["key_cache_i8"],
-        value_cache,
-        metadata["lut"],
-        metadata["valid_block_num"],
-        attn_mask=attn_mask,
-        is_causal=is_causal,
-        scale=scale,
-        quant_block_size=metadata["quant_block_size"],
-        qscale=metadata["qscale"],
-        kscale=metadata["kscale"],
-        kscale_cache=metadata["kscale_cache"],
-        tensor_layout=tensor_layout,
-    )
-    sparsity_ratio = metadata["stats"]["sparsity_ratio"]
-    if return_metadata and return_sparsity:
-        return out, sparsity_ratio, metadata
-    if return_metadata:
-        return out, metadata
-    if return_sparsity:
-        return out, sparsity_ratio
-    return out
 
 
 def sparge_sage2_attn_meansim_topk_xpu(
