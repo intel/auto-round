@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import csv
 import html
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parent.parent
 SWEEP_DIR = ROOT / "bench_sparse_topk_sweeps"
@@ -50,12 +52,7 @@ def make_svg(results: dict[str, dict[int, dict[float, float]]]) -> str:
     panel_gap = 40
     panel_width = (width - margin_left - margin_right - panel_gap) / 2
     panel_height = height - margin_top - margin_bottom
-    max_val = max(
-        results[layout][seq_len][topk]
-        for layout in LAYOUTS
-        for seq_len in SEQ_LENS
-        for topk in TOPKS
-    )
+    max_val = max(results[layout][seq_len][topk] for layout in LAYOUTS for seq_len in SEQ_LENS for topk in TOPKS)
     y_max = max(4.0, round(max_val + 0.5, 1))
     plot_bg = "#FCFBF7"
     axis_color = "#2B2B2B"

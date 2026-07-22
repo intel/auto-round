@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     echo "Source this file instead of executing it:" >&2
     echo "  source benchmarks/source_env_xpu67_oneapi2025.sh" >&2

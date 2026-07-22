@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 if [[ "${ARK_BENCH_LOGIN_SHELL_READY:-0}" != "1" ]]; then
