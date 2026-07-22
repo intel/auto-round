@@ -114,32 +114,3 @@ class CalibrationContext:
                 "You can also try to increase the model_max_length to avoid this issue."
             )
             self.seqlen = min(self.seqlen, tok_max)
-
-    # def ensure_dataloader(self, model_context: Any, seed: int) -> Any:
-    #     """Resolve :attr:`dataset` into :attr:`dataloader` and return it.
-    #
-    #     - If ``self.dataset`` is a string, builds a tokenized dataloader via
-    #       :func:`auto_round.calib_dataset.get_dataloader`.
-    #     - Otherwise, treats ``self.dataset`` as an already-iterable loader.
-    #
-    #     Mirrors the inline logic that previously lived in
-    #     ``Compressor._compute_imatrix`` and the calibrator subclasses.
-    #     """
-    #     if isinstance(self.dataset, str):
-    #         tokenizer = getattr(model_context, "tokenizer", None)
-    #         if tokenizer is None:
-    #             raise ValueError("A tokenizer must be set for the model when using a dataset string.")
-    #         from auto_round.calib_dataset import get_dataloader
-    #
-    #         dataset_name = self.dataset.replace(" ", "")
-    #         self.dataloader = get_dataloader(
-    #             tokenizer,
-    #             self.seqlen,
-    #             dataset_name,
-    #             seed,
-    #             self.batch_size,
-    #             self.nsamples,
-    #         )
-    #     else:
-    #         self.dataloader = self.dataset
-    #     return self.dataloader

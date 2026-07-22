@@ -148,15 +148,3 @@ def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
                 if getattr(config, attr_name) is None:
                     setattr(config, attr_name, shared_value)
     return configs
-
-
-# def sync_shared_config_from(source_config: Any, target_configs: list[Any]) -> None:
-#     """Propagate resolved source values to targets that already define matching attrs."""
-#     source_attrs = _public_config_attrs(source_config)
-#     for target in _quantization_configs(target_configs):
-#         if target is source_config:
-#             continue
-#         target_attrs = _public_config_attrs(target)
-#         for attr_name, source_value in source_attrs.items():
-#             if attr_name in target_attrs and source_value is not None:
-#                 setattr(target, attr_name, source_value)

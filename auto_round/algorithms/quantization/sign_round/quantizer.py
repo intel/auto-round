@@ -28,12 +28,10 @@ from auto_round.compressors.utils import (
 )
 from auto_round.logger import logger
 from auto_round.utils import (
-    get_module,
     htcore,
     is_hpex_available,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
-    set_module,
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager

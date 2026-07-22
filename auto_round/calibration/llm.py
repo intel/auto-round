@@ -210,22 +210,9 @@ class LLMCalibrator(Calibrator):
         if layer_names is None:
             layer_names = []
 
-        # TODO have a check wenhuach need to pass attetnion_mask
-        # if hasattr(c, "quantizer") and hasattr(c.quantizer, "attention_mask"):
-        #     c.quantizer.attention_mask = []
-
         block_names = flatten_list(block_names)
         self.to_cached_layers = block_names + layer_names
 
-        # tmp_dtype = None  # TODO delete this as most model is not fp32 now
-        # # Bug if block name is not the first block
-        # if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
-        #     tmp_dtype = self.model.dtype
-        #     if c.model_context.amp:
-        #         if c.model_context.model.dtype != c.model_context.model.dtype:
-        #             c.model_context.model = c.model_context.model.to(torch.bfloat16)
-        #     else:
-        #         c.model_context.model = c.model_context.model.to(torch.float32)  # model on cpu
 
         self.last_cache_name = _infer_last_cache_name(block_names, layer_names, last_cache_name)
         self._cache_target_set = set(self.to_cached_layers)
@@ -250,8 +237,6 @@ class LLMCalibrator(Calibrator):
             if hasattr(self, "dataloader"):
                 del self.dataloader
         res = self.inputs
-        # if tmp_dtype is not None:
-        #     c.model_context.model.to(tmp_dtype)
 
         return res
 

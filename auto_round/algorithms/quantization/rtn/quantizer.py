@@ -20,8 +20,6 @@ from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
-    get_module,
-    set_module,
 )
 
 
@@ -70,14 +68,6 @@ class RTNQuantizer(BaseQuantizer):
             if check_to_quantized(m):
                 self._quantize_layer_via_rtn(m, disable_opt_rtn=True)
         return {}
-
-    # @torch.no_grad()
-    # def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
-    #     if dtype is not None:
-    #         layer = get_module(self.model, name)
-    #         set_module(self.model, name, layer.to(dtype))
-    #     self._quantize_layer_via_rtn(name, disable_opt_rtn=True)
-
 
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):

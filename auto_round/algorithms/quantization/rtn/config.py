@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.logger import logger
 
 

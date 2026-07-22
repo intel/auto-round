@@ -852,11 +852,7 @@ class BaseOrchestrator(object):
         dataset = self.calibration_context.dataset
         if dataset is not None:
             return dataset
-        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-        # scheme = self.scheme
-        # if isinstance(scheme, AutoScheme) and scheme.dataset: #  TODO  have a check dataset from scheme? wenhuach
-        #     return scheme.dataset
+        
         return "NeelNanda/pile-10k"
 
     def post_init(self) -> None:
