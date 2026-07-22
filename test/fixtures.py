@@ -401,7 +401,8 @@ def mock_fp8_capable_device():
 def clean_tmp_model_folder():
     yield
     shutil.rmtree("./tmp", ignore_errors=True)  # unittest default workspace
-    shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default workspace
+    shutil.rmtree("./ar_workspace", ignore_errors=True)  # autoround default workspace
+    shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default model output path
 
 
 # Create objective fixtures for testing

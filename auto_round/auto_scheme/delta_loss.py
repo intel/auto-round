@@ -1546,6 +1546,10 @@ def _save_autoscheme_scores(
           "total_params": 12345
         }
     """
+    # Persist only per-layer independent scores. Grouping (e.g. shared_layers
+    # or MoE expert groups) is intentionally NOT stored here — callers should
+    # re-apply grouping when loading a cache so the on-disk format stays
+    # per-op and backward/forward compatible.
     data = {
         "version": 2,
         "cache_key": cache_key,
@@ -1886,15 +1890,27 @@ def _gen_layer_config(
                         index,
                         _scheme_cache_key,
                     )
-                    # Restore this scheme's per-layer scores
-                    layer_scores_for_scheme = _scheme_cached_data["layer_scores"]
-                    total_loss_for_scheme = _scheme_cached_data["total_loss_for_scheme"]
-
-                    # Populate total_scores and options_scores for this scheme
+                    # Re-apply shared_layers merging on the cached per-op scores.
+                    # Cache always stores one entry per op; grouping is re-applied
+                    # here so changing --shared_layers takes effect without re-scoring.
                     new_scores = {}
-                    for layer_name, score_pair in layer_scores_for_scheme.items():
-                        bits, loss = score_pair
-                        new_scores[layer_name] = [index, bits, loss, [layer_name]]
+                    remaining = dict(_scheme_cached_data["layer_scores"])
+                    for share_layer in shared_layers:
+                        param_bits = 0
+                        tmp_loss = 0
+                        name_list = []
+                        for name in share_layer:
+                            if name in remaining:
+                                bits, loss = remaining.pop(name)
+                                param_bits += bits
+                                tmp_loss += loss
+                                name_list.append(name)
+                        if name_list:
+                            new_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
+                    for name, (bits, loss) in remaining.items():
+                        new_scores[name] = [index, bits, loss, [name]]
+
+                    total_loss_for_scheme = sum(item[2] for item in new_scores.values())
                     for key, item in new_scores.items():
                         if key in total_scores:
                             total_scores[key].append(item)
@@ -1943,23 +1959,52 @@ def _gen_layer_config(
             memory_monitor.update()
             memory_monitor.log_summary()
 
+            # Save per-op scores to cache BEFORE shared_layers merging so the
+            # cache is independent of --shared_layers configuration.
+            if isinstance(scheme, str):
+                scheme_dict = asdict(preset_name_to_scheme(scheme))
+            elif isinstance(scheme, QuantizationScheme):
+                scheme_dict = asdict(scheme)
+            else:
+                scheme_dict = scheme if isinstance(scheme, dict) else {"preset": str(scheme)}
+
+            _save_autoscheme_scores(
+                cache_path=_scheme_cache_path,
+                cache_key=_scheme_cache_key,
+                scheme_index=index,
+                scheme_dict=scheme_dict,
+                layer_scores={name: list(v) for name, v in scores.items()},
+                total_loss_for_scheme=sum(v[1] for v in scores.values()),
+                total_params=sum(
+                    (
+                        m.weight.numel()
+                        if hasattr(m, "weight") and m.weight is not None
+                        else (m._cached_weight_numel if hasattr(m, "_cached_weight_numel") else 0)
+                    )
+                    for n, m in model.named_modules()
+                    if n in quant_layer_names + embedding_layers_names
+                ),
+            )
+
+            # Apply shared_layers merging
             new_scores = {}
             for share_layer in shared_layers:
                 param_bits = 0
                 tmp_loss = 0
                 name_list = []
                 for name in share_layer:
-                    if name in scores.keys():
+                    if name in scores:
                         param_bits += scores[name][0]
                         tmp_loss += scores[name][1]
                         name_list.append(name)
-                        scores.pop(name)
-                new_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
-            for name, item in scores.items():
-                new_scores[name] = [index, item[0], item[1], [name]]
-            options_total_loss = 0.0
+                        del scores[name]
+                if name_list:
+                    new_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
+            for name, (bits, loss) in scores.items():
+                new_scores[name] = [index, bits, loss, [name]]
+
+            options_total_loss = sum(item[2] for item in new_scores.values())
             for key, item in new_scores.items():
-                options_total_loss += item[2]
                 if key in total_scores:
                     total_scores[key].append(item)
                 else:
@@ -1970,40 +2015,6 @@ def _gen_layer_config(
                 f"scoring finished (total_loss={options_total_loss:.6f})"
             )
             clear_memory(device_list=device_list)
-
-            # Save this scheme's cache (per-scheme granularity)
-            if _scheme_cached_data is None:
-                # Only save if we computed it; skip if loaded from cache
-                layer_scores_for_cache = {}
-                for layer_name, item in new_scores.items():
-                    # item = [index, bits, loss, [names]]
-                    layer_scores_for_cache[layer_name] = [item[1], item[2]]  # [bits, loss]
-
-                # Normalize scheme to dict
-                if isinstance(scheme, str):
-                    scheme_dict = asdict(preset_name_to_scheme(scheme))
-                elif isinstance(scheme, QuantizationScheme):
-                    scheme_dict = asdict(scheme)
-                else:
-                    scheme_dict = scheme if isinstance(scheme, dict) else {"preset": str(scheme)}
-
-                _save_autoscheme_scores(
-                    cache_path=_scheme_cache_path,
-                    cache_key=_scheme_cache_key,
-                    scheme_index=index,
-                    scheme_dict=scheme_dict,
-                    layer_scores=layer_scores_for_cache,
-                    total_loss_for_scheme=options_total_loss,
-                    total_params=sum(
-                        (
-                            m.weight.numel()
-                            if hasattr(m, "weight") and m.weight is not None
-                            else (m._cached_weight_numel if hasattr(m, "_cached_weight_numel") else 0)
-                        )
-                        for n, m in model.named_modules()
-                        if n in quant_layer_names + embedding_layers_names
-                    ),
-                )
 
         # Remove hooks and restore original weights from disk for final bit-budget computations
         if offload_context is not None:

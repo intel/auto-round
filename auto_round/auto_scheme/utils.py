@@ -872,7 +872,7 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
         max_cell_len = max((len(block_cells.get(b, {}).get(col, "-")) for b in block_names), default=1)
         widths[col] = max(len(leaf), max_cell_len)
     if has_expert_layers:
-        widths["experts"] = max(len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1))
+        widths["experts"] = max(len("mlp"), len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1))
     # Ensure the first column of each prefix group is wide enough for the prefix text in header row 1.
     for col, prefix in zip(columns, header_rows[0][1:]):
         if prefix:
