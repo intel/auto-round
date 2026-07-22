@@ -25,7 +25,7 @@ class _QuantizerStub:
 
 ## AttributeError: 'Compressor' object has no attribute 'pipeline'
 def test_llmc_quantize_block_allows_mllm(monkeypatch):
-    return True # TODO yi
+    return True  # TODO yi
     compressor = object.__new__(Compressor)
     compressor.model_context = SimpleNamespace(model=None, is_mllm=True, is_diffusion=False, amp_dtype=torch.float32)
     compressor._post_init_done = True
