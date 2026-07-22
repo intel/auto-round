@@ -62,7 +62,6 @@ class QDQTool:
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
 
-
     # # ── runtime wiring ────────────────────────────────────────────────────────
     def configure(self, composer) -> None:
         """Derive QDQ behaviour from the run's block quantizer."""
