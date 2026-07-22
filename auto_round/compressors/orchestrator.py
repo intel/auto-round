@@ -58,6 +58,7 @@ from auto_round.utils.device import (
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
+
 # TODO wenhuach align all the API args
 class CompressionOrchestrator(BaseOrchestrator):
 

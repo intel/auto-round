@@ -213,7 +213,6 @@ class LLMCalibrator(Calibrator):
         block_names = flatten_list(block_names)
         self.to_cached_layers = block_names + layer_names
 
-
         self.last_cache_name = _infer_last_cache_name(block_names, layer_names, last_cache_name)
         self._cache_target_set = set(self.to_cached_layers)
         self._cache_seen_targets = set()

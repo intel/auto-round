@@ -2262,7 +2262,6 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             device=device,
             quant_lm_head=quant_lm_head,
             quant_nontext_module=quant_nontext_module,
-
         )
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
@@ -2295,7 +2294,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             ignore_layers=ignore_layers,
             device_map=device_map,
             quant_lm_head=quant_lm_head,
-            low_cpu_mem_usage=low_cpu_mem_usage
+            low_cpu_mem_usage=low_cpu_mem_usage,
         )
 
         self._fallback_init_kwargs = fallback_init
