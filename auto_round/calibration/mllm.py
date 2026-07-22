@@ -105,26 +105,48 @@ class MLLMCalibrator(LLMCalibrator):
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            (
-                c.dataloader,
-                c.batch_size,
-                c.seqlen,
-                c.gradient_accumulate_steps,
-            ) = get_mllm_dataloader(
-                template=c.template_obj,
-                model=mc.model,
-                tokenizer=tokenizer,
-                processor=processor,
-                image_processor=image_processor,
-                dataset=dataset,
-                extra_data_dir=c.extra_data_dir,
-                seqlen=c.seqlen,
-                bs=bs,
-                seed=c.seed,
-                nsamples=nsamples,
-                gradient_accumulate_steps=c.gradient_accumulate_steps,
-                quant_nontext_module=c.quant_nontext_module,
-            )
+            from auto_round.compressors.mllm.dataset import MLLM_DATASET
+
+            if not c.quant_nontext_module and dataset not in MLLM_DATASET:
+                # A local text dataset (file/dir/HF
+                # text set) is valid calibration for a VLM whose non-text
+                # modules are NOT being quantized -- the full-model forward
+                # runs text-only and the generic-dict branch of the loop below
+                # feeds model(**batch). Upstream instead falls through to
+                # get_mllm_dataloader, which KeyErrors on any dataset not in
+                # its MLLM_DATASET registry (its `os.path.isfile(dataset) or
+                # dataset in MLLM_DATASET` guard still indexes MLLM_DATASET
+                # with the file path).
+                from auto_round.calib_dataset import get_dataloader
+
+                logger.info(
+                    f"Multimodal model with non-MLLM calibration dataset {dataset!r} and "
+                    "quant_nontext_module=False: using the standard text dataloader "
+                    "(vision/audio towers are not being quantized, so text-only "
+                    "calibration through the full-model forward is sufficient)."
+                )
+                c.dataloader = get_dataloader(tokenizer, c.seqlen, dataset, c.seed, bs, nsamples)
+            else:
+                (
+                    c.dataloader,
+                    c.batch_size,
+                    c.seqlen,
+                    c.gradient_accumulate_steps,
+                ) = get_mllm_dataloader(
+                    template=c.template_obj,
+                    model=mc.model,
+                    tokenizer=tokenizer,
+                    processor=processor,
+                    image_processor=image_processor,
+                    dataset=dataset,
+                    extra_data_dir=c.extra_data_dir,
+                    seqlen=c.seqlen,
+                    bs=bs,
+                    seed=c.seed,
+                    nsamples=nsamples,
+                    gradient_accumulate_steps=c.gradient_accumulate_steps,
+                    quant_nontext_module=c.quant_nontext_module,
+                )
         else:
             c.dataloader = c.dataset
 
