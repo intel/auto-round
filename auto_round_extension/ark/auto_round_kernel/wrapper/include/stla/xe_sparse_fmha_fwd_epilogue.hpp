@@ -94,7 +94,7 @@ class SparseFMHAFwdEpilogue {
 
   template <typename QVCoord>
   CUTLASS_DEVICE void operator()(TensorO2D const& O, FragA& tArA, FragARow& tA_max, FragARow& tA_sum, QVCoord blk_qv,
-                                 int thr_id) {
+                                 int thr_id, int /*head_q*/, int /*idx_b*/) {
     using namespace cute;
     using ElementAcc = typename FragA::element_type;
 

@@ -42,7 +42,6 @@
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
 #include "flash_attention_v2/collective/xe_fmha_fwd_epilogue.hpp"
 #include "flash_attention_v2/collective/xe_fmha_fwd_mainloop.hpp"
-#include "xe_fmha_fwd_epilogue_compat.hpp"
 #include "xe_sparse_sagev1_fwd_mainloop.hpp"
 #include "flash_attention_v2/kernel/xe_tile_scheduler.hpp"
 #include <type_traits>
@@ -342,8 +341,7 @@ class XeSparseSageFwdKernel {
       }
 
       CollectiveEpilogue epilogue{params.epilogue, shared_storage.epilogue};
-      detail::run_fmha_fwd_epilogue(epilogue, O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, thr_id, head_q,
-                                    idx_b, 0);
+      epilogue(O(_, _, head_q, l_coord), tArA, tA_max, tA_sum, blk_qv, thr_id, head_q, idx_b);
     }
   }
 };
