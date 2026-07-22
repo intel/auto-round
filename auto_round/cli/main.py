@@ -333,6 +333,38 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
+    # Normalize --options: accepts both space-separated (nargs="+" list) and comma-separated string.
+    # Examples: --options W4A16 W8A16  OR  --options W4A16,W8A16
+    if args.options is not None:
+        flat = ",".join(args.options)  # handles list; each element may itself contain commas
+        args.options = ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+    # Normalize --shared_layers: supports three forms per invocation:
+    #   - all bare tokens (no commas): treated as one group
+    #     e.g. --shared_layers l1 l2       → [['l1', 'l2']]
+    #   - comma-containing tokens: each token is its own group
+    #     e.g. --shared_layers l1,l2 l3,l4 → [['l1','l2'], ['l3','l4']]
+    #   - single comma token: one group
+    #     e.g. --shared_layers l1,l2       → [['l1', 'l2']]
+    # Multiple --shared_layers flags always produce multiple groups (one per flag when each flag
+    # yields exactly one group, or more if a flag contains comma-tokens).
+    if args.shared_layers is not None:
+        normalized_groups = []
+        for invocation in args.shared_layers:
+            # invocation is a list of tokens from one --shared_layers flag (nargs="+")
+            if any("," in token for token in invocation):
+                # at least one comma token → each token becomes its own group
+                for token in invocation:
+                    group = [p.strip() for p in token.split(",") if p.strip()]
+                    if group:
+                        normalized_groups.append(group)
+            else:
+                # all bare names → bundle into a single group
+                group = [p.strip() for p in invocation if p.strip()]
+                if group:
+                    normalized_groups.append(group)
+        args.shared_layers = normalized_groups if normalized_groups else None
+
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")

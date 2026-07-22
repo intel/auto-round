@@ -127,7 +127,13 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")
-    rt.add_argument("--options", default=None, type=str, help="AutoScheme options, for example 'W4A16,W8A16'.")
+    rt.add_argument(
+        "--options",
+        default=None,
+        type=str,
+        nargs="+",
+        help="AutoScheme options. Accepts comma-separated ('W4A16,W8A16') or space-separated (W4A16 W8A16).",
+    )
     rt.add_argument(
         "--low_gpu_mem_usage", action="store_true", help="Enable memory-efficient mode by offloading features to CPU."
     )
@@ -150,7 +156,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         nargs="+",
         action="append",
         default=None,
-        help="Ensure listed layers share the same quantization data type.",
+        help="Ensure listed layers share the same quantization data type."
+        " Accepts space-separated (--shared_layers l1 l2) or comma-separated ('l1,l2') per group.",
     )
     rt.add_argument(
         "--static_kv_dtype",
