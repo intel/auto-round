@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ctypes
 import os
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -209,6 +211,72 @@ def _empty_attention_output(
 
 cpu_lib = None
 xpu_lib = None
+_oneapi_runtime_preloaded = False
+
+
+def _oneapi_runtime_dirs() -> list[Path]:
+    dirs: list[Path] = []
+
+    cmplr_root = os.environ.get("CMPLR_ROOT")
+    if cmplr_root:
+        root = Path(cmplr_root)
+        dirs.extend([root / "lib", root / "opt" / "compiler" / "lib"])
+
+    if not cmplr_root:
+        for exe_name in ("icpx", "icx"):
+            exe_path = shutil.which(exe_name)
+            if exe_path:
+                root = Path(exe_path).resolve().parent.parent
+                dirs.extend([root / "lib", root / "opt" / "compiler" / "lib"])
+        for candidate in (
+            Path("/opt/intel/oneapi/compiler/latest"),
+            Path("/opt/intel/oneapi/compiler"),
+        ):
+            if candidate.exists():
+                if candidate.name == "compiler":
+                    versioned = sorted(path for path in candidate.iterdir() if path.is_dir())
+                    if versioned:
+                        root = versioned[-1]
+                        dirs.extend([root / "lib", root / "opt" / "compiler" / "lib"])
+                else:
+                    dirs.extend([candidate / "lib", candidate / "opt" / "compiler" / "lib"])
+
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for path in dirs:
+        if path.exists() and path not in seen:
+            seen.add(path)
+            result.append(path)
+    return result
+
+
+def _preload_oneapi_runtime_deps() -> None:
+    global _oneapi_runtime_preloaded
+    if _oneapi_runtime_preloaded:
+        return
+
+    load_mode = getattr(ctypes, "RTLD_GLOBAL", 0)
+    runtime_names = (
+        "libOpenCL.so.1",
+        "libsycl.so.8",
+        "libiomp5.so",
+        "libsvml.so",
+        "libirng.so",
+        "libimf.so",
+        "libintlc.so.5",
+    )
+
+    for runtime_dir in _oneapi_runtime_dirs():
+        for lib_name in runtime_names:
+            lib_path = runtime_dir / lib_name
+            if not lib_path.exists():
+                continue
+            try:
+                ctypes.CDLL(str(lib_path), mode=load_mode)
+            except OSError:
+                continue
+
+    _oneapi_runtime_preloaded = True
 
 
 def _load_local_xpu_lib():
