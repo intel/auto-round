@@ -14,11 +14,13 @@
 
 import json
 import os
+import re
 from collections import OrderedDict
 from typing import Optional, Union
 
 import torch
 
+from auto_round import envs
 from auto_round.compressors.utils import _get_save_folder_name
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
@@ -95,7 +97,76 @@ class ShardWriter:
         self.total_param_size_bytes = 0
         self.skipped_meta_tensors = []
 
+        # When resumability is active
+        # (AR_RESUME_DIR set), a fresh process's ShardWriter otherwise has no
+        # idea a previous, crashed process already flushed some shards to
+        # output_dir -- it would restart shard_counter at 0 and overwrite
+        # `model-shard-00001...`, and finalize()'s index would only cover the
+        # tensors written by *this* process, producing a corrupt/incomplete
+        # checkpoint. Gated on AR_RESUME_DIR so normal (non-resuming) runs
+        # never change behavior even if output_dir happens to be reused.
+        #
+        # Deliberately NOT run here in __init__: at construction time (from
+        # post_init(), inside quantize_and_save()) `self.output_dir` still
+        # reflects the pre-`_get_export_dir()` path -- the final subfolder
+        # (e.g. `<model>-w4g128/`) hasn't been appended yet, so discovery
+        # would silently look in the wrong directory and find nothing
+        # (confirmed empirically: this exact ordering bug let a resumed run's
+        # blocks 0-2 through tuning correctly, then still lose their output,
+        # since `_flush_shard`/`finalize` never learned about the crashed
+        # run's shards). Deferred to the first real `_flush_shard()` call
+        # instead, by which point `output_dir` is always the final path.
+        self._existing_shards_discovered = False
+
         ShardWriter._initialized = True
+
+    def _discover_existing_shards(self) -> None:
+        """Recover shard-writer state from shard files a previous (crashed)
+        process already flushed to ``output_dir``, so this process continues
+        shard numbering instead of colliding with them, and ``finalize()``'s
+        index covers tensors from both processes.
+
+        Only files still in the pre-``finalize()`` temp naming
+        (``model-shard-NNNNN.<ext>``) are considered: once ``finalize()`` runs
+        it renames everything to the final HF layout, so a directory with no
+        such temp files means either nothing has been flushed yet, or a prior
+        run already finished -- neither should be treated as in-progress
+        shards to adopt.
+        """
+        output_dir = self.output_dir
+        if not os.path.isdir(output_dir):
+            return
+        pattern = re.compile(rf"^model-shard-(\d+)\.{re.escape(self.shard_suffix)}$")
+        found = []
+        for fname in os.listdir(output_dir):
+            m = pattern.match(fname)
+            if m:
+                found.append((int(m.group(1)), fname))
+        if not found:
+            return
+        found.sort()
+        for _, fname in found:
+            path = os.path.join(output_dir, fname)
+            params = self._read_shard_tensor_names(path)
+            self.shard_meta.append({"tmp_file": fname, "params": params, "dir": output_dir})
+            self._all_saved.update(params)
+        self.shard_counter = found[-1][0]
+        logger.info(
+            f"ShardWriter: discovered {len(found)} already-flushed shard(s) in {output_dir} "
+            f"from a previous run; resuming shard numbering from {self.shard_counter}."
+        )
+
+    def _read_shard_tensor_names(self, path: str) -> list[str]:
+        """Read only the tensor-name header of an already-flushed shard file,
+        without materializing any tensor data."""
+        if self.use_safetensors:
+            from safetensors import safe_open
+
+            with safe_open(path, framework="pt") as f:
+                return list(f.keys())
+        else:
+            sd = torch.load(path, map_location="meta")
+            return list(sd.keys())
 
     @property
     def output_dir(self) -> str:
@@ -257,6 +328,10 @@ class ShardWriter:
     def _flush_shard(self):
         if not self.current_shard_tensors:
             return
+
+        if envs.AR_RESUME_DIR and not self._existing_shards_discovered:
+            self._discover_existing_shards()
+            self._existing_shards_discovered = True
 
         self.shard_counter += 1
         output_dir = self.output_dir
