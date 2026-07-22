@@ -1,7 +1,6 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import math
 import sys
 from pathlib import Path
@@ -13,30 +12,23 @@ if str(REPO_PARENT) not in sys.path:
     sys.path.insert(0, str(REPO_PARENT))
 
 import auto_round_kernel as ark
+from auto_round_kernel.xpu_loader import ensure_xpu_lib
 
 
 def ensure_sparse_binding() -> None:
-    if getattr(ark, "xpu_lib", None) is not None and hasattr(ark.xpu_lib, "sage_sparse"):
-        return
-    candidates = sorted((REPO_PARENT / "auto_round_kernel" / "xbuild").glob("auto_round_kernel_xpu*.so"))
-    if not candidates:
-        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in xbuild/")
-    ext_path = candidates[-1]
-    spec = importlib.util.spec_from_file_location("auto_round_kernel_xpu", ext_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load extension spec from {ext_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["auto_round_kernel_xpu"] = module
-    spec.loader.exec_module(module)
-    if not hasattr(module, "sage_sparse"):
-        raise RuntimeError(f"Loaded extension does not expose sage_sparse: {ext_path}")
-    ark.xpu_lib = module
+    ensure_xpu_lib(required_symbols=("sage_sparse",))
 
 
 def _to_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
     if tensor_layout == "HND":
         return tensor.contiguous()
     return tensor.permute(0, 2, 1, 3).contiguous()
+
+
+def _canonicalize_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
+    canonical = torch.empty(tensor.shape, dtype=tensor.dtype, device=tensor.device)
+    canonical.copy_(tensor)
+    return canonical
 
 
 def _assert_metadata_matches(actual: dict, reference: dict) -> None:
@@ -207,6 +199,9 @@ def run_case(
         raise RuntimeError(f"sparge preprocess torch replay mismatch for {case_name}, D={head_dim}")
 
     if topk == 1.0:
+        dense_query = _canonicalize_layout(meta["query_i8"], tensor_layout)
+        dense_key = _canonicalize_layout(meta["key_i8"], tensor_layout)
+        dense_value = _canonicalize_layout(value, tensor_layout)
         dense_mask = ark.sparge_block_map_to_mask(
             meta["block_map"],
             quant_block_size=meta["quant_block_size"],
@@ -217,9 +212,9 @@ def run_case(
             is_causal=is_causal,
         )
         dense_out = ark.sage(
-            meta["query_i8"],
-            meta["key_i8"],
-            value,
+            dense_query,
+            dense_key,
+            dense_value,
             attn_mask=dense_mask,
             is_causal=False,
             scale=scale,
@@ -306,30 +301,25 @@ def run_causal_decoupled_wrapper_case(*, tensor_layout: str) -> None:
         return_metadata=True,
     )
 
-    dense_mask = ark.sparge_block_map_to_mask(
-        meta["block_map"],
-        quant_block_size=meta["quant_block_size"],
-        q_block_tokens=meta["sparse_q_block_tokens"],
-        k_block_tokens=meta["sparse_k_block_tokens"],
-        seq_len_q=seq_len_q,
-        seq_len_kv=seq_len_kv,
-        is_causal=True,
-    )
-    dense_out = ark.sage(
+    direct_sparse = ark.sage_sparse(
         meta["query_i8"],
         meta["key_i8"],
         value,
-        attn_mask=dense_mask,
-        is_causal=False,
+        meta["lut"],
+        meta["valid_block_num"],
+        is_causal=True,
         scale=scale,
         quant_block_size=meta["quant_block_size"],
         qscale=meta["qscale"],
         kscale=meta["kscale"],
+        q_tile_override=256,
+        sparse_q_block_tokens=meta["sparse_q_block_tokens"],
+        sparse_k_block_tokens=meta["sparse_k_block_tokens"],
         tensor_layout=tensor_layout,
     )
     torch.xpu.synchronize()
 
-    diff = (dense_out.float() - sparse_out.float()).abs()
+    diff = (direct_sparse.float() - sparse_out.float()).abs()
     max_diff = float(diff.max().cpu())
     mean_diff = float(diff.mean().cpu())
     print(
@@ -354,8 +344,24 @@ def main() -> None:
         run_case(128, topk=0.5, is_causal=True, tensor_layout=tensor_layout)
         run_case(64, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
         run_case(128, topk=0.25, is_causal=False, tensor_layout=tensor_layout)
-        run_case(128, topk=0.5, is_causal=False, tensor_layout=tensor_layout, query_tile_tokens=256)
-        run_case(128, topk=0.5, is_causal=False, tensor_layout=tensor_layout, q_tile_override=256)
+        run_case(
+            128,
+            topk=0.5,
+            is_causal=False,
+            tensor_layout=tensor_layout,
+            query_tile_tokens=256,
+            sparse_q_block_tokens=256,
+            sparse_k_block_tokens=64,
+        )
+        run_case(
+            128,
+            topk=0.5,
+            is_causal=False,
+            tensor_layout=tensor_layout,
+            q_tile_override=256,
+            sparse_q_block_tokens=256,
+            sparse_k_block_tokens=64,
+        )
         run_case(
             128,
             topk=0.5,

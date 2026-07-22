@@ -2,10 +2,8 @@
 # # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
-import importlib.util
 import os
 import sys
-import sysconfig
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +17,7 @@ if str(ARK_DIR) not in sys.path:
     sys.path.insert(0, str(ARK_DIR))
 
 import auto_round_kernel as ark
+from auto_round_kernel.xpu_loader import ensure_xpu_lib
 from diffusers.models.transformers.transformer_wan import WanAttention, _get_qkv_projections
 
 
@@ -38,40 +37,10 @@ def _parse_optional_int_env(name: str) -> int | None:
 
 
 def ensure_ark_sparse_binding() -> None:
-    if getattr(ark, "xpu_lib", None) is not None and hasattr(ark.xpu_lib, "sage_sparse"):
-        return
-
-    ext_suffix = sysconfig.get_config_var("EXT_SUFFIX")
-    if not ext_suffix:
-        raise RuntimeError("Unable to determine Python extension suffix for the current interpreter")
-
-    search_roots = [
-        KERNEL_DIR / "xbuild",
-        KERNEL_DIR / "xbuild_diffuser",
-        KERNEL_DIR,
-    ]
-    candidates = []
-    for root in search_roots:
-        if root.exists():
-            candidates.extend(sorted(root.glob(f"auto_round_kernel_xpu*{ext_suffix}")))
-    if not candidates:
-        raise RuntimeError(
-            "Unable to locate a built XPU extension matching the current Python ABI. "
-            f"Expected suffix {ext_suffix!r} under one of {[str(p) for p in search_roots]}."
-        )
-
-    ext_path = candidates[-1]
-    spec = importlib.util.spec_from_file_location("auto_round_kernel_xpu", ext_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load extension spec from {ext_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["auto_round_kernel_xpu"] = module
-    spec.loader.exec_module(module)
-    required = ("sage_sparse", "sage_dynamic_quant_layout")
-    missing = [name for name in required if not hasattr(module, name)]
-    if missing:
-        raise RuntimeError(f"Loaded extension is missing required XPU bindings {missing}: {ext_path}")
-    ark.xpu_lib = module
+    ensure_xpu_lib(
+        required_symbols=("sage_sparse", "sage_dynamic_quant_layout"),
+        search_roots=(KERNEL_DIR, KERNEL_DIR / "xbuild", KERNEL_DIR / "xbuild_diffuser"),
+    )
 
 
 def _apply_rotary_emb(hidden_states: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor) -> torch.Tensor:

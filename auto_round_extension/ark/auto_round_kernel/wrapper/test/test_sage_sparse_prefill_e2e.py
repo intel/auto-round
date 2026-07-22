@@ -1,7 +1,6 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import math
 import sys
 from pathlib import Path
@@ -13,24 +12,11 @@ if str(REPO_PARENT) not in sys.path:
     sys.path.insert(0, str(REPO_PARENT))
 
 import auto_round_kernel as ark
+from auto_round_kernel.xpu_loader import ensure_xpu_lib
 
 
 def ensure_sparse_binding() -> None:
-    if getattr(ark, "xpu_lib", None) is not None and hasattr(ark.xpu_lib, "sage_sparse"):
-        return
-    candidates = sorted((REPO_PARENT / "auto_round_kernel" / "xbuild").glob("auto_round_kernel_xpu*.so"))
-    if not candidates:
-        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in xbuild/")
-    ext_path = candidates[-1]
-    spec = importlib.util.spec_from_file_location("auto_round_kernel_xpu", ext_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load extension spec from {ext_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["auto_round_kernel_xpu"] = module
-    spec.loader.exec_module(module)
-    if not hasattr(module, "sage_sparse"):
-        raise RuntimeError(f"Loaded extension does not expose sage_sparse: {ext_path}")
-    ark.xpu_lib = module
+    ensure_xpu_lib(required_symbols=("sage_sparse",))
 
 
 def quantize_qk(tensor: torch.Tensor, block_size: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -58,14 +44,18 @@ def build_sparse_metadata_and_mask(
     batch: int,
     heads: int,
     seq_len: int,
-    block_size: int,
+    quant_block_size: int,
     query_tile_tokens: int,
     per_query_tile_selection: list[list[int]],
     device: torch.device,
     is_causal: bool = False,
+    sparse_q_block_tokens: int | None = None,
+    sparse_k_block_tokens: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    q_blocks = seq_len // block_size
-    kv_blocks = q_blocks
+    q_block_tokens = quant_block_size if sparse_q_block_tokens is None else sparse_q_block_tokens
+    k_block_tokens = quant_block_size if sparse_k_block_tokens is None else sparse_k_block_tokens
+    q_blocks = (seq_len + q_block_tokens - 1) // q_block_tokens
+    kv_blocks = (seq_len + k_block_tokens - 1) // k_block_tokens
     active_query_tiles = (seq_len + query_tile_tokens - 1) // query_tile_tokens
     assert len(per_query_tile_selection) == active_query_tiles
 
@@ -73,7 +63,7 @@ def build_sparse_metadata_and_mask(
     valid = torch.zeros((batch, heads, q_blocks), dtype=torch.int32, device=device)
     mask = torch.full((batch, 1, seq_len, seq_len), -1.0e9, dtype=torch.float32, device=device)
 
-    q_blocks_per_query_tile = max(1, query_tile_tokens // block_size)
+    q_blocks_per_query_tile = max(1, query_tile_tokens // q_block_tokens)
     for qblk in range(q_blocks):
         qtile = min(qblk // q_blocks_per_query_tile, active_query_tiles - 1)
         selected_blocks = per_query_tile_selection[qtile]
@@ -88,8 +78,8 @@ def build_sparse_metadata_and_mask(
         q_end = min(q_start + query_tile_tokens, seq_len)
         for qt in range(q_start, q_end):
             for selected in selected_blocks:
-                k_start = selected * block_size
-                k_end = min(k_start + block_size, seq_len)
+                k_start = selected * k_block_tokens
+                k_end = min(k_start + k_block_tokens, seq_len)
                 if not is_causal:
                     mask[:, :, qt : qt + 1, k_start:k_end] = 0.0
                 else:
@@ -152,6 +142,8 @@ def run_case(
 
     q_i8, q_scale = quantize_qk(query, block_size)
     k_i8, k_scale = quantize_qk(key, block_size)
+    effective_sparse_q_block_tokens = block_size if sparse_q_block_tokens is None else sparse_q_block_tokens
+    effective_sparse_k_block_tokens = block_size if sparse_k_block_tokens is None else sparse_k_block_tokens
     lut, valid, dense_mask = build_sparse_metadata_and_mask(
         batch,
         num_heads_q,
@@ -161,6 +153,8 @@ def run_case(
         per_query_tile_selection,
         device,
         is_causal=is_causal,
+        sparse_q_block_tokens=effective_sparse_q_block_tokens,
+        sparse_k_block_tokens=effective_sparse_k_block_tokens,
     )
 
     dense_out = ark.sage(

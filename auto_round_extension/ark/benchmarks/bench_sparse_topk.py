@@ -6,7 +6,6 @@
 
 import argparse
 import csv
-import importlib.util
 import math
 import sys
 import time
@@ -21,24 +20,13 @@ if str(LOCAL_ARK_PARENT) not in sys.path:
     sys.path.insert(0, str(LOCAL_ARK_PARENT))
 
 import auto_round_kernel as ark
+from auto_round_kernel.xpu_loader import load_xpu_lib
 
 
 def _load_sparse_binding(ext_path: Path) -> None:
-    ext_path = ext_path.resolve()
-    if not ext_path.is_file():
-        raise RuntimeError(f"Unable to locate XPU extension: {ext_path}")
     module_name = "auto_round_kernel._bench.auto_round_kernel_xpu"
-    print(f"Loading XPU extension from {ext_path} as {module_name}")
-    spec = importlib.util.spec_from_file_location(module_name, ext_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load extension spec from {ext_path}")
-    sys.modules.pop(module_name, None)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    if not hasattr(module, "sage_sparse"):
-        raise RuntimeError(f"Loaded extension does not expose sage_sparse: {ext_path}")
-    ark.xpu_lib = module
+    print(f"Loading XPU extension from {ext_path.resolve()} as {module_name}")
+    load_xpu_lib(ext_path, required_symbols=("sage_sparse",), module_name=module_name)
 
 
 def _resolve_sparse_binding(args: argparse.Namespace) -> Path | None:
@@ -914,30 +902,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--num-heads-q", type=int, default=40)
     parser.add_argument("--num-heads-kv", type=int, default=40)
-    parser.add_argument("--seq-len", type=int, nargs="+", default=[75600])
+    parser.add_argument("--seq-len", type=int, nargs="+", default=[32768, 75600])
     parser.add_argument("--head-dim", type=int, default=128)
-    parser.add_argument("--topk", type=float, nargs="+", default=[1.0, 0.75, 0.5, 0.25, 0.125])
+    parser.add_argument("--topk", type=float, nargs="+", default=[0.5, 0.25, 0.125])
     parser.add_argument("--quant-block-size", type=int, default=64)
     parser.add_argument(
         "--q-tile-override",
         type=int,
-        default=0,
+        default=256,
         choices=(0, 64, 256),
         help="Sparse kernel q_tile override. 0 keeps the default kernel choice.",
     )
     parser.add_argument(
         "--sparse-q-block-tokens",
         type=int,
-        default=None,
+        default=256,
         help="Optional sparse Q-row granularity in tokens. Use 256 with --q-tile-override 256 for the decoupled path.",
     )
     parser.add_argument(
         "--sparse-k-block-tokens",
         type=int,
-        default=None,
+        default=64,
         help="Optional sparse K logical-block granularity in tokens. Use 64 for the decoupled qtile256 path.",
     )
-    parser.add_argument("--tensor-layout", choices=("HND", "NHD"), nargs="+", default=["HND"])
+    parser.add_argument("--tensor-layout", choices=("HND", "NHD"), nargs="+", default=["HND", "NHD"])
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument(
