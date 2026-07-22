@@ -81,7 +81,7 @@ class BaseAlgorithm:
             return cls(config)
         return alg_cls(config)
 
-    def bind(self, orchestrator: "BaseOrchestrator" ) -> None:
+    def bind(self, orchestrator: "BaseOrchestrator") -> None:
         """Wire compressor-owned state into a frozen :class:`QuantizationRunContext`.
         Called once before block iteration starts.  Fields not present on the
         compressor (e.g. ``calibration_context`` for preprocessors) default to ``None``.

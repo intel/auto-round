@@ -261,7 +261,6 @@ class BaseQuantizer(BaseAlgorithm):
         block = block.to(device_manager.device)
         return block, False, device_manager.device
 
-
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
