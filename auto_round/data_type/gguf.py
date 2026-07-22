@@ -389,7 +389,7 @@ def _imatrix_handle_zero(
 
     if group_size is None:
         group_size = 16 if bits == 2 else 32
-    imatrix = imatrix.reshape(-1, imatrix.shape[-1])
+    imatrix = imatrix.reshape(-1, imatrix.shape[-1]).clone()
     if torch.min(imatrix) == 0:
         logger.warning_once(
             "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"

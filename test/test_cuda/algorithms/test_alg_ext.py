@@ -49,10 +49,11 @@ class TestAlgExt:
         # post_init() runs the full pipeline (resolve_scheme → resolve_formats →
         # create_quantizer → ...).  quantizer only exists afterwards.
         ar.post_init()
+        quantizer = ar.alg_composer.block_quantizer
 
-        assert ar.quantizer.wrapper_block.keywords["wrapper_cls"] is SignRoundDQWrapperLinear, (
+        assert quantizer.wrapper_block.keywords["wrapper_cls"] is SignRoundDQWrapperLinear, (
             f"Expected wrapper_block to use '{SignRoundDQWrapperLinear.__name__}', "
-            f"got '{ar.quantizer.wrapper_block.__name__}'. "
+            f"got '{quantizer.wrapper_block.__name__}'. "
             "This likely means the quantizer was created before GGUF format "
             "overrides were applied (data_type was not yet 'int_asym_dq')."
         )
@@ -74,20 +75,21 @@ class TestAlgExt:
             enable_quanted_input=False,
         )
         ar.post_init()
+        quantizer = ar.alg_composer.block_quantizer
 
-        assert ar.quantizer.scheme.bits == 2
-        assert ar.quantizer.scheme.group_size == 64
-        assert ar.quantizer.scheme.sym is False
-        assert ar.quantizer.enable_alg_ext is True
-        assert ar.quantizer.enable_minmax_tuning is False
-        assert ar.quantizer.enable_norm_bias_tuning is True
-        assert ar.quantizer.enable_quanted_input is False
+        assert quantizer.scheme.bits == 2
+        assert quantizer.scheme.group_size == 64
+        assert quantizer.scheme.sym is False
+        assert quantizer.enable_alg_ext is True
+        assert quantizer.enable_minmax_tuning is False
+        assert quantizer.enable_norm_bias_tuning is True
+        assert quantizer.enable_quanted_input is False
 
         ar.quantize()
 
-        assert ar.quantizer.enable_minmax_tuning is False
-        assert ar.quantizer.enable_norm_bias_tuning is True
-        assert ar.quantizer.enable_quanted_input is False
+        assert quantizer.enable_minmax_tuning is False
+        assert quantizer.enable_norm_bias_tuning is True
+        assert quantizer.enable_quanted_input is False
 
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
     def test_all_support_dtype(self, scheme, tiny_qwen_model_path):

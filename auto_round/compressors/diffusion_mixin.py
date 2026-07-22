@@ -130,37 +130,7 @@ class DiffusionMixin:
         ``_should_stop_cache_forward``.
         """
         return "diffusion"
-
-    # def _build_pipeline_call_kwargs(self, pipe, prompts):
-    #     """Build kwargs for pipeline.__call__."""
-    #     call_kwargs = {
-    #         "guidance_scale": self.guidance_scale,
-    #         "num_inference_steps": self.num_inference_steps,
-    #         "generator": (
-    #             None
-    #             if self.generator_seed is None
-    #             else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
-    #         ),
-    #     }
-    #     call_kwargs.update(self.pipeline_call_kwargs)
-    #
-    #     if self._requires_calibration_image():
-    #         call_kwargs.setdefault(
-    #             "image", self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
-    #         )
-    #         call_kwargs.setdefault("prompt", prompts)
-    #
-    #     return call_kwargs
-    #
-    # def _requires_calibration_image(self) -> bool:
-    #     """Return True when the pipeline's __call__ has a required 'image' parameter.
-    #
-    #     I2V (image-to-video) pipelines like WanImageToVideoPipeline require a PIL/torch
-    #     image as input. This is detected by checking whether 'image' is a positional-or-
-    #     keyword parameter without a default value.
-    #     """
-    #     image_param = inspect.signature(self.model_context.pipe.__call__).parameters.get("image")
-    #     return image_param is not None and image_param.default is inspect.Parameter.empty
+    
 
     def _find_additional_transformers(self):
         """Find transformer components beyond the primary one (e.g. transformer_2 in WAN)."""
@@ -368,13 +338,13 @@ class DiffusionMixin:
             return self._quantize_zero_shot()
 
         # Get block names and call cache_inter_data to populate self.inputs
-        if bool(self.quantizer.quant_block_list):
-            all_blocks = self.quantizer.quant_block_list
+        if bool(self.quant_block_list):
+            all_blocks = self.quant_block_list
         else:
             all_blocks = get_block_names(self.model_context.model)
         if len(all_blocks) == 0:
             logger.warning("could not find blocks, exit with original model")
-            return self.model_context.model, self.quantizer.layer_config
+            return self.model, self.layer_config
 
         if not self.has_variable_block_shape:
             to_cache_block_names = [block[0] for block in all_blocks]
@@ -400,11 +370,11 @@ class DiffusionMixin:
             logger.info("start to cache block inputs")
             all_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names,
-                self.nsamples,
+                self.calibration_context.nsamples,
                 layer_names=[],
             )
             self.inputs = all_inputs
-            clear_memory(device_list=device_manager.device_list)
+            clear_memory()
             self._inputs_cached = True
             return super().quantize()
 
@@ -431,7 +401,7 @@ class DiffusionMixin:
         self.compress_context.is_immediate_saving = False
 
         # Store primary transformer state
-        primary_model = self.model_context.model
+        primary_model = self.model
         primary_layer_config = dict(self.layer_config) if self.layer_config else {}
         primary_quant_block_list = list(self.quant_block_list) if self.quant_block_list else []
         quantized_extras = {}
