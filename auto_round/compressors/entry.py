@@ -716,6 +716,7 @@ class AutoRoundCompatible:
                 layer_config=layer_config,
                 tokenizer=tokenizer,
                 device_map=device_map,
+                low_cpu_mem_usage=low_cpu_mem_usage,
                 **compressor_only_kwargs,
                 **kwargs,
             )

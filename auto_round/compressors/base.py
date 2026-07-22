@@ -387,6 +387,11 @@ class BaseOrchestrator(object):
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
         )
+        # Reset the singleton so each new orchestrator gets a fresh CompressContext.
+        # CompressContext uses AutoSkipInitMeta (singleton), so without a reset the
+        # second AutoRound(...) call reuses the previous instance and silently keeps
+        # stale values (e.g. low_cpu_mem_usage=True from a prior run).
+        CompressContext.reset_context()
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,

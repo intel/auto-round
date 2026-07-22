@@ -58,7 +58,7 @@ from auto_round.utils.device import (
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
-
+# TODO wenhuach align all the API args
 class CompressionOrchestrator(BaseOrchestrator):
 
     def __init__(
@@ -90,9 +90,6 @@ class CompressionOrchestrator(BaseOrchestrator):
             dataset=dataset,
             **kwargs,
         )
-        # # Routed to ``self._calibration_context.dataset`` via @property.
-        # # Set after ``super().__init__()`` because the state object is created there.
-        # self.dataset = dataset
 
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
@@ -428,7 +425,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     block.to("meta")
                 else:
                     mv_module_from_gpu(block)
-                    if self.low_cpu_mem_usage:
+                    if self.compress_context.low_cpu_mem_usage:
                         self._offloader(self.model, block_name)
 
                 clear_memory()
@@ -438,7 +435,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         cnt = 1
         remain_layer_names = []
         block_name_set = set(name for block in all_blocks for name in block)
-        for n, m in self.model_context.model.named_modules():
+        for n, m in self.model.named_modules():
             if not check_to_quantized(m):
                 continue
             # Skip if this layer is part of any block (by prefix match)
@@ -455,7 +452,7 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
-        if self.low_cpu_mem_usage:
+        if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model)
         if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
