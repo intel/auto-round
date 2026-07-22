@@ -8,6 +8,7 @@ repos:
     hooks:
       - id: check-json
       - id: check-yaml
+      - id: check-case-conflict
       - id: debug-statements
       - id: mixed-line-ending
         args: [--fix=lf]
@@ -31,7 +32,7 @@ repos:
           ]
 
   - repo: https://github.com/psf/black-pre-commit-mirror
-    rev: 26.3.1
+    rev: 26.5.1
     hooks:
       - id: black
         files: (.*\.py)$
@@ -48,7 +49,7 @@ repos:
       - id: blacken-docs
         args: [--line-length=120, --skip-errors]
         additional_dependencies:
-          - black==26.3.1
+          - black==26.5.1
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.2
@@ -60,7 +61,7 @@ repos:
           - tomli
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.45.0
+    rev: v1.48.0
     hooks:
       - id: typos
         exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
@@ -72,7 +73,7 @@ repos:
         exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.9
+    rev: v0.15.20
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix, --no-cache]

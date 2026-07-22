@@ -115,7 +115,7 @@ def test_restorer_does_not_rerun_completed_conversion_group(monkeypatch):
     assert restored == []
 
 
-def test_resolve_restored_qtype_uses_consistent_multi_source_layer_config():
+def test_resolve_restored_qtype_keeps_higher_recipe_fallback_for_multi_source_layer_config():
     import gguf
 
     from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
@@ -134,9 +134,57 @@ def test_resolve_restored_qtype_uses_consistent_multi_source_layer_config():
         gguf_name="blk.0.ffn_gate_up.weight",
         fallback_qtype=gguf.GGMLQuantizationType.Q5_K,
         diagnostics=diagnostics,
+        allow_recipe_fallback=True,
+    )
+
+    assert qtype is None
+    assert diagnostics == []
+
+
+def test_resolve_restored_qtype_respects_mixed_layer_config_even_when_recipe_is_higher():
+    import gguf
+
+    from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
+
+    diagnostics = []
+    qtype = resolve_restored_qtype(
+        layer_config={
+            "model.layers.0.mlp.gate_proj": {"bits": 4, "super_bits": 6, "sym": False},
+            "model.layers.0.mlp.up_proj": {"bits": 4, "super_bits": 6, "sym": False},
+        },
+        hf_names=(
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.layers.0.mlp.up_proj.weight",
+        ),
+        checkpoint_name="model.layers.0.mlp.gate_up_proj.weight",
+        gguf_name="blk.0.ffn_gate_up.weight",
+        fallback_qtype=gguf.GGMLQuantizationType.Q5_K,
+        diagnostics=diagnostics,
+        allow_recipe_fallback=False,
     )
 
     assert qtype == gguf.GGMLQuantizationType.Q4_K
+    assert diagnostics == []
+
+
+def test_resolve_restored_qtype_keeps_higher_layer_config_than_recipe_fallback():
+    import gguf
+
+    from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
+
+    diagnostics = []
+    qtype = resolve_restored_qtype(
+        layer_config={
+            "model.layers.0.mlp.down_proj": {"bits": 6, "super_bits": 8, "sym": True},
+        },
+        hf_names=("model.layers.0.mlp.down_proj.weight",),
+        checkpoint_name="model.layers.0.mlp.down_proj.weight",
+        gguf_name="blk.0.ffn_down.weight",
+        fallback_qtype=gguf.GGMLQuantizationType.Q5_K,
+        diagnostics=diagnostics,
+    )
+
+    assert qtype == gguf.GGMLQuantizationType.Q6_K
     assert diagnostics == []
 
 
