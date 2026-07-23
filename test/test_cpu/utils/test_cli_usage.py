@@ -272,7 +272,7 @@ def _normalize_shared_layers(raw):
             group = [p.strip() for p in invocation if p.strip()]
             if group:
                 normalized_groups.append(group)
-    return normalized_groups if normalized_groups else None
+    return normalized_groups or None
 
 
 def test_options_comma_space_separated():
@@ -291,13 +291,19 @@ def test_shared_layers_normalize():
 
     p = build_quantize_parser()
     # bare tokens → one group
-    assert _normalize_shared_layers(p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2"]).shared_layers) == [["l1", "l2"]]
+    assert _normalize_shared_layers(
+        p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2"]).shared_layers
+    ) == [["l1", "l2"]]
     # comma token → one group
-    assert _normalize_shared_layers(p.parse_args(["--model", "dummy", "--shared_layers", "l1,l2"]).shared_layers) == [["l1", "l2"]]
+    assert _normalize_shared_layers(p.parse_args(["--model", "dummy", "--shared_layers", "l1,l2"]).shared_layers) == [
+        ["l1", "l2"]
+    ]
     # a,b c,d → two groups (replaces --shared_layers a,b --shared_layers c,d)
-    assert _normalize_shared_layers(p.parse_args(["--model", "dummy", "--shared_layers", "l1,l2", "l3,l4"]).shared_layers) == [["l1", "l2"], ["l3", "l4"]]
+    assert _normalize_shared_layers(
+        p.parse_args(["--model", "dummy", "--shared_layers", "l1,l2", "l3,l4"]).shared_layers
+    ) == [["l1", "l2"], ["l3", "l4"]]
     # multiple flags → multiple groups
-    assert _normalize_shared_layers(p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2", "--shared_layers", "l3,l4"]).shared_layers) == [["l1", "l2"], ["l3", "l4"]]
+    assert _normalize_shared_layers(
+        p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2", "--shared_layers", "l3,l4"]).shared_layers
+    ) == [["l1", "l2"], ["l3", "l4"]]
     assert p.parse_args(["--model", "dummy"]).shared_layers is None
-
-
