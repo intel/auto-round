@@ -381,8 +381,21 @@ def quant_tensor_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
-def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int):
+def _imatrix_handle_zero(
+    imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int, raw_imatrix: torch.Tensor = None
+):
     if not isinstance(imatrix, torch.Tensor):
+        return imatrix
+
+    # `imatrix` here is normally a broadcast-expanded VIEW of the much smaller per-block
+    # `raw_imatrix` (no extra memory), built via `.expand(...).reshape(weight.shape)`. But the
+    # `.reshape(-1, imatrix.shape[-1])` a few lines below merges the broadcast dimension into a
+    # real one, which forces PyTorch to fully materialize a tensor as large as `weight` itself
+    # (e.g. an extra ~11GB for an ~11GB embedding tensor). The common case - calibration data
+    # with no zero-valued activations - never needs any of that; check for zeros on the small,
+    # pre-broadcast `raw_imatrix` first and skip the expensive materialization entirely then.
+    probe = raw_imatrix if raw_imatrix is not None else imatrix
+    if torch.min(probe) != 0:
         return imatrix
 
     group_size = 16 if bits == 2 else 32
@@ -464,7 +477,7 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         weights = imatrix.reshape(1, -1)
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
-        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
+        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits, raw_imatrix=imatrix)
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
@@ -540,7 +553,13 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = int(2.0**bits) - 1
     group_size = 16 if bits == 2 else 32
-    split_num = 1
+    # The RTN-tuning path previously always ran the scale search unchunked (`split_num=1`),
+    # unlike the export/packing path (`ggml_quant` in packing.py) which already chunks large
+    # tensors. For very large single tensors (e.g. huge vocab embed/output projections),
+    # `search_gguf_scale_min_asym`'s unchunked candidate search allocates several full-size
+    # float32 buffers at once and can need tens of GB, causing OOM even though the model
+    # itself is small. Chunk it here too once the tensor is large enough to matter.
+    split_num = 16 if tensor.nelement() // group_size > 100_000 else 1
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -748,7 +767,7 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num, v=0
         weights = weights.expand(tensor.numel() // weights.numel(), -1)
         quant_weights = weights.reshape(tensor.shape)
 
-        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
+        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits, raw_imatrix=imatrix)
 
         scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights, split_num=split_num, v=v)
     if split_num > 1:
@@ -802,6 +821,14 @@ def quant_tensor_gguf_sym_dq(
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
+    # Chunk the candidate-scale search for very large single tensors (e.g. huge vocab
+    # embed/output projections). This search allocates several full-size float32 buffers
+    # at once; unchunked, that can need tens of GB for a single tensor and OOM even though
+    # the overall model is small. Callers pass split_num=1 by default; bump it here once the
+    # tensor is large enough to matter, mirroring the heuristic already used in the export/
+    # packing path (`ggml_quant` in packing.py).
+    if split_num == 1 and n_blocks > 100_000:
+        split_num = 16
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
     if iter is None:

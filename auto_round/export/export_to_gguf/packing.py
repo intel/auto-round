@@ -183,7 +183,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
 
         # Compute weighting tensor w based on rmse_type
         if qw is not None:
-            w = qw
+            w = qw[start:end]
         elif rmse_type == 1:
             w = chunk * chunk
         elif rmse_type == 2:

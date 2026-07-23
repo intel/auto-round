@@ -1208,7 +1208,7 @@ class CalibratedRTNCompressor(DataDrivenCompressor):
             if self.super_group_size is not None:
                 dtype = torch.float32
             self.quantizer.quantize_layer_outside_block(name, dtype=dtype)
-            # clear_memory(device_list=device_manager.device_list)
+            clear_memory(device_list=device_manager.device_list)
         # if self.compress_context.is_immediate_saving:
         #     shard_writer(self, is_finalize=True)
 
