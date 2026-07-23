@@ -56,6 +56,35 @@ def test_short_summary_name_keeps_one_field_before_numeric_suffix():
     assert _short_summary_name("model.layers.0") == "layers.0"
 
 
+def test_get_layer_config_supports_avg_bits_list(monkeypatch):
+    from auto_round import auto_scheme
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme, GenScheme
+
+    scheme = AutoScheme(avg_bits=[2.5, 3.5], options=("W2A16", "W4A16"))
+    generator = GenScheme.__new__(GenScheme)
+    generator.auto_scheme = scheme
+    generator.model = object()
+    generator.quant_layer_names = []
+    generator.fixed_layer_scheme = {}
+    generator.dataset = "pile-10k"
+    generator.tokenizer = object()
+    generator.device_map = None
+    generator.enable_torch_compile = False
+    generator.min_avg_bit_scheme = "W2A16"
+    generator.processor = None
+
+    def method_func(auto_scheme, *args, **kwargs):
+        return {"layer": {"bits": auto_scheme.avg_bits}}
+
+    monkeypatch.setitem(auto_scheme.AUTO_SCHEME_METHODS, "default", method_func)
+
+    assert generator.get_layer_config() == {
+        2.5: {"layer": {"bits": 2.5}},
+        3.5: {"layer": {"bits": 3.5}},
+    }
+    assert scheme.avg_bits == [2.5, 3.5]
+
+
 def test_choose_bits_per_layer_reconstructs_optimal_path():
     """DP parent pointers should preserve the optimal choices in layer order."""
     from auto_round.auto_scheme.delta_loss import choose_bits_per_layer_with_path

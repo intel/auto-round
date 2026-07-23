@@ -27,7 +27,7 @@ from auto_round.utils import get_layer_features, get_module
 
 @dataclass
 class AutoScheme:
-    avg_bits: float
+    avg_bits: Union[float, list[float]]
     options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str], ...]]
     shared_layers: Optional[Iterable[Iterable[str]]] = None
     method: str = "default"
@@ -126,31 +126,41 @@ class GenScheme:
         if not isinstance(self.dataset, str):
             raise TypeError("`dataset` must be a string, got {type(self.dataset).__name__}.")
 
-        target = self.auto_scheme.avg_bits
+        targets = (
+            self.auto_scheme.avg_bits if isinstance(self.auto_scheme.avg_bits, list) else [self.auto_scheme.avg_bits]
+        )
+        if not targets:
+            raise ValueError("`avg_bits` must not be an empty list.")
+
         min_avg_bit = self.min_avg_bit
         max_avg_bit = self.max_avg_bit
-        logger.info("Average bits range: [%.3f, %.3f], target = %.3f", min_avg_bit, max_avg_bit, target)
-        if abs(target - min_avg_bit) < 1e-3 or abs(target - max_avg_bit) < 1e-3:
+        normalized_targets = []
+        for target in targets:
+            logger.info("Average bits range: [%.3f, %.3f], target = %.3f", min_avg_bit, max_avg_bit, target)
             if abs(target - min_avg_bit) < 1e-3:
                 target = min_avg_bit
-            else:
+            elif abs(target - max_avg_bit) < 1e-3:
                 target = max_avg_bit
-            self.auto_scheme.avg_bits = target
+            normalized_targets.append(target)
 
-        if not (min_avg_bit <= target <= max_avg_bit):
-            details = ", ".join(f"{opt}={bits:.3f}" for opt, bits in getattr(self, "_option_avg_bits", []))
-            hint = (
-                "Provide at least one option whose avg_bits is <= target and one whose avg_bits is >= target. "
-                "Note that layers fixed to high-precision (e.g. lm_head/embed kept at bf16) inflate the lower bound; "
-                "use `quant_lm_head=True`/adjust `layer_config`/`ignore_layers` if needed."
-            )
-            raise ValueError(
-                f"Target avg_bits={target:.3f} is outside the achievable range "
-                f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}] for options={list(self.auto_scheme.options)} "
-                f"(per-option avg_bits: {details}). {hint}"
-            )
+            if not (min_avg_bit <= target <= max_avg_bit):
+                details = ", ".join(f"{opt}={bits:.3f}" for opt, bits in getattr(self, "_option_avg_bits", []))
+                hint = (
+                    "Provide at least one option whose avg_bits is <= target and one whose avg_bits is >= target. "
+                    "Note that layers fixed to high-precision (e.g. lm_head/embed kept at bf16) inflate the lower bound; "
+                    "use `quant_lm_head=True`/adjust `layer_config`/`ignore_layers` if needed."
+                )
+                raise ValueError(
+                    f"Target avg_bits={target:.3f} is outside the achievable range "
+                    f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}] for options={list(self.auto_scheme.options)} "
+                    f"(per-option avg_bits: {details}). {hint}"
+                )
 
-    def get_layer_config(self) -> dict[str, dict]:
+        self.auto_scheme.avg_bits = (
+            normalized_targets if isinstance(self.auto_scheme.avg_bits, list) else normalized_targets[0]
+        )
+
+    def get_layer_config(self) -> dict[str, dict] | dict[float, dict[str, dict]]:
         method_name = self.auto_scheme.method
         from auto_round import auto_scheme
 
@@ -158,6 +168,20 @@ class GenScheme:
         if self.auto_scheme.low_gpu_mem_usage:
             self.enable_torch_compile = False
 
+        target_bits = self.auto_scheme.avg_bits
+        if not isinstance(target_bits, list):
+            return self._get_layer_config(method_func)
+
+        layer_configs = {}
+        try:
+            for target_bit in target_bits:
+                self.auto_scheme.avg_bits = target_bit
+                layer_configs[target_bit] = self._get_layer_config(method_func)
+        finally:
+            self.auto_scheme.avg_bits = target_bits
+        return layer_configs
+
+    def _get_layer_config(self, method_func) -> dict[str, dict]:
         layer_config = method_func(
             self.auto_scheme,
             self.model,

@@ -2219,9 +2219,9 @@ def _gen_layer_config(
                     cache_key, cache_path, cached_data = scheme_cache_meta[index]
                     if cached_data is not None:
                         logger.info(
-                            "AutoScheme: per-scheme cache hit (scheme %d, key=%s) — skipping scoring",
+                            "AutoScheme: loading per-scheme cache for scheme %d from %s. Delete this file to disable reuse and rescore this scheme.",
                             index,
-                            cache_key,
+                            cache_path,
                         )
                         per_op_scores = cached_data["layer_scores"]
                         if not check_bf16_scheme(scheme):
@@ -2257,9 +2257,9 @@ def _gen_layer_config(
 
                 if cached_data is not None:
                     logger.info(
-                        "AutoScheme: per-scheme cache hit (scheme %d, key=%s) — skipping scoring",
+                        "AutoScheme: loading per-scheme cache for scheme %d from %s. Delete this file to disable reuse and rescore this scheme.",
                         index,
-                        cache_key,
+                        cache_path,
                     )
                     per_op_scores = cached_data["layer_scores"]
                     if not check_bf16_scheme(scheme):
