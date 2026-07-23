@@ -337,6 +337,21 @@ class LLMCalibrator(Calibrator):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
+            # Cache raw token IDs for quantize_block.  The last token of every
+            # sample has no next-token target and must be excluded from the loss;
+            # encode this by replacing it with pad_token_id (or -1 when no
+            # pad token is configured) so _compute_valid_token_mask derives the
+            # correct mask without any extra special-case logic.
+            if "input_ids" not in self.inputs:
+                self.inputs["input_ids"] = []
+            ids_to_cache = input_ids.clone()
+            _pad_id = (
+                self.tokenizer.pad_token_id
+                if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None
+                else -1
+            )
+            ids_to_cache[:, -1] = _pad_id
+            self.inputs["input_ids"].extend(list(torch.split(ids_to_cache.to("cpu"), 1, dim=0)))
             if need_attention_mask:
                 if (
                     isinstance(data_new, dict)
@@ -374,9 +389,6 @@ class LLMCalibrator(Calibrator):
                 # Force the last token in each sequence to be masked out so the mask is
                 # never "all ones".
                 new_attention_mask[:, -1] = 0
-                if "valid_token_mask" not in self.inputs:
-                    self.inputs["valid_token_mask"] = []
-                self.inputs["valid_token_mask"].extend(list(torch.split(new_attention_mask, 1, dim=0)))
 
             else:
                 new_attention_mask = None

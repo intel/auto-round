@@ -158,7 +158,7 @@ class SignRoundQuantizer(BaseQuantizer):
         fp_outputs,
         q_inputs,
         block_ctx,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
@@ -178,11 +178,10 @@ class SignRoundQuantizer(BaseQuantizer):
             q_inputs: Quantized inputs from the previous block, or ``None`` when
                 cascaded quantized-input is disabled.
             block_ctx: Per-block pipeline context (BlockContext).
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed (e.g. standard string datasets without padding).
-                When provided, the loss is computed only over valid token positions.
+            input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                sample). Used to derive the valid-token loss mask once (result
+                cached on ``self._cached_valid_token_mask`` for reuse across
+                all blocks). ``None`` disables loss masking.
             **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
@@ -193,6 +192,14 @@ class SignRoundQuantizer(BaseQuantizer):
         loss_device = getattr(self, "_loss_device", device)
         card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
         mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+
+        valid_token_mask = None
+        # Derive valid_token_mask from raw token IDs when not supplied by caller.
+        # Result is cached on self so it is computed only once across all blocks.
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
 
         # Use quantized inputs if available and enabled
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
@@ -266,11 +273,14 @@ class SignRoundQuantizer(BaseQuantizer):
         batch_size = self.calibration_context.batch_size
         global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
+        # Compute num_elm once before the loop (used to normalise the accumulated loss).
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
-            whole_indices = torch.arange(global_batch_size)
-            if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
-                num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
+        if self.gradient_accumulate_steps != 1:
+            whole_indices = list(range(global_batch_size))
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
+            elif isinstance(active_inputs, list):  # dict for diffusion, tricky setting
+                num_elm = sum(active_inputs[i].numel() for i in whole_indices)
 
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
@@ -295,8 +305,6 @@ class SignRoundQuantizer(BaseQuantizer):
                     m.cur_iter = i
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -369,8 +377,8 @@ class SignRoundQuantizer(BaseQuantizer):
         layer: "torch.nn.Module",
         fp_input: Optional[list[torch.Tensor]] = None,
         q_input: Optional[list[torch.Tensor]] = None,
-        valid_token_mask: Optional[list[torch.Tensor]] = None,
         disable_opt_rtn: Optional[bool] = None,
+        input_ids: Optional[list[torch.Tensor]] = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
@@ -388,12 +396,10 @@ class SignRoundQuantizer(BaseQuantizer):
                 used instead of ``fp_input`` during the forward pass when
                 cascaded quantized-input is enabled. ``None`` means use
                 ``fp_input`` for both reference and tuning forward.
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed. Forwarded to the loss computation to weight out
-                padding tokens.
             disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
+            input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                sample); used to derive the valid-token loss mask via
+                ``_compute_valid_token_mask``. ``None`` disables loss masking.
         """
 
         layer_name = layer.global_name
@@ -406,6 +412,14 @@ class SignRoundQuantizer(BaseQuantizer):
                 ),
             )
             return
+
+        # Derive valid_token_mask from raw token IDs when not supplied by caller.
+        # Reuse the cached mask if already computed by a previous block.
+        valid_token_mask = None
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
 
         logger.info(f"quantizing layer {layer_name}")
         # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
@@ -470,9 +484,12 @@ class SignRoundQuantizer(BaseQuantizer):
         batch_size = 1  # Force to low gpu
         global_batch_size = gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
-        if gradient_accumulate_steps != 1 and not valid_token_mask:
-            whole_indices = torch.arange(global_batch_size).tolist()
-            if q_input is not None:
+        # Compute num_elm once before the loop.
+        if gradient_accumulate_steps != 1:
+            whole_indices = list(range(global_batch_size))
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
+            elif q_input is not None:
                 num_elm = self._count_layer_input_elements(q_input, whole_indices)
             else:
                 num_elm = self._count_layer_input_elements(fp_input, whole_indices)
@@ -482,8 +499,6 @@ class SignRoundQuantizer(BaseQuantizer):
         for i in range(self.iters):
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -553,6 +568,73 @@ class SignRoundQuantizer(BaseQuantizer):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
+
+    def finalize_run(self) -> None:
+        """Clear per-run caches (e.g. cached valid_token_mask)."""
+        if hasattr(self, "_cached_valid_token_mask"):
+            del self._cached_valid_token_mask
+
+    def _compute_valid_token_mask(self, input_ids: list) -> Optional[list]:
+        """Derive a per-sample valid-token mask from raw token IDs.
+
+        The caller (``LLMCalibrator.calib``) already encodes the "last token is
+        invalid" rule directly in the cached ``input_ids`` by replacing the final
+        position with ``pad_token_id`` (or ``-1`` when no pad token is configured).
+        This method therefore needs no explicit ``mask[:, -1] = 0`` special-case.
+
+        Rules applied in order:
+
+        1. Tokens equal to the tokenizer's ``pad_token_id`` are masked (0).
+        2. When no pad token is configured, ``-1`` sentinel tokens (set by the
+           calibrator for the last position) and any trailing *repeated* tokens
+           are masked (heuristic for datasets without an explicit pad id).
+
+        Args:
+            input_ids: List of ``[1, seq_len]`` integer token-ID tensors (one per
+                calibration sample), as cached by ``LLMCalibrator.calib``.
+                The last position of each tensor is already ``pad_token_id`` or
+                ``-1`` to signal that it should be excluded from the loss.
+
+        Returns:
+            List of ``[1, seq_len]`` ``torch.long`` masks (1 = valid, 0 = ignore),
+            or ``None`` if *input_ids* is ``None`` / empty.
+        """
+        if not input_ids:
+            return None
+
+        tokenizer = getattr(self.model_context, "tokenizer", None)
+        pad_token_id = None
+        if tokenizer is not None and getattr(tokenizer, "pad_token_id", None) is not None:
+            pad_token_id = tokenizer.pad_token_id
+
+        masks = []
+        for ids in input_ids:
+            # ids: [1, seq_len]; last position is already pad_token_id or -1.
+            if pad_token_id is not None:
+                mask = (ids != pad_token_id).to(torch.long)
+            else:
+                # Mask -1 sentinel (last position) and trailing repeated tokens.
+                mask = (ids != -1).to(torch.long)
+                _, seq_len = ids.shape
+                # ids[0, -1] is already -1 (sentinel), so mask[0, -1] == 0 already.
+                # Check positions before the sentinel for trailing repetitions.
+                last_real_token = ids[0, -2] if seq_len >= 2 else None
+                if last_real_token is not None:
+                    j = seq_len - 2
+                    repeated = False
+                    while j >= 0 and ids[0, j] == last_real_token:
+                        repeated = True
+                        mask[0, j] = 0
+                        j -= 1
+                    # If there were repetitions, the sentinel position is already 0;
+                    # nothing extra needed.
+                    _ = repeated  # suppress unused-variable warning
+            masks.append(mask)
+        # If every position in every sample is valid (mask all-ones), masking is
+        # a no-op.  Return None so the fast unmasked loss path is used instead.
+        if all(m.all().item() for m in masks):
+            return None
+        return masks
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.

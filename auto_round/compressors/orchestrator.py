@@ -177,7 +177,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         nblocks: int = 1,
         pbar: tqdm | None = None,
         input_others_extra_blocks: dict | None = None,
-        valid_token_mask: list[torch.Tensor] | None = None,
+        token_ids: list[torch.Tensor] | None = None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -259,7 +259,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 input_others,
                 block_ctx=ctx,
                 q_input=q_input,
-                valid_token_mask=valid_token_mask,
+                input_ids=token_ids,
             )
 
             # ── Infrastructure: memory management ─────────────────────────────
@@ -513,8 +513,8 @@ class CompressionOrchestrator(BaseOrchestrator):
             to_cache_layer_names,
             last_cache_name=_last_cache_name,
         )
-        # Whether the token is pad token or not. For signround, the pad token should not be taken into account in loss
-        valid_token_mask = all_inputs.pop("valid_token_mask", None)
+        # Raw token IDs from the tokenizer, cached during calibration for use in quantize_block.
+        input_ids_cache = all_inputs.pop("input_ids", None)
         self.inputs = all_inputs
 
         all_q_inputs = None
@@ -580,7 +580,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 nblocks=self.nblocks,
                 pbar=pbar,
                 input_others_extra_blocks=all_inputs,
-                valid_token_mask=valid_token_mask,
+                token_ids=input_ids_cache,
             )
             if self.compress_context.is_immediate_packing and len(self.formats) != 1:
                 raise ValueError(
@@ -594,7 +594,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model_context.model)
-        self._quantize_layers_outside_blocks(layer_names, all_inputs, valid_token_mask=valid_token_mask)
+        self._quantize_layers_outside_blocks(layer_names, all_inputs, token_ids=input_ids_cache)
 
         convert_module_to_hp_if_necessary(
             self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
@@ -651,7 +651,8 @@ class CompressionOrchestrator(BaseOrchestrator):
     #         module.to("meta")
 
     def _quantize_layers_outside_blocks(
-        self, layer_names: list, layer_inputs: dict, valid_token_mask: list[torch.Tensor] | None = None
+        self, layer_names: list, layer_inputs: dict,
+        token_ids: list[torch.Tensor] | None = None,
     ) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
@@ -691,7 +692,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 self.alg_composer.compress_layer_outside_block(
                     get_module(self.model, layer_name),
                     disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
-                    valid_token_mask=valid_token_mask,  # TODO wenhuach has not filter out loss
+                    input_ids=token_ids,
                 )
                 layer_names.remove(layer_name)
                 if self.compress_context.is_immediate_packing:
@@ -732,7 +733,8 @@ class CompressionOrchestrator(BaseOrchestrator):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self.alg_composer.compress_layer_outside_block(
-                get_module(self.model, layer_name), fp_input=layer_input, q_input=q_layer_input
+                get_module(self.model, layer_name), fp_input=layer_input, q_input=q_layer_input,
+                input_ids=token_ids,
             )
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.layer_config)

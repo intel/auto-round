@@ -89,9 +89,6 @@ class SignRoundConfig(QuantizationConfig):
         self.momentum = momentum
         self.enable_alg_ext = enable_alg_ext
 
-        # Some helpers
-        self.infer_bs_coeff = 1
-
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         if self.enable_norm_bias_tuning:

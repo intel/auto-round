@@ -153,9 +153,30 @@ class BaseQuantizer(BaseAlgorithm):
         fp_outputs: "list[torch.Tensor]",
         q_inputs: "list[torch.Tensor] | None",
         block_ctx: "BlockContext",
-        valid_token_mask: "list[torch.Tensor] | None" = None,
+        input_ids: "list[torch.Tensor] | None" = None,
         **kwargs,
     ) -> dict:
+        """Apply the quantization algorithm to a prepared block.
+        This is the **pure-algorithm** entry point called by the Compressor after
+        all infrastructure work (device placement, data collection, act-max hook
+        registration, DDP setup) has been completed.
+        Args:
+            block:        The transformer block module to quantize.
+            fp_inputs:    FP calibration inputs (list[Tensor] or dict for diffusion).
+            input_others: Auxiliary kwargs (attention_mask, position_ids, …).
+            fp_outputs:   FP reference outputs used as quantization targets.
+            q_inputs:     Quantized inputs from the previous block, or ``None``.
+            block_ctx:    Per-block pipeline context (:class:`BlockContext`).
+            input_ids:    Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                          sample); used to derive the valid-token loss mask.
+                          ``None`` for diffusion or zero-shot paths.
+            **kwargs:     Reserved for future parameters.
+        Returns:
+            dict: Best quantization parameters found, or ``{}`` if not applicable.
+        Raises:
+            NotImplementedError: Subclasses must override this method.
+        """
+        raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
         """Apply the quantization algorithm to a prepared block.
         This is the **pure-algorithm** entry point called by the Compressor after
         all infrastructure work (device placement, data collection, act-max hook
@@ -169,6 +190,10 @@ class BaseQuantizer(BaseAlgorithm):
             block_ctx:        Per-block pipeline context (:class:`BlockContext`).
             valid_token_mask: Per-sample boolean masks ``[1, seq_len]``; ``None`` if
                               no padding masking is needed.
+            input_ids:        Original FP calibration inputs before any q_input
+                              substitution. Equals ``fp_inputs`` when ``q_inputs``
+                              is ``None``; otherwise carries the raw FP activations
+                              that were replaced by quantized inputs.
             **kwargs:         Reserved for future parameters.
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
@@ -183,8 +208,20 @@ class BaseQuantizer(BaseAlgorithm):
         fp_input: "list[torch.Tensor] | None" = None,
         q_input: "list[torch.Tensor] | None" = None,
         disable_opt_rtn: "bool | None" = None,
-        valid_token_mask: "list[torch.Tensor] | None" = None,
+        input_ids: "list[torch.Tensor] | None" = None,
     ) -> None:
+        """Quantize a single layer outside a transformer block using RTN fallback.
+        Args:
+            layer:           The layer module to quantize.  Must have a
+                             ``global_name`` attribute for model re-insertion.
+            fp_input:        Optional FP calibration inputs; unused in base RTN.
+            q_input:         Optional quantized activations; unused in base RTN.
+            disable_opt_rtn: ``True`` skips optimized-RTN scale/zp search.
+                             ``None`` defers to ``self.config.disable_opt_rtn``.
+            input_ids:       Raw token IDs from the tokenizer; used to derive
+                             the valid-token loss mask. ``None`` for RTN fallback.
+        """
+        self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
         """Quantize a single layer outside a transformer block using RTN fallback.
         Args:
             layer:            The layer module to quantize.  Must have a
@@ -194,6 +231,8 @@ class BaseQuantizer(BaseAlgorithm):
             disable_opt_rtn:  ``True`` skips optimized-RTN scale/zp search.
                               ``None`` defers to ``self.config.disable_opt_rtn``.
             valid_token_mask: Per-sample masks; unused in base RTN.
+            input_ids:        Original FP calibration inputs, same as ``fp_input``
+                              when ``q_input`` is ``None``; unused in base RTN.
         """
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
