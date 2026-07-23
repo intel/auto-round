@@ -70,7 +70,7 @@ class AutoRoundFormat(OutputFormat):
                 self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
             elif scheme.is_mx_int() and scheme.bits == 4:  # only add mx_int4 now
                 self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
-            elif scheme.is_static_wfp8afp8():  # static wfp8afp8
+            elif scheme.is_act_static():  # static wfp8afp8
                 self.backend = AutoRoundFormat(BackendDataType.FP8_STATIC.value, scheme, ctx)
             elif scheme.data_type.startswith("fp") and scheme.bits == 8 and scheme.act_bits >= 16:  # woq fp8
                 self.backend = AutoRoundFormat(BackendDataType.FP8.value, scheme, ctx)

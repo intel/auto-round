@@ -99,7 +99,7 @@ class TestPredefinedIgnoreLayersBlockFilter:
     @staticmethod
     def _make_compressor_stub(predefined_ignore_layers, quant_block_list):
         """Create a minimal stub that allows calling configure_layer_config."""
-        from auto_round.compressors.base import BaseCompressor
+        from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
         stub = object.__new__(BaseCompressor)
         # Minimal attributes required by configure_layer_config

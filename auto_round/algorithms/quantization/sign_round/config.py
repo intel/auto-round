@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Union
+from typing import Callable
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
@@ -24,8 +24,8 @@ class SignRoundConfig(QuantizationConfig):
         self,
         *,
         iters: int = 200,
-        lr: float = None,
-        minmax_lr: float = None,
+        lr: float | None = None,
+        minmax_lr: float | None = None,
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
         nblocks: int = 1,
@@ -36,8 +36,8 @@ class SignRoundConfig(QuantizationConfig):
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         enable_quanted_input: bool = True,
-        optimizer: str = None,
-        enable_adam: bool = False,
+        optimizer: str | None = None,  # TODO later wenhuach delete this
+        enable_adam: bool = False,  # TODO later  wenhuach delete this
         **kwargs,
     ) -> None:
         """Initialize a SignRound configuration.

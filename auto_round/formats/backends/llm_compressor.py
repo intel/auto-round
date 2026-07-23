@@ -56,7 +56,7 @@ class LLMCompressorFormat(OutputFormat):
                 self.backend = LLMCompressorFormat(scheme.data_type, scheme, ctx)
             elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
                 self.backend = LLMCompressorFormat(BackendDataType.FP8_BLOCK.value, scheme, ctx)
-            elif scheme.is_static_wfp8afp8():
+            elif scheme.is_act_static():
                 self.backend = LLMCompressorFormat(BackendDataType.FP8_STATIC.value, scheme, ctx)
                 if scheme.act_group_size != 0:
                     logger.warning(

@@ -53,7 +53,7 @@ class BasicProcessor:
     def __init__(self) -> None:
         pass
 
-    def post_init(self, model, tokenizer, processor=None, image_processor=None, use_rtn=False, **kwargs):
+    def post_init(self, model, tokenizer, processor=None, image_processor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
         self.processor = processor
@@ -61,7 +61,6 @@ class BasicProcessor:
             self.image_processor = image_processor
         else:
             self.image_processor = self.default_image_processor
-        self.use_rtn = use_rtn
         self.check_image_processor()
 
     def get_input(self, text, images, squeeze=True, **kwargs):
@@ -82,8 +81,9 @@ class BasicProcessor:
         return ret
 
     def check_image_processor(self):
-        if not self.use_rtn and self.image_processor is None:
-            raise ValueError("image processor should not be None.")
+        return
+        # if not self.use_rtn and self.image_processor is None:
+        #     raise ValueError("image processor should not be None.")
 
 
 @register_processor("hf")

@@ -349,10 +349,8 @@ class QuantizationScheme:
     def is_static_afp8(self) -> bool:
         return self.act_data_type is not None and BackendDataType.FP8_STATIC in self.act_data_type
 
-    def is_static_wfp8afp8(self) -> bool:
-        if self.act_dynamic:
-            return False
-        return self.is_wfp8afp8()
+    def is_act_static(self) -> bool:
+        return not self.act_dynamic
 
     def is_dynamic_wint8aint8(self) -> bool:
         if not self.act_dynamic:
@@ -412,7 +410,9 @@ def _reconcile_bits_and_dtype(config: dict, prefix: str = ""):
     if inferred_bits is not None and inferred_bits < 16:
         # Check for conflict between user-specified bits and inferred bits
         if inferred_bits != config.get(bits_key):
-            logger.warning(f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}.")
+            logger.warning_once(
+                f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}."
+            )
             config[bits_key] = inferred_bits
 
         # Normalize data_type (e.g., 'mx_fp4' -> 'mx')

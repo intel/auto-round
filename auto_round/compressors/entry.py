@@ -12,11 +12,10 @@ from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RT
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 from auto_round.compressors.entry_contract import filter_supported_entry_kwargs, split_entry_kwargs
+from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.compressors.utils import check_need_act_calibration
-from auto_round.compressors.zero_shot import ZeroShotCompressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.device_manager import normalize_default_device_map
@@ -285,11 +284,17 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
     if enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme):
         if not isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = OptimizedRTNConfig
-        return CalibratedRTNCompressor
 
     if isinstance(quant_config, OptimizedRTNConfig):
-        quant_config.__class__ = RTNConfig
-    return ZeroShotCompressor
+        pass  # keep OptimizedRTNConfig as-is
+    elif not (enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme)):
+        # Pure zero-shot RTN: downgrade to basic RTNConfig
+        if isinstance(quant_config, OptimizedRTNConfig):
+            quant_config.__class__ = RTNConfig
+
+    # Always use Compressor — it internally detects whether calibration
+    # data is needed and falls back to the zero-shot (RTN) path when it is not.
+    return Compressor
 
 
 class PipelineCompressor(object):
@@ -320,10 +325,10 @@ class PipelineCompressor(object):
         tokenizer=None,
         platform="hf",
         format=None,
+        dataset="NeelNanda/pile-10k",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         iters: int = None,
-        gradient_accumulate_steps: int = 1,
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -336,7 +341,8 @@ class PipelineCompressor(object):
 
         if alg_configs is None:
             alg_configs = "auto_round"
-
+        # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override,
+        #  e.g. gradient_accumulate_step
         device_map = normalize_default_device_map(device_map)
         split_kwargs = split_entry_kwargs(kwargs)
         route_kwargs = dict(split_kwargs["route"])
@@ -384,10 +390,10 @@ class PipelineCompressor(object):
             platform=platform,
             format=format,
             scheme=scheme,
+            dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
             iters=iters,
-            gradient_accumulate_steps=gradient_accumulate_steps,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -404,7 +410,7 @@ class PipelineCompressor(object):
         # actually runs; the pipeline auto-appends RTN when no block_quantizer
         # is supplied. SignRound is itself data-driven and shares the same host.
         if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
-            return _get_compressor_class(model_type, DataDrivenCompressor)(alg_configs, **local_args, **ctor_kwargs)
+            return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
             return _get_compressor_class(model_type, base_cls)(alg_configs, **local_args, **ctor_kwargs)

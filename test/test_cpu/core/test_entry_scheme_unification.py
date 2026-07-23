@@ -21,14 +21,13 @@ the resulting compressor-class routing — are identical whether the user passes
 import ast
 import inspect
 
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.compressors.data_driven import CalibratedRTNCompressor
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.compressors.entry import (
     _collect_config_scheme_overrides,
     _preview_resolved_attrs,
     _select_rtn_compressor_base_cls,
 )
-from auto_round.compressors.zero_shot import ZeroShotCompressor
+from auto_round.compressors.orchestrator import CompressionOrchestrator
 
 
 def test_rtn_routing_does_not_fallback_to_raw_config_scheme_fields():
@@ -75,23 +74,31 @@ def test_preview_falls_back_to_config_overrides_when_preview_skipped():
 
 def test_routing_matches_between_scheme_only_and_equivalent_override():
     base_kwargs = {}
-    # sym W4A16 (int4, sym) -> imatrix -> CalibratedRTNCompressor, identical whether
-    # the bits/dtype come from the scheme or from explicit config overrides.
-    via_scheme = _select_rtn_compressor_base_cls(RTNConfig(), "W4A16", None, base_kwargs)
-    via_override = _select_rtn_compressor_base_cls(
-        RTNConfig(bits=4, data_type="int", sym=True), "W4A16", None, base_kwargs
-    )
-    assert via_scheme is via_override is CalibratedRTNCompressor
+    # sym W4A16 (int4, sym) -> imatrix enabled, identical whether the bits/dtype
+    # come from the scheme or from explicit config overrides. The compressor class
+    # returned is always CompressionOrchestrator (it internally detects whether
+    # calibration data is needed); the imatrix/zero-shot decision now surfaces via
+    # ``enable_imatrix`` and the resolved config class.
+    cfg_scheme = RTNConfig()
+    cfg_override = RTNConfig(bits=4, data_type="int", sym=True)
+    via_scheme = _select_rtn_compressor_base_cls(cfg_scheme, "W4A16", None, base_kwargs)
+    via_override = _select_rtn_compressor_base_cls(cfg_override, "W4A16", None, base_kwargs)
+    assert via_scheme is via_override is CompressionOrchestrator
+    assert cfg_scheme.enable_imatrix is cfg_override.enable_imatrix is True
+    assert isinstance(cfg_scheme, OptimizedRTNConfig) and isinstance(cfg_override, OptimizedRTNConfig)
 
-    # asym W4A16 disables imatrix -> ZeroShotCompressor, again identical across paths.
-    via_scheme_asym = _select_rtn_compressor_base_cls(RTNConfig(sym=False), "W4A16", None, base_kwargs)
-    via_override_asym = _select_rtn_compressor_base_cls(
-        RTNConfig(bits=4, data_type="int", sym=False), "W4A16", None, base_kwargs
-    )
-    assert via_scheme_asym is via_override_asym is ZeroShotCompressor
+    # asym W4A16 disables imatrix, again identical across paths.
+    cfg_scheme_asym = RTNConfig(sym=False)
+    cfg_override_asym = RTNConfig(bits=4, data_type="int", sym=False)
+    via_scheme_asym = _select_rtn_compressor_base_cls(cfg_scheme_asym, "W4A16", None, base_kwargs)
+    via_override_asym = _select_rtn_compressor_base_cls(cfg_override_asym, "W4A16", None, base_kwargs)
+    assert via_scheme_asym is via_override_asym is CompressionOrchestrator
+    assert cfg_scheme_asym.enable_imatrix is cfg_override_asym.enable_imatrix is False
 
 
 def test_w8a16_symmetric_routes_to_zero_shot():
-    # sym W8A16 (bits>=8, sym True) -> no imatrix, no act calib -> ZeroShotCompressor.
-    cls = _select_rtn_compressor_base_cls(RTNConfig(), "W8A16", None, {})
-    assert cls is ZeroShotCompressor
+    # sym W8A16 (bits>=8, sym True) -> no imatrix, no act calib -> zero-shot RTN path.
+    cfg = RTNConfig()
+    cls = _select_rtn_compressor_base_cls(cfg, "W8A16", None, {})
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is False

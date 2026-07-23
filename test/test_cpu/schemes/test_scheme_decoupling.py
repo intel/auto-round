@@ -83,11 +83,11 @@ def test_int_and_fp8_shape_predicates():
 # --- D2: the two confirmed drift points use Option A (utils.py) semantics ---
 
 
-def test_is_static_wfp8afp8_matches_fp8_static_preset_option_a():
+def test_is_act_static_matches_fp8_static_preset_option_a():
     # FP8_STATIC preset itself has data_type="fp"/act_data_type="fp" (no literal
-    # "fp8_static"); Option A must still classify it as static wfp8afp8.
-    assert _scheme(data_type="fp", bits=8, act_data_type="fp", act_bits=8, act_dynamic=False).is_static_wfp8afp8()
-    assert not _scheme(data_type="fp", bits=8, act_data_type="fp", act_bits=8, act_dynamic=True).is_static_wfp8afp8()
+    # "fp8_static"); Option A must still classify it as static.
+    assert _scheme(data_type="fp", bits=8, act_data_type="fp", act_bits=8, act_dynamic=False).is_act_static()
+    assert not _scheme(data_type="fp", bits=8, act_data_type="fp", act_bits=8, act_dynamic=True).is_act_static()
 
 
 def test_is_dynamic_wint8aint8_requires_int8_shape_option_a():
@@ -105,7 +105,7 @@ def test_quantization_config_predicates_delegate_to_scheme_option_a():
         is False
     )
     assert (
-        QuantizationConfig(bits=8, data_type="fp", act_bits=8, act_data_type="fp", act_dynamic=False).is_static_wfp8afp8
+        QuantizationConfig(bits=8, data_type="fp", act_bits=8, act_data_type="fp", act_dynamic=False).is_act_static
         is True
     )
 

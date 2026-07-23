@@ -18,18 +18,16 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from auto_round.autoround import AutoRoundCompatible
-    from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+    from auto_round.compressors.base import BaseOrchestrator, BaseCompressor
     from auto_round.compressors.entry import PipelineCompressor
     from auto_round.compressors.model_free import ModelFreeCompressor
-    from auto_round.compressors.zero_shot import ZeroShotCompressor
+    from auto_round.compressors.orchestrator import CompressionOrchestrator
 
 __all__ = [
     "PipelineCompressor",
-    "BaseCompressor",
-    "DataDrivenCompressor",
-    "CalibratedRTNCompressor",
-    "ZeroShotCompressor",
+    "BaseOrchestrator",
+    "BaseCompressor",  # backward-compat alias
+    "CompressionOrchestrator",
     "AutoRoundCompatible",
     "ModelFreeCompressor",
 ]
@@ -46,21 +44,20 @@ def __getattr__(name):
         from auto_round.autoround import AutoRoundCompatible
 
         return AutoRoundCompatible
-    elif name == "BaseCompressor":
-        from auto_round.compressors.base import BaseCompressor
+    elif name in ("BaseOrchestrator", "BaseCompressor"):
+        from auto_round.compressors.base import BaseOrchestrator
 
-        return BaseCompressor
-    elif name in ("DataDrivenCompressor", "CalibratedRTNCompressor"):
-        from auto_round.compressors.data_driven import CalibratedRTNCompressor, DataDrivenCompressor
+        return BaseOrchestrator
+    elif name == "CompressionOrchestrator":
+        from auto_round.compressors.orchestrator import CompressionOrchestrator
 
-        return {
-            "DataDrivenCompressor": DataDrivenCompressor,
-            "CalibratedRTNCompressor": CalibratedRTNCompressor,
-        }[name]
-    elif name == "ZeroShotCompressor":
-        from auto_round.compressors.zero_shot import ZeroShotCompressor
+        return CompressionOrchestrator
+    elif name in ("Compressor", "ZeroShotCompressor", "DataDrivenCompressor", "CalibratedRTNCompressor"):
+        # Backward-compat aliases: these classes were consolidated into
+        # ``CompressionOrchestrator`` (main's #2039 compressor/quantizer refactor).
+        from auto_round.compressors.orchestrator import CompressionOrchestrator
 
-        return ZeroShotCompressor
+        return CompressionOrchestrator
     elif name == "ModelFreeCompressor":
         from auto_round.compressors.model_free import ModelFreeCompressor
 

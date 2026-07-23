@@ -32,7 +32,7 @@ def split_inputs(
 ) -> Tuple[object, dict]:
     """Split a captured ``inputs`` dict into ``(input_ids, input_others)``.
 
-    Mirrors the original ``DataDrivenCompressor._split_inputs`` exactly:
+    Mirrors the original ``Compressor._split_inputs`` exactly:
 
     - For diffusion models, every key containing ``"hidden_state"`` is pulled
       out into a dict and returned as ``input_ids``; the remaining kwargs are
@@ -74,7 +74,7 @@ def preprocess_block_inputs(
 ) -> Tuple[object, dict]:
     """Move/cast cached block inputs onto the calibration cache device.
 
-    Mirrors the original ``DataDrivenCompressor._preprocess_block_inputs`` exactly.
+    Mirrors the original ``Compressor._preprocess_block_inputs`` exactly.
     Parameterized on ``model_context`` (for ``amp`` / ``amp_dtype`` /
     ``is_diffusion``) and ``compress_context`` (for ``cache_device`` /
     ``device_list``) so it does not require a Compressor ``self``.

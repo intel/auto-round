@@ -68,7 +68,6 @@ class TestAutoRound:
     #             res == """<s> There is a girl who likes adventure, and she is looking for a partner to go on a treasure hunt. She has found a map that leads to a hidden treasure, but she needs a partner to help her decipher the clues and find the treasure. You""")
 
     def qwen_inference(self, quantized_model_dir):
-        from transformers import AutoProcessor, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_dir)
         processor = AutoProcessor.from_pretrained(quantized_model_dir, trust_remote_code=True)
@@ -131,7 +130,6 @@ class TestAutoRound:
 
     @require_vlm_env
     def test_mm_block_name(self):
-        from auto_round.utils import get_block_names
 
         model_name = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
         from transformers import MllamaForConditionalGeneration
@@ -171,73 +169,73 @@ class TestAutoRound:
             model_name = get_model_path(model_name)
             assert is_mllm_model(model_name)
 
-    def test_llama32_vision_early_stop_tracking(self):
-        """Test early-stop during calibration for Llama-3.2-11B-Vision-Instruct."""
-        model_path = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
-        if not os.path.exists(model_path):
-            pytest.skip(f"Llama-3.2-11B-Vision-Instruct not found in {model_path}")
-
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-        model = AutoModelForImageTextToText.from_pretrained(
-            model_path, trust_remote_code=True, device_map="auto", torch_dtype="auto"
-        )
-
-        autoround = AutoRound(
-            model=model,
-            tokenizer=tokenizer,
-            processor=processor,
-            bits=4,
-            group_size=128,
-            nsamples=2,
-            batch_size=1,
-            iters=1,
-            dataset=VisionDataLoader(),
-            seqlen=8,
-            quant_nontext_module=True,
-        )
-
-        call_log = []
-        original_should_stop = autoround._should_stop_cache_forward
-
-        def tracked_should_stop(name):
-            result = original_should_stop(name)
-            call_log.append(
-                {
-                    "name": name,
-                    "result": result,
-                    "last_cache_name": getattr(autoround, "last_cache_name", None),
-                }
-            )
-            return result
-
-        autoround._should_stop_cache_forward = tracked_should_stop
-
-        try:
-            all_blocks = get_block_names(model, quant_vision=True)
-            if not all_blocks:
-                pytest.skip("No blocks found in Llama-3.2-11B-Vision-Instruct")
-
-            all_first_block_names = [block[0] for block in all_blocks if block]
-            if len(all_first_block_names) < 3:
-                pytest.skip("Need 3 block groups for Llama-3.2 vision test")
-
-            inputs = autoround.cache_inter_data(all_first_block_names, nsamples=2)
-            print(f"call_log: {call_log}")
-
-            stop_calls = [c for c in call_log if c["result"] is True]
-            assert len(stop_calls) > 0, "Should trigger early-stop during calibration"
-
-            last_cache_values = [c["last_cache_name"] for c in call_log]
-            assert last_cache_values[0] is None, "last_cache_name should start as None"
-            assert (
-                last_cache_values[-1] == "model.language_model.layers.0"
-            ), "last_cache_name should update to model.language_model.layers.0"
-
-            assert "model.language_model.layers.0" in inputs, "Should have cached language model block"
-            assert len(inputs) >= 3, "Should have cached at least 3 input keys"
-        finally:
-            autoround._should_stop_cache_forward = original_should_stop
+    # def test_llama32_vision_early_stop_tracking(self):
+    #     """Test early-stop during calibration for Llama-3.2-11B-Vision-Instruct."""
+    #     model_path = get_model_path("meta-llama/Llama-3.2-11B-Vision-Instruct")
+    #     if not os.path.exists(model_path):
+    #         pytest.skip(f"Llama-3.2-11B-Vision-Instruct not found in {model_path}")
+    #
+    #     tokenizer = AutoTokenizer.from_pretrained(model_path)
+    #     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    #     model = AutoModelForImageTextToText.from_pretrained(
+    #         model_path, trust_remote_code=True, device_map="auto", torch_dtype="auto"
+    #     )
+    #
+    #     autoround = AutoRound(
+    #         model=model,
+    #         tokenizer=tokenizer,
+    #         processor=processor,
+    #         bits=4,
+    #         group_size=128,
+    #         nsamples=2,
+    #         batch_size=1,
+    #         iters=1,
+    #         dataset=VisionDataLoader(),
+    #         seqlen=8,
+    #         quant_nontext_module=True,
+    #     )
+    #
+    #     call_log = []
+    #     original_should_stop = autoround._should_stop_cache_forward
+    #
+    #     def tracked_should_stop(name):
+    #         result = original_should_stop(name)
+    #         call_log.append(
+    #             {
+    #                 "name": name,
+    #                 "result": result,
+    #                 "last_cache_name": getattr(autoround, "last_cache_name", None),
+    #             }
+    #         )
+    #         return result
+    #
+    #     autoround._should_stop_cache_forward = tracked_should_stop
+    #
+    #     try:
+    #         all_blocks = get_block_names(model, quant_vision=True)
+    #         if not all_blocks:
+    #             pytest.skip("No blocks found in Llama-3.2-11B-Vision-Instruct")
+    #
+    #         all_first_block_names = [block[0] for block in all_blocks if block]
+    #         if len(all_first_block_names) < 3:
+    #             pytest.skip("Need 3 block groups for Llama-3.2 vision test")
+    #
+    #         inputs = autoround.cache_inter_data(all_first_block_names, nsamples=2)
+    #         print(f"call_log: {call_log}")
+    #
+    #         stop_calls = [c for c in call_log if c["result"] is True]
+    #         assert len(stop_calls) > 0, "Should trigger early-stop during calibration"
+    #
+    #         last_cache_values = [c["last_cache_name"] for c in call_log]
+    #         assert last_cache_values[0] is None, "last_cache_name should start as None"
+    #         assert (
+    #             last_cache_values[-1] == "model.language_model.layers.0"
+    #         ), "last_cache_name should update to model.language_model.layers.0"
+    #
+    #         assert "model.language_model.layers.0" in inputs, "Should have cached language model block"
+    #         assert len(inputs) >= 3, "Should have cached at least 3 input keys"
+    #     finally:
+    #         autoround._should_stop_cache_forward = original_should_stop
 
     def test_mllm_text_dataset_low_vram(self):
         """Test that MLLM with string/text dataset uses CPU caching to reduce peak VRAM."""

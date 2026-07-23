@@ -80,10 +80,10 @@ def is_wint8aint8(ar):
     return _as_scheme(ar).is_wint8aint8()
 
 
-def is_static_wfp8afp8(ar_or_format):
+def is_act_static(ar_or_format):
     if isinstance(ar_or_format, str):
         return "fp8_static" in ar_or_format.lower()
-    return _as_scheme(ar_or_format).is_static_wfp8afp8()
+    return _as_scheme(ar_or_format).is_act_static()
 
 
 def is_dynamic_wint8aint8(ar_or_format):
