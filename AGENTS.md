@@ -23,17 +23,26 @@ pip install --no-build-isolation .
 
 ## Testing
 
+Tests are split into three tiers under `test/`: `unit/` (fast, runs in PR CI),
+`integration/` (third-party frameworks, runs nightly), and `e2e/` (full models /
+real inference engines, runs weekly). Each tier is further split by hardware
+(`test_cpu/`, `test_cuda/`, `test_hpu/`, `test_xpu/`, `test_ark/`, `test_mlx/`).
+
 ```bash
-# CPU tests (most common during development)
-pytest test/test_cpu/ -x -q
+# CPU unit tests (most common during development)
+pytest test/unit/test_cpu/ -x -q
 
 # Single test
-pytest test/test_cpu/ -k "test_name" -x -q
+pytest test/unit/test_cpu/ -k "test_name" -x -q
 
-# Hardware-specific
-pytest test/test_cuda/
-pytest test/test_hpu/ --mode=lazy   # or --mode=compile
-pytest test/test_xpu/
+# Hardware-specific unit tests
+pytest test/unit/test_cuda/
+pytest test/unit/test_hpu/ --mode=lazy   # or --mode=compile
+pytest test/unit/test_xpu/
+
+# Slower suites (nightly / weekly)
+pytest test/integration/test_cpu/
+pytest test/e2e/test_cpu/
 ```
 
 Test fixtures create tiny models (OPT-125M, Qwen-0.6B) at session scope — first run downloads them.
@@ -63,11 +72,11 @@ Test fixtures create tiny models (OPT-125M, Qwen-0.6B) at session scope — firs
 
 - `auto_round/` — core library (AutoRound class, sign-SGD, exporters, eval, data types)
 - `auto_round_extension/` — hardware backends (CUDA, HPU, IPEX/XPU, Triton, ARK, vLLM)
-- `test/` — tests organized by hardware: `test_cpu/`, `test_cuda/`, `test_hpu/`, `test_xpu/`
+- `test/` — tests organized by tier then hardware: `unit/` (PR CI), `integration/` (nightly), `e2e/` (weekly), each with `test_cpu/`, `test_cuda/`, ...
 - `examples/` — usage examples for different model types
 
 ## Gotchas
 
 - `setup.py` forces `CC=CXX=g++` at import time
 - Version is computed dynamically from git tags — untagged commits produce dev versions
-- Some test dependencies (AutoAWQ, GPTQModel, llama-cpp) require manual git installs — see comments in `test/test_cuda/requirements.txt`
+- Some test dependencies (AutoAWQ, GPTQModel, llama-cpp) require manual git installs — see comments in `test/unit/test_cuda/requirements.txt`

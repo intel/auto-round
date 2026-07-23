@@ -28,7 +28,7 @@ function setup_environment() {
 function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./test_hpu -name "test*.py" | sort); do
+    for test_file in $(find ./unit/test_hpu -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running ${test_file} in HPU lazy mode..."

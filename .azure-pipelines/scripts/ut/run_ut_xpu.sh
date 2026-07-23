@@ -33,7 +33,7 @@ function setup_environment() {
 function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./test_ark -name "test*.py" | sort); do
+    for test_file in $(find ./unit/test_ark -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running ark ${test_file}..."
@@ -44,7 +44,7 @@ function run_unit_test() {
         echo "##[endgroup]"
     done
 
-    for test_file in $(find ./test_xpu -name "test*.py" ! -name "test_llmc_integration.py" | sort); do
+    for test_file in $(find ./unit/test_xpu -name "test*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu ${test_file}..."
@@ -58,13 +58,13 @@ function run_unit_test() {
 
 function run_unit_test_llmc() {
     echo "##[group]set up llmc UT env..."
-    BUILD_TYPE="nightly" uv pip install -r ./test_xpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r ./unit/test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
 
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./test_xpu -name "test_llmc_integration.py" | sort); do
+    for test_file in $(find ./integration/test_xpu -name "test_llmc_integration.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu llmc ${test_file}..."
@@ -116,4 +116,4 @@ function main() {
     print_summary
 }
 
-main
+main "$@"

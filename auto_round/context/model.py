@@ -209,6 +209,15 @@ class ModelContext(BaseContext):
 
         self._model_loaded = True
 
+        # Clear tuning_device from any previous quantization passes.
+        # Previous AutoRound runs may have set tuning_device on modules to match
+        # their device_map (e.g., cpu). When re-quantizing with a different
+        # device_map, stale tuning_device causes device mismatches (WrapperLinear
+        # uses orig_layer.tuning_device instead of the current device_manager.device).
+        for m in self.model.modules():
+            if hasattr(m, "tuning_device"):
+                delattr(m, "tuning_device")
+
     def _import_custom_moe_replacements(self, model_or_config) -> None:
         model_type = getattr(model_or_config, "model_type", None)
         module_name = _CUSTOM_MOE_REPLACEMENT_MODULES.get(model_type)

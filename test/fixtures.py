@@ -356,15 +356,19 @@ def tiny_qwen2_5_omni_model_path():
     """
     from huggingface_hub import hf_hub_download
 
-    model_name = qwen2_5_omni_name_or_path
+    model_name_or_path = get_model_path(qwen2_5_omni_name_or_path)
     tiny_model_path = "./tmp/tiny_qwen2_5_omni_model_path"
-    tiny_model_path = save_tiny_model(model_name, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
     tokenizer.save_pretrained(tiny_model_path)
     processor.save_pretrained(tiny_model_path)
     # Copy model-specific files required for from_pretrained (e.g. spk_dict.pt for token2wav)
-    file_path = hf_hub_download(repo_id="Qwen/Qwen2.5-Omni-3B", filename="spk_dict.pt", local_dir=tiny_model_path)
+    local_spk_dict = os.path.join(model_name_or_path, "spk_dict.pt")
+    if os.path.exists(local_spk_dict):
+        shutil.copy(local_spk_dict, tiny_model_path)
+    else:
+        hf_hub_download(repo_id=qwen2_5_omni_name_or_path, filename="spk_dict.pt", local_dir=tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
@@ -377,11 +381,11 @@ def tiny_qwen3_omni_moe_model_path():
     still exercising the real config structure.
     Skipped automatically when the model path does not exist locally.
     """
-    model_name = qwen3_omni_name_or_path
+    model_name_or_path = get_model_path(qwen3_omni_name_or_path)
     tiny_model_path = "./tmp/tiny_qwen3_omni_moe_model_path"
-    tiny_model_path = save_tiny_model(model_name, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
     tokenizer.save_pretrained(tiny_model_path)
     processor.save_pretrained(tiny_model_path)
     yield tiny_model_path

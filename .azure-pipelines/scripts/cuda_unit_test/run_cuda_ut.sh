@@ -80,7 +80,7 @@ function run_unit_test() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
+    find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
@@ -115,7 +115,7 @@ function run_unit_test_llmc() {
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
-        -r test/test_cuda/requirements_llmc.txt \
+        -r test/unit/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install -U chardet
@@ -127,7 +127,7 @@ function run_unit_test_llmc() {
 
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
@@ -158,7 +158,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
@@ -189,7 +189,7 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
