@@ -31,7 +31,7 @@ class SignRoundConfig(QuantizationConfig):
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
         gradient_accumulate_steps: int = 1,
-        enable_alg_ext: bool = False, # TODO later wenhuach delete this
+        enable_alg_ext: bool = False,  # TODO later wenhuach delete this
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         enable_quanted_input: bool = True,

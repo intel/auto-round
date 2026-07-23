@@ -206,7 +206,7 @@ class BaseQuantizer(BaseAlgorithm):
         try:
             if disable_opt_rtn is None:
                 disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
-            if ( # TODO wenhuach move to opt alg
+            if (  # TODO wenhuach move to opt alg
                 not disable_opt_rtn
                 and getattr(self.config, "orig_disable_opt_rtn", None) is None
                 and self.model_context.is_moe_model
@@ -251,7 +251,7 @@ class BaseQuantizer(BaseAlgorithm):
                 raise
         set_module(self.model, layer_name, layer)
 
-    def dispatch_block(self, block: "torch.nn.Module", input_ids:torch.Tensor|dict, input_others: dict):
+    def dispatch_block(self, block: "torch.nn.Module", input_ids: torch.Tensor | dict, input_others: dict):
         """Place a block on the correct device(s) for quantization.
         Default: move to primary device.
         Returns ``(block)``.
