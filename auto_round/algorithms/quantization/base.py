@@ -62,7 +62,6 @@ class BaseQuantizer(BaseAlgorithm):
         """Register hooks that fire during the reference (FP-input) block forward.
         Subclasses override to add statistics collection hooks (e.g. imatrix).
         Returns a list of hook handles that the caller must remove when done.
-        Note: act_max hooks are registered by the Compressor, not by the quantizer.
         """
         return []
 
@@ -70,7 +69,6 @@ class BaseQuantizer(BaseAlgorithm):
         """Register hooks that fire during the quantized-input block forward.
         Used when act-calib policy requires collecting stats from quantized
         activations. Returns a list of hook handles that the caller must remove.
-        Note: act_max hooks are registered by the Compressor, not by the quantizer.
         """
         return []
 
@@ -207,7 +205,7 @@ class BaseQuantizer(BaseAlgorithm):
         try:
             if disable_opt_rtn is None:
                 disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
-            if (
+            if ( # TODO wenhuach move to opt alg
                 not disable_opt_rtn
                 and getattr(self.config, "orig_disable_opt_rtn", None) is None
                 and self.model_context.is_moe_model
@@ -252,17 +250,17 @@ class BaseQuantizer(BaseAlgorithm):
                 raise
         set_module(self.model, layer_name, layer)
 
-    def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
+    def dispatch_block(self, block: "torch.nn.Module", input_ids:torch.Tensor|dict, input_others: dict):
         """Place a block on the correct device(s) for quantization.
         Default: move to primary device.
-        Returns ``(block, card_0_in_high_risk, loss_device)``.
+        Returns ``(block)``.
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
         block = block.to(device_manager.device)
-        return block, False, device_manager.device
+        return block
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
-    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
+    def prepare_run(self, composer: "AlgorithmComposer|None" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return
 

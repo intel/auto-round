@@ -512,9 +512,9 @@ class BaseOrchestrator(object):
                 config.scheme = self.scheme_context
         self.quantize_config.check_config()
         for config in self._alg_configs:
-            finalize_scheme = getattr(config, "finalize_scheme", None)
-            if callable(finalize_scheme):
-                finalize_scheme()
+            adjust_config = getattr(config, "adjust_config", None)
+            if callable(adjust_config):
+                adjust_config()
 
         self.orig_scheme = copy.deepcopy(self.scheme)
         self.scheme = default_scheme

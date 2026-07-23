@@ -28,11 +28,10 @@ class SignRoundConfig(QuantizationConfig):
         minmax_lr: float | None = None,
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
-        nblocks: int = 1,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
         gradient_accumulate_steps: int = 1,
-        enable_alg_ext: bool = False,
+        enable_alg_ext: bool = False, # TODO later wenhuach delete this
         not_use_best_mse: bool = False,
         dynamic_max_gap: int = -1,
         enable_quanted_input: bool = True,
@@ -52,7 +51,6 @@ class SignRoundConfig(QuantizationConfig):
             lr_scheduler: Optional learning-rate scheduler name or
                 scheduler object used by the optimizer.
             momentum: Momentum factor used by the optimizer.
-            nblocks: Number of blocks to optimize together.
             enable_minmax_tuning: Whether to tune weight min/max ranges.
             enable_norm_bias_tuning: Whether to tune normalization and
                 bias terms.
@@ -80,17 +78,12 @@ class SignRoundConfig(QuantizationConfig):
             self.iters = 200
 
         # lr/minmax_lr depend on `bits`, which may still be unresolved here
-        # (e.g. only `scheme=` was given) -- finalize_scheme() fills them in.
+        # (e.g. only `scheme=` was given) -- adjust_config() fills them in.
         self.lr = lr
         self.minmax_lr = minmax_lr
         self.lr_scheduler = lr_scheduler
-
-        self.nblocks = nblocks
         self.momentum = momentum
         self.enable_alg_ext = enable_alg_ext
-
-        # Some helpers
-        self.infer_bs_coeff = 1
 
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
@@ -102,7 +95,7 @@ class SignRoundConfig(QuantizationConfig):
         self.optimizer = optimizer
         self.enable_adam = enable_adam
 
-    def finalize_scheme(self) -> None:
+    def adjust_config(self) -> None:
         """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""
         if self.lr is None:
             # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models

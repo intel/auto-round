@@ -142,7 +142,7 @@ class AWQConfig(QuantizationConfig):
         self.infer_bs_coeff = 1
         self.batch_dim = None
 
-    def finalize_scheme(self) -> None:
+    def adjust_config(self) -> None:
         """Adjust AWQ state that depends on the resolved run scheme."""
         data_type = self.data_type
         is_gguf_double_quant = bool(data_type) and (data_type.endswith("_dq") or data_type.endswith("float_zp"))

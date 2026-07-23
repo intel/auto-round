@@ -241,19 +241,19 @@ def test_rtn_routing_respects_explicit_enable_opt_rtn():
 
 
 @pytest.mark.parametrize("bits, expected_lr", [(3, 2.0 / 1000), (4, 1.0 / 1000)])
-def test_sign_round_finalize_scheme_lr_heuristic(bits, expected_lr):
+def test_sign_round_adjust_config_lr_heuristic(bits, expected_lr):
     """The low-bit lr bump must apply once `bits` is resolved via the scheme,
     even though it was unset (None) at construction time (e.g. `scheme=` alone,
     no explicit `bits=`)."""
     config = SignRoundConfig(iters=1000)
     config.scheme = QuantizationScheme(bits=bits, act_bits=16, data_type="int")
-    config.finalize_scheme()
+    config.adjust_config()
     assert config.lr == expected_lr
 
 
-def test_sign_round_finalize_scheme_respects_explicit_lr():
+def test_sign_round_adjust_config_respects_explicit_lr():
     config = SignRoundConfig(iters=1000, lr=0.01, minmax_lr=0.05)
     config.scheme = QuantizationScheme(bits=2, act_bits=16, data_type="int")
-    config.finalize_scheme()
+    config.adjust_config()
     assert config.lr == 0.01
     assert config.minmax_lr == 0.05

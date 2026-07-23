@@ -536,6 +536,7 @@ class AlgorithmComposer:
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
     def prepare_run(self, composer: "AlgorithmComposer" = None):
+        # TODO move hadamard to here
         for alg in self.members():
             alg.prepare_run(composer=self)
 
