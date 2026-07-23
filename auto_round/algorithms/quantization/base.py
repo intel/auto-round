@@ -62,6 +62,7 @@ class BaseQuantizer(BaseAlgorithm):
         """Register hooks that fire during the reference (FP-input) block forward.
         Subclasses override to add statistics collection hooks (e.g. imatrix).
         Returns a list of hook handles that the caller must remove when done.
+        Note: act_max hooks are registered by the Compressor, not by the quantizer.
         """
         return []
 
