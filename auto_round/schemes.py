@@ -14,17 +14,184 @@
 import copy
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
+GGUF_SCHEME_FACTS: dict[str, dict] = {
+    "gguf:q4_0": {
+        "bits": 4,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": True,
+        "data_type": "int",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q4_1": {
+        "bits": 4,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_float_zp",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q5_0": {
+        "bits": 5,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": True,
+        "data_type": "int",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q5_1": {
+        "bits": 5,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_float_zp",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q8_0": {
+        "bits": 8,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": True,
+        "data_type": "int",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q2_k": {
+        "bits": 2,
+        "act_bits": 16,
+        "group_size": 16,
+        "sym": False,
+        "data_type": "int_asym_dq",
+        "super_bits": 4,
+        "super_group_size": 16,
+    },
+    "gguf:q3_k": {
+        "bits": 3,
+        "act_bits": 16,
+        "group_size": 16,
+        "sym": True,
+        "data_type": "int_sym_dq",
+        "super_bits": 6,
+        "super_group_size": 16,
+    },
+    "gguf:q4_k": {
+        "bits": 4,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_dq",
+        "super_bits": 6,
+        "super_group_size": 8,
+    },
+    "gguf:q5_k": {
+        "bits": 5,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_dq",
+        "super_bits": 6,
+        "super_group_size": 8,
+    },
+    "gguf:q6_k": {
+        "bits": 6,
+        "act_bits": 16,
+        "group_size": 16,
+        "sym": True,
+        "data_type": "int_sym_dq",
+        "super_bits": 8,
+        "super_group_size": 16,
+    },
+    "gguf:bf16": {
+        "bits": 16,
+        "act_bits": 16,
+        "group_size": None,
+        "sym": True,
+        "data_type": "int_sym_dq",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+}
+GGUF_SCHEME_FACTS["gguf:fp16"] = GGUF_SCHEME_FACTS["gguf:bf16"]
+
+GGUF_PRESET_ALIASES: dict[str, str] = {
+    "gguf:q4_0": "gguf:q4_0",
+    "gguf:q4_1": "gguf:q4_1",
+    "gguf:q5_0": "gguf:q5_0",
+    "gguf:q5_1": "gguf:q5_1",
+    "gguf:q2_k_s": "gguf:q2_k",
+    "gguf:q2_k_mixed": "gguf:q2_k",
+    "gguf:q3_k_s": "gguf:q3_k",
+    "gguf:q3_k_m": "gguf:q3_k",
+    "gguf:q3_k_l": "gguf:q3_k",
+    "gguf:q4_k_s": "gguf:q4_k",
+    "gguf:q4_k_m": "gguf:q4_k",
+    "gguf:q5_k_s": "gguf:q5_k",
+    "gguf:q5_k_m": "gguf:q5_k",
+    "gguf:q6_k": "gguf:q6_k",
+    "gguf:q8_0": "gguf:q8_0",
+}
+
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
-__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
+__all__ = [
+    "QuantizationScheme",
+    "BackendDataType",
+    "GGUF_SCHEME_FACTS",
+    "GGUF_PRESET_ALIASES",
+    "is_standard_fp",
+    "is_mx_fp",
+    "is_nv_fp",
+    "is_mx_int",
+    "get_gguf_scheme",
+    "preset_name_to_scheme",
+]
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+
+class BackendDataType(str, Enum):
+    STANDARD_FP = "fp"
+    MX_FP = "mx_fp"
+    NV_FP = "nv_fp"
+    MX_INT = "mx_int"
+    FP8_STATIC = "fp8_static"
+    FP8 = "fp8"
+
+
+# --- data_type string classifiers (single authority) ------------------------
+# These classify a raw data_type / backend string (e.g. "mx_fp4", "nv_fp",
+# "fp8_static"). They are the one place the substring rules live: both the
+# ``QuantizationScheme.is_*`` methods and ``compressors.utils`` (which re-exports
+# them for its many string call sites) delegate here, so there is no duplicate
+# copy of the "what makes a dtype mx_fp/nv_fp/..." logic.
+
+
+def is_mx_fp(backend: str) -> bool:
+    return BackendDataType.MX_FP in backend.lower()
+
+
+def is_nv_fp(backend: str) -> bool:
+    return BackendDataType.NV_FP in backend.lower()
+
+
+def is_mx_int(backend: str) -> bool:
+    return BackendDataType.MX_INT in backend.lower()
+
+
+def is_standard_fp(backend: str) -> bool:
+    backend = backend.lower()
+    return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 @dataclass
@@ -117,6 +284,80 @@ class QuantizationScheme:
                     continue
                 return False
         return True
+
+    # --- classification predicates (single authority, see D1) ---
+
+    def is_standard_fp(self) -> bool:
+        return self.data_type is not None and is_standard_fp(self.data_type)
+
+    def is_mx_fp(self) -> bool:
+        return self.data_type is not None and is_mx_fp(self.data_type)
+
+    def is_nv_fp(self) -> bool:
+        return self.data_type is not None and is_nv_fp(self.data_type)
+
+    def is_mx_int(self) -> bool:
+        return self.data_type is not None and is_mx_int(self.data_type)
+
+    def is_act_standard_fp(self) -> bool:
+        return self.act_data_type is not None and is_standard_fp(self.act_data_type)
+
+    def is_act_mx_fp(self) -> bool:
+        return self.act_data_type is not None and is_mx_fp(self.act_data_type)
+
+    def is_act_nv_fp(self) -> bool:
+        return self.act_data_type is not None and is_nv_fp(self.act_data_type)
+
+    def is_act_quantize(self) -> bool:
+        return self.act_bits is not None and self.act_bits <= 8
+
+    def is_wint_woq(self) -> bool:
+        """Integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+        return "int" in self.data_type and self.act_bits >= 16 and self.super_group_size is None
+
+    def is_wfp8afp8(self) -> bool:
+        if self.act_data_type is None or self.data_type is None:
+            return False
+        return (
+            ("fp8" in self.act_data_type or ("fp" in self.act_data_type and self.act_bits == 8))
+            and ("fp8" in self.data_type or ("fp" in self.data_type and self.bits == 8))
+            and self.is_act_standard_fp()
+            and self.is_standard_fp()
+        )
+
+    def is_wint8aint8(self) -> bool:
+        return ("int8" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 8)) and (
+            "int8" in self.data_type or ("int" in self.data_type and self.bits == 8)
+        )
+
+    def is_wint4aint4(self) -> bool:
+        return ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
+            "int4" in self.data_type or ("int" in self.data_type and self.bits == 4)
+        )
+
+    def is_dynamic_afp8(self) -> bool:
+        return self.act_dynamic and self.act_data_type.startswith("fp") and self.act_bits == 8
+
+    def is_block_wfp8(self) -> bool:
+        return (
+            isinstance(self.group_size, tuple)
+            and len(self.group_size) == 2
+            and self.data_type.startswith("fp")
+            and self.bits == 8
+        )
+
+    def is_static_afp8(self) -> bool:
+        return self.act_data_type is not None and BackendDataType.FP8_STATIC in self.act_data_type
+
+    def is_static_wfp8afp8(self) -> bool:
+        if self.act_dynamic:
+            return False
+        return self.is_wfp8afp8()
+
+    def is_dynamic_wint8aint8(self) -> bool:
+        if not self.act_dynamic:
+            return False
+        return self.is_wint8aint8()
 
 
 def preset_name_to_scheme(name: str) -> QuantizationScheme:
@@ -573,14 +814,9 @@ PRESET_SCHEMES = {
     "FP8_BLOCK": FP8_BLOCK,
     "MXINT4": MXINT4,
 }
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
-for key, val in GGUF_CONFIG.items():
-    value = copy.deepcopy(val)
-    value.pop("mostly", None)
-    value.pop("embedding", None)
-    value.pop("lm_head", None)
-    PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
+for alias_key, facts_key in GGUF_PRESET_ALIASES.items():
+    PRESET_SCHEMES[alias_key.upper()] = QuantizationScheme.from_dict(GGUF_SCHEME_FACTS[facts_key])
 
 
 def _handle_special_schemes(
@@ -651,6 +887,8 @@ def _handle_special_schemes(
 
 
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+    if scheme is None:
+        return ""
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return scheme
     if isinstance(scheme, str):

@@ -26,75 +26,7 @@ if TYPE_CHECKING:
     from auto_round.compressors.base import BaseCompressor
 
 
-_COMPAT_KWARGS = {
-    "format",
-    "bits",
-    "group_size",
-    "sym",
-    "data_type",
-    "act_bits",
-    "act_group_size",
-    "act_sym",
-    "act_data_type",
-    "act_dynamic",
-    "super_bits",
-    "super_group_size",
-    "scale_dtype",
-    "ignore_layers",
-    "quant_lm_head",
-    "to_quant_block_names",
-    "model_free",
-    "disable_model_free",
-    "model_dtype",
-    "trust_remote_code",
-    "amp",
-    "nblocks",
-    "lr",
-    "minmax_lr",
-    "enable_minmax_tuning",
-    "enable_norm_bias_tuning",
-    "enable_quanted_input",
-    "enable_opt_rtn",
-    "disable_deterministic_algorithms",
-    "enable_deterministic_algorithms",
-    "static_kv_dtype",
-    "static_attention_dtype",
-    "rotation_config",
-    "processor",
-    "image_processor",
-    "template",
-    "extra_data_dir",
-    "quant_nontext_module",
-    "guidance_scale",
-    "num_inference_steps",
-    "generator_seed",
-    "duo_scaling",
-    "n_grid",
-    "mappings",
-    "algorithm",
-    "optimizer",
-    "lr_scheduler",
-    "not_use_best_mse",
-    "dynamic_max_gap",
-    "momentum",
-    "device",
-}
-
-
-def _filter_supported_compat_kwargs(kwargs: dict) -> dict:
-    supported = {}
-    unknown = []
-    for key, value in kwargs.items():
-        if key in _COMPAT_KWARGS:
-            supported[key] = value
-        else:
-            unknown.append(key)
-    if unknown:
-        logger.warning_once(
-            "AutoRound compatibility path received unsupported kwargs %s. They will be ignored.",
-            ", ".join(sorted(unknown)),
-        )
-    return supported
+from auto_round.compressors.compat import build_compatible_compressor, filter_supported_compat_kwargs
 
 
 class AutoRound:
@@ -221,15 +153,14 @@ class AutoRound:
         """
         device_map = normalize_default_device_map(device_map)
 
-        # Short-circuit: if alg_configs is provided, bypass AutoRoundCompatible and go directly
-        # to the new-arch entry point to avoid duplicate keyword argument errors.
+        # Short-circuit: if alg_configs is provided, bypass the legacy-kwargs translation
+        # and go directly to the pipeline entry to avoid duplicate keyword argument errors.
         if alg_configs is not None:
-            from auto_round.compressors.entry import AutoRound as _NewAutoRound
-            from auto_round.compressors.entry import filter_supported_entry_kwargs
+            from auto_round.compressors.entry import PipelineCompressor, filter_supported_entry_kwargs
 
             entry_kwargs = filter_supported_entry_kwargs(kwargs, context="AutoRound")
 
-            return _NewAutoRound(
+            return PipelineCompressor(
                 model,
                 scheme,
                 alg_configs,
@@ -249,16 +180,14 @@ class AutoRound:
                 **entry_kwargs,
             )
 
-        compat_kwargs = _filter_supported_compat_kwargs(kwargs)
+        compat_kwargs = filter_supported_compat_kwargs(kwargs)
         compat_kwargs.update(
             enable_adam=enable_adam,
             enable_alg_ext=enable_alg_ext,
             disable_opt_rtn=disable_opt_rtn,
         )
 
-        from auto_round.compressors.entry import AutoRoundCompatible
-
-        return AutoRoundCompatible(
+        return build_compatible_compressor(
             model=model,
             tokenizer=tokenizer,
             platform=platform,
@@ -357,3 +286,10 @@ class AutoRoundDiffusion:
 
     def __new__(cls, *args, **kwargs):
         return AutoRound(*args, **kwargs)
+
+
+# Backward-compatible alias: the old-API translation layer used to be a separate
+# ``AutoRoundCompatible`` class. Its logic now lives in ``AutoRound`` (which routes
+# the legacy-kwargs path through ``entry.build_compatible_compressor``), so the name
+# is kept only so existing ``AutoRoundCompatible(...)`` call sites keep working.
+AutoRoundCompatible = AutoRound

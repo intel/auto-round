@@ -1,7 +1,7 @@
 import argparse
 
 from auto_round import AutoRound
-from auto_round.compressors.entry import AutoRound as NewAutoRound
+from auto_round.compressors.entry import PipelineCompressor as NewAutoRound
 
 
 def test_argparse_check(tiny_opt_model_path):

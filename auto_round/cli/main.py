@@ -24,6 +24,8 @@ from auto_round.cli.parser import (
     build_quantize_parser,
     build_root_parser,
 )
+from auto_round.logger import logger
+from auto_round.planning import FormatCompatibilityError, LayerConfigResolutionError, SchemeResolutionError
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -293,7 +295,7 @@ def tune(args):
     logger.info(f"start to quantize {model_name}")
 
     from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
+    from auto_round.compressors.entry import PipelineCompressor
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -355,7 +357,7 @@ def tune(args):
 
     from auto_round.utils import clear_memory
 
-    autoround: BaseCompressor = PipelineAutoRound(
+    autoround: BaseCompressor = PipelineCompressor(
         model_name,
         scheme,
         alg_configs if len(alg_configs) > 1 else alg_configs[0],
@@ -451,20 +453,24 @@ def _print_help(topic=None):
 
 
 def run():
-    argv = list(sys.argv[1:])
-    command, command_argv = _normalize_cli_invocation(argv)
+    try:
+        argv = list(sys.argv[1:])
+        command, command_argv = _normalize_cli_invocation(argv)
 
-    if command == "help":
-        root_args = build_root_parser().parse_args(argv)
-        _print_help(root_args.topic)
-        return
-    if command == "list":
-        list_item(command_argv)
-        return
-    if command == "eval":
-        run_eval(command_argv)
-        return
-    start(argv=command_argv)
+        if command == "help":
+            root_args = build_root_parser().parse_args(argv)
+            _print_help(root_args.topic)
+            return
+        if command == "list":
+            list_item(command_argv)
+            return
+        if command == "eval":
+            run_eval(command_argv)
+            return
+        start(argv=command_argv)
+    except (SchemeResolutionError, FormatCompatibilityError, LayerConfigResolutionError) as error:
+        logger.error(str(error))
+        raise SystemExit(2) from error
 
 
 def run_best():

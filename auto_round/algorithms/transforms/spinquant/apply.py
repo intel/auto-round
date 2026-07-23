@@ -32,10 +32,10 @@ Usage via the unified entry point::
 
 Usage via AutoRound pipeline::
 
-    from auto_round.compressors.entry import AutoRound
+    from auto_round.compressors.entry import PipelineCompressor
     from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
-    AutoRound(
+    PipelineCompressor(
         alg_configs=[SignRoundConfig(iters=200), SpinQuantConfig(r1=True, r2=True)],
         model=model,
         scheme="W4A16",
