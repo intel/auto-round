@@ -1191,7 +1191,10 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             target_patterns = [target_patterns]
         for target_pattern in target_patterns:
             source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
-            source_pattern = re.sub(r"\(.*\)", "", source_pattern)
+            # Skip stripping the capture group if the target backreferences it,
+            # otherwise re.subn raises "invalid group reference".
+            if not re.search(r"\\g?<?\d+>?", target_pattern):
+                source_pattern = re.sub(r"\(.*\)", "", source_pattern)
 
             # Weight-conversion reverse mappings may expose bare tensor names
             # such as "weight" -> ".weight_packed". Treat those as terminal
