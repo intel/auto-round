@@ -177,30 +177,6 @@ class BaseQuantizer(BaseAlgorithm):
             NotImplementedError: Subclasses must override this method.
         """
         raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
-        """Apply the quantization algorithm to a prepared block.
-        This is the **pure-algorithm** entry point called by the Compressor after
-        all infrastructure work (device placement, data collection, act-max hook
-        registration, DDP setup) has been completed.
-        Args:
-            block:            The transformer block module to quantize.
-            fp_inputs:        FP calibration inputs (list[Tensor] or dict for diffusion).
-            input_others:     Auxiliary kwargs (attention_mask, position_ids, …).
-            fp_outputs:       FP reference outputs used as quantization targets.
-            q_inputs:         Quantized inputs from the previous block, or ``None``.
-            block_ctx:        Per-block pipeline context (:class:`BlockContext`).
-            valid_token_mask: Per-sample boolean masks ``[1, seq_len]``; ``None`` if
-                              no padding masking is needed.
-            input_ids:        Original FP calibration inputs before any q_input
-                              substitution. Equals ``fp_inputs`` when ``q_inputs``
-                              is ``None``; otherwise carries the raw FP activations
-                              that were replaced by quantized inputs.
-            **kwargs:         Reserved for future parameters.
-        Returns:
-            dict: Best quantization parameters found, or ``{}`` if not applicable.
-        Raises:
-            NotImplementedError: Subclasses must override this method.
-        """
-        raise NotImplementedError("quantize_block must be implemented in subclasses of BaseQuantizer")
 
     def quantize_layer_outside_block(
         self,
@@ -290,6 +266,58 @@ class BaseQuantizer(BaseAlgorithm):
             except Exception:
                 raise
         set_module(self.model, layer_name, layer)
+
+    def _compute_valid_token_mask(self, input_ids: list) -> "list | None":
+        """Derive a per-sample valid-token loss mask from raw token IDs.
+
+        ``LLMCalibrator.calib`` already encodes the "last token is invalid" rule
+        by replacing the last position in each cached ``input_ids`` tensor with
+        ``pad_token_id`` (or ``-1`` when no pad token is configured).
+
+        Rules applied in order:
+
+        1. Tokens equal to ``tokenizer.pad_token_id`` are masked (→ 0).
+        2. When no pad token is configured, ``-1`` sentinel tokens and any
+           trailing *repeated* tokens are masked.
+        3. If every position in every sample is valid (all-ones mask), returns
+           ``None`` so the fast unmasked loss path is taken.
+
+        Args:
+            input_ids: List of ``[1, seq_len]`` integer tensors (one per sample),
+                with the last position already set to ``pad_token_id`` or ``-1``.
+
+        Returns:
+            List of ``[1, seq_len]`` ``torch.long`` masks, or ``None`` when no
+            masking is needed.
+        """
+        if not input_ids:
+            return None
+
+        tokenizer = getattr(self.model_context, "tokenizer", None)
+        pad_token_id = None
+        if tokenizer is not None and getattr(tokenizer, "pad_token_id", None) is not None:
+            pad_token_id = tokenizer.pad_token_id
+
+        masks = []
+        for ids in input_ids:
+            # ids: [1, seq_len]; last position is already pad_token_id or -1.
+            if pad_token_id is not None:
+                mask = (ids != pad_token_id).to(torch.long)
+            else:
+                # Mask -1 sentinel (last position) and trailing repeated tokens.
+                mask = (ids != -1).to(torch.long)
+                _, seq_len = ids.shape
+                last_real_token = ids[0, -2] if seq_len >= 2 else None
+                if last_real_token is not None:
+                    j = seq_len - 2
+                    while j >= 0 and ids[0, j] == last_real_token:
+                        mask[0, j] = 0
+                        j -= 1
+            masks.append(mask)
+        # All-ones → masking is a no-op; use the faster unmasked loss path.
+        if all(m.all().item() for m in masks):
+            return None
+        return masks
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.

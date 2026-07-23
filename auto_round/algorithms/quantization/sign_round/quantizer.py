@@ -569,72 +569,11 @@ class SignRoundQuantizer(BaseQuantizer):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
+
     def finalize_run(self) -> None:
-        """Clear per-run caches (e.g. cached valid_token_mask)."""
+        """Clear per-run caches (``_cached_valid_token_mask``)."""
         if hasattr(self, "_cached_valid_token_mask"):
             del self._cached_valid_token_mask
-
-    def _compute_valid_token_mask(self, input_ids: list) -> Optional[list]:
-        """Derive a per-sample valid-token mask from raw token IDs.
-
-        The caller (``LLMCalibrator.calib``) already encodes the "last token is
-        invalid" rule directly in the cached ``input_ids`` by replacing the final
-        position with ``pad_token_id`` (or ``-1`` when no pad token is configured).
-        This method therefore needs no explicit ``mask[:, -1] = 0`` special-case.
-
-        Rules applied in order:
-
-        1. Tokens equal to the tokenizer's ``pad_token_id`` are masked (0).
-        2. When no pad token is configured, ``-1`` sentinel tokens (set by the
-           calibrator for the last position) and any trailing *repeated* tokens
-           are masked (heuristic for datasets without an explicit pad id).
-
-        Args:
-            input_ids: List of ``[1, seq_len]`` integer token-ID tensors (one per
-                calibration sample), as cached by ``LLMCalibrator.calib``.
-                The last position of each tensor is already ``pad_token_id`` or
-                ``-1`` to signal that it should be excluded from the loss.
-
-        Returns:
-            List of ``[1, seq_len]`` ``torch.long`` masks (1 = valid, 0 = ignore),
-            or ``None`` if *input_ids* is ``None`` / empty.
-        """
-        if not input_ids:
-            return None
-
-        tokenizer = getattr(self.model_context, "tokenizer", None)
-        pad_token_id = None
-        if tokenizer is not None and getattr(tokenizer, "pad_token_id", None) is not None:
-            pad_token_id = tokenizer.pad_token_id
-
-        masks = []
-        for ids in input_ids:
-            # ids: [1, seq_len]; last position is already pad_token_id or -1.
-            if pad_token_id is not None:
-                mask = (ids != pad_token_id).to(torch.long)
-            else:
-                # Mask -1 sentinel (last position) and trailing repeated tokens.
-                mask = (ids != -1).to(torch.long)
-                _, seq_len = ids.shape
-                # ids[0, -1] is already -1 (sentinel), so mask[0, -1] == 0 already.
-                # Check positions before the sentinel for trailing repetitions.
-                last_real_token = ids[0, -2] if seq_len >= 2 else None
-                if last_real_token is not None:
-                    j = seq_len - 2
-                    repeated = False
-                    while j >= 0 and ids[0, j] == last_real_token:
-                        repeated = True
-                        mask[0, j] = 0
-                        j -= 1
-                    # If there were repetitions, the sentinel position is already 0;
-                    # nothing extra needed.
-                    _ = repeated  # suppress unused-variable warning
-            masks.append(mask)
-        # If every position in every sample is valid (mask all-ones), masking is
-        # a no-op.  Return None so the fast unmasked loss path is used instead.
-        if all(m.all().item() for m in masks):
-            return None
-        return masks
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.
