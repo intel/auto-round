@@ -27,10 +27,9 @@ def test_get_diffusion_dataloader_parses_coco2014_response_without_temp_file(mon
 
     monkeypatch.setattr("requests.get", _fake_get)
 
-    dataloader, bs, grad_steps = get_diffusion_dataloader(dataset="coco2014", bs=1, nsamples=2)
+    dataloader, bs = get_diffusion_dataloader(dataset="coco2014", bs=1, nsamples=2)
 
     assert bs == 1
-    assert grad_steps == 1
     dataset = dataloader.dataset
     assert dataset.caption_ids == [1, 2]
     assert dataset.captions == ["hello", "world"]

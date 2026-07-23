@@ -382,7 +382,11 @@ def quant_tensor_asym_dq(
 
 
 def _imatrix_handle_zero(
-    imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int, raw_imatrix: torch.Tensor = None
+    imatrix: Union[torch.Tensor, float],
+    weight: torch.Tensor,
+    bits: int,
+    group_size: Union[int, None] = None,
+    raw_imatrix: torch.Tensor = None,
 ):
     if not isinstance(imatrix, torch.Tensor):
         return imatrix
@@ -398,8 +402,9 @@ def _imatrix_handle_zero(
     if torch.min(probe) != 0:
         return imatrix
 
-    group_size = 16 if bits == 2 else 32
-    imatrix = imatrix.reshape(-1, imatrix.shape[-1])
+    if group_size is None:
+        group_size = 16 if bits == 2 else 32
+    imatrix = imatrix.reshape(-1, imatrix.shape[-1]).clone()
     if torch.min(imatrix) == 0:
         logger.warning_once(
             "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
@@ -409,9 +414,9 @@ def _imatrix_handle_zero(
         replace_index = zero_cnt > group_size // 2
         if torch.sum(replace_index) > 0:
             ## fallback to no imatrix
-            if bits == 2:
+            if bits <= 3:
                 tmp_quant_weights = torch.abs(weight)
-            elif bits == 4 or bits == 5:
+            else:
                 sigma2 = torch.sum(torch.pow(weight, 2), dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
                 av_x = torch.sqrt(sigma2)
                 tmp_quant_weights = torch.abs(weight) + av_x
