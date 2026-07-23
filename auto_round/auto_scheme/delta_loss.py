@@ -554,7 +554,7 @@ class MyCustomError(Exception):
 last_grad_input = None
 
 
-def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu"):
+def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu", disk_index=None):
     """Wrap every block's forward so that, for one calibration batch, it (1) moves itself to
     ``major_device`` on demand, (2) records its own inputs into ``block_inputs`` (on CPU) so
     they can be replayed later, and (3) moves itself back to CPU once done.
@@ -562,6 +562,13 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
     Called once per calibration batch before ``model_forward_low_gpu`` runs the actual
     forward+backward -- the recorded ``block_inputs`` are what let the backward pass be
     replayed manually, one block at a time, without keeping every block resident on GPU.
+
+    When ``disk_index`` is set (streaming mode -- the model is a
+    meta-device skeleton, see gen_layer_config/disk_stream_util.py), each block's
+    real weights are materialized from the checkpoint right before its own forward
+    and released back to meta right after, instead of the original code's implicit
+    assumption that the block already has real CPU-resident weights to shuffle to
+    GPU and back.
     """
     block_inputs.clear()
     for n, m in model.named_modules():
@@ -581,6 +588,10 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             """Move the block to device, run its original forward, cache its (CPU) inputs
             for later replay, then move the block back to CPU.
             """
+            if disk_index is not None:
+                from auto_round.utils.disk_stream_util import materialize_module
+
+                materialize_module(module, module_name, disk_index, device=major_device)
             move_module_to_tuning_device(module, major_device=major_device)
             # for n,m in module.named_modules():
             #     if hasattr(m, "post_init_qdqw"):
@@ -599,7 +610,19 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             }
             block_inputs[module_name] = input_info
 
-            module.to("cpu")
+            if disk_index is not None:
+                from auto_round.utils.disk_stream_util import free_module, total_resident_bytes
+
+                free_module(module)
+                import os as _os
+
+                if _os.environ.get("AR_STREAM_DEBUG"):
+                    logger.debug(
+                        f"STREAM_DEBUG prepare_model_low_gpu after free({module_name}): "
+                        f"resident={total_resident_bytes(model) / 1e9:.2f}GB"
+                    )
+            else:
+                module.to("cpu")
             memory_monitor.update(device_list=major_device)
             # clear_memory(device_list=major_device) #slow
             # memory_monitor.log_summary()
@@ -671,7 +694,7 @@ def model_forward(model, data, **forward_kwargs):
     return model(**prepared, **forward_kwargs), prepared
 
 
-def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None):
+def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None, disk_index=None):
     """Run one full scoring pass (all calibration batches) in low-GPU-memory mode.
 
     For each batch: capture per-block inputs via ``prepare_model_low_gpu``, run a forward
@@ -679,6 +702,12 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
     raising ``MyCustomError``), then manually replay the backward pass block-by-block
     (moving each block to ``major_device`` only for its own recompute + backward, then back
     to CPU) so only one block's weights need to be resident on GPU at a time.
+
+    ``disk_index`` set means the model is a meta-device skeleton
+    (streaming mode) -- each block's real weights are materialized from the
+    checkpoint right before use and released back to meta right after, both here
+    (the manual reverse-order backward replay) and in ``prepare_model_low_gpu``
+    (the initial forward capture pass).
     """
     block_inputs = {}
     total_batches = len(dataloader) if hasattr(dataloader, "__len__") else None
@@ -696,7 +725,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
         raise MyCustomError("Interrupt backward pass")
 
     for batch_idx, data in enumerate(dataloader, start=1):
-        prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar)
+        prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar, disk_index=disk_index)
 
         # lm_head sits outside every decoder block, so it never gets `grad_mode=True`
         # in the manual block-by-block backward below. Scope the fix narrowly to
@@ -763,6 +792,10 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
             for n, m in block_module.named_modules():
                 if hasattr(m, "grad_mode"):
                     m.grad_mode = True
+            if disk_index is not None:
+                from auto_round.utils.disk_stream_util import materialize_module
+
+                materialize_module(block_module, block_name, disk_index, device=major_device)
             move_module_to_tuning_device(block_module, major_device=major_device)
 
             # Set the block to eval mode while enabling gradient computation
@@ -795,7 +828,19 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
                 break
 
             del block_output, main_output, block_input_args, block_input_kwargs
-            block_module.to("cpu")
+            if disk_index is not None:
+                from auto_round.utils.disk_stream_util import free_module, total_resident_bytes
+
+                free_module(block_module)
+                import os as _os
+
+                if _os.environ.get("AR_STREAM_DEBUG"):
+                    logger.debug(
+                        f"STREAM_DEBUG model_forward_low_gpu after free({block_name}): "
+                        f"resident={total_resident_bytes(model) / 1e9:.2f}GB"
+                    )
+            else:
+                block_module.to("cpu")
 
             # clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
@@ -834,6 +879,7 @@ def get_score_for_scheme(
     force_mllm: bool = False,
     model_name: Optional[str] = None,
     scheme_tag: Optional[str] = None,
+    disk_index=None,
 ):
     """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
     forward(+backward, unless RTN-only) calibration over ``nsamples`` examples from
@@ -1052,11 +1098,20 @@ def get_score_for_scheme(
                     "AutoScheme(force_mllm): cannot build mllm dataloader. "
                     "Provide a `processor` and a multimodal `dataset`."
                 )
-            model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
+            model_forward_low_gpu(
+                model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag, disk_index=disk_index
+            )
         else:
             try:
                 dataloader = _build_calib_dataloader()
-                model_forward_low_gpu(model, dataloader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
+                model_forward_low_gpu(
+                    model,
+                    dataloader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
+                    disk_index=disk_index,
+                )
             except Exception as exc:  # noqa: BLE001
                 if not is_vlm:
                     raise
@@ -1068,7 +1123,14 @@ def get_score_for_scheme(
                 batch_size = 1
                 if mllm_loader is None:
                     raise
-                model_forward_low_gpu(model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag)
+                model_forward_low_gpu(
+                    model,
+                    mllm_loader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
+                    disk_index=disk_index,
+                )
     else:
         for n, m in model.named_modules():
             if hasattr(m, "grad_mode"):
@@ -1447,6 +1509,7 @@ def _gen_layer_config(
     device_list=None,
     processor=None,
     is_vlm: bool = False,
+    disk_index=None,
 ):
     """Score every candidate scheme in ``auto_scheme.options`` against ``quant_layer_names``
     and return per-layer per-scheme losses used by the caller to pick a final bit-width
@@ -1464,8 +1527,16 @@ def _gen_layer_config(
     # Create offload context for CPU RAM optimization
     # Note: low_cpu_mem_usage only works when low_gpu_mem_usage is also enabled,
     # because it requires layer-by-layer processing
+    #
+    # When disk_index is set, gen_layer_config already built the
+    # model as a meta-device skeleton and materialize_module/free_module (called
+    # directly around each block's use, see get_score_for_scheme/
+    # model_forward_low_gpu/prepare_model_low_gpu below) are the actual streaming
+    # mechanism -- OffloadManager's hook-based approach doesn't apply to a model
+    # that never had real CPU-resident weights to begin with, and empirically
+    # didn't bound memory during scoring even when otherwise enabled.
     offload_context = None
-    if auto_scheme.low_cpu_mem_usage and auto_scheme.low_gpu_mem_usage:
+    if disk_index is None and auto_scheme.low_cpu_mem_usage and auto_scheme.low_gpu_mem_usage:
         _model_dir = model_name
         if _model_dir is None and hasattr(model, "config"):
             _model_dir = getattr(model.config, "_name_or_path", None)
@@ -1728,6 +1799,7 @@ def _gen_layer_config(
                 force_mllm=force_mllm,
                 model_name=model_name,
                 scheme_tag=scheme_tag,
+                disk_index=disk_index,
             )
         # Track peak RAM after each scheme scoring
         memory_monitor.update()
@@ -1744,6 +1816,11 @@ def _gen_layer_config(
                     tmp_loss += scores[name][1]
                     name_list.append(name)
                     scores.pop(name)
+            if not name_list:
+                # Every member of this shared group (e.g. fused qkv sublayers) is
+                # fixed_by_user (--fp_layers/--fp_layers_fp8) and already excluded
+                # from `scores` -- nothing left to score for this group.
+                continue
             new_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
         for name, item in scores.items():
             new_scores[name] = [index, item[0], item[1], [name]]
@@ -1934,6 +2011,25 @@ def _gen_layer_config(
     if model_name is not None:
         model = None
         del model
+    elif disk_index is not None:
+        # Decoder blocks are already back on
+        # meta (freed by `free_module` after scoring each one); `.to("cpu")`
+        # would fail the same way it does everywhere else in this file for a
+        # meta model, and there's nothing to move -- the non-block params were
+        # never moved off cpu in the first place. Still run the rest of the
+        # cleanup below (scoring-only attributes left on wrapper modules),
+        # since `model` is the same object the compressor's tuning phase
+        # reuses afterward.
+        for n, m in model.named_modules():
+            if hasattr(m, "scale_dtype"):  # TODO refine code
+                delattr(m, "scale_dtype")
+            if hasattr(m, "imatrix"):
+                delattr(m, "imatrix")
+            if hasattr(m, "tuning_device"):
+                delattr(m, "tuning_device")
+        for n, m in model.named_parameters():
+            if hasattr(m, "grad"):
+                m.grad = None
     else:
         model = model.to("cpu")  # TODO this requires large ram
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -1987,6 +2083,7 @@ def gen_layer_config(
     """
     model_name = None
     is_vlm = False
+    disk_index = None
     if isinstance(model, str):
         model_name = model
         # Detect VLM (Qwen-VL / Qwen3-VL / LLaVA / etc.) and load via the MLLM
@@ -2000,6 +2097,28 @@ def gen_layer_config(
                 device="cpu",
                 use_auto_mapping=False,
             )
+        elif auto_scheme.low_cpu_mem_usage and low_gpu_mem_usage:
+            # Disk-streamed load (meta-device skeleton + on-demand
+            # per-block materialize/free, see disk_stream_util.py) instead of
+            # llm_load_model(device_map="cpu")'s full-checkpoint CPU RAM load --
+            # infeasible for a checkpoint bigger than available RAM (e.g. ~207GB
+            # command-a-translate on a 190GB-RAM machine). Falls back to the
+            # original full-CPU-load path below for anything build_meta_model
+            # doesn't cover (bagel/glm/mxfp4/HPU-specific loading).
+            try:
+                from auto_round.utils.disk_stream_util import build_meta_model, materialize_non_block_params
+
+                model, tokenizer, disk_index = build_meta_model(model_name)
+                block_prefixes = flatten_list(get_block_names(model, quant_vision=is_vlm))
+                materialize_non_block_params(model, block_prefixes, disk_index, device="cpu")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"AutoScheme streaming load failed ({exc}); falling back to "
+                    f"llm_load_model(device_map='cpu') (needs the whole checkpoint "
+                    f"resident in RAM)."
+                )
+                disk_index = None
+                model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
         else:
             # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
             model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
@@ -2009,10 +2128,26 @@ def gen_layer_config(
             is_vlm = is_mllm_model(model)
         except Exception:  # noqa: BLE001
             is_vlm = False
+        # By the time AutoRound's compressor
+        # calls into AutoScheme, ModelContext has already turned a string model
+        # into a real object -- meaning the `isinstance(model, str)` branch
+        # above never actually runs in the standard `AutoRound(model=path, ...)`
+        # API flow. When ModelContext itself built the object as a meta
+        # skeleton (AR_DISK_STREAM_MODEL=1), it stashes the SafetensorsIndex on
+        # the model so we can pick it up here instead of re-detecting streaming
+        # mode from scratch (or, worse, silently treating a meta model as if it
+        # were fully real).
+        disk_index = getattr(model, "_disk_stream_index", None)
 
-    from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+    if disk_index is None:
+        # Skipped in streaming mode: materialize_model_ only acts on
+        # ReplacementModuleBase (fused-MoE) instances -- a no-op for dense models
+        # like ours -- but it also warns once per still-meta parameter/buffer,
+        # which would flood the log with one warning per decoder-block tensor
+        # (intentionally still meta, to be streamed on demand later).
+        from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 
-    materialize_model_(model)
+        materialize_model_(model)
     # ---- Vision-tower scoring requires a full backward ---- #
     # ``model_forward_low_gpu`` only walks the language tower (it uses
     # ``get_block_names(model)[0]``, which excludes vision blocks by default)
@@ -2041,7 +2176,14 @@ def gen_layer_config(
         else:
             model = dispatch_model_by_all_available_devices(model, device_map)
     else:
-        model.to("cpu")
+        if disk_index is None:
+            model.to("cpu")
+        # Skip `model.to("cpu")` in streaming mode
+        # -- decoder blocks are intentionally still on meta (to be
+        # materialized/freed one at a time during scoring below), and `.to()`
+        # cannot move a meta tensor to a real device (no data to copy). The
+        # non-block params were already materialized for real onto cpu by
+        # ModelContext.
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             import accelerate
 
@@ -2106,6 +2248,7 @@ def gen_layer_config(
             min_avg_bit_scheme=min_avg_bit_scheme,
             processor=processor,
             is_vlm=is_vlm,
+            disk_index=disk_index,
         )
     except torch.OutOfMemoryError:
         logger.warning(
@@ -2137,6 +2280,7 @@ def gen_layer_config(
             min_avg_bit_scheme=min_avg_bit_scheme,
             processor=processor,
             is_vlm=is_vlm,
+            disk_index=disk_index,
         )
 
     return res
