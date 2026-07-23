@@ -925,6 +925,112 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def load_model(
+    pretrained_model_name_or_path: Union[str, torch.nn.Module],
+    platform: str = "hf",
+    model_dtype: str = None,
+    trust_remote_code: bool = True,
+    device: str = "cpu",
+    use_auto_mapping: bool = None,
+    use_model_replacements: bool = False,
+    **kwargs,
+) -> tuple:
+    """Unified model loader supporting LLM, MLLM (VLM), and diffusion models.
+
+    Automatically detects model type (text-only LLM / multimodal MLLM / diffusion
+    pipeline) via ``is_mllm_model`` / ``is_diffusion_model`` and dispatches to the
+    corresponding loader.  When a pre-loaded ``torch.nn.Module`` is passed the
+    function skips loading and only performs type detection.
+
+    Args:
+        pretrained_model_name_or_path: HuggingFace model ID, local path, or an
+            already-loaded ``torch.nn.Module``.
+        platform: ``"hf"`` (default) or ``"model_scope"``.
+        model_dtype: Cast the model to this dtype after loading (e.g. ``"bf16"``).
+        trust_remote_code: Passed through to every HF ``from_pretrained`` call.
+        device: Device to load the model onto (default ``"cpu"``).
+        use_auto_mapping: Override ``device_map="auto"`` for MLLM/diffusion loaders.
+            ``None`` means each sub-loader decides its own default.
+        use_model_replacements: Apply AutoRound replacement modules and special-model
+            forward patches after loading. Intended for isolated quantization workers.
+        **kwargs: Extra keyword arguments forwarded verbatim to the active sub-loader.
+
+    Returns:
+        A 7-tuple ``(model, tokenizer, processor, image_processor, pipe, is_mllm,
+        is_diffusion)`` where unused fields are ``None`` / ``False``.
+    """
+
+    def _prepare_model(model):
+        if not use_model_replacements:
+            return model
+        from auto_round.special_model_handler import _handle_special_model, update_module
+
+        model = update_module(model, formats=None, cleanup_original=False)
+        return _handle_special_model(model)
+
+    if isinstance(pretrained_model_name_or_path, str):
+        if is_mllm_model(pretrained_model_name_or_path, platform=platform):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            model, processor, tokenizer, image_processor = mllm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            return model, tokenizer, processor, image_processor, None, True, False
+
+        if is_diffusion_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            pipe, model = diffusion_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            return model, None, None, None, pipe, False, True
+
+        # Plain text LLM
+        # Apply class-level block patches (e.g. unfused-MoE replacements) before
+        # ``from_pretrained`` so the model is loaded with the correct architecture.
+        from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+
+        apply_model_monkey_patches(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+        _kwargs = dict(
+            platform=platform,
+            device=device,
+            model_dtype=model_dtype,
+            trust_remote_code=trust_remote_code,
+        )
+        _kwargs.update(kwargs)
+        model, tokenizer = llm_load_model(pretrained_model_name_or_path, **_kwargs)
+        model = _prepare_model(model)
+        return model, tokenizer, None, None, None, False, False
+
+    # Already a loaded model object – detect type without triggering any file I/O.
+    _is_mllm = False
+    _is_diffusion = False
+    try:
+        _is_mllm = is_mllm_model(pretrained_model_name_or_path)
+    except Exception:
+        pass
+    if not _is_mllm:
+        try:
+            _is_diffusion = is_diffusion_model(pretrained_model_name_or_path)
+        except Exception:
+            pass
+    model = _prepare_model(pretrained_model_name_or_path)
+    return model, None, None, None, None, _is_mllm, _is_diffusion
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):

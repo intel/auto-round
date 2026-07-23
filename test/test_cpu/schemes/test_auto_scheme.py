@@ -1,13 +1,10 @@
-import shutil
 import os
+import shutil
 
 import pytest
 
 from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
-
-
-
 
 
 def test_env_ar_auto_scheme_nsamples_overrides_default(monkeypatch):
@@ -121,6 +118,7 @@ def test_build_expert_groups_skips_fixed_layers():
     groups = build_expert_groups(model, quant_layer_names, fixed_layer_scheme)
     assert len(groups) == 0
 
+
 class TestAutoScheme:
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):
@@ -184,22 +182,23 @@ class TestAutoScheme:
 
         # Cache files must exist — one per scheme (2 schemes here)
         cache_files = glob.glob(f"{cache_dir}/auto_scheme_cache/scheme_*.json")
-        assert len(cache_files) == 2, (
-            f"Expected 2 cache files (one per scheme), found {len(cache_files)}: {cache_files}"
-        )
+        assert (
+            len(cache_files) == 2
+        ), f"Expected 2 cache files (one per scheme), found {len(cache_files)}: {cache_files}"
 
         for path in cache_files:
             data = _load_autoscheme_scores(path)
             assert data is not None, f"Cache file {path} could not be loaded"
-            assert data["version"] == 2
+            assert data["version"] == 3
+            assert data["score_granularity"] == "per_op"
             assert "layer_scores" in data
             assert "total_loss_for_scheme" in data
 
             # Every layer in layer_scores must have a [bits, loss] pair (individual, not merged)
             for layer_name, score_pair in data["layer_scores"].items():
-                assert isinstance(score_pair, list) and len(score_pair) == 2, (
-                    f"layer_scores[{layer_name!r}] should be [bits, loss], got {score_pair}"
-                )
+                assert (
+                    isinstance(score_pair, list) and len(score_pair) == 2
+                ), f"layer_scores[{layer_name!r}] should be [bits, loss], got {score_pair}"
                 bits, loss = score_pair
                 assert bits > 0, f"bits must be positive for {layer_name}"
                 assert loss >= 0, f"loss must be non-negative for {layer_name}"
@@ -282,3 +281,221 @@ class TestAutoScheme:
                 f"Block {prefix!r}: q/k/v should all have the same bits with shared_layers, "
                 f"got {dict(zip(present, bits_values))}"
             )
+
+
+def test_autoscheme_cache_key_different_for_different_schemes():
+    """Per-scheme cache: different schemes should produce different cache keys."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    key_w4 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.0"],
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+    )
+    key_w8 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.0"],
+        fixed_layer_scheme={},
+        scheme="W8A16",
+        force_mllm=False,
+    )
+    assert key_w4 != key_w8
+    assert len(key_w4) == 16  # sha256 truncated to 16 chars
+
+
+def test_autoscheme_cache_key_insensitive_to_layer_order():
+    """Per-scheme cache: layer order should not affect the key (internally sorted)."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    key1 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.0", "layer.1"],
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+    )
+    key2 = _autoscheme_cache_key(
+        model_name="test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=["layer.1", "layer.0"],  # Different order
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+    )
+    assert key1 == key2  # Should match after internal sorting
+
+
+def test_autoscheme_cache_save_and_load(tmp_path):
+    """Per-scheme cache: scores can be saved and loaded correctly."""
+    from auto_round.auto_scheme.delta_loss import (
+        _load_autoscheme_scores,
+        _save_autoscheme_scores,
+    )
+
+    cache_key = "test_key_123"
+    cache_path = os.path.join(str(tmp_path), f"scheme_00_{cache_key}.json")
+
+    scheme_dict = {"bits": 4, "act_bits": 16}
+    layer_scores = {
+        "layer.0": [4, 1.2],
+        "layer.1": [4, 0.9],
+    }
+    total_loss = 2.1
+    total_params = 1000000
+
+    _save_autoscheme_scores(
+        cache_path,
+        cache_key,
+        0,
+        scheme_dict,
+        layer_scores,
+        total_loss,
+        total_params,
+    )
+
+    loaded = _load_autoscheme_scores(cache_path)
+    assert loaded is not None
+    assert loaded["layer_scores"] == layer_scores
+    assert loaded["total_loss_for_scheme"] == total_loss
+    assert loaded["total_params"] == total_params
+
+
+def test_parallel_progress_events_are_applied_in_parent():
+    """Worker progress events should update only the parent-owned progress bar."""
+    import queue
+
+    from auto_round.auto_scheme.delta_loss import _drain_progress_queue, _ProgressQueueProxy
+
+    class FakeProgressBar:
+        def __init__(self):
+            self.steps = 0
+            self.messages = []
+
+        def update(self, steps):
+            self.steps += steps
+
+        def write(self, message):
+            self.messages.append(message)
+
+    progress_queue = queue.Queue()
+    worker_progress = _ProgressQueueProxy(progress_queue)
+    parent_progress = FakeProgressBar()
+
+    worker_progress.update(2)
+    worker_progress.write("scheme progress")
+    worker_progress.update()
+    _drain_progress_queue(progress_queue, parent_progress)
+
+    assert parent_progress.steps == 3
+    assert parent_progress.messages == ["scheme progress"]
+    assert progress_queue.empty()
+
+
+def test_assign_scheme_worker_devices_round_robin():
+    from auto_round.auto_scheme.delta_loss import _assign_scheme_worker_devices
+
+    assert _assign_scheme_worker_devices(5, 2) == ["cuda:0", "cuda:1", "cuda:0", "cuda:1", "cuda:0"]
+
+
+def test_assign_scheme_worker_devices_shares_single_gpu():
+    from auto_round.auto_scheme.delta_loss import _assign_scheme_worker_devices
+
+    assert _assign_scheme_worker_devices(3, 1) == ["cuda:0", "cuda:0", "cuda:0"]
+
+
+def test_assign_scheme_worker_devices_rejects_no_gpu():
+    from auto_round.auto_scheme.delta_loss import _assign_scheme_worker_devices
+
+    with pytest.raises(ValueError, match="at least 1"):
+        _assign_scheme_worker_devices(1, 0)
+
+
+def test_per_op_cache_compatibility_rejects_grouped_scores():
+    from auto_round.auto_scheme.delta_loss import _is_per_op_cache_compatible
+
+    quant_layers = ["layer.0", "layer.1", "fixed"]
+    fixed_layers = {"fixed": {"bits": 8}}
+
+    assert _is_per_op_cache_compatible(
+        {"layer_scores": {"layer.0": [4, 1.0], "layer.1": [4, 2.0]}},
+        quant_layers,
+        fixed_layers,
+    )
+    assert not _is_per_op_cache_compatible(
+        {"layer_scores": {"layer.0": [8, 3.0]}},
+        quant_layers,
+        fixed_layers,
+    )
+
+
+def test_version_two_cache_is_rejected(tmp_path):
+    import json
+
+    from auto_round.auto_scheme.delta_loss import _load_autoscheme_scores
+
+    cache_path = tmp_path / "scheme_00_old.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "layer_scores": {"layer.0": [4, 1.0]},
+                "total_loss_for_scheme": 1.0,
+                "total_params": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _load_autoscheme_scores(cache_path) is None
+
+
+def test_worker_vram_reports_cover_all_processes_and_devices():
+    from auto_round.auto_scheme.delta_loss import _merge_worker_memory_reports
+
+    class FakeMemoryMonitor:
+        peak_vram = {"0": 1.0}
+
+    monitor = FakeMemoryMonitor()
+    _merge_worker_memory_reports(
+        monitor,
+        [
+            {"device": "0", "peak_vram": 2.0},
+            {"device": "0", "peak_vram": 3.0},
+            {"device": "1", "peak_vram": 4.0},
+        ],
+    )
+
+    assert monitor.peak_vram == {"0": 5.0, "1": 4.0}
+
+
+def test_replacement_wrapper_without_tuning_device_uses_major_device():
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import move_module_to_tuning_device
+
+    class ReplacementWrapper(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.orig_layer = torch.nn.Linear(2, 2)
+
+    wrapper = ReplacementWrapper()
+    move_module_to_tuning_device(wrapper, major_device="cpu")
+
+    assert wrapper.orig_layer.weight.device.type == "cpu"
