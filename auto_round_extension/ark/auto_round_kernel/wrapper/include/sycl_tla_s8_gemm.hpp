@@ -1,3 +1,8 @@
+// SYCL-TLA S8 GEMM Wrapper
+//
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <cstdint>
