@@ -636,16 +636,13 @@ def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, tota
                 )
 
 
-def _build_layer_config_header_rows(columns: list[str]) -> list[list[str]]:
+def _build_layer_config_header_rows(columns: list[str], has_expert_layers: bool = False) -> list[list[str]]:
     """Build a compact two-row header for the layer-config matrix.
 
     The first row keeps a shared prefix for each grouped set of columns (for
     example ``mlp`` or ``self_attn``), while the second row keeps the leaf
     suffix (for example ``down_proj``).
     """
-    if not columns:
-        return [["block"], [""]]
-
     leaves = []
     first_row = []
     prev_prefix = None
@@ -663,6 +660,10 @@ def _build_layer_config_header_rows(columns: list[str]) -> list[list[str]]:
             leaves.append(column)
             first_row.append("")
             prev_prefix = None
+
+    if has_expert_layers:
+        first_row.append("mlp")
+        leaves.append("experts")
 
     header_rows = [["block"] + first_row]
     header_rows.append([""] + leaves)
@@ -711,7 +712,7 @@ def _log_scheme_loss_matrix(total_scores, options, block_names, model=None, laye
     has_expert_layers = any(block_expert_keys.get(b) for b in block_names)
 
     block_display_names = [_short_summary_name(b) for b in block_names]
-    header_rows = _build_layer_config_header_rows(columns)
+    header_rows = _build_layer_config_header_rows(columns, has_expert_layers)
 
     # Fixed cell width for scientific-notation values: "1.234E-05" = 9 chars.
     _CELL_W = 9
@@ -727,11 +728,8 @@ def _log_scheme_loss_matrix(total_scores, options, block_names, model=None, laye
             widths[col] = max(widths[col], len(prefix))
 
     header_keys = ["block"] + columns + (["experts"] if has_expert_layers else [])
-    header_vals = [header_rows[0][0]] + header_rows[0][1:]
-    header_vals_row2 = ([""]) + (header_rows[1][1:] if len(header_rows) > 1 else [""] * len(columns))
-    if has_expert_layers:
-        header_vals.append("experts")
-        header_vals_row2.append("")
+    header_vals = header_rows[0]
+    header_vals_row2 = header_rows[1]
 
     def _fmt_row(values: list[str], keys: list[str]) -> str:
         return "|".join(v.ljust(widths[k]) for v, k in zip(values, keys))
@@ -862,7 +860,7 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
     has_expert_layers = any(block_expert_layers.get(block_name) for block_name in block_names)
 
     block_display_names = [_short_summary_name(block_name) for block_name in block_names]
-    header_rows = _build_layer_config_header_rows(columns)
+    header_rows = _build_layer_config_header_rows(columns, has_expert_layers)
 
     # Width is driven by the leaf name and cell content — NOT the full dotted column name,
     # so columns stay tight (e.g. "down_proj" width, not "mlp.down_proj" width).
@@ -872,7 +870,9 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
         max_cell_len = max((len(block_cells.get(b, {}).get(col, "-")) for b in block_names), default=1)
         widths[col] = max(len(leaf), max_cell_len)
     if has_expert_layers:
-        widths["experts"] = max(len("mlp"), len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1))
+        widths["experts"] = max(
+            len("mlp"), len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1)
+        )
     # Ensure the first column of each prefix group is wide enough for the prefix text in header row 1.
     for col, prefix in zip(columns, header_rows[0][1:]):
         if prefix:
@@ -882,11 +882,8 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
         return "|".join(v.ljust(widths[k]) for v, k in zip(values, keys))
 
     header_keys = ["block"] + columns + (["experts"] if has_expert_layers else [])
-    header_vals = [header_rows[0][0]] + header_rows[0][1:]
-    if len(header_rows) > 1:
-        header_vals_row2 = [header_rows[1][0]] + header_rows[1][1:]
-    else:
-        header_vals_row2 = [""] + [""] * len(columns)
+    header_vals = header_rows[0]
+    header_vals_row2 = header_rows[1]
 
     logger.info("AutoScheme final layer_config matrix:")
     logger.info("AutoScheme note: cell=`scheme`.")

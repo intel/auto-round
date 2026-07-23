@@ -1308,13 +1308,24 @@ class MemoryMonitor:
         self.peak_vram = {}  # {device_id: peak_mb}
         self.enabled = True
 
+    @staticmethod
+    def _process_tree_rss() -> float:
+        """Return the combined RSS of this process and all live descendants in GB."""
+        process = psutil.Process()
+        rss = process.memory_info().rss
+        for child in process.children(recursive=True):
+            try:
+                rss += child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return rss / 1024**3
+
     def update(self, device_list=None):
         """Update current memory usage and track peaks."""
         if not self.enabled:
             return
         # Track RAM
-        process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = self._process_tree_rss()
         self.peak_ram = max(self.peak_ram, current_ram)
         if device_list is None:  # TODO this has issue, wait for clean_memory all pass device_list
             device_list = [0]
@@ -1356,8 +1367,7 @@ class MemoryMonitor:
     def update_cpu(self):
         if not self.enabled:
             return
-        process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = self._process_tree_rss()
         self.peak_ram = max(self.peak_ram, current_ram)
 
     def update_hpu(self, device_list=None):

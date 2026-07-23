@@ -1252,9 +1252,10 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         (layer_names, scheme) for each layer, or (None, None) if no feasible
         solution exists.
     """
-    # dp: total_params -> (accumulated_loss, chosen_path)
-    # The path is stored as a tuple to avoid the high overhead of repeatedly
-    # copying Python lists for every DP transition.
+    # dp: total_params -> (accumulated_loss, path_node)
+    # Each path node points to its parent. Tuple/list concatenation still copies
+    # the entire path on every transition, which becomes quadratic for large
+    # models; linked nodes keep each transition O(1) and are expanded only once.
     dp: dict[int, tuple[float, tuple]] = {0: (0.0, ())}
     for layer_name, opts in layers.items():
         new_dp: dict[int, tuple[float, tuple]] = {}
@@ -1266,7 +1267,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
                     continue
 
                 new_loss = cur_loss + loss_cost
-                new_path = cur_path + ((layer_names, scheme),)
+                new_path = (cur_path, layer_names, scheme)
 
                 # Keep the path with smaller loss for the same parameter budget
                 if np_total not in new_dp or new_loss < new_dp[np_total][0]:
@@ -1311,7 +1312,12 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # Select the solution with the minimum loss
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
     best_loss, best_path = dp[best_params]
-    return best_loss, list(best_path)
+    path = []
+    while best_path:
+        best_path, layer_names, scheme = best_path
+        path.append((layer_names, scheme))
+    path.reverse()
+    return best_loss, path
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
@@ -1649,14 +1655,22 @@ def _drain_progress_queue(progress_queue, pbar):
 
 
 def _get_worker_memory_report(worker_device):
-    """Return this process's peak VRAM for its assigned logical device."""
+    """Return this worker's peak RAM and VRAM for its assigned logical device."""
     memory_monitor.update(device_list=worker_device)
     device_key = str(worker_device).split(":")[-1]
-    return {"device": device_key, "peak_vram": memory_monitor.peak_vram.get(device_key, 0.0)}
+    return {
+        "device": device_key,
+        "peak_ram": memory_monitor.peak_ram,
+        "peak_vram": memory_monitor.peak_vram.get(device_key, 0.0),
+    }
 
 
 def _merge_worker_memory_reports(monitor, reports):
-    """Merge per-process VRAM peaks, summing workers that share one GPU."""
+    """Merge child-process RAM/VRAM peaks into the parent monitor."""
+    worker_peak_ram = sum(report.get("peak_ram", 0.0) for report in reports)
+    parent_ram = monitor._process_tree_rss() if hasattr(monitor, "_process_tree_rss") else monitor.peak_ram
+    monitor.peak_ram = max(monitor.peak_ram, parent_ram + worker_peak_ram)
+
     worker_peaks = {}
     for report in reports:
         device = str(report["device"])
@@ -2193,6 +2207,7 @@ def _gen_layer_config(
                         async_results = pool.map_async(_score_scheme_worker, worker_args)
                         while not async_results.ready():
                             _drain_progress_queue(progress_queue, pbar)
+                            memory_monitor.update_cpu()
                             async_results.wait(timeout=0.1)
                         _drain_progress_queue(progress_queue, pbar)
                         worker_results = async_results.get()
@@ -2223,6 +2238,7 @@ def _gen_layer_config(
                     )
                 parallel_done = True
                 logger.info("AutoScheme: parallel scoring completed.")
+                post_scoring_started = time.perf_counter()
             except Exception as parallel_error:  # noqa: BLE001
                 logger.warning("AutoScheme: parallel scoring failed, falling back to serial: %s", parallel_error)
                 total_scores.clear()
@@ -2320,6 +2336,12 @@ def _gen_layer_config(
                 if n_param == 0 and hasattr(m, "_cached_weight_numel"):
                     n_param = m._cached_weight_numel
                 total_params += n_param
+
+        if parallel_done:
+            logger.info(
+                "AutoScheme post-scoring: model restore and parameter accounting took %.2fs",
+                time.perf_counter() - post_scoring_started,
+            )
 
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
@@ -2447,11 +2469,22 @@ def _gen_layer_config(
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
 
+    cleanup_started = time.perf_counter()
     remove_quant_scheme(model)  # Must place after minus fixed_layer
     memory_monitor.update()
     memory_monitor.log_summary()
+    logger.info(
+        "AutoScheme post-scoring: scheme cleanup and memory accounting took %.2fs",
+        time.perf_counter() - cleanup_started,
+    )
 
+    dp_started = time.perf_counter()
     best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+    logger.info(
+        "AutoScheme post-scoring: DP selection took %.2fs (layers=%d)",
+        time.perf_counter() - dp_started,
+        len(total_scores),
+    )
 
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
@@ -2465,8 +2498,10 @@ def _gen_layer_config(
         layer_scheme = options[item[1]]
         for layer_name in layer_names:
             layer_config[layer_name] = asdict(layer_scheme)
+    reporting_started = time.perf_counter()
     _log_scheme_loss_matrix(total_scores, options, block_name, model=model, layer_numel=layer_numel)
     _describe_layer_config(layer_config, total_scores, options, block_name, model=model)
+    logger.info("AutoScheme post-scoring: result reporting took %.2fs", time.perf_counter() - reporting_started)
     if model_name is not None:
         model = None
         del model

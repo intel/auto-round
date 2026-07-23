@@ -43,9 +43,32 @@ def test_build_layer_config_header_rows_merges_adjacent_prefixes():
     ]
 
 
+def test_build_layer_config_header_rows_includes_experts_under_mlp():
+    columns = ["mlp.down_proj", "self_attn.q_proj"]
+    assert _build_layer_config_header_rows(columns, has_expert_layers=True) == [
+        ["block", "mlp", "self_attn", "mlp"],
+        ["", "down_proj", "q_proj", "experts"],
+    ]
+
+
 def test_short_summary_name_keeps_one_field_before_numeric_suffix():
     """Numeric block suffixes should be shortened to keep the preceding field."""
     assert _short_summary_name("model.layers.0") == "layers.0"
+
+
+def test_choose_bits_per_layer_reconstructs_optimal_path():
+    """DP parent pointers should preserve the optimal choices in layer order."""
+    from auto_round.auto_scheme.delta_loss import choose_bits_per_layer_with_path
+
+    layers = {
+        "layer.0": [(0, 2, 4.0, ["layer.0"]), (1, 4, 1.0, ["layer.0"])],
+        "layer.1": [(0, 2, 3.0, ["layer.1"]), (1, 4, 0.5, ["layer.1"])],
+    }
+
+    loss, path = choose_bits_per_layer_with_path(layers, P=6)
+
+    assert loss == 4.0
+    assert path == [(["layer.0"], 1), (["layer.1"], 0)]
 
 
 def test_build_expert_groups_groups_experts_per_block():
@@ -466,22 +489,28 @@ def test_version_two_cache_is_rejected(tmp_path):
     assert _load_autoscheme_scores(cache_path) is None
 
 
-def test_worker_vram_reports_cover_all_processes_and_devices():
+def test_worker_memory_reports_cover_all_processes_and_devices():
     from auto_round.auto_scheme.delta_loss import _merge_worker_memory_reports
 
     class FakeMemoryMonitor:
+        peak_ram = 1.0
         peak_vram = {"0": 1.0}
+
+        @staticmethod
+        def _process_tree_rss():
+            return 1.25
 
     monitor = FakeMemoryMonitor()
     _merge_worker_memory_reports(
         monitor,
         [
-            {"device": "0", "peak_vram": 2.0},
-            {"device": "0", "peak_vram": 3.0},
-            {"device": "1", "peak_vram": 4.0},
+            {"device": "0", "peak_ram": 0.5, "peak_vram": 2.0},
+            {"device": "0", "peak_ram": 0.75, "peak_vram": 3.0},
+            {"device": "1", "peak_ram": 0.25, "peak_vram": 4.0},
         ],
     )
 
+    assert monitor.peak_ram == 2.75
     assert monitor.peak_vram == {"0": 5.0, "1": 4.0}
 
 
