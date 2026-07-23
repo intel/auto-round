@@ -410,33 +410,35 @@ class ARDevice:
         return _DeviceIndexContext(self, index)
 
     def total_memory(self, index: int = 0) -> int:
-        if self._module is None:
-            return 0
+        return self.mem_get_info(index)[1]
 
-        fn = getattr(self._module, "get_memory_info", None)
-        if callable(fn):
+    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+        """Return ``(free_bytes, total_bytes)`` for ``index``."""
+        modules = (self._module, self.get_device_module(self.type))
+        for module in dict.fromkeys(modules):
+            if module is None:
+                continue
+            for name in ("get_memory_info", "mem_get_info"):
+                fn = getattr(module, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    free, total = fn(index)  # pylint: disable=E1102
+                    if int(total) > 0:
+                        return int(free), int(total)
+                except Exception:
+                    continue
+
+        module = self.get_device_module(self.type)
+        get_properties = getattr(module, "get_device_properties", None)
+        if callable(get_properties):
             try:
-                return int(fn(index)[1])  # pylint: disable=E1102
+                total = int(get_properties(index).total_memory)
+                if total > 0:
+                    return max(0, total - self.memory_reserved(index)), total
             except Exception:
                 pass
-
-        # torch.cuda / torch.xpu commonly expose mem_get_info instead of get_memory_info.
-        fn = getattr(self._module, "mem_get_info", None)
-        if callable(fn):
-            try:
-                return int(fn(index)[1])  # pylint: disable=E1102
-            except Exception:
-                pass
-
-        # Generic fallback: read total memory from device properties.
-        fn = getattr(self._module, "get_device_properties", None)
-        if callable(fn):
-            try:
-                return int(fn(index).total_memory)  # pylint: disable=E1102
-            except Exception:
-                pass
-
-        return 0
+        return 0, 0
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
@@ -455,17 +457,6 @@ class ARDevice:
             return int(fn(index)) if callable(fn) else 0  # pylint: disable=E1102
         except Exception:
             return 0
-
-    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-    #     """Return ``(free_bytes, total_bytes)`` for ``index``.
-    #
-    #     Falls back to ``total - reserved`` when the backend lacks a native
-    #     ``mem_get_info`` implementation.
-    #     """
-    #     module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
-    #     fn = getattr(module, "get_memory_info", None)
-    #
-    #     return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
