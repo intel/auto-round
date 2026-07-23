@@ -102,7 +102,6 @@ class SignRoundConfig(QuantizationConfig):
         self.optimizer = optimizer
         self.enable_adam = enable_adam
 
-
     def finalize_scheme(self) -> None:
         """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""
         if self.lr is None:
