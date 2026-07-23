@@ -49,6 +49,7 @@ _COMPAT_KWARGS = {
     "trust_remote_code",
     "amp",
     "nblocks",
+    "nblocks_overlap",
     "lr",
     "minmax_lr",
     "enable_minmax_tuning",

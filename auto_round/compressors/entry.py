@@ -33,6 +33,7 @@ _ENTRY_BASE_KWARGS = {
     "trust_remote_code",
     "amp",
     "nblocks",
+    "nblocks_overlap",
     "disable_deterministic_algorithms",
     "enable_deterministic_algorithms",
     "static_kv_dtype",
@@ -487,6 +488,7 @@ class AutoRoundCompatible:
         common_keys = ("super_bits", "super_group_size")
         auto_round_only_keys = (
             "nblocks",
+            "nblocks_overlap",
             "enable_alg_ext",
             "lr_scheduler",
             "not_use_best_mse",
