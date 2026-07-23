@@ -270,50 +270,23 @@ class BaseQuantizer(BaseAlgorithm):
     def _compute_valid_token_mask(self, input_ids: list) -> "list | None":
         """Derive a per-sample valid-token loss mask from raw token IDs.
 
-        ``LLMCalibrator.calib`` already encodes the "last token is invalid" rule
-        by replacing the last position in each cached ``input_ids`` tensor with
-        ``pad_token_id`` (or ``-1`` when no pad token is configured).
-
-        Rules applied in order:
-
-        1. Tokens equal to ``tokenizer.pad_token_id`` are masked (→ 0).
-        2. When no pad token is configured, ``-1`` sentinel tokens and any
-           trailing *repeated* tokens are masked.
-        3. If every position in every sample is valid (all-ones mask), returns
-           ``None`` so the fast unmasked loss path is taken.
+        ``LLMCalibrator.calib`` already marks every position that should be
+        excluded from the loss with ``-100`` (PyTorch's standard ignore index):
+        pad tokens, trailing repeated tokens, and the last position of each
+        sample.  This method therefore only needs a single comparison.
 
         Args:
             input_ids: List of ``[1, seq_len]`` integer tensors (one per sample),
-                with the last position already set to ``pad_token_id`` or ``-1``.
+                with ignored positions already set to ``-100``.
 
         Returns:
-            List of ``[1, seq_len]`` ``torch.long`` masks, or ``None`` when no
-            masking is needed.
+            List of ``[1, seq_len]`` ``torch.long`` masks (1 = valid, 0 = ignore),
+            or ``None`` when every position is valid (all-ones → fast path).
         """
         if not input_ids:
             return None
 
-        tokenizer = getattr(self.model_context, "tokenizer", None)
-        pad_token_id = None
-        if tokenizer is not None and getattr(tokenizer, "pad_token_id", None) is not None:
-            pad_token_id = tokenizer.pad_token_id
-
-        masks = []
-        for ids in input_ids:
-            # ids: [1, seq_len]; last position is already pad_token_id or -1.
-            if pad_token_id is not None:
-                mask = (ids != pad_token_id).to(torch.long)
-            else:
-                # Mask -1 sentinel (last position) and trailing repeated tokens.
-                mask = (ids != -1).to(torch.long)
-                _, seq_len = ids.shape
-                last_real_token = ids[0, -2] if seq_len >= 2 else None
-                if last_real_token is not None:
-                    j = seq_len - 2
-                    while j >= 0 and ids[0, j] == last_real_token:
-                        mask[0, j] = 0
-                        j -= 1
-            masks.append(mask)
+        masks = [(ids != -100).to(torch.long) for ids in input_ids]
         # All-ones → masking is a no-op; use the faster unmasked loss path.
         if all(m.all().item() for m in masks):
             return None

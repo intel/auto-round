@@ -60,6 +60,7 @@ class SignRoundQuantizer(BaseQuantizer):
         self.not_use_best_mse = config.not_use_best_mse
         self.enable_quanted_input = config.enable_quanted_input
         self.dynamic_max_gap = config.dynamic_max_gap
+        self.enable_lfq = config.enable_lfq
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
@@ -117,6 +118,7 @@ class SignRoundQuantizer(BaseQuantizer):
         loss_func: Callable,
         device: Union[str, torch.device] = "cpu",
         valid_token_mask: Optional[torch.Tensor] = None,
+        input_ids = None
     ):
         autocast_ctx = (
             nullcontext()
@@ -149,6 +151,143 @@ class SignRoundQuantizer(BaseQuantizer):
             return len(inputs)
         else:
             return inputs.shape[self.calibration_context.batch_dim]
+
+    def _init_lm_components(self) -> None:
+        """Lazily locate and cache ``_post_block_modules`` and ``_lm_head`` for LFQ loss.
+
+        ``_post_block_modules`` is an ordered list of modules that must be applied
+        between the last transformer-block output and the lm_head projection.
+        Most architectures have a single final norm; OPT additionally has an
+        optional ``project_out`` projection.
+
+        Supported without manual configuration:
+            LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3 — ``model.model.norm``
+            OPT — ``model.model.decoder.{final_layer_norm, project_out}`` (both optional)
+            GPT-2 / Falcon / Bloom — ``model.transformer.ln_f``
+            GPT-NeoX / Pythia — ``model.gpt_neox.final_layer_norm``
+            Phi / Phi-2 — ``model.model.final_layernorm``
+            MPT — ``model.transformer.norm_f``
+            ChatGLM — ``model.transformer.encoder.final_layernorm``
+            RWKV — ``model.rwkv.ln_out``
+
+        Raises ``AttributeError`` if no lm_head equivalent can be found.
+        """
+        if hasattr(self, "_lm_head"):
+            return
+
+        model = self.model
+
+        # ── lm_head ──────────────────────────────────────────────────────────
+        for name in ("lm_head", "embed_out", "output", "head"):
+            if hasattr(model, name):
+                self._lm_head = getattr(model, name)
+                break
+        else:
+            raise AttributeError(
+                f"Cannot locate lm_head in {type(model).__name__}. "
+                "Checked: lm_head, embed_out, output, head."
+            )
+
+        # ── post-block processing (ordered list applied before lm_head) ───────
+        # OPT: decoder has both an optional final_layer_norm *and* an optional
+        # project_out that maps ffn_dim → word_embed_proj_dim.  Detect by probing
+        # for the characteristic project_out attribute (may be None).
+        try:
+            decoder = model.model.decoder
+            _ = decoder.project_out  # raises AttributeError if not an OPT decoder
+            self._post_block_modules = [
+                m for m in (decoder.final_layer_norm, decoder.project_out)
+                if m is not None
+            ]
+            return
+        except AttributeError:
+            pass
+
+        # All other architectures: single optional final norm.
+        norm_getters = [
+            lambda: model.model.norm,                           # LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3
+            lambda: model.transformer.ln_f,                     # GPT-2 / Falcon / Bloom
+            lambda: model.gpt_neox.final_layer_norm,            # GPT-NeoX / Pythia
+            lambda: model.model.final_layernorm,                # Phi / Phi-2
+            lambda: model.transformer.norm_f,                   # MPT
+            lambda: model.transformer.encoder.final_layernorm,  # ChatGLM
+            lambda: model.rwkv.ln_out,                          # RWKV
+        ]
+        self._post_block_modules = []
+        for getter in norm_getters:
+            try:
+                norm = getter()
+                if norm is not None:
+                    self._post_block_modules = [norm]
+                    break
+            except AttributeError:
+                continue
+
+    # Keywords that identify non-text (visual / audio / multimodal) blocks.
+    # LFQ loss is only meaningful for pure language-model decoder blocks.
+    _NON_TEXT_BLOCK_KEYWORDS = frozenset({
+        "vis", "vision", "visual",
+        "image", "img",
+        "audio",
+        "video",
+        "patch", "pixel",
+        "clip", "vit",
+        "perceiver", "resampler",
+        "connector", "projector",
+    })
+
+    def _is_text_decoder_block(self, block_name: str) -> bool:
+        """Return ``True`` if *block_name* refers to a text-decoder block.
+
+        Blocks whose names contain any of the non-text keywords (vision, audio,
+        image, …) are considered multimodal and excluded from LFQ loss.
+        """
+        name_lower = block_name.lower()
+        return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
+
+    def lfq_loss(self, hidden_state: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
+        """Compute LM cross-entropy loss from the last block's hidden states.
+
+        Applies every post-block module (final norm, optional projection, …) in
+        order, then runs lm_head and computes next-token prediction loss.
+        Positions marked with ``-100`` in *input_ids* are excluded from the loss.
+
+        Args:
+            hidden_state: Last block output, shape ``[batch, seq_len, hidden]``.
+            input_ids:    Token-ID labels with ``-100`` for ignored positions,
+                          shape ``[batch, seq_len]``.
+
+        Returns:
+            Scalar cross-entropy loss tensor.
+        """
+        self._init_lm_components()
+        device = hidden_state.device
+
+        for module in self._post_block_modules:
+            module.to(device)
+            hidden_state = module(hidden_state)
+
+        self._lm_head.to(device)
+        logits = self._lm_head(hidden_state)
+
+        if hasattr(self.model, "loss_function"):
+            loss = self.model.loss_function(
+                logits=logits,
+                labels=input_ids.to(device),
+                vocab_size=self.model.config.vocab_size,
+            )
+        else:
+            import torch.nn.functional as F
+
+            # Standard causal-LM shift: predict token t+1 from hidden state t.
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous().to(device)
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+        return loss
 
     def quantize_block(
         self,
@@ -312,7 +451,15 @@ class SignRoundQuantizer(BaseQuantizer):
                 pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
-                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                if (
+                    block_ctx.block_index == block_ctx.layer_cnt - 1
+                    and self.enable_lfq
+                    and input_ids is not None
+                    and self._is_text_decoder_block(block_ctx.block_name)
+                ):
+                    loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                else:
+                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
@@ -571,9 +718,10 @@ class SignRoundQuantizer(BaseQuantizer):
 
 
     def finalize_run(self) -> None:
-        """Clear per-run caches (``_cached_valid_token_mask``)."""
-        if hasattr(self, "_cached_valid_token_mask"):
-            del self._cached_valid_token_mask
+        """Clear per-run caches (``_cached_valid_token_mask``, LFQ components)."""
+        for attr in ("_cached_valid_token_mask", "_lm_head", "_post_block_modules"):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.

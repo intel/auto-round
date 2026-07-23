@@ -38,6 +38,7 @@ class SignRoundConfig(QuantizationConfig):
         enable_quanted_input: bool = True,
         optimizer: str | None = None,  # TODO later wenhuach delete this
         enable_adam: bool = False,  # TODO later  wenhuach delete this
+        enable_lfq: bool = False,
         **kwargs,
     ) -> None:
         """Initialize a SignRound configuration.
@@ -98,6 +99,9 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_quanted_input = enable_quanted_input
         self.optimizer = optimizer
         self.enable_adam = enable_adam
+        self.enable_lfq = enable_lfq
+        if self.enable_lfq:
+            logger.warning("the `enable_lfq` feature is experimental and currently has limited model support.")
 
     def finalize_scheme(self) -> None:
         """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""

@@ -250,6 +250,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 is_mllm=self.model_context.is_mllm,
                 is_diffusion=self.model_context.is_diffusion,
                 pbar=pbar,
+                layer_cnt=(len(block_names)+nblocks-1)//nblocks
             )
 
             # ── Run block pipeline (calibration → quantization → collection) ──

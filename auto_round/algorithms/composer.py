@@ -77,6 +77,7 @@ class BlockContext:
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
+    layer_cnt: int = 0  # total number of blocks being quantized in this run
 
 
 # ---------------------------------------------------------------------------
