@@ -56,7 +56,6 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
         "batch_size": args.batch_size,
-        "gradient_accumulate_steps": getattr(args, "gradient_accumulate_steps", 1),
         "low_gpu_mem_usage": args.low_gpu_mem_usage,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
@@ -292,7 +291,7 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
     from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:
@@ -396,6 +395,8 @@ def run_eval(argv=None):
 
     if args.model is None:
         args.model = args.model_name
+    if args.model_name is None:
+        args.model_name = args.model
     if "llama" in args.model.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True

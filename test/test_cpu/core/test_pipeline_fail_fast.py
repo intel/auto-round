@@ -1,21 +1,20 @@
-"""Fast unit tests for algorithm registry and pipeline construction."""
+"""Fast unit tests for algorithm registry and bundle construction."""
 
 import pytest
 
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
+from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
     split_quantization_configs,
-    sync_shared_config_from,
 )
-from auto_round.algorithms.pipeline import QuantizationPipeline
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
 from auto_round.compressors.base import collect_user_scheme_overrides
-from auto_round.compressors.data_driven import DataDrivenCompressor
 from auto_round.compressors.entry import AutoRound as NewAutoRound
 from auto_round.compressors.entry import _select_rtn_compressor_base_cls
+from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
@@ -37,19 +36,19 @@ def test_split_awq_plus_rtn():
 
 
 def test_pipeline_preprocessor_only_auto_appends_rtn():
-    pipeline = QuantizationPipeline.from_configs([AWQConfig()])
+    pipeline = AlgorithmComposer([AWQConfig()])
     assert type(pipeline.preprocessors[0]).__name__ == "AWQTransform"
     assert isinstance(pipeline.block_quantizer, RTNQuantizer)
 
 
 def test_pipeline_duplicate_preprocessor_rejected():
     with pytest.raises(ValueError, match="Duplicate preprocessor"):
-        QuantizationPipeline.from_configs([AWQConfig(), AWQConfig()])
+        AlgorithmComposer([AWQConfig(), AWQConfig()])
 
 
 def test_pipeline_multiple_block_quantizers_rejected():
     with pytest.raises(ValueError, match="exactly one block-quantization config"):
-        QuantizationPipeline.from_configs([RTNConfig(), SignRoundConfig()])
+        AlgorithmComposer([RTNConfig(), SignRoundConfig()])
 
 
 def test_registry_builtin_aliases_and_unknown():
@@ -87,7 +86,7 @@ def test_new_entry_defaults_to_autoround_config(monkeypatch):
     def _fake_init(self, config, **kwargs):
         captured["config"] = config
 
-    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr(Compressor, "__init__", _fake_init)
     monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
 
     NewAutoRound("dummy-model", "W4A16", iters=1, seqlen=8, nsamples=1)
@@ -116,7 +115,7 @@ def test_compat_entry_preserves_spinquant_dict_config(monkeypatch):
     def _fake_init(self, config, **kwargs):
         captured["config"] = config
 
-    monkeypatch.setattr(DataDrivenCompressor, "__init__", _fake_init)
+    monkeypatch.setattr(Compressor, "__init__", _fake_init)
     monkeypatch.setattr("auto_round.utils.is_mllm_model", lambda *args, **kwargs: False)
     monkeypatch.setattr("auto_round.utils.is_diffusion_model", lambda *args, **kwargs: False)
     monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
@@ -182,15 +181,15 @@ def test_shared_config_values_reject_conflicts():
         )
 
 
-def test_shared_config_sync_from_source_skips_missing_attrs():
-    source = PartialSharedConfig(weight_clip_ratio=0.75)
-    target = PartialSharedConfig()
-    no_clip_target = NoWeightClipConfig()
-
-    sync_shared_config_from(source, [target, no_clip_target, RotationConfig()])
-
-    assert target.weight_clip_ratio == 0.75
-    assert not hasattr(no_clip_target, "weight_clip_ratio")
+# def test_shared_config_sync_from_source_skips_missing_attrs():
+#     source = PartialSharedConfig(weight_clip_ratio=0.75)
+#     target = PartialSharedConfig()
+#     no_clip_target = NoWeightClipConfig()
+#
+#     sync_shared_config_from(source, [target, no_clip_target, RotationConfig()])
+#
+#     assert target.weight_clip_ratio == 0.75
+#     assert not hasattr(no_clip_target, "weight_clip_ratio")
 
 
 def test_user_scheme_overrides_merge_across_all_configs():

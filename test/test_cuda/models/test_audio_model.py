@@ -41,7 +41,6 @@ from auto_round.special_model_handler import (
     _get_qwen3_tts_multimodal_block,
     _handle_special_model,
     _qwen3_tts_forward,
-    check_mllm_model_batch,
     mllms_with_limited_bs,
     resolve_model_type,
 )
@@ -261,10 +260,10 @@ class TestStableAudioRegistration:
     """Verify StableAudio-specific registrations."""
 
     def test_config_and_special_registered(self):
-        from auto_round.algorithms.quantization.base import DiffusionMixin
+        from auto_round.algorithms.block_runner import _DIFFUSION_OUTPUT_REGISTRY
 
-        assert "StableAudioDiTBlock" in DiffusionMixin.DIFFUSION_OUTPUT_CONFIGS
-        assert DiffusionMixin.DIFFUSION_OUTPUT_CONFIGS["StableAudioDiTBlock"] == ["hidden_states"]
+        assert "StableAudioDiTBlock" in _DIFFUSION_OUTPUT_REGISTRY
+        assert _DIFFUSION_OUTPUT_REGISTRY["StableAudioDiTBlock"] == ["hidden_states"]
 
         assert "StableAudioDiTModel" in SPECIAL_SHARED_CACHE_KEYS
         assert "encoder_hidden_states" in SPECIAL_SHARED_CACHE_KEYS["StableAudioDiTModel"]

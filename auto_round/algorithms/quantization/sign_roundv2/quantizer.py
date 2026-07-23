@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from functools import partial
-from typing import Callable, Union
+from typing import TYPE_CHECKING, Callable, Union
 
 import torch
 import transformers
@@ -22,6 +22,9 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
@@ -317,24 +320,37 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         self._use_outlier_suppressed_loss = False
         logger.info("using algorithm extension for quantization.")
 
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
+        """Model-level setup: initialise scheme-dependent state once before block iteration."""
+        super().prepare_run(composer=composer)
+
         if (
-            self.sym
-            and self.super_group_size is None
-            and (self.data_type.startswith("int") or self.data_type.startswith("mx") or self.data_type.startswith("nv"))
+            self.scheme.sym
+            and self.scheme.super_group_size is None
+            and (
+                self.scheme.data_type.startswith("int")
+                or self.scheme.data_type.startswith("mx")
+                or self.scheme.data_type.startswith("nv")
+            )
         ):
-            if self.bits > 2 and not (self.data_type.startswith("mx") or self.data_type.startswith("nv")):
+            if self.scheme.bits > 2 and not (
+                self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv")
+            ):
                 logger.warning_once(
                     "algorithm extension has only undergone limited validation on "
                     "W2A16,INT4, MXFP4 and NVFP4; use with caution."
                 )
-            if self.act_bits <= 4 or self.bits < 4:
+            if self.scheme.act_bits <= 4 or self.scheme.bits < 4:
                 self._use_outlier_suppressed_loss = True
             else:
                 self._use_outlier_suppressed_loss = False
             self.wrapper_block = _named_wrapper_block(SignRoundOptimizedWrapperLinear, "wrapper_block")
 
-        if self.data_type.endswith("dq"):
+        if self.scheme.data_type.endswith("dq"):
             self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
+
+    def can_compile_block_forward(self):
+        return False
 
     def _get_loss(
         self,
@@ -343,6 +359,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         indices: torch.Tensor,
         mse_loss: Callable,
         device: Union[str, torch.device] = "cpu",
+        valid_token_mask: list[torch.Tensor] | None = None,
     ):
         if self._use_outlier_suppressed_loss:
             loss_diff = torch.abs(pred_output - ref_output)
@@ -356,8 +373,8 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             autocast_ctx = (
                 autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype) if self.amp else nullcontext()
             )
-            if self.attention_mask:
-                tmp_attention_mask = [self.attention_mask[i] for i in indices]
+            if valid_token_mask:
+                tmp_attention_mask = [valid_token_mask[i] for i in indices]
                 tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
                 tmp_attention_mask.unsqueeze_(-1)
                 with autocast_ctx:
@@ -374,17 +391,17 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
                 return torch.mean((torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32)) * mask) ** 2)
         return super()._get_loss(pred_output, ref_output, indices, mse_loss, device)
 
-    @contextmanager
-    def block_forward_hooks(self, ctx):
-        with super().block_forward_hooks(ctx) as hook_handles:
-            if not self._is_wint4aint4():
-                hook_handles.extend(self._register_imatrix_hooks(ctx.block))
-            yield hook_handles
+    def register_fp_input_forward_hooks(self, block):
+        """Register FP-input hooks: imatrix."""
+        handles = super().register_fp_input_forward_hooks(block)
+        if not self._is_wint4aint4():
+            handles.extend(self._register_imatrix_hooks(block))
+        return handles
 
     def _is_wint4aint4(self):
-        return ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
-            "int4" in self.data_type or ("int" in self.data_type and self.bits == 4)
-        )
+        return (
+            "int4" in self.scheme.act_data_type or ("int" in self.scheme.act_data_type and self.scheme.act_bits == 4)
+        ) and ("int4" in self.scheme.data_type or ("int" in self.scheme.data_type and self.scheme.bits == 4))
 
     def _register_imatrix_hooks(self, model):
         def collect_imatrix(module, input, output):
@@ -399,6 +416,6 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
 
         handles = []
         for _, module in model.named_modules():
-            if isinstance(module, self.supported_types) and check_to_quantized(module):
+            if check_to_quantized(module):
                 handles.append(module.register_forward_hook(collect_imatrix))
         return handles
