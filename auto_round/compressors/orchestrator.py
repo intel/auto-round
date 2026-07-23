@@ -651,7 +651,9 @@ class CompressionOrchestrator(BaseOrchestrator):
     #         module.to("meta")
 
     def _quantize_layers_outside_blocks(
-        self, layer_names: list, layer_inputs: dict,
+        self,
+        layer_names: list,
+        layer_inputs: dict,
         token_ids: list[torch.Tensor] | None = None,
     ) -> None:
         """Quantizes specified layers based on inputs and configuration.
@@ -733,7 +735,9 @@ class CompressionOrchestrator(BaseOrchestrator):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self.alg_composer.compress_layer_outside_block(
-                get_module(self.model, layer_name), fp_input=layer_input, q_input=q_layer_input,
+                get_module(self.model, layer_name),
+                fp_input=layer_input,
+                q_input=q_layer_input,
                 input_ids=token_ids,
             )
             if self.compress_context.is_immediate_packing:

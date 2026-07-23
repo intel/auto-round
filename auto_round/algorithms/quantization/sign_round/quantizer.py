@@ -569,7 +569,6 @@ class SignRoundQuantizer(BaseQuantizer):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
 
-
     def finalize_run(self) -> None:
         """Clear per-run caches (``_cached_valid_token_mask``)."""
         if hasattr(self, "_cached_valid_token_mask"):
