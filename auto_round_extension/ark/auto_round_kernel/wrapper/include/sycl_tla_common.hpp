@@ -228,6 +228,33 @@ void sage_prefill_varlen(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
                          int head_dim, float softmax_scale, bool is_causal,
                          const int* cu_seqlens_q, const int* cu_seqlens_k,
                          float* lse = nullptr);
+
+void sdpa_impl_qks8_sparse_d64_pvhalf(
+    sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, int scale_block_size,
+    void* qscale, void* kscale, void* lut, void* valid_block_num, int num_q_blocks, int num_k_blocks,
+    int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s,
+    int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
+    int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+    int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    BTLA_DTYPE pv_dtype = BTLA_DTYPE::F16);
+
+void sdpa_impl_qks8_sparse_row_linear_pvhalf(
+    sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, int scale_block_size,
+    void* qscale, void* kscale, void* lut, void* valid_block_num, int num_q_blocks, int num_k_blocks,
+    int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s,
+    int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
+    int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+    int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    BTLA_DTYPE pv_dtype = BTLA_DTYPE::F16);
+
+void sdpa_impl_qks8_sparse_qtile256_row64k_pvhalf(
+    sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, int scale_block_size,
+    void* qscale, void* kscale, void* lut, void* valid_block_num, int num_q_blocks, int num_k_blocks,
+    int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s,
+    int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
+    int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+    int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    BTLA_DTYPE pv_dtype = BTLA_DTYPE::F16);
 #endif  // ARK_SYCL_TLA
 
 }  // namespace ark

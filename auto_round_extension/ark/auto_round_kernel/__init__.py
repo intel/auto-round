@@ -207,6 +207,7 @@ def _empty_attention_output(
 cpu_lib = None
 xpu_lib = None
 
+
 try:
     from . import auto_round_kernel_cpu as _cpu_lib_mod
 
@@ -1278,6 +1279,23 @@ def sageattn(
         return_lse=return_lse,
         **kwargs,
     )
+
+
+from .sparse_attention import (
+    _block_map_lut_torch,
+    _build_block_causal_mask,
+    _build_sparge_preprocess_context,
+    _finalize_sparge_preprocess_outputs,
+    _from_hnd,
+    _sparge_preprocess_topk_torch,
+    _sequence_mean_native_layout,
+    _slice_sequence_native_layout,
+    _to_hnd,
+    sage_sparse,
+    sparge_block_map_to_mask,
+    sparge_preprocess_topk,
+    sparge_sage2_attn_meansim_topk_xpu,
+)
 
 
 def sageattn_varlen(
