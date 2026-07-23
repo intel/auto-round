@@ -14,7 +14,7 @@
 """Calibration sub-package."""
 
 from auto_round.calibration.base import Calibrator
-from auto_round.calibration.state import CalibrationState
+from auto_round.calibration.state import CalibrationContext
 from auto_round.calibration.register import CALIBRATORS, get_calibrator, register_calibrator
 
 # Importing the strategy modules triggers their ``@register_calibrator`` decorators.
@@ -24,7 +24,7 @@ from auto_round.calibration import diffusion as _diffusion  # noqa: F401
 
 __all__ = [
     "Calibrator",
-    "CalibrationState",
+    "CalibrationContext",
     "CALIBRATORS",
     "get_calibrator",
     "register_calibrator",

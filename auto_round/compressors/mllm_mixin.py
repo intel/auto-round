@@ -20,14 +20,13 @@ from auto_round.logger import logger
 class MLLMMixin:
     """MLLM-specific functionality mixin.
 
-    This mixin adds MLLM-specific functionality to any compressor (DataDrivenCompressor,
-    ZeroShotCompressor, ImatrixCompressor, etc). It handles multi-modal models
+    This mixin adds MLLM-specific functionality to any compressor (Compressor,
+    ImatrixCompressor, etc). It handles multi-modal models
     (vision-language models) that require special data loading and processing logic.
 
     Can be combined with:
-    - DataDrivenCompressor (for AutoRound with calibration)
+    - Compressor (for AutoRound with calibration, or basic RTN)
     - ImatrixCompressor (for RTN with importance matrix)
-    - ZeroShotCompressor (for basic RTN)
 
     MLLM-specific parameters:
         processor: Multi-modal processor override (normally loaded by ModelContext)

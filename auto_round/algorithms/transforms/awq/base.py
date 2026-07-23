@@ -31,16 +31,10 @@ from __future__ import annotations
 
 import inspect
 import re
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.pipeline import (
-    ActCalibPolicy,
-    CalibTiming,
-    InputSource,
-)
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
@@ -50,7 +44,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
-from auto_round.algorithms.transforms.base import BaseWeightTransformer
+from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.data_type.utils import (
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
@@ -58,7 +52,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockContext
+    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
 
 
 # Known normalization classes whose ``forward`` computes
@@ -109,10 +103,10 @@ def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
 
 
 @register_pipeline_member(AWQConfig)
-class AWQTransform(BaseWeightTransformer):
+class AWQTransform(BasePreprocessor):
     """AWQ transform: activation-aware weight smoothing pre-processor.
 
-    Inherits :class:`~auto_round.algorithms.transforms.base.BaseWeightTransformer`.
+    Inherits :class:`~auto_round.algorithms.transforms.base.BasePreprocessor`.
     It smooths block weights in-place; actual weight compression (RTN /
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """
@@ -164,15 +158,15 @@ class AWQTransform(BaseWeightTransformer):
         super().bind(compressor)
         nblocks = getattr(compressor, "nblocks", 1)
         if nblocks > 1:
-            logger.warning(
-                "AWQ does not support nblocks > 1 (got nblocks=%s). " "Falling back to nblocks=1.",
+            logger.error(
+                "AWQ does not support nblocks > 1 (got nblocks=%s). ",
                 nblocks,
             )
-            compressor.nblocks = 1
+            exit(-1)
 
-    def prepare_run(self, compressor) -> None:
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Validate compatibility, resolve model-wide mappings, and group by block prefix."""
-        model = compressor.model_context.model
+        model = self.model
         report = check_model_compatibility(model, self._user_mappings)
         for warning in report["warnings"]:
             logger.warning(warning)
@@ -193,10 +187,8 @@ class AWQTransform(BaseWeightTransformer):
             prefix = _extract_block_prefix(m.smooth_name)
             self._block_mappings.setdefault(prefix, []).append(m)
 
-        self._qdq_tool.configure(compressor)
-
-        if compressor.compress_context is not None:
-            compressor.compress_context.cache_device = torch.device("cpu")
+        if composer is not None:
+            self._qdq_tool.configure(composer)
 
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",
@@ -205,31 +197,18 @@ class AWQTransform(BaseWeightTransformer):
         )
         self._finalized = False
 
-    def get_act_calib_policy(self, ctx: "BlockContext"):
-        """AWQ W4A16 (weight-only): no activation calibration needed."""
-        # AWQ pre-processing does not collect act-calib stats; that is the
-        # block_quantizer's concern.  For W8A8/static activation, a post-smooth
-        # forward may be needed — handled via the block_quantizer's policy.
-        return ActCalibPolicy(when=CalibTiming.SKIP, source=InputSource.FP_CACHE)
-
-    @contextmanager
-    def block_forward_hooks(self, ctx: "BlockContext"):
+    def register_fp_input_forward_hooks(self, block) -> list:
         """Register AWQ activation-stats and parent-kwargs hooks.
 
         Hooks are registered on the *current block's* smooth sources and
-        parent modules.  All handles are removed when this context manager
-        exits (before ``__exit__`` returns), regardless of exceptions.
+        parent modules. Returns hook handles that the caller must remove.
         """
-        handles = []
-        block_mappings = self._block_mappings.get(ctx.block_name, [])
+        # Need block_name from the block's global_name attribute
+        block_name = getattr(block, "global_name", "")
+        block_mappings = self._block_mappings.get(block_name, [])
         if block_mappings:
-            handles = self._register_awq_hooks(ctx.model, ctx.block, ctx.block_name)
-        try:
-            yield handles
-        finally:
-            for h in handles:
-                h.remove()
-            handles.clear()
+            return self._register_awq_hooks(self.model_context.model, block, block_name)
+        return []
 
     def pre_quantize_block(self, ctx: "BlockContext") -> None:
         """Apply AWQ smoothing for this block and mark modified params.
@@ -254,7 +233,6 @@ class AWQTransform(BaseWeightTransformer):
         for mapping in block_mappings:
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
-        ctx.mark_modified_fp_params(modified)
 
     def post_quantize_block(self, ctx: "BlockContext") -> None:
         """Release per-block AWQ caches to free memory."""
@@ -276,7 +254,7 @@ class AWQTransform(BaseWeightTransformer):
                 seen_parents.add(pid)
                 self._parent_args_cache.pop(m.parent, None)
 
-    def finalize_run(self, compressor) -> None:
+    def finalize_run(self) -> None:
         """Idempotent global teardown.  Safe to call inside try/finally."""
         if self._finalized:
             return
