@@ -28,6 +28,12 @@ from packaging import version
 from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
 
+try:
+    from transformers.models.diffusion_gemma.modeling_diffusion_gemma import DiffusionGemmaModel
+except ImportError:
+    # diffusion_gemma is only available in transformers >= 5.11.0.
+    DiffusionGemmaModel = None  # type: ignore[assignment]
+
 
 def download_audiocaps_csv():
     """Download AudioCaps train.csv and return the local cache path.
@@ -238,6 +244,37 @@ def _patch_tensor_get_dtype_for_prequantized_loading():
     torch.Tensor.get_dtype = _tensor_get_dtype
 
 
+def _patch_diffusion_gemma_tied_weights():
+    """Install a ``__init__`` hook on ``DiffusionGemmaModel`` to prune stale tied-weights keys.
+
+    AutoRound unfuses ``DiffusionGemmaTextExperts.gate_up_proj`` /
+    ``down_proj`` (fused 3D ``nn.Parameter``) into per-expert
+    ``gate_proj / up_proj / down_proj`` ``nn.Linear`` modules at quantize
+    time. The encoder/decoder weight-tying map declared in
+    ``DiffusionGemmaModel._tied_weights_keys`` still references the original
+    fused parameter names (``gate_up_proj``, ``down_proj``).
+    The fix is to prune the stale patterns at the moment the model is constructed.
+    """
+    if DiffusionGemmaModel is None:
+        # diffusion_gemma is unavailable (transformers < 5.11.0); nothing to patch.
+        return
+    if getattr(DiffusionGemmaModel, "_ar_tied_prune_patched", False):
+        return
+    original_init = DiffusionGemmaModel.__init__
+
+    from auto_round.utils.model import prune_stale_tied_weights_keys
+
+    def _patched_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        try:
+            prune_stale_tied_weights_keys(self)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[DiffusionGemma] prune_stale_tied_weights_keys during __init__ failed: {exc}")
+
+    DiffusionGemmaModel.__init__ = _patched_init
+    DiffusionGemmaModel._ar_tied_prune_patched = True
+
+
 def _patch_default_rope_init():
     """Restore legacy ``rope_type='default'`` support for older remote-code models.
 
@@ -351,6 +388,8 @@ def monkey_patch_transformers():
         # transformers 5.3.0 calls tensor.get_dtype() on plain torch.Tensor objects
         # while loading pre-quantized checkpoints.
         _patch_tensor_get_dtype_for_prequantized_loading()
+    if parsed_version >= version.parse("5.11.0"):
+        _patch_diffusion_gemma_tied_weights()
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
     if parsed_version >= version.parse("4.56.0"):

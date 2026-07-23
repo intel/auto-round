@@ -47,6 +47,7 @@ from auto_round.utils import (
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
+from auto_round.utils.model import prune_stale_tied_weights_keys
 
 supported_devices = ("cpu", "hpu", "xpu", "cuda", "mps")
 
@@ -367,8 +368,10 @@ def get_layer_config(model, quantization_config):
         modules_in_block_to_quantize = flatten_list(
             quantization_config.modules_in_block_to_quantize
         )  # Flatten the list
+        # Pre-compile patterns once instead of recompiling them for every layer name.
+        compiled_modules_in_block = [re.compile(n) for n in modules_in_block_to_quantize]
         for layer_name in layer_names:
-            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
+            if not any(pattern.search(layer_name) is not None for pattern in compiled_modules_in_block):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Expand GPTQ 'dynamic' config (regex-based)
@@ -383,8 +386,9 @@ def get_layer_config(model, quantization_config):
             model=model,
         )
 
-    # AWQ format: exclude specified modules
-    extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
+    # AWQ format: exclude specified modules.
+    if "awq" in (getattr(quantization_config, "quant_method", "") or "").lower():
+        extra_config = skip_not_convert_modules(model, quantization_config, layer_names, extra_config)
 
     # Expand auto_round regex configs (regex-based)
     extra_config = _expand_regex_config(
@@ -872,6 +876,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+
+    prune_stale_tied_weights_keys(model)
 
     # Apply rotation hooks (hadamard, spinquant, quarot, etc.) via unified dispatch.
     _has_rotation = getattr(quantization_config, "rotation_config", None) or getattr(
