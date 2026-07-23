@@ -398,7 +398,7 @@ struct SageFP8KernelRunner : KernelRunner<BaseKernel, false> {
 };
 
 template <bool Causal, bool SmoothV, typename TileShapeQK, typename TileShapePV, typename TileShapeOutput,
-          typename SubgroupLayoutQK, int PipelineStages, typename ElementScale = float>
+          typename SubgroupLayoutQK, int PipelineStages, typename ElementScale = float, bool UseFP8PV = false>
 struct SageFP8Config {
   using ElementQ = cutlass::float_e4m3_t;
   using ElementK = cutlass::float_e4m3_t;
@@ -444,7 +444,7 @@ struct SageFP8Config {
   using ProblemShape = cutlass::fmha::kernel::FMHAProblemShape<false>;
   using Scheduler = cutlass::fmha::kernel::XeFHMAIndividualTileScheduler<>;
   using BaseKernel = cutlass::fmha::kernel::XeFMHAFwdKernel<ProblemShape, Mainloop, Epilogue, Scheduler>;
-  using Kernel = cutlass::fmha::kernel::XeSageFP8FwdKernel<ProblemShape, Mainloop, Epilogue, Scheduler, SmoothV>;
+  using Kernel = cutlass::fmha::kernel::XeSageFP8FwdKernel<ProblemShape, Mainloop, Epilogue, Scheduler, SmoothV, UseFP8PV>;
 
   static int run(const Options& options) {
     cutlass::KernelHardwareInfo hw_info;
@@ -972,24 +972,24 @@ struct SageConfig {
 // ========================================================================
 
 template <typename ElementScale, bool Causal, typename ShapeQK, typename ShapePV, typename ShapeOut,
-          typename SubgroupLayoutQK, int PipelineStages>
+          typename SubgroupLayoutQK, int PipelineStages, bool UseFP8PV = false>
 inline int run_sage_fp8_kernel(Options const& options) {
   if (options.vmean) {
     return SageFP8Config<Causal, true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                         PipelineStages, ElementScale>::run(options);
+                         PipelineStages, ElementScale, UseFP8PV>::run(options);
   }
   return SageFP8Config<Causal, false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK,
-                       PipelineStages, ElementScale>::run(options);
+                       PipelineStages, ElementScale, UseFP8PV>::run(options);
 }
 
 template <typename ElementScale, typename ShapeQK, typename ShapePV, typename ShapeOut,
-          typename SubgroupLayoutQK, int PipelineStages>
+          typename SubgroupLayoutQK, int PipelineStages, bool UseFP8PV = false>
 inline int dispatch_sage_fp8_kernel(Options const& options) {
   return options.is_causal
              ? run_sage_fp8_kernel<ElementScale, true, ShapeQK, ShapePV, ShapeOut,
-                                   SubgroupLayoutQK, PipelineStages>(options)
+                                   SubgroupLayoutQK, PipelineStages, UseFP8PV>(options)
              : run_sage_fp8_kernel<ElementScale, false, ShapeQK, ShapePV, ShapeOut,
-                                   SubgroupLayoutQK, PipelineStages>(options);
+                                   SubgroupLayoutQK, PipelineStages, UseFP8PV>(options);
 }
 
 template <typename ElementScale>

@@ -157,37 +157,20 @@ def trace_intermediates(query, key, value, scale):
     print_error_stats("QK softmax after FP8", probabilities_fp8, probabilities)
     print_error_stats("PV after FP8", pv_fp8_reference, pv_reference)
 
-    print("[stage] launch raw fp8_fa2", flush=True)
-    kernel_raw = ark.fp8_fa2(
-        query_fp8,
-        key_fp8,
-        value_fp8,
-        qscale=qscale,
-        kscale=kscale,
-        vscale=vscale,
+    print("[stage] launch sage_fp8", flush=True)
+    kernel_output = ark.sage_fp8(
+        query,
+        key,
+        value,
         scale=scale,
+        smooth_k=True,
+        smooth_v=True,
         tensor_layout="HND",
     ).float()
-    sync_stage("trace raw fp8_fa2")
-    print_error_stats("kernel raw output vs FP8 PV reference", kernel_raw, pv_fp8_reference)
-    print_error_stats("kernel raw output vs FP32 PV reference", kernel_raw, pv_reference)
-    print("[stage] launch fused V mean restore", flush=True)
-    kernel_fused = ark.fp8_fa2(
-        query_fp8,
-        key_fp8,
-        value_fp8,
-        qscale=qscale,
-        kscale=kscale,
-        vscale=vscale,
-        vmean=value_mean,
-        scale=scale,
-        tensor_layout="HND",
-    ).float()
-    sync_stage("trace fused V mean restore")
-    print_error_stats("kernel fused output", kernel_fused, pv_fp8_reference + value_mean_seq)
-    print_error_stats("fused vs raw plus V mean", kernel_fused, kernel_raw + value_mean_seq)
+    sync_stage("trace sage_fp8")
+    print_error_stats("sage_fp8 output vs FP8 PV reference", kernel_output, pv_fp8_reference + value_mean_seq)
     print("[trace] end", flush=True)
-    return kernel_fused
+    return kernel_output
 
 
 def test_configuration(args, desc):

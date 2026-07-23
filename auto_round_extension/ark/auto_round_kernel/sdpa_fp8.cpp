@@ -21,6 +21,10 @@
 #include "sycl_tla_sdpa.hpp"
 #include "sdpa_kernel_declarations.hpp"
 
+#if defined(CUTLASS_SYCL_PROFILING_ENABLED)
+#include "cutlass/util/sycl_event_manager.hpp"
+#endif
+
 namespace ark {
 namespace {
 
@@ -117,7 +121,10 @@ void sage_fp8_fused_impl(sycl::queue* q, const void* Q, const void* K, const voi
                          float* K_mean, float* V_mean, float* workspace, int input_dtype,
                          int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
                          int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                         int tensor_layout) {
+                         int tensor_layout, float* timing_ms) {
+#if defined(CUTLASS_SYCL_PROFILING_ENABLED)
+  size_t start_event_idx = EventManager::getInstance().size();
+#endif
   if (tensor_layout != 0 && tensor_layout != 1) {
     throw std::invalid_argument("sage_fp8_fused_impl: tensor_layout must be HND or NHD");
   }
@@ -199,6 +206,17 @@ void sage_fp8_fused_impl(sycl::queue* q, const void* Q, const void* K, const voi
     throw std::runtime_error("sage_fp8_fused_impl: supported head dimensions are 64, 96, 128, and 192");
   }
   launcher(options);
+
+#if defined(CUTLASS_SYCL_PROFILING_ENABLED)
+  if (timing_ms != nullptr) {
+    size_t end_event_idx = EventManager::getInstance().size();
+    SyclEvent begin_event, end_event;
+    begin_event = static_cast<int>(start_event_idx);
+    end_event = static_cast<int>(end_event_idx);
+    syclEventSynchronize(begin_event, end_event);
+    syclEventElapsedTime(timing_ms, begin_event, end_event);
+  }
+#endif
 }
 
 }  // namespace ark

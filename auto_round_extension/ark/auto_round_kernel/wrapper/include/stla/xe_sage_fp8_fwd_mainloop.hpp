@@ -40,17 +40,20 @@
  *
  * 2. K may be smoothed (K = K - mean(K)) on host before quantization.
  *
- * 3. After softmax: P (FP32) is quantized to FP8 E4M3 via RS_32_to_8
- *    (floatx4_to_e4m3x4), using static scale = 1/448.
+ * 3. After softmax: P (FP32) can be quantized to FP8 E4M3 for GEMM2 when
+ *    UseFP8PV is true. When false (default), P remains FP32 for higher precision.
+ *    If UseFP8PV, P quantization uses static scale = 1/448.
  *
- * 4. V is FP8 E4M3 (pre-quantized on host) with a scalar FP32 scale.
- *    GEMM2: FP8 x FP8 -> FP32 via DPAS with V scaling.
+ * 4. V is FP8 E4M3 (pre-quantized on host) with a per-tensor FP32 scale.
+ *    GEMM2: P(FP32 or FP8) x V(FP8) -> FP32 via DPAS with V scaling.
  *
  * 5. Two-layer accumulation for GEMM2 (Layer 1: MMA -> RO_inst_buf,
  *    Layer 2: RO_inst_buf -> RO). This compensates for FP22 truncation
  *    in Xe2 DPAS accumulation.
  *
  * 6. The scalar V scale is applied once to each GEMM2 contribution.
+ *
+ * 7. SIMD32 exp2 optimization using vISA asm for better performance.
  *
  * Reference: SageAttention (ICLR 2025) / SageAttention2 (ICML 2025).
  *
@@ -76,7 +79,7 @@
 
 namespace cutlass::sage {
 
-template <int Stages>
+template <int Stages, bool UseFP8PV_ = false>
 class XeSageFP8 {};  // SageAttention FP8 mainloop, P in registers.
 
 }  // namespace cutlass::sage
@@ -111,6 +114,7 @@ struct SageFP8FwdMainloop {
 
 /// Specialization for Xe2 FP8 DPAS mainloop
 template <int Stages, bool CausalMask_, bool FullMask_, bool CachedKV_, bool PagedKV_,
+          bool UseFP8PV_,
           class TiledMMAQK_, class TiledMMAPV_, int VTiles_,
           class TensorQ_, class TensorK_, class TensorV_,
           class TensorScaleQ_, class TensorScaleK_, class TensorScaleV_,
@@ -119,6 +123,7 @@ template <int Stages, bool CausalMask_, bool FullMask_, bool CachedKV_, bool Pag
           class TiledCopyK_cache_, class TiledCopyV_cache_>
 struct SageFP8FwdMainloop<
     sage::XeSageFP8<Stages>, CausalMask_, FullMask_, CachedKV_, PagedKV_,
+    UseFP8PV_,
     TiledMMAQK_, TiledMMAPV_, VTiles_,
     TensorQ_, TensorK_, TensorV_,
     TensorScaleQ_, TensorScaleK_, TensorScaleV_,
@@ -190,6 +195,11 @@ struct SageFP8FwdMainloop<
   static constexpr bool FullMask = FullMask_;
   static constexpr bool PerTensorScale = true;
   static constexpr bool BlockScale = false;
+  static constexpr bool UseFP8PV = UseFP8PV_;
+
+  // P quantization constants
+  static constexpr float kFP8Max = 448.0f;        // FP8 E4M3 max value
+  static constexpr float kInvFP8Max = 1.0f / kFP8Max;  // Static scale for P quantization
 
   // =========================================================================
   // User-facing arguments
@@ -223,6 +233,32 @@ struct SageFP8FwdMainloop<
   }
 
   CUTLASS_HOST_DEVICE static bool can_implement(Arguments const&) { return true; }
+
+  // DPAS kernels run as SIMD16, so pack two SIMD16 vectors into one temporary SIMD32 vector
+  // before issuing a single vISA SIMD32 instruction.
+  CUTLASS_DEVICE static void exp2_pair_simd32_asm(ElementA x0, ElementA x1, ElementA& y0, ElementA& y1) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(SYCL_INTEL_TARGET)
+    asm(
+        "{\n"
+        ".decl OUT0 v_type=G type=F num_elts=16 alias=<%0,0>\n"
+        ".decl OUT1 v_type=G type=F num_elts=16 alias=<%1,0>\n"
+        ".decl IN0  v_type=G type=F num_elts=16 alias=<%2,0>\n"
+        ".decl IN1  v_type=G type=F num_elts=16 alias=<%3,0>\n"
+        ".decl TMP_IN  v_type=G type=F num_elts=32 align=64\n"
+        ".decl TMP_OUT v_type=G type=F num_elts=32 align=64\n"
+        "mov (M1_NM, 16) TMP_IN(0,0)<1> IN0(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) TMP_IN(1,0)<1> IN1(0,0)<1;1,0>\n"
+        "exp (M1_NM, 32) TMP_OUT(0,0)<1> TMP_IN(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) OUT0(0,0)<1> TMP_OUT(0,0)<1;1,0>\n"
+        "mov (M1_NM, 16) OUT1(0,0)<1> TMP_OUT(1,0)<1;1,0>\n"
+        "}\n"
+        : "=rw"(y0), "=rw"(y1)
+        : "rw"(x0), "rw"(x1));
+#else
+    y0 = sycl::native::exp2(x0);
+    y1 = sycl::native::exp2(x1);
+#endif
+  }
 
   // =========================================================================
   // Main operator()
@@ -516,6 +552,15 @@ struct SageFP8FwdMainloop<
       }
 
       reorder(tSrS, tArP);
+
+      // Get V scale for this iteration
+      const ElementS v_scale = (params.vscale != nullptr) ? params.vscale[0] : 1.0f;
+
+      // Optional P quantization to FP8 for GEMM2 (when UseFP8PV is enabled)
+      if constexpr (UseFP8PV) {
+        quantize_p_to_fp8(tSrS, v_scale);
+      }
+
       CUTLASS_PRAGMA_UNROLL
       for (int VV = 0; VV < VTiles; VV++) {
         auto tArA_v = tArA(_, _, _, VV);
@@ -543,7 +588,12 @@ struct SageFP8FwdMainloop<
 
         CUTLASS_PRAGMA_UNROLL
         for (int i = 0; i < tArA_v.size(); i++) {
-          tArA_v(i) += ElementA(tArAcc(i));
+          // Apply V scale after GEMM2 (unless already applied in quantize_p_to_fp8)
+          if constexpr (!UseFP8PV) {
+            tArA_v(i) += ElementA(tArAcc(i)) * v_scale;
+          } else {
+            tArA_v(i) += ElementA(tArAcc(i));
+          }
         }
       }
 
@@ -607,16 +657,38 @@ struct SageFP8FwdMainloop<
       tS(i) -= broadcast<0>(tS_max, tS, i);
     }
 
+    // Use SIMD32 asm exp2 for better performance (matching BF16 v1 implementation)
+    static_assert(FragS{}.size() % 2 == 0, "FragS size must be even for pairwise SIMD32 exp.");
     CUTLASS_PRAGMA_UNROLL
     for (int i = 0; i < tS.size(); i += 2) {
-      tS(i) = sycl::native::exp2(tS(i));
-      tS(i + 1) = sycl::native::exp2(tS(i + 1));
+      exp2_pair_simd32_asm(tS(i), tS(i + 1), tS(i), tS(i + 1));
     }
 
     auto tS_partial_sum = reduce<1, ReduceMode::Vertical>(tS, sycl::plus<void>{});
     return cute::make_tuple(rescale, tS_partial_sum);
   }
 
+  // =========================================================================
+  // P quantization to FP8 (when UseFP8PV is enabled)
+  // =========================================================================
+  CUTLASS_DEVICE
+  void quantize_p_to_fp8(FragS& tS, ElementS v_scale) {
+    // Quantize P from FP32 to FP8 E4M3 using static scale = 1/448
+    // Then dequantize back to FP32 for GEMM2 (FP8 MMA requires FP8 input)
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < tS.size(); i++) {
+      // Scale P: multiply by inv_fp8_max to normalize to [-1, 1]
+      float p_scaled = tS(i) * kInvFP8Max;
+      // Clamp to FP8 E4M3 range [-448, 448]
+      p_scaled = sycl::clamp(p_scaled, -kFP8Max, kFP8Max);
+      // Convert to FP8 E4M3 and back to float
+      ElementQ p_fp8(p_scaled);
+      // Dequantize: multiply by fp8_max to get proper value for GEMM2
+      tS(i) = static_cast<ElementS>(p_fp8) * kFP8Max;
+      // Apply V scale during dequantization
+      tS(i) *= v_scale;
+    }
+  }
 };
 
 }  // namespace cutlass::fmha::collective

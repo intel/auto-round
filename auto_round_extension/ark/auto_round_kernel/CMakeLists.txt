@@ -102,6 +102,7 @@ if(ARK_XPU AND ARK_SYCL_TLA)
     "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate")
 
   set(CUTLASS_ENABLE_SYCL ON)
+  set(CUTLASS_SYCL_PROFILING_ENABLED ON)
   if(ARK_SIMULATOR)
     set(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Use sycl-tla headers without building tools or oneMKL" FORCE)
   endif()

@@ -31,9 +31,15 @@ using namespace cute;
  * This wrapper deliberately leaves the FA2 mainloop untouched and fuses the V
  * correction into the same kernel launch after FA2 stores its output tile.
  * VMean uses dense [batch, num_heads_kv, head_size_vo] FP32 layout.
+ *
+ * Optimization features:
+ * - UseFP8PV: When true, P (attention probabilities) is quantized to FP8 E4M3
+ *   before GEMM2 for improved performance. When false (default), P remains FP32
+ *   for higher precision.
+ * - SIMD32 exp2: Uses vISA asm optimization for exp2 operations.
  */
 template <class ProblemShape_, class CollectiveMainloop_, class CollectiveEpilogue_, class TileScheduler_,
-          bool SmoothV_>
+          bool SmoothV_, bool UseFP8PV_ = false>
 class XeSageFP8FwdKernel {
  public:
   using BaseKernel =
@@ -58,6 +64,7 @@ class XeSageFP8FwdKernel {
   using SharedStorage = typename BaseKernel::SharedStorage;
 
   static constexpr bool SmoothV = SmoothV_;
+  static constexpr bool UseFP8PV = UseFP8PV_;
   static constexpr bool is_var_len = BaseKernel::is_var_len;
   static constexpr int SharedStorageSize = BaseKernel::SharedStorageSize;
 

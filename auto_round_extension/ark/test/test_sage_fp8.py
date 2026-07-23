@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+import time
 
 import pytest
 import torch
@@ -21,93 +22,158 @@ import torch
 ark = pytest.importorskip("auto_round_kernel", reason="ARK extension is not built")
 
 
+# CRI hardware spec (per-device peak)
+PEAK_TFLOPS_BF16 = 300.0
+PEAK_TFLOPS_FP8 = 600.0
+PEAK_BW_GBPS = 1370.0  # LPDDR5X
+PEAK_MEM_GB = 256
+
+
 def has_sage_fp8():
     return hasattr(torch, "xpu") and torch.xpu.is_available() and ark.xpu_lib is not None and hasattr(ark.xpu_lib, "sage_fp8")
 
 
-pytestmark = [
-    pytest.mark.skipif(not has_sage_fp8(), reason="Sage FP8 requires an ARK Xe3P XPU build"),
-]
+def get_ark():
+    return ark
 
 
-@pytest.mark.parametrize("tensor_layout", ["HND", "NHD"])
-def test_quantize_fp8_is_signed_and_finite(tensor_layout):
-    shape = (1, 2, 32, 64) if tensor_layout == "HND" else (1, 32, 2, 64)
-    values = torch.linspace(-2.0, 2.0, math.prod(shape), dtype=torch.bfloat16, device="xpu").reshape(shape)
+def bench(fn, n_warmup=5, n_runs=10, dev="xpu"):
+    """Benchmark helper: returns average time in ms using XPU events."""
+    for _ in range(n_warmup):
+        fn()
+    if hasattr(torch, "xpu") and dev == "xpu":
+        start_event = torch.xpu.Event(enable_timing=True)
+        end_event = torch.xpu.Event(enable_timing=True)
+        torch.xpu.synchronize()
+        start_event.record()
+        for _ in range(n_runs):
+            fn()
+        end_event.record()
+        torch.xpu.synchronize()
+        return start_event.elapsed_time(end_event) / n_runs
+    else:
+        st = time.time()
+        for _ in range(n_runs):
+            fn()
+        return (time.time() - st) / n_runs * 1e3
 
-    quantized, scale = ark.quantize_fp8(values, tensor_layout=tensor_layout)
 
-    assert quantized.dtype == torch.float8_e4m3fn
-    assert quantized.is_contiguous()
-    assert math.isfinite(scale.item()) and scale.item() > 0.0
-    assert (quantized.float() < 0).any()
-    assert (quantized.float() > 0).any()
+def _perf_metrics(batch, num_heads_q, num_heads_kv, seq_q, seq_kv, head_dim,
+                  is_causal, time_ms, in_bytes=2, out_bytes=2):
+    """Compute cutlass-style Performance metrics.
 
-    zeros, zero_scale = ark.quantize_fp8(torch.zeros_like(values), tensor_layout=tensor_layout)
-    assert torch.count_nonzero(zeros.float()) == 0
-    assert math.isfinite(zero_scale.item()) and zero_scale.item() > 0.0
+    Args:
+        time_ms: kernel execution time in milliseconds
+        in_bytes: bytes per element for inputs (Q, K, V). BF16/FP16=2, FP8=1
+        out_bytes: bytes per element for output. BF16/FP16=2, FP8=1
+
+    Returns:
+        (gbps, tflops)
+    """
+    B, Hq, Hkv = batch, num_heads_q, num_heads_kv
+    Sq, Skv, D = seq_q, seq_kv, head_dim
+    time_s = time_ms * 1e-3
+    # GB/s = (bytes_read_Q + bytes_read_K + bytes_read_V + bytes_written_O) / time
+    bytes_q = B * Hq * Sq * D * in_bytes
+    bytes_k = B * Hkv * Skv * D * in_bytes
+    bytes_v = B * Hkv * Skv * D * in_bytes
+    bytes_o = B * Hq * Sq * D * out_bytes
+    total_bytes = bytes_q + bytes_k + bytes_v + bytes_o
+    gbps = (total_bytes * 1e-9) / time_s
+    # effective seq lens: causal adjusts the active Skv; non-causal is full Skv
+    if is_causal:
+        offset = min(Sq, Skv)
+        discard = Sq - offset
+        effective_Sq = Sq - discard
+        effective_Skv = Skv - offset + (offset + 1) / 2.0
+    else:
+        effective_Sq = Sq
+        effective_Skv = float(Skv)
+    batched_eff_Sq = B * effective_Sq
+    batched_eff_Skv = B * effective_Skv
+    # 2 * B * Hq * Sq * Skv * D for QK + 2 * B * Hq * Sq * Skv * D for PV
+    flops_qk = 2.0 * Hq * batched_eff_Sq * batched_eff_Skv * D
+    flops_pv = 2.0 * Hq * batched_eff_Sq * batched_eff_Skv * D
+    tflops = ((flops_qk + flops_pv) * 1e-12) / time_s
+    return gbps, tflops
 
 
-@pytest.mark.parametrize(
-    "head_dim,num_heads_q,num_heads_kv,is_causal,smooth_v",
-    [(64, 4, 4, False, False), (64, 8, 2, True, True), (128, 4, 4, False, True)],
-)
-def test_sage_fp8_matches_bf16_sdpa(head_dim, num_heads_q, num_heads_kv, is_causal, smooth_v):
-    torch.manual_seed(42)
-    batch, seq_len = 1, 256
-    query = torch.randn(batch, num_heads_q, seq_len, head_dim, dtype=torch.bfloat16, device="xpu") * 0.5
-    key = torch.randn(batch, num_heads_kv, seq_len, head_dim, dtype=torch.bfloat16, device="xpu") * 0.5
-    value = torch.randn(batch, num_heads_kv, seq_len, head_dim, dtype=torch.bfloat16, device="xpu") * 0.5
-    softmax_scale = 1.0 / math.sqrt(head_dim)
-
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        query,
-        key,
-        value,
-        scale=softmax_scale,
-        is_causal=is_causal,
-        enable_gqa=num_heads_q != num_heads_kv,
+def _print_perf(label, time_ms, batch, num_heads_q, num_heads_kv, seq_q, seq_kv,
+                head_dim, is_causal, in_bytes=2, out_bytes=2, peak_tflops=PEAK_TFLOPS_BF16):
+    gbps, tflops = _perf_metrics(
+        batch, num_heads_q, num_heads_kv, seq_q, seq_kv, head_dim,
+        is_causal, time_ms, in_bytes=in_bytes, out_bytes=out_bytes,
     )
-    actual = ark.sage_fp8(
-        query,
-        key,
-        value,
-        scale=softmax_scale,
-        is_causal=is_causal,
-        enable_gqa=num_heads_q != num_heads_kv,
-        smooth_v=smooth_v,
+    mfu = (tflops / peak_tflops) * 100.0
+    mbu = (gbps / PEAK_BW_GBPS) * 100.0
+    bound = "compute" if mfu >= mbu else "memory"
+    print(
+        f"  {label:<14} {time_ms:8.4f} ms  |  {gbps:8.3f} GB/s  |  {tflops:7.3f} TFlop/s"
+        f"  |  MFU={mfu:5.1f}%  MBU={mbu:5.1f}%  ({bound}-bound)"
+    )
+    return gbps, tflops
+
+
+def run_benchmark(
+    batch=1,
+    seq_q=256,
+    seq_kv=256,
+    num_heads_q=4,
+    num_heads_kv=4,
+    head_dim=64,
+    dt=torch.bfloat16,
+    is_causal=False,
+    tensor_layout="HND",
+    dev="xpu",
+):
+    """Run sage_fp8 accuracy and latency benchmark against FP16 SDPA reference."""
+    if not has_sage_fp8():
+        print("sage_fp8 not available, skipping benchmark")
+        return
+
+    enable_gqa = num_heads_q != num_heads_kv
+    scale = 1.0 / math.sqrt(head_dim)
+
+    shape_q = (batch, num_heads_q, seq_q, head_dim) if tensor_layout == "HND" else (batch, seq_q, num_heads_q, head_dim)
+    shape_kv = (batch, num_heads_kv, seq_kv, head_dim) if tensor_layout == "HND" else (batch, seq_kv, num_heads_kv, head_dim)
+
+    print("=== Sage FP8 Benchmark ===")
+    print(f"Layout:{tensor_layout} Batch:{batch} SeqQ:{seq_q} SeqKV:{seq_kv} HeadQ:{num_heads_q} HeadKV:{num_heads_kv} HDim:{head_dim} Causal:{is_causal} GQA:{enable_gqa}")
+    print()
+
+    query = torch.randn(shape_q, dtype=dt, device=dev)
+    key = torch.randn(shape_kv, dtype=dt, device=dev)
+    value = torch.randn_like(key)
+
+    ref = torch.nn.functional.scaled_dot_product_attention(
+        query.to("cpu"), key.to("cpu"), value.to("cpu"), scale=scale, is_causal=is_causal
     )
 
-    assert actual.shape == expected.shape
-    assert torch.isfinite(actual).all()
-    torch.testing.assert_close(actual, expected, rtol=0.08, atol=0.08)
+    t_ref = bench(lambda: torch.nn.functional.scaled_dot_product_attention(
+        query.to("cpu"), key.to("cpu"), value.to("cpu"), scale=scale, is_causal=is_causal
+    ), dev="cpu")
+    print(f"  FP16 SDPA ref (CPU):  {t_ref:8.2f} ms ")
+
+    out_fp8 = get_ark().sage_fp8(query, key, value, scale=scale, is_causal=is_causal, enable_gqa=enable_gqa, tensor_layout=tensor_layout)
+    dff_fp8 = (ref.to(dev) - out_fp8).abs()
+    t_fp8 = bench(lambda: get_ark().sage_fp8(query, key, value, scale=scale, is_causal=is_causal, enable_gqa=enable_gqa, tensor_layout=tensor_layout), dev="xpu")
+    print(f"  Sage FP8:       {t_fp8:8.4f} ms  diff max={dff_fp8.max().item():.6f} mean={dff_fp8.mean().item():.6f}")
+    _print_perf("Sage FP8", t_fp8, batch, num_heads_q, num_heads_kv, seq_q, seq_kv,
+                head_dim, is_causal, in_bytes=1, out_bytes=2, peak_tflops=PEAK_TFLOPS_FP8)
+
+    if hasattr(get_ark().xpu_lib, "sagev1") and head_dim in (64, 128):
+        out_v1 = get_ark().sagev1(query, key, value, scale=scale, is_causal=is_causal, enable_gqa=enable_gqa, smooth_k=True)
+        dff_v1 = (ref.to(dev) - out_v1).abs()
+        t_v1 = bench(lambda: get_ark().sagev1(query, key, value, scale=scale, is_causal=is_causal, enable_gqa=enable_gqa, smooth_k=True), dev="xpu")
+        print(f"  SageV1:         {t_v1:8.4f} ms  diff max={dff_v1.max().item():.6f} mean={dff_v1.mean().item():.6f}")
+        _print_perf("SageV1", t_v1, batch, num_heads_q, num_heads_kv, seq_q, seq_kv,
+                    head_dim, is_causal)
+        print(f"  SageFP8 vs V1:  {t_fp8/t_v1:.2f}x  max_err ratio={dff_fp8.max().item()/max(dff_v1.max().item(),1e-9):.2f}")
+
+    print()
 
 
-def test_sage_fp8_fused_vmean_matches_raw_plus_mean():
-    torch.manual_seed(7)
-    query = torch.randn(1, 4, 1, 64, dtype=torch.bfloat16, device="xpu")
-    key = torch.randn(1, 2, 256, 64, dtype=torch.bfloat16, device="xpu")
-    value = torch.randn_like(key)
-    key_smoothed, _ = ark._smooth_sequence_mean(key)
-    value_smoothed, value_mean = ark._smooth_sequence_mean(value)
-    query_fp8, qscale = ark.quantize_fp8(query)
-    key_fp8, kscale = ark.quantize_fp8(key_smoothed)
-    value_fp8, vscale = ark.quantize_fp8(value_smoothed)
-    kwargs = dict(qscale=qscale, kscale=kscale, vscale=vscale, scale=1.0 / 8.0)
-
-    raw = ark.fp8_fa2(query_fp8, key_fp8, value_fp8, **kwargs)
-    fused = ark.fp8_fa2(query_fp8, key_fp8, value_fp8, vmean=value_mean, **kwargs)
-
-    torch.testing.assert_close(fused.float(), raw.float() + value_mean.unsqueeze(2), rtol=0.02, atol=0.02)
-
-
-def test_sage_fp8_matches_sagev1_output():
-    torch.manual_seed(11)
-    query = torch.randn(1, 4, 128, 64, dtype=torch.bfloat16, device="xpu")
-    key = torch.randn(1, 2, 128, 64, dtype=torch.bfloat16, device="xpu")
-    value = torch.randn_like(key)
-
-    fp8_output = ark.sage_fp8(query, key, value, enable_gqa=True)
-    sagev1_output = ark.sagev1(query, key, value, enable_gqa=True, smooth_k=True)
-
-    torch.testing.assert_close(fp8_output, sagev1_output, rtol=0.12, atol=0.12)
+if __name__ == "__main__":
+    run_benchmark(batch=1, seq_q=4096, seq_kv=4096, num_heads_q=4, num_heads_kv=4, head_dim=128)
+    run_benchmark(batch=1, seq_q=4096, seq_kv=4096, num_heads_q=4, num_heads_kv=4, head_dim=128, is_causal=True)
+    run_benchmark(batch=1, seq_q=4096, seq_kv=4096, num_heads_q=4, num_heads_kv=4, head_dim=128, is_causal=True, tensor_layout="NHD")

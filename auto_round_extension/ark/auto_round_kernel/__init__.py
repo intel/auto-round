@@ -1037,58 +1037,6 @@ def _smooth_sequence_mean(tensor: torch.Tensor, tensor_layout: str = "HND") -> t
     return smoothed, mean.squeeze(sequence_dim).contiguous()
 
 
-def fp8_fa2(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    *,
-    qscale: torch.Tensor | float,
-    kscale: torch.Tensor | float,
-    vscale: torch.Tensor | float,
-    vmean: torch.Tensor | None = None,
-    scale: float | None = None,
-    is_causal: bool = False,
-    tensor_layout: str = "HND",
-) -> torch.Tensor:
-    """Run fixed-length FP8 FA2, optionally restoring a smoothed V mean."""
-    if query.device.type != "xpu":
-        raise NotImplementedError("fp8_fa2 is only supported on XPU")
-    B, Hq, Sq, D = _validate_attention_tensor(
-        query, "Q", tensor_layout, expected_dtype=torch.float8_e4m3fn
-    )
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(
-        key, "K", tensor_layout, expected_dtype=torch.float8_e4m3fn
-    )
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(
-        value, "V", tensor_layout, expected_dtype=torch.float8_e4m3fn
-    )
-    if (Bk, Bv) != (B, B) or (Hkv2, Skv2, Dv) != (Hkv, Skv, Dk) or Dk != D:
-        raise ValueError("Q/K/V shapes are incompatible")
-    if Hq % Hkv != 0:
-        raise ValueError("The number of query heads must be divisible by the number of KV heads")
-    if D not in (64, 96, 128, 192):
-        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 96, 128, 192")
-    if vmean is not None:
-        if vmean.dtype != torch.float32 or tuple(vmean.shape) != (B, Hkv, D):
-            raise ValueError(f"vmean must be contiguous float32 [B, Hkv, D], got {vmean.dtype} {tuple(vmean.shape)}")
-        if not vmean.is_contiguous() or vmean.device != query.device:
-            raise ValueError("vmean must be contiguous and on the same device as Q")
-
-    for tensor, name in ((query, "Q"), (key, "K"), (value, "V")):
-        _validate_canonical_strides(tensor, name, tensor_layout)
-    output = _empty_attention_output(
-        B, Hq, Sq, D, dtype=torch.bfloat16, device=query.device, tensor_layout=tensor_layout
-    )
-    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
-    get_lib(query).sage_fp8(
-        get_stream(query), query.data_ptr(), key.data_ptr(), value.data_ptr(), output.data_ptr(),
-        float(qscale), float(kscale), float(vscale), vmean.data_ptr() if vmean is not None else 0,
-        B, Hq, Hkv, Sq, Skv, D, float(scale) if scale is not None else 1.0 / (D**0.5),
-        bool(is_causal), layout_code,
-    )
-    return output
-
-
 def sage_fp8(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1107,14 +1055,17 @@ def sage_fp8(
         raise NotImplementedError("sage_fp8 does not support an explicit attention mask")
     if dropout_p != 0.0:
         raise NotImplementedError("sage_fp8 does not support dropout")
-    B, Hq, _, D = _validate_attention_tensor(query, "Q", tensor_layout)
-    Bk, Hkv, _, Dk = _validate_attention_tensor(key, "K", tensor_layout)
-    Bv, Hkv2, _, Dv = _validate_attention_tensor(value, "V", tensor_layout)
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_fp8 is only supported on XPU")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout)
     if query.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         raise ValueError(f"Q/K/V must be FP16, BF16, or FP32, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
         raise ValueError("Q/K/V dtypes must match")
-    if (Bv, Hkv2, Dv) != (Bk, Hkv, Dk) or Dk != D:
+    if (Bv, Hkv2, Skv2, Dv) != (Bk, Hkv, Skv, Dk) or Dk != D:
         raise ValueError("Q/K/V shapes are incompatible")
     if Bk != B or Bv != B:
         raise ValueError("Batch size mismatch between Q/K/V")
@@ -1122,6 +1073,10 @@ def sage_fp8(
         raise ValueError("Set enable_gqa=True when query and KV head counts differ")
     if Hq % Hkv != 0:
         raise ValueError("The number of query heads must be divisible by the number of KV heads")
+    if D not in (64, 96, 128, 192):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 96, 128, 192")
+
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
 
     if smooth_k and smooth_v and hasattr(get_lib(query), "sage_fp8_fused"):
         for tensor, name in ((query, "Q"), (key, "K"), (value, "V")):
@@ -1129,35 +1084,36 @@ def sage_fp8(
         query_fp8 = torch.empty_like(query, dtype=torch.float8_e4m3fn)
         key_fp8 = torch.empty_like(key, dtype=torch.float8_e4m3fn)
         value_fp8 = torch.empty_like(value, dtype=torch.float8_e4m3fn)
-        output = _empty_attention_output(
-            B, Hq, query.shape[2 if _normalize_tensor_layout(tensor_layout) == "HND" else 1], D,
-            dtype=torch.bfloat16, device=query.device, tensor_layout=tensor_layout,
-        )
+        output = _empty_attention_output(B, Hq, Sq, D, dtype=torch.bfloat16, device=query.device, tensor_layout=tensor_layout)
         key_mean = torch.empty((B, Hkv, D), dtype=torch.float32, device=query.device)
         value_mean = torch.empty_like(key_mean)
         workspace = torch.empty(6, dtype=torch.float32, device=query.device)
-        layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
         get_lib(query).sage_fp8_fused(
             get_stream(query), query.data_ptr(), key.data_ptr(), value.data_ptr(),
             query_fp8.data_ptr(), key_fp8.data_ptr(), value_fp8.data_ptr(), output.data_ptr(),
             key_mean.data_ptr(), value_mean.data_ptr(), workspace.data_ptr(), cvt_dtype(query.dtype),
-            B, Hq, Hkv,
-            query.shape[2 if layout_code == LAYOUT_HND else 1],
-            key.shape[2 if layout_code == LAYOUT_HND else 1],
-            D, float(scale) if scale is not None else 1.0 / (D**0.5),
+            B, Hq, Hkv, Sq, Skv, D, float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal), layout_code,
         )
         return output
 
-    key_input, _ = _smooth_sequence_mean(key, tensor_layout) if smooth_k else (key, None)
+    key_input, key_mean = _smooth_sequence_mean(key, tensor_layout) if smooth_k else (key, None)
     value_input, value_mean = _smooth_sequence_mean(value, tensor_layout) if smooth_v else (value, None)
+
     query_fp8, qscale = quantize_fp8(query, tensor_layout)
     key_fp8, kscale = quantize_fp8(key_input, tensor_layout)
     value_fp8, vscale = quantize_fp8(value_input, tensor_layout)
-    return fp8_fa2(
-        query_fp8, key_fp8, value_fp8, qscale=qscale, kscale=kscale, vscale=vscale,
-        vmean=value_mean, scale=scale, is_causal=is_causal, tensor_layout=tensor_layout,
+
+    output = _empty_attention_output(B, Hq, Sq, D, dtype=torch.bfloat16, device=query.device, tensor_layout=tensor_layout)
+    get_lib(query).sage_fp8(
+        get_stream(query), query_fp8.data_ptr(), key_fp8.data_ptr(), value_fp8.data_ptr(), output.data_ptr(),
+        float(qscale), float(kscale), float(vscale),
+        value_mean.data_ptr() if value_mean is not None else 0,
+        B, Hq, Hkv, Sq, Skv, D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal), layout_code,
     )
+    return output
 
 
 def sagev1(
