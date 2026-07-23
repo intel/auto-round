@@ -118,7 +118,7 @@ class SignRoundQuantizer(BaseQuantizer):
         loss_func: Callable,
         device: Union[str, torch.device] = "cpu",
         valid_token_mask: Optional[torch.Tensor] = None,
-        input_ids = None
+        input_ids=None,
     ):
         autocast_ctx = (
             nullcontext()
@@ -184,8 +184,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 break
         else:
             raise AttributeError(
-                f"Cannot locate lm_head in {type(model).__name__}. "
-                "Checked: lm_head, embed_out, output, head."
+                f"Cannot locate lm_head in {type(model).__name__}. " "Checked: lm_head, embed_out, output, head."
             )
 
         # ── post-block processing (ordered list applied before lm_head) ───────
@@ -195,23 +194,20 @@ class SignRoundQuantizer(BaseQuantizer):
         try:
             decoder = model.model.decoder
             _ = decoder.project_out  # raises AttributeError if not an OPT decoder
-            self._post_block_modules = [
-                m for m in (decoder.final_layer_norm, decoder.project_out)
-                if m is not None
-            ]
+            self._post_block_modules = [m for m in (decoder.final_layer_norm, decoder.project_out) if m is not None]
             return
         except AttributeError:
             pass
 
         # All other architectures: single optional final norm.
         norm_getters = [
-            lambda: model.model.norm,                           # LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3
-            lambda: model.transformer.ln_f,                     # GPT-2 / Falcon / Bloom
-            lambda: model.gpt_neox.final_layer_norm,            # GPT-NeoX / Pythia
-            lambda: model.model.final_layernorm,                # Phi / Phi-2
-            lambda: model.transformer.norm_f,                   # MPT
+            lambda: model.model.norm,  # LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3
+            lambda: model.transformer.ln_f,  # GPT-2 / Falcon / Bloom
+            lambda: model.gpt_neox.final_layer_norm,  # GPT-NeoX / Pythia
+            lambda: model.model.final_layernorm,  # Phi / Phi-2
+            lambda: model.transformer.norm_f,  # MPT
             lambda: model.transformer.encoder.final_layernorm,  # ChatGLM
-            lambda: model.rwkv.ln_out,                          # RWKV
+            lambda: model.rwkv.ln_out,  # RWKV
         ]
         self._post_block_modules = []
         for getter in norm_getters:
@@ -225,16 +221,25 @@ class SignRoundQuantizer(BaseQuantizer):
 
     # Keywords that identify non-text (visual / audio / multimodal) blocks.
     # LFQ loss is only meaningful for pure language-model decoder blocks.
-    _NON_TEXT_BLOCK_KEYWORDS = frozenset({
-        "vis", "vision", "visual",
-        "image", "img",
-        "audio",
-        "video",
-        "patch", "pixel",
-        "clip", "vit",
-        "perceiver", "resampler",
-        "connector", "projector",
-    })
+    _NON_TEXT_BLOCK_KEYWORDS = frozenset(
+        {
+            "vis",
+            "vision",
+            "visual",
+            "image",
+            "img",
+            "audio",
+            "video",
+            "patch",
+            "pixel",
+            "clip",
+            "vit",
+            "perceiver",
+            "resampler",
+            "connector",
+            "projector",
+        }
+    )
 
     def _is_text_decoder_block(self, block_name: str) -> bool:
         """Return ``True`` if *block_name* refers to a text-decoder block.

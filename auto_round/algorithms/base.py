@@ -144,7 +144,6 @@ class BaseAlgorithm:
         """Model-level preparation called once before block iteration starts."""
         return
 
-
     def finalize_run(self) -> None:
         """Model-level teardown called once after all blocks are processed."""
         return
