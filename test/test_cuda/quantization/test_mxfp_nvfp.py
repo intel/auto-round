@@ -11,20 +11,20 @@ from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
-from auto_round.formats import AutoRoundExportFormat
+from auto_round.formats import BackendDataType
 
 from ...envs import has_module, require_awq, require_optimum
 from ...helpers import get_model_path, save_tiny_model
 
 testing_schemes = [
-    AutoRoundExportFormat.MXFP8.value,
-    AutoRoundExportFormat.MXFP4.value,
-    AutoRoundExportFormat.NVFP4.value,
+    BackendDataType.MXFP8.value,
+    BackendDataType.MXFP4.value,
+    BackendDataType.NVFP4.value,
 ]
 QMODULE_MAPPING = {
-    AutoRoundExportFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
-    AutoRoundExportFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
-    AutoRoundExportFormat.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
+    BackendDataType.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
+    BackendDataType.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    BackendDataType.NVFP4.value: ar_qmodules.NVFP4QuantLinear,
 }
 
 

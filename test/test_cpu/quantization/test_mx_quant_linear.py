@@ -5,15 +5,15 @@ from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _MXFPLinear
 from auto_round.export.export_to_autoround.qlinear_int import QuantLinear as _MXINTLinear
-from auto_round.formats import AutoRoundExportFormat
+from auto_round.formats import BackendDataType
 from auto_round.schemes import PRESET_SCHEMES
 
-mx_schemes = [AutoRoundExportFormat.MXFP8.value, AutoRoundExportFormat.MXFP4.value]
-mx_int_schemes = [AutoRoundExportFormat.MXINT4.value]
+mx_schemes = [BackendDataType.MXFP8.value, BackendDataType.MXFP4.value]
+mx_int_schemes = [BackendDataType.MXINT4.value]
 QMODULE_MAPPING = {
-    AutoRoundExportFormat.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
-    AutoRoundExportFormat.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
-    AutoRoundExportFormat.MXINT4.value: ar_qmodules.MXINT4QuantLinear,
+    BackendDataType.MXFP8.value: ar_qmodules.MXFP8QuantLinear,
+    BackendDataType.MXFP4.value: ar_qmodules.MXFP4QuantLinear,
+    BackendDataType.MXINT4.value: ar_qmodules.MXINT4QuantLinear,
 }
 
 

@@ -12,23 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.planning.builder import build_compression_plan
 from auto_round.planning.contracts import (
-    CompressionIntent,
     CompressionPlan,
     FormatResolution,
     ResolvedScheme,
     thaw_mapping,
 )
-from auto_round.planning.errors import FormatCompatibilityError, LayerConfigResolutionError, SchemeResolutionError
-from auto_round.planning.scheme_resolver import resolve_scheme_value
+from auto_round.planning.errors import (
+    FormatCompatibilityError,
+    LayerConfigResolutionError,
+    PlanningError,
+    SchemeResolutionError,
+)
+from auto_round.planning.resolve import build_compression_plan, resolve_scheme_value
 
 __all__ = [
-    "CompressionIntent",
     "CompressionPlan",
     "FormatCompatibilityError",
     "FormatResolution",
     "LayerConfigResolutionError",
+    "PlanningError",
     "ResolvedScheme",
     "SchemeResolutionError",
     "build_compression_plan",

@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 
 from auto_round.formats import resolve_formats
-from auto_round.planning import CompressionIntent, build_compression_plan, resolve_scheme_value
+from auto_round.planning import build_compression_plan, resolve_scheme_value
 
 EXPECTED_PLAN_SNAPSHOTS = {
     "w4_autoround": {
@@ -83,12 +83,10 @@ def test_scheme_format_plan_snapshot(case_name):
     expected = EXPECTED_PLAN_SNAPSHOTS[case_name]
     scheme = resolve_scheme_value(expected["scheme_name"], {})
     resolution = resolve_formats(
-        CompressionIntent(
-            format=expected["format_name"],
-            layer_config={"layer": {"bits": scheme.value.bits}},
-            scale_dtype=torch.float16,
-        ),
         scheme,
+        format=expected["format_name"],
+        layer_config={"layer": {"bits": scheme.value.bits}},
+        scale_dtype=torch.float16,
         model=nn.Sequential(nn.Linear(32, 32)),
     )
     plan = build_compression_plan(resolution, {"layer": {"bits": resolution.scheme.value.bits}})

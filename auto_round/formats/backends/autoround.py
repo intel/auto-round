@@ -19,7 +19,7 @@ import torch
 
 from auto_round.formats.backends.gptq_awq import AutoAWQFormat, AutoGPTQFormat
 from auto_round.formats.backends.mlx import MLXFormat
-from auto_round.formats.base import AutoRoundExportFormat, OutputFormat, _check_divisible_by_32
+from auto_round.formats.base import BackendDataType, OutputFormat, _check_divisible_by_32
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
@@ -71,9 +71,9 @@ class AutoRoundFormat(OutputFormat):
             elif scheme.is_mx_int() and scheme.bits == 4:  # only add mx_int4 now
                 self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
             elif scheme.is_static_wfp8afp8():  # static wfp8afp8
-                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8_STATIC.value, scheme, ctx)
+                self.backend = AutoRoundFormat(BackendDataType.FP8_STATIC.value, scheme, ctx)
             elif scheme.data_type.startswith("fp") and scheme.bits == 8 and scheme.act_bits >= 16:  # woq fp8
-                self.backend = AutoRoundFormat(AutoRoundExportFormat.FP8.value, scheme, ctx)
+                self.backend = AutoRoundFormat(BackendDataType.FP8.value, scheme, ctx)
             elif scheme.data_type.startswith("fp") and scheme.bits == 8 and isinstance(scheme.group_size, tuple):
                 self.backend = AutoRoundFormat("auto_round:fp8", scheme, ctx)
             elif scheme.act_bits < 16:
@@ -86,7 +86,7 @@ class AutoRoundFormat(OutputFormat):
         elif not format.startswith("auto_round"):
             if format == "mlx":
                 self.backend = MLXFormat("mlx", scheme, ctx)
-            elif format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
+            elif format.upper() not in list(BackendDataType.__members__.keys()):
                 raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
             else:
                 self.output_format = f"auto_round:{format}"
@@ -114,7 +114,7 @@ class AutoRoundFormat(OutputFormat):
                 if (
                     scheme.act_group_size != 0
                     and not scheme.act_dynamic
-                    and self.get_backend_name() == f"auto_round:{AutoRoundExportFormat.FP8.value}"
+                    and self.get_backend_name() == f"auto_round:{BackendDataType.FP8.value}"
                 ):
                     logger.warning(
                         f"Please note that quantize activation with act_group_size={scheme.act_group_size}"
@@ -131,22 +131,22 @@ class AutoRoundFormat(OutputFormat):
         backend = self.get_backend_name()
 
         if self.output_format in [
-            f"auto_round:{AutoRoundExportFormat.NV_FP.value}",
-            f"auto_round:{AutoRoundExportFormat.MX_FP.value}",
-            f"auto_round:{AutoRoundExportFormat.MX_FP_RCEIL.value}",
-            f"auto_round:{AutoRoundExportFormat.NV_FP4_WITH_STATIC_GS.value}",
+            f"auto_round:{BackendDataType.NV_FP.value}",
+            f"auto_round:{BackendDataType.MX_FP.value}",
+            f"auto_round:{BackendDataType.MX_FP_RCEIL.value}",
+            f"auto_round:{BackendDataType.NV_FP4_WITH_STATIC_GS.value}",
         ]:
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
 
             pack_func = pack_layer
-        elif self.output_format in [f"auto_round:{AutoRoundExportFormat.MX_INT.value}"]:
+        elif self.output_format in [f"auto_round:{BackendDataType.MX_INT.value}"]:
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
 
             pack_func = pack_layer
         elif self.output_format in [
-            f"auto_round:{AutoRoundExportFormat.FP8.value}",
-            f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
-            f"auto_round:{AutoRoundExportFormat.FP8_STATIC.value}",
+            f"auto_round:{BackendDataType.FP8.value}",
+            f"auto_round:{BackendDataType.FP8_STATIC.value}",
+            f"auto_round:{BackendDataType.FP8_STATIC.value}",
         ]:
             from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer
 
@@ -184,7 +184,7 @@ class AutoRoundFormat(OutputFormat):
                 **kwargs,
             )
         backend = self.get_backend_name()
-        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", backend):
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
             backend = "auto_round:llm_compressor"
@@ -194,7 +194,7 @@ class AutoRoundFormat(OutputFormat):
 
             backend = "auto_round:fp8_static" if serialization_dict.get("act_bits", 16) == 8 else None
             export_func = save_quantized_as_autoround
-        elif re.search(f"{AutoRoundExportFormat.MX_INT.value}", backend):
+        elif re.search(f"{BackendDataType.MX_INT.value}", backend):
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
             backend = "auto_round"

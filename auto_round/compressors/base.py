@@ -40,7 +40,6 @@ from auto_round.layer_config import (
 )
 from auto_round.logger import logger
 from auto_round.planning import (
-    CompressionIntent,
     FormatResolution,
     ResolvedScheme,
     build_compression_plan,
@@ -538,7 +537,7 @@ class BaseCompressor(object):
     ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
-        Must be called BEFORE ``get_formats()`` and BEFORE ``_scheme_post_init()``.
+        Must be called BEFORE ``_resolve_formats()`` and BEFORE ``_scheme_post_init()``.
         Idempotent: safe to call multiple times.
         """
         if self._scheme_resolved:
@@ -663,7 +662,6 @@ class BaseCompressor(object):
             quant_lm_head=self.quant_lm_head,
             enable_gguf_official_mixed=False,
             is_mllm=self.model_context.is_mllm,
-            layer_policy=format_resolution.layer_policy,
         )
         regex_config = extract_regex_config(
             model=self.model_context.model,
@@ -852,7 +850,6 @@ class BaseCompressor(object):
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.model_context.is_mllm,
             fill_default_value=fill_default_value,
-            layer_policy=format_resolution.layer_policy,
         )
         regex_config = extract_regex_config(
             model=self.model_context.model,
@@ -1154,7 +1151,7 @@ class BaseCompressor(object):
         return None
 
     def _resolve_format_string(self, format_str: str) -> list["OutputFormat"]:
-        """Resolve one format string via get_formats(), then propagate any
+        """Resolve one format string via resolve_formats(), then propagate any
         scheme/layer_config/scale_dtype/quant_block_list correction it makes
         (e.g. GGUF's gguf_args_check) back onto self.
 
@@ -1164,19 +1161,17 @@ class BaseCompressor(object):
         """
         preset_name = self.scheme if isinstance(self.scheme, str) else None
         self._format_resolution = resolve_formats(
-            CompressionIntent(
-                format=format_str,
-                layer_config=self.layer_config or {},
-                scale_dtype=self.scale_dtype,
-                mllm=self.model_context.is_mllm,
-                iters=getattr(self, "iters", 0),
-                enable_alg_ext=getattr(self, "enable_alg_ext", False),
-                quant_nontext_module=self.quant_nontext_module,
-                quant_block_list=self.quant_block_list,
-                platform=self.platform,
-                is_auto_scheme=self.is_auto_scheme,
-            ),
             ResolvedScheme.from_scheme(self.scheme_context, preset_name=preset_name),
+            format=format_str,
+            layer_config=self.layer_config or {},
+            scale_dtype=self.scale_dtype,
+            mllm=self.model_context.is_mllm,
+            iters=getattr(self, "iters", 0),
+            enable_alg_ext=getattr(self, "enable_alg_ext", False),
+            quant_nontext_module=self.quant_nontext_module,
+            quant_block_list=self.quant_block_list,
+            platform=self.platform,
+            is_auto_scheme=self.is_auto_scheme,
             model=self.model_context.model,
         )
         formats = list(self._format_resolution.formats)

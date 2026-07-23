@@ -256,7 +256,6 @@ def set_layer_config(
     fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """Compatibility adapter for the pure layer-config resolver and explicit apply phase."""
-    from auto_round.formats.backends.gguf import GGUFLayerPolicy
     from auto_round.layer_config import (
         apply_plan_to_model,
         extract_regex_config,
@@ -268,18 +267,14 @@ def set_layer_config(
 
     if isinstance(default_scheme, ResolvedScheme):
         resolved_scheme = default_scheme
-        gguf_name = resolved_scheme.preset_name or ""
     elif isinstance(default_scheme, QuantizationScheme):
-        gguf_name = get_gguf_scheme(default_scheme) or ""
         resolved_scheme = ResolvedScheme.from_scheme(
             default_scheme,
-            preset_name=gguf_name or None,
+            preset_name=get_gguf_scheme(default_scheme) or None,
         )
     else:
         resolved_scheme = resolve_scheme_value(default_scheme, {})
-        gguf_name = get_gguf_scheme(default_scheme) or ""
 
-    layer_policy = GGUFLayerPolicy() if gguf_name.lower().startswith("gguf:") else None
     resolved = resolve_layer_config(
         model=model,
         scheme=resolved_scheme,
@@ -293,7 +288,6 @@ def set_layer_config(
         enable_gguf_official_mixed=enable_gguf_official_mixed,
         is_mllm=is_mllm,
         fill_default_value=fill_default_value,
-        layer_policy=layer_policy,
     )
     regex_config = extract_regex_config(
         model=model,

@@ -26,16 +26,10 @@ import torch
 import transformers
 
 from auto_round.export.export_to_gguf.config import ModelType
-from auto_round.planning.contracts import thaw_mapping
 from auto_round.planning.errors import FormatCompatibilityError
-from auto_round.schemes import (
-    PRESET_SCHEMES,
-    QuantizationScheme,
-    get_gguf_scheme,
-)
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
-    SUPPORTED_FORMATS,
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compress_layer_names,
@@ -48,7 +42,12 @@ from auto_round.utils import (
 )
 
 
-class AutoRoundExportFormat(str, Enum):
+class BackendDataType(str, Enum):
+    """Quantized data-type/backend-variant identifiers used as the suffix after a format
+    name (e.g. ``auto_round:fp8_static``, ``llm_compressor:int8_w8a8``). Shared across the
+    ``auto_round`` and ``llm_compressor`` output formats -- not tied to a single format.
+    """
+
     # Weight: FP8, per-channel, may be extended to per-tensor in future
     # Activation: FP8, per-tensor
     FP8_STATIC = "fp8_static"
@@ -65,100 +64,6 @@ class AutoRoundExportFormat(str, Enum):
     MXINT4 = "mxint4"
     MX_INT = "mx_int"
     WINT_A16 = "wint_a16"
-
-
-def _check_compatibility(formats: list[str], scheme: QuantizationScheme):
-    has_gguf_format = any(f.lower().startswith("gguf") for f in formats)
-    non_gguf_formats = [f for f in formats if f.lower() != "fake" and not f.lower().startswith("gguf")]
-    if has_gguf_format and non_gguf_formats:
-        raise ValueError(
-            f"GGUF format is not compatible with other formats, but got {formats}, please choose only one of them"
-        )
-    gguf_format_name = get_gguf_scheme(scheme)
-    if gguf_format_name:
-        if gguf_format_name.lower().endswith("mixed"):
-            gguf_format_name = gguf_format_name.lower().replace("_mixed", "_s")
-        if any([f.lower() not in ["fake", gguf_format_name.lower()] for f in formats]):
-            has_gguf_format = any(f.lower().startswith("gguf") for f in formats if f.lower() != "fake")
-            if has_gguf_format:
-                logger.warning(
-                    f"scheme {gguf_format_name} is GGUF, but format {','.join(formats)} specifies "
-                    f"a different GGUF type. The scheme-driven per-layer quantization may differ from the "
-                    f"file-level GGUF format type."
-                )
-            else:
-                tmp_format_name = (
-                    gguf_format_name.lower() if "fake" not in formats else (f"{gguf_format_name.lower()},fake")
-                )
-                logger.warning(
-                    f"reset format {','.join(formats)} to {tmp_format_name} "
-                    f"since scheme {gguf_format_name} can only be exported to format "
-                    f"{gguf_format_name.lower()} or fake"
-                )
-                formats = tmp_format_name.split(",")
-
-    if isinstance(scheme.group_size, tuple) and any(["auto_round" in f.lower() for f in formats]):
-        logger.warning(
-            "auto_round:fp8 format only supports vLLM inference for now. "
-            "We recommend using the FP8 format via `--format fp8` instead."
-        )
-
-    return formats
-
-
-def get_formats(
-    format: str,
-    scheme: QuantizationScheme,
-    *,
-    model=None,
-    layer_config: dict = None,
-    scale_dtype=None,
-    mllm: bool = False,
-    iters: int = 0,
-    enable_alg_ext: bool = False,
-    quant_nontext_module: bool = False,
-    quant_block_list: list = None,
-    platform: str = None,
-    is_auto_scheme: bool = False,
-) -> tuple[list[OutputFormat], QuantizationScheme, dict, object, list]:
-    """Get the list of OutputFormat instances based on the provided name.
-
-    Returns ``(formats, scheme, layer_config, scale_dtype, quant_block_list)`` since format
-    resolution may replace the scheme (GGUF preset correction), create ``layer_config`` if it
-    was ``None``, force ``scale_dtype`` to ``torch.float32`` for GGUF, or narrow ``quant_block_list``.
-    """
-    from auto_round.formats.resolver import resolve_formats
-    from auto_round.planning import CompressionIntent, ResolvedScheme
-
-    resolution = resolve_formats(
-        CompressionIntent(
-            format=format,
-            layer_config=layer_config or {},
-            scale_dtype=scale_dtype,
-            mllm=mllm,
-            iters=iters,
-            enable_alg_ext=enable_alg_ext,
-            quant_nontext_module=quant_nontext_module,
-            quant_block_list=quant_block_list,
-            platform=platform,
-            is_auto_scheme=is_auto_scheme,
-        ),
-        ResolvedScheme.from_scheme(scheme),
-        model=model,
-    )
-    resolved_layer_config = thaw_mapping(resolution.layer_config_patch)
-    if layer_config is None and not resolved_layer_config:
-        resolved_layer_config = None
-    resolved_blocks = (
-        [list(group) for group in resolution.quant_block_list] if resolution.quant_block_list is not None else None
-    )
-    return (
-        list(resolution.formats),
-        resolution.scheme.value,
-        resolved_layer_config,
-        resolution.scale_dtype,
-        resolved_blocks,
-    )
 
 
 def _check_divisible_by_32(scheme: QuantizationScheme, model, layer_config: dict) -> dict:

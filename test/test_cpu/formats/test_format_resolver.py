@@ -15,15 +15,14 @@
 import pytest
 
 from auto_round.formats import resolve_formats
-from auto_round.planning import CompressionIntent, FormatCompatibilityError, resolve_scheme_value
+from auto_round.planning import FormatCompatibilityError, resolve_scheme_value
 
 
 def test_resolve_formats_does_not_mutate_inputs():
     layer_config = {"layer": {"bits": 4}}
-    intent = CompressionIntent(format="auto_round", layer_config=layer_config)
     scheme = resolve_scheme_value("W4A16", {})
 
-    result = resolve_formats(intent, scheme, model=None)
+    result = resolve_formats(scheme, format="auto_round", layer_config=layer_config, model=None)
 
     layer_config["layer"]["bits"] = 8
     assert scheme.value.bits == 4
@@ -35,4 +34,14 @@ def test_resolve_formats_rejects_gguf_with_real_companion():
     scheme = resolve_scheme_value("W4A16", {})
 
     with pytest.raises(FormatCompatibilityError):
-        resolve_formats(CompressionIntent(format="gguf:q4_k_m,auto_round"), scheme, model=None)
+        resolve_formats(scheme, format="gguf:q4_k_m,auto_round", model=None)
+
+
+def test_resolve_formats_allows_gguf_with_fake_companion():
+    scheme = resolve_scheme_value("W4A16", {})
+
+    result = resolve_formats(scheme, format="gguf:q4_k_m,fake", model=None)
+
+    assert sorted(f.output_format for f in result.formats) == ["fake", "gguf"]
+    assert any(f.is_gguf() for f in result.formats)
+    assert any(f.is_fake() for f in result.formats)

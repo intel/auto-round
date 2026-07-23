@@ -79,24 +79,6 @@ def freeze_block_groups(value: Optional[Tuple[Tuple[str, ...], ...]]) -> Optiona
 
 
 @dataclass(frozen=True)
-class CompressionIntent:
-    format: Optional[str] = None
-    layer_config: LayerConfig = field(default_factory=lambda: MappingProxyType({}))
-    scale_dtype: Any = None
-    quant_block_list: Optional[BlockGroups] = None
-    mllm: bool = False
-    iters: int = 0
-    enable_alg_ext: bool = False
-    quant_nontext_module: bool = False
-    platform: Optional[str] = None
-    is_auto_scheme: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "layer_config", freeze_mapping(self.layer_config))
-        object.__setattr__(self, "quant_block_list", freeze_block_groups(self.quant_block_list))
-
-
-@dataclass(frozen=True)
 class ResolvedScheme:
     _value: QuantizationScheme
     preset_name: Optional[str] = None
@@ -118,7 +100,6 @@ class ResolvedScheme:
 class FormatResolution:
     formats: Tuple[Any, ...]
     scheme: ResolvedScheme
-    layer_policy: Any = None
     layer_config_patch: LayerConfig = field(default_factory=lambda: MappingProxyType({}))
     scale_dtype: Any = None
     quant_block_list: Optional[BlockGroups] = None

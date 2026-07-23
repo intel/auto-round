@@ -12,6 +12,8 @@ from auto_round.export.export_to_autogptq import export as autogptq_export
 from auto_round.export.export_to_autoround import export as autoround_export
 from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
 from auto_round.export.export_to_awq import export as awq_export
+from auto_round.formats import resolve_formats
+from auto_round.planning import ResolvedScheme
 
 from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
 
@@ -382,19 +384,18 @@ class TestAutoRound:
         print(res)
 
     def test_export_format(self):
-        from auto_round.formats import get_formats
-
         autoround = AutoRound(
             self.model_name,
             scheme="FP8_STATIC",
         )
         autoround.post_init()
-        format_list, _, _, _, _ = get_formats(
-            "auto_round, llm_compressor, auto_round:llm_compressor",
-            autoround.scheme_context,
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(autoround.scheme_context),
+            format="auto_round, llm_compressor, auto_round:llm_compressor",
             model=autoround.model_context.model,
             scale_dtype=autoround.scale_dtype,
         )
+        format_list = list(resolution.formats)
         assert len(format_list) == 3
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:fp8_static"
@@ -408,12 +409,13 @@ class TestAutoRound:
             scheme="W4A16",
         )
         autoround.post_init()
-        format_list, _, _, _, _ = get_formats(
-            "auto_round:auto_awq, auto_gptq",
-            autoround.scheme_context,
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(autoround.scheme_context),
+            format="auto_round:auto_awq, auto_gptq",
             model=autoround.model_context.model,
             scale_dtype=autoround.scale_dtype,
         )
+        format_list = list(resolution.formats)
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:auto_awq"
         assert format_list[1].output_format == "auto_gptq"
@@ -424,12 +426,13 @@ class TestAutoRound:
             scheme="INT8",
         )
         autoround.post_init()
-        format_list, _, _, _, _ = get_formats(
-            "llm_compressor, auto_round:llm_compressor",
-            autoround.scheme_context,
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(autoround.scheme_context),
+            format="llm_compressor, auto_round:llm_compressor",
             model=autoround.model_context.model,
             scale_dtype=autoround.scale_dtype,
         )
+        format_list = list(resolution.formats)
         assert format_list[0].output_format == "llm_compressor"
         assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list[1].output_format == "auto_round"
@@ -441,20 +444,19 @@ class TestAutoRound:
             scheme="INT8_W8A8",
         )
         autoround_old.post_init()
-        format_list_old, _, _, _, _ = get_formats(
-            "llm_compressor, auto_round:llm_compressor",
-            autoround_old.scheme_context,
+        resolution_old = resolve_formats(
+            ResolvedScheme.from_scheme(autoround_old.scheme_context),
+            format="llm_compressor, auto_round:llm_compressor",
             model=autoround_old.model_context.model,
             scale_dtype=autoround_old.scale_dtype,
         )
+        format_list_old = list(resolution_old.formats)
         assert format_list_old[0].output_format == "llm_compressor"
         assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list_old[1].output_format == "auto_round"
         assert format_list_old[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
 
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
-        from auto_round.formats import get_formats
-
         ar = AutoRound(
             model=tiny_qwen_model_path,
             scheme="W4A16",
@@ -464,13 +466,19 @@ class TestAutoRound:
         )
         ar.post_init()
         with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
-            get_formats(
-                "auto_round:auto_awq", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype
+            resolve_formats(
+                ResolvedScheme.from_scheme(ar.scheme_context),
+                format="auto_round:auto_awq",
+                model=ar.model_context.model,
+                scale_dtype=ar.scale_dtype,
             )
 
         with pytest.raises(ValueError, match="but got bits=2, data_type=int"):
-            get_formats(
-                "auto_round:llm_compressor", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype
+            resolve_formats(
+                ResolvedScheme.from_scheme(ar.scheme_context),
+                format="auto_round:llm_compressor",
+                model=ar.model_context.model,
+                scale_dtype=ar.scale_dtype,
             )
 
         ar = AutoRound(
@@ -482,8 +490,11 @@ class TestAutoRound:
         )
         ar.post_init()
         with pytest.raises(ValueError, match="but got data_type=fp, bits=4"):
-            get_formats(
-                "auto_round:llm_compressor", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype
+            resolve_formats(
+                ResolvedScheme.from_scheme(ar.scheme_context),
+                format="auto_round:llm_compressor",
+                model=ar.model_context.model,
+                scale_dtype=ar.scale_dtype,
             )
 
         ar = AutoRound(
@@ -494,7 +505,12 @@ class TestAutoRound:
             sym=True,
         )
         ar.post_init()
-        get_formats("auto_round:auto_awq", ar.scheme_context, model=ar.model_context.model, scale_dtype=ar.scale_dtype)
+        resolve_formats(
+            ResolvedScheme.from_scheme(ar.scheme_context),
+            format="auto_round:auto_awq",
+            model=ar.model_context.model,
+            scale_dtype=ar.scale_dtype,
+        )
 
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")

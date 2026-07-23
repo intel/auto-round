@@ -24,7 +24,7 @@ import torch
 
 from auto_round.layer_config.special_cases import apply_layer_config_special_cases
 from auto_round.logger import logger
-from auto_round.planning import ResolvedScheme
+from auto_round.planning import CompressionPlan, ResolvedScheme
 from auto_round.planning.contracts import LayerConfig, freeze_mapping
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme
 from auto_round.utils import (
@@ -35,6 +35,7 @@ from auto_round.utils import (
     infer_bits_by_data_type,
     to_standard_regex,
 )
+from auto_round.utils.model import get_module
 
 
 def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:
@@ -313,7 +314,6 @@ def resolve_layer_config(
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
     fill_default_value: bool = True,
-    layer_policy=None,
 ) -> LayerConfig:
     """Resolve final per-layer configuration without writing model attributes."""
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
@@ -350,19 +350,20 @@ def resolve_layer_config(
         quant_lm_head,
         gguf_name,
     )
-    if layer_policy is not None:
-        resolved = layer_policy.apply(
-            model=model,
-            scheme=scheme,
-            layer_config=resolved,
-            gguf_name=gguf_name,
-            lm_head_name=lm_head_name,
-            tie_word_embeddings=tied,
-            embedding_layer_names=embedding_names,
-            default_scale_dtype=scale_dtype,
-            enable_gguf_official_mixed=enable_gguf_official_mixed,
-            is_mllm=is_mllm,
-            has_qlayer_outside_block=has_outside,
+    if gguf_name:
+        from auto_round.formats.backends.gguf import apply_gguf_layer_defaults
+
+        resolved, _ = apply_gguf_layer_defaults(
+            dict(resolved),
+            model,
+            gguf_name,
+            lm_head_name,
+            tied,
+            embedding_names,
+            scale_dtype,
+            enable_gguf_official_mixed,
+            is_mllm,
+            has_outside,
         )
     return freeze_mapping(resolved)
 
@@ -410,3 +411,21 @@ def has_quantized_layer_outside_blocks(layer_config: LayerConfig) -> bool:
     return any(
         not config.get("in_blocks", False) and check_to_quantized(dict(config)) for config in layer_config.values()
     )
+
+
+def apply_plan_to_model(model, plan: CompressionPlan) -> None:
+    """Apply a resolved plan at the single explicit module-attribute write boundary."""
+    scheme_keys = tuple(field.name for field in fields(QuantizationScheme)) + ("scale_dtype",)
+    for module_name, module in model.named_modules():
+        for key in scheme_keys:
+            if module_name == "" and key == "rotation_config":
+                continue
+            if hasattr(module, key):
+                delattr(module, key)
+
+    for layer_name, config in plan.layer_config.items():
+        module = get_module(model, layer_name)
+        if module is None:
+            continue
+        for name, value in config.items():
+            setattr(module, name, value)

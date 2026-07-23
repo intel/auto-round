@@ -19,10 +19,9 @@ from typing import Iterable
 
 import torch
 
-from auto_round.formats.backends.gguf import GGUFFormat, GGUFLayerPolicy
+from auto_round.formats.backends.gguf import GGUFFormat
 from auto_round.formats.base import OutputFormat
 from auto_round.planning import (
-    CompressionIntent,
     FormatCompatibilityError,
     FormatResolution,
     ResolvedScheme,
@@ -92,10 +91,24 @@ def _precise_gguf_name(formats: list[OutputFormat]) -> str | None:
     return None
 
 
-def resolve_formats(intent: CompressionIntent, scheme: ResolvedScheme, *, model=None) -> FormatResolution:
+def resolve_formats(
+    scheme: ResolvedScheme,
+    *,
+    format: str = None,
+    layer_config: dict = None,
+    scale_dtype=None,
+    quant_block_list=None,
+    mllm: bool = False,
+    iters: int = 0,
+    enable_alg_ext: bool = False,
+    quant_nontext_module: bool = False,
+    platform: str = None,
+    is_auto_scheme: bool = False,
+    model=None,
+) -> FormatResolution:
     """Resolve format selection using caller-isolated state and no exporter capability checks."""
     scheme_value = scheme.value
-    names = _normalize_format_names(intent.format or "auto_round", scheme_value.bits)
+    names = _normalize_format_names(format or "auto_round", scheme_value.bits)
     _validate_format_combination(names)
     names = _deduplicate(_apply_scheme_format_constraint(names, scheme))
 
@@ -103,25 +116,23 @@ def resolve_formats(intent: CompressionIntent, scheme: ResolvedScheme, *, model=
         if name not in SUPPORTED_FORMATS:
             raise ValueError(f"{name} is not supported, we only support {SUPPORTED_FORMATS}")
 
-    layer_config = thaw_mapping(intent.layer_config)
-    quant_block_list = (
-        [list(group) for group in intent.quant_block_list] if intent.quant_block_list is not None else None
-    )
+    layer_config = thaw_mapping(layer_config)
+    quant_block_list = [list(group) for group in quant_block_list] if quant_block_list is not None else None
     context = SimpleNamespace(
         model=model,
         layer_config=layer_config,
-        scale_dtype=intent.scale_dtype,
-        mllm=intent.mllm,
-        iters=intent.iters,
-        enable_alg_ext=intent.enable_alg_ext,
-        quant_nontext_module=intent.quant_nontext_module,
+        scale_dtype=scale_dtype,
+        mllm=mllm,
+        iters=iters,
+        enable_alg_ext=enable_alg_ext,
+        quant_nontext_module=quant_nontext_module,
         quant_block_list=quant_block_list,
-        platform=intent.platform,
-        is_auto_scheme=intent.is_auto_scheme,
+        platform=platform,
+        is_auto_scheme=is_auto_scheme,
     )
 
     selected = []
-    requested = intent.format or "auto_round"
+    requested = format or "auto_round"
     for name in names:
         if name.startswith("gguf:"):
             output_format, scheme_value, context.layer_config = GGUFFormat.build(name, scheme_value, context)
@@ -157,7 +168,6 @@ def resolve_formats(intent: CompressionIntent, scheme: ResolvedScheme, *, model=
     return FormatResolution(
         formats=tuple(selected),
         scheme=resolved_scheme,
-        layer_policy=GGUFLayerPolicy() if precise_gguf_name is not None else None,
         layer_config_patch=context.layer_config,
         scale_dtype=scale_dtype,
         quant_block_list=context.quant_block_list,

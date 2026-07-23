@@ -106,7 +106,7 @@ class GGUFFormat(OutputFormat):
 
         Plain ``__init__`` cannot report a corrected ``scheme``/``layer_config`` back to its
         caller, but GGUF resolution can replace either (the ``_mixed`` -> ``_s`` rewrite, and the
-        legacy string-scheme correction above). ``get_formats`` calls this instead of the bare
+        legacy string-scheme correction above). ``resolve_formats`` calls this instead of the bare
         constructor for every ``gguf:``-prefixed dispatch.
         """
         instance = cls(format, scheme, ctx)
@@ -230,7 +230,15 @@ class GGUFFormat(OutputFormat):
                 model_path = model.name_or_path
             if not os.path.isdir(model_path):
                 model_path = download_or_get_path(model_path, platform)
-            conversion = get_conversion(model_path, model_type=ModelType.TEXT)
+            try:
+                conversion = get_conversion(model_path, model_type=ModelType.TEXT)
+            except AttributeError as e:
+                print(f"[gguf conversion] error: {e}")
+                raise ImportError(
+                    "Please use the latest gguf-py, you can use the following command to install it:\n"
+                    "git clone https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py"
+                    " && pip install . sentencepiece"
+                )
             model_architecture = get_gguf_architecture(model_path, model_type=ModelType.TEXT)
             if not conversion.is_supported(model_architecture, ModelType.TEXT):
                 raise FormatCompatibilityError(f"Model {model_architecture} is not supported to export gguf format.")
@@ -305,7 +313,7 @@ class GGUFFormat(OutputFormat):
         )
 
 
-def _apply_gguf_layer_defaults(
+def apply_gguf_layer_defaults(
     layer_config,
     model,
     gguf_name,
@@ -791,36 +799,3 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         gguf_format_config[layer_name] = new_type
 
     return layer_config, gguf_format_config
-
-
-class GGUFLayerPolicy:
-    """Apply GGUF-owned per-layer defaults behind the generic LayerPolicy boundary."""
-
-    def apply(
-        self,
-        *,
-        model,
-        scheme,
-        layer_config,
-        gguf_name,
-        lm_head_name,
-        tie_word_embeddings,
-        embedding_layer_names,
-        default_scale_dtype,
-        enable_gguf_official_mixed,
-        is_mllm,
-        has_qlayer_outside_block,
-    ):
-        resolved, _ = _apply_gguf_layer_defaults(
-            dict(layer_config),
-            model,
-            gguf_name,
-            lm_head_name,
-            tie_word_embeddings,
-            embedding_layer_names,
-            default_scale_dtype,
-            enable_gguf_official_mixed,
-            is_mllm,
-            has_qlayer_outside_block,
-        )
-        return resolved

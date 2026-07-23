@@ -20,7 +20,6 @@ import pytest
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.cli import main as cli_main
 from auto_round.planning import (
-    CompressionIntent,
     FormatCompatibilityError,
     ResolvedScheme,
     SchemeResolutionError,
@@ -71,19 +70,6 @@ def test_resolved_scheme_is_deeply_isolated_and_frozen():
     assert resolved.value.rotation_config == {"mode": "hadamard"}
     with pytest.raises(FrozenInstanceError):
         resolved.preset_name = "W8A16"
-
-
-def test_compression_intent_freezes_nested_layer_config_copy():
-    source = {"model.layers.0.q_proj": {"bits": 4, "metadata": {"source": "user"}}}
-    intent = CompressionIntent(format="auto_round", layer_config=source)
-
-    source["model.layers.0.q_proj"]["bits"] = 8
-    source["model.layers.0.q_proj"]["metadata"]["source"] = "default"
-
-    assert intent.layer_config["model.layers.0.q_proj"]["bits"] == 4
-    assert intent.layer_config["model.layers.0.q_proj"]["metadata"] == {"source": "user"}
-    with pytest.raises(TypeError):
-        intent.layer_config["model.layers.0.q_proj"]["bits"] = 2
 
 
 def test_cli_converts_domain_error_to_nonzero_exit(monkeypatch):

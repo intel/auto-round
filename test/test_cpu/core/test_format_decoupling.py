@@ -15,7 +15,7 @@
 
 Two behaviors that must survive the scheme/format/compressor decoupling:
 
-1. Format-selection: ``get_formats(scheme, ...)`` (now scheme-centric, no ``ar``)
+1. Format-selection: ``resolve_formats(scheme, ...)`` (now scheme-centric, no ``ar``)
    resolves the same backend as pre-refactor for representative combos.
 2. GGUF scheme correction propagates back onto ``self.scheme`` /
    ``self.scheme_context`` / ``self.quantize_config`` (the staleness fix), with
@@ -31,14 +31,14 @@ import torch.nn as nn
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.compressors.base import BaseCompressor
-from auto_round.formats import _check_compatibility, get_formats
+from auto_round.formats import resolve_formats
 from auto_round.planning import FormatResolution, ResolvedScheme
 from auto_round.schemes import QuantizationScheme, parse_scheme
 
 
 def _resolved_scheme(scheme_name):
     # Real call sites always fully resolve the scheme (parse_scheme's third return,
-    # final_attrs) before calling get_formats — e.g. act_data_type defaults to "float"
+    # final_attrs) before calling resolve_formats — e.g. act_data_type defaults to "float"
     # rather than staying None. Mirror that precondition here.
     _, _, final_attrs = parse_scheme(scheme_name, {})
     return QuantizationScheme.from_dict(final_attrs)
@@ -60,23 +60,11 @@ def test_format_selection_baseline():
         # _check_divisible_by_32 iterates model.named_modules() for int/act_bits>=16,
         # so a real nn.Module is required.
         model = nn.Sequential(nn.Linear(32, 32))
-        formats, _, _, _, _ = get_formats(fmt, scheme, model=model, layer_config=None, scale_dtype=torch.float16)
-        results[(scheme_name, fmt)] = [f.get_backend_name() for f in formats]
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(scheme), format=fmt, model=model, scale_dtype=torch.float16
+        )
+        results[(scheme_name, fmt)] = [f.get_backend_name() for f in resolution.formats]
     assert results == EXPECTED_FORMAT_SELECTION_BASELINE
-
-
-@pytest.mark.parametrize("other_format", ["auto_round", "llm_compressor"])
-def test_gguf_rejects_non_fake_companion_formats(other_format):
-    scheme = _resolved_scheme("W4A16")
-
-    with pytest.raises(ValueError, match="GGUF format is not compatible"):
-        _check_compatibility(["gguf:q4_k_m", other_format], scheme)
-
-
-def test_gguf_allows_fake_companion_format():
-    scheme = _resolved_scheme("W4A16")
-
-    assert _check_compatibility(["gguf:q4_k_m", "fake"], scheme) == ["gguf:q4_k_m", "fake"]
 
 
 def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):

@@ -23,16 +23,13 @@ from auto_round.formats.backends import (
     MLXFormat,
 )
 from auto_round.formats.base import (
-    AutoRoundExportFormat,
+    BackendDataType,
     OutputFormat,
-    _check_compatibility,
-    get_formats,
 )
 from auto_round.formats.resolver import resolve_formats
-from auto_round.formats.registry import get_format_registry
 
 __all__ = [
-    "AutoRoundExportFormat",
+    "BackendDataType",
     "AutoRoundFormat",
     "AutoAWQFormat",
     "AutoGPTQFormat",
@@ -42,7 +39,5 @@ __all__ = [
     "LLMCompressorFormat",
     "MLXFormat",
     "OutputFormat",
-    "get_format_registry",
-    "get_formats",
     "resolve_formats",
 ]

@@ -17,7 +17,7 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.formats.base import AutoRoundExportFormat, OutputFormat
+from auto_round.formats.base import BackendDataType, OutputFormat
 from auto_round.logger import logger
 from auto_round.planning.errors import FormatCompatibilityError
 from auto_round.schemes import QuantizationScheme
@@ -55,9 +55,9 @@ class LLMCompressorFormat(OutputFormat):
                 check_compressed_tensors_supported(raise_error=True)
                 self.backend = LLMCompressorFormat(scheme.data_type, scheme, ctx)
             elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_BLOCK.value, scheme, ctx)
+                self.backend = LLMCompressorFormat(BackendDataType.FP8_BLOCK.value, scheme, ctx)
             elif scheme.is_static_wfp8afp8():
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.FP8_STATIC.value, scheme, ctx)
+                self.backend = LLMCompressorFormat(BackendDataType.FP8_STATIC.value, scheme, ctx)
                 if scheme.act_group_size != 0:
                     logger.warning(
                         f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
@@ -73,15 +73,15 @@ class LLMCompressorFormat(OutputFormat):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported()
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.INT8.name, scheme, ctx)
-                self.backend.output_format = f"llm_compressor:{AutoRoundExportFormat.INT8.value}"
+                self.backend = LLMCompressorFormat(BackendDataType.INT8.name, scheme, ctx)
+                self.backend.output_format = f"llm_compressor:{BackendDataType.INT8.value}"
             elif scheme.is_wint_woq():
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported()
-                self.backend = LLMCompressorFormat(AutoRoundExportFormat.WINT_A16.value, scheme, ctx)
+                self.backend = LLMCompressorFormat(BackendDataType.WINT_A16.value, scheme, ctx)
         else:
-            if format.upper() not in list(AutoRoundExportFormat.__members__.keys()):
+            if format.upper() not in list(BackendDataType.__members__.keys()):
                 raise KeyError(f"Unsupported backend format llm_compressor:{format}, please check")
             self.output_format = f"llm_compressor:{format}"
             self.backend = None
@@ -159,23 +159,23 @@ class LLMCompressorFormat(OutputFormat):
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.backend is not None:
             return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
-        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", self.output_format):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
             return pack_layer(layer_name, model, device=device)
-        elif re.search(f"{AutoRoundExportFormat.FP8_STATIC.value}", self.output_format):
+        elif re.search(f"{BackendDataType.FP8_STATIC.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
-        elif re.search(f"{AutoRoundExportFormat.INT8.value}", self.output_format):
+        elif re.search(f"{BackendDataType.INT8.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
-        elif re.search(f"{AutoRoundExportFormat.FP8_BLOCK.value}", self.output_format):
+        elif re.search(f"{BackendDataType.FP8_BLOCK.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
-        elif re.search(f"{AutoRoundExportFormat.WINT_A16.value}", self.output_format):
+        elif re.search(f"{BackendDataType.WINT_A16.value}", self.output_format):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
@@ -195,11 +195,11 @@ class LLMCompressorFormat(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         backend = self.get_backend_name()
-        if re.search(f"{AutoRoundExportFormat.MX_FP.value}|{AutoRoundExportFormat.NV_FP.value}", backend):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", backend):
             from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
 
             export_func = save_quantized_as_fp
-        elif re.search(f"{AutoRoundExportFormat.FP8_STATIC.value}", backend):
+        elif re.search(f"{BackendDataType.FP8_STATIC.value}", backend):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import save_quantized_as_static_fp
 
             export_func = save_quantized_as_static_fp

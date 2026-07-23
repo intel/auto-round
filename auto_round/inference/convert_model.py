@@ -21,7 +21,7 @@ from packaging.version import Version
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.formats import AutoRoundExportFormat
+from auto_round.formats import BackendDataType
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
@@ -559,11 +559,11 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
         )
     elif (
-        AutoRoundExportFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundExportFormat.MXFP8.value in layer_backend
-        or AutoRoundExportFormat.MXFP4.value in layer_backend
-        or AutoRoundExportFormat.NVFP4.value in layer_backend
-        or AutoRoundExportFormat.MXINT4.value in layer_backend
+        BackendDataType.FP8_STATIC.value in layer_backend
+        or BackendDataType.MXFP8.value in layer_backend
+        or BackendDataType.MXFP4.value in layer_backend
+        or BackendDataType.NVFP4.value in layer_backend
+        or BackendDataType.MXINT4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 

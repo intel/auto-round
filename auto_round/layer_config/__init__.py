@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.layer_config.apply import apply_plan_to_model
 from auto_round.layer_config.resolver import (
+    apply_plan_to_model,
     extract_regex_config,
     has_quantized_layer_outside_blocks,
     resolve_layer_config,

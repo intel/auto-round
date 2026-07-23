@@ -37,7 +37,7 @@ from auto_round.export.utils import (
     save_model,
     save_pretrained_artifact,
 )
-from auto_round.formats import AutoRoundExportFormat
+from auto_round.formats import BackendDataType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -263,7 +263,7 @@ def save_quantized_as_autoround(
     if (
         (serialization_dict.get("sym") is None or serialization_dict.get("sym"))
         and ("gptq" not in backend and "awq" not in backend)
-        and (AutoRoundExportFormat.FP8_STATIC.value not in backend)
+        and (BackendDataType.FP8_STATIC.value not in backend)
     ):
         backend = backend.replace("auto_round", "auto_round:auto_gptq")
 

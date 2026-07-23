@@ -25,7 +25,7 @@ from auto_round.cli.parser import (
     build_root_parser,
 )
 from auto_round.logger import logger
-from auto_round.planning import FormatCompatibilityError, LayerConfigResolutionError, SchemeResolutionError
+from auto_round.planning import PlanningError
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -468,7 +468,7 @@ def run():
             run_eval(command_argv)
             return
         start(argv=command_argv)
-    except (SchemeResolutionError, FormatCompatibilityError, LayerConfigResolutionError) as error:
+    except PlanningError as error:
         logger.error(str(error))
         raise SystemExit(2) from error
 

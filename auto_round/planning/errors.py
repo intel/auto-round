@@ -13,13 +13,21 @@
 # limitations under the License.
 
 
-class SchemeResolutionError(ValueError):
+class PlanningError(ValueError):
+    """Base class for user-facing compression-planning configuration errors.
+
+    Callers that want to surface a clean, no-traceback message (e.g. the CLI) should
+    catch this common base instead of enumerating every specific subclass.
+    """
+
+
+class SchemeResolutionError(PlanningError):
     """Raised when a quantization scheme cannot be resolved."""
 
 
-class FormatCompatibilityError(ValueError):
+class FormatCompatibilityError(PlanningError):
     """Raised when requested export formats are mutually incompatible."""
 
 
-class LayerConfigResolutionError(ValueError):
+class LayerConfigResolutionError(PlanningError):
     """Raised when per-layer quantization configuration cannot be resolved."""
