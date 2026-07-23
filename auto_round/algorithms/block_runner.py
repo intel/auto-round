@@ -337,7 +337,9 @@ class BlockForwardRunner:
             return first
         raise TypeError(f"Block output[0] must be tensor, got {type(first).__name__}.")
 
-    def _get_diffusion_output_dict(self, output: Any, block: "torch.nn.Module" = None) -> dict[str, torch.Tensor] | None:
+    def _get_diffusion_output_dict(
+        self, output: Any, block: "torch.nn.Module" = None
+    ) -> dict[str, torch.Tensor] | None:
         if not self.is_diffusion or isinstance(output, torch.Tensor) or not isinstance(output, (tuple, list)):
             return None
         block_cls_name = block.__class__.__name__ if block is not None else None
