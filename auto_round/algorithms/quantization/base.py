@@ -255,11 +255,11 @@ class BaseQuantizer(BaseAlgorithm):
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.
         Default: move to primary device.
-        Returns ``(block, card_0_in_high_risk, loss_device)``.
+        Returns the block after device placement.
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
         block = block.to(device_manager.device)
-        return block, False, device_manager.device
+        return block
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:

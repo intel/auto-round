@@ -67,7 +67,8 @@ class SignRoundQuantizer(BaseQuantizer):
     def dispatch_block(self, block, input_ids, input_others):
         """Multi-GPU aware block dispatch for SignRound tuning.
 
-        Stores card_0_in_high_risk and loss_device on self for use in quantize_block.
+        Stores _card_0_in_high_risk and _loss_device on self for use in quantize_block.
+        Returns the block after device placement.
         """
         from auto_round.utils import is_auto_device_mapping
 
@@ -99,7 +100,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
         self._card_0_in_high_risk = card_0_in_high_risk
         self._loss_device = loss_device
-        return block, card_0_in_high_risk, loss_device
+        return block
 
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]

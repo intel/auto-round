@@ -229,7 +229,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             materialize_model_(m)
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
 
-            m, _, _ = self.alg_composer.dispatch_block(m, input_ids, input_others)
+            m = self.alg_composer.dispatch_block(m, input_ids, input_others)
 
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.composer import BlockContext
