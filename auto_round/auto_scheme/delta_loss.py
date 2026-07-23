@@ -2345,10 +2345,11 @@ def _gen_layer_config(
 
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
-    # Layers that are not fixed in fixed_layer_scheme
-    not_fixed_embedding_layers_names = [
-        name for name in embedding_layers_names if (name not in fixed_layer_scheme and name in quant_layer_names)
-    ]
+    # Layers that are not fixed in fixed_layer_scheme. Note that
+    # `embedding_layers_names` was carved out of `quant_layer_names` above, so
+    # every entry is a quantization target; checking `quant_layer_names` again
+    # here would always fail and silently leave embeddings outside the budget.
+    not_fixed_embedding_layers_names = [name for name in embedding_layers_names if name not in fixed_layer_scheme]
 
     # Determine if model has shared lm_head (tie_word_embeddings)
     has_tied_lm_head = getattr(getattr(model, "config", None), "tie_word_embeddings", False)
@@ -2374,22 +2375,19 @@ def _gen_layer_config(
             total += n_param * emb_bits
         return total
 
-    # Compute bits already consumed by user-fixed layers (excluding embeddings we'll set)
-    already_fixed_bits = 0
-    for name in fixed_layer_scheme.keys():
-        m = get_module(model, name)
-        layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
-        already_fixed_bits += layer_bits
-
     # Compute minimum bits needed for DP layers (non-fixed, non-embedding)
     min_dp_bits = 0
     for layer_name, opts in total_scores.items():
         min_dp_bits += min(opt[1] for opt in opts)
 
     def _fits_budget(scheme_dict):
-        """Check if applying scheme_dict to embeddings leaves enough budget for DP layers."""
+        """Check if applying scheme_dict to embeddings leaves enough budget for DP layers.
+
+        Called after user-fixed layers have already been subtracted from
+        ``target_params_cnt``, so only the embedding cost is deducted here.
+        """
         emb_bits = _compute_embedding_bits(scheme_dict)
-        remaining = target_params_cnt - already_fixed_bits - emb_bits
+        remaining = target_params_cnt - emb_bits
         return remaining >= min_dp_bits
 
     def _select_embedding_scheme_index():
@@ -2401,8 +2399,9 @@ def _gen_layer_config(
         For models without shared lm_head:
           - use the lowest-loss option among those with bits >= ceil(target_bits)
 
-        In all cases, the selected scheme must not exceed the total bit budget
-        (i.e., embedding bits + fixed bits + min DP bits <= target_params_cnt).
+        In all cases, the selected scheme must not exceed the remaining bit budget
+        (i.e., embedding bits + min DP bits <= target_params_cnt, where user-fixed
+        layers have already been subtracted from target_params_cnt).
         """
 
         if has_tied_lm_head:
@@ -2443,8 +2442,13 @@ def _gen_layer_config(
         return all_by_bits[0] if all_by_bits else 0
 
     # Minus fixed_layer
-    for name in fixed_layer_scheme.keys():  # The Scheme should have been applied
+    for name, layer_scheme in fixed_layer_scheme.items():
         m = get_module(model, name)
+        # apply_quant_scheme only covers quant_layer_names; embedding layers were
+        # carved out of it, so a user-fixed embedding still has no scheme attrs here
+        # and compute_layer_bits would price it at 16 bits, wrecking the budget.
+        for key, item in _to_scheme_dict(layer_scheme).items():
+            setattr(m, key, item)
         layer_bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
         target_params_cnt -= layer_bits
 

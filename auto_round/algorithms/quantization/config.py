@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from enum import Enum
-from typing import ClassVar, Union
+from typing import ClassVar
 
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
@@ -45,6 +45,8 @@ class QuantizationConfig:
         super_bits: Bit width used for double quantization metadata.
         super_group_size: Group size used for double quantization metadata.
     """
+
+    need_calib = True
 
     _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
 
@@ -171,16 +173,16 @@ class QuantizationConfig:
             and not self.is_dynamic_wint8aint8
             and not self.is_static_afp8
         ):
-            logger.warning(
+            logger.warning_once(
                 "activation quantization is an experimental feature with limited support and a complex API. "
                 "And please save the quantized model to fake format as real deployment is not supported currently"
             )
         # For block-wise group_size (tuple), skip the scalar-only warnings
         scalar_gs = self.group_size if not isinstance(self.group_size, (tuple, list)) else None
         if self.is_mx_fp and scalar_gs != 32:
-            logger.warning("dtype mx_fp should only support group_size of 32 in real deployment")
+            logger.warning_once("dtype mx_fp should only support group_size of 32 in real deployment")
         if self.is_nv_fp and scalar_gs != 16:
-            logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
+            logger.warning_once("dtype nv_fp should only support group_size of 16 in real deployment")
 
     @property
     def is_act_quantize(self) -> bool:

@@ -2515,6 +2515,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # --- AutoRound compressor-role aliases ---
         tokenizer: Any = None,
         device_map: Any = None,
+        low_cpu_mem_usage: bool = True,
         **kwargs,
     ) -> None:
         import copy
@@ -2580,6 +2581,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             ignore_layers=ignore_layers,
             device_map=device_map,
             quant_lm_head=quant_lm_head,
+            low_cpu_mem_usage=low_cpu_mem_usage,
         )
 
         self._fallback_init_kwargs = fallback_init

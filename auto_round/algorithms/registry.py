@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.base import BasePipelineMember
+    from auto_round.algorithms.base import BaseAlgorithm
 
 
 @dataclass
@@ -24,7 +24,7 @@ class AlgRegistryEntry:
 
 _ALG_REGISTRY: dict[str, AlgRegistryEntry] = {}
 _ALIAS_TO_NAME: dict[str, str] = {}
-_CONFIG_IMPL_REGISTRY: dict[type, type["BasePipelineMember"]] = {}
+_CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
 
@@ -125,14 +125,14 @@ def list_registered_algorithms() -> list[str]:
 
 
 def register_pipeline_member(config_cls: type):
-    def _decorator(member_cls: type["BasePipelineMember"]) -> type["BasePipelineMember"]:
+    def _decorator(member_cls: type["BaseAlgorithm"]) -> type["BaseAlgorithm"]:
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
 
     return _decorator
 
 
-def resolve_pipeline_member(config: object) -> type["BasePipelineMember"]:
+def resolve_pipeline_member(config: object) -> type["BaseAlgorithm"]:
     _ensure_pipeline_members_registered()
     config_cls = type(config)
     for cls in config_cls.__mro__:

@@ -122,8 +122,15 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
     )
+    # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
-        "--algorithm", default=None, type=str, help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'."
+        "--algorithm",
+        "--algorithms",
+        "--alg",
+        "--algs",
+        default=None,
+        type=str,
+        help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")

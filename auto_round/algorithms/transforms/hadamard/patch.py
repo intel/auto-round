@@ -13,7 +13,7 @@
 # limitations under the License.
 """Monkey-patching helpers to inject Hadamard transforms into calibration wrappers.
 
-During AutoRound calibration (``need_calibration=True``) the weight is re-
+During AutoRound calibration (``need_calib=True``) the weight is re-
 quantised at every forward pass.  These patches insert the Hadamard rotation
 into :class:`~auto_round.wrapper.WrapperLinear` and
 :class:`~auto_round.wrapper.WrapperWALayer` so the transform is applied

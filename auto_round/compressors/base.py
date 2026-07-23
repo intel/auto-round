@@ -28,7 +28,7 @@ from auto_round.algorithms.transforms import (
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import ShardWriter
-from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp, set_layer_config
+from auto_round.compressors.utils import _get_save_folder_name, is_act_static, is_mx_fp, is_nv_fp, set_layer_config
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
 from auto_round.formats import OutputFormat, get_formats
@@ -148,7 +148,7 @@ def _make_compressor_scheme_property(name):
     return property(getter, setter)
 
 
-class BaseCompressor(object):
+class BaseOrchestrator(object):
     need_calib: bool = True
     compress_context: CompressContext = None
     model_context: ModelContext = None
@@ -210,28 +210,27 @@ class BaseCompressor(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         **kwargs,
     ) -> None:
-        # ``CalibrationState`` is the single source of truth for calibration
+        # ``CalibrationContext`` is the single source of truth for calibration
         # runtime state.  Seed every calibration field here in one block so
         # the rest of ``__init__`` only ever interacts with the state object
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
-        from auto_round.calibration.state import CalibrationState
+        from auto_round.calibration.state import CalibrationContext
 
-        self._calibration_state = CalibrationState(
+        self.dataset = dataset
+        if self.dataset is None:
+            self.dataset = "NeelNanda/pile-10k"
+        batch_size = min(kwargs.pop("batch_size", 8), nsamples)
+        self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
             seqlen=seqlen if seqlen is not None else 2048,
-            batch_size=kwargs.pop("batch_size", 8),
-            gradient_accumulate_steps=kwargs.pop("gradient_accumulate_steps", 1),
+            batch_size=batch_size,
+            orig_batch_size=batch_size,
+            dataset=self.dataset,
         )
-
-        # ``dataset`` is not a named __init__ parameter – it arrives via
-        # **kwargs from the compatibility layer.  Pop it early and route
-        # through the property setter so CalibrationState owns it.
-        _dataset = kwargs.pop("dataset", None)
-        if _dataset is not None:
-            self.dataset = _dataset
 
         self.quantize_config = None
         self.rotation_configs: list[BaseRotationConfig] = []
@@ -266,7 +265,7 @@ class BaseCompressor(object):
 
         # Compressor-level layer params (do not live in QuantizationConfig).
         # Calibration params (nsamples/seqlen/batch_size) are owned by
-        # ``self._calibration_state`` (seeded above) and exposed via
+        # ``self.calibration_context`` (seeded above) and exposed via
         # ``@property`` forwarders.
         self.layer_config = layer_config
         self.scale_dtype = scale_dtype
@@ -283,8 +282,8 @@ class BaseCompressor(object):
         self.scheme_context = None
 
         # Calibrator strategy (auto_round.calibration.base.Calibrator).  Constructed
-        # lazily by ``DataDrivenCompressor.post_init`` based on ``_get_calibrator_kind()``;
-        # remains ``None`` for ``ZeroShotCompressor`` (RTN does not need data).
+        # lazily by ``Compressor.post_init`` based on ``_get_calibrator_kind()``;
+        # remains ``None`` when calibration data is not needed (RTN zero-shot path).
         self.calibration = None
 
         self.formats = format
@@ -389,6 +388,11 @@ class BaseCompressor(object):
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
         )
+        # Reset the singleton so each new orchestrator gets a fresh CompressContext.
+        # CompressContext uses AutoSkipInitMeta (singleton), so without a reset the
+        # second AutoRound(...) call reuses the previous instance and silently keeps
+        # stale values (e.g. low_cpu_mem_usage=True from a prior run).
+        CompressContext.reset_context()
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -410,7 +414,7 @@ class BaseCompressor(object):
         self._precheck_torch_compile(enable_torch_compile)
         self.compress_context.enable_torch_compile = self.enable_torch_compile
 
-        # ``self._calibration_state`` was created at the top of __init__ so
+        # ``self.calibration_context`` was created at the top of __init__ so
         # all calibration-related property writes above (nsamples / seqlen /
         # batch_size from kwargs) have already routed through it.
 
@@ -418,6 +422,59 @@ class BaseCompressor(object):
         fixed_attr = get_predefined_fixed_attr(self.model) or {}
         for key, value in fixed_attr.items():
             setattr(self, key, value)
+
+        self.need_calib = self._check_need_calib()
+
+    def _check_need_calib(self) -> bool:
+        """Whether this compressor instance actually needs calibration data.
+
+        Returns True when imatrix/opt-rtn is enabled, activation calibration is
+        needed (e.g. act_dynamic=False with NV FP types), or an AutoScheme is in
+        use.  Returns False for pure zero-shot RTN cases.
+        """
+
+        # During early __init__ quantize_config may not exist yet — default to True.
+        if not hasattr(self, "quantize_config") or self.quantize_config is None:
+            return True
+        return self._needs_calibration_data()
+
+    def _needs_calibration_data(self) -> bool:
+        """Determine whether calibration data is truly required.
+
+        Calibration data IS required when:
+        - Static activation quantization is needed (act_dynamic=False with NV FP)
+        - AutoScheme is being used (needs delta-loss evaluation)
+        - The quantizer uses iterative optimization (iters > 0, i.e., SignRound)
+
+        Otherwise, zero-shot (RTN/opt-RTN) quantization can proceed without data.
+        """
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+        if any(getattr(config, "need_calib", True) for config in self._alg_configs):
+            return True
+
+        # AutoScheme needs data for delta-loss scheme selection
+        if isinstance(self.scheme, AutoScheme):
+            return True
+
+        # Check if activation calibration is needed
+        from auto_round.compressors.utils import check_need_act_calibration
+
+        _, _, final_attrs = parse_scheme(self.scheme, {})
+        act_bits = final_attrs["act_bits"]
+        act_data_type = final_attrs["act_data_type"]
+        act_dynamic = final_attrs["act_dynamic"]
+        is_act_quantize = act_bits is not None and act_bits <= 8
+        if is_act_quantize and check_need_act_calibration(
+            act_dynamic,
+            act_data_type,
+            act_bits if act_bits is not None else 16,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
+        ):
+            return True
+
+        return False
 
     # ── Convenience properties ────────────────────────────────────────────────
 
@@ -432,7 +489,6 @@ class BaseCompressor(object):
         self,
         model_context: Optional[ModelContext] = None,
         compress_context: Optional[CompressContext] = None,
-        dataset: Optional[str] = None,
     ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
@@ -446,8 +502,6 @@ class BaseCompressor(object):
             self.model_context = model_context
         if compress_context is not None:
             self.compress_context = compress_context
-        if dataset is not None:
-            self.dataset = dataset
 
         user_scheme_overrides = collect_user_scheme_overrides(self._alg_configs)
         default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(self.scheme, user_scheme_overrides)
@@ -742,26 +796,20 @@ class BaseCompressor(object):
         raw_scheme_upper = raw_scheme.upper()
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
-        is_raw_fp8 = (
-            "fp8" in raw_dt
-            or "fp8" in raw_adt
-            or "FP8" in raw_scheme_upper
-            or ("fp" in raw_dt and getattr(cfg, "bits", 16) == 8)
-            or ("fp" in raw_adt and getattr(cfg, "act_bits", 16) == 8)
-        )
+        is_valid_act_static = cfg.act_dynamic is False and (getattr(cfg, "act_bits", 16) or 16) <= 8
 
-        act_bits = getattr(cfg, "act_bits", 16) or 16
-        return is_raw_fp8, is_raw_nv_fp, act_bits
+        return is_raw_nv_fp, is_valid_act_static
 
     def _maybe_log_torch_compile_default_hint(self) -> None:
         """Log the default torch.compile hint once final config state is available."""
-        is_raw_fp8, _, act_bits = self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+
         if (
             not self.enable_torch_compile
             and TORCH_VERSION_AT_LEAST_2_6
-            and act_bits > 8
             and not is_debug_mode()
-            and not is_raw_fp8
+            and not is_raw_nv_fp
+            and not is_valid_act_static
             and self.need_calib
         ):
             logger.info(
@@ -773,24 +821,16 @@ class BaseCompressor(object):
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        cfg = self.quantize_config
-        is_raw_fp8, is_raw_nv_fp, _ = self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_raw_fp8 and not is_hpex_available():
+        if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as fp8 is enabled")
+            logger.warning_once("reset enable_torch_compile to `False` as activation is static")
         # TODO: fix https://github.com/intel/auto-round/issues/1109
         if self.enable_torch_compile and is_raw_nv_fp:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
-        # super_group_size = getattr(cfg, "super_group_size", None)
-        # enable_alg_ext = getattr(cfg, "enable_alg_ext", False)
-        # if self.enable_torch_compile and super_group_size is not None and enable_alg_ext:
-        #     self.enable_torch_compile = False
-        #     logger.warning_once(
-        #         "reset enable_torch_compile to `False` as super_group_size is set for algorithm extension"
-        #     )
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
@@ -810,14 +850,10 @@ class BaseCompressor(object):
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
-        dataset = self._calibration_state.dataset
+        dataset = self.calibration_context.dataset
         if dataset is not None:
             return dataset
-        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
-        scheme = self.scheme
-        if isinstance(scheme, AutoScheme) and scheme.dataset:
-            return scheme.dataset
         return "NeelNanda/pile-10k"
 
     def post_init(self) -> None:
@@ -851,7 +887,6 @@ class BaseCompressor(object):
                 self.model_context.model = self.model_context.model.to(torch.bfloat16)
 
         self._resolve_formats()
-        self._build_quantizer()
         self._patch_model()
         self._build_layer_config()
         self._apply_rotations()
@@ -865,6 +900,11 @@ class BaseCompressor(object):
 
         self._hardware_setup()
 
+        # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
+        # so _build_composer must run first.
+        self._build_composer()
+
+        # Set block_forward torch compile for block forward
         # Final trim after all init phases.
         gc.collect()
         _force_trim_malloc()
@@ -895,10 +935,9 @@ class BaseCompressor(object):
         self.resolve_scheme(
             model_context=self.model_context,
             compress_context=self.compress_context,
-            dataset=self._get_calibration_dataset(),
         )
 
-    def _build_quantizer(self) -> None:
+    def _build_composer(self) -> None:
         """Phase 1b – Quantizer construction and wiring.
 
         Preconditions:
@@ -909,50 +948,29 @@ class BaseCompressor(object):
 
         Work performed:
           - Constructs the block_quantizer from the resolved config.
-          - Wraps it in a :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`
-            so that the entire compressor operates through the pipeline abstraction.
+          - Wraps it in a :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`
+            so that the entire compressor operates through the bundle abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
-            ``CalibrationState`` from this compressor.  ``quantizer.model``
+            ``CalibrationContext`` from this compressor.  ``quantizer.model``
             is a property that reads ``model_context.model``.
           - Exposes ``self.quantizer`` as a ``@property`` (see below) that
             transparently delegates to ``self.pipeline.block_quantizer`` so all
             existing call-sites continue to work without modification.
 
         Postconditions:
-          - ``self.pipeline`` is a ``QuantizationPipeline`` wrapping the block quantizer.
-          - ``self.quantizer`` (via property) is ready and shares ``CalibrationState``
+          - ``self.pipeline`` is an ``AlgorithmComposer`` wrapping the block quantizer.
+          - ``self.quantizer`` (via property) is ready and shares ``CalibrationContext``
             with the compressor.
         """
-        from auto_round.algorithms.pipeline import QuantizationPipeline
+        from auto_round.algorithms.composer import AlgorithmComposer
 
-        self._pipeline = QuantizationPipeline.from_configs(self._alg_configs, compressor=self)
-
-    @property
-    def quantizer(self) -> BaseQuantizer:
-        """Transparent forwarder to ``self.pipeline.block_quantizer``.
-
-        All existing ``self.quantizer.xxx`` call-sites continue to work
-        unchanged.  New code should prefer ``self.pipeline`` for pipeline-aware
-        operations.
-        """
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
-            return _pipeline.block_quantizer
-        return self.__dict__["_quantizer"]
-
-    @quantizer.setter
-    def quantizer(self, value: BaseQuantizer) -> None:
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
-            _pipeline.block_quantizer = value
-        else:
-            self.__dict__["_quantizer"] = value
+        self._alg_composer = AlgorithmComposer(self._alg_configs, orchestrator=self)
 
     @property
-    def pipeline(self) -> Any:
-        """The active :class:`~auto_round.algorithms.pipeline.QuantizationPipeline`."""
-        return self._pipeline
+    def alg_composer(self) -> Any:
+        """The active :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`."""
+        return self._alg_composer
 
     def _resolve_formats(self) -> None:
         """Phase 2 – Format resolution and config attr sync.
@@ -1158,28 +1176,6 @@ class BaseCompressor(object):
         # (AutoScheme path) runs delta-loss forward+backward passes.
         self._scheme_post_init()
 
-        # Sync the fully-resolved scheme state to the quantizer so that
-        # quantization methods (quantize_block, quantize_layer, etc.) have
-        # access to layer_config, scale_dtype, quant_block_list, etc.
-        self.quantizer.layer_config = self.layer_config
-        self.quantizer.has_qlayer_outside_block = self.has_qlayer_outside_block
-        self.quantizer.regex_config = self.regex_config
-        self.quantizer.quant_block_list = self.quant_block_list
-        self.quantizer.to_quant_block_names = self.to_quant_block_names
-        self.quantizer.scale_dtype = self.scale_dtype
-        self.quantizer.ignore_layers = self.ignore_layers
-
-        from auto_round.algorithms.config_resolver import sync_shared_config_from
-
-        sync_shared_config_from(self.quantizer.config, [pre.config for pre in self._pipeline.preprocessors])
-
-        # Also sync runtime-only state to all preprocessors in the pipeline so
-        # they have access to per-layer quant config during pre-processing (e.g.
-        # AWQ grid search uses layer_config to look up bits/group_size for each layer).
-        for pre in self._pipeline.preprocessors:
-            pre.layer_config = self.layer_config
-            pre.scale_dtype = self.scale_dtype
-
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
 
@@ -1282,118 +1278,8 @@ class BaseCompressor(object):
     def device_map(self) -> Any:
         return device_manager.device_map
 
-    # ── Forwarding properties to ``self._calibration_state`` ──────────────────
     @property
-    def calibration_state(self) -> Any:
-        return self._calibration_state
-
-    @calibration_state.setter
-    def calibration_state(self, value: Any) -> None:
-        self._calibration_state = value
-        # Re-wire quantizer if it already exists so they keep sharing.
-        # quantizer is now a @property forwarding to _pipeline.block_quantizer;
-        # use _pipeline directly to avoid triggering __getattr__ loops.
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
-            _pipeline.block_quantizer.calibration_state = value
-
-    @property
-    def inputs(self) -> dict:
-        return self._calibration_state.inputs
-
-    @inputs.setter
-    def inputs(self, value: dict) -> None:
-        self._calibration_state.inputs = value if value is not None else {}
-
-    @property
-    def to_cached_layers(self) -> list:
-        return self._calibration_state.to_cached_layers
-
-    @to_cached_layers.setter
-    def to_cached_layers(self, value: list) -> None:
-        self._calibration_state.to_cached_layers = value if value is not None else []
-
-    @to_cached_layers.deleter
-    def to_cached_layers(self) -> None:
-        self._calibration_state.to_cached_layers = []
-
-    @property
-    def last_cache_name(self) -> Optional[str]:
-        return self._calibration_state.last_cache_name
-
-    @last_cache_name.setter
-    def last_cache_name(self, value: Optional[str]) -> None:
-        self._calibration_state.last_cache_name = value
-
-    @last_cache_name.deleter
-    def last_cache_name(self) -> None:
-        self._calibration_state.last_cache_name = None
-
-    @property
-    def blocks_requiring_input_ids(self) -> list:
-        return self._calibration_state.blocks_requiring_input_ids
-
-    @blocks_requiring_input_ids.setter
-    def blocks_requiring_input_ids(self, value: list) -> None:
-        self._calibration_state.blocks_requiring_input_ids = value if value is not None else []
-
-    @property
-    def batch_size(self) -> int:
-        return self._calibration_state.batch_size
-
-    @batch_size.setter
-    def batch_size(self, value: int) -> None:
-        self._calibration_state.batch_size = value
-
-    @property
-    def gradient_accumulate_steps(self) -> int:
-        return self._calibration_state.gradient_accumulate_steps
-
-    @gradient_accumulate_steps.setter
-    def gradient_accumulate_steps(self, value: int) -> None:
-        if value is not None:
-            self._calibration_state.gradient_accumulate_steps = value
-
-    @property
-    def nsamples(self) -> int:
-        return self._calibration_state.nsamples
-
-    @nsamples.setter
-    def nsamples(self, value: int) -> None:
-        if value is not None:
-            self._calibration_state.nsamples = value
-
-    @property
-    def seqlen(self) -> int:
-        return self._calibration_state.seqlen
-
-    @seqlen.setter
-    def seqlen(self, value: int) -> None:
-        if value is not None:
-            self._calibration_state.seqlen = value
-
-    @property
-    def dataset(self) -> Any:
-        return self._calibration_state.dataset
-
-    @dataset.setter
-    def dataset(self, value: Any) -> None:
-        self._calibration_state.dataset = value
-
-    @property
-    def dataloader(self) -> Any:
-        return self._calibration_state.dataloader
-
-    @dataloader.setter
-    def dataloader(self, value: Any) -> None:
-        self._calibration_state.dataloader = value
-
-    @dataloader.deleter
-    def dataloader(self) -> None:
-        self._calibration_state.dataloader = None
-
-    @property
-    def optimizer(self) -> Any:
+    def optimizer(self) -> Any:  # TODO wenhuach delete
         """Return the actual optimizer class, converting string to class for backward compat.
 
         Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).
@@ -1492,7 +1378,7 @@ class BaseCompressor(object):
     def _ensure_shard_writer(self):
         """Lazily create ShardWriter if it hasn't been created yet."""
         if self.shard_writer is None and self.formats is not None:
-            self.shard_writer = ShardWriter(self.model_context.model, bits=8)
+            self.shard_writer = ShardWriter(self.model, bits=8)
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -1552,8 +1438,8 @@ class BaseCompressor(object):
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
-            if serialization_dict.get("to_quant_block_names") is None and self.quantizer.quant_block_list:
-                serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quantizer.quant_block_list)
+            if serialization_dict.get("to_quant_block_names") is None and self.quant_block_list:
+                serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quant_block_list)
             if "scale_dtype" in serialization_dict.keys():
                 serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
@@ -1587,7 +1473,7 @@ class BaseCompressor(object):
             compressed_model = format.save_quantized(
                 save_folder,
                 model=self.model_context.model,
-                layer_config=self.quantizer.layer_config,
+                layer_config=self.layer_config,
                 inplace=inplace,
                 tokenizer=self.model_context.tokenizer,
                 device=device_manager.device,
@@ -1740,3 +1626,7 @@ class BaseCompressor(object):
         memory_monitor.log_summary()
 
         return model, folders
+
+
+#: Backward-compatible alias — prefer ``BaseOrchestrator`` in new code.
+BaseCompressor = BaseOrchestrator
