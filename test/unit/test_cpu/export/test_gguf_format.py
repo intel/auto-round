@@ -53,7 +53,7 @@ class TestGGUF:
         assert gguf_file.endswith(".gguf"), "Saved file is not in gguf format"
         # Accuracy test is covered in test_cuda/export/test_gguf_format.py::TestAutoRound::test_q4_0_accuracy
 
-    def test_q2_k_s_routes_calibrated_rtn(self, tiny_qwen_model_path):
+    def test_q2_k_s_routes_data_driven(self, tiny_qwen_model_path):
         autoround = AutoRound(
             tiny_qwen_model_path,
             scheme="gguf:q2_k_s",
@@ -62,7 +62,7 @@ class TestGGUF:
             seqlen=8,
         )
 
-        assert type(autoround).__name__ == "CalibratedRTNCompressor"
+        assert type(autoround).__name__ == "CompressionOrchestrator"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
     def test_func(self):
@@ -101,7 +101,7 @@ class TestGGUF:
             model_name,
             layer_config=layer_config,
             iters=0,
-            seqlen=1,
+            seqlen=16,
             nsamples=8,
             dataset=dataloader,
             disable_opt_rtn=True,
@@ -435,8 +435,8 @@ class TestGGUF:
             quant_nontext_module=False,
         )
         ar.post_init()
-        assert ar.quantizer.layer_config["model.language_model.embed_tokens"]["bits"] == 6
-        assert ar.quantizer.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
+        assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
+        assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path

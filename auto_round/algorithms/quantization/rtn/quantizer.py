@@ -11,83 +11,63 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections import defaultdict
-from contextlib import contextmanager
-from typing import Any, Callable, Optional, Union
 
-import accelerate
 import torch
 
-from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
+from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.registry import register_pipeline_member
-from auto_round.compressors.utils import (
-    IndexSampler,
-    block_forward,
-    check_need_act_calibration,
-    check_skippable_keywords,
-    collect_best_params,
-    get_shared_keys,
-    infer_bits_by_data_type,
-    init_cache,
-    reset_params,
-    set_layer_config,
-)
-from auto_round.data_type.utils import update_block_global_scale_if_needed
+from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
-    get_module,
-    set_amax_for_all_moe_layers,
-    set_module,
 )
 
 
 @register_pipeline_member(RTNConfig)
-class RTNQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
+class RTNQuantizer(BaseQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
 
     @torch.no_grad()
-    def quantize_block(self, ctx) -> dict:
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        valid_token_mask=None,
+        **kwargs,
+    ) -> dict:
         """Apply zero-shot RTN quantization to a block.
 
-        Pure-algorithm entry point.  Infrastructure (materialize, shard writing,
-        device cleanup) is handled by the Compressor before/after this call.
-
         Args:
-            block: Module already materialized and placed on the correct device.
-            input_ids: Unused for zero-shot RTN (accepted for interface consistency).
-            input_others: Unused for zero-shot RTN.
-            reference_output: Unused for zero-shot RTN.
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as quantization
+                targets (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+            **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
-            dict: Empty dict (zero-shot RTN has no tunable parameters to return).
+            dict: Empty dict — zero-shot RTN has no tunable parameters to track.
         """
-        block = ctx.block
-        if (
-            self.config.is_act_nv_fp
-            or self.config.is_static_afp8
-            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
-        ):
-            # For FP8 static / NVFP paths, expert input scales are derived during
-            # layer quantization from the current act_max. Unify MoE input-proj
-            # act_max values before quantizing each expert so exported input_scale
-            # stays aligned across experts.
-            set_amax_for_all_moe_layers(block, attr_name="act_max")
 
         for _name, m in block.named_modules():
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer(m.global_name)
+            if check_to_quantized(m):
+                self._quantize_layer_via_rtn(m, disable_opt_rtn=True)
         return {}
-
-    @torch.no_grad()
-    def quantize_layer(self, name: str, dtype: torch.dtype = None) -> None:
-        if dtype is not None:
-            layer = get_module(self.model, name)
-            set_module(self.model, name, layer.to(dtype))
-        self.quantize_layer_via_rtn(name)
 
 
 @register_pipeline_member(OptimizedRTNConfig)
@@ -95,19 +75,24 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
-        self.data_type = config.data_type
-        self.group_size = config.group_size
-        self.infer_bs_coeff = config.infer_bs_coeff
-        self.enable_imatrix = getattr(config, "enable_imatrix", False)
+        if (
+            self.scheme is not None
+            and self.scheme.data_type
+            and ("nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type)
+        ):
+            logger.warning_once(
+                "opt-rtn does not support NVFP or MXFP. It behaves the same as RTN but is much slower. "
+                "Please use RTN instead."
+            )
 
-        self.enable_alg_ext = True
+    def can_compile_block_forward(self):
+        return False
 
-    @contextmanager
-    def block_forward_hooks(self, ctx):
-        with super().block_forward_hooks(ctx) as hook_handles:
-            if self.enable_imatrix:
-                hook_handles.extend(self._register_imatrix_hooks(ctx.block, with_count=True))
-            yield hook_handles
+    def register_fp_input_forward_hooks(self, block):
+        """Register FP-input hooks: imatrix."""
+        handles = super().register_fp_input_forward_hooks(block)
+        handles.extend(self._register_imatrix_hooks(block, with_count=True))
+        return handles
 
     def _register_imatrix_hooks(self, model, *, with_count: bool = False):
         def collect_imatrix(module, input, output):
@@ -126,37 +111,45 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         handles = []
         for _, module in model.named_modules():
-            if isinstance(module, self.supported_types) and check_to_quantized(module):
+            if check_to_quantized(module):
                 handles.append(module.register_forward_hook(collect_imatrix))
         return handles
 
     @torch.no_grad()
-    def quantize_block(self, ctx):
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        valid_token_mask=None,
+        **kwargs,
+    ):
         """Apply imatrix-informed RTN quantization to a block.
 
-        Pure-algorithm entry point.  Device placement and cleanup are handled
-        by the Compressor; act-max and imatrix hook registration are owned by
-        the quantizer hook helpers before this method is called.
-
         Args:
-            block: Module already placed on the correct device(s) with act_max
-                attributes populated by the Compressor's hook pass.
-            input_ids: Unused for optimized RTN; accepted for interface consistency.
-            input_others: Unused for optimized RTN.
-            reference_output: Unused for optimized RTN.
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as quantization
+                targets (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+                Currently unused in imatrix-RTN; reserved for future use.
+            **kwargs: Reserved for forward-compatibility with future parameters.
         """
-        block = ctx.block
-        update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-        if (
-            self.config.is_act_nv_fp
-            or self.config.is_static_afp8
-            or (self.config.is_wfp8afp8 and not self.config.act_dynamic)
-        ):
-            # enable moe experts act_max automatic generation for Linear
-            set_amax_for_all_moe_layers(block, attr_name="act_max")
         # Normalize imatrix and quantize layers
         for name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
             if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer_outside_block(m.global_name)
+                self.quantize_layer_outside_block(m)

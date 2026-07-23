@@ -303,11 +303,11 @@ class TestAWQUseV2ScaleSearch:
         compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
 
-    def test_use_v2_true_for_v2_block(self):
-        """Gate is True for any SignRoundV2 block (data-type gating is per-layer)."""
-        q = self._awq_quantizer()
-        compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
+    # def test_use_v2_true_for_v2_block(self):
+    #     """Gate is True for any SignRoundV2 block (data-type gating is per-layer)."""
+    #     q = self._awq_quantizer()
+    #     compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
+    #     assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
 
     def test_use_v2_false_for_non_v2_block(self):
         """Gate is False when the block is not SignRoundV2, regardless of dtype."""

@@ -40,7 +40,7 @@ function run_unit_test() {
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -51,13 +51,13 @@ function run_unit_test() {
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
 
-function run_unit_test_vllm() {
-    echo "##[group]set up vllm UT env..."
+function run_unit_test_llmc() {
+    echo "##[group]set up llmc UT env..."
     BUILD_TYPE="nightly" uv pip install -r ./unit/test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
@@ -67,11 +67,11 @@ function run_unit_test_vllm() {
     for test_file in $(find ./integration/test_xpu -name "test_llmc_integration.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
 
-        echo "##[group]Running xpu vLLM ${test_file}..."
+        echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
@@ -110,11 +110,7 @@ function print_coverage() {
 function main() {
     setup_environment
     run_unit_test
-    # The XPU LLMC integration test only runs in the nightly pipeline to keep
-    # PR CI fast. Pass "integration" as the first argument to enable it.
-    if [ "${1:-}" == "integration" ]; then
-        run_unit_test_vllm
-    fi
+    run_unit_test_llmc
     collect_log
     print_coverage
     print_summary

@@ -12,39 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from collections import defaultdict
 from contextlib import nullcontext
-from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
-import accelerate
 import torch
 from torch import autocast
 
-from auto_round.algorithms.quantization.base import BaseQuantizer, RTNLayerFallbackMixin
+from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
-    block_forward,
-    check_need_act_calibration,
     collect_best_params,
-    immediate_pack,
 )
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_fused_layer_global_scales
 from auto_round.logger import logger
 from auto_round.utils import (
-    check_to_quantized,
-    compile_func,
-    convert_module_to_hp_if_necessary,
-    get_module,
     htcore,
     is_hpex_available,
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
-    set_module,
-    to_device,
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
@@ -52,11 +39,11 @@ from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.pipeline import BlockContext
+    from auto_round.algorithms.composer import BlockContext
 
 
 @register_pipeline_member(SignRoundConfig)
-class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
+class SignRoundQuantizer(BaseQuantizer):
 
     def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
@@ -65,10 +52,10 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         self.minmax_lr = config.minmax_lr
         self.lr_scheduler = config.lr_scheduler
         self.momentum = config.momentum
-        self.infer_bs_coeff = config.infer_bs_coeff
         self.enable_minmax_tuning = config.enable_minmax_tuning
         self.enable_norm_bias_tuning = config.enable_norm_bias_tuning
         self.gradient_accumulate_steps = config.gradient_accumulate_steps
+
         self.enable_alg_ext = config.enable_alg_ext
         self.not_use_best_mse = config.not_use_best_mse
         self.enable_quanted_input = config.enable_quanted_input
@@ -76,6 +63,43 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
+
+    def dispatch_block(self, block, input_ids, input_others):
+        """Multi-GPU aware block dispatch for SignRound tuning.
+
+        Stores card_0_in_high_risk and loss_device on self for use in quantize_block.
+        """
+        from auto_round.utils import is_auto_device_mapping
+
+        if (
+            is_auto_device_mapping(device_manager.device_map)
+            and len(device_manager.device_list) > 1
+            and not self.model_context.is_diffusion
+        ):
+            from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                block,
+                device_manager.device_list,
+                input_ids,
+                self.compress_context.low_gpu_mem_usage,
+                self.calibration_context.batch_size,
+                device_manager.device,
+            )
+            if len(device_manager.device_list) > 1:
+                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+                for _n, _mod in block.named_modules():
+                    if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
+                        continue
+                    add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
+        else:
+            block = block.to(device_manager.device)
+            card_0_in_high_risk, loss_device = False, device_manager.device
+
+        self._card_0_in_high_risk = card_0_in_high_risk
+        self._loss_device = loss_device
+        return block, card_0_in_high_risk, loss_device
 
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
@@ -89,52 +113,89 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         pred_output: torch.Tensor,
         ref_output: torch.Tensor,
         indices: torch.Tensor,
-        mse_loss: Callable,
+        loss_func: Callable,
         device: Union[str, torch.device] = "cpu",
+        valid_token_mask: Optional[torch.Tensor] = None,
     ):
         autocast_ctx = (
             nullcontext()
             if self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
-        if self.attention_mask:
-            tmp_attention_mask = [self.attention_mask[i] for i in indices]
+        if valid_token_mask:
+            tmp_attention_mask = [valid_token_mask[i] for i in indices]
             tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
             tmp_attention_mask.unsqueeze_(-1)
 
             with autocast_ctx:
-                loss = mse_loss(  # pylint: disable=not-callable
+                loss = loss_func(  # pylint: disable=not-callable
                     (pred_output * tmp_attention_mask).to(torch.float32),
                     (ref_output * tmp_attention_mask).to(torch.float32),
                 )
         else:
             with autocast_ctx:
-                loss = mse_loss(  # pylint: disable=not-callable
+                loss = loss_func(  # pylint: disable=not-callable
                     pred_output.to(torch.float32), ref_output.to(torch.float32)
                 )
 
         return loss
 
-    def quantize_block(self, ctx: "BlockContext") -> dict:
+    def _count_samples(self, inputs: Any) -> int:
+        if isinstance(inputs, dict):
+            hs = inputs.get("hidden_states")
+            return len(hs) if isinstance(hs, list) else hs.shape[self.calibration_context.batch_dim]
+        elif isinstance(inputs, list):
+            return len(inputs)
+        else:
+            return inputs.shape[self.calibration_context.batch_dim]
+
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        valid_token_mask=None,
+        **kwargs,
+    ) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
 
         This is the pure-algorithm entry point.  All infrastructure concerns
-        (device placement, act-max hook collection, reference-output caching,
-        DDP setup, memory cleanup, logging) are handled by the Compressor
-        before and after this call.
+        (device placement, act-max hook collection, DDP setup, memory cleanup,
+        logging) are handled by the Compressor before and after this call.
 
         Args:
-            ctx: Per-block pipeline context. ``ctx.io`` owns calibration inputs,
-                reference outputs, and mini-batch block forwards.
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as the optimization
+                target for the sign-gradient descent loss (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed (e.g. standard string datasets without padding).
+                When provided, the loss is computed only over valid token positions.
+            **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
-            best_params: Best quantization parameters found during optimization.
-                Empty dict if no trainable parameters were found.
+            dict: Best quantization parameters found during optimization, or an
+                empty dict if no trainable parameters were found.
         """
-        block = ctx.block
         device = device_manager.device
-        loss_device = ctx.loss_device
-        mid_iter_mem_check = ctx.mid_iter_mem_check
+        loss_device = getattr(self, "_loss_device", device)
+        card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
+        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+
+        # Use quantized inputs if available and enabled
+        active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
+        nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
@@ -143,9 +204,7 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
         )
-        if self.config.is_nv_fp:
-            for module in block.modules():
-                update_fused_layer_global_scales(module)
+
         round_params = []
         minmax_params = []
         for n, m in block.named_modules():
@@ -192,7 +251,6 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        nsamples = ctx.num_samples
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -204,31 +262,48 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
         init_loss = None
         best_params = {}
         total_loss = 0
-        global_batch_size = self.batch_size * self.gradient_accumulate_steps
+        batch_size = self.calibration_context.batch_size
+        global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not self.attention_mask:
+        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
             whole_indices = torch.arange(global_batch_size)
-            num_elm = ctx.count_batch_elements(whole_indices)
+            if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
+                num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
+
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
-        batch_size = self.batch_size
+        block_fwd = self.block_forward
+
+        # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
+        # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
+        # through CPU (cache_device="cpu") and the very next line moves it back to
+        # loss_device — a wasteful GPU→CPU→GPU roundtrip on every batch × iteration.
+        # pred_output is a transient single-batch tensor consumed immediately for the
+        # loss and then freed, so keeping it on the compute device costs no persistent
+        # extra memory.  Pass it as a per-call override so self.cache_device is unchanged.
+        _fwd_cache_device = (
+            device
+            if getattr(self.compress_context, "low_gpu_mem_usage", False) and not str(device).startswith("cpu")
+            else None
+        )
+
         for i in range(self.iters):
-            if self.enable_alg_ext and self.data_type.endswith("dq"):
+            if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                ref_output = ctx.get_reference_outputs(indices, device=loss_device)
-                # BlockIO centralizes batch input selection, reference caching,
-                # and forwarding for the currently scheduled block (ctx.block).
-                pred_output = ctx.forward_block_batch(indices, device=device, cache_device=loss_device)
-                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device)
+                ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                if loss_device is not None:
+                    pred_output = pred_output.to(loss_device)
+                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
@@ -290,64 +365,54 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
 
     def quantize_layer_outside_block(
         self,
-        layer_name: str,
-        input_ids: Optional[list[torch.Tensor]] = None,
-        q_inputs: Optional[list[torch.Tensor]] = None,
-        device: str = "cpu",
-        dtype: Optional[torch.dtype] = None,
-        **kwargs,
+        layer: "torch.nn.Module",
+        fp_input: Optional[list[torch.Tensor]] = None,
+        q_input: Optional[list[torch.Tensor]] = None,
+        valid_token_mask: Optional[list[torch.Tensor]] = None,
+        disable_opt_rtn: Optional[bool] = None,
     ):
-        """Quantize a specific layer of the model using the provided inputs.
+        """Quantize a single layer that lives outside a transformer block.
+
+        When ``fp_input`` is provided the layer is tuned with the sign-gradient
+        descent optimizer (same loss loop as block-level quantization).  When
+        ``fp_input`` is ``None`` the method falls back to zero-shot RTN.
 
         Args:
-            layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor): Input data for quantization.
-            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
-            device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
-
-        Returns:
-            None
+            layer: The layer module to quantize.  Must have a ``global_name``
+                attribute for model re-insertion and logging.
+            fp_input: Per-sample FP activations fed into this layer, used as
+                calibration inputs during optimization. ``None`` triggers RTN
+                fallback.
+            q_input: Per-sample quantized activations from the previous stage,
+                used instead of ``fp_input`` during the forward pass when
+                cascaded quantized-input is enabled. ``None`` means use
+                ``fp_input`` for both reference and tuning forward.
+            valid_token_mask: Per-sample boolean/int masks of shape
+                ``[1, seq_len]`` indicating valid (non-padding) token positions.
+                ``1`` means valid, ``0`` means padding. ``None`` if no masking
+                is needed. Forwarded to the loss computation to weight out
+                padding tokens.
+            disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
         """
-        if input_ids is None:
+
+        layer_name = layer.global_name
+        if fp_input is None:
             logger.info(f"using rtn to quantize {layer_name}")
-            if dtype is not None:
-                layer = get_module(self.model, layer_name)
-                set_module(self.model, layer_name, layer.to(dtype))
-            self.quantize_layer_via_rtn(
-                layer_name,
-                disable_opt_rtn=kwargs.get("disable_opt_rtn", getattr(self.config, "disable_opt_rtn", True)),
+            self._quantize_layer_via_rtn(
+                layer,
+                disable_opt_rtn=(
+                    disable_opt_rtn if disable_opt_rtn is not None else getattr(self.config, "disable_opt_rtn", True)
+                ),
             )
             return
 
         logger.info(f"quantizing layer {layer_name}")
-        layer = get_module(self.model, layer_name)
-        if dtype is not None:
-            layer = layer.to(dtype)
-        if hasattr(layer, "tuning_device"):
-            device = layer.tuning_device
-
-        layer = layer.to(device)
-        for i in range(len(input_ids)):
-            input_ids[i] = input_ids[i].to(layer.weight.dtype)
-            if q_inputs is not None:
-                q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
-
-        static_kv_dtype = self.compress_context.static_kv_dtype
-        static_attention_dtype = self.compress_context.static_attention_dtype
-        if self.config.is_act_quantize and check_need_act_calibration(
-            self.config.act_dynamic,
-            self.config.act_data_type,
-            self.config.act_bits,
-            static_kv_dtype,
-            static_attention_dtype,
-        ):
-            tmp_inputs = q_inputs if q_inputs is not None else input_ids
-            hook_handles = self._register_act_max_hooks(layer)
-            with torch.no_grad():
-                for input in tmp_inputs:
-                    layer(input)
-            for handle in hook_handles:
-                handle.remove()
+        # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
+        device = layer.weight.device if hasattr(layer, "weight") else device_manager.device
+        for i in range(len(fp_input)):
+            fp_input[i] = fp_input[i].to(layer.weight.dtype)
+            if q_input is not None:
+                q_input[i] = q_input[i].to(layer.weight.dtype)
 
         wrapper_linear = WrapperLinear(
             layer,
@@ -384,13 +449,16 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-        nsamples = len(input_ids)
+        nsamples = len(fp_input)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         best_params = None
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
-        gradient_accumulate_steps = self.batch_size  # Force to low gpu
+
+        gradient_accumulate_steps = (
+            self.calibration_context.batch_size * self.gradient_accumulate_steps
+        )  # Force to low gpu
 
         total_loss = 0
         num_elm = 1
@@ -399,32 +467,32 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         batch_size = 1  # Force to low gpu
-        global_batch_size = self.batch_size * gradient_accumulate_steps
+        global_batch_size = gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
-        if gradient_accumulate_steps != 1 and not self.attention_mask:
-            whole_indices = torch.arange(global_batch_size)
-            if q_inputs is not None:
-                num_elm = self._count_layer_input_elements(q_inputs, whole_indices)
+        if gradient_accumulate_steps != 1 and not valid_token_mask:
+            whole_indices = torch.arange(global_batch_size).tolist()
+            if q_input is not None:
+                num_elm = self._count_layer_input_elements(q_input, whole_indices)
             else:
-                num_elm = self._count_layer_input_elements(input_ids, whole_indices)
+                num_elm = self._count_layer_input_elements(fp_input, whole_indices)
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
         for i in range(self.iters):
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                if q_inputs is not None:
-                    current_input = [q_inputs[i] for i in indices]
+                if q_input is not None:
+                    current_input = [q_input[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
-                    org_input = [input_ids[i] for i in indices]
+                    org_input = [fp_input[i] for i in indices]
                     org_input = torch.cat(org_input, dim=0).to(device)
                 else:
-                    current_input = [input_ids[i] for i in indices]
+                    current_input = [fp_input[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
                 with torch.no_grad():
@@ -434,16 +502,16 @@ class SignRoundQuantizer(RTNLayerFallbackMixin, BaseQuantizer):
                     if not self.model_context.amp
                     else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
                 )
-                if self.attention_mask:
-                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-                    tmp_attention_mask.unsqueeze_(-1)
+                if valid_token_mask:
+                    tmp_valid_mask = [valid_token_mask[i] for i in indices]
+                    tmp_valid_mask = torch.cat(tmp_valid_mask, dim=0).to(device)
+                    tmp_valid_mask.unsqueeze_(-1)
 
                     with autocast_ctx:
                         output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
                         loss = mse_loss(  # pylint: disable=not-callable
-                            (output_q * tmp_attention_mask).to(torch.float32),
-                            (current_output * tmp_attention_mask).to(torch.float32),
+                            (output_q * tmp_valid_mask).to(torch.float32),
+                            (current_output * tmp_valid_mask).to(torch.float32),
                         )
 
                 else:

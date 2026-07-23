@@ -40,6 +40,7 @@ class TestAutoRound:
             nsamples=2,
             seqlen=32,
             iters=0,
+            disable_opt_rtn=True,
             low_cpu_mem_usage=False,
         )
         quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
