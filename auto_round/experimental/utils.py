@@ -23,6 +23,22 @@ from auto_round.utils import logger
 SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
 
 
+FP8_GRANULARITY_TENSOR = "tensor"
+FP8_GRANULARITY_HEAD = "head"
+
+
+def normalize_fp8_granularity(granularity: str | None) -> str:
+    if granularity is None:
+        return FP8_GRANULARITY_TENSOR
+    granularity = granularity.lower()
+    if granularity in (FP8_GRANULARITY_TENSOR, FP8_GRANULARITY_HEAD):
+        return granularity
+    raise ValueError(
+        f"Invalid FP8 calibration granularity: {granularity}. "
+        f"Supported granularities are: {FP8_GRANULARITY_TENSOR}, {FP8_GRANULARITY_HEAD}."
+    )
+
+
 def per_tensor_fp8_qdq(
     tensor: torch.Tensor, tensor_max: None | torch.Tensor = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -30,6 +46,37 @@ def per_tensor_fp8_qdq(
 
     qdq_tensor, scale, _ = quant_fp8_sym(tensor, max_scale=1.0, tensor_max=tensor_max, group_size=0, v=0)
     return qdq_tensor, scale
+
+
+def per_head_fp8_qdq(tensor: torch.Tensor, tensor_max: None | torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize/dequantize an attention tensor with one FP8 scale per attention head."""
+    if tensor.dim() < 4:
+        raise ValueError(f"Per-head FP8 calibration expects [batch, heads, seq, head_dim], got {tuple(tensor.shape)}")
+
+    info = torch.finfo(torch.float8_e4m3fn)
+    orig_dtype = tensor.dtype
+    if tensor.dtype == torch.float16:
+        tensor = tensor.to(torch.bfloat16)
+
+    if tensor_max is None:
+        max_tensor = tensor.abs().amax(dim=(0, 2, 3)).to(torch.float32)
+    else:
+        max_tensor = tensor_max.to(tensor.device, dtype=torch.float32)
+
+    scale = torch.clip(max_tensor / info.max, min=float(1.0 / (info.max * 512.0)))
+    qdq_scale = scale.view(1, -1, 1, 1)
+    fp8_res = torch.clip(tensor / qdq_scale, info.min, info.max)
+    fp8_res = fp8_res.to(torch.float8_e4m3fn)
+    return (fp8_res.to(tensor.dtype) * qdq_scale).to(orig_dtype), scale
+
+
+def fp8_qdq(
+    tensor: torch.Tensor, tensor_max: None | torch.Tensor = None, granularity: str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    granularity = normalize_fp8_granularity(granularity)
+    if granularity == FP8_GRANULARITY_HEAD:
+        return per_head_fp8_qdq(tensor, tensor_max=tensor_max)
+    return per_tensor_fp8_qdq(tensor, tensor_max=tensor_max)
 
 
 @torch.compiler.disable
@@ -41,7 +88,10 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
     if hasattr(module, name):
         param = getattr(module, name)
         if isinstance(param, torch.nn.Parameter):
-            param.data.copy_(new_val)
+            if param.shape == new_val.shape:
+                param.data.copy_(new_val)
+            else:
+                setattr(module, name, torch.nn.Parameter(new_val))
         else:
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:

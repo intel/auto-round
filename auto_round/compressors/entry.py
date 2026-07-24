@@ -36,6 +36,8 @@ _ENTRY_BASE_KWARGS = {
     "enable_deterministic_algorithms",
     "static_kv_dtype",
     "static_attention_dtype",
+    "static_kv_granularity",
+    "static_attention_granularity",
 }
 _ENTRY_MLLM_KWARGS = {"processor", "image_processor", "template", "extra_data_dir", "quant_nontext_module"}
 _ENTRY_DIFFUSION_KWARGS = {"guidance_scale", "num_inference_steps", "generator_seed"}

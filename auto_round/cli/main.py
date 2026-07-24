@@ -64,6 +64,10 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
         "trust_remote_code": not args.disable_trust_remote_code,
+        "static_kv_dtype": args.static_kv_dtype,
+        "static_kv_granularity": args.static_kv_granularity,
+        "static_attention_dtype": args.static_attention_dtype,
+        "static_attention_granularity": args.static_attention_granularity,
     }
 
 

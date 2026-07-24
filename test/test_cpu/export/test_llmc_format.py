@@ -149,6 +149,35 @@ class TestLLMC:
         assert kv_cache_scheme["dynamic"] is False
         assert kv_cache_scheme["symmetric"] is True
 
+    def test_mxfp8_llmcompressor_per_head_kv_config(self, tiny_opt_model_path, tmp_path):
+        from safetensors import safe_open
+
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            iters=0,
+            disable_opt_rtn=True,
+            scheme="mxfp8",
+            static_kv_dtype="fp8",
+            static_kv_granularity="head",
+        )
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
+
+        kv_cache_scheme = config["quantization_config"]["kv_cache_scheme"]
+        assert kv_cache_scheme is not None
+        assert kv_cache_scheme["strategy"] == "attn_head"
+
+        num_kv_heads = compressed_model.config.num_attention_heads
+        if hasattr(compressed_model.config, "num_key_value_heads"):
+            num_kv_heads = compressed_model.config.num_key_value_heads
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            k_scale = f.get_tensor("model.decoder.layers.0.self_attn.k_scale")
+            v_scale = f.get_tensor("model.decoder.layers.0.self_attn.v_scale")
+        assert k_scale.shape == torch.Size([num_kv_heads])
+        assert v_scale.shape == torch.Size([num_kv_heads])
+
     def test_mxfp8_llmcompressor_attention_config(self, tiny_opt_model_path, tmp_path):
         ar = AutoRound(
             model=tiny_opt_model_path,
@@ -200,6 +229,39 @@ class TestLLMC:
         assert attention_group["input_activations"]["symmetric"] is True
         assert quantization_config["kv_cache_scheme"] is not None
         assert getattr(compressed_model.model.decoder.layers[0].self_attn, "q_scale", None) is not None
+
+    def test_mxfp8_llmcompressor_per_head_attention_config(self, tiny_opt_model_path, tmp_path):
+        from safetensors import safe_open
+
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            iters=0,
+            disable_opt_rtn=True,
+            scheme="mxfp8",
+            static_attention_dtype="fp8",
+            static_attention_granularity="head",
+        )
+        compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            saved_config = json.load(f)
+
+        saved_groups = saved_config["quantization_config"]["config_groups"]
+        attention_group = None
+        for group in saved_groups.values():
+            if "Linear" not in group["targets"]:
+                attention_group = group
+                break
+
+        assert attention_group is not None
+        assert attention_group["input_activations"]["strategy"] == "attn_head"
+        assert saved_config["quantization_config"]["kv_cache_scheme"]["strategy"] == "attn_head"
+
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            q_scale = f.get_tensor("model.decoder.layers.0.self_attn.q_scale")
+            k_scale = f.get_tensor("model.decoder.layers.0.self_attn.k_scale")
+        assert q_scale.shape == torch.Size([compressed_model.config.num_attention_heads])
+        assert k_scale.ndim == 1
 
     def test_mixed_precision_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = AutoScheme(
