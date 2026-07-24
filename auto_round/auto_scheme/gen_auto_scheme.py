@@ -147,8 +147,8 @@ class GenScheme:
                 details = ", ".join(f"{opt}={bits:.3f}" for opt, bits in getattr(self, "_option_avg_bits", []))
                 hint = (
                     "Provide at least one option whose avg_bits is <= target and one whose avg_bits is >= target. "
-                    "Note that layers fixed to high-precision (e.g. lm_head/embed kept at bf16) inflate the lower bound; "
-                    "use `quant_lm_head=True`/adjust `layer_config`/`ignore_layers` if needed."
+                    "Note that layers fixed to high-precision (e.g. lm_head/embed kept at bf16) "
+                    "inflate the lower bound; use `quant_lm_head=True`/adjust `layer_config`/`ignore_layers` if needed."
                 )
                 raise ValueError(
                     f"Target avg_bits={target:.3f} is outside the achievable range "

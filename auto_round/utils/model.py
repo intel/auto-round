@@ -2416,6 +2416,11 @@ def is_model_free_route(
 
     explicit = bool(kwargs.get("model_free", False))
     disabled = bool(kwargs.get("disable_model_free", False))
+    has_static_attention_quantization = any(
+        kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
+    )
+    if has_static_attention_quantization:
+        return False
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).

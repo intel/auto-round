@@ -1684,7 +1684,7 @@ def _validate_supported_scheme(
         # name is provided.  Variants such as MXFP4_RCEIL / MXFP8_RCEIL use a
         # different activation format; silently mapping them to "MXFP4" /
         # "MXFP8" in the output config would misrepresent the requested scheme.
-        if isinstance(scheme_input, str) and scheme_input not in ("MXFP4", "MXFP8"):
+        if isinstance(scheme_input, str) and scheme_input.upper() not in ("MXFP4", "MXFP8"):
             raise ValueError(
                 f"Model-free mode only supports MXFP preset names 'MXFP4' and 'MXFP8', "
                 f"but got '{scheme_input}'. "
@@ -2803,7 +2803,12 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         }
         # MXFP supports both llm_compressor (compressed-tensors) and auto_round formats.
         # The only difference is the quantization_config metadata; on-disk weights are identical.
-        if self.scheme_input in ["MXFP4", "MXFP8"] or self._auto_scheme_family == "mx_fp":
+        normalized_scheme = (
+            _normalize_scheme(self.scheme_input) if not _looks_like_auto_scheme(self.scheme_input) else None
+        )
+        if (
+            normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
+        ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.

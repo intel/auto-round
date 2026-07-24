@@ -44,12 +44,26 @@ from auto_round.compressors.model_free import (
     is_model_free_supported_scheme,
 )
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.model import is_model_free_route
 
 from ...envs import require_compressed_tensors
 
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scheme", ["MXFP8", "mxfp8"])
+def test_model_free_route_accepts_mxfp_scheme_case_insensitively(scheme):
+    assert is_model_free_route("model", scheme, 0, True, {})
+
+
+@pytest.mark.parametrize("dtype_key", ["static_kv_dtype", "static_attention_dtype"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_model_free_route_rejects_static_attention_quantization(dtype_key, explicit):
+    kwargs = {dtype_key: "fp8", "model_free": explicit}
+    assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
+
 
 _LLAMA_CFG = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
 _DEFAULT_SCHEME = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
@@ -660,6 +674,7 @@ class TestModelFreeMXFP:
             output_dir=output_dir,
             scheme="MXFP4",
             layer_config=layer_config,
+            format="llm_compressor",
         ).run()
 
         qc = _read_qconfig(output_dir)
@@ -870,7 +885,9 @@ class TestLLMCompressorMXFPSource:
         }
         model_dir = _make_model_dir(tmp_path, _LLMCOMPRESSOR_MXFP_CFG_FP8, tensors)
         output_dir = str(tmp_path / "output")
-        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8").run()
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8", format="llm_compressor"
+        ).run()
 
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp8-quantized"
@@ -951,7 +968,9 @@ class TestLLMCompressorMXFPSource:
         }
         model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8").run()
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8", format="llm_compressor"
+        ).run()
 
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp8-quantized"

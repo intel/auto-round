@@ -99,6 +99,7 @@ def test_qwen3_vl_moe_mxfp(tiny_qwen3_vl_moe_model_path, tmp_path):
         seqlen=32,
         iters=0,
         disable_opt_rtn=True,
+        disable_model_free=True,
         ignore_layers="self_attn,lm_head, mlp.gate",
     )
     quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=tmp_path)

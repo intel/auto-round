@@ -2251,7 +2251,8 @@ def _gen_layer_config(
                     cache_key, cache_path, cached_data = scheme_cache_meta[index]
                     if cached_data is not None:
                         logger.info(
-                            "AutoScheme: loading per-scheme cache for scheme %d from %s. Delete this file to disable reuse and rescore this scheme.",
+                            "AutoScheme: loading per-scheme cache for scheme %d from %s."
+                            " Delete this file to disable reuse and rescore.",
                             index,
                             cache_path,
                         )
@@ -2296,7 +2297,8 @@ def _gen_layer_config(
 
                 if cached_data is not None:
                     logger.info(
-                        "AutoScheme: loading per-scheme cache for scheme %d from %s. Delete this file to disable reuse and rescore this scheme.",
+                        "AutoScheme: loading per-scheme cache for scheme %d from %s."
+                        " Delete this file to disable reuse and rescore.",
                         index,
                         cache_path,
                     )
