@@ -14,7 +14,11 @@
 
 import copy
 import gc
+import hashlib
+import json
 import math
+import os
+import time
 from dataclasses import asdict
 from functools import wraps
 from typing import Iterable, Optional, Union
@@ -48,6 +52,7 @@ from auto_round.data_type.gguf import (
 )
 from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.logger import logger
+from auto_round.modeling.fused_moe.replace_modules import safe_to_cpu_
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -61,6 +66,7 @@ from auto_round.utils import (
     get_module,
     is_mllm_model,
     llm_load_model,
+    load_model,
     mllm_load_model,
     parse_available_devices,
     set_avg_auto_device_map,
@@ -152,7 +158,8 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 self.x_diff = None
                 return None
 
-            qdq_x.register_hook(save_grad)
+            if qdq_x.requires_grad:
+                qdq_x.register_hook(save_grad)
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
@@ -185,7 +192,8 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 self.mix_score = self.weight_score + self.act_score
                 return None
 
-            qdq_w.register_hook(save_grad)
+            if qdq_w.requires_grad:
+                qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
 
 
@@ -304,7 +312,8 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                 self.x_diff = None
                 return None
 
-            qdq_x.register_hook(save_grad)
+            if qdq_x.requires_grad:
+                qdq_x.register_hook(save_grad)
         return qdq_x, scale, zp
 
     def _qdq_weight(self, value, min_scale, max_scale):
@@ -607,11 +616,16 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
             # Enable gradients for the output of the last block
             if module.tmp_name == block_names[-1]:
                 if isinstance(result, torch.Tensor):
-                    result = result.requires_grad_(True)
+                    if result.is_floating_point():
+                        result = result.requires_grad_(True)
                 elif isinstance(result, tuple):
-                    result = tuple(r.requires_grad_(True) if isinstance(r, torch.Tensor) else r for r in result)
+                    result = tuple(
+                        r.requires_grad_(True) if isinstance(r, torch.Tensor) and r.is_floating_point() else r
+                        for r in result
+                    )
 
-            pbar.update(1)
+            if pbar is not None:
+                pbar.update(1)
             return result
 
         return new_forward
@@ -775,9 +789,12 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
             if isinstance(block_output, tuple):
                 # For tuple outputs, we usually care about the first element (hidden states)
                 main_output = block_output[0]
-                main_output = main_output.requires_grad_(True)
-            else:
+                if isinstance(main_output, torch.Tensor) and main_output.is_floating_point():
+                    main_output = main_output.requires_grad_(True)
+            elif isinstance(block_output, torch.Tensor) and block_output.is_floating_point():
                 main_output = block_output.requires_grad_(True)
+            else:
+                main_output = block_output
 
             # Backward pass for the current block
             torch.autograd.backward(
@@ -789,7 +806,11 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
 
             # Extract gradients w.r.t. the block input
             if block_input_args and isinstance(block_input_args[0], torch.Tensor):
-                current_grad = block_input_args[0].grad.detach().clone()
+                if block_input_args[0].grad is not None:
+                    current_grad = block_input_args[0].grad.detach().clone()
+                else:
+                    logger.warning(f"No gradient found for input of {block_name}, stopping backward replay")
+                    break
             else:
                 logger.warning(f"No suitable input gradient found for {block_name}")
                 break
@@ -800,7 +821,8 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
             # clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
 
-            pbar.update(1)
+            if pbar is not None:
+                pbar.update(1)
 
         _log_batch_avg_loss(
             model,
@@ -867,6 +889,8 @@ def get_score_for_scheme(
         if name in fixed_layer_scheme.keys():
             continue
         m = get_module(model, name)
+        if m is None:
+            raise RuntimeError(f"AutoScheme scoring layer {name!r} is missing after model preprocessing")
         if not check_to_quantized(m):
             layer_bits, _ = compute_layer_bits(m, ignore_scale_zp_bits)
             scores_dict[name] = [layer_bits, 0.0]
@@ -895,7 +919,9 @@ def get_score_for_scheme(
                     device = major_device
             else:
                 device = m.weight.device
-                m.tuning_device = m.weight.device
+            # Replacement materialization may create fresh expert Linear modules
+            # without the metadata assigned on the pre-materialized tree.
+            m.tuning_device = device
 
             new_m = WrapperLayer(
                 m,
@@ -1226,9 +1252,10 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
         (layer_names, scheme) for each layer, or (None, None) if no feasible
         solution exists.
     """
-    # dp: total_params -> (accumulated_loss, chosen_path)
-    # The path is stored as a tuple to avoid the high overhead of repeatedly
-    # copying Python lists for every DP transition.
+    # dp: total_params -> (accumulated_loss, path_node)
+    # Each path node points to its parent. Tuple/list concatenation still copies
+    # the entire path on every transition, which becomes quadratic for large
+    # models; linked nodes keep each transition O(1) and are expanded only once.
     dp: dict[int, tuple[float, tuple]] = {0: (0.0, ())}
     for layer_name, opts in layers.items():
         new_dp: dict[int, tuple[float, tuple]] = {}
@@ -1240,7 +1267,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
                     continue
 
                 new_loss = cur_loss + loss_cost
-                new_path = cur_path + ((layer_names, scheme),)
+                new_path = (cur_path, layer_names, scheme)
 
                 # Keep the path with smaller loss for the same parameter budget
                 if np_total not in new_dp or new_loss < new_dp[np_total][0]:
@@ -1285,7 +1312,12 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # Select the solution with the minimum loss
     best_params = min(dp.keys(), key=lambda k: dp[k][0])
     best_loss, best_path = dp[best_params]
-    return best_loss, list(best_path)
+    path = []
+    while best_path:
+        best_path, layer_names, scheme = best_path
+        path.append((layer_names, scheme))
+    path.reverse()
+    return best_loss, path
 
 
 def move_module_to_tuning_device(module, major_device="cpu"):
@@ -1321,7 +1353,7 @@ def move_module_to_tuning_device(module, major_device="cpu"):
 
     for n, m in module.named_modules():
         if hasattr(m, "orig_layer"):
-            target = m.orig_layer.tuning_device
+            target = getattr(m.orig_layer, "tuning_device", getattr(m, "tuning_device", major_device))
             m.to(target)
             _move_own_tensors(m, target)
         elif hasattr(m, "tuning_device"):
@@ -1432,6 +1464,371 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
                 total_scores[head_name] = filtered
 
 
+# ---------------------------------------------------------------------------
+# AutoScheme scoring cache helpers
+# ---------------------------------------------------------------------------
+
+
+def _scheme_repr(s):
+    """Normalize a scheme (str/QuantizationScheme/dict) to a hashable repr."""
+    if isinstance(s, str):
+        return s
+    if isinstance(s, QuantizationScheme):
+        return json.dumps(asdict(s), sort_keys=True, default=str)
+    if isinstance(s, dict):
+        return json.dumps(s, sort_keys=True, default=str)
+    return str(s)
+
+
+def _autoscheme_cache_key(
+    model_name,
+    dataset,
+    nsamples,
+    seqlen,
+    batch_size,
+    quant_layer_names,
+    fixed_layer_scheme,
+    scheme,
+    force_mllm,
+    low_gpu_mem_usage,
+):
+    """Return a 16-char hex digest that uniquely identifies a **single-scheme** scoring run.
+
+    The key covers every parameter that directly affects per-layer loss values
+    **except** ``avg_bits`` / ``target_bits`` (only drive the DP step).
+    Unlike the old version, this key is generated **per-scheme**, not per-run,
+    so caching is granular: adding/removing schemes doesn't invalidate cached
+    scores for unchanged schemes.
+    """
+    key_data = {
+        "model_name": model_name,
+        "dataset": dataset,
+        "nsamples": nsamples,
+        "seqlen": seqlen,
+        "batch_size": batch_size,
+        "quant_layer_names": sorted(quant_layer_names),
+        "fixed_layer_scheme": {k: v for k, v in sorted(fixed_layer_scheme.items())},
+        "scheme": _scheme_repr(scheme),
+        "force_mllm": force_mllm,
+        "low_gpu_mem_usage": low_gpu_mem_usage,
+    }
+    key_str = json.dumps(key_data, sort_keys=True, default=str)
+    return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+
+
+def _autoscheme_cache_path(cache_key, scheme_index):
+    """Return the full path to the JSON cache file for a **single scheme**.
+
+    Each scheme gets its own cache file under ``{AR_WORK_SPACE}/auto_scheme_cache/``
+    to enable granular reuse: adding/removing schemes or changing non-scoring
+    parameters (e.g., target_bits) doesn't invalidate caches for unmodified schemes.
+
+    Args:
+        cache_key: Per-scheme cache key (includes model, dataset, scheme, etc.)
+        scheme_index: Index of the scheme (for human readability in filenames)
+    """
+    from auto_round import envs as _envs
+
+    cache_dir = os.path.join(_envs.AR_WORK_SPACE, "auto_scheme_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"scheme_{scheme_index:02d}_{cache_key}.json")
+
+
+def _save_autoscheme_scores(
+    cache_path,
+    cache_key,
+    scheme_index,
+    scheme_dict,
+    layer_scores,
+    total_loss_for_scheme,
+    total_params,
+):
+    """Persist scoring results for **a single scheme** to *cache_path* as JSON.
+
+    Each scheme's scores are stored independently so that adding/removing schemes
+    or changing unrelated parameters (e.g., target_bits) doesn't invalidate cached
+    scores for unchanged schemes.
+
+    Schema version 3 (per-scheme, per-op cache)::
+
+        {
+          "version": 3,
+          "score_granularity": "per_op",
+          "cache_key": "<hex>",
+          "scheme_index": 0,
+          "scheme": { ... scheme dict ... },
+          "created_at": "<ISO datetime>",
+          "layer_scores": { layer_key: [bits, loss], ... },
+          "total_loss_for_scheme": 1.234,
+          "total_params": 12345
+        }
+    """
+    # Persist only per-layer independent scores. Grouping (e.g. shared_layers
+    # or MoE expert groups) is intentionally NOT stored here — callers should
+    # re-apply grouping when loading a cache so the on-disk format stays
+    # per-op and backward/forward compatible.
+    data = {
+        "version": 3,
+        "score_granularity": "per_op",
+        "cache_key": cache_key,
+        "scheme_index": scheme_index,
+        "scheme": scheme_dict,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "layer_scores": layer_scores,
+        "total_loss_for_scheme": total_loss_for_scheme,
+        "total_params": total_params,
+    }
+    try:
+        with open(cache_path, "w", encoding="utf-8") as _f:
+            json.dump(data, _f, indent=2, default=str)
+        logger.info("AutoScheme: per-scheme cache saved → %s", cache_path)
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("AutoScheme: failed to save per-scheme cache: %s", _exc)
+
+
+def _load_autoscheme_scores(cache_path):
+    """Load and validate a **single-scheme** per-op scoring cache file (version 3).
+
+    Returns the parsed dict with keys ``layer_scores``, ``total_loss_for_scheme``,
+    and ``total_params`` on success, or ``None`` if the file is missing, malformed,
+    or fails the version sanity check.
+    """
+    _required = ("layer_scores", "total_loss_for_scheme", "total_params")
+    try:
+        with open(cache_path, encoding="utf-8") as _f:
+            data = json.load(_f)
+        if data.get("version") != 3 or data.get("score_granularity") != "per_op":
+            logger.warning(
+                "AutoScheme: per-scheme cache schema mismatch "
+                "(expected version=3, score_granularity=per_op; got version=%s, score_granularity=%s)",
+                data.get("version"),
+                data.get("score_granularity"),
+            )
+            return None
+        for _k in _required:
+            if _k not in data:
+                logger.warning("AutoScheme: per-scheme cache missing required field %s", _k)
+                return None
+        return data
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("AutoScheme: failed to read per-scheme cache %s: %s", cache_path, _exc)
+        return None
+
+
+def _is_per_op_cache_compatible(cached_data, quant_layer_names, fixed_layer_scheme):
+    """Return whether a cache contains exactly one score for every non-fixed quant layer."""
+    expected_layers = set(quant_layer_names) - set(fixed_layer_scheme)
+    return set(cached_data["layer_scores"]) == expected_layers
+
+
+def _refresh_cached_layer_bits(
+    model,
+    quant_layer_names,
+    fixed_layer_scheme,
+    scheme,
+    cached_layer_scores,
+    ignore_scale_zp_bits,
+):
+    """Recompute bit costs for the current accounting mode while preserving cached losses."""
+    apply_quant_scheme(
+        model,
+        quant_layer_names=quant_layer_names,
+        fixed_layer_scheme=fixed_layer_scheme,
+        scheme=scheme,
+    )
+    refreshed_scores = {}
+    for name, (_, loss) in cached_layer_scores.items():
+        bits, _ = compute_layer_bits(get_module(model, name), ignore_scale_zp_bits)
+        refreshed_scores[name] = [bits, loss]
+    return refreshed_scores
+
+
+def _assign_scheme_worker_devices(worker_count, visible_gpu_count):
+    """Assign workers round-robin within the parent's logical CUDA device space."""
+    if visible_gpu_count < 1:
+        raise ValueError("visible_gpu_count must be at least 1")
+    return [f"cuda:{worker_index % visible_gpu_count}" for worker_index in range(worker_count)]
+
+
+class _ProgressQueueProxy:
+    """Forward worker progress events to the parent process that owns tqdm."""
+
+    def __init__(self, progress_queue):
+        self.progress_queue = progress_queue
+
+    def update(self, steps=1):
+        self.progress_queue.put(("update", steps))
+
+    def write(self, message):
+        self.progress_queue.put(("write", message))
+
+
+def _drain_progress_queue(progress_queue, pbar):
+    """Apply all currently queued worker progress events to the parent tqdm instance."""
+    import queue
+
+    while True:
+        try:
+            event, payload = progress_queue.get_nowait()
+        except queue.Empty:
+            break
+        if event == "update":
+            pbar.update(payload)
+        elif event == "write":
+            pbar.write(payload)
+
+
+def _get_worker_memory_report(worker_device):
+    """Return this worker's peak RAM and VRAM for its assigned logical device."""
+    memory_monitor.update(device_list=worker_device)
+    device_key = str(worker_device).split(":")[-1]
+    return {
+        "device": device_key,
+        "peak_ram": memory_monitor.peak_ram,
+        "peak_vram": memory_monitor.peak_vram.get(device_key, 0.0),
+    }
+
+
+def _merge_worker_memory_reports(monitor, reports):
+    """Merge child-process RAM/VRAM peaks into the parent monitor."""
+    worker_peak_ram = sum(report.get("peak_ram", 0.0) for report in reports)
+    parent_ram = monitor._process_tree_rss() if hasattr(monitor, "_process_tree_rss") else monitor.peak_ram
+    monitor.peak_ram = max(monitor.peak_ram, parent_ram + worker_peak_ram)
+
+    worker_peaks = {}
+    for report in reports:
+        device = str(report["device"])
+        worker_peaks[device] = worker_peaks.get(device, 0.0) + report["peak_vram"]
+    for device, peak_vram in worker_peaks.items():
+        monitor.peak_vram[device] = max(monitor.peak_vram.get(device, 0.0), peak_vram)
+
+
+def _get_scheme_worker_count(num_schemes, num_gpus):
+    """Use at most one model-loading worker per visible GPU."""
+    if num_gpus < 1:
+        raise ValueError("AutoScheme multiprocessing requires at least one GPU")
+    return min(num_schemes, num_gpus)
+
+
+def _score_scheme_worker(args):
+    """Score one scheme and return its index, scores, and worker VRAM peak."""
+    import traceback as _tb
+
+    (
+        index,
+        scheme,
+        model_name,
+        is_vlm,
+        quant_layer_names,
+        fixed_layer_scheme,
+        dataset,
+        nsamples,
+        seqlen,
+        batch_size,
+        need_weight_grad,
+        enable_torch_compile,
+        low_gpu_mem_usage,
+        ignore_scale_zp_bits,
+        force_mllm,
+        use_model_replacements,
+        worker_device,
+        total_schemes,
+        progress_queue,
+    ) = args
+
+    from auto_round.auto_scheme.utils import _scheme_short_name as _short_name
+    from auto_round.auto_scheme.utils import apply_quant_scheme as _apply_quant_scheme
+    from auto_round.auto_scheme.utils import compute_layer_bits as _compute_layer_bits
+    from auto_round.utils import get_block_names as _get_block_names
+    from auto_round.utils import get_module as _get_module
+
+    try:
+        model, tokenizer, processor, _, _, is_vlm, _ = load_model(
+            model_name,
+            device="cpu",
+            use_auto_mapping=False,
+            use_model_replacements=use_model_replacements,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"_score_scheme_worker[{index}]: failed to load model {model_name!r}\n{_tb.format_exc()}"
+        ) from exc
+
+    safe_to_cpu_(model)
+    block_names = _get_block_names(model, quant_vision=force_mllm)[0]
+    for block_name in block_names:
+        block = _get_module(model, block_name)
+        block.in_block = True
+        for _, module in block.named_modules():
+            module.in_block = True
+    for _, module in model.named_modules():
+        if len(list(module.children())) == 0:
+            if not hasattr(module, "in_block"):
+                module.in_block = False
+            if not module.in_block and low_gpu_mem_usage:
+                module.to(worker_device)
+
+    from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+
+    materialize_model_(model)
+    # MoE materialization can replace fused expert modules with newly-created
+    # Linear layers. Assign tuning metadata only after the final module tree exists.
+    for layer_name in quant_layer_names:
+        layer = _get_module(model, layer_name)
+        if layer is None:
+            raise RuntimeError(
+                f"_score_scheme_worker[{index}]: layer {layer_name!r} is missing after model preprocessing"
+            )
+        if not hasattr(layer, "tuning_device"):
+            layer.tuning_device = worker_device
+        layer.tmp_name = layer_name
+
+    _apply_quant_scheme(
+        model,
+        quant_layer_names=quant_layer_names,
+        fixed_layer_scheme=fixed_layer_scheme,
+        scheme=scheme,
+    )
+
+    is_bf16 = isinstance(scheme, str) and scheme.upper() == "BF16"
+    if isinstance(scheme, dict):
+        is_bf16 = scheme.get("bits", 16) >= 16 and scheme.get("act_bits", 16) >= 16
+    if is_bf16:
+        scores = {}
+        for layer_name in quant_layer_names:
+            if layer_name in fixed_layer_scheme:
+                continue
+            layer_bits, _ = _compute_layer_bits(_get_module(model, layer_name), ignore_scale_zp_bits)
+            scores[layer_name] = [layer_bits, 0.0]
+        return index, scores, _get_worker_memory_report(worker_device)
+
+    from auto_round.auto_scheme.delta_loss import get_score_for_scheme
+
+    scores = get_score_for_scheme(
+        model,
+        tokenizer,
+        quant_layer_names,
+        fixed_layer_scheme,
+        dataset,
+        ignore_scale_zp_bits=ignore_scale_zp_bits,
+        pbar=_ProgressQueueProxy(progress_queue),
+        nsamples=nsamples,
+        seqlen=seqlen,
+        need_weight_grad=need_weight_grad,
+        enable_torch_compile=enable_torch_compile,
+        low_gpu_mem_usage=low_gpu_mem_usage,
+        major_device=worker_device,
+        batch_size=batch_size,
+        offload_context=None,
+        processor=processor,
+        is_vlm=is_vlm,
+        force_mllm=force_mllm,
+        model_name=model_name,
+        scheme_tag=f"{index + 1}/{total_schemes} {_short_name(scheme)}",
+    )
+    return index, scores, _get_worker_memory_report(worker_device)
+
+
 def _gen_layer_config(
     auto_scheme: AutoScheme,
     model: Union[str, torch.nn.Module],
@@ -1539,8 +1936,8 @@ def _gen_layer_config(
             return True
         if isinstance(scheme, QuantizationScheme):
             scheme = asdict(scheme)
-            if scheme["bits"] >= 16 and scheme["act_bits"] >= 16:
-                return True
+        if isinstance(scheme, dict):
+            return scheme.get("bits", 16) >= 16 and scheme.get("act_bits", 16) >= 16
         return False
 
     from auto_round import envs as _envs
@@ -1670,108 +2067,329 @@ def _gen_layer_config(
         layer_numel[_n] = _np
 
     options_scores = []
+    pbar = None
 
-    if need_imatrix:
-        dataloader = get_dataloader(
-            tokenizer,
-            seqlen=max(seqlen * 2, 2048),
-            dataset_name=dataset,
-            seed=42,
-            bs=batch_size,
-            nsamples=min(nsamples, 128),
-        )
-        logger.info("start to compute imatrix in AutoScheme")
-        cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
-        memory_monitor.update()
-        memory_monitor.log_summary()
-        logger.info("finish calculating imatrix")
+    # ---- Scoring cache (per-scheme) -------------------------------------------------- #
+    # Each scheme gets its own cache file so that adding/removing schemes or changing
+    # unrelated parameters (e.g., target_bits) doesn't invalidate cached scores for
+    # unchanged schemes.
+    _model_id_for_cache = model_name or getattr(getattr(model, "config", None), "_name_or_path", None)
 
-    # Register hooks and clear all block weights before the scheme loop.
-    # Hooks will transparently reload weights on demand during forward passes.
-    if offload_context is not None:
-        offload_context.add_offload_hooks(model, block_name)
-
-    pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
-    for index, scheme in enumerate(schemes):
-        scheme_tag = f"{index + 1}/{len(schemes)} {_scheme_short_name(scheme)}"
-        logger.info(f"AutoScheme transition: switch to scheme {index + 1}/{len(schemes)} ({scheme})")
-        apply_quant_scheme(
-            model, quant_layer_names=quant_layer_names, fixed_layer_scheme=fixed_layer_scheme, scheme=scheme
-        )
-        scores = {}  # name: bits, loss
-        if check_bf16_scheme(scheme):
-            for n in quant_layer_names:
-                if n in fixed_layer_scheme.keys():
-                    continue
-                m = get_module(model, n)
-                bits, _ = compute_layer_bits(m, auto_scheme.ignore_scale_zp_bits)
-                scores[n] = [bits, 0.0]
-        else:
-            scores = get_score_for_scheme(
-                model,
+    # In per-scheme caching, each scheme is checked independently for cache hits.
+    # We always prepare the common resources (imatrix, pbar, etc.) since they're
+    # reusable across schemes and their setup cost is negligible compared to scoring.
+    if True:
+        if need_imatrix:
+            dataloader = get_dataloader(
                 tokenizer,
-                quant_layer_names,
-                fixed_layer_scheme,
-                dataset,
-                ignore_scale_zp_bits=auto_scheme.ignore_scale_zp_bits,
-                pbar=pbar,
+                seqlen=max(seqlen * 2, 2048),
+                dataset_name=dataset,
+                seed=42,
+                bs=batch_size,
+                nsamples=min(nsamples, 128),
+            )
+            logger.info("start to compute imatrix in AutoScheme")
+            cal_imatrix(model, dataloader, major_device, low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage)
+            memory_monitor.update()
+            memory_monitor.log_summary()
+            logger.info("finish calculating imatrix")
+
+        # Register hooks and clear all block weights before the scheme loop.
+        # Hooks will transparently reload weights on demand during forward passes.
+        if offload_context is not None:
+            offload_context.add_offload_hooks(model, block_name)
+
+        pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
+        scored_layer_names = set(quant_layer_names + embedding_layers_names)
+
+        def _group_per_op_scores(index, per_op_scores):
+            """Apply the current shared-layer grouping without mutating cached per-op scores."""
+            grouped_scores = {}
+            remaining = {name: list(score) for name, score in per_op_scores.items()}
+            for share_layer in shared_layers:
+                param_bits = 0
+                tmp_loss = 0
+                name_list = []
+                for name in share_layer:
+                    if name in remaining:
+                        bits, loss = remaining.pop(name)
+                        param_bits += bits
+                        tmp_loss += loss
+                        name_list.append(name)
+                if name_list:
+                    grouped_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
+            for name, (bits, loss) in remaining.items():
+                grouped_scores[name] = [index, bits, loss, [name]]
+            return grouped_scores
+
+        def _record_scheme_scores(index, per_op_scores):
+            grouped_scores = _group_per_op_scores(index, per_op_scores)
+            total_loss = sum(item[2] for item in grouped_scores.values())
+            for key, item in grouped_scores.items():
+                total_scores.setdefault(key, []).append(item)
+            options_scores.append(total_loss)
+            return total_loss
+
+        def _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores):
+            if isinstance(scheme, str):
+                scheme_dict = asdict(preset_name_to_scheme(scheme))
+            elif isinstance(scheme, QuantizationScheme):
+                scheme_dict = asdict(scheme)
+            else:
+                scheme_dict = scheme if isinstance(scheme, dict) else {"preset": str(scheme)}
+            _save_autoscheme_scores(
+                cache_path=cache_path,
+                cache_key=cache_key,
+                scheme_index=index,
+                scheme_dict=scheme_dict,
+                layer_scores={name: list(score) for name, score in per_op_scores.items()},
+                total_loss_for_scheme=sum(score[1] for score in per_op_scores.values()),
+                total_params=sum(
+                    (
+                        module.weight.numel()
+                        if hasattr(module, "weight") and module.weight is not None
+                        else getattr(module, "_cached_weight_numel", 0)
+                    )
+                    for name, module in model.named_modules()
+                    if name in scored_layer_names
+                ),
+            )
+
+        scheme_cache_meta = []
+        for index, scheme in enumerate(schemes):
+            cache_key = _autoscheme_cache_key(
+                model_name=_model_id_for_cache,
+                dataset=dataset,
                 nsamples=nsamples,
                 seqlen=seqlen,
-                need_weight_grad=need_weight_grad,
-                enable_torch_compile=enable_torch_compile,
-                low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
-                major_device=major_device,
                 batch_size=batch_size,
-                offload_context=offload_context,
-                processor=processor,
-                is_vlm=is_vlm,
+                quant_layer_names=quant_layer_names,
+                fixed_layer_scheme=fixed_layer_scheme,
+                scheme=scheme,
                 force_mllm=force_mllm,
-                model_name=model_name,
-                scheme_tag=scheme_tag,
+                low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
             )
-        # Track peak RAM after each scheme scoring
-        memory_monitor.update()
-        memory_monitor.log_summary()
+            cache_path = _autoscheme_cache_path(cache_key, index)
+            cached_data = _load_autoscheme_scores(cache_path) if os.path.exists(cache_path) else None
+            if cached_data is not None and not _is_per_op_cache_compatible(
+                cached_data, quant_layer_names, fixed_layer_scheme
+            ):
+                logger.warning(
+                    "AutoScheme: cache %s does not contain complete per-op scores; rescoring scheme %d",
+                    cache_path,
+                    index,
+                )
+                cached_data = None
+            scheme_cache_meta.append((cache_key, cache_path, cached_data))
 
-        new_scores = {}
-        for share_layer in shared_layers:
-            param_bits = 0
-            tmp_loss = 0
-            name_list = []
-            for name in share_layer:
-                if name in scores.keys():
-                    param_bits += scores[name][0]
-                    tmp_loss += scores[name][1]
-                    name_list.append(name)
-                    scores.pop(name)
-            new_scores[name_list[0]] = [index, param_bits, tmp_loss, name_list]
-        for name, item in scores.items():
-            new_scores[name] = [index, item[0], item[1], [name]]
-        options_total_loss = 0.0
-        for key, item in new_scores.items():
-            options_total_loss += item[2]
-            if key in total_scores:
-                total_scores[key].append(item)
-            else:
-                total_scores[key] = [item]
-        options_scores.append(options_total_loss)
-        logger.info(
-            f"AutoScheme transition: scheme {index + 1}/{len(schemes)} "
-            f"scoring finished (total_loss={options_total_loss:.6f})"
+        uncached_indices = [index for index, (_, _, cached) in enumerate(scheme_cache_meta) if cached is None]
+        num_gpus = torch.cuda.device_count()
+        can_parallel = (
+            _model_id_for_cache is not None and num_gpus >= 1 and len(uncached_indices) >= 2 and not need_imatrix
         )
-        clear_memory(device_list=device_list)
 
-    # Remove hooks and restore original weights from disk for final bit-budget computations
-    if offload_context is not None:
-        offload_context.remove_offload_hooks(model, block_name)
+        from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 
-    total_params = 0
-    for n, m in model.named_modules():
-        if n in quant_layer_names + embedding_layers_names:
-            n_param = m.weight.numel()
-            if n_param == 0 and hasattr(m, "_cached_weight_numel"):
-                n_param = m._cached_weight_numel
-            total_params += n_param
+        use_model_replacements = any(isinstance(module, ReplacementModuleBase) for module in model.modules())
+
+        parallel_done = False
+        if can_parallel:
+            try:
+                import torch.multiprocessing as multiprocessing
+
+                def _serialize_scheme(scheme):
+                    return asdict(scheme) if isinstance(scheme, QuantizationScheme) else scheme
+
+                num_workers = _get_scheme_worker_count(len(uncached_indices), num_gpus)
+                worker_devices = _assign_scheme_worker_devices(len(uncached_indices), num_workers)
+                logger.info(
+                    "AutoScheme: starting %d parallel workers for %d uncached schemes (visible GPUs=%d)",
+                    num_workers,
+                    len(uncached_indices),
+                    num_gpus,
+                )
+                spawn_context = multiprocessing.get_context("spawn")
+                with spawn_context.Manager() as manager:
+                    progress_queue = manager.Queue()
+                    worker_args = [
+                        (
+                            index,
+                            _serialize_scheme(schemes[index]),
+                            _model_id_for_cache,
+                            is_vlm,
+                            list(quant_layer_names),
+                            dict(fixed_layer_scheme),
+                            dataset,
+                            nsamples,
+                            seqlen,
+                            batch_size,
+                            need_weight_grad,
+                            enable_torch_compile,
+                            auto_scheme.low_gpu_mem_usage,
+                            auto_scheme.ignore_scale_zp_bits,
+                            force_mllm,
+                            use_model_replacements,
+                            worker_devices[slot],
+                            len(schemes),
+                            progress_queue,
+                        )
+                        for slot, index in enumerate(uncached_indices)
+                    ]
+                    with spawn_context.Pool(processes=num_workers) as pool:
+                        async_results = pool.map_async(_score_scheme_worker, worker_args)
+                        while not async_results.ready():
+                            _drain_progress_queue(progress_queue, pbar)
+                            memory_monitor.update_cpu()
+                            async_results.wait(timeout=0.1)
+                        _drain_progress_queue(progress_queue, pbar)
+                        worker_results = async_results.get()
+
+                    parallel_results = {index: scores for index, scores, _ in worker_results}
+                    _merge_worker_memory_reports(memory_monitor, [report for _, _, report in worker_results])
+
+                for index, scheme in enumerate(schemes):
+                    cache_key, cache_path, cached_data = scheme_cache_meta[index]
+                    if cached_data is not None:
+                        logger.info(
+                            "AutoScheme: loading per-scheme cache for scheme %d from %s."
+                            " Delete this file to disable reuse and rescore.",
+                            index,
+                            cache_path,
+                        )
+                        per_op_scores = _refresh_cached_layer_bits(
+                            model,
+                            quant_layer_names,
+                            fixed_layer_scheme,
+                            scheme,
+                            cached_data["layer_scores"],
+                            auto_scheme.ignore_scale_zp_bits,
+                        )
+                        if not check_bf16_scheme(scheme):
+                            pbar.update(pbar_cnt // effective_scheme_num if effective_scheme_num > 0 else 1)
+                    else:
+                        per_op_scores = parallel_results[index]
+                        _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
+                    total_loss = _record_scheme_scores(index, per_op_scores)
+                    logger.info(
+                        "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.6f)",
+                        index + 1,
+                        len(schemes),
+                        total_loss,
+                    )
+                parallel_done = True
+                logger.info("AutoScheme: parallel scoring completed.")
+                post_scoring_started = time.perf_counter()
+            except Exception as parallel_error:  # noqa: BLE001
+                logger.warning("AutoScheme: parallel scoring failed, falling back to serial: %s", parallel_error)
+                total_scores.clear()
+                options_scores.clear()
+                pbar.reset(total=pbar_cnt)
+
+        if not parallel_done:
+            if uncached_indices:
+                from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+
+                materialize_model_(model)
+            for index, scheme in enumerate(schemes):
+                scheme_tag = f"{index + 1}/{len(schemes)} {_scheme_short_name(scheme)}"
+                logger.info(f"AutoScheme transition: switch to scheme {index + 1}/{len(schemes)} ({scheme})")
+                cache_key, cache_path, cached_data = scheme_cache_meta[index]
+
+                if cached_data is not None:
+                    logger.info(
+                        "AutoScheme: loading per-scheme cache for scheme %d from %s."
+                        " Delete this file to disable reuse and rescore.",
+                        index,
+                        cache_path,
+                    )
+                    per_op_scores = _refresh_cached_layer_bits(
+                        model,
+                        quant_layer_names,
+                        fixed_layer_scheme,
+                        scheme,
+                        cached_data["layer_scores"],
+                        auto_scheme.ignore_scale_zp_bits,
+                    )
+                    if not check_bf16_scheme(scheme):
+                        pbar.update(pbar_cnt // effective_scheme_num if effective_scheme_num > 0 else 1)
+                else:
+                    apply_quant_scheme(
+                        model,
+                        quant_layer_names=quant_layer_names,
+                        fixed_layer_scheme=fixed_layer_scheme,
+                        scheme=scheme,
+                    )
+                    if check_bf16_scheme(scheme):
+                        per_op_scores = {}
+                        for name in quant_layer_names:
+                            if name in fixed_layer_scheme:
+                                continue
+                            bits, _ = compute_layer_bits(get_module(model, name), auto_scheme.ignore_scale_zp_bits)
+                            per_op_scores[name] = [bits, 0.0]
+                    else:
+                        per_op_scores = get_score_for_scheme(
+                            model,
+                            tokenizer,
+                            quant_layer_names,
+                            fixed_layer_scheme,
+                            dataset,
+                            ignore_scale_zp_bits=auto_scheme.ignore_scale_zp_bits,
+                            pbar=pbar,
+                            nsamples=nsamples,
+                            seqlen=seqlen,
+                            need_weight_grad=need_weight_grad,
+                            enable_torch_compile=enable_torch_compile,
+                            low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
+                            major_device=major_device,
+                            batch_size=batch_size,
+                            offload_context=offload_context,
+                            processor=processor,
+                            is_vlm=is_vlm,
+                            force_mllm=force_mllm,
+                            model_name=model_name,
+                            scheme_tag=scheme_tag,
+                        )
+                    memory_monitor.update()
+                    memory_monitor.log_summary()
+                    _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
+
+                total_loss = _record_scheme_scores(index, per_op_scores)
+                logger.info(
+                    "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.6f)",
+                    index + 1,
+                    len(schemes),
+                    total_loss,
+                )
+                clear_memory(device_list=device_list)
+
+        # Serial scoring leaves the main model configured with the final scheme and
+        # applies fixed_layer_scheme as a side effect. Parallel workers and cache hits
+        # do not touch the main model, so restore that state before bit-budget math.
+        if schemes:
+            apply_quant_scheme(
+                model,
+                quant_layer_names=quant_layer_names,
+                fixed_layer_scheme=fixed_layer_scheme,
+                scheme=schemes[-1],
+            )
+
+        # Remove hooks and restore original weights from disk for final bit-budget computations
+        if offload_context is not None:
+            offload_context.remove_offload_hooks(model, block_name)
+
+        total_params = 0
+        for n, m in model.named_modules():
+            if n in quant_layer_names + embedding_layers_names:
+                n_param = m.weight.numel()
+                if n_param == 0 and hasattr(m, "_cached_weight_numel"):
+                    n_param = m._cached_weight_numel
+                total_params += n_param
+
+        if parallel_done:
+            logger.info(
+                "AutoScheme post-scoring: model restore and parameter accounting took %.2fs",
+                time.perf_counter() - post_scoring_started,
+            )
 
     target_params_cnt = int(total_params * target_bits)
     sorted_indices = sorted(range(len(options_scores)), key=lambda i: options_scores[i])
@@ -1903,19 +2521,25 @@ def _gen_layer_config(
     if target_params_cnt <= 0:
         raise ValueError("Avg bits is too small")
 
+    cleanup_started = time.perf_counter()
     remove_quant_scheme(model)  # Must place after minus fixed_layer
     memory_monitor.update()
     memory_monitor.log_summary()
+    logger.info(
+        "AutoScheme post-scoring: scheme cleanup and memory accounting took %.2fs",
+        time.perf_counter() - cleanup_started,
+    )
 
+    dp_started = time.perf_counter()
     best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+    logger.info(
+        "AutoScheme post-scoring: DP selection took %.2fs (layers=%d)",
+        time.perf_counter() - dp_started,
+        len(total_scores),
+    )
+
     if best_path is None:
-        min_dp_avg = min_dp_bits / max(sum(layer_numel.get(n, 0) for n in total_scores), 1)
-        raise ValueError(
-            f"target_bits is infeasible: after subtracting fixed/embedding layers the remaining "
-            f"budget ({target_params_cnt} bits) is below the minimum the given options can reach "
-            f"({min_dp_bits} bits, avg {min_dp_avg:.3f}). Raise target_bits, add a lower-bit option, "
-            f"or lower the bits of fixed layers."
-        )
+        raise ValueError("Avg bits is too small")
 
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
@@ -1929,13 +2553,15 @@ def _gen_layer_config(
         layer_scheme = options[item[1]]
         for layer_name in layer_names:
             layer_config[layer_name] = asdict(layer_scheme)
+    reporting_started = time.perf_counter()
     _log_scheme_loss_matrix(total_scores, options, block_name, model=model, layer_numel=layer_numel)
     _describe_layer_config(layer_config, total_scores, options, block_name, model=model)
+    logger.info("AutoScheme post-scoring: result reporting took %.2fs", time.perf_counter() - reporting_started)
     if model_name is not None:
         model = None
         del model
     else:
-        model = model.to("cpu")  # TODO this requires large ram
+        safe_to_cpu_(model)
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             import accelerate
 
@@ -1960,7 +2586,8 @@ def _gen_layer_config(
     low_cpu_str = "enabled" if auto_scheme.low_cpu_mem_usage else "disabled"
     memory_monitor.log_summary(f"AutoScheme complete (low_cpu_mem_usage={low_cpu_str})")
 
-    pbar.close()
+    if pbar is not None:
+        pbar.close()
     return layer_config
 
 
@@ -1989,30 +2616,11 @@ def gen_layer_config(
     is_vlm = False
     if isinstance(model, str):
         model_name = model
-        # Detect VLM (Qwen-VL / Qwen3-VL / LLaVA / etc.) and load via the MLLM
-        # path so we get a usable ``processor`` for the multimodal calibration
-        # dataloader. The block walker auto-detects VLMs too and skips the
-        # vision tower when scoring.
-        is_vlm = is_mllm_model(model_name)
-        if is_vlm:
-            model, processor, tokenizer, _ = mllm_load_model(
-                model_name,
-                device="cpu",
-                use_auto_mapping=False,
-            )
-        else:
-            # Load model on CPU only; do not apply automatic device map or tuning-aware placement at load time.
-            model, tokenizer, _ = llm_load_model(model_name, device_map="cpu")
+        model, tokenizer, processor, _, _, is_vlm, _ = load_model(model_name, device="cpu", use_auto_mapping=False)
     else:
         # Object passed in: still try to detect VLM so we can pick the right dataloader later.
-        try:
-            is_vlm = is_mllm_model(model)
-        except Exception:  # noqa: BLE001
-            is_vlm = False
+        _, _, _, _, _, is_vlm, _ = load_model(model)
 
-    from auto_round.modeling.fused_moe.replace_modules import materialize_model_
-
-    materialize_model_(model)
     # ---- Vision-tower scoring requires a full backward ---- #
     # ``model_forward_low_gpu`` only walks the language tower (it uses
     # ``get_block_names(model)[0]``, which excludes vision blocks by default)
@@ -2041,7 +2649,7 @@ def gen_layer_config(
         else:
             model = dispatch_model_by_all_available_devices(model, device_map)
     else:
-        model.to("cpu")
+        safe_to_cpu_(model)
         if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
             import accelerate
 
@@ -2112,7 +2720,7 @@ def gen_layer_config(
             "Fallback to CPU for automatic scheme generation."
             " Using multiple devices is strongly recommended (e.g., --device_map 0,1,2,3)."
         )
-        model.to("cpu")
+        safe_to_cpu_(model)
         for n, m in model.named_modules():
             if hasattr(m, "orig_layer"):
                 set_module(model, n, m.orig_layer)

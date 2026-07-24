@@ -249,3 +249,61 @@ def test_legacy_disable_flags_map_to_enable_bools():
 
     assert args.enable_minmax_tuning is False
     assert args.enable_quanted_input is False
+
+
+def _normalize_options(raw):
+    if raw is None:
+        return None
+    flat = ",".join(raw)
+    return ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+
+def _normalize_shared_layers(raw):
+    if raw is None:
+        return None
+    normalized_groups = []
+    for invocation in raw:
+        if any("," in token for token in invocation):
+            for token in invocation:
+                group = [p.strip() for p in token.split(",") if p.strip()]
+                if group:
+                    normalized_groups.append(group)
+        else:
+            group = [p.strip() for p in invocation if p.strip()]
+            if group:
+                normalized_groups.append(group)
+    return normalized_groups or None
+
+
+def test_options_comma_space_separated():
+    """--options accepts comma-separated and space-separated values."""
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    assert _normalize_options(p.parse_args(["--avg_bits", "4", "--options", "W4A16,W8A16"]).options) == "W4A16,W8A16"
+    assert _normalize_options(p.parse_args(["--avg_bits", "4", "--options", "W4A16", "W8A16"]).options) == "W4A16,W8A16"
+    assert p.parse_args(["--model", "dummy"]).options is None
+
+
+def test_shared_layers_normalize():
+    """--shared_layers: bare tokens → one group; comma tokens → one group each; a,b c,d → two groups."""
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    # bare tokens → one group
+    assert _normalize_shared_layers(
+        p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2"]).shared_layers
+    ) == [["l1", "l2"]]
+    # comma token → one group
+    assert _normalize_shared_layers(p.parse_args(["--model", "dummy", "--shared_layers", "l1,l2"]).shared_layers) == [
+        ["l1", "l2"]
+    ]
+    # a,b c,d → two groups (replaces --shared_layers a,b --shared_layers c,d)
+    assert _normalize_shared_layers(
+        p.parse_args(["--model", "dummy", "--shared_layers", "l1,l2", "l3,l4"]).shared_layers
+    ) == [["l1", "l2"], ["l3", "l4"]]
+    # multiple flags → multiple groups
+    assert _normalize_shared_layers(
+        p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2", "--shared_layers", "l3,l4"]).shared_layers
+    ) == [["l1", "l2"], ["l3", "l4"]]
+    assert p.parse_args(["--model", "dummy"]).shared_layers is None

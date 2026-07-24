@@ -24,6 +24,7 @@ from safetensors.torch import save_file
 
 from auto_round import AutoRound
 from auto_round.compressors.model_free import (
+    _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
@@ -43,12 +44,26 @@ from auto_round.compressors.model_free import (
     is_model_free_supported_scheme,
 )
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.model import is_model_free_route
 
 from ...envs import require_compressed_tensors
 
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scheme", ["MXFP8", "mxfp8"])
+def test_model_free_route_accepts_mxfp_scheme_case_insensitively(scheme):
+    assert is_model_free_route("model", scheme, 0, True, {})
+
+
+@pytest.mark.parametrize("dtype_key", ["static_kv_dtype", "static_attention_dtype"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_model_free_route_rejects_static_attention_quantization(dtype_key, explicit):
+    kwargs = {dtype_key: "fp8", "model_free": explicit}
+    assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
+
 
 _LLAMA_CFG = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
 _DEFAULT_SCHEME = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
@@ -503,7 +518,9 @@ class TestModelFreeMXFP:
         }
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme=scheme).run()
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme=scheme, format="llm_compressor"
+        ).run()
         qc = _read_qconfig(output_dir)
         assert qc["format"] == fmt
         assert qc["quant_method"] == "compressed-tensors"
@@ -550,6 +567,20 @@ class TestModelFreeMXFP:
         assert cfg["format"] == "mxfp4-pack-quantized"
         assert "lm_head" in cfg["ignore"]
         assert len(cfg["config_groups"]) == 1
+
+    @require_compressed_tensors
+    def test_build_mxfp_config_bf16_default_targets_only_overrides(self):
+        """A single MXFP override must not describe all BF16 Linear layers as quantized."""
+        default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
+        layer_config = {
+            "model.layers.0.self_attn.q_proj": {"bits": 4, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = ["model.layers.0.self_attn.q_proj"]
+
+        cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
+
+        assert cfg["format"] == "mxfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["targets"] == quantized
 
     @require_compressed_tensors
     def test_build_mxfp_mixed_config_two_groups(self):
@@ -643,6 +674,7 @@ class TestModelFreeMXFP:
             output_dir=output_dir,
             scheme="MXFP4",
             layer_config=layer_config,
+            format="llm_compressor",
         ).run()
 
         qc = _read_qconfig(output_dir)
@@ -853,7 +885,9 @@ class TestLLMCompressorMXFPSource:
         }
         model_dir = _make_model_dir(tmp_path, _LLMCOMPRESSOR_MXFP_CFG_FP8, tensors)
         output_dir = str(tmp_path / "output")
-        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8").run()
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8", format="llm_compressor"
+        ).run()
 
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp8-quantized"
@@ -934,7 +968,9 @@ class TestLLMCompressorMXFPSource:
         }
         model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8").run()
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8", format="llm_compressor"
+        ).run()
 
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp8-quantized"
@@ -979,11 +1015,10 @@ class TestLLMCompressorMXFPSource:
 # ===========================================================================
 
 
-_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8"]
+_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8", "BF16"]
 _UNSUPPORTED = [
     "W3A16",
     "FPW8A16",
-    "BF16",
     "MXINT4",
     "NVFP4",
     "FP8_BLOCK",
@@ -1022,11 +1057,16 @@ class TestSchemeValidation:
             layer_config=core.layer_config,
             ignore_patterns=core.ignore_patterns,
         )
-        assert "model.layers.0.mlp.fc1" in quantized
-        if name.startswith("MXFP"):
-            assert "model.layers.0.mlp.fc1.weight_scale" in output
+        if name == "BF16":
+            # BF16 default: no weights quantized; the layer is kept in full precision.
+            assert len(quantized) == 0
+            assert "model.layers.0.mlp.fc1.weight" in output
         else:
-            assert "model.layers.0.mlp.fc1.qweight" in output
+            assert "model.layers.0.mlp.fc1" in quantized
+            if name.startswith("MXFP"):
+                assert "model.layers.0.mlp.fc1.weight_scale" in output
+            else:
+                assert "model.layers.0.mlp.fc1.qweight" in output
 
     @pytest.mark.parametrize("name", _UNSUPPORTED)
     def test_unsupported_raises(self, tmp_path, name):
@@ -1400,6 +1440,11 @@ class TestModelFreeAutoScheme:
 
         assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16"))) == "int"
 
+    def test_validate_options_int_family_with_bf16(self):
+        from auto_round import AutoScheme
+
+        assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))) == "int"
+
     def test_validate_options_mxfp_family(self):
         from auto_round import AutoScheme
 
@@ -1440,6 +1485,22 @@ class TestModelFreeAutoScheme:
         assert "model.embed_tokens" not in per_layer
         assert fp16_layers == ["model.embed_tokens"]
 
+    def test_convert_layer_config_infers_mxfp_bits_from_dtype_alias(self):
+        generated = {
+            "model.layers.0.q_proj": {"group_size": 32, "sym": True, "data_type": "mxfp8"},
+            "model.layers.0.k_proj": {"group_size": 32, "sym": True, "data_type": "MXFP4"},
+        }
+
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
+
+        assert fp16_layers == []
+        assert per_layer["model.layers.0.q_proj"]["bits"] == 8
+        assert per_layer["model.layers.0.q_proj"]["data_type"] == "mx_fp"
+        assert per_layer["model.layers.0.k_proj"]["bits"] == 4
+        assert per_layer["model.layers.0.k_proj"]["data_type"] == "mx_fp"
+        assert base_scheme.data_type == "mx_fp"
+        assert base_scheme.bits in (4, 8)
+
     def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
         from auto_round import AutoScheme
 
@@ -1468,3 +1529,269 @@ class TestModelFreeAutoScheme:
         qc = _read_qconfig(output_dir)
         assert qc["quant_method"] == "compressed-tensors"
         assert qc["provider"] == "auto-round"
+
+
+# ===========================================================================
+#  MXFP auto-round format (packing_format=auto_round:llm_compressor)
+# ===========================================================================
+
+
+class TestMXFPAutoRoundFormat:
+    """Tests for MXFP4/MXFP8 model-free quantization with format='auto_round'.
+
+    The weight tensors on disk are identical to the llm_compressor path;
+    only the ``quantization_config`` metadata differs.
+    """
+
+    # ------------------------------------------------------------------
+    # Unit tests: _build_mxfp_autoround_quantization_config
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_mxfp4_top_level_fields(self):
+        """MXFP4 scheme → all mandatory top-level fields are correct."""
+        from dataclasses import asdict
+
+        from auto_round.schemes import PRESET_SCHEMES
+
+        default = {k: v for k, v in asdict(PRESET_SCHEMES["MXFP4"]).items() if v is not None}
+        cfg = _build_mxfp_autoround_quantization_config(default, quantized_layers=["layer.fc1"], ignored_layers=[])
+        assert cfg["quant_method"] == "auto-round"
+        assert cfg["packing_format"] == "auto_round:llm_compressor"
+        assert cfg["bits"] == 4
+        assert cfg["group_size"] == 32
+        assert cfg["data_type"] == "mx_fp"
+        assert cfg["sym"] is True
+        assert cfg["enable_quanted_input"] is False
+        assert cfg["model_free"] is True
+        assert "autoround_version" in cfg
+
+    @require_compressed_tensors
+    def test_mxfp4_activation_fields(self):
+        """MXFP4 scheme carries act_* fields matching the real AutoRound output."""
+        from dataclasses import asdict
+
+        from auto_round.schemes import PRESET_SCHEMES
+
+        default = {k: v for k, v in asdict(PRESET_SCHEMES["MXFP4"]).items() if v is not None}
+        cfg = _build_mxfp_autoround_quantization_config(default, quantized_layers=["layer.fc1"], ignored_layers=[])
+        assert cfg["act_bits"] == 4
+        assert cfg["act_data_type"] == "mx_fp"
+        assert cfg["act_dynamic"] is True
+        assert cfg["act_group_size"] == 32
+        assert cfg["act_sym"] is True
+
+    @require_compressed_tensors
+    def test_mxfp8_bits(self):
+        """MXFP8 scheme → bits=8, act_bits=8."""
+        from dataclasses import asdict
+
+        from auto_round.schemes import PRESET_SCHEMES
+
+        default = {k: v for k, v in asdict(PRESET_SCHEMES["MXFP8"]).items() if v is not None}
+        cfg = _build_mxfp_autoround_quantization_config(default, quantized_layers=["layer.fc1"], ignored_layers=[])
+        assert cfg["bits"] == 8
+        assert cfg["act_bits"] == 8
+        assert cfg["packing_format"] == "auto_round:llm_compressor"
+
+    @require_compressed_tensors
+    def test_ignored_layers_in_extra_config(self):
+        """Ignored layers (non-embed/conv) go into extra_config as bits=16."""
+        default = {
+            "bits": 4,
+            "group_size": 32,
+            "sym": True,
+            "data_type": "mx_fp",
+            "act_bits": 4,
+            "act_data_type": "mx_fp",
+            "act_dynamic": True,
+            "act_group_size": 32,
+            "act_sym": True,
+        }
+        ignored = ["lm_head", "model.embed_tokens", "model.conv1", "model.layers.0.mlp.gate"]
+        cfg = _build_mxfp_autoround_quantization_config(
+            default,
+            quantized_layers=["model.layers.0.fc1"],
+            ignored_layers=ignored,
+        )
+        extra = cfg.get("extra_config", {})
+        assert extra.get("lm_head") == {"bits": 16, "data_type": "float"}
+        assert extra.get("model.layers.0.mlp.gate") == {"bits": 16, "data_type": "float"}
+        # embed / conv are non-Linear — filtered out
+        assert "model.embed_tokens" not in extra
+        assert "model.conv1" not in extra
+
+    @require_compressed_tensors
+    def test_quantized_lm_head_in_extra_config(self):
+        """When lm_head is quantized it must appear in extra_config with its scheme."""
+        default = {
+            "bits": 4,
+            "group_size": 32,
+            "sym": True,
+            "data_type": "mx_fp",
+            "act_bits": 4,
+            "act_data_type": "mx_fp",
+            "act_dynamic": True,
+            "act_group_size": 32,
+            "act_sym": True,
+        }
+        cfg = _build_mxfp_autoround_quantization_config(
+            default,
+            quantized_layers=["model.layers.0.fc1", "lm_head"],
+            ignored_layers=[],
+        )
+        extra = cfg.get("extra_config", {})
+        assert "lm_head" in extra
+        assert extra["lm_head"]["bits"] == 4
+        assert extra["lm_head"]["data_type"] == "mx_fp"
+
+    @require_compressed_tensors
+    def test_build_quantization_config_routes_mxfp_to_autoround(self):
+        """_build_quantization_config with format='auto_round' routes MXFP to auto-round style."""
+        default = {
+            "bits": 4,
+            "group_size": 32,
+            "sym": True,
+            "data_type": "mx_fp",
+            "act_bits": 4,
+            "act_data_type": "mx_fp",
+            "act_dynamic": True,
+            "act_group_size": 32,
+            "act_sym": True,
+        }
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={},
+            ignore_patterns=[],
+            quantized_layers=["layer.fc1"],
+            ignored_layers=[],
+            format="auto_round",
+        )
+        assert cfg["quant_method"] == "auto-round"
+        assert cfg["packing_format"] == "auto_round:llm_compressor"
+
+    @require_compressed_tensors
+    def test_build_quantization_config_mxfp_llmcompressor_path_unchanged(self):
+        """_build_quantization_config with format='llm_compressor' still produces compressed-tensors."""
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={},
+            ignore_patterns=[],
+            quantized_layers=["layer.fc1"],
+            ignored_layers=["lm_head"],
+            format="llm_compressor",
+        )
+        assert cfg["quant_method"] == "compressed-tensors"
+        assert cfg["format"] == "mxfp4-pack-quantized"
+
+    # ------------------------------------------------------------------
+    # End-to-end tests via AutoRound.quantize_and_save
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_e2e_mxfp4_config_fields(self, tmp_path):
+        """MXFP4 + format='auto_round': quantization_config matches real AutoRound output."""
+        tensors = {
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(output_dir, format="auto_round")
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round"
+        assert qc["packing_format"] == "auto_round:llm_compressor"
+        assert qc["bits"] == 4
+        assert qc["data_type"] == "mx_fp"
+        assert qc["act_bits"] == 4
+        assert qc["act_data_type"] == "mx_fp"
+        assert qc["enable_quanted_input"] is False
+        assert qc["model_free"] is True
+        # lm_head kept full-precision → extra_config entry
+        extra = qc.get("extra_config", {})
+        assert extra.get("lm_head") == {"bits": 16, "data_type": "float"}
+
+    @require_compressed_tensors
+    def test_e2e_mxfp4_weight_tensors(self, tmp_path):
+        """MXFP4 + format='auto_round': on-disk weight layout is unchanged (weight_packed + weight_scale)."""
+        tensors = {
+            "model.layers.0.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(output_dir, format="auto_round")
+        keys = _read_output_keys(output_dir)
+        assert "model.layers.0.fc1.weight_packed" in keys
+        assert "model.layers.0.fc1.weight_scale" in keys
+        assert "lm_head.weight" in keys
+        assert "lm_head.weight_packed" not in keys
+
+    @require_compressed_tensors
+    def test_e2e_mxfp8_autoround_format(self, tmp_path):
+        """MXFP8 + format='auto_round': bits=8, weight layout uses float8 .weight."""
+        tensors = {
+            "model.layers.0.fc1.weight": torch.randn(128, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP8", model_free=True).quantize_and_save(output_dir, format="auto_round")
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round"
+        assert qc["packing_format"] == "auto_round:llm_compressor"
+        assert qc["bits"] == 8
+        assert qc["act_bits"] == 8
+        keys = _read_output_keys(output_dir)
+        assert "model.layers.0.fc1.weight" in keys
+        assert "model.layers.0.fc1.weight_scale" in keys
+
+    @require_compressed_tensors
+    def test_e2e_mxfp4_quant_lm_head_extra_config(self, tmp_path):
+        """When lm_head is quantized, it appears in extra_config with its full scheme."""
+        tensors = {
+            "model.layers.0.fc1.weight": torch.randn(128, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True, quant_lm_head=True).quantize_and_save(
+            output_dir, format="auto_round"
+        )
+        qc = _read_qconfig(output_dir)
+        extra = qc.get("extra_config", {})
+        assert "lm_head" in extra
+        assert extra["lm_head"]["bits"] == 4
+        assert extra["lm_head"]["data_type"] == "mx_fp"
+        keys = _read_output_keys(output_dir)
+        assert "lm_head.weight_packed" in keys
+
+    @require_compressed_tensors
+    def test_e2e_mxfp4_autoround_format_same_weights_as_llmcompressor(self, tmp_path):
+        """auto_round and llm_compressor format produce identical weight bytes."""
+        tensors = {"model.layers.0.fc1.weight": torch.randn(64, 128)}
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+
+        out_ar = str(tmp_path / "out_ar")
+        out_llm = str(tmp_path / "out_llm")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(out_ar, format="auto_round")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(out_llm, format="llm_compressor")
+
+        # Weight bytes must match; only quantization_config differs.
+        def _load_tensor(directory, name):
+            for f in os.listdir(directory):
+                if f.endswith(".safetensors"):
+                    with safe_open(os.path.join(directory, f), framework="pt") as sf:
+                        if name in sf.keys():
+                            return sf.get_tensor(name)
+            return None
+
+        wp_ar = _load_tensor(out_ar, "model.layers.0.fc1.weight_packed")
+        ws_ar = _load_tensor(out_ar, "model.layers.0.fc1.weight_scale")
+        wp_llm = _load_tensor(out_llm, "model.layers.0.fc1.weight_packed")
+        ws_llm = _load_tensor(out_llm, "model.layers.0.fc1.weight_scale")
+        assert wp_ar is not None and wp_llm is not None
+        assert torch.equal(wp_ar, wp_llm), "weight_packed must be identical"
+        assert torch.equal(ws_ar, ws_llm), "weight_scale must be identical"

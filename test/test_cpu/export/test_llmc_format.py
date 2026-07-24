@@ -291,37 +291,34 @@ def test_llmcompressor_static_fp8_attention_config(dataloader, tmp_path):
 
     with open(os.path.join(quantized_model_path, "config.json")) as f:
         saved_config = json.load(f)
+    model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
+    attention_target = model.model.layers[0].self_attn.__class__.__name__
     saved_groups = saved_config["quantization_config"]["config_groups"]
-    attention_group = None
-    for group in saved_groups.values():
-        if "Linear" not in group["targets"]:
-            attention_group = group
-            break
+    assert len(saved_groups) == 2
+    attention_groups = [group for group in saved_groups.values() if group["targets"] == [attention_target]]
 
-    assert attention_group is not None
+    assert len(attention_groups) == 1
+    attention_group = attention_groups[0]
     assert attention_group["weights"] is None
     assert attention_group["input_activations"]["num_bits"] == 8
     assert attention_group["input_activations"]["type"] == "float"
     assert attention_group["input_activations"]["strategy"] == "tensor"
     assert attention_group["input_activations"]["dynamic"] is False
     assert attention_group["input_activations"]["symmetric"] is True
-    assert saved_config["quantization_config"]["kv_cache_scheme"] is not None
+    saved_kv_scheme = saved_config["quantization_config"]["kv_cache_scheme"]
+    assert saved_kv_scheme["num_bits"] == 8
+    assert saved_kv_scheme["type"] == "float"
+    assert saved_kv_scheme["dynamic"] is False
 
-    model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
     quantization_config = model.config.quantization_config
     config = quantization_config.to_dict() if hasattr(quantization_config, "to_dict") else quantization_config
     config_groups = config["config_groups"]
 
     assert "group_0" in config_groups
-    attention_group = None
-    for group in config_groups.values():
-        targets = group["targets"]
-        if "Linear" not in targets:
-            attention_group = group
-            break
-
-    assert attention_group is not None
-    assert attention_group["targets"] == [model.model.layers[0].self_attn.__class__.__name__]
+    assert len(config_groups) == 2
+    attention_groups = [group for group in config_groups.values() if group["targets"] == [attention_target]]
+    assert len(attention_groups) == 1
+    attention_group = attention_groups[0]
     assert attention_group["weights"] is None
     assert attention_group["input_activations"]["num_bits"] == 8
     assert attention_group["input_activations"]["type"] == "float"
