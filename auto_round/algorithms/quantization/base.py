@@ -153,7 +153,7 @@ class BaseQuantizer(BaseAlgorithm):
         fp_outputs: "list[torch.Tensor]",
         q_inputs: "list[torch.Tensor] | None",
         block_ctx: "BlockContext",
-        valid_token_mask: "list[torch.Tensor] | None" = None,
+        input_ids: "list[torch.Tensor] | None" = None,
         **kwargs,
     ) -> dict:
         """Apply the quantization algorithm to a prepared block.
@@ -161,15 +161,16 @@ class BaseQuantizer(BaseAlgorithm):
         all infrastructure work (device placement, data collection, act-max hook
         registration, DDP setup) has been completed.
         Args:
-            block:            The transformer block module to quantize.
-            fp_inputs:        FP calibration inputs (list[Tensor] or dict for diffusion).
-            input_others:     Auxiliary kwargs (attention_mask, position_ids, …).
-            fp_outputs:       FP reference outputs used as quantization targets.
-            q_inputs:         Quantized inputs from the previous block, or ``None``.
-            block_ctx:        Per-block pipeline context (:class:`BlockContext`).
-            valid_token_mask: Per-sample boolean masks ``[1, seq_len]``; ``None`` if
-                              no padding masking is needed.
-            **kwargs:         Reserved for future parameters.
+            block:        The transformer block module to quantize.
+            fp_inputs:    FP calibration inputs (list[Tensor] or dict for diffusion).
+            input_others: Auxiliary kwargs (attention_mask, position_ids, …).
+            fp_outputs:   FP reference outputs used as quantization targets.
+            q_inputs:     Quantized inputs from the previous block, or ``None``.
+            block_ctx:    Per-block pipeline context (:class:`BlockContext`).
+            input_ids:    Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                          sample); used to derive the valid-token loss mask.
+                          ``None`` for diffusion or zero-shot paths.
+            **kwargs:     Reserved for future parameters.
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
         Raises:
@@ -183,8 +184,20 @@ class BaseQuantizer(BaseAlgorithm):
         fp_input: "list[torch.Tensor] | None" = None,
         q_input: "list[torch.Tensor] | None" = None,
         disable_opt_rtn: "bool | None" = None,
-        valid_token_mask: "list[torch.Tensor] | None" = None,
+        input_ids: "list[torch.Tensor] | None" = None,
     ) -> None:
+        """Quantize a single layer outside a transformer block using RTN fallback.
+        Args:
+            layer:           The layer module to quantize.  Must have a
+                             ``global_name`` attribute for model re-insertion.
+            fp_input:        Optional FP calibration inputs; unused in base RTN.
+            q_input:         Optional quantized activations; unused in base RTN.
+            disable_opt_rtn: ``True`` skips optimized-RTN scale/zp search.
+                             ``None`` defers to ``self.config.disable_opt_rtn``.
+            input_ids:       Raw token IDs from the tokenizer; used to derive
+                             the valid-token loss mask. ``None`` for RTN fallback.
+        """
+        self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
         """Quantize a single layer outside a transformer block using RTN fallback.
         Args:
             layer:            The layer module to quantize.  Must have a
@@ -194,6 +207,8 @@ class BaseQuantizer(BaseAlgorithm):
             disable_opt_rtn:  ``True`` skips optimized-RTN scale/zp search.
                               ``None`` defers to ``self.config.disable_opt_rtn``.
             valid_token_mask: Per-sample masks; unused in base RTN.
+            input_ids:        Original FP calibration inputs, same as ``fp_input``
+                              when ``q_input`` is ``None``; unused in base RTN.
         """
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
@@ -252,14 +267,39 @@ class BaseQuantizer(BaseAlgorithm):
                 raise
         set_module(self.model, layer_name, layer)
 
+    def _compute_valid_token_mask(self, input_ids: list) -> "list | None":
+        """Derive a per-sample valid-token loss mask from raw token IDs.
+
+        ``LLMCalibrator.calib`` already marks every position that should be
+        excluded from the loss with ``-100`` (PyTorch's standard ignore index):
+        pad tokens, trailing repeated tokens, and the last position of each
+        sample.  This method therefore only needs a single comparison.
+
+        Args:
+            input_ids: List of ``[1, seq_len]`` integer tensors (one per sample),
+                with ignored positions already set to ``-100``.
+
+        Returns:
+            List of ``[1, seq_len]`` ``torch.long`` masks (1 = valid, 0 = ignore),
+            or ``None`` when every position is valid (all-ones → fast path).
+        """
+        if not input_ids:
+            return None
+
+        masks = [(ids != -100).to(torch.long) for ids in input_ids]
+        # All-ones → masking is a no-op; use the faster unmasked loss path.
+        if all(m.all().item() for m in masks):
+            return None
+        return masks
+
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.
         Default: move to primary device.
-        Returns ``(block, card_0_in_high_risk, loss_device)``.
+        Returns the block after device placement.
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
         block = block.to(device_manager.device)
-        return block, False, device_manager.device
+        return block
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:

@@ -60,6 +60,7 @@ class SignRoundQuantizer(BaseQuantizer):
         self.not_use_best_mse = config.not_use_best_mse
         self.enable_quanted_input = config.enable_quanted_input
         self.dynamic_max_gap = config.dynamic_max_gap
+        self.enable_lfq = config.enable_lfq
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
@@ -67,7 +68,8 @@ class SignRoundQuantizer(BaseQuantizer):
     def dispatch_block(self, block, input_ids, input_others):
         """Multi-GPU aware block dispatch for SignRound tuning.
 
-        Stores card_0_in_high_risk and loss_device on self for use in quantize_block.
+        Stores _card_0_in_high_risk and _loss_device on self for use in quantize_block.
+        Returns the block after device placement.
         """
         from auto_round.utils import is_auto_device_mapping
 
@@ -99,7 +101,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
         self._card_0_in_high_risk = card_0_in_high_risk
         self._loss_device = loss_device
-        return block, card_0_in_high_risk, loss_device
+        return block
 
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
@@ -116,6 +118,7 @@ class SignRoundQuantizer(BaseQuantizer):
         loss_func: Callable,
         device: Union[str, torch.device] = "cpu",
         valid_token_mask: Optional[torch.Tensor] = None,
+        input_ids=None,
     ):
         autocast_ctx = (
             nullcontext()
@@ -149,6 +152,148 @@ class SignRoundQuantizer(BaseQuantizer):
         else:
             return inputs.shape[self.calibration_context.batch_dim]
 
+    def _init_lm_components(self) -> None:
+        """Lazily locate and cache ``_post_block_modules`` and ``_lm_head`` for LFQ loss.
+
+        ``_post_block_modules`` is an ordered list of modules that must be applied
+        between the last transformer-block output and the lm_head projection.
+        Most architectures have a single final norm; OPT additionally has an
+        optional ``project_out`` projection.
+
+        Supported without manual configuration:
+            LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3 — ``model.model.norm``
+            OPT — ``model.model.decoder.{final_layer_norm, project_out}`` (both optional)
+            GPT-2 / Falcon / Bloom — ``model.transformer.ln_f``
+            GPT-NeoX / Pythia — ``model.gpt_neox.final_layer_norm``
+            Phi / Phi-2 — ``model.model.final_layernorm``
+            MPT — ``model.transformer.norm_f``
+            ChatGLM — ``model.transformer.encoder.final_layernorm``
+            RWKV — ``model.rwkv.ln_out``
+
+        Raises ``AttributeError`` if no lm_head equivalent can be found.
+        """
+        if hasattr(self, "_lm_head"):
+            return
+
+        model = self.model
+
+        # ── lm_head ──────────────────────────────────────────────────────────
+        for name in ("lm_head", "embed_out", "output", "head"):
+            if hasattr(model, name):
+                self._lm_head = getattr(model, name)
+                break
+        else:
+            raise AttributeError(
+                f"Cannot locate lm_head in {type(model).__name__}. " "Checked: lm_head, embed_out, output, head."
+            )
+
+        # ── post-block processing (ordered list applied before lm_head) ───────
+        # OPT: decoder has both an optional final_layer_norm *and* an optional
+        # project_out that maps ffn_dim → word_embed_proj_dim.  Detect by probing
+        # for the characteristic project_out attribute (may be None).
+        try:
+            decoder = model.model.decoder
+            _ = decoder.project_out  # raises AttributeError if not an OPT decoder
+            self._post_block_modules = [m for m in (decoder.final_layer_norm, decoder.project_out) if m is not None]
+            return
+        except AttributeError:
+            pass
+
+        # All other architectures: single optional final norm.
+        norm_getters = [
+            lambda: model.model.norm,  # LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3
+            lambda: model.transformer.ln_f,  # GPT-2 / Falcon / Bloom
+            lambda: model.gpt_neox.final_layer_norm,  # GPT-NeoX / Pythia
+            lambda: model.model.final_layernorm,  # Phi / Phi-2
+            lambda: model.transformer.norm_f,  # MPT
+            lambda: model.transformer.encoder.final_layernorm,  # ChatGLM
+            lambda: model.rwkv.ln_out,  # RWKV
+        ]
+        self._post_block_modules = []
+        for getter in norm_getters:
+            try:
+                norm = getter()
+                if norm is not None:
+                    self._post_block_modules = [norm]
+                    break
+            except AttributeError:
+                continue
+
+    # Keywords that identify non-text (visual / audio / multimodal) blocks.
+    # LFQ loss is only meaningful for pure language-model decoder blocks.
+    _NON_TEXT_BLOCK_KEYWORDS = frozenset(
+        {
+            "vis",
+            "vision",
+            "visual",
+            "image",
+            "img",
+            "audio",
+            "video",
+            "patch",
+            "pixel",
+            "clip",
+            "vit",
+            "perceiver",
+            "resampler",
+            "connector",
+            "projector",
+        }
+    )
+
+    def _is_text_decoder_block(self, block_name: str) -> bool:
+        """Return ``True`` if *block_name* refers to a text-decoder block.
+
+        Blocks whose names contain any of the non-text keywords (vision, audio,
+        image, …) are considered multimodal and excluded from LFQ loss.
+        """
+        name_lower = block_name.lower()
+        return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
+
+    def lfq_loss(self, hidden_state: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
+        """Compute LM cross-entropy loss from the last block's hidden states.
+
+        Applies every post-block module (final norm, optional projection, …) in
+        order, then runs lm_head and computes next-token prediction loss.
+        Positions marked with ``-100`` in *input_ids* are excluded from the loss.
+
+        Args:
+            hidden_state: Last block output, shape ``[batch, seq_len, hidden]``.
+            input_ids:    Token-ID labels with ``-100`` for ignored positions,
+                          shape ``[batch, seq_len]``.
+
+        Returns:
+            Scalar cross-entropy loss tensor.
+        """
+        self._init_lm_components()
+        device = hidden_state.device
+
+        for module in self._post_block_modules:
+            module.to(device)
+            hidden_state = module(hidden_state)
+
+        self._lm_head.to(device)
+        logits = self._lm_head(hidden_state)
+
+        if hasattr(self.model, "loss_function"):
+            loss = self.model.loss_function(
+                logits=logits,
+                labels=input_ids.to(device),
+                vocab_size=self.model.config.vocab_size,
+            )
+        else:
+            import torch.nn.functional as F
+
+            # Standard causal-LM shift: predict token t+1 from hidden state t.
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous().to(device)
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+        return loss
+
     def quantize_block(
         self,
         block,
@@ -157,7 +302,7 @@ class SignRoundQuantizer(BaseQuantizer):
         fp_outputs,
         q_inputs,
         block_ctx,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ) -> dict:
         """Apply the AutoRound optimization algorithm to a block.
@@ -177,11 +322,10 @@ class SignRoundQuantizer(BaseQuantizer):
             q_inputs: Quantized inputs from the previous block, or ``None`` when
                 cascaded quantized-input is disabled.
             block_ctx: Per-block pipeline context (BlockContext).
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed (e.g. standard string datasets without padding).
-                When provided, the loss is computed only over valid token positions.
+            input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                sample). Used to derive the valid-token loss mask once (result
+                cached on ``self._cached_valid_token_mask`` for reuse across
+                all blocks). ``None`` disables loss masking.
             **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
@@ -192,6 +336,14 @@ class SignRoundQuantizer(BaseQuantizer):
         loss_device = getattr(self, "_loss_device", device)
         card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
         mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+
+        valid_token_mask = None
+        # Derive valid_token_mask from raw token IDs when not supplied by caller.
+        # Result is cached on self so it is computed only once across all blocks.
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
 
         # Use quantized inputs if available and enabled
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
@@ -265,11 +417,14 @@ class SignRoundQuantizer(BaseQuantizer):
         batch_size = self.calibration_context.batch_size
         global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
+        # Compute num_elm once before the loop (used to normalise the accumulated loss).
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
-            whole_indices = torch.arange(global_batch_size)
-            if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
-                num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
+        if self.gradient_accumulate_steps != 1:
+            whole_indices = list(range(global_batch_size))
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
+            elif isinstance(active_inputs, list):  # dict for diffusion, tricky setting
+                num_elm = sum(active_inputs[i].numel() for i in whole_indices)
 
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
@@ -294,8 +449,6 @@ class SignRoundQuantizer(BaseQuantizer):
                     m.cur_iter = i
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -303,7 +456,15 @@ class SignRoundQuantizer(BaseQuantizer):
                 pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
-                loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                if (
+                    block_ctx.block_index == block_ctx.layer_cnt - 1
+                    and self.enable_lfq
+                    and input_ids is not None
+                    and self._is_text_decoder_block(block_ctx.block_name)
+                ):
+                    loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                else:
+                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                 num_elm = 1 if num_elm <= 0 else num_elm
                 total_loss += loss.item() / num_elm
 
@@ -368,8 +529,8 @@ class SignRoundQuantizer(BaseQuantizer):
         layer: "torch.nn.Module",
         fp_input: Optional[list[torch.Tensor]] = None,
         q_input: Optional[list[torch.Tensor]] = None,
-        valid_token_mask: Optional[list[torch.Tensor]] = None,
         disable_opt_rtn: Optional[bool] = None,
+        input_ids: Optional[list[torch.Tensor]] = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
@@ -387,12 +548,10 @@ class SignRoundQuantizer(BaseQuantizer):
                 used instead of ``fp_input`` during the forward pass when
                 cascaded quantized-input is enabled. ``None`` means use
                 ``fp_input`` for both reference and tuning forward.
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed. Forwarded to the loss computation to weight out
-                padding tokens.
             disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
+            input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                sample); used to derive the valid-token loss mask via
+                ``_compute_valid_token_mask``. ``None`` disables loss masking.
         """
 
         layer_name = layer.global_name
@@ -405,6 +564,14 @@ class SignRoundQuantizer(BaseQuantizer):
                 ),
             )
             return
+
+        # Derive valid_token_mask from raw token IDs when not supplied by caller.
+        # Reuse the cached mask if already computed by a previous block.
+        valid_token_mask = None
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
 
         logger.info(f"quantizing layer {layer_name}")
         # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
@@ -469,9 +636,12 @@ class SignRoundQuantizer(BaseQuantizer):
         batch_size = 1  # Force to low gpu
         global_batch_size = gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
-        if gradient_accumulate_steps != 1 and not valid_token_mask:
-            whole_indices = torch.arange(global_batch_size).tolist()
-            if q_input is not None:
+        # Compute num_elm once before the loop.
+        if gradient_accumulate_steps != 1:
+            whole_indices = list(range(global_batch_size))
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
+            elif q_input is not None:
                 num_elm = self._count_layer_input_elements(q_input, whole_indices)
             else:
                 num_elm = self._count_layer_input_elements(fp_input, whole_indices)
@@ -481,8 +651,6 @@ class SignRoundQuantizer(BaseQuantizer):
         for i in range(self.iters):
             total_loss = 0
             global_indices = index_sampler.next_batch()
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -552,6 +720,12 @@ class SignRoundQuantizer(BaseQuantizer):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
         logger.info(dump_info)
+
+    def finalize_run(self) -> None:
+        """Clear per-run caches (``_cached_valid_token_mask``, LFQ components)."""
+        for attr in ("_cached_valid_token_mask", "_lm_head", "_post_block_modules"):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     def _get_optimizer(self, optimizer: Any):
         """Returns the specified optimizer. In SignRound, we fix the optimizer.

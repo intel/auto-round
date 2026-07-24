@@ -77,6 +77,7 @@ class BlockContext:
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
+    layer_cnt: int = 0  # total number of blocks being quantized in this run
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +341,7 @@ class AlgorithmComposer:
         input_others,
         block_ctx: BlockContext,
         q_inputs=None,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
@@ -441,7 +442,7 @@ class AlgorithmComposer:
             reference_output,
             q_inputs,
             block_ctx,
-            valid_token_mask=valid_token_mask,
+            input_ids=input_ids,
         )
 
         # ── Step 5: post_quantize_block ─────────────────────────────────────────
@@ -463,8 +464,8 @@ class AlgorithmComposer:
         layer: "torch.nn.Module",
         fp_input=None,
         q_input=None,
-        valid_token_mask=None,
         disable_opt_rtn=None,  # TODO wenhuach rename this to search_init_scale
+        input_ids=None,
     ) -> None:
         """Quantize a single layer that lives outside transformer blocks.
 
@@ -500,8 +501,8 @@ class AlgorithmComposer:
             layer,
             fp_input=fp_input,
             q_input=q_input,
-            valid_token_mask=valid_token_mask,
             disable_opt_rtn=disable_opt_rtn,
+            input_ids=input_ids,
         )
 
     # ── Convenience act-calib helpers ────────────────────────────────────────

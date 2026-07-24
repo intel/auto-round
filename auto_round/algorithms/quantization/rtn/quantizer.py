@@ -38,7 +38,7 @@ class RTNQuantizer(BaseQuantizer):
         fp_outputs,
         q_inputs,
         block_ctx,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ) -> dict:
         """Apply zero-shot RTN quantization to a block.
@@ -54,10 +54,7 @@ class RTNQuantizer(BaseQuantizer):
             q_inputs: Quantized inputs from the previous block, or ``None`` when
                 cascaded quantized-input is disabled.
             block_ctx: Per-block pipeline context (BlockContext).
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed (e.g. standard string datasets without padding).
+            input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
@@ -124,7 +121,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         fp_outputs,
         q_inputs,
         block_ctx,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ):
         """Apply imatrix-informed RTN quantization to a block.
@@ -140,11 +137,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             q_inputs: Quantized inputs from the previous block, or ``None`` when
                 cascaded quantized-input is disabled.
             block_ctx: Per-block pipeline context (BlockContext).
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed (e.g. standard string datasets without padding).
-                Currently unused in imatrix-RTN; reserved for future use.
+            input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
         """
         # Normalize imatrix and quantize layers
