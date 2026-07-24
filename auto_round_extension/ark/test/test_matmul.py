@@ -25,45 +25,6 @@ import torch
 ark = auto_round_kernel
 
 
-def benchmark_xpu(fn, runs, warmup=200):
-    for _ in range(warmup):
-        fn()
-    torch.xpu.synchronize()
-
-    st = time.perf_counter()
-    for _ in range(runs):
-        fn()
-    torch.xpu.synchronize()
-    return (time.perf_counter() - st) / runs
-
-
-def make_s8_case(m, k, n, dt, has_bias=True):
-    torch.manual_seed(0)
-    A = torch.rand(m, k, dtype=dt, device="xpu") - 0.5
-    B = torch.randint(-128, 127, (n, k), dtype=torch.int8, device="xpu")
-    scaleB = torch.rand(n, 1, dtype=dt, device="xpu") / 100
-    bias = torch.rand(1, n, dtype=dt, device="xpu") + 2 if has_bias else None
-    return A, B, scaleB, bias
-
-
-def print_pair_perf(name_a, dur_a, name_b, dur_b, m, n, k):
-    ops = m * n * k * 2
-    tflops_a = ops / dur_a / 1e12
-    tflops_b = ops / dur_b / 1e12
-    speedup = dur_a / dur_b
-
-    print("\n")
-    print(f"  [{name_a}] : {dur_a * 1000:8.4f} ms  {tflops_a:7.3f} TFLOPS")
-    print(f"  [{name_b}]     : {dur_b * 1000:8.4f} ms  {tflops_b:7.3f} TFLOPS  speedup={speedup:5.2f}x")
-    return speedup
-
-
-def benchmark_pair(fn_a, fn_b, runs, repeats=3):
-    dur_a = min(benchmark_xpu(fn_a, runs) for _ in range(repeats))
-    dur_b = min(benchmark_xpu(fn_b, runs) for _ in range(repeats))
-    return dur_a, dur_b
-
-
 def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device, op=None, op_name="matmul"):
     op = op or ark.matmul
     print(f"\n  op={op_name}, m={m}, k={k}, n={n}, dt={dt}, batch={batch_size}")
