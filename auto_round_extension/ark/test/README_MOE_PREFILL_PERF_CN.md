@@ -84,6 +84,28 @@ test_moe_prefill_perf.py
 2. **Speedup**: 越大越好 — 表示相对基线的性能提升
 3. **Latency (ms)**: 越小越好 — 实际 kernel 执行时间
 
+## BF16/FP16 Prefill Tile 选择
+
+BF16/FP16 分组 GEMM (`ark.moe_gemm`，在 `test_perf_fp` 中测量，同时被量化
+prefill kernel 用作累加路径) 会根据输出宽度 `N` 选择 work-group tile，
+对齐
+[`vllm-project/vllm-xpu-kernels`](https://github.com/vllm-project/vllm-xpu-kernels)
+中 `w16a16` 的 large-M 策略启发式：
+
+| 条件        | Work-group tile | Sub-group layout |
+| ----------- | --------------- | ---------------- |
+| `N <= 64`   | `256x64x32`     | `8x1`            |
+| `N <= 512`  | `256x128x32`    | `8x2`（历史默认） |
+| `N > 512`   | `256x256x32`    | `8x4`            |
+
+Prefill 每个专家会路由多个 token（M 较大），因此对 large-`N` 的 up/down 投影
+使用更宽的 `256x256` tile 可提升 sub-group 利用率并减少启动的 work-group tile
+数量。三种策略保持相同的 per-sub-group tile (`32x64x32`)，因此共享同一套 2D
+block copy atom。实现见 `sycl_tla_moe.hpp`。
+
+设置 `ARK_MOE_GEMM_FIXED_TILE=1` 可强制无视 `N` 始终使用历史固定的 `256x128`
+(`8x2`) tile（用于逐设备调优/回归的应急开关）。
+
 ## 相关文件
 
 - `test_moe.py`: MoE GEMM 的正确性测试
