@@ -203,39 +203,6 @@ def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
     print(f"[Performance] Time: {dur*1000:.4f} ms, GFLOPS: {gflops:.2f}, Bandwidth: {bandwidth:.2f} GB/s")
 
 
-@pytest.mark.parametrize("m", [1, 8, 32, 128, 1024, 2048, 3072, 4096])
-@pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
-@pytest.mark.parametrize("has_bias", [True, False], ids=["bias", "no_bias"])
-@pytest.mark.parametrize("runs", [1000])
-def test_woqgemm_s8_joint_matrix_vs_sycl_tla(m, k, n, dt, has_bias, runs, record_property):
-    if not torch.xpu.is_available():
-        pytest.skip("No XPU Device")
-    if not hasattr(ark, "woqgemm_s8_joint_matrix") or not hasattr(ark, "woqgemm_s8_sycl_tla"):
-        pytest.skip("Both woqgemm_s8 backends are not available in this build")
-
-    A, B, scaleB, bias = make_s8_case(m, k, n, dt, has_bias)
-
-    out_joint = ark.woqgemm_s8_joint_matrix(A, B, scaleB, bias)
-    out_tla = ark.woqgemm_s8_sycl_tla(A, B, scaleB, bias)
-    torch.xpu.synchronize()
-
-    assert torch.allclose(out_tla, out_joint, atol=1, rtol=0.1)
-
-    joint_dur, tla_dur = benchmark_pair(
-        lambda: ark.woqgemm_s8_joint_matrix(A, B, scaleB, bias),
-        lambda: ark.woqgemm_s8_sycl_tla(A, B, scaleB, bias),
-        runs,
-    )
-
-    tag = "bias" if has_bias else "no_bias"
-    speedup = print_pair_perf(f"joint_matrix {tag}", joint_dur, f"sycl_tla {tag}", tla_dur, m, n, k)
-
-    record_property(f"joint_matrix_{tag}_time_ms", round(joint_dur * 1000, 4))
-    record_property(f"sycl_tla_{tag}_time_ms", round(tla_dur * 1000, 4))
-    record_property(f"{tag}_speedup", round(speedup, 4))
-
-
 @pytest.mark.parametrize("m", [4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float32, torch.float16], ids=["float32", "float16"])

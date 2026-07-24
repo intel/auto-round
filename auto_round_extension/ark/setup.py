@@ -103,6 +103,7 @@ def env_flag(name, default=False):
 requirements = fetch_requirements("requirements.txt")
 enable_sycl_tla = parse_major_minor(oneapi_version) >= (2025, 3)
 enable_dnnl = env_flag("ARK_DNNL", default=not enable_sycl_tla)
+enable_joint_matrix = env_flag("ARK_JOINT_MATRIX", default=False)
 
 
 def get_system_memory_gb():
@@ -194,6 +195,7 @@ class CMakeBuild(build_ext):
             "-DCMAKE_CXX_COMPILER=icx",
             "-DARK_XPU=ON",
             f"-DARK_DNNL={'ON' if enable_dnnl else 'OFF'}",
+            f"-DARK_JOINT_MATRIX={'ON' if enable_joint_matrix else 'OFF'}",
             f"-DARK_SYCL_TLA={'ON' if enable_sycl_tla else 'OFF'}",
         ]
         if sys.platform == "win32":
