@@ -42,10 +42,10 @@ def test_split_inputs_diffusion():
 
     input_ids, input_others = split_inputs(inputs, "ignored", is_diffusion=True)
 
-    assert set(input_ids) == {"hidden_states", "encoder_hidden_states"}
+    assert set(input_ids) == {"hidden_states"}
     assert "hidden_states" not in input_others
-    assert "encoder_hidden_states" not in input_others
-    assert set(input_others) == {"timestep"}
+    assert "encoder_hidden_states" in input_others
+    assert set(input_others) == {"encoder_hidden_states", "timestep"}
 
 
 def test_preprocess_block_inputs_casts_tensors(monkeypatch):
@@ -54,6 +54,7 @@ def test_preprocess_block_inputs_casts_tensors(monkeypatch):
         "auto_round.calibration.inputs.clear_memory",
         lambda device_list: calls.append(tuple(device_list)),
     )
+    monkeypatch.setattr("auto_round.calibration.inputs.device_manager", SimpleNamespace(device_list=["cpu"]))
 
     model_context = SimpleNamespace(is_diffusion=False, amp=True, amp_dtype=torch.bfloat16)
     compress_context = SimpleNamespace(cache_device=torch.device("cpu"), device_list=["cpu"])
