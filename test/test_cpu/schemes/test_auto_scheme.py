@@ -429,6 +429,7 @@ def test_autoscheme_cache_key_different_for_different_schemes():
         fixed_layer_scheme={},
         scheme="W4A16",
         force_mllm=False,
+        low_gpu_mem_usage=True,
     )
     key_w8 = _autoscheme_cache_key(
         model_name="test-model",
@@ -440,6 +441,7 @@ def test_autoscheme_cache_key_different_for_different_schemes():
         fixed_layer_scheme={},
         scheme="W8A16",
         force_mllm=False,
+        low_gpu_mem_usage=True,
     )
     assert key_w4 != key_w8
     assert len(key_w4) == 16  # sha256 truncated to 16 chars
@@ -459,6 +461,7 @@ def test_autoscheme_cache_key_insensitive_to_layer_order():
         fixed_layer_scheme={},
         scheme="W4A16",
         force_mllm=False,
+        low_gpu_mem_usage=True,
     )
     key2 = _autoscheme_cache_key(
         model_name="test-model",
@@ -470,8 +473,49 @@ def test_autoscheme_cache_key_insensitive_to_layer_order():
         fixed_layer_scheme={},
         scheme="W4A16",
         force_mllm=False,
+        low_gpu_mem_usage=True,
     )
     assert key1 == key2  # Should match after internal sorting
+
+
+def test_autoscheme_cache_key_changes_only_with_scoring_config():
+    """Execution settings that affect scoring invalidate the cache; bit accounting does not."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    kwargs = {
+        "model_name": "test-model",
+        "dataset": "pile-10k",
+        "nsamples": 16,
+        "seqlen": 256,
+        "batch_size": 8,
+        "quant_layer_names": ["layer.0"],
+        "fixed_layer_scheme": {},
+        "scheme": "W4A16",
+        "force_mllm": False,
+        "low_gpu_mem_usage": True,
+    }
+    baseline = _autoscheme_cache_key(**kwargs)
+
+    assert baseline != _autoscheme_cache_key(**{**kwargs, "low_gpu_mem_usage": False})
+
+
+def test_refresh_cached_layer_bits_preserves_loss():
+    import torch
+    from torch import nn
+
+    from auto_round.auto_scheme.delta_loss import _refresh_cached_layer_bits
+
+    model = nn.Module()
+    model.layer = nn.Linear(8, 4, bias=False)
+    scheme = {"bits": 4, "group_size": 4, "sym": True, "data_type": "int", "act_bits": 16}
+    cached_scores = {"layer": [999, 1.25]}
+
+    with_overhead = _refresh_cached_layer_bits(model, ["layer"], {}, scheme, cached_scores, False)
+    without_overhead = _refresh_cached_layer_bits(model, ["layer"], {}, scheme, cached_scores, True)
+
+    assert with_overhead["layer"][0] > without_overhead["layer"][0]
+    assert without_overhead["layer"] == [model.layer.weight.numel() * 4, 1.25]
+    assert cached_scores == {"layer": [999, 1.25]}
 
 
 def test_autoscheme_cache_save_and_load(tmp_path):
@@ -557,6 +601,14 @@ def test_assign_scheme_worker_devices_rejects_no_gpu():
 
     with pytest.raises(ValueError, match="at least 1"):
         _assign_scheme_worker_devices(1, 0)
+
+
+def test_scheme_worker_count_is_limited_by_visible_gpus():
+    from auto_round.auto_scheme.delta_loss import _get_scheme_worker_count
+
+    assert _get_scheme_worker_count(5, 1) == 1
+    assert _get_scheme_worker_count(5, 2) == 2
+    assert _get_scheme_worker_count(1, 4) == 1
 
 
 def test_per_op_cache_compatibility_rejects_grouped_scores():

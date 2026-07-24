@@ -1092,6 +1092,11 @@ def _build_mxfp_quantization_config(
         scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
         fmt = "mxfp4-pack-quantized" if actual_bits == 4 else "mxfp8-quantized"
         qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        if is_fp_default and scheme_groups:
+            targets = list(quantized_layers)
+            if any(".experts." in name for name in quantized_layers):
+                targets.insert(0, "RoutedExperts")
+            qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
         qconfig["provider"] = "auto-round"

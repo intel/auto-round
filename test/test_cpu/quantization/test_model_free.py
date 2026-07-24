@@ -553,6 +553,20 @@ class TestModelFreeMXFP:
         assert len(cfg["config_groups"]) == 1
 
     @require_compressed_tensors
+    def test_build_mxfp_config_bf16_default_targets_only_overrides(self):
+        """A single MXFP override must not describe all BF16 Linear layers as quantized."""
+        default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
+        layer_config = {
+            "model.layers.0.self_attn.q_proj": {"bits": 4, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = ["model.layers.0.self_attn.q_proj"]
+
+        cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
+
+        assert cfg["format"] == "mxfp4-pack-quantized"
+        assert cfg["config_groups"]["group_0"]["targets"] == quantized
+
+    @require_compressed_tensors
     def test_build_mxfp_mixed_config_two_groups(self):
         """Mixed MXFP4+MXFP8: override layers get explicit targets; default gets ["Linear"]."""
         default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}

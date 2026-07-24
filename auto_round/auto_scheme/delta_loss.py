@@ -1490,6 +1490,7 @@ def _autoscheme_cache_key(
     fixed_layer_scheme,
     scheme,
     force_mllm,
+    low_gpu_mem_usage,
 ):
     """Return a 16-char hex digest that uniquely identifies a **single-scheme** scoring run.
 
@@ -1509,6 +1510,7 @@ def _autoscheme_cache_key(
         "fixed_layer_scheme": {k: v for k, v in sorted(fixed_layer_scheme.items())},
         "scheme": _scheme_repr(scheme),
         "force_mllm": force_mllm,
+        "low_gpu_mem_usage": low_gpu_mem_usage,
     }
     key_str = json.dumps(key_data, sort_keys=True, default=str)
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
@@ -1556,7 +1558,7 @@ def _save_autoscheme_scores(
           "scheme_index": 0,
           "scheme": { ... scheme dict ... },
           "created_at": "<ISO datetime>",
-          "layer_scores": { layer_key: [[bits, loss], ...], ... },
+          "layer_scores": { layer_key: [bits, loss], ... },
           "total_loss_for_scheme": 1.234,
           "total_params": 12345
         }
@@ -1619,6 +1621,28 @@ def _is_per_op_cache_compatible(cached_data, quant_layer_names, fixed_layer_sche
     return set(cached_data["layer_scores"]) == expected_layers
 
 
+def _refresh_cached_layer_bits(
+    model,
+    quant_layer_names,
+    fixed_layer_scheme,
+    scheme,
+    cached_layer_scores,
+    ignore_scale_zp_bits,
+):
+    """Recompute bit costs for the current accounting mode while preserving cached losses."""
+    apply_quant_scheme(
+        model,
+        quant_layer_names=quant_layer_names,
+        fixed_layer_scheme=fixed_layer_scheme,
+        scheme=scheme,
+    )
+    refreshed_scores = {}
+    for name, (_, loss) in cached_layer_scores.items():
+        bits, _ = compute_layer_bits(get_module(model, name), ignore_scale_zp_bits)
+        refreshed_scores[name] = [bits, loss]
+    return refreshed_scores
+
+
 def _assign_scheme_worker_devices(worker_count, visible_gpu_count):
     """Assign workers round-robin within the parent's logical CUDA device space."""
     if visible_gpu_count < 1:
@@ -1677,6 +1701,13 @@ def _merge_worker_memory_reports(monitor, reports):
         worker_peaks[device] = worker_peaks.get(device, 0.0) + report["peak_vram"]
     for device, peak_vram in worker_peaks.items():
         monitor.peak_vram[device] = max(monitor.peak_vram.get(device, 0.0), peak_vram)
+
+
+def _get_scheme_worker_count(num_schemes, num_gpus):
+    """Use at most one model-loading worker per visible GPU."""
+    if num_gpus < 1:
+        raise ValueError("AutoScheme multiprocessing requires at least one GPU")
+    return min(num_schemes, num_gpus)
 
 
 def _score_scheme_worker(args):
@@ -2069,6 +2100,7 @@ def _gen_layer_config(
             offload_context.add_offload_hooks(model, block_name)
 
         pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
+        scored_layer_names = set(quant_layer_names + embedding_layers_names)
 
         def _group_per_op_scores(index, per_op_scores):
             """Apply the current shared-layer grouping without mutating cached per-op scores."""
@@ -2119,7 +2151,7 @@ def _gen_layer_config(
                         else getattr(module, "_cached_weight_numel", 0)
                     )
                     for name, module in model.named_modules()
-                    if name in quant_layer_names + embedding_layers_names
+                    if name in scored_layer_names
                 ),
             )
 
@@ -2135,6 +2167,7 @@ def _gen_layer_config(
                 fixed_layer_scheme=fixed_layer_scheme,
                 scheme=scheme,
                 force_mllm=force_mllm,
+                low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
             )
             cache_path = _autoscheme_cache_path(cache_key, index)
             cached_data = _load_autoscheme_scores(cache_path) if os.path.exists(cache_path) else None
@@ -2167,14 +2200,13 @@ def _gen_layer_config(
                 def _serialize_scheme(scheme):
                     return asdict(scheme) if isinstance(scheme, QuantizationScheme) else scheme
 
-                worker_devices = _assign_scheme_worker_devices(len(uncached_indices), num_gpus)
-                num_workers = len(uncached_indices)
+                num_workers = _get_scheme_worker_count(len(uncached_indices), num_gpus)
+                worker_devices = _assign_scheme_worker_devices(len(uncached_indices), num_workers)
                 logger.info(
-                    "AutoScheme: starting %d parallel workers for %d uncached schemes " "(visible GPUs=%d, %s)",
+                    "AutoScheme: starting %d parallel workers for %d uncached schemes (visible GPUs=%d)",
                     num_workers,
                     len(uncached_indices),
                     num_gpus,
-                    "single GPU shared" if num_gpus == 1 else "multi-GPU round-robin",
                 )
                 spawn_context = multiprocessing.get_context("spawn")
                 with spawn_context.Manager() as manager:
@@ -2223,7 +2255,14 @@ def _gen_layer_config(
                             index,
                             cache_path,
                         )
-                        per_op_scores = cached_data["layer_scores"]
+                        per_op_scores = _refresh_cached_layer_bits(
+                            model,
+                            quant_layer_names,
+                            fixed_layer_scheme,
+                            scheme,
+                            cached_data["layer_scores"],
+                            auto_scheme.ignore_scale_zp_bits,
+                        )
                         if not check_bf16_scheme(scheme):
                             pbar.update(pbar_cnt // effective_scheme_num if effective_scheme_num > 0 else 1)
                     else:
@@ -2261,7 +2300,14 @@ def _gen_layer_config(
                         index,
                         cache_path,
                     )
-                    per_op_scores = cached_data["layer_scores"]
+                    per_op_scores = _refresh_cached_layer_bits(
+                        model,
+                        quant_layer_names,
+                        fixed_layer_scheme,
+                        scheme,
+                        cached_data["layer_scores"],
+                        auto_scheme.ignore_scale_zp_bits,
+                    )
                     if not check_bf16_scheme(scheme):
                         pbar.update(pbar_cnt // effective_scheme_num if effective_scheme_num > 0 else 1)
                 else:
@@ -2489,6 +2535,9 @@ def _gen_layer_config(
         time.perf_counter() - dp_started,
         len(total_scores),
     )
+
+    if best_path is None:
+        raise ValueError("Avg bits is too small")
 
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)

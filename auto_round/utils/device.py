@@ -21,7 +21,6 @@ import sys
 import tempfile
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
-from itertools import combinations
 from threading import Lock
 from typing import Any, Callable, Optional, Union
 
