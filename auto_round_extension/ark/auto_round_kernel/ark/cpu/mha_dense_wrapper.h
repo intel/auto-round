@@ -1460,7 +1460,8 @@ template <>
 inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
     const attn_fwd_args_t<float, utils::fp16, utils::fp16, float>& params, parallel::IThreading& th) {
   GetCPUDevice();
-  if (MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() && params.step_k_sl == 1) {
+  if (MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() && params.K_layout == ATTN_FWD_LAYOUT_PLAIN &&
+      params.V_layout == ATTN_FWD_LAYOUT_PLAIN && params.step_k_sl == 1) {
 #if CompileFP16()
     using GemmKernelFP16TrackMax = launcher_base_weight_t<  //
         gemm::HCoreRowNAvx512fp16<64, 8>,                   //
