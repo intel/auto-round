@@ -114,6 +114,92 @@ class BaseRotation(ABC):
         """
 
     # ------------------------------------------------------------------
+    # Layer-wise rotation interface (optional)
+    # ------------------------------------------------------------------
+
+    @property
+    def supports_layerwise(self) -> bool:
+        """Whether this rotation algorithm supports layer-wise execution.
+
+        When ``True``, the compressor can call :meth:`prepare_layerwise`
+        during ``post_init`` and then :meth:`rotate_layer` per-block inside
+        the ``_quantize_blocks`` loop — avoiding the need to load the
+        entire model onto GPU at once.
+        """
+        return False
+
+    def prepare_layerwise(
+        self,
+        model: torch.nn.Module,
+        data_type: str = "mx_fp",
+        **kwargs: Any,
+    ) -> "BaseRotation":
+        """Prepare for layer-wise rotation without modifying model weights.
+
+        Called once during ``post_init`` when ``layerwise_rotation=True``.
+        Implementations should initialise rotation matrices (as model
+        buffers) and any other lightweight state, but must **not** modify
+        model weights or register hooks yet.
+
+        Args:
+            model: The model to prepare (not modified).
+            data_type: Quantization data type.
+            **kwargs: Algorithm-specific arguments (e.g. ``dataloader``).
+
+        Returns:
+            ``self``, so the compressor can later call :meth:`rotate_layer`.
+
+        Raises:
+            NotImplementedError: If the algorithm does not support
+                layer-wise rotation.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support layer-wise rotation. "
+            f"Use full-model rotation instead."
+        )
+
+    def rotate_layer(
+        self,
+        layer: torch.nn.Module,
+        layer_idx: int,
+        **kwargs: Any,
+    ) -> None:
+        """Apply rotation to a single decoder layer.
+
+        Called per-block in the ``_quantize_blocks`` loop, after the block
+        is materialised and placed on the target device, **before**
+        reference-output collection.
+
+        Implementations should:
+        - Rotate weights of target modules inside *layer*.
+        - Register any online hooks (R1/R3/R4) needed at inference time.
+        - Be idempotent — calling twice on the same layer should be safe.
+
+        Args:
+            layer: A single decoder layer, already on the target device.
+            layer_idx: Zero-based index of this layer in the model.
+            **kwargs: Algorithm-specific arguments.
+
+        Raises:
+            NotImplementedError: If the algorithm does not support
+                layer-wise rotation.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support layer-wise rotation."
+        )
+
+    def finalize_layerwise(self, model: torch.nn.Module) -> None:
+        """Post-loop cleanup after all layers have been rotated.
+
+        Called once after the ``_quantize_blocks`` loop completes.
+        Default implementation is a no-op.
+
+        Args:
+            model: The fully-rotated model.
+        """
+        pass
+
+    # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
 
