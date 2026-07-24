@@ -244,8 +244,8 @@ def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tenso
         raise ValueError("A and B must be 2D tensors")
     if A.device != B.device:
         raise ValueError("A and B must be on the same device")
-    if A.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError("matmul_sycl_tla only supports torch.float16 and torch.bfloat16")
+    if A.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        raise ValueError("matmul_sycl_tla only supports torch.float32, torch.float16 and torch.bfloat16")
     if B.dtype != A.dtype:
         raise ValueError("A and B must have the same dtype")
 
@@ -345,7 +345,7 @@ def igemm_s8s8s32(A: torch.Tensor, B: torch.Tensor):
 
 # A: mxk:DT,  B: nxk:s8, scaleB: n:DT
 # return: mxn:DT
-def woqgemm_s8(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor):
+def woqgemm_s8(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor | None = None):
     m = A.shape[0]
     n = B.shape[0]
     k = B.shape[1]
@@ -362,7 +362,7 @@ def woqgemm_s8(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: tor
         cvt_dtype(A.dtype),
         B.contiguous().data_ptr(),
         C.contiguous().data_ptr(),
-        bias.contiguous().data_ptr(),
+        0 if bias is None or bias.numel() == 0 else bias.contiguous().data_ptr(),
         True,
         scaleB.contiguous().data_ptr(),
     )

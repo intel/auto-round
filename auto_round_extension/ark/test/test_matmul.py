@@ -56,7 +56,7 @@ def main_op(m, k, n, dt, batch_size, runs, has_bias, record_property, device, op
     diff = abs(tar_dst - ref_dst)
     print(f"  Max Diff: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}", end="", flush=True)
     if dt == torch.float32:
-        atol = 0.001
+        atol = 0.01
         rtol = 0.03
     if dt == torch.float16:
         atol = 0.1
@@ -166,7 +166,7 @@ def woqgemm(m, k, n, dt, batch_size, runs, record_property, device):
 
 @pytest.mark.parametrize("m", [4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16], ids=["float32", "float16"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_woqgemm_xpu(m, k, n, dt, batch_size, runs, record_property):
@@ -179,7 +179,7 @@ def test_woqgemm_xpu(m, k, n, dt, batch_size, runs, record_property):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_xpu(m, k, n, dt, batch_size, runs, record_property):
@@ -192,7 +192,7 @@ def test_xpu(m, k, n, dt, batch_size, runs, record_property):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32])
+@pytest.mark.parametrize("dt", [torch.float32], ids=["float32"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_cpu(m, k, n, dt, batch_size, runs, record_property):
@@ -231,7 +231,7 @@ def test_xpu_sycl_tla(m, k, n, dt, batch_size, runs, record_property):
 
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16], ids=["float16", "bfloat16"])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("runs", [1])
 def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
@@ -260,25 +260,19 @@ def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
 
 
 # pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
+@pytest.mark.skipif(
+    os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
+    reason="Skipped because ARK_DNNL is not enabled in environment variables",
+)
+@pytest.mark.parametrize("has_bias", [True, False], ids=["with_bias", "no_bias"])
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
-def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
+@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
+def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, has_bias):
     warmup = 100
     runs = 1000
 
-    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu")
-    torch.xpu.empty_cache()
-
-
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
-@pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float16, torch.bfloat16])
-def test_xpu_compare_dnnl_vs_sycl_tla_no_bias(m, k, n, dt):
-    warmup = 100
-    runs = 1000
-
-    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu", has_bias=False)
+    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu", has_bias=has_bias)
     torch.xpu.empty_cache()
 
 
@@ -288,7 +282,8 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, device="xpu", has_bias=Tr
 
     def _matmul_tolerance(dt):
         if dt == torch.float32:
-            return 0.001, 0.03
+            # SYCL-TLA fp32 GEMM uses TF32 DPAS internally.
+            return 0.01, 0.06
         if dt == torch.float16:
             return 0.1, 0.06
         if dt == torch.bfloat16:
@@ -318,6 +313,8 @@ def compare_matmul_backends(m, k, n, dt, warmup, runs, device="xpu", has_bias=Tr
     dnnl_out = ark.matmul(activation, wei, bias)
     tla_out = ark.matmul_sycl_tla(activation, wei, bias)
 
+    diff = abs(dnnl_out - tla_out)
+    print(f"  Max Diff: {diff.max().item():.5f}, Mean Diff: {diff.mean().item():.5f}", end="", flush=True)
     atol, rtol = _matmul_tolerance(dt)
     ok = torch.allclose(dnnl_out, tla_out, atol=atol, rtol=rtol)
 

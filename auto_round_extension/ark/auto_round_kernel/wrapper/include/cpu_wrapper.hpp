@@ -616,7 +616,7 @@ class CpuWrapper {
     auto bsize = bestla::BTLAGemmNPackBSize(n, k, dt);
     auto wssize = bsize;
     wssize += BT ? n * k * bestla::utils::bestla_dtype_bytes(dt) : 0;
-    auto ptr = DnnlContext::Instance()->get_scratch_mem(wssize, 0, nullptr);
+    auto ptr = DeviceMemoryPool::Instance()->get_scratch_mem(wssize, 0, nullptr);
     auto packwptr = ptr;
     auto bntptr = (int8_t*)packwptr + bsize;
     auto bptr = B;
@@ -631,7 +631,7 @@ class CpuWrapper {
   static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
                        size_t blob_count = 0) {
     auto wssize = bestla::BTLAWOQGemmForwardWorkspace((void*)b, m, p->n, p->k, p->k, p->n, blob_count);
-    auto ptr = DnnlContext::Instance()->get_scratch_mem(wssize, 0, nullptr);
+    auto ptr = DeviceMemoryPool::Instance()->get_scratch_mem(wssize, 0, nullptr);
     bestla::BTLAWOQGemmFp32Forward((void*)b, (const float*)a, (float*)c, (const float*)bias, m, p->n, p->k, p->k, p->n,
                                    ptr, get_threading(), blob_count);
   }
