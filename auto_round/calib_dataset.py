@@ -74,7 +74,7 @@ def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=Non
                 tokenize=False,
                 add_generation_prompt=True,
             )
-        except:
+        except Exception:
             logger.warning("Failed to apply chat template. removing the system role in chat history.")
             message_modified = [msg for msg in message if msg["role"] != "system"]
             chat_templated = tokenizer.apply_chat_template(
@@ -706,7 +706,7 @@ def get_dataset_len(dataset):
     try:
         dataset_len = len(dataset)
         return dataset_len
-    except:
+    except Exception:
         cnt = 0
         for _ in dataset:
             cnt += 1
@@ -748,7 +748,7 @@ def select_dataset(dataset, indices):
     """
     try:
         return dataset.select(indices)
-    except:
+    except Exception:
         list_data = list(select(dataset, indices))
         import pandas as pd
 
