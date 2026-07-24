@@ -169,8 +169,9 @@ use `--model_dtype "fp16"`.
 
 ### **7. Better Use `torch.compile`**
 
-**`torch.compile` is enabled by default. To opt out, pass `enable_torch_compile=False` or use
-`--disable_torch_compile` on the CLI.**
+**`torch.compile` is enabled by default except on Windows. Windows users can pass `enable_torch_compile=True` or use
+`--enable_torch_compile` to force enable it. On other platforms, pass `enable_torch_compile=False` or use
+`--disable_torch_compile` to opt out.**
 
 It can reduce tuning cost by about 20%, but may throw exceptions on some models, especially with lower versions of
 PyTorch.

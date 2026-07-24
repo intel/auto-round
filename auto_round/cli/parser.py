@@ -149,15 +149,15 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--enable_torch_compile",
         dest="enable_torch_compile",
         action="store_true",
-        help="Deprecated: torch.compile is enabled by default. This flag is kept for backward compatibility.",
+        help="Enable torch.compile during quantization (force enable on Windows).",
     )
     torch_compile_group.add_argument(
         "--disable_torch_compile",
         dest="enable_torch_compile",
         action="store_false",
-        help="Disable torch.compile during quantization (enabled by default).",
+        help="Disable torch.compile during quantization.",
     )
-    rt.set_defaults(enable_torch_compile=True)
+    rt.set_defaults(enable_torch_compile=None)
     rt.add_argument(
         "--disable_trust_remote_code", action="store_true", help="Disable trust_remote_code when loading models."
     )

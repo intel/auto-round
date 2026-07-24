@@ -238,7 +238,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-  # torch.compile is enabled by default. Set enable_torch_compile=False if it causes compatibility issues.
+  # torch.compile is enabled by default except on Windows. On Windows, set True to force enable it.
 )
 
 output_dir = "./tmp_autoround"
@@ -879,8 +879,9 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
     - or combine them
 
-  To disable `torch.compile` for compatibility, pass `enable_torch_compile=False` to the Python API or use
-  `--disable_torch_compile` on the command line.
+  `torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC `cl.exe` compiler. Windows
+  users can pass `enable_torch_compile=True` to the Python API or use `--enable_torch_compile` to force enable it. On
+  other platforms, pass `enable_torch_compile=False` or use `--disable_torch_compile` to opt out.
 
 
 - **Enable quantized lm-head:**

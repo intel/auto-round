@@ -229,7 +229,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-  # 默认启用 torch.compile；如遇兼容性问题，可设置 enable_torch_compile=False。
+  # 除 Windows 外默认启用 torch.compile；Windows 用户可设置 True 强制开启。
 )
 
 output_dir = "./tmp_autoround"
@@ -853,8 +853,9 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 - 将 `seqlen` 降至 512（**部分场景可能出现大幅精度损失**）
 - 将 `bs` 降至 4（**仅有轻微精度损失**）
 
-如需规避兼容性问题，可在 Python API 中传入 `enable_torch_compile=False`，或在命令行中使用
-`--disable_torch_compile` 关闭 `torch.compile`。
+Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。Windows 用户可在
+Python API 中传入 `enable_torch_compile=True`，或使用命令行参数 `--enable_torch_compile` 强制开启。其他
+平台如需关闭，可传入 `enable_torch_compile=False` 或使用 `--disable_torch_compile`。
 
 #### 开启 lm-head 层量化
 该配置目前**仅支持 AutoRound 原生格式的推理**，命令行启用方式如下：

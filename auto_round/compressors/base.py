@@ -200,7 +200,7 @@ class BaseOrchestrator(object):
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = True,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         layer_config: Optional[dict] = None,
@@ -347,6 +347,19 @@ class BaseOrchestrator(object):
 
         self.nblocks = nblocks
 
+        if enable_torch_compile is None:
+            enable_torch_compile = sys.platform != "win32"
+            if not enable_torch_compile:
+                logger.warning_once(
+                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                    "`--enable_torch_compile` to force enable it."
+                )
+        elif enable_torch_compile and sys.platform == "win32":
+            logger.warning_once(
+                "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
+                "is not installed or not available on PATH."
+            )
         self.enable_torch_compile = enable_torch_compile
 
         # Whether to pack the layer immediately after tuning
@@ -786,7 +799,7 @@ class BaseOrchestrator(object):
     def diffusion(self) -> bool:
         return self.model_context.is_diffusion
 
-    def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool]:
         """Return raw dtype state used by torch.compile guard rules."""
         # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
         cfg = self.quantize_config
@@ -820,7 +833,7 @@ class BaseOrchestrator(object):
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+        _, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_valid_act_static:

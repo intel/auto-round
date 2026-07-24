@@ -100,7 +100,7 @@ export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
+- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
 - **Default**: `16`
 - **Valid Values**: positive integer
 - **Usage**: Increase if your model has more than 16 distinct linear-weight shapes per block (rare).

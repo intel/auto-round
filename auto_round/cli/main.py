@@ -280,11 +280,8 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
-    if not args.enable_torch_compile:
-        logger.info(
-            "`torch.compile` is disabled. "
-            "Remove `--disable_torch_compile` to re-enable it (default) for better performance."
-        )
+    if args.enable_torch_compile is False:
+        logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -335,7 +332,7 @@ def tune(args):
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
-        if not enable_torch_compile:
+        if enable_torch_compile is False:
             logger.warning(
                 "`torch.compile` is disabled with AutoScheme. "
                 "Enabling it (the default) is strongly recommended to save VRAM."
