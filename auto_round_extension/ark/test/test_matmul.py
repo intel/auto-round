@@ -299,25 +299,19 @@ def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
 
 
 # pytest -vs auto_round_extension/ark/test/test_matmul.py -k compare_dnnl_vs_sycl_tla
+@pytest.mark.skipif(
+    os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
+    reason="Skipped because ARK_DNNL is not enabled in environment variables",
+)
+@pytest.mark.parametrize("has_bias", [True, False], ids=["with_bias", "no_bias"])
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
-def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt):
+def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, has_bias):
     warmup = 100
     runs = 1000
 
-    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu")
-    torch.xpu.empty_cache()
-
-
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
-@pytest.mark.parametrize("k, n", [(4096, 4096)])
-@pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
-def test_xpu_compare_dnnl_vs_sycl_tla_no_bias(m, k, n, dt):
-    warmup = 100
-    runs = 1000
-
-    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu", has_bias=False)
+    compare_matmul_backends(m, k, n, dt, warmup, runs, "xpu", has_bias=has_bias)
     torch.xpu.empty_cache()
 
 
