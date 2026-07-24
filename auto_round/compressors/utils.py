@@ -105,12 +105,10 @@ def is_wint8aint8(ar):
         return False
 
 
-def is_static_wfp8afp8(ar_or_format: Union[str, Callable]) -> bool:
-    if isinstance(ar_or_format, str):
+def is_act_static(ar_or_format: Union[str, Callable]) -> bool:
+    if isinstance(ar_or_format, str):  # TODO this is not robust
         return "fp8_static" in ar_or_format.lower()
-    if ar_or_format.act_dynamic:
-        return False
-    if is_wfp8afp8(ar_or_format):
+    if not ar_or_format.act_dynamic:
         return True
     return False
 
@@ -750,15 +748,43 @@ def _gguf_type_fallback(gguf_type: str) -> str:
     return gguf_type
 
 
-def _resolve_gguf_n_layers(config, model_type=ModelType.TEXT):
-    """Resolve text (and vision) layer counts from a model config.
+def _infer_gguf_n_layers_from_model(model, model_type=ModelType.TEXT):
+    if model is None or not hasattr(model, "named_modules"):
+        return None, None
+
+    from auto_round.utils.common import MM_MODULE_KEYS
+
+    text_layer_ids = set()
+    vision_layer_ids = set()
+    layer_pattern = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
+    for module_name, _ in model.named_modules():
+        match = layer_pattern.search(module_name)
+        if match is None:
+            continue
+        layer_id = int(match.group(1))
+        if model_type != ModelType.TEXT and any(key in module_name.lower() for key in MM_MODULE_KEYS):
+            vision_layer_ids.add(layer_id)
+        else:
+            text_layer_ids.add(layer_id)
+
+    n_layer = max(text_layer_ids) + 1 if text_layer_ids else None
+    n_layer_vision = max(vision_layer_ids) + 1 if vision_layer_ids else None
+    return n_layer, n_layer_vision
+
+
+def _resolve_gguf_n_layers(config, model_type=ModelType.TEXT, model=None):
+    """Resolve text (and vision) layer counts from config, then model structure.
 
     Multimodal configs (e.g. Qwen3.5, Qwen3-VL) keep the text hparams only in
     ``config.text_config``, so both it and the top-level config must be checked.
+    If config naming changes, fall back to the loaded module hierarchy so GGUF
+    official mixed formats still receive a usable block count.
     """
     n_layer = None
     n_layer_vision = None
     text_config = getattr(config, "text_config", None)
+    vision_config = None
+    audio_config = getattr(config, "audio_config", None)
     for name in ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth"]:
         if hasattr(config, name):
             n_layer = getattr(config, name)
@@ -770,11 +796,27 @@ def _resolve_gguf_n_layers(config, model_type=ModelType.TEXT):
         if model_type != ModelType.TEXT:
             for config_name in ["vision_config", "vision_encoder"]:
                 if hasattr(config, config_name):
-                    if hasattr(getattr(config, config_name), name):
-                        n_layer_vision = getattr(getattr(config, config_name), name)
+                    vision_config = getattr(config, config_name)
+                    if hasattr(vision_config, name):
+                        n_layer_vision = getattr(vision_config, name)
                         break
             if n_layer and n_layer_vision:
                 break
+
+    inferred_n_layer, inferred_n_layer_vision = _infer_gguf_n_layers_from_model(model, model_type)
+    n_layer = n_layer or inferred_n_layer
+    n_layer_vision = n_layer_vision or inferred_n_layer_vision
+
+    if (
+        model_type != ModelType.TEXT
+        and n_layer_vision is None
+        and vision_config is not None
+        and audio_config is not None
+    ):
+        # llama.cpp's Gemma4 mmproj converter uses a fixed tensor-name map size
+        # when vision and audio encoders coexist, because the two encoders do not
+        # expose a single transformer block count in config.json.
+        n_layer_vision = 128
     return n_layer, n_layer_vision
 
 
@@ -810,7 +852,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
     except NotImplementedError:
         return layer_config, {}
 
-    n_layer, n_layer_vision = _resolve_gguf_n_layers(model.config, model_type)
+    n_layer, n_layer_vision = _resolve_gguf_n_layers(model.config, model_type, model=model)
 
     if n_layer is None:
         return layer_config, {}

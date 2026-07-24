@@ -100,7 +100,10 @@ class LinearGlm4MoeLiteMoE(nn.Module):
         residuals = hidden_states
         orig_shape = hidden_states.shape
         router_logits = self.gate(hidden_states)
-        topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
+        if isinstance(router_logits, tuple):  # transformers >= 5.13.0
+            _, topk_weights, topk_indices = router_logits
+        else:
+            topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = self.experts_forward(hidden_states, topk_indices, topk_weights).view(*orig_shape)
         hidden_states = hidden_states + self.shared_experts(residuals)

@@ -291,7 +291,7 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
     from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:
@@ -395,6 +395,8 @@ def run_eval(argv=None):
 
     if args.model is None:
         args.model = args.model_name
+    if args.model_name is None:
+        args.model_name = args.model
     if "llama" in args.model.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True

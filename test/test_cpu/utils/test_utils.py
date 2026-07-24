@@ -56,6 +56,14 @@ def test_revert_checkpoint_conversion_mapping_does_not_rewrite_quantized_tensor_
     )
 
 
+def test_revert_checkpoint_conversion_mapping_handles_backreference_patterns():
+    mapping = {r"^model\.language_model\.(.+)$": r"model.\1"}
+
+    converted = revert_checkpoint_conversion_mapping("model.language_model.layers.0.self_attn.q_proj.weight", mapping)
+
+    assert converted == "model.layers.0.self_attn.q_proj.weight"
+
+
 def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"
@@ -91,7 +99,7 @@ class TestPredefinedIgnoreLayersBlockFilter:
     @staticmethod
     def _make_compressor_stub(predefined_ignore_layers, quant_block_list):
         """Create a minimal stub that allows calling configure_layer_config."""
-        from auto_round.compressors.base import BaseCompressor
+        from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
         stub = object.__new__(BaseCompressor)
         # Minimal attributes required by configure_layer_config
