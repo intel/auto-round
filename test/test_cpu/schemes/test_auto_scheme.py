@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 
@@ -184,13 +185,28 @@ class TestAutoScheme:
 
     def test_auto_scheme_export(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
+        int_save_dir = os.path.join(self.save_dir, "int")
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
-        ar.quantize_and_save(self.save_dir)
+        _, int_model_path = ar.quantize_and_save(int_save_dir)
 
+        with open(os.path.join(int_model_path, "config.json")) as f:
+            int_config = json.load(f)["quantization_config"]
+        assert int_config["quant_method"] == "auto-round"
+        assert int_config["bits"] == 2
+        assert int_config["data_type"] == "int"
+
+        mxfp_save_dir = os.path.join(self.save_dir, "mxfp")
         scheme = AutoScheme(avg_bits=4, options=("mxfp4"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
-        ar.quantize_and_save(self.save_dir)
+        _, mxfp_model_path = ar.quantize_and_save(mxfp_save_dir)
+
+        with open(os.path.join(mxfp_model_path, "config.json")) as f:
+            mxfp_config = json.load(f)["quantization_config"]
+        assert mxfp_config["quant_method"] == "auto-round"
+        assert mxfp_config["bits"] == 4
+        assert mxfp_config["data_type"] == "mx_fp"
+        assert os.path.exists(os.path.join(int_model_path, "config.json"))
 
     def test_gguf_user_fixed_embedding_budget(self, tiny_qwen_model_path):
         """Regression test: a user-fixed embedding must be budget-priced at its fixed bits.

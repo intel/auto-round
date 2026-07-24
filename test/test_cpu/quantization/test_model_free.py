@@ -504,7 +504,9 @@ class TestModelFreeMXFP:
         }
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme=scheme).run()
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme=scheme, format="llm_compressor"
+        ).run()
         qc = _read_qconfig(output_dir)
         assert qc["format"] == fmt
         assert qc["quant_method"] == "compressed-tensors"
