@@ -176,7 +176,7 @@ def tiny_untied_qwen_model_path():
 def tiny_qwen_moe_model_path():
     model_name_or_path = qwen_moe_name_or_path
     tiny_model_path = "./tmp/tiny_qwen_moe_model_path"
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, from_config=True)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
