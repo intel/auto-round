@@ -20,6 +20,16 @@ from auto_round.utils import clear_memory, get_reciprocal
 
 GGML_QUANT_TYPE = {}
 
+# Only chunk (via `split_num`) tensors whose fp32 footprint exceeds this many bytes. Chunking
+# trades some real per-chunk Python-loop/GPU-kernel-launch overhead for bounded peak memory, so
+# it should only kick in for genuinely oversized single tensors (e.g. an unusually large vocab
+# embedding, which can be several GB) - not every ordinary attention/FFN weight, which would pay
+# that overhead for no memory benefit (they're already only tens to a few hundred MB, even for
+# very large dense models). 1GB comfortably separates the two: it's well above the largest
+# ordinary per-tensor weight sizes seen in current dense/MoE LLMs, while still catching the
+# outsized embeddings that actually risk OOM.
+_LARGE_TENSOR_BYTES_THRESHOLD = 1_000_000_000
+
 
 def register_qtype(name):
 
@@ -75,7 +85,12 @@ def ggml_quant(
     data = data.to(torch.float32).to(device)
     shape = data.shape
     n_blocks = data.nelement() // block_size
-    split_num = 16 if max(data.shape) > 100_000 else 1
+    # Only chunk genuinely oversized tensors (e.g. an unusually large vocab embedding, multiple
+    # GB in fp32): chunking has real per-chunk Python-loop/kernel-launch overhead, so a low
+    # threshold (e.g. based on block count alone) would slow down completely ordinary,
+    # comfortably-sized attention/FFN weights for no memory benefit. See
+    # `_LARGE_TENSOR_BYTES_THRESHOLD` above (also reused by `data_type/gguf.py`).
+    split_num = 16 if data.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD else 1
     blocks = data.reshape((n_blocks, block_size))
 
     def _safe_reshape(t):
@@ -132,7 +147,7 @@ def torch_roundf(n):
     return torch.sign(n) * b
 
 
-def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
+def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0, qw_row_pattern=None):
     """
     Extreme VRAM-optimized version of quantization.
 
@@ -144,6 +159,12 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
         v: Optional rounding perturbation. Either a scalar or a tensor with the
             same shape as ``data``; added before each ``round`` to support
             AutoRound-style tuning.
+        qw_row_pattern: Optional small "one row of blocks" importance-weight tensor
+            (shape ``(blocks_per_row, *group_shape)``), used instead of a full-size
+            ``qw`` when the weighting is an imatrix broadcast that repeats every
+            ``blocks_per_row`` blocks along dim 0 (see callers in ``data_type/gguf.py``).
+            Avoids ever materializing a tensor as large as ``data`` just for the
+            (constant, repeating) importance weights.
     """
     nmax = 2 ** (bits - 1)
     scales_list = []
@@ -151,6 +172,7 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
     chunk_size = (data.shape[0] + split_num - 1) // split_num
     # A 0-dim tensor (scalar tensor) cannot be sliced; treat it like a Python scalar.
     v_is_tensor = isinstance(v, torch.Tensor) and v.dim() > 0
+    bpr = qw_row_pattern.shape[0] if qw_row_pattern is not None else None
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]  # Slice a batch chunk to reduce memory footprint
@@ -183,7 +205,13 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0):
 
         # Compute weighting tensor w based on rmse_type
         if qw is not None:
-            w = qw
+            w = qw[start:end]
+        elif qw_row_pattern is not None:
+            # The importance weights repeat every `bpr` blocks (broadcast across output rows);
+            # gather this chunk's slice from the small per-row-of-blocks pattern instead of a
+            # full-size `qw` tensor.
+            row_idx = torch.arange(start, end, device=data.device) % bpr
+            w = qw_row_pattern.index_select(0, row_idx)
         elif rmse_type == 1:
             w = chunk * chunk
         elif rmse_type == 2:

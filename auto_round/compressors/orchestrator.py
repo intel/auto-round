@@ -447,8 +447,12 @@ class CompressionOrchestrator(BaseOrchestrator):
             logger.info(f"Quantizing remaining layer {name} on CPU.")
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
             cnt += 1
+            # Outside-block layers (embed_tokens/lm_head/etc.) are typically few (often <10, e.g.
+            # for gguf export) but can individually be huge (e.g. large-vocab embeddings), so
+            # clearing memory only every 10th layer would rarely, if ever, fire for them. Clear
+            # after each one; only throttle the (comparatively cheap) memory_monitor logging.
+            clear_memory()
             if cnt % 10 == 0:
-                clear_memory()
                 memory_monitor.log_summary()
 
         # Convert remaining fp8

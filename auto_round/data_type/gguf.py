@@ -18,7 +18,12 @@ import torch
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
-from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants, make_qx_quants_chunk
+from auto_round.export.export_to_gguf.packing import (
+    _LARGE_TENSOR_BYTES_THRESHOLD,
+    make_q3_quants,
+    make_qx_quants,
+    make_qx_quants_chunk,
+)
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 from auto_round.utils.device import clear_memory
@@ -381,10 +386,64 @@ def quant_tensor_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
+def _imatrix_row_pattern(imatrix: torch.Tensor, group_shape) -> torch.Tensor:
+    """Reshape a per-input-channel imatrix into the small, non-materialized "one row of
+    groups" repeat unit, instead of broadcasting+reshaping it to the full weight tensor's
+    shape.
+
+    An imatrix is computed per input channel (column) and is identical across every output
+    row, so once it's grouped the same way the weight tensor is (into blocks/groups of
+    ``group_shape`` elements each), the resulting pattern of length ``blocks_per_row =
+    imatrix.numel() // prod(group_shape)`` simply repeats for every output row. Any global
+    block/group index ``i`` (0-based, row-major over the weight tensor) maps to
+    ``pattern[i % blocks_per_row]`` — this holds for ANY quant type/group size, since GGUF
+    requires ``in_features % prod(group_shape) == 0`` (blocks never straddle two rows).
+
+    Building only this small ``(blocks_per_row, *group_shape)`` tensor - instead of
+    ``imatrix.expand(...).reshape(weight.shape)``, which PyTorch cannot represent as a view
+    once the broadcast dimension has to be reshaped/merged and so silently materializes a
+    full copy as large as the weight tensor - keeps the up-front cost independent of
+    out_features, no matter how large a single tensor (e.g. an oversized vocab embedding) is.
+    """
+    if isinstance(group_shape, int):
+        group_shape = (group_shape,)
+    group_numel = 1
+    for d in group_shape:
+        group_numel *= d
+    blocks_per_row = imatrix.numel() // group_numel
+    return imatrix.reshape(blocks_per_row, *group_shape)
+
+
+def _gather_row_pattern(row_pattern: torch.Tensor, start: int, end: int) -> torch.Tensor:
+    """Materialize only the ``[start:end)`` slice of a full, row-repeating broadcast, by
+    gathering from the small ``row_pattern`` (see ``_imatrix_row_pattern``) with the block
+    index taken modulo ``blocks_per_row``. Cheap regardless of how large ``end - start`` is
+    relative to the full (un-chunked) tensor, since ``row_pattern`` itself never grows.
+    """
+    bpr = row_pattern.shape[0]
+    idx = torch.arange(start, end, device=row_pattern.device) % bpr
+    return row_pattern.index_select(0, idx)
+
+
 def _imatrix_handle_zero(
-    imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int, group_size: Union[int, None] = None
+    imatrix: Union[torch.Tensor, float],
+    weight: torch.Tensor,
+    bits: int,
+    group_size: Union[int, None] = None,
+    raw_imatrix: torch.Tensor = None,
 ):
     if not isinstance(imatrix, torch.Tensor):
+        return imatrix
+
+    # `imatrix` here is normally a broadcast-expanded VIEW of the much smaller per-block
+    # `raw_imatrix` (no extra memory), built via `.expand(...).reshape(weight.shape)`. But the
+    # `.reshape(-1, imatrix.shape[-1])` a few lines below merges the broadcast dimension into a
+    # real one, which forces PyTorch to fully materialize a tensor as large as `weight` itself
+    # (e.g. an extra ~11GB for an ~11GB embedding tensor). The common case - calibration data
+    # with no zero-valued activations - never needs any of that; check for zeros on the small,
+    # pre-broadcast `raw_imatrix` first and skip the expensive materialization entirely then.
+    probe = raw_imatrix if raw_imatrix is not None else imatrix
+    if torch.min(probe) != 0:
         return imatrix
 
     if group_size is None:
@@ -464,10 +523,24 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
-        weights = imatrix.reshape(1, -1)
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
-        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
+        # An imatrix is per input channel and identical across every output row, so
+        # broadcasting it to `tensor.shape` (`.expand(...).reshape(...)`) forces PyTorch to
+        # materialize a full copy as large as `tensor` itself - regardless of `split_num` -
+        # since that materialization happens here, before any chunked search even starts.
+        # For a single very large tensor (e.g. an oversized vocab embedding), that alone can
+        # cost tens of extra GB. Zero-valued calibration activations are rare (and already
+        # warned about elsewhere), so only fall back to the full materialization + explicit
+        # zero-handling in that rare case; otherwise keep imatrix as the small, row-repeating
+        # pattern and let the chunked search gather from it per chunk on demand.
+        row_pattern = _imatrix_row_pattern(imatrix, tensor.shape[-1])
+        quant_weights = None
+        weights_row_pattern = row_pattern
+        if torch.min(imatrix) == 0:
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
+            quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits, raw_imatrix=imatrix)
+            weights_row_pattern = None
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
@@ -487,6 +560,8 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             nstep=params["nstep"],
             use_mad=params["use_mad"],
             weights=quant_weights,
+            weights_row_pattern=weights_row_pattern,
+            split_num=split_num,
             v=v,
         )
         scale = scale.to(scale_dtype)
@@ -494,7 +569,15 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
         nmax = int(2.0**super_bits) - 1
         scale = scale.reshape(-1, super_group_size)
         wmin = wmin_0.reshape(-1, super_group_size)
-        sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
+        if quant_weights is not None:
+            sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
+        else:
+            # Same row-repeating trick for the (much smaller, one-value-per-block) sum: the
+            # per-block sum of an imatrix broadcast repeats with the same `blocks_per_row`
+            # period, so gather it from a tiny precomputed pattern instead of reducing a
+            # full-size `quant_weights`.
+            sum_pattern = row_pattern.sum(-1, keepdim=True)
+            sum_quant_weights = _gather_row_pattern(sum_pattern, 0, tensor.shape[0]).reshape(-1, super_group_size)
 
         d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights)
         d_wmin, q_wmin = make_qp_quants(nmax, wmin, sum_quant_weights)
@@ -543,7 +626,16 @@ def quant_tensor_gguf_asym_dq(
     orig_dtype = tensor.dtype
     maxq = int(2.0**bits) - 1
     group_size = 16 if bits == 2 else 32
-    split_num = 1
+    # The RTN-tuning path previously always ran the scale search unchunked (`split_num=1`),
+    # unlike the export/packing path (`ggml_quant` in packing.py) which already chunks large
+    # tensors. For very large single tensors (e.g. huge vocab embed/output projections),
+    # `search_gguf_scale_min_asym`'s unchunked candidate search allocates several full-size
+    # float32 buffers at once and can need tens of GB, causing OOM even though the model
+    # itself is small. Chunk it here too once the tensor is large enough to matter - but only
+    # then: chunking has real per-chunk Python-loop/kernel-launch overhead, so applying it to
+    # every ordinary attention/FFN weight (which never risked OOM in the first place) would
+    # just slow those down for no benefit. See `_LARGE_TENSOR_BYTES_THRESHOLD`.
+    split_num = 16 if tensor.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD else 1
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
@@ -581,7 +673,16 @@ def quant_tensor_gguf_asym_dq(
 
 # TODO consolidate iterative_wls_quant_search_chunk and non-chunk
 def iterative_wls_quant_search_chunk(
-    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1, v=0
+    data,
+    bits=4,
+    rrmin=-1.0,
+    rdelta=0.1,
+    nstep=20,
+    use_mad=False,
+    weights=None,
+    split_num=1,
+    v=0,
+    weights_row_pattern=None,
 ):
     dtype = torch.float32
     data = data.to(dtype)
@@ -599,7 +700,12 @@ def iterative_wls_quant_search_chunk(
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]
-        chunk_weights = weights if isinstance(weights, float) else weights[start:end]
+        if weights_row_pattern is not None:
+            # See `_imatrix_row_pattern`/`_gather_row_pattern`: gather this chunk's weights
+            # from the small repeating pattern instead of slicing a full-size `weights`.
+            chunk_weights = _gather_row_pattern(weights_row_pattern, start, end).to(dtype)
+        else:
+            chunk_weights = weights if isinstance(weights, float) else weights[start:end]
         v_chunk = v[start:end] if v_is_tensor else v
 
         # Pre-allocate reusable buffers to avoid new allocations
@@ -701,7 +807,16 @@ def iterative_wls_quant_search_chunk(
 
 
 def iterative_wls_quant_search(
-    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1, v=0
+    data,
+    bits=4,
+    rrmin=-1.0,
+    rdelta=0.1,
+    nstep=20,
+    use_mad=False,
+    weights=None,
+    split_num=1,
+    v=0,
+    weights_row_pattern=None,
 ):
     """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
@@ -715,6 +830,8 @@ def iterative_wls_quant_search(
         weights (torch.Tensor): Weight matrix for each element.
         v: Optional rounding perturbation (scalar or tensor with the same
             shape as ``data``) for AutoRound-style tuning.
+        weights_row_pattern: Optional small, row-repeating weight pattern (see
+            ``_imatrix_row_pattern``) used instead of a full-size ``weights`` tensor.
 
     Returns:
         Tuple: (Optimal scale tensor, optimal minimum value tensor)
@@ -732,6 +849,7 @@ def iterative_wls_quant_search(
         weights=weights,
         split_num=split_num,
         v=v,
+        weights_row_pattern=weights_row_pattern,
     )
 
 
@@ -747,13 +865,26 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num, v=0
             scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num, v=v)
     else:
         imatrix = imatrix.to(tensor.device)
-        weights = imatrix.reshape(1, -1)
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
+        # See the analogous comment in `search_gguf_scale_min_asym`: broadcasting+reshaping
+        # imatrix to `tensor.shape` forces a full materialization proportional to the whole
+        # tensor, independent of `split_num`, since it happens before any chunking starts.
+        # Only fall back to that full materialization (needed for `_imatrix_handle_zero`'s
+        # explicit zero-row replacement) in the rare case calibration actually produced
+        # zero-valued entries; otherwise pass the small row-repeating pattern straight into
+        # the already-chunked `make_qx_quants_chunk`.
+        row_pattern = _imatrix_row_pattern(imatrix, tuple(tensor.shape[1:]))
+        quant_weights = None
+        qw_row_pattern = row_pattern
+        if torch.min(imatrix) == 0:
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
+            quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits, raw_imatrix=imatrix)
+            qw_row_pattern = None
 
-        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
-
-        scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights, split_num=split_num, v=v)
+        scale, int_w = make_qx_quants_chunk(
+            tensor, bits=bits, rmse_type=1, qw=quant_weights, qw_row_pattern=qw_row_pattern, split_num=split_num, v=v
+        )
     if split_num > 1:
         clear_memory(device_list=[tensor.device])
     return scale
@@ -805,6 +936,16 @@ def quant_tensor_gguf_sym_dq(
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
+    # Chunk the candidate-scale search for very large single tensors (e.g. huge vocab
+    # embed/output projections). This search allocates several full-size float32 buffers
+    # at once; unchunked, that can need tens of GB for a single tensor and OOM even though
+    # the overall model is small. Callers pass split_num=1 by default; bump it here once the
+    # tensor is large enough to matter (see `_LARGE_TENSOR_BYTES_THRESHOLD`), mirroring the
+    # heuristic already used in the export/packing path (`ggml_quant` in packing.py). Chunking
+    # has real per-chunk overhead, so it's deliberately NOT applied below that threshold -
+    # ordinary attention/FFN weights never needed it and would just get slower for no benefit.
+    if split_num == 1 and tensor.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD:
+        split_num = 16
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
     if iter is None:
