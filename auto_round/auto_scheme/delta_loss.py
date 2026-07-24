@@ -88,7 +88,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         **kwargs,
     ):
         """Wrap ``orig_layer`` to accumulate a ``mix_score`` (weight + activation loss) during
@@ -200,7 +200,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         **kwargs,
     ):
         """Wrap ``orig_layer`` and eagerly run the imatrix-aware quant search to build ``qdq_w``."""
@@ -377,7 +377,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         **kwargs,
     ):
         """Wrap ``orig_layer`` and eagerly run the imatrix-weighted GGUF K-quant search to
@@ -824,7 +824,7 @@ def get_score_for_scheme(
     pbar=None,
     shared_layers=None,
     need_weight_grad=False,
-    enable_torch_compile=False,
+    enable_torch_compile=True,
     low_gpu_mem_usage=True,
     major_device="cpu",
     batch_size=1,
@@ -1441,7 +1441,7 @@ def _gen_layer_config(
     dataset: str = "pile-10k",
     tokenizer=None,
     device_map=None,
-    enable_torch_compile=False,
+    enable_torch_compile=True,
     model_name=None,
     major_device="cpu",
     device_list=None,
@@ -1974,7 +1974,7 @@ def gen_layer_config(
     dataset: str = "pile-10k",
     tokenizer=None,
     device_map=None,
-    enable_torch_compile=False,
+    enable_torch_compile=True,
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
     processor=None,

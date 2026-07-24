@@ -169,8 +169,11 @@ use `--model_dtype "fp16"`.
 
 ### **7. Better Use `torch.compile`**
 
-**Suggestion: Use `torch.compile` if possible, but be aware that it may throw exceptions for some models, especially
-with lower versions of PyTorch**. Starting from PyTorch 2.6, we have set using `torch.compile` as the default.
+**`torch.compile` is enabled by default. To opt out, pass `enable_torch_compile=False` or use
+`--disable_torch_compile` on the CLI.**
+
+It can reduce tuning cost by about 20%, but may throw exceptions on some models, especially with lower versions of
+PyTorch.
 
 **Reasoning:**  `torch.compile` is useful to reduce tuning cost. Thanks Liu Yi for kind discussion.
 

@@ -111,7 +111,7 @@ class BlockForwardRunner:
         is_diffusion: bool = False,
         shared_cache_keys: tuple = (),
         output_config: list[str] | None = None,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: bool = True,
     ) -> None:
         self.batch_dim = batch_dim
         self.batch_size = batch_size
@@ -132,7 +132,7 @@ class BlockForwardRunner:
     # ── Factory ──────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_orchestrator(cls, orchestrator: "BaseOrchestrator", enable_torch_compile=False) -> "BlockForwardRunner":
+    def from_orchestrator(cls, orchestrator: "BaseOrchestrator", enable_torch_compile=True) -> "BlockForwardRunner":
         """Create from an orchestrator instance (called once at orchestrator init)."""
         model_ctx = getattr(orchestrator, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False

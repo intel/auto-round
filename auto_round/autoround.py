@@ -113,7 +113,7 @@ class AutoRound:
         sym (bool): Whether to use symmetric weight quantization.
         layer_config (dict): Per-layer quantization configuration.
         nsamples (int): Number of calibration samples.
-        enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers.
+        enable_torch_compile (bool): Whether to enable torch.compile for quant blocks/layers. Defaults to True.
     """
 
     SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")
@@ -146,7 +146,7 @@ class AutoRound:
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: bool = True,
         seed: int = 42,
         enable_adam: bool = False,
         enable_alg_ext: bool = False,
@@ -171,7 +171,7 @@ class AutoRound:
             gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
             low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
             device_map (str | dict, optional): Device map for each module. Defaults to 0.
-            enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to False.
+            enable_torch_compile (bool, optional): Enable torch.compile for low cost in quantization. Defaults to True.
             seed (int, optional): Random seed. Defaults to 42.
             enable_adam (bool, optional): Enable Adam-based optimizer. Defaults to False.
             enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2)

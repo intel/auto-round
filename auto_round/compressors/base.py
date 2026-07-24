@@ -200,7 +200,7 @@ class BaseOrchestrator(object):
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: bool = True,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         layer_config: Optional[dict] = None,
@@ -814,8 +814,7 @@ class BaseOrchestrator(object):
         ):
             logger.info(
                 "%s",
-                "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
+                "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
@@ -827,10 +826,6 @@ class BaseOrchestrator(object):
         if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
-        # TODO: fix https://github.com/intel/auto-round/issues/1109
-        if self.enable_torch_compile and is_raw_nv_fp:
-            self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.

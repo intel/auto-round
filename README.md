@@ -258,7 +258,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 
 ##### Device/Speed Configuration
-- **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
+- **`enable_torch_compile` (bool)**: Enable `torch.compile` for faster quantization with lower resource usage (default is `True`). Pass `enable_torch_compile=False` in Python or `--disable_torch_compile` on the CLI if compilation causes compatibility issues.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~30%-100% more tuning time (default is `False`).
 - **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `True`).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
