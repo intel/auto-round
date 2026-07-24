@@ -229,7 +229,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-  # 除 Windows 外默认启用 torch.compile；Windows 用户可设置 True 强制开启。
+    # 除 Windows 外默认启用 torch.compile；Windows 用户可设置 True 强制开启。
 )
 
 output_dir = "./tmp_autoround"
