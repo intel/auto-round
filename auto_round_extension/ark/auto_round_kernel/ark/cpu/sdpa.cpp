@@ -521,24 +521,31 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   }
 
   auto* cpu = bestla::device::CpuDevice::getInstance();
+  const bool has_extended_features =
+      (local.attn_flags &
+       (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_PREFER_FP32)) != 0;
   const bool fp16_plain_avx512 =
-      kv_dtype == BTLA_DTYPE::F16 && bestla_mha::MHA_PREFER_AVX512FP16 && cpu->AVX512_FP16() && local.step_k_sl == 1;
+      kv_dtype == BTLA_DTYPE::F16 && !has_extended_features && bestla_mha::MHA_PREFER_AVX512FP16 &&
+      cpu->AVX512_FP16() && local.step_k_sl == 1;
   const bool fp16_plain_amx_features_ok =
-      (local.attn_flags & (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_PREFER_FP32)) ==
-          0 &&
+      !has_extended_features &&
       local.head_num == local.heads_kv;
   const bool fp16_plain_amx = kv_dtype == BTLA_DTYPE::F16 && cpu->AMX_BF16() &&
                               local.K_layout == ATTN_FWD_LAYOUT_PLAIN && local.V_layout == ATTN_FWD_LAYOUT_PLAIN &&
                               (local.step_k_head_size == 1 || local.step_k_sl == 1) && fp16_plain_amx_features_ok;
 
+  if (kv_dtype == BTLA_DTYPE::F16 && has_extended_features && !cpu->AVX2()) {
+    throw std::runtime_error(
+        "ark::cpu::bestla_sdpa_forward: mixed fp16 extended features require the AVX2 fp32-score kernel");
+  }
   if (kv_dtype == BTLA_DTYPE::F16 && !(cpu->AVX2() || fp16_plain_avx512 || fp16_plain_amx)) {
     throw std::runtime_error(
         "ark::cpu::bestla_sdpa_forward: fp16 mixed SDPA requires AVX2 packed K/V, "
         "or AVX512-FP16 plain K/V with step_k_sl == 1, or the AMX-BF16 plain route");
   }
-  if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
+  if (kv_dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F() && !cpu->AMX_BF16()) {
     throw std::runtime_error(
-        "ark::cpu::bestla_sdpa_forward: bf16 K/V (NTILE48_ROWPACK2) mixed SDPA requires AVX512F; "
+        "ark::cpu::bestla_sdpa_forward: bf16 K/V mixed SDPA requires AVX512F or AMX-BF16; "
         "this CPU/build does not provide it");
   }
 

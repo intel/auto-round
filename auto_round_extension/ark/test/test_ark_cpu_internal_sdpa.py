@@ -28,6 +28,8 @@ import auto_round_kernel
 _TOL = {torch.float16: (3e-2, 3e-2), torch.bfloat16: (8e-2, 8e-2)}
 INTERNAL_CPU = auto_round_kernel.internal.cpu
 CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
+HAS_AVX2 = "avx2" in CPU_FLAGS
+HAS_AVX512F = "avx512f" in CPU_FLAGS
 HAS_AMX_BF16 = "amx_bf16" in CPU_FLAGS
 BUILD_HAS_BF16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE)
 
@@ -210,6 +212,55 @@ def test_bestla_mixed_sdpa_prefer_fp32_is_accepted(kv_dtype):
     assert out.shape == (batch, heads_q, seq, head_dim)
 
 
+@pytest.mark.parametrize("feature_kwargs", [{}, {"prefer_fp32": True}])
+def test_bf16_mixed_route_accepts_avx512f_or_amx_bf16(feature_kwargs):
+    """The BF16 mixed entry gate accepts either supported ISA."""
+    if not BUILD_HAS_BF16_ROUTE:
+        pytest.skip("BF16 mixed route was not compiled")
+    q = torch.randn(1, 4, 4, 32, dtype=torch.float32)
+    k = torch.randn(1, 2, 8, 32, dtype=torch.bfloat16)
+    v = torch.randn(1, 2, 8, 32, dtype=torch.bfloat16)
+    expected_route = _resolved_cpu_sdpa_route(q, k, v, **feature_kwargs)
+    assert expected_route == 1
+    if not (HAS_AVX512F or HAS_AMX_BF16):
+        with pytest.raises(RuntimeError, match="AVX512F or AMX-BF16"):
+            _mixed_sdpa_ex(q, k, v, 1 / math.sqrt(32), **feature_kwargs)
+        return
+    out = _mixed_sdpa_ex(q, k, v, 1 / math.sqrt(32), **feature_kwargs)
+    assert out.shape == q.shape
+
+
+def test_bf16_mixed_avx512f_only_route():
+    if not (HAS_AVX512F and not HAS_AMX_BF16):
+        pytest.skip("requires AVX512F without AMX-BF16")
+    q = torch.randn(1, 4, 4, 32, dtype=torch.float32)
+    k = torch.randn(1, 2, 8, 32, dtype=torch.bfloat16)
+    v = torch.randn(1, 2, 8, 32, dtype=torch.bfloat16)
+    out = _mixed_sdpa_ex(q, k, v, 1 / math.sqrt(32))
+    assert out.shape == q.shape
+
+
+def test_bf16_mixed_amx_only_route():
+    if not (HAS_AMX_BF16 and not HAS_AVX512F):
+        pytest.skip("requires AMX-BF16 without AVX512F")
+    q = torch.randn(1, 4, 4, 32, dtype=torch.float32)
+    k = torch.randn(1, 2, 8, 32, dtype=torch.bfloat16)
+    v = torch.randn(1, 2, 8, 32, dtype=torch.bfloat16)
+    out = _mixed_sdpa_ex(q, k, v, 1 / math.sqrt(32))
+    assert out.shape == q.shape
+
+
+def test_bf16_mixed_amx_preferred_without_features():
+    """A machine with AMX-BF16 may use the AMX route when no feature is enabled."""
+    if not HAS_AMX_BF16:
+        pytest.skip("requires AMX-BF16")
+    q = torch.randn(1, 4, 8, 64, dtype=torch.float32)
+    k = torch.randn(1, 2, 32, 64, dtype=torch.bfloat16)
+    v = torch.randn(1, 2, 32, 64, dtype=torch.bfloat16)
+    out = _mixed_sdpa_ex(q, k, v, 1 / math.sqrt(64))
+    assert out.shape == q.shape
+
+
 @pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
 def test_bestla_mixed_sdpa_padding_right_matches_reference(kv_dtype):
     torch.manual_seed(7002)
@@ -219,6 +270,10 @@ def test_bestla_mixed_sdpa_padding_right_matches_reference(kv_dtype):
     q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
     k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
     v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+    if kv_dtype == torch.float16 and not HAS_AVX2:
+        with pytest.raises(RuntimeError, match="mixed fp16 extended features require the AVX2"):
+            _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
+        return
     try:
         actual = _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
     except (RuntimeError, ValueError) as exc:
