@@ -229,7 +229,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-    # 可选开启torch编译加速：enable_torch_compile=True,
+    # 除 Windows 外默认启用 torch.compile；Windows 用户可设置 True 强制开启。
 )
 
 output_dir = "./tmp_autoround"
@@ -836,7 +836,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 ### 超参数调整
 #### 降低 GPU 显存占用
 以下方法可单独或组合使用，其中部分方式会增加训练耗时或带来轻微的精度损失：
-- 将 `enable_torch_compile` 设为 True（开启 PyTorch 编译加速，不损失精度）
+- 保持默认的 `enable_torch_compile=True`（开启 PyTorch 编译加速，不损失精度）
 - 开启 `low_gpu_mem_usage`（低显存模式，**增加训练耗时**）
 - 设置 `--bs 1 --gradient_accumulate_steps 8`（批次1+梯度累积8步，**增加训练耗时**）
 - 将 `bs` 降至 4（**可能会有轻微的精度损失**）
@@ -848,10 +848,14 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 #### 提升训练速度
 以下方法可单独或组合使用，其中部分方式可能带来精度损失：
-- 将 `enable_torch_compile` 设为 True（无精度损失）
+- 保持默认的 `enable_torch_compile=True`（无精度损失）
 - 使用 `auto-round-light` （小模型/ 2-bits 场景可能有明显精度损失）
 - 将 `seqlen` 降至 512（**部分场景可能出现大幅精度损失**）
 - 将 `bs` 降至 4（**仅有轻微精度损失**）
+
+Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。Windows 用户可在
+Python API 中传入 `enable_torch_compile=True`，或使用命令行参数 `--enable_torch_compile` 强制开启。其他
+平台如需关闭，可传入 `enable_torch_compile=False` 或使用 `--disable_torch_compile`。
 
 #### 开启 lm-head 层量化
 该配置目前**仅支持 AutoRound 原生格式的推理**，命令行启用方式如下：

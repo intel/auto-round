@@ -280,11 +280,8 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
-    if args.enable_torch_compile:
-        logger.info(
-            "`torch.compile` is enabled to reduce tuning costs. "
-            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
-        )
+    if args.enable_torch_compile is False:
+        logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
     model_name = args.model
     if model_name[-1] == "/":
@@ -305,7 +302,7 @@ def tune(args):
                     f"{fmt} is not supported for lm-head quantization, please change to {auto_round_formats}"
                 )
 
-    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
+    enable_torch_compile = args.enable_torch_compile
     scheme = args.scheme.upper()
 
     from auto_round.schemes import PRESET_SCHEMES
@@ -335,10 +332,10 @@ def tune(args):
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
-        if enable_torch_compile:
+        if enable_torch_compile is False:
             logger.warning(
-                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
-                "on some models. If so, try removing `--enable_torch_compile`."
+                "`torch.compile` is disabled with AutoScheme. "
+                "Enabling it (the default) is strongly recommended to save VRAM."
             )
         scheme = AutoScheme(
             options=args.options,

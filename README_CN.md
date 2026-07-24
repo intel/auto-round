@@ -252,7 +252,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### 设备 / 速度配置
 
-- ​**​`enable_torch_compile`​**（bool）：通常建议设为 `True` 来提升量化速度、降低资源消耗，但是有极小概率会触发异常，建议使用最新的 tiron 版本。
+- ​**​`enable_torch_compile`​**（bool）：启用 `torch.compile` 以提升量化速度并降低资源消耗。除 Windows 外默认开启；Windows 上默认关闭，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。在 Windows 上可通过 Python 参数 `enable_torch_compile=True` 或命令行参数 `--enable_torch_compile` 强制开启；其他平台可使用 `enable_torch_compile=False` 或 `--disable_torch_compile` 关闭。
 - ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
 - ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `False`）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。

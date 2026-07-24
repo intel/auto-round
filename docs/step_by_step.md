@@ -238,7 +238,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-    # enable_torch_compile=True,
+    # torch.compile is enabled by default except on Windows. On Windows, set True to force enable it.
 )
 
 output_dir = "./tmp_autoround"
@@ -849,7 +849,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 - **Reduced GPU Memory Usage:**
     
-    - set `enable_torch_compile` to True
+  - keep `enable_torch_compile=True` (the default)
 
     - enable `low_gpu_mem_usage`(more tuning cost)
 
@@ -869,7 +869,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
       quantize_and_save API, as long as only one export format is specified.
 
 - **Speedup the tuning:**
-    - set `enable_torch_compile` to True
+  - keep `enable_torch_compile=True` (the default)
 
     - use `auto-round-light` configuration
 
@@ -878,6 +878,10 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
     - reduce the train bs to 4(little accuracy drop. )
 
     - or combine them
+
+  `torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC `cl.exe` compiler. Windows
+  users can pass `enable_torch_compile=True` to the Python API or use `--enable_torch_compile` to force enable it. On
+  other platforms, pass `enable_torch_compile=False` or use `--disable_torch_compile` to opt out.
 
 
 - **Enable quantized lm-head:**

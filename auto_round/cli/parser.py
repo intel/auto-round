@@ -144,7 +144,20 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Deprecated compatibility flag. Low CPU memory mode is enabled by default.",
     )
     rt.add_argument("--disable_low_cpu_mem_usage", action="store_true", help="Disable low CPU memory mode.")
-    rt.add_argument("--enable_torch_compile", action="store_true", help="Enable torch.compile during quantization.")
+    torch_compile_group = rt.add_mutually_exclusive_group()
+    torch_compile_group.add_argument(
+        "--enable_torch_compile",
+        dest="enable_torch_compile",
+        action="store_true",
+        help="Enable torch.compile during quantization (force enable on Windows).",
+    )
+    torch_compile_group.add_argument(
+        "--disable_torch_compile",
+        dest="enable_torch_compile",
+        action="store_false",
+        help="Disable torch.compile during quantization.",
+    )
+    rt.set_defaults(enable_torch_compile=None)
     rt.add_argument(
         "--disable_trust_remote_code", action="store_true", help="Disable trust_remote_code when loading models."
     )
