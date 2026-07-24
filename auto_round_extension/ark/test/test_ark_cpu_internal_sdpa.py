@@ -13,6 +13,7 @@ This module covers behavior that is intentionally outside the public
 """
 
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -274,10 +275,29 @@ def test_bestla_mixed_sdpa_padding_right_matches_reference(kv_dtype):
         with pytest.raises(RuntimeError, match="mixed fp16 extended features require the AVX2"):
             _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
         return
+    old_debug = os.environ.get("ARK_DEBUG_SDPA_DISPATCH")
+    os.environ["ARK_DEBUG_SDPA_DISPATCH"] = "1"
     try:
+        print(
+            f"SDPA debug: dtype={kv_dtype} flags={sorted(CPU_FLAGS)} "
+            f"build_bf16={BUILD_HAS_BF16_ROUTE} avx2={HAS_AVX2} "
+            f"route={_resolved_cpu_sdpa_route(q, k, v, n_padding=n_padding)} n_padding={n_padding}",
+            flush=True,
+        )
         actual = _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
+        expected = _scalar_attn_ref(q, k.float(), v.float(), scale, n_valid=n_padding)
+        print(
+            f"SDPA debug result: max_abs={(actual - expected).abs().max().item():.6g} "
+            f"actual00={actual[0, 0, 0, :4].tolist()} expected00={expected[0, 0, 0, :4].tolist()}",
+            flush=True,
+        )
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
+    finally:
+        if old_debug is None:
+            os.environ.pop("ARK_DEBUG_SDPA_DISPATCH", None)
+        else:
+            os.environ["ARK_DEBUG_SDPA_DISPATCH"] = old_debug
     expected = _scalar_attn_ref(q, k.float(), v.float(), scale, n_valid=n_padding)
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32

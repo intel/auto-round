@@ -68,6 +68,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <stdexcept>
@@ -1463,6 +1464,25 @@ inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
   const bool has_extended_features =
       (params.attn_flags & (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 |
                             ATTN_FLAG_PREFER_FP32)) != 0;
+  if (std::getenv("ARK_DEBUG_SDPA_DISPATCH") != nullptr) {
+    const char* selected =
+        !has_extended_features && MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() &&
+                params.K_layout == ATTN_FWD_LAYOUT_PLAIN && params.V_layout == ATTN_FWD_LAYOUT_PLAIN &&
+                params.step_k_sl == 1
+            ? "avx512fp16-plain"
+            : (_cd->AMX_BF16() && params.K_layout == ATTN_FWD_LAYOUT_PLAIN &&
+                       params.V_layout == ATTN_FWD_LAYOUT_PLAIN
+                   ? "amx-plain"
+                   : (_cd->AVX2() ? "avx2-packed" : "unsupported"));
+    std::fprintf(stderr,
+                 "ARK fp16 dispatch: selected=%s features=%d K_layout=%d V_layout=%d step_k_sl=%d "
+                 "AVX512_FP16=%d AMX_BF16=%d AVX2=%d CompileFP16=%d CompileAVX2=%d n_padding=%d\n",
+                 selected, static_cast<int>(has_extended_features), static_cast<int>(params.K_layout),
+                 static_cast<int>(params.V_layout), params.step_k_sl, static_cast<int>(_cd->AVX512_FP16()),
+                 static_cast<int>(_cd->AMX_BF16()), static_cast<int>(_cd->AVX2()), static_cast<int>(CompileFP16()),
+                 static_cast<int>(CompileAVX2()),
+                 static_cast<int>((params.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0));
+  }
   if (!has_extended_features && MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() &&
       params.K_layout == ATTN_FWD_LAYOUT_PLAIN &&
       params.V_layout == ATTN_FWD_LAYOUT_PLAIN && params.step_k_sl == 1) {
