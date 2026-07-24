@@ -581,9 +581,7 @@ class SpinQuantPreprocessor:
 
         n_r1 = len(self._r1_hook_handles)
         n_other = len(self._hook_handles)
-        logger.info(
-            f"[SpinQuant] Layer-wise rotation finalized. " f"Active hooks: {n_r1} R1 + {n_other} R3/R4."
-        )
+        logger.info(f"[SpinQuant] Layer-wise rotation finalized. " f"Active hooks: {n_r1} R1 + {n_other} R3/R4.")
 
     def _validate_dimensions(self) -> None:
         """Validate dimension requirements and disable rotations that can't work."""

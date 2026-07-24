@@ -154,8 +154,7 @@ class BaseRotation(ABC):
                 layer-wise rotation.
         """
         raise NotImplementedError(
-            f"{self.__class__.__name__} does not support layer-wise rotation. "
-            f"Use full-model rotation instead."
+            f"{self.__class__.__name__} does not support layer-wise rotation. " f"Use full-model rotation instead."
         )
 
     def rotate_layer(
@@ -184,9 +183,7 @@ class BaseRotation(ABC):
             NotImplementedError: If the algorithm does not support
                 layer-wise rotation.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support layer-wise rotation."
-        )
+        raise NotImplementedError(f"{self.__class__.__name__} does not support layer-wise rotation.")
 
     def finalize_layerwise(self, model: torch.nn.Module) -> None:
         """Post-loop cleanup after all layers have been rotated.
