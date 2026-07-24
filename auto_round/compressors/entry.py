@@ -23,7 +23,13 @@ from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.device_manager import normalize_default_device_map
 
 _ENTRY_ROUTE_KWARGS = {"model_free", "disable_model_free", "disable_opt_rtn"}
-_ENTRY_COMPRESSOR_KWARGS = {"scale_dtype", "ignore_layers", "quant_lm_head", "to_quant_block_names"}
+_ENTRY_COMPRESSOR_KWARGS = {
+    "scale_dtype",
+    "ignore_layers",
+    "quant_lm_head",
+    "to_quant_block_names",
+    "layerwise_rotation",
+}
 _ENTRY_BASE_KWARGS = {
     "format",
     "dataset",

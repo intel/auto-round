@@ -43,6 +43,7 @@ _COMPAT_KWARGS = {
     "ignore_layers",
     "quant_lm_head",
     "to_quant_block_names",
+    "layerwise_rotation",
     "model_free",
     "disable_model_free",
     "model_dtype",
