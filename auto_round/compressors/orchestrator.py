@@ -231,6 +231,9 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             m, _, _ = self.alg_composer.dispatch_block(m, input_ids, input_others)
 
+            # ── Layer-wise rotation: rotate this block before reference collection ──
+            self._on_block_ready(m, block_name_or_names, i)
+
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.composer import BlockContext
 
@@ -373,6 +376,7 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         all_blocks = self.quant_block_list or get_block_names(self.model)
         pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+        _zs_block_idx = 0
         for block_names in all_blocks:
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
@@ -380,6 +384,10 @@ class CompressionOrchestrator(BaseOrchestrator):
 
                 # ── Infrastructure: materialize ───────────────────────────
                 materialize_model_(block)
+
+                # ── Layer-wise rotation: rotate this block before quantization ──
+                self._on_block_ready(block, block_name, _zs_block_idx)
+                _zs_block_idx += 1
 
                 # ── Pure algorithm ────────────────────────────────────────
                 ctx = BlockContext(
@@ -432,6 +440,8 @@ class CompressionOrchestrator(BaseOrchestrator):
                 clear_memory()
                 memory_monitor.log_summary()
                 pbar.update(1)
+
+        self._finalize_block_processing(self.model)
 
         cnt = 1
         remain_layer_names = []
@@ -590,6 +600,8 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         # ── Pipeline lifecycle: finalize_quantization (model-level teardown)
         self.alg_composer.finalize_run()
+        # ── Layer-wise rotation: finalize after all blocks processed ─
+        self._finalize_block_processing(self.model_context.model)
         pbar.set_description("Quantizing done")
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
@@ -832,6 +844,20 @@ class CompressionOrchestrator(BaseOrchestrator):
         # quantizer, layer_config, etc.).
         if not self._post_init_done:
             self.post_init()
+
+        # Layer-wise rotation is driven by the internal block loop in
+        # ``quantize()`` (rotate on ``_on_block_ready`` → cleanup on
+        # ``_finalize_block_processing``). This externally-driven single-block API
+        # cannot guarantee that lifecycle, and rotating here would desync the
+        # caller's own reference/teacher outputs (collected on the un-rotated
+        # block). Fail loudly instead of producing silently wrong results.
+        if self.layerwise_rotation and self._rotation_transforms:
+            raise NotImplementedError(
+                "layerwise_rotation=True is not supported through the single-block "
+                "quantize_block() API (e.g. LLM-Compressor). Use the full AutoRound "
+                "quantize() entry point, or disable layerwise_rotation to apply "
+                "full-model rotation up-front."
+            )
 
         # ── Zero-shot (RTN) path: no calibration data needed ──────────────────
         if not self.need_calib:
