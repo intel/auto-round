@@ -135,9 +135,9 @@ class TestRotationEquivalenceXPU:
             logits.flatten().unsqueeze(0).float(),
         ).item()
         max_diff = (baseline_logits - logits).abs().max().item()
-        assert cos_sim > 0.9999, (
-            f"{label} rotation broke model equivalence: cos_sim = {cos_sim:.6f}, max_diff = {max_diff:.4f}"
-        )
+        assert (
+            cos_sim > 0.9999
+        ), f"{label} rotation broke model equivalence: cos_sim = {cos_sim:.6f}, max_diff = {max_diff:.4f}"
 
 
 class TestHookLifecycleXPU:
