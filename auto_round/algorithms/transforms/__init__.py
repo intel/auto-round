@@ -45,7 +45,8 @@ from typing import Any
 import torch
 
 from auto_round.algorithms.transforms.base import (
-    BaseWeightTransformer,
+    BasePreprocessor,
+    BaseWeightTransformer,  # backward-compat alias
     BaseRotation,
     BaseRotationConfig,
     SerializerMixin,
@@ -62,7 +63,8 @@ from auto_round.algorithms.transforms.hadamard import (
 
 __all__ = [
     # Base interfaces
-    "BaseWeightTransformer",
+    "BasePreprocessor",
+    "BaseWeightTransformer",  # backward-compat alias
     "BaseRotation",
     "BaseRotationConfig",
     "SerializerMixin",

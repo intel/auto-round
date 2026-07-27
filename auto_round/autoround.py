@@ -23,7 +23,7 @@ from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-    from auto_round.compressors.base import BaseCompressor
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
 
 _COMPAT_KWARGS = {

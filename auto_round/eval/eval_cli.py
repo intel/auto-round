@@ -45,7 +45,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--model_name",
             "--model",
             "--model_name_or_path",
-            default="facebook/opt-125m",
+            dest="model_name",
+            default=None,
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
@@ -189,19 +190,19 @@ def eval(args):
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
-    if is_diffusion_model(args.model):
+    if is_diffusion_model(args.model_name):
         from auto_round.eval.evaluation import evaluate_diffusion_model
         from auto_round.utils import diffusion_load_model
 
-        pipe, _ = diffusion_load_model(args.model)
+        pipe, _ = diffusion_load_model(args.model_name)
         evaluate_diffusion_model(args, pipe=pipe)
         return
     if args.eval_backend == "vllm":
-        assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
+        assert isinstance(args.model_name, str), "vllm evaluation only supports model name or path."
         eval_with_vllm(args)
         return
     tasks, model_args, device_str = _eval_init(
-        args.tasks, args.model, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
+        args.tasks, args.model_name, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
     )
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
@@ -211,7 +212,7 @@ def eval(args):
     if (batch_size := args.eval_bs) is None:
         batch_size = "auto:8"
 
-    model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(args.model, args.eval_model_dtype)
+    model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(args.model_name, args.eval_model_dtype)
 
     if is_gguf_file:
         from lm_eval.utils import make_table  # pylint: disable=E0401
@@ -270,7 +271,7 @@ def eval_with_vllm(args):
 
     # Build vllm kwargs with base parameters
     vllm_kwargs = {
-        "pretrained": args.model,
+        "pretrained": args.model_name,
         "dtype": eval_model_dtype,
         "trust_remote_code": not args.disable_trust_remote_code,
         "add_bos_token": args.add_bos_token,

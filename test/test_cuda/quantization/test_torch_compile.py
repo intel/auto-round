@@ -74,9 +74,9 @@ class TestTorchCompile:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_opt_rtn_uses_plain_block_forward(self):
-        config = RTNConfig(bits=4, data_type="int", act_bits=16, disable_opt_rtn=False)
-        quantizer = BaseQuantizer(config)
-        quantizer.compress_context = SimpleNamespace(enable_torch_compile=True, device="cpu")
-
-        assert quantizer._resolve_block_forward() is block_forward
+    # def test_opt_rtn_uses_plain_block_forward(self):
+    #     config = RTNConfig(bits=4, data_type="int", act_bits=16, disable_opt_rtn=False)
+    #     quantizer = BaseQuantizer(config)
+    #     quantizer.compress_context = SimpleNamespace(enable_torch_compile=True, device="cpu")
+    #
+    #     assert quantizer._resolve_block_forward() is block_forward

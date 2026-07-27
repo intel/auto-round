@@ -457,7 +457,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         # Create a minimal args object with essential parameters
         vllm_args = type("Args", (), {})()
         # Required parameters
-        vllm_args.model = eval_folder
+        vllm_args.model_name = eval_folder
         vllm_args.tasks = args.tasks
         vllm_args.device_map = getattr(args, "device_map", device_str)
         # Optional common parameters
