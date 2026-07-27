@@ -1691,6 +1691,10 @@ def _get_worker_memory_report(worker_device):
 
 def _merge_worker_memory_reports(monitor, reports):
     """Merge child-process RAM/VRAM peaks into the parent monitor."""
+    # Worker reports are process-local. Sum them to estimate the concurrent
+    # worker peak, then add the parent RSS after workers have exited. The
+    # parent's sampled peak may already contain the full live process tree,
+    # so retain whichever aggregate is larger rather than adding both.
     worker_peak_ram = sum(report.get("peak_ram", 0.0) for report in reports)
     parent_ram = monitor._process_tree_rss() if hasattr(monitor, "_process_tree_rss") else monitor.peak_ram
     monitor.peak_ram = max(monitor.peak_ram, parent_ram + worker_peak_ram)
@@ -1704,10 +1708,10 @@ def _merge_worker_memory_reports(monitor, reports):
 
 
 def _get_scheme_worker_count(num_schemes, num_gpus):
-    """Use at most one model-loading worker per visible GPU."""
+    """Use one worker per scoring scheme; workers may share a visible GPU."""
     if num_gpus < 1:
         raise ValueError("AutoScheme multiprocessing requires at least one GPU")
-    return min(num_schemes, num_gpus)
+    return num_schemes
 
 
 def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage):
@@ -2168,6 +2172,15 @@ def _gen_layer_config(
 
         scheme_cache_meta = []
         for index, scheme in enumerate(schemes):
+            if check_bf16_scheme(scheme):
+                scheme_cache_meta.append((None, None, None))
+                logger.info(
+                    "AutoScheme: scheme %d/%d (%s) is a BF16 baseline; skipping scoring and cache lookup.",
+                    index + 1,
+                    len(schemes),
+                    _scheme_short_name(scheme),
+                )
+                continue
             cache_key = _autoscheme_cache_key(
                 model_name=_model_id_for_cache,
                 dataset=dataset,
@@ -2193,7 +2206,11 @@ def _gen_layer_config(
                 cached_data = None
             scheme_cache_meta.append((cache_key, cache_path, cached_data))
 
-        uncached_indices = [index for index, (_, _, cached) in enumerate(scheme_cache_meta) if cached is None]
+        uncached_indices = [
+            index
+            for index, (_, _, cached) in enumerate(scheme_cache_meta)
+            if not check_bf16_scheme(schemes[index]) and cached is None
+        ]
         worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
         num_gpus = len(worker_device_pool)
         can_parallel = (
@@ -2215,7 +2232,8 @@ def _gen_layer_config(
                 num_workers = _get_scheme_worker_count(len(uncached_indices), num_gpus)
                 worker_devices = _assign_scheme_worker_devices(len(uncached_indices), worker_device_pool)
                 logger.info(
-                    "AutoScheme: starting %d parallel workers for %d uncached schemes (devices=%s)",
+                    "AutoScheme: starting %d parallel scoring workers for %d uncached non-BF16 schemes "
+                    "(devices=%s; workers may share devices)",
                     num_workers,
                     len(uncached_indices),
                     worker_device_pool,
@@ -2259,10 +2277,28 @@ def _gen_layer_config(
 
                     parallel_results = {index: scores for index, scores, _ in worker_results}
                     _merge_worker_memory_reports(memory_monitor, [report for _, _, report in worker_results])
+                    logger.info(
+                        "AutoScheme parallel aggregate memory (parent + %d workers): %s",
+                        len(worker_results),
+                        memory_monitor.get_summary(),
+                    )
 
                 for index, scheme in enumerate(schemes):
                     cache_key, cache_path, cached_data = scheme_cache_meta[index]
-                    if cached_data is not None:
+                    if check_bf16_scheme(scheme):
+                        apply_quant_scheme(
+                            model,
+                            quant_layer_names=quant_layer_names,
+                            fixed_layer_scheme=fixed_layer_scheme,
+                            scheme=scheme,
+                        )
+                        per_op_scores = {}
+                        for name in quant_layer_names:
+                            if name in fixed_layer_scheme:
+                                continue
+                            bits, _ = compute_layer_bits(get_module(model, name), auto_scheme.ignore_scale_zp_bits)
+                            per_op_scores[name] = [bits, 0.0]
+                    elif cached_data is not None:
                         logger.info(
                             "AutoScheme: loading per-scheme cache for scheme %d from %s."
                             " Delete this file to disable reuse and rescore.",
@@ -2364,7 +2400,8 @@ def _gen_layer_config(
                         )
                     memory_monitor.update()
                     memory_monitor.log_summary()
-                    _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
+                    if not check_bf16_scheme(scheme):
+                        _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
 
                 total_loss = _record_scheme_scores(index, per_op_scores)
                 logger.info(

@@ -650,12 +650,19 @@ def test_assign_scheme_worker_devices_rejects_no_gpu():
         _assign_scheme_worker_devices(1, [])
 
 
-def test_scheme_worker_count_is_limited_by_visible_gpus():
+def test_scheme_worker_count_allows_workers_to_share_gpus():
     from auto_round.auto_scheme.delta_loss import _get_scheme_worker_count
 
-    assert _get_scheme_worker_count(5, 1) == 1
-    assert _get_scheme_worker_count(5, 2) == 2
+    assert _get_scheme_worker_count(5, 1) == 5
+    assert _get_scheme_worker_count(5, 2) == 5
     assert _get_scheme_worker_count(1, 4) == 1
+
+
+def test_scheme_worker_count_rejects_no_gpu():
+    from auto_round.auto_scheme.delta_loss import _get_scheme_worker_count
+
+    with pytest.raises(ValueError, match="at least one GPU"):
+        _get_scheme_worker_count(2, 0)
 
 
 def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
