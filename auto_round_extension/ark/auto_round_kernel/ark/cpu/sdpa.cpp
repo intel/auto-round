@@ -538,6 +538,12 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     throw std::runtime_error(
         "ark::cpu::bestla_sdpa_forward: mixed fp16 extended features require the AVX2 fp32-score kernel");
   }
+  // TODO: validate and re-enable AMD AVX2 FP16 feature dispatch. The packed
+  // route currently produces incorrect results for right-padding on AMD.
+  if (kv_dtype == BTLA_DTYPE::F16 && has_extended_features && cpu->AVX2() && !cpu->INTEL()) {
+    throw std::runtime_error(
+        "ark::cpu::bestla_sdpa_forward: FP16 internal features are temporarily unsupported on non-Intel AVX2 CPUs");
+  }
   if (kv_dtype == BTLA_DTYPE::F16 && !(cpu->AVX2() || fp16_plain_avx512 || fp16_plain_amx)) {
     throw std::runtime_error(
         "ark::cpu::bestla_sdpa_forward: fp16 mixed SDPA requires AVX2 packed K/V, "

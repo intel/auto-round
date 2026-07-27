@@ -13,7 +13,6 @@ This module covers behavior that is intentionally outside the public
 """
 
 import math
-import os
 import sys
 from pathlib import Path
 
@@ -30,6 +29,7 @@ _TOL = {torch.float16: (3e-2, 3e-2), torch.bfloat16: (8e-2, 8e-2)}
 INTERNAL_CPU = auto_round_kernel.internal.cpu
 CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
 HAS_AVX2 = "avx2" in CPU_FLAGS
+IS_INTEL = "GenuineIntel" in cpuinfo.get_cpu_info().get("vendor_id_raw", "")
 HAS_AVX512F = "avx512f" in CPU_FLAGS
 HAS_AMX_BF16 = "amx_bf16" in CPU_FLAGS
 BUILD_HAS_BF16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE)
@@ -275,29 +275,12 @@ def test_bestla_mixed_sdpa_padding_right_matches_reference(kv_dtype):
         with pytest.raises(RuntimeError, match="mixed fp16 extended features require the AVX2"):
             _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
         return
-    old_debug = os.environ.get("ARK_DEBUG_SDPA_DISPATCH")
-    os.environ["ARK_DEBUG_SDPA_DISPATCH"] = "1"
     try:
-        print(
-            f"SDPA debug: dtype={kv_dtype} flags={sorted(CPU_FLAGS)} "
-            f"build_bf16={BUILD_HAS_BF16_ROUTE} avx2={HAS_AVX2} "
-            f"route={_resolved_cpu_sdpa_route(q, k, v, n_padding=n_padding)} n_padding={n_padding}",
-            flush=True,
-        )
         actual = _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
-        expected = _scalar_attn_ref(q, k.float(), v.float(), scale, n_valid=n_padding)
-        print(
-            f"SDPA debug result: max_abs={(actual - expected).abs().max().item():.6g} "
-            f"actual00={actual[0, 0, 0, :4].tolist()} expected00={expected[0, 0, 0, :4].tolist()}",
-            flush=True,
-        )
     except (RuntimeError, ValueError) as exc:
+        if kv_dtype == torch.float16 and HAS_AVX2 and not IS_INTEL:
+            pytest.skip(f"AMD AVX2 FP16 feature route is temporarily disabled: {exc}")
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
-    finally:
-        if old_debug is None:
-            os.environ.pop("ARK_DEBUG_SDPA_DISPATCH", None)
-        else:
-            os.environ["ARK_DEBUG_SDPA_DISPATCH"] = old_debug
     expected = _scalar_attn_ref(q, k.float(), v.float(), scale, n_valid=n_padding)
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32
