@@ -1643,11 +1643,11 @@ def _refresh_cached_layer_bits(
     return refreshed_scores
 
 
-def _assign_scheme_worker_devices(worker_count, visible_gpu_count):
-    """Assign workers round-robin within the parent's logical CUDA device space."""
-    if visible_gpu_count < 1:
-        raise ValueError("visible_gpu_count must be at least 1")
-    return [f"cuda:{worker_index % visible_gpu_count}" for worker_index in range(worker_count)]
+def _assign_scheme_worker_devices(worker_count, available_devices):
+    """Assign workers round-robin within the devices selected by the caller."""
+    if not available_devices:
+        raise ValueError("available_devices must contain at least one device")
+    return [available_devices[worker_index % len(available_devices)] for worker_index in range(worker_count)]
 
 
 class _ProgressQueueProxy:
@@ -1710,6 +1710,17 @@ def _get_scheme_worker_count(num_schemes, num_gpus):
     return min(num_schemes, num_gpus)
 
 
+def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage):
+    """Load an isolated worker model without an extra full-size CPU initialization copy."""
+    return load_model(
+        model_name,
+        device="cpu",
+        use_auto_mapping=False,
+        use_model_replacements=use_model_replacements,
+        low_cpu_mem_usage=low_cpu_mem_usage,
+    )
+
+
 def _score_scheme_worker(args):
     """Score one scheme and return its index, scores, and worker VRAM peak."""
     import traceback as _tb
@@ -1727,6 +1738,7 @@ def _score_scheme_worker(args):
         batch_size,
         need_weight_grad,
         enable_torch_compile,
+        low_cpu_mem_usage,
         low_gpu_mem_usage,
         ignore_scale_zp_bits,
         force_mllm,
@@ -1743,11 +1755,10 @@ def _score_scheme_worker(args):
     from auto_round.utils import get_module as _get_module
 
     try:
-        model, tokenizer, processor, _, _, is_vlm, _ = load_model(
+        model, tokenizer, processor, _, _, is_vlm, _ = _load_scheme_worker_model(
             model_name,
-            device="cpu",
-            use_auto_mapping=False,
-            use_model_replacements=use_model_replacements,
+            use_model_replacements,
+            low_cpu_mem_usage,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -2183,7 +2194,8 @@ def _gen_layer_config(
             scheme_cache_meta.append((cache_key, cache_path, cached_data))
 
         uncached_indices = [index for index, (_, _, cached) in enumerate(scheme_cache_meta) if cached is None]
-        num_gpus = torch.cuda.device_count()
+        worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
+        num_gpus = len(worker_device_pool)
         can_parallel = (
             _model_id_for_cache is not None and num_gpus >= 1 and len(uncached_indices) >= 2 and not need_imatrix
         )
@@ -2201,12 +2213,12 @@ def _gen_layer_config(
                     return asdict(scheme) if isinstance(scheme, QuantizationScheme) else scheme
 
                 num_workers = _get_scheme_worker_count(len(uncached_indices), num_gpus)
-                worker_devices = _assign_scheme_worker_devices(len(uncached_indices), num_workers)
+                worker_devices = _assign_scheme_worker_devices(len(uncached_indices), worker_device_pool)
                 logger.info(
-                    "AutoScheme: starting %d parallel workers for %d uncached schemes (visible GPUs=%d)",
+                    "AutoScheme: starting %d parallel workers for %d uncached schemes (devices=%s)",
                     num_workers,
                     len(uncached_indices),
-                    num_gpus,
+                    worker_device_pool,
                 )
                 spawn_context = multiprocessing.get_context("spawn")
                 with spawn_context.Manager() as manager:
@@ -2225,6 +2237,7 @@ def _gen_layer_config(
                             batch_size,
                             need_weight_grad,
                             enable_torch_compile,
+                            auto_scheme.low_cpu_mem_usage,
                             auto_scheme.low_gpu_mem_usage,
                             auto_scheme.ignore_scale_zp_bits,
                             force_mllm,

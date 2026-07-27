@@ -8,6 +8,31 @@ from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
 
 
+@pytest.mark.parametrize(
+    "model_type, expected",
+    [
+        ("mllm", ("model", "tokenizer", "processor", "image_processor", None, True, False)),
+        ("diffusion", ("model", None, None, None, "pipe", False, True)),
+        ("llm", ("model", "tokenizer", None, None, None, False, False)),
+    ],
+)
+def test_load_model_returns_named_values_for_each_model_type(monkeypatch, model_type, expected):
+    import auto_round.utils.model as model_utils
+
+    monkeypatch.setattr(model_utils, "is_mllm_model", lambda *_args, **_kwargs: model_type == "mllm")
+    monkeypatch.setattr(model_utils, "is_diffusion_model", lambda *_args, **_kwargs: model_type == "diffusion")
+    monkeypatch.setattr(
+        model_utils,
+        "mllm_load_model",
+        lambda *_args, **_kwargs: ("model", "processor", "tokenizer", "image_processor"),
+    )
+    monkeypatch.setattr(model_utils, "diffusion_load_model", lambda *_args, **_kwargs: ("pipe", "model"))
+    monkeypatch.setattr(model_utils, "llm_load_model", lambda *_args, **_kwargs: ("model", "tokenizer"))
+    monkeypatch.setattr("auto_round.modeling.unfused_moe.apply_model_monkey_patches", lambda *_args, **_kwargs: None)
+
+    assert model_utils.load_model("model-id") == expected
+
+
 def test_env_ar_auto_scheme_nsamples_overrides_default(monkeypatch):
     """AR_AUTO_SCHEME_NSAMPLES env var should override the built-in nsamples heuristic."""
     import auto_round.envs as envs
@@ -603,20 +628,26 @@ def test_parallel_progress_events_are_applied_in_parent():
 def test_assign_scheme_worker_devices_round_robin():
     from auto_round.auto_scheme.delta_loss import _assign_scheme_worker_devices
 
-    assert _assign_scheme_worker_devices(5, 2) == ["cuda:0", "cuda:1", "cuda:0", "cuda:1", "cuda:0"]
+    assert _assign_scheme_worker_devices(5, ["cuda:2", "cuda:5"]) == [
+        "cuda:2",
+        "cuda:5",
+        "cuda:2",
+        "cuda:5",
+        "cuda:2",
+    ]
 
 
 def test_assign_scheme_worker_devices_shares_single_gpu():
     from auto_round.auto_scheme.delta_loss import _assign_scheme_worker_devices
 
-    assert _assign_scheme_worker_devices(3, 1) == ["cuda:0", "cuda:0", "cuda:0"]
+    assert _assign_scheme_worker_devices(3, ["cuda:3"]) == ["cuda:3", "cuda:3", "cuda:3"]
 
 
 def test_assign_scheme_worker_devices_rejects_no_gpu():
     from auto_round.auto_scheme.delta_loss import _assign_scheme_worker_devices
 
-    with pytest.raises(ValueError, match="at least 1"):
-        _assign_scheme_worker_devices(1, 0)
+    with pytest.raises(ValueError, match="at least one"):
+        _assign_scheme_worker_devices(1, [])
 
 
 def test_scheme_worker_count_is_limited_by_visible_gpus():
@@ -625,6 +656,32 @@ def test_scheme_worker_count_is_limited_by_visible_gpus():
     assert _get_scheme_worker_count(5, 1) == 1
     assert _get_scheme_worker_count(5, 2) == 2
     assert _get_scheme_worker_count(1, 4) == 1
+
+
+def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
+    from test.helpers import opt_name_or_path
+
+    from auto_round.auto_scheme import delta_loss
+
+    captured = {}
+
+    def fake_load_model(model_name, **kwargs):
+        captured["model_name"] = model_name
+        captured.update(kwargs)
+        return ("model", "tokenizer", None, None, None, False, False)
+
+    monkeypatch.setattr(delta_loss, "load_model", fake_load_model)
+
+    result = delta_loss._load_scheme_worker_model(opt_name_or_path, True, True)
+
+    assert result[0] == "model"
+    assert captured == {
+        "model_name": opt_name_or_path,
+        "device": "cpu",
+        "use_auto_mapping": False,
+        "use_model_replacements": True,
+        "low_cpu_mem_usage": True,
+    }
 
 
 def test_per_op_cache_compatibility_rejects_grouped_scores():

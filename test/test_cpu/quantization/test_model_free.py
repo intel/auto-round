@@ -18,6 +18,33 @@ import json
 import os
 
 import pytest
+
+
+def test_quantize_and_save_restores_temporary_state_on_failure(monkeypatch):
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    compressor = ModelFreeCompressor.__new__(ModelFreeCompressor)
+    compressor.scheme_input = "W4A16"
+    compressor.layer_config_input = None
+    compressor.user_scheme_overrides = None
+    compressor._auto_scheme_family = None
+    compressor.output_dir = "original-output"
+    compressor.format = "auto_round"
+    compressor.quantized = False
+
+    def fail_run():
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(compressor, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        compressor.quantize_and_save("temporary-output", format="auto_round:auto_gptq")
+
+    assert compressor.output_dir == "original-output"
+    assert compressor.format == "auto_round"
+    assert compressor.quantized is False
+
+
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file

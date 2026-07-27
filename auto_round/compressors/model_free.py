@@ -2829,9 +2829,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         orig_fmt = self.format
         self.output_dir = output_dir
         self.format = format
-        out_path = self.run()
-        self.output_dir = orig_dir
-        self.format = orig_fmt
+        try:
+            out_path = self.run()
+        finally:
+            self.output_dir = orig_dir
+            self.format = orig_fmt
         self.quantized = True
         return None, out_path
 

@@ -1078,7 +1078,7 @@ def get_device_memory(i: int = 0) -> int:
         raise RuntimeError(
             f"Detected non-positive total memory ({total_memory}) for device index {i} on backend {dev_mgr.type}."
         )
-    return total_memory / 1024 / 1024 / 1024
+    return total_memory / 1024**3
 
 
 def _clear_memory_for_cpu_and_cuda(
