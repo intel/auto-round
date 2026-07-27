@@ -275,6 +275,7 @@ def test_llmcompressor_static_fp8_kv_config(tiny_opt_model_path, dataloader, tmp
     assert kv_cache_scheme["dynamic"] is False
     assert kv_cache_scheme["symmetric"] is True
 
+
 # TODO: remove xfail once the issue is resolved.
 @pytest.mark.xfail(reason="https://github.com/vllm-project/compressed-tensors/issues/795")
 def test_llmcompressor_static_fp8_attention_config(dataloader, tmp_path):
