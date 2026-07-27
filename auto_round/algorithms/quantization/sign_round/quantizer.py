@@ -451,6 +451,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
+                self.enable_lfq = True
                 if (
                     block_ctx.block_index == block_ctx.layer_cnt - 1
                     and self.enable_lfq
