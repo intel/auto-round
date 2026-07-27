@@ -433,7 +433,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                 memory_monitor.log_summary()
                 pbar.update(1)
 
-        cnt = 1
         remain_layer_names = []
         block_name_set = set(name for block in all_blocks for name in block)
         for n, m in self.model.named_modules():
@@ -446,14 +445,10 @@ class CompressionOrchestrator(BaseOrchestrator):
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
-            cnt += 1
-            # Outside-block layers (embed_tokens/lm_head/etc.) are typically few (often <10, e.g.
-            # for gguf export) but can individually be huge (e.g. large-vocab embeddings), so
-            # clearing memory only every 10th layer would rarely, if ever, fire for them. Clear
-            # after each one; only throttle the (comparatively cheap) memory_monitor logging.
+            # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
+            # log a summary after each one.
             clear_memory()
-            if cnt % 10 == 0:
-                memory_monitor.log_summary()
+            memory_monitor.log_summary()
 
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
