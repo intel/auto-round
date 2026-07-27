@@ -355,6 +355,8 @@ def test_bestla_packed_sdpa_numerical_parity(kv_dtype, is_causal):
     try:
         actual = _packed_sdpa(q, k, v, scale, is_causal=is_causal)
     except (RuntimeError, ValueError, NotImplementedError) as exc:
+        if kv_dtype == torch.float16 and HAS_AVX2 and not IS_INTEL:
+            pytest.skip(f"AMD AVX2 FP16 packed route is temporarily disabled: {exc}")
         pytest.skip(f"BestLA packed path unavailable on this ISA/runtime: {exc}")
 
     expected = torch.nn.functional.scaled_dot_product_attention(

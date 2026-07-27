@@ -801,6 +801,13 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
     if (shape.dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
       throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: fp16 K/V mixed SDPA requires AVX2");
     }
+    // TODO: validate and re-enable AMD AVX2 FP16 packed dispatch. The packed
+    // route currently produces incorrect results on AMD, including no-feature
+    // persistent-cache calls.
+    if (shape.dtype == BTLA_DTYPE::F16 && cpu->AVX2() && !cpu->INTEL()) {
+      throw std::runtime_error(
+          "ark::cpu::bestla_sdpa_forward_packed: FP16 packed SDPA is temporarily unsupported on non-Intel AVX2 CPUs");
+    }
     if (shape.dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
       throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: bf16 K/V mixed SDPA requires AVX512F");
     }
