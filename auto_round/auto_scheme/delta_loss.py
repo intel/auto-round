@@ -2213,17 +2213,17 @@ def _gen_layer_config(
         ]
         worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
         num_gpus = len(worker_device_pool)
-        parallel_disabled = _envs.AR_DISABLE_AUTO_SCHEME_PARALLEL
+        parallel_enabled = _envs.AR_ENABLE_AUTO_SCHEME_PARALLEL
         can_parallel = (
-            not parallel_disabled
+            parallel_enabled
             and _model_id_for_cache is not None
             and num_gpus >= 1
             and len(uncached_indices) >= 2
             and not need_imatrix
         )
-        if parallel_disabled and len(uncached_indices) >= 2:
+        if not parallel_enabled and len(uncached_indices) >= 2:
             logger.info(
-                "AutoScheme: parallel scoring disabled by AR_DISABLE_AUTO_SCHEME_PARALLEL; "
+                "AutoScheme: parallel scoring is disabled; set AR_ENABLE_AUTO_SCHEME_PARALLEL=1 to enable it. "
                 "scoring %d uncached non-BF16 schemes serially.",
                 len(uncached_indices),
             )
@@ -2251,7 +2251,7 @@ def _gen_layer_config(
                 )
                 logger.info(
                     "AutoScheme: if parallel scoring runs out of RAM/VRAM or automatic serial fallback cannot "
-                    "recover, set AR_DISABLE_AUTO_SCHEME_PARALLEL=1 and rerun."
+                    "recover, set AR_ENABLE_AUTO_SCHEME_PARALLEL=0 and rerun."
                 )
                 spawn_context = multiprocessing.get_context("spawn")
                 with spawn_context.Manager() as manager:
@@ -2347,7 +2347,7 @@ def _gen_layer_config(
                 logger.warning(
                     "AutoScheme: parallel scoring failed, falling back to serial: %s. "
                     "If fallback cannot recover (for example after RAM/VRAM exhaustion), rerun with "
-                    "AR_DISABLE_AUTO_SCHEME_PARALLEL=1.",
+                    "AR_ENABLE_AUTO_SCHEME_PARALLEL=0.",
                     parallel_error,
                 )
                 total_scores.clear()
