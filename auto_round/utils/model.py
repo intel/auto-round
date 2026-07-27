@@ -356,8 +356,18 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    if "dtype" in kwargs:
+        torch_dtype = kwargs.pop("dtype")
+        kwargs.pop("torch_dtype", None)
+    elif "torch_dtype" in kwargs:
+        torch_dtype = kwargs.pop("torch_dtype")
+    dtype_key = (
+        "dtype"
+        if platform == "hf" and version.parse(transformers.__version__) >= version.parse("4.56.0")
+        else "torch_dtype"
+    )
     load_kwargs = {
-        "torch_dtype": torch_dtype,
+        dtype_key: torch_dtype,
         "trust_remote_code": trust_remote_code,
         "device_map": "auto" if use_auto_mapping else None,
     }
