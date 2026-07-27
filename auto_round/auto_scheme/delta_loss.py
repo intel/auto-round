@@ -1563,6 +1563,8 @@ def _save_autoscheme_scores(
           "total_params": 12345
         }
     """
+    if cache_path is None or cache_key is None:
+        return
     # Persist only per-layer independent scores. Grouping (e.g. shared_layers
     # or MoE expert groups) is intentionally NOT stored here — callers should
     # re-apply grouping when loading a cache so the on-disk format stays
@@ -2146,6 +2148,8 @@ def _gen_layer_config(
             return total_loss
 
         def _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores):
+            if cache_key is None or cache_path is None:
+                return
             if isinstance(scheme, str):
                 scheme_dict = asdict(preset_name_to_scheme(scheme))
             elif isinstance(scheme, QuantizationScheme):
@@ -2172,14 +2176,15 @@ def _gen_layer_config(
 
         scheme_cache_meta = []
         for index, scheme in enumerate(schemes):
-            if check_bf16_scheme(scheme):
+            if check_bf16_scheme(scheme) or _model_id_for_cache is None:
                 scheme_cache_meta.append((None, None, None))
-                logger.info(
-                    "AutoScheme: scheme %d/%d (%s) is a BF16 baseline; skipping scoring and cache lookup.",
-                    index + 1,
-                    len(schemes),
-                    _scheme_short_name(scheme),
-                )
+                if check_bf16_scheme(scheme):
+                    logger.info(
+                        "AutoScheme: scheme %d/%d (%s) is a BF16 baseline; skipping scoring and cache lookup.",
+                        index + 1,
+                        len(schemes),
+                        _scheme_short_name(scheme),
+                    )
                 continue
             cache_key = _autoscheme_cache_key(
                 model_name=_model_id_for_cache,
