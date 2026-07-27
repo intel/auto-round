@@ -264,10 +264,10 @@ def test_xpu_sycl_tla_no_bias(m, k, n, dt, batch_size, runs, record_property):
     os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
     reason="Skipped because ARK_DNNL is not enabled in environment variables",
 )
-@pytest.mark.parametrize("has_bias", [True, False], ids=["with_bias", "no_bias"])
 @pytest.mark.parametrize("m", [1, 8, 16, 32, 128, 1024, 2048, 4096])
 @pytest.mark.parametrize("k, n", [(4096, 4096)])
 @pytest.mark.parametrize("dt", [torch.float32, torch.float16, torch.bfloat16], ids=["float32", "float16", "bfloat16"])
+@pytest.mark.parametrize("has_bias", [True, False], ids=["with_bias", "no_bias"])
 def test_xpu_compare_dnnl_vs_sycl_tla(m, k, n, dt, has_bias):
     warmup = 100
     runs = 1000
