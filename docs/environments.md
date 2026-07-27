@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_DISABLE_AUTO_SCHEME_PARALLEL
+- **Description**: Disables multiprocessing across AutoScheme candidates and scores them serially. Use this when parallel model-loading workers exhaust host RAM or device memory, especially if the automatic serial fallback cannot recover after an out-of-memory failure.
+- **Default**: `False` (parallel scoring remains enabled when eligible)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for disabling parallel scoring; any other value keeps parallel scoring enabled
+- **Usage**: Set this before rerunning AutoScheme to reduce peak RAM and VRAM usage
+
+```bash
+export AR_DISABLE_AUTO_SCHEME_PARALLEL=1
+```
+
 ## Usage Examples
 
 ### Setting Environment Variables

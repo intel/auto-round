@@ -60,6 +60,15 @@ def test_env_ar_auto_scheme_batch_size_zero_raises(monkeypatch):
         _ = envs.AR_AUTO_SCHEME_BATCH_SIZE
 
 
+def test_env_ar_disable_auto_scheme_parallel(monkeypatch):
+    import auto_round.envs as envs
+
+    monkeypatch.delenv("AR_DISABLE_AUTO_SCHEME_PARALLEL", raising=False)
+    assert envs.AR_DISABLE_AUTO_SCHEME_PARALLEL is False
+    monkeypatch.setenv("AR_DISABLE_AUTO_SCHEME_PARALLEL", "1")
+    assert envs.AR_DISABLE_AUTO_SCHEME_PARALLEL is True
+
+
 def test_build_layer_config_header_rows_merges_adjacent_prefixes():
     """Adjacent columns with the same prefix should be merged into one compact header cell."""
     columns = ["mlp.down_proj", "mlp.gate_proj", "self_attn.q_proj", "self_attn.v_proj"]

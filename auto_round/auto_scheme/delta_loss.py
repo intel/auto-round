@@ -2213,9 +2213,20 @@ def _gen_layer_config(
         ]
         worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
         num_gpus = len(worker_device_pool)
+        parallel_disabled = _envs.AR_DISABLE_AUTO_SCHEME_PARALLEL
         can_parallel = (
-            _model_id_for_cache is not None and num_gpus >= 1 and len(uncached_indices) >= 2 and not need_imatrix
+            not parallel_disabled
+            and _model_id_for_cache is not None
+            and num_gpus >= 1
+            and len(uncached_indices) >= 2
+            and not need_imatrix
         )
+        if parallel_disabled and len(uncached_indices) >= 2:
+            logger.info(
+                "AutoScheme: parallel scoring disabled by AR_DISABLE_AUTO_SCHEME_PARALLEL; "
+                "scoring %d uncached non-BF16 schemes serially.",
+                len(uncached_indices),
+            )
 
         from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 
@@ -2237,6 +2248,10 @@ def _gen_layer_config(
                     num_workers,
                     len(uncached_indices),
                     worker_device_pool,
+                )
+                logger.info(
+                    "AutoScheme: if parallel scoring runs out of RAM/VRAM or automatic serial fallback cannot "
+                    "recover, set AR_DISABLE_AUTO_SCHEME_PARALLEL=1 and rerun."
                 )
                 spawn_context = multiprocessing.get_context("spawn")
                 with spawn_context.Manager() as manager:
@@ -2329,7 +2344,12 @@ def _gen_layer_config(
                 logger.info("AutoScheme: parallel scoring completed.")
                 post_scoring_started = time.perf_counter()
             except Exception as parallel_error:  # noqa: BLE001
-                logger.warning("AutoScheme: parallel scoring failed, falling back to serial: %s", parallel_error)
+                logger.warning(
+                    "AutoScheme: parallel scoring failed, falling back to serial: %s. "
+                    "If fallback cannot recover (for example after RAM/VRAM exhaustion), rerun with "
+                    "AR_DISABLE_AUTO_SCHEME_PARALLEL=1.",
+                    parallel_error,
+                )
                 total_scores.clear()
                 options_scores.clear()
                 pbar.reset(total=pbar_cnt)
