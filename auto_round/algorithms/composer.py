@@ -394,11 +394,13 @@ class AlgorithmComposer:
             pre.pre_quantize_block(block_ctx)
 
         reference_output = None
+        reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
                 reference_output = block_forward_fn(block, fp_inputs, input_others)
+                reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
 
@@ -450,10 +452,11 @@ class AlgorithmComposer:
         if self.block_quantizer.enable_quanted_input:
             with torch.no_grad():
                 new_q_input = block_forward_fn(block, effective_input, input_others)
+                new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
         else:
             new_q_input = None
 
-        return new_q_input, reference_output
+        return new_q_input, reference_next_input
 
     def compress_layer_outside_block(
         self,
