@@ -16,7 +16,7 @@ import gc
 import os
 import sys
 from dataclasses import asdict, dataclass, fields
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 from transformers import AutoConfig, set_seed
@@ -68,6 +68,9 @@ from auto_round.utils.device import (
 )
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.offload import OffloadManager
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.transforms import BaseRotation
 
 
 @dataclass
