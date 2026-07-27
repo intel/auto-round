@@ -1649,6 +1649,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.attr("ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16") = pybind11::int_(static_cast<int>(ark::CpuSdpaRoute::HomogeneousBf16));
   m.attr("ARK_CPU_SDPA_BUILD_HAS_FP16_ROUTE") = pybind11::bool_(CompileFP16());
   m.attr("ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE") = pybind11::bool_(CompileBF16());
+  m.attr("ARK_CPU_SDPA_INTERNAL_FEATURES_ENABLED") = pybind11::bool_(ARK_ENABLE_INTERNAL_SDPA_FEATURES);
   m.def("ark_cpu_debug_resolve_sdpa_route", &ark::ark_cpu_debug_resolve_sdpa_route);
   m.def("ark_cpu_debug_route4_raw", &ark::ark_cpu_debug_route4_raw);
   m.def("ark_cpu_kv_update", &ark::ark_cpu_kv_update);

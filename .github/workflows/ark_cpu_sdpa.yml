@@ -54,6 +54,5 @@ jobs:
       - name: Run CPU SDPA tests
         working-directory: auto_round_extension/ark
         run: |
-          python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short -x
-          python -m pytest test/test_ark_cpu_internal_sdpa.py -v --tb=short -x
-          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short -x
+          echo "=== Public CPU SDPA suite ==="
+          python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short

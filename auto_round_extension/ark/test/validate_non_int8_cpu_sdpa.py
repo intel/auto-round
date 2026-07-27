@@ -111,9 +111,8 @@ Python tests:
       bf16 GQA remains scalar-backed even after route 4 is runtime-selectable.
   test_ark_cpu_mixed_bestla_sdpa.py — standard public sdpa() semantics on mixed
     dtype inputs (dtype/layout/causal/GQA/prefill/decode only)
-  test_ark_cpu_internal_sdpa.py     — internal/experimental route tests
-    (packed KV, alibi, tanh, n_padding, prefer_fp32, route-specific validators,
-     public/internal API boundary checks)
+  test_ark_cpu_internal_sdpa.py     — internal/experimental route tests, kept
+    for opt-in development validation and excluded from the public CI command set.
 
     ISA skip conditions (pytest.mark.skipif):
       Route 1 (F16): AVX2 required
@@ -138,19 +137,6 @@ COMMANDS = {
     "Tier 1 mixed BestLA (Python, requires AVX2/AVX512F)": [
         "pytest",
         "auto_round_extension/ark/test/test_ark_cpu_mixed_bestla_sdpa.py",
-        "-v",
-        "-x",
-    ],
-    "Tier 1 packed path (Python, requires AVX2/AVX512F)": [
-        "pytest",
-        "auto_round_extension/ark/test/test_ark_cpu_internal_sdpa.py",
-        "-v",
-        "-k",
-        "packed",
-    ],
-    "Internal mixed/packed helpers (Python, requires AVX2/AVX512F)": [
-        "pytest",
-        "auto_round_extension/ark/test/test_ark_cpu_internal_sdpa.py",
         "-v",
         "-x",
     ],

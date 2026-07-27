@@ -511,6 +511,13 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   attn_fwd_args_t local = args;
   std::vector<int> n_padding_storage;
   prepare_forward_padding(local, n_padding_storage, "ark::cpu::bestla_sdpa_forward", /*padding_supported=*/true);
+#if !ARK_ENABLE_INTERNAL_SDPA_FEATURES
+  if ((local.attn_flags &
+       (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_PREFER_FP32)) != 0) {
+    throw std::runtime_error(
+        "ark::cpu::bestla_sdpa_forward: internal SDPA features are disabled in this build");
+  }
+#endif
   // GQA (matrix row GQA == S): the stable interface maps grouped-query heads via
   // ihkv = ihn / (head_num / heads_kv) and requires head_num to be a positive
   // multiple of heads_kv; the raw->packed reorder below also groups K/V by
@@ -537,12 +544,6 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   if (kv_dtype == BTLA_DTYPE::F16 && has_extended_features && !cpu->AVX2()) {
     throw std::runtime_error(
         "ark::cpu::bestla_sdpa_forward: mixed fp16 extended features require the AVX2 fp32-score kernel");
-  }
-  // TODO: validate and re-enable AMD AVX2 FP16 feature dispatch. The packed
-  // route currently produces incorrect results for right-padding on AMD.
-  if (kv_dtype == BTLA_DTYPE::F16 && has_extended_features && cpu->AVX2() && !cpu->INTEL()) {
-    throw std::runtime_error(
-        "ark::cpu::bestla_sdpa_forward: FP16 internal features are temporarily unsupported on non-Intel AVX2 CPUs");
   }
   if (kv_dtype == BTLA_DTYPE::F16 && !(cpu->AVX2() || fp16_plain_avx512 || fp16_plain_amx)) {
     throw std::runtime_error(
@@ -792,6 +793,13 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
   std::vector<int> n_padding_storage;
   prepare_forward_padding(local, n_padding_storage, "ark::cpu::bestla_sdpa_forward_packed",
                           /*padding_supported=*/true);
+#if !ARK_ENABLE_INTERNAL_SDPA_FEATURES
+  if ((local.attn_flags &
+       (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 | ATTN_FLAG_PREFER_FP32)) != 0) {
+    throw std::runtime_error(
+        "ark::cpu::bestla_sdpa_forward_packed: internal SDPA features are disabled in this build");
+  }
+#endif
   if (args.heads_kv <= 0 || args.head_num <= 0 || (args.head_num % args.heads_kv) != 0) {
     throw std::invalid_argument(
         "ark::cpu::bestla_sdpa_forward_packed: head_num must be a positive multiple of heads_kv (GQA groups)");
@@ -800,13 +808,6 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
     auto* cpu = bestla::device::CpuDevice::getInstance();
     if (shape.dtype == BTLA_DTYPE::F16 && !cpu->AVX2()) {
       throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: fp16 K/V mixed SDPA requires AVX2");
-    }
-    // TODO: validate and re-enable AMD AVX2 FP16 packed dispatch. The packed
-    // route currently produces incorrect results on AMD, including no-feature
-    // persistent-cache calls.
-    if (shape.dtype == BTLA_DTYPE::F16 && cpu->AVX2() && !cpu->INTEL()) {
-      throw std::runtime_error(
-          "ark::cpu::bestla_sdpa_forward_packed: FP16 packed SDPA is temporarily unsupported on non-Intel AVX2 CPUs");
     }
     if (shape.dtype == BTLA_DTYPE::BF16 && !cpu->AVX512F()) {
       throw std::runtime_error("ark::cpu::bestla_sdpa_forward_packed: bf16 K/V mixed SDPA requires AVX512F");

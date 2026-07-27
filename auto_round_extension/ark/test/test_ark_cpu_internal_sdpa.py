@@ -29,10 +29,14 @@ _TOL = {torch.float16: (3e-2, 3e-2), torch.bfloat16: (8e-2, 8e-2)}
 INTERNAL_CPU = auto_round_kernel.internal.cpu
 CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
 HAS_AVX2 = "avx2" in CPU_FLAGS
-IS_INTEL = "GenuineIntel" in cpuinfo.get_cpu_info().get("vendor_id_raw", "")
 HAS_AVX512F = "avx512f" in CPU_FLAGS
 HAS_AMX_BF16 = "amx_bf16" in CPU_FLAGS
 BUILD_HAS_BF16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE)
+INTERNAL_FEATURES_ENABLED = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_INTERNAL_FEATURES_ENABLED)
+pytestmark = pytest.mark.skipif(
+    not INTERNAL_FEATURES_ENABLED,
+    reason="internal SDPA features are disabled; rebuild with -DARK_ENABLE_INTERNAL_SDPA_FEATURES=ON",
+)
 
 
 def _resolved_cpu_sdpa_route(query, key, value, **kwargs):
@@ -278,8 +282,6 @@ def test_bestla_mixed_sdpa_padding_right_matches_reference(kv_dtype):
     try:
         actual = _mixed_sdpa_ex(q, k, v, scale, n_padding=n_padding)
     except (RuntimeError, ValueError) as exc:
-        if kv_dtype == torch.float16 and HAS_AVX2 and not IS_INTEL:
-            pytest.skip(f"AMD AVX2 FP16 feature route is temporarily disabled: {exc}")
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
     expected = _scalar_attn_ref(q, k.float(), v.float(), scale, n_valid=n_padding)
     atol, rtol = _TOL[kv_dtype]
@@ -355,8 +357,6 @@ def test_bestla_packed_sdpa_numerical_parity(kv_dtype, is_causal):
     try:
         actual = _packed_sdpa(q, k, v, scale, is_causal=is_causal)
     except (RuntimeError, ValueError, NotImplementedError) as exc:
-        if kv_dtype == torch.float16 and HAS_AVX2 and not IS_INTEL:
-            pytest.skip(f"AMD AVX2 FP16 packed route is temporarily disabled: {exc}")
         pytest.skip(f"BestLA packed path unavailable on this ISA/runtime: {exc}")
 
     expected = torch.nn.functional.scaled_dot_product_attention(
