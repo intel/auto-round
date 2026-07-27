@@ -105,6 +105,7 @@ class TestLLMC:
             iters=0,
             disable_opt_rtn=True,
             scheme=scheme,
+            disable_model_free=True,
         )
         compressed_model, tmp_path = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
         tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
