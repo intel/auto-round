@@ -809,7 +809,10 @@ class BaseOrchestrator(object):
         raw_scheme_upper = raw_scheme.upper()
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
-        is_valid_act_static = cfg.act_dynamic is False and (getattr(cfg, "act_bits", 16) or 16) <= 8
+        has_static_global_scale = "static_gs" in raw_adt or "NVFP4" in raw_scheme_upper
+        is_valid_act_static = (cfg.act_dynamic is False or has_static_global_scale) and (
+            getattr(cfg, "act_bits", 16) or 16
+        ) <= 8
 
         return is_raw_nv_fp, is_valid_act_static
 
