@@ -210,7 +210,7 @@ class BaseOrchestrator(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader, None] = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -221,8 +221,6 @@ class BaseOrchestrator(object):
         from auto_round.calibration.state import CalibrationContext
 
         self.dataset = dataset
-        if self.dataset is None:
-            self.dataset = "NeelNanda/pile-10k"
         batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
@@ -448,6 +446,39 @@ class BaseOrchestrator(object):
             setattr(self, key, value)
 
         self.need_calib = self._check_need_calib()
+        calibrator_kind = self._get_calibrator_kind()
+        if self.dataset is None and (not self.need_calib or calibrator_kind == "mllm"):
+            # Preserve the existing visible default without running code-task
+            # detection for no-calibration or multimodal routes.
+            self.dataset = "NeelNanda/pile-10k"
+            self.calibration_context.dataset = self.dataset
+        elif self.need_calib and self.dataset is None and calibrator_kind == "llm":
+            from auto_round.utils.code_calibration import build_code_calibration_dataset, detect_code_model
+
+            detection_config = model_config or getattr(self.model_context.model, "config", None)
+            detection = detect_code_model(model, detection_config)
+            if detection.is_code:
+                selection = build_code_calibration_dataset(self.calibration_context.nsamples)
+                self.dataset = selection.dataset
+                logger.info(
+                    "Detected a code-specialized model from %s (matched %r).",
+                    detection.source,
+                    detection.match,
+                )
+                if not selection.github_code_clean_enabled:
+                    logger.warning(
+                        "datasets %s does not support the script-based github-code-clean dataset; "
+                        "using the normalized OpenCodeInstruct/MBPP mix instead.",
+                        selection.datasets_version,
+                    )
+                logger.info("Automatically selected code calibration dataset: %s", self.dataset)
+            else:
+                self.dataset = "NeelNanda/pile-10k"
+                logger.info(
+                    "No explicit code-specialization signal was found; using default calibration dataset %s.",
+                    self.dataset,
+                )
+            self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
         """Whether this compressor instance actually needs calibration data.

@@ -74,7 +74,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         tokenizer: Any = None,
         platform: str = "hf",
         format: Union[str, list, None] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader, None] = None,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: Optional[bool] = None,

@@ -139,7 +139,7 @@ class AutoRound:
         platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Union[str, list, tuple, torch.utils.data.DataLoader, None] = None,
         iters: int = 200,
         seqlen: int = 2048,
         nsamples: int = 128,
@@ -164,7 +164,8 @@ class AutoRound:
             platform: The platform to download pretrained model, options: ["hf", "model_scope"]
             scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
             layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
-            dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
+            dataset (str | list | tuple | DataLoader, optional): Calibration data. When omitted, AutoRound selects a
+                model-appropriate default.
             iters (int, optional): Optimization iterations. Defaults to 200.
             seqlen (int, optional): Calibration sequence length. Defaults to 2048.
             nsamples (int, optional): Number of calibration samples. Defaults to 128.

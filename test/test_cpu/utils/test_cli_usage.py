@@ -307,3 +307,9 @@ def test_shared_layers_normalize():
         p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2", "--shared_layers", "l3,l4"]).shared_layers
     ) == [["l1", "l2"], ["l3", "l4"]]
     assert p.parse_args(["--model", "dummy"]).shared_layers is None
+
+
+def test_dataset_default_is_deferred_until_model_task_is_known():
+    from auto_round.cli.parser import build_quantize_parser
+
+    assert build_quantize_parser().parse_args(["--model", "dummy"]).dataset is None
