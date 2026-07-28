@@ -13,6 +13,7 @@
 # limitations under the License.
 import copy
 from contextlib import nullcontext
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import torch
@@ -27,6 +28,7 @@ from auto_round.compressors.utils import (
     collect_best_params,
 )
 from auto_round.logger import logger
+from auto_round.modeling.kimi_vl import enable_kimi_vl_moe_grad, prepare_kimi_vl_moe_grad
 from auto_round.utils import (
     htcore,
     is_hpex_available,
@@ -39,7 +41,18 @@ from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
-    from auto_round.algorithms.composer import BlockContext
+    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+
+
+def _with_kimi_vl_moe_grad(func: Callable) -> Callable:
+    """Scope the Kimi-VL routed-expert gradient patch to block tuning."""
+
+    @wraps(func)
+    def wrapper(self, block, *args, **kwargs):
+        with enable_kimi_vl_moe_grad(self.model, block, self.iters):
+            return func(self, block, *args, **kwargs)
+
+    return wrapper
 
 
 @register_pipeline_member(SignRoundConfig)
@@ -63,6 +76,17 @@ class SignRoundQuantizer(BaseQuantizer):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
+
+    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
+        """Pre-validate Kimi-VL routed experts before block iteration."""
+        super().prepare_run(composer=composer)
+        target_count = prepare_kimi_vl_moe_grad(self.model, self.iters)
+        if target_count is not None:
+            logger.info(
+                "Kimi-VL routed-expert gradient support is enabled for %d DeepseekV3MoE module(s) "
+                "during block tuning.",
+                target_count,
+            )
 
     def dispatch_block(self, block, input_ids, input_others):
         """Multi-GPU aware block dispatch for SignRound tuning.
@@ -149,6 +173,7 @@ class SignRoundQuantizer(BaseQuantizer):
         else:
             return inputs.shape[self.calibration_context.batch_dim]
 
+    @_with_kimi_vl_moe_grad
     def quantize_block(
         self,
         block,
