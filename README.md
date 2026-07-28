@@ -37,6 +37,8 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 ## 🆕 What's New
 
+* [2026/07] `torch.compile` is enabled by default to accelerate quantization and reduce resource usage. Minor numerical differences compared with the non-compiled path are expected due to compiler optimizations. To disable it, pass `enable_torch_compile=False` to the Python API or use `--disable_torch_compile` on the CLI.
+
 * [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
 
 * [2026/06] AutoRound is now fully integrated into vLLM-Omni: [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround)

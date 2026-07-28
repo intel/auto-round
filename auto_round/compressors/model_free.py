@@ -95,6 +95,7 @@ import multiprocessing as mp
 import os
 import re
 import shutil
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields
@@ -107,7 +108,7 @@ from auto_round.compressors.utils import is_mx_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
-from auto_round.utils.device import clear_memory, memory_monitor
+from auto_round.utils.device import clear_memory, compile_func, memory_monitor
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
 # ---------------------------------------------------------------------------
@@ -564,6 +565,7 @@ def _quantize_single_tensor(
     tensor: torch.Tensor,
     matcher: "_PatternMatcher",
     device: str = "cpu",
+    quantize_func: Callable = quantize_weight_rtn,
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
@@ -617,7 +619,7 @@ def _quantize_single_tensor(
 
     # ---- Integer WOQ path ----
     try:
-        qweight, qzeros, scales = quantize_weight_rtn(
+        qweight, qzeros, scales = quantize_func(
             weight=tensor,
             bits=bits,
             group_size=group_size,
@@ -916,6 +918,7 @@ def _process_shard(
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
+    enable_torch_compile: bool = False,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -938,6 +941,7 @@ def _process_shard(
 
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
+    quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
 
     if shard_path.endswith(".bin"):
         # PyTorch pickle checkpoint — load with weights_only where supported.
@@ -1011,6 +1015,7 @@ def _process_shard(
             tensor,
             matcher,
             device,
+            quantize_func,
         )
         output_tensors.update(out_dict)
         if q_layer:
@@ -1291,6 +1296,7 @@ def _process_single_shard_task(
     model_type: str | None,
     quant_output_dir: str,
     total_shards: int,
+    enable_torch_compile: bool = False,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Process one shard in an isolated subprocess task.
 
@@ -1316,6 +1322,7 @@ def _process_single_shard_task(
         device=device,
         fp8_block_size=fp8_block_size,
         model_type=model_type,
+        enable_torch_compile=enable_torch_compile,
     )
 
     out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
@@ -1667,6 +1674,7 @@ class _ModelFreeCompressorCore:
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
+        enable_torch_compile: Optional[bool] = None,
     ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
@@ -1678,6 +1686,7 @@ class _ModelFreeCompressorCore:
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
+        self.enable_torch_compile = sys.platform != "win32" if enable_torch_compile is None else enable_torch_compile
 
         # --- derived state populated during run() ---
         self.scheme_obj: QuantizationScheme | None = None
@@ -1963,6 +1972,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
+                        enable_torch_compile=self.enable_torch_compile,
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
                     )
@@ -2158,6 +2168,7 @@ class _ModelFreeCompressorCore:
             f"  Diffusion model: {self.is_diffusion_model}\n"
             f"  Quant lm_head: {self.quant_lm_head}\n"
             f"  Quant nontext module: {self.quant_nontext_module}\n"
+            f"  Torch compile: {self.enable_torch_compile}\n"
             f"  Device: {self.device}"
         )
 
@@ -2229,6 +2240,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         tokenizer: Any = None,
         device_map: Any = None,
         low_cpu_mem_usage: bool = True,
+        enable_torch_compile: Optional[bool] = None,
         **kwargs,
     ) -> None:
         import copy
@@ -2262,6 +2274,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             device=device,
             quant_lm_head=quant_lm_head,
             quant_nontext_module=quant_nontext_module,
+            enable_torch_compile=enable_torch_compile,
         )
 
         # Compressor-role state (mirrors BaseCompressor attributes used by

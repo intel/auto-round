@@ -16,6 +16,7 @@
 
 import json
 import os
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -218,6 +219,17 @@ class TestParseLayerConfig:
 
 
 class TestProcessShard:
+    @pytest.mark.parametrize("enabled, expected_calls", [(True, 1), (False, 0)])
+    def test_torch_compile_setting(self, tmp_path, monkeypatch, enabled, expected_calls):
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"layer.fc1.weight": torch.randn(64, 128)}, shard_path)
+        compile_mock = Mock(side_effect=lambda func, _device: func)
+        monkeypatch.setattr("auto_round.compressors.model_free.compile_func", compile_mock)
+
+        _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], enable_torch_compile=enabled)
+
+        assert compile_mock.call_count == expected_calls
+
     def test_quantizes_eligible_weights(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
         save_file({"layer.fc1.weight": torch.randn(64, 128), "layer.fc1.bias": torch.randn(64)}, shard_path)

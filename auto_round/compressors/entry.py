@@ -387,6 +387,7 @@ class AutoRound(object):
                 layer_config=layer_config,
                 tokenizer=tokenizer,
                 device_map=device_map,
+                enable_torch_compile=enable_torch_compile,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,
@@ -717,6 +718,7 @@ class AutoRoundCompatible:
                 tokenizer=tokenizer,
                 device_map=device_map,
                 low_cpu_mem_usage=low_cpu_mem_usage,
+                enable_torch_compile=enable_torch_compile,
                 **compressor_only_kwargs,
                 **kwargs,
             )

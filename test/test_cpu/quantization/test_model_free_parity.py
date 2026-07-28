@@ -141,6 +141,7 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
         disable_opt_rtn=True,
         model_free=True,
         device_map=device,
+        enable_torch_compile=False,  # disable torch.compile to ensure model is loaded in full precision
     )
     assert getattr(ar_a, "model_free", False) is True
     # Model must NOT be loaded into memory in the model-free path.
@@ -159,6 +160,7 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
         disable_model_free=True,  # opt out of auto-routing
         device_map=device,
         amp=False,  # disable_amp to ensure model is loaded in full precision
+        enable_torch_compile=False,  # disable torch.compile to ensure model is loaded in full precision
     )
     assert getattr(ar_b, "model_free", False) is False
     # Confirm the regular path actually loaded the model on the requested
