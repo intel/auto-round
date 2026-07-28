@@ -158,6 +158,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._block_groups.clear()
         if self.model is None:
             return
+        self.model._autoround_svdquant_model_adapter = self.config.model_adapter or "auto"
         for block_name in self._configured_block_names:
             block = self.model.get_submodule(block_name)
             self._block_groups[block_name] = discover_svdquant_groups(block, self._is_target)

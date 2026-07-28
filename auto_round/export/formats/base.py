@@ -102,6 +102,7 @@ class OutputFormat(ABC):
     support_schemes: list = []
     _format_list: dict[str, OutputFormat] = {}
     format_name = "base"
+    requires_full_model_export = False
 
     def __init__(self, format: str, scheme: QuantizationScheme, ctx: Any):
         """Initialize the OutputFormat class."""
