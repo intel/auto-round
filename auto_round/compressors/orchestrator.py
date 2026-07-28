@@ -854,7 +854,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_name=getattr(block, "global_name", ""),
                 block_index=0,
             )
-            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None, valid_token_mask=None)
+            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None)
 
             mv_module_from_gpu(block)
             return None, None

@@ -18,7 +18,7 @@ class _QuantizerStub:
         return torch.ones(1, 1)
 
     def quantize_block(
-        self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx=None, valid_token_mask=None, **kwargs
+        self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx=None, **kwargs
     ):
         return None
 
