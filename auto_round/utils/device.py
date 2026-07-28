@@ -986,6 +986,12 @@ def set_auto_device_map_for_block_with_tuning(
     card_1_left_memory = max(0, device_1_memory - loss_memory) if card_0_in_high_risk else device_1_memory
     loss_device = device_1 if card_0_in_high_risk else output_device
 
+    if not layer_memory_dict:
+        output_device = device_0 if output_device is None else output_device
+        block.to(output_device)
+        logger.debug(f"No layers require tuning; moved the block to {output_device}")
+        return card_0_in_high_risk, loss_device
+
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory + card_1_left_memory
     for i in range(2, len(gpu_devices)):
