@@ -813,15 +813,14 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     return 1.0, False  # Default ratio for non-MoE models
 
 
-def estimate_tuning_block_mem(
-    block: torch.nn.Module, input_ids: list[torch.Tensor], batch_size: int
-) -> tuple[dict, float]:
+def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size: int) -> tuple[dict, float]:
     """
     Calculates the memory consumption of a specific block in the model.
 
     Args:
         block (torch.nn.Module): The block of the model to analyze.
-        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+        input_ids: Cached block inputs as a tensor, a list of tensors, or a dictionary containing
+            ``hidden_states`` and auxiliary block inputs.
         batch_size (int): Number of samples to consider for memory estimation.
 
     Returns:
@@ -837,9 +836,23 @@ def estimate_tuning_block_mem(
 
     layer_memory_dict = {}
 
-    # Calculate batch_size and sequence_length from input_ids for output memory estimation
-    seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
-    element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
+    def iter_input_tensors(value):
+        if isinstance(value, torch.Tensor):
+            yield value
+        elif isinstance(value, dict):
+            for nested_value in value.values():
+                yield from iter_input_tensors(nested_value)
+        elif isinstance(value, (list, tuple)):
+            for nested_value in value:
+                yield from iter_input_tensors(nested_value)
+
+    input_tensors = list(iter_input_tensors(input_ids))
+    hidden_states = input_ids.get("hidden_states") if isinstance(input_ids, dict) else input_ids
+    reference_tensor = next(iter_input_tensors(hidden_states), input_tensors[0] if input_tensors else None)
+
+    # Calculate sequence length and dtype from hidden states for output memory estimation.
+    seq_len = reference_tensor.shape[1] if reference_tensor is not None and reference_tensor.ndim >= 2 else 1
+    element_size = reference_tensor.element_size() if reference_tensor is not None else 2
 
     moe_ratio, has_moe = get_moe_memory_ratio(block)  # Get MoE memory ratio (1.0 for non-MoE models)
 
@@ -880,7 +893,7 @@ def estimate_tuning_block_mem(
             }
 
     # Assuming bfloat16 or float32, input and output
-    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_tensors) / 1024**3
 
     # Roughly estimate additional memory for attention and other operations
     # For MoE expert layers, multiply activation memory by the ratio of active experts
