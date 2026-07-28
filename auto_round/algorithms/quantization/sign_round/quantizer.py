@@ -419,12 +419,10 @@ class SignRoundQuantizer(BaseQuantizer):
         global_batch_size = min(nsamples, global_batch_size)
         # Compute num_elm once before the loop (used to normalise the accumulated loss).
         # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1:
-            whole_indices = list(range(global_batch_size))
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
-            elif isinstance(active_inputs, list):  # dict for diffusion, tricky setting
-                num_elm = sum(active_inputs[i].numel() for i in whole_indices)
+        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
+            whole_indices = torch.arange(global_batch_size)
+            if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
+                num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
@@ -449,6 +447,8 @@ class SignRoundQuantizer(BaseQuantizer):
                     m.cur_iter = i
             total_loss = 0
             global_indices = index_sampler.next_batch()
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
@@ -457,7 +457,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 if loss_device is not None:
                     pred_output = pred_output.to(loss_device)
                 if (
-                    block_ctx.block_index == block_ctx.layer_cnt - 1
+                    block_ctx.block_index == block_ctx.block_cnt - 1
                     and self.enable_lfq
                     and input_ids is not None
                     and self._is_text_decoder_block(block_ctx.block_name)
@@ -527,27 +527,27 @@ class SignRoundQuantizer(BaseQuantizer):
     def quantize_layer_outside_block(
         self,
         layer: "torch.nn.Module",
-        fp_input: Optional[list[torch.Tensor]] = None,
-        q_input: Optional[list[torch.Tensor]] = None,
+        fp_inputs: Optional[list[torch.Tensor]] = None,
+        q_inputs: Optional[list[torch.Tensor]] = None,
         disable_opt_rtn: Optional[bool] = None,
         input_ids: Optional[list[torch.Tensor]] = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
-        When ``fp_input`` is provided the layer is tuned with the sign-gradient
+        When ``fp_inputs`` is provided the layer is tuned with the sign-gradient
         descent optimizer (same loss loop as block-level quantization).  When
-        ``fp_input`` is ``None`` the method falls back to zero-shot RTN.
+        ``fp_inputs`` is ``None`` the method falls back to zero-shot RTN.
 
         Args:
             layer: The layer module to quantize.  Must have a ``global_name``
                 attribute for model re-insertion and logging.
-            fp_input: Per-sample FP activations fed into this layer, used as
+            fp_inputs: Per-sample FP activations fed into this layer, used as
                 calibration inputs during optimization. ``None`` triggers RTN
                 fallback.
-            q_input: Per-sample quantized activations from the previous stage,
-                used instead of ``fp_input`` during the forward pass when
+            q_inputs: Per-sample quantized activations from the previous stage,
+                used instead of ``fp_inputs`` during the forward pass when
                 cascaded quantized-input is enabled. ``None`` means use
-                ``fp_input`` for both reference and tuning forward.
+                ``fp_inputs`` for both reference and tuning forward.
             disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
             input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
                 sample); used to derive the valid-token loss mask via
@@ -555,7 +555,7 @@ class SignRoundQuantizer(BaseQuantizer):
         """
 
         layer_name = layer.global_name
-        if fp_input is None:
+        if fp_inputs is None:
             logger.info(f"using rtn to quantize {layer_name}")
             self._quantize_layer_via_rtn(
                 layer,
@@ -576,10 +576,10 @@ class SignRoundQuantizer(BaseQuantizer):
         logger.info(f"quantizing layer {layer_name}")
         # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
         device = layer.weight.device if hasattr(layer, "weight") else device_manager.device
-        for i in range(len(fp_input)):
-            fp_input[i] = fp_input[i].to(layer.weight.dtype)
-            if q_input is not None:
-                q_input[i] = q_input[i].to(layer.weight.dtype)
+        for i in range(len(fp_inputs)):
+            fp_inputs[i] = fp_inputs[i].to(layer.weight.dtype)
+            if q_inputs is not None:
+                q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
         wrapper_linear = WrapperLinear(
             layer,
@@ -616,7 +616,7 @@ class SignRoundQuantizer(BaseQuantizer):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
-        nsamples = len(fp_input)
+        nsamples = len(fp_inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         best_params = None
@@ -641,10 +641,10 @@ class SignRoundQuantizer(BaseQuantizer):
             whole_indices = list(range(global_batch_size))
             if valid_token_mask:
                 num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
-            elif q_input is not None:
-                num_elm = self._count_layer_input_elements(q_input, whole_indices)
+            elif q_inputs is not None:
+                num_elm = self._count_layer_input_elements(q_inputs, whole_indices)
             else:
-                num_elm = self._count_layer_input_elements(fp_input, whole_indices)
+                num_elm = self._count_layer_input_elements(fp_inputs, whole_indices)
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
@@ -654,13 +654,13 @@ class SignRoundQuantizer(BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                if q_input is not None:
-                    current_input = [q_input[i] for i in indices]
+                if q_inputs is not None:
+                    current_input = [q_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
-                    org_input = [fp_input[i] for i in indices]
+                    org_input = [fp_inputs[i] for i in indices]
                     org_input = torch.cat(org_input, dim=0).to(device)
                 else:
-                    current_input = [fp_input[i] for i in indices]
+                    current_input = [fp_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
                 with torch.no_grad():

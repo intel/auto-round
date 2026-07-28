@@ -250,7 +250,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 is_mllm=self.model_context.is_mllm,
                 is_diffusion=self.model_context.is_diffusion,
                 pbar=pbar,
-                layer_cnt=(len(block_names) + nblocks - 1) // nblocks,
+                block_cnt=(len(block_names) + nblocks - 1) // nblocks,
             )
 
             # ── Run block pipeline (calibration → quantization → collection) ──
@@ -259,7 +259,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 input_ids,
                 input_others,
                 block_ctx=ctx,
-                q_input=q_input,
+                q_inputs=q_input,
                 input_ids=token_ids,
             )
 
@@ -737,8 +737,8 @@ class CompressionOrchestrator(BaseOrchestrator):
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self.alg_composer.compress_layer_outside_block(
                 get_module(self.model, layer_name),
-                fp_input=layer_input,
-                q_input=q_layer_input,
+                fp_inputs=layer_input,
+                q_inputs=q_layer_input,
                 input_ids=token_ids,
             )
             if self.compress_context.is_immediate_packing:
@@ -947,7 +947,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             input_ids,
             input_others,
             block_ctx=ctx,
-            q_input=q_input,
+            q_inputs=q_input,
         )
 
         # ── Cleanup ───────────────────────────────────────────────────────────
