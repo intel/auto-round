@@ -85,12 +85,12 @@ function run_unit_test() {
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
-    if [ "$test_part" -le "$r" ]; then
+    if [ "$test_part" -lt "$r" ]; then
         chunk_size=$(( q + 1 ))
-        start_line=$(( (test_part - 1) * chunk_size + 1 ))
+        start_line=$(( test_part * chunk_size + 1 ))
     else
         chunk_size=$q
-        start_line=$(( r * (q + 1) + (test_part - r - 1) * q + 1 ))
+        start_line=$(( r * (q + 1) + (test_part - r) * q + 1 ))
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
