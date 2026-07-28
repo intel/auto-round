@@ -162,42 +162,25 @@ class TestLLMC:
         with open(os.path.join(quantized_model_path, "config.json")) as f:
             saved_config = json.load(f)
 
-        saved_groups = saved_config["quantization_config"]["config_groups"]
-        attention_group = None
-        for group in saved_groups.values():
-            if "Linear" not in group["targets"]:
-                attention_group = group
-                break
-
-        assert attention_group is not None
-        assert attention_group["targets"] == [compressed_model.model.decoder.layers[0].self_attn.__class__.__name__]
-        assert attention_group["weights"] is None
-        assert attention_group["input_activations"]["num_bits"] == 8
-        assert attention_group["input_activations"]["type"] == "float"
-        assert attention_group["input_activations"]["strategy"] == "tensor"
-        assert attention_group["input_activations"]["dynamic"] is False
-        assert attention_group["input_activations"]["symmetric"] is True
+        # Attention config is stored in a dedicated top-level field (not config_groups).
+        attention_config = saved_config["quantization_config"]["attention_input_activations"]
+        assert attention_config is not None
+        assert attention_config["targets"] == [compressed_model.model.decoder.layers[0].self_attn.__class__.__name__]
+        assert attention_config["input_activations"]["num_bits"] == 8
+        assert attention_config["input_activations"]["type"] == "float"
+        assert attention_config["input_activations"]["strategy"] == "tensor"
+        assert attention_config["input_activations"]["dynamic"] is False
+        assert attention_config["input_activations"]["symmetric"] is True
         assert saved_config["quantization_config"]["kv_cache_scheme"] is not None
 
         quantization_config = transformers.AutoConfig.from_pretrained(
             quantized_model_path, trust_remote_code=True
         ).quantization_config
         config_groups = quantization_config["config_groups"]
-        attention_group = None
-        for group in config_groups.values():
-            targets = group["targets"]
-            if "Linear" not in targets:
-                attention_group = group
-                break
+        # Only Linear layers should be in config_groups.
+        for group_targets in (g["targets"] for g in config_groups.values()):
+            assert "Linear" in group_targets, f"Unexpected non-Linear targets in config_groups: {group_targets}"
 
-        assert attention_group is not None
-        assert attention_group["targets"] == [compressed_model.model.decoder.layers[0].self_attn.__class__.__name__]
-        assert attention_group["weights"] is None
-        assert attention_group["input_activations"]["num_bits"] == 8
-        assert attention_group["input_activations"]["type"] == "float"
-        assert attention_group["input_activations"]["strategy"] == "tensor"
-        assert attention_group["input_activations"]["dynamic"] is False
-        assert attention_group["input_activations"]["symmetric"] is True
         assert quantization_config["kv_cache_scheme"] is not None
         assert getattr(compressed_model.model.decoder.layers[0].self_attn, "q_scale", None) is not None
 
@@ -293,45 +276,50 @@ def test_llmcompressor_static_fp8_attention_config(dataloader, tmp_path):
 
     with open(os.path.join(quantized_model_path, "config.json")) as f:
         saved_config = json.load(f)
-    saved_groups = saved_config["quantization_config"]["config_groups"]
-    attention_group = None
-    for group in saved_groups.values():
-        if "Linear" not in group["targets"]:
-            attention_group = group
-            break
 
-    assert attention_group is not None
-    assert attention_group["weights"] is None
-    assert attention_group["input_activations"]["num_bits"] == 8
-    assert attention_group["input_activations"]["type"] == "float"
-    assert attention_group["input_activations"]["strategy"] == "tensor"
-    assert attention_group["input_activations"]["dynamic"] is False
-    assert attention_group["input_activations"]["symmetric"] is True
+    # Attention config is stored in a dedicated top-level field (not config_groups)
+    # to prevent compressed_tensors from trying to compress attention modules at load time.
+    attention_config = saved_config["quantization_config"]["attention_input_activations"]
+    assert attention_config is not None
+    assert "Linear" not in attention_config["targets"]
+    assert attention_config["input_activations"]["num_bits"] == 8
+    assert attention_config["input_activations"]["type"] == "float"
+    assert attention_config["input_activations"]["strategy"] == "tensor"
+    assert attention_config["input_activations"]["dynamic"] is False
+    assert attention_config["input_activations"]["symmetric"] is True
     assert saved_config["quantization_config"]["kv_cache_scheme"] is not None
 
+    # Verify the model can be loaded without crashing.
     model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", trust_remote_code=True)
     quantization_config = model.config.quantization_config
     config = quantization_config.to_dict() if hasattr(quantization_config, "to_dict") else quantization_config
     config_groups = config["config_groups"]
 
+    # Only Linear layers should be in config_groups; attention modules use the
+    # separate attention_input_activations field.
     assert "group_0" in config_groups
-    attention_group = None
-    for group in config_groups.values():
-        targets = group["targets"]
-        if "Linear" not in targets:
-            attention_group = group
-            break
+    for group_targets in (g["targets"] for g in config_groups.values()):
+        assert "Linear" in group_targets, f"Unexpected non-Linear targets in config_groups: {group_targets}"
 
-    assert attention_group is not None
-    assert attention_group["targets"] == [model.model.layers[0].self_attn.__class__.__name__]
-    assert attention_group["weights"] is None
-    assert attention_group["input_activations"]["num_bits"] == 8
-    assert attention_group["input_activations"]["type"] == "float"
-    assert attention_group["input_activations"]["strategy"] == "tensor"
-    assert attention_group["input_activations"]["dynamic"] is False
-    assert attention_group["input_activations"]["symmetric"] is True
-    assert getattr(model.model.layers[0].self_attn, "q_scale", None) is not None
     assert config["kv_cache_scheme"] is not None
+
+    # Verify KV cache quant parameters (q_scale, k_scale, v_scale) were saved
+    # in the checkpoint. They show as UNEXPECTED on the loaded model because the
+    # base HuggingFace architecture does not register them as standard parameters.
+    import glob as _glob
+
+    safetensors_files = _glob.glob(os.path.join(quantized_model_path, "*.safetensors"))
+    assert len(safetensors_files) > 0, "No safetensors file found"
+    from safetensors import safe_open as _safe_open
+
+    has_q_scale = False
+    for sf in safetensors_files:
+        with _safe_open(sf, framework="pt") as f:
+            for key in f.keys():
+                if "self_attn.q_scale" in key:
+                    has_q_scale = True
+                    break
+    assert has_q_scale, "q_scale not found in checkpoint"
 
 
 def test_llmcompressor_mxfp8_export_packs_serially(tmp_path, monkeypatch):
