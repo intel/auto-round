@@ -339,6 +339,87 @@ def test_legacy_disable_flags_map_to_enable_bools():
     assert args.enable_quanted_input is False
 
 
+def test_svdquant_cli_builds_hyphenated_options_before_rtn():
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    parser = build_quantize_parser()
+    args = parser.parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--algorithm",
+            "svdquant,rtn",
+            "--svdquant-rank",
+            "16",
+            "--enable-svdquant-smooth",
+            "--svdquant-smooth-num-grids",
+            "39",
+            "--svdquant-smooth-max-calibration-calls",
+            "64",
+            "--svdquant-residual-iters",
+            "20",
+            "--enable-svdquant-residual-early-stop",
+            "--svdquant-residual-quant-method",
+            "rtn",
+            "--svdquant-low-rank-dtype",
+            "fp32",
+            "--svdquant-target-modules",
+            "attn,ff",
+            "--svdquant-exclude-modules",
+            "proj_out",
+            "--svdquant-model-adapter",
+            "flux",
+            "--disable_opt_rtn",
+        ]
+    )
+
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert isinstance(configs[0], SVDQuantConfig)
+    assert configs[0].rank == 16
+    assert configs[0].smooth_enabled is True
+    assert configs[0].smooth_num_grids == 39
+    assert configs[0].smooth_max_calibration_calls == 64
+    assert configs[0].residual_iters == 20
+    assert configs[0].residual_early_stop is True
+    assert configs[0].low_rank_dtype == "fp32"
+    assert configs[0].target_modules == ["attn", "ff"]
+    assert configs[0].exclude_modules == ["proj_out"]
+    assert configs[0].model_adapter == "flux"
+    assert configs[1].__class__.__name__ == "RTNConfig"
+
+
+def test_svdquant_cli_rejects_underscore_option_aliases():
+    from auto_round.cli.parser import build_quantize_parser
+
+    with pytest.raises(SystemExit):
+        build_quantize_parser().parse_args(
+            ["--model", "dummy-model", "--algorithm", "svdquant,rtn", "--svdquant_rank", "16"]
+        )
+
+
+def test_svdquant_cli_defaults_compose_before_signround():
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        ["--model", "dummy-model", "--algorithm", "svdquant,auto_round", "--iters", "200"]
+    )
+
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert isinstance(configs[0], SVDQuantConfig)
+    assert configs[0].rank == 32
+    assert configs[0].smooth_enabled is False
+    assert configs[0].residual_iters == 1
+    assert configs[0].model_adapter == "auto"
+    assert isinstance(configs[1], SignRoundConfig)
+
+
 def _normalize_options(raw):
     if raw is None:
         return None
