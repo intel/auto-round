@@ -27,11 +27,16 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.base import BasePipelineMember
+from auto_round.algorithms.base import BaseAlgorithm
 
 
-class BaseWeightTransformer(BasePipelineMember):
-    """Base class for weight-transformation algorithms in a QuantizationPipeline."""
+class BasePreprocessor(BaseAlgorithm):
+    """Base class for pre-quantization transform algorithms in a QuantizationPipeline.
+
+    Pre-processors run *before* the terminal block quantizer (e.g. AWQ smooth,
+    SmoothQuant, SpinQuant rotation).  Implement at least one of the lifecycle
+    hooks below.
+    """
 
     def pre_quantize_block(self, ctx) -> None:
         """Called after the reference forward, before block quantization."""
@@ -40,6 +45,10 @@ class BaseWeightTransformer(BasePipelineMember):
     def post_quantize_block(self, ctx) -> None:
         """Called after the block quantizer completes."""
         return
+
+
+# Backward-compat alias — remove after all call sites are updated.
+BaseWeightTransformer = BasePreprocessor
 
 
 # ---------------------------------------------------------------------------

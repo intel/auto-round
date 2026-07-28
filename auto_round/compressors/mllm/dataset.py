@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
 from auto_round.logger import logger
-from auto_round.special_model_handler import check_mllm_model_batch
+from auto_round.special_model_handler import check_mllm_only_support_bs1
 
 from .template import Template
 from .utils import _extract_data_dir
@@ -219,7 +219,6 @@ def get_mllm_dataloader(
     truncation=False,
     seed=42,
     nsamples=512,
-    gradient_accumulate_steps=1,
     quant_nontext_module=False,
 ):
     """Generate a DataLoader for calibration using specified parameters.
@@ -262,11 +261,8 @@ def get_mllm_dataloader(
         if "cache_size" in signature(dataset_cls.__init__).parameters:
             dataset_kwargs["cache_size"] = int(os.getenv("AR_MLLM_DATASET_CACHE_SIZE", "0"))
         dataset = dataset_cls(template, model, tokenizer, dataset, extra_data_dir, **dataset_kwargs)
-
-        bs, gradient_accumulate_steps = check_mllm_model_batch(
-            model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps
-        )
-
+        if check_mllm_only_support_bs1(model):
+            bs = 1
         set_seed(seed)
         # Calibration should be deterministic: keep a fixed sample order.
         dataloader_params = {
@@ -275,7 +271,7 @@ def get_mllm_dataloader(
             "collate_fn": dataset.template.processor.data_collator,
         }
 
-        return DataLoader(dataset, **dataloader_params), bs, seqlen, gradient_accumulate_steps
+        return DataLoader(dataset, **dataloader_params), bs, seqlen
     else:
         # try to load text calibration dataset
         from auto_round.calib_dataset import get_dataloader
@@ -287,4 +283,4 @@ def get_mllm_dataloader(
                 " switching to liuhaotian/llava_conv_58k"
             )
             exit(-1)
-        return dataloader, bs, seqlen, gradient_accumulate_steps
+        return dataloader, bs, seqlen
