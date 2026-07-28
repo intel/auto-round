@@ -31,4 +31,6 @@ def discover_svdquant_groups(block: torch.nn.Module, is_target: TargetPredicate)
     return generic_linear_groups(block, is_target)
 
 
-__all__ = ["SmoothSearchGroup", "discover_svdquant_groups"]
+discover_smooth_search_groups = discover_svdquant_groups
+
+__all__ = ["SmoothSearchGroup", "discover_smooth_search_groups", "discover_svdquant_groups"]
