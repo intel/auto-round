@@ -14,12 +14,47 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
 TargetPredicate = Callable[[str, torch.nn.Module], bool]
+
+
+def normalize_tensors(output: Any, indices: tuple[int, ...] | None = None) -> tuple[torch.Tensor, ...]:
+    """Return floating-point tensors used by the smooth output-error objective."""
+    if indices is not None:
+        if not isinstance(output, (tuple, list)):
+            raise TypeError("Indexed SVDQuant smooth output must be a tuple or list.")
+        output = tuple(output[index] for index in indices)
+
+    tensors = []
+
+    def collect(value):
+        if torch.is_tensor(value):
+            if value.is_floating_point():
+                tensors.append(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                collect(item)
+
+    collect(output)
+    if not tensors:
+        raise ValueError("SVDQuant smooth evaluation produced no floating-point tensors.")
+    return tuple(tensors)
+
+
+def filter_supported_kwargs(module: torch.nn.Module, kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    parameters = inspect.signature(module.forward).parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return dict(kwargs)
+    return {name: value for name, value in kwargs.items() if name in parameters}
 
 
 @dataclass(frozen=True)
@@ -29,7 +64,9 @@ class SmoothSearchGroup:
     key: str
     projection_names: tuple[str, ...]
     projections: tuple[torch.nn.Linear, ...]
+    projection_input_key: str
     projection_input_module: torch.nn.Module
+    evaluation_input_key: str
     evaluation_module: torch.nn.Module
     output_indices: tuple[int, ...] | None = None
     output_splits: tuple[int, ...] = ()
@@ -43,6 +80,12 @@ class SmoothSearchGroup:
             raise ValueError(f"SVDQuant group {self.key!r} projections must share an input width.")
         if self.output_splits and sum(self.output_splits) != len(self.projections):
             raise ValueError(f"SVDQuant group {self.key!r} output splits do not cover its projections.")
+
+    def filter_evaluation_kwargs(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
+        return filter_supported_kwargs(self.evaluation_module, kwargs)
+
+    def normalize_output(self, output: Any) -> tuple[torch.Tensor, ...]:
+        return normalize_tensors(output, self.output_indices)
 
 
 def module_global_name(block: torch.nn.Module, local_name: str) -> str:
@@ -85,7 +128,9 @@ def generic_linear_groups(
                 key=name,
                 projection_names=(name,),
                 projections=(module,),
+                projection_input_key=name,
                 projection_input_module=module,
+                evaluation_input_key=name,
                 evaluation_module=module,
                 output_splits=(1,),
             )
