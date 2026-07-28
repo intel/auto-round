@@ -232,14 +232,6 @@ class BlockForwardRunner:
                 self.last_output_dict["hidden_states"] = result
             return result
         else:
-            if self.batch_size == 1:
-                outputs = [output.unsqueeze(dim=self.batch_dim).to(out_device) for output in outputs]
-                if output_dict:
-                    output_dict = {
-                        key: [value.unsqueeze(dim=self.batch_dim).to(out_device) for value in values]
-                        for key, values in output_dict.items()
-                    }
-
             outputs = torch.cat(outputs, dim=self.batch_dim).to(out_device)
             if output_dict:
                 self.last_output_dict = {

@@ -6,10 +6,50 @@ import torch
 from packaging import version
 
 from auto_round import AutoRound
+from auto_round.calibration.diffusion import _prepare_pipeline_for_calibration
 
 from ...helpers import get_model_path, transformers_version
 
 flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
+
+
+def test_low_gpu_memory_diffusion_calibration_uses_model_cpu_offload():
+    class Pipeline:
+        device = torch.device("cpu")
+
+        def __init__(self):
+            self.offload_device = None
+
+        def enable_model_cpu_offload(self, *, device):
+            self.offload_device = device
+
+        def to(self, _device):
+            raise AssertionError("low GPU memory calibration must not move the full pipeline")
+
+    pipe = Pipeline()
+
+    mode = _prepare_pipeline_for_calibration(pipe, "cuda:0", low_gpu_mem_usage=True)
+
+    assert mode == "model"
+    assert pipe.offload_device == torch.device("cuda:0")
+
+
+def test_regular_diffusion_calibration_moves_pipeline_to_device():
+    class Pipeline:
+        device = torch.device("cpu")
+
+        def __init__(self):
+            self.target_device = None
+
+        def to(self, device):
+            self.target_device = device
+
+    pipe = Pipeline()
+
+    mode = _prepare_pipeline_for_calibration(pipe, "cuda:0", low_gpu_mem_usage=False)
+
+    assert mode is None
+    assert pipe.target_device == torch.device("cuda:0")
 
 
 @pytest.fixture

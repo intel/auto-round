@@ -34,6 +34,8 @@ class FluxTransformerBlock(torch.nn.Module):
     def __init__(self, width=8):
         super().__init__()
         self.attn = FluxAttention(width)
+        self.norm1 = torch.nn.Module()
+        self.norm1.linear = torch.nn.Linear(width, width, bias=False)
 
 
 class TinyFlux(torch.nn.Module):
@@ -101,6 +103,32 @@ def test_no_smooth_flux_qkv_share_one_down_factor():
     assert q.lora_up.bits == 16
     for actual, reference in zip((q(inputs), k(inputs), v(inputs)), expected):
         torch.testing.assert_close(actual, reference)
+
+
+def test_flux_adapter_default_targets_only_runtime_supported_projections():
+    model = TinyFlux()
+    model.config = {"_class_name": "FluxTransformer2DModel"}
+    _mark_modules(model)
+    block_name = "transformer_blocks.0"
+    transform = SVDQuantTransform(SVDQuantConfig(rank=2, model_adapter="auto", low_rank_dtype="fp32"))
+    orchestrator = SimpleNamespace(
+        model_context=SimpleNamespace(model=model),
+        compress_context=None,
+        calibration_context=None,
+        scheme_context=None,
+        scale_dtype=None,
+        nblocks=1,
+        quant_block_list=[[block_name]],
+    )
+    transform.bind(orchestrator)
+    transform.prepare_run()
+
+    transform.pre_quantize_block(
+        BlockContext(model=model, block_names=[block_name], block_name=block_name, block_index=0)
+    )
+
+    assert isinstance(model.transformer_blocks[0].attn.to_q, SVDQuantLinear)
+    assert isinstance(model.transformer_blocks[0].norm1.linear, torch.nn.Linear)
 
 
 def test_no_smooth_grouped_residual_iteration_and_cleanup():
