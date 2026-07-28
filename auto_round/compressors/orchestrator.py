@@ -283,6 +283,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
+            clear_memory(device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────

@@ -369,7 +369,12 @@ class AutoRound(object):
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
-        route_decision_kwargs = dict(route_kwargs, format=format)
+        route_decision_kwargs = dict(
+            route_kwargs,
+            format=format,
+            static_kv_dtype=base_kwargs.get("static_kv_dtype"),
+            static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+        )
         if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
             from auto_round.compressors.model_free import ModelFreeCompressor
 
