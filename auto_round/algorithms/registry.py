@@ -47,6 +47,7 @@ def _ensure_pipeline_members_registered() -> None:
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
         "auto_round.algorithms.transforms.awq.base",
+        "auto_round.algorithms.transforms.svdquant.apply",
     ):
         importlib.import_module(module_name)
     _pipeline_members_registered = True
