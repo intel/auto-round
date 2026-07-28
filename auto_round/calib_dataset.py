@@ -338,6 +338,39 @@ def get_github_code_clean_dataset(
     return calib_dataset
 
 
+@register_dataset(["nvidia/OpenCodeInstruct", "opencode-instruct"])
+def get_opencode_instruct_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="nvidia/OpenCodeInstruct",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+):
+    """Return tokenized coding instructions and responses from OpenCodeInstruct."""
+    split = "train" if split is None else split
+    if isinstance(split, list):
+        if len(split) != 1:
+            raise ValueError("OpenCodeInstruct supports only the train split.")
+        split = split[0]
+    if split != "train":
+        raise ValueError("OpenCodeInstruct supports only the train split.")
+
+    calib_dataset = load_dataset("nvidia/OpenCodeInstruct", split=split, streaming=True)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+
+    def tokenize_example_batch(examples):
+        texts = [
+            f"{input_text}\n\n{output_text}" for input_text, output_text in zip(examples["input"], examples["output"])
+        ]
+        if apply_chat_template:
+            return apply_chat_template_to_samples(texts, tokenizer, seqlen, system_prompt=system_prompt)
+        return tokenizer(texts, truncation=True, max_length=seqlen)
+
+    return calib_dataset.map(tokenize_example_batch, batched=True)
+
+
 @register_dataset(["HuggingFaceH4/ultrachat_200k", "ultrachat_200k"])
 def get_ultrachat_dataset(
     tokenizer,
