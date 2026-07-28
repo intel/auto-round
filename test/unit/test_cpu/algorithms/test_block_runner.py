@@ -64,3 +64,48 @@ def test_unregistered_tuple_output_keeps_first_tensor_behavior():
     assert runner.last_output_dict is None
     for output, input_tensor in zip(outputs, inputs):
         torch.testing.assert_close(output, input_tensor + 1)
+
+
+def test_indexed_single_sample_forward_preserves_one_batch_dimension():
+    runner = BlockForwardRunner(
+        batch_dim=0,
+        batch_size=1,
+        device="cpu",
+        cache_device="cpu",
+        amp=True,
+        amp_dtype=torch.bfloat16,
+    )
+    sample = torch.randn(1, 3, 4)
+
+    output = runner(torch.nn.Identity(), [sample], {}, indices=torch.tensor([0]))
+
+    assert output.shape == sample.shape
+    torch.testing.assert_close(output, sample)
+
+
+def test_indexed_diffusion_outputs_preserve_batch_dimension():
+    class FluxTransformerBlock(torch.nn.Module):
+        def forward(self, hidden_states, **_kwargs):
+            return hidden_states + 1, hidden_states + 2
+
+    runner = BlockForwardRunner(
+        batch_dim=0,
+        batch_size=1,
+        device="cpu",
+        cache_device="cpu",
+        amp=True,
+        amp_dtype=torch.bfloat16,
+        is_diffusion=True,
+    )
+    sample = torch.randn(1, 3, 4)
+
+    output = runner(
+        FluxTransformerBlock(),
+        {"hidden_states": [sample]},
+        {},
+        indices=torch.tensor([0]),
+    )
+
+    assert output.shape == sample.shape
+    assert runner.last_output_dict["encoder_hidden_states"].shape == sample.shape
+    assert runner.last_output_dict["hidden_states"].shape == sample.shape

@@ -97,8 +97,15 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
     from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
 
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
-    model = torch.nn.Module()
-    model.config = {"_class_name": "FluxTransformer2DModel", "num_layers": 0, "num_single_layers": 0}
+
+    class FluxModel(torch.nn.Module):
+        config = {"_class_name": "FluxTransformer2DModel", "num_layers": 0, "num_single_layers": 0}
+
+        def save_config(self, output_dir):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            Path(output_dir, "config.json").write_text(json.dumps(self.config), encoding="utf-8")
+
+    model = FluxModel()
     captured = {}
 
     def fake_export(export_model, output_path, *, config, residual_provider, adapter):
@@ -118,6 +125,7 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
     assert captured["output_path"] == str(tmp_path / "diffusion_pytorch_model.safetensors")
     assert captured["runtime_loadable"] is True
     assert isinstance(captured["adapter"], FluxSVDQuantNunchakuAdapter)
+    assert (tmp_path / "config.json").is_file()
 
 
 def test_format_rejects_models_without_runtime_adapter(tmp_path):
