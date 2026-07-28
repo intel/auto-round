@@ -32,6 +32,22 @@ from auto_round.calibration.register import register_calibrator
 from auto_round.compressors import BaseOrchestrator as BaseCompressor
 from auto_round.logger import logger
 from auto_round.utils.device_manager import device_manager
+
+
+def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage: bool) -> str | None:
+    """Place a diffusion pipeline for calibration without exceeding one GPU."""
+    target_device = torch.device(target_device)
+    if low_gpu_mem_usage:
+        enable_model_cpu_offload = getattr(pipe, "enable_model_cpu_offload", None)
+        if not callable(enable_model_cpu_offload):
+            raise ValueError("The diffusion pipeline does not support component-level model CPU offload.")
+        enable_model_cpu_offload(device=target_device)
+        return "model"
+    if pipe.device != target_device:
+        pipe.to(target_device)
+    return None
+
+
 from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
 
@@ -120,8 +136,11 @@ class DiffusionCalibrator(LLMCalibrator):
             exit(-1)
 
         target_device = device_manager.device
-        if pipe.device != torch.device(target_device):
-            pipe.to(target_device)
+        self._cpu_offload_mode = _prepare_pipeline_for_calibration(
+            pipe,
+            target_device,
+            low_gpu_mem_usage=self.low_gpu_mem_usage,
+        )
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         # Check if this is an I2V pipeline (needs calibration image)
         requires_image = False

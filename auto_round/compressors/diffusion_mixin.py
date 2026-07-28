@@ -396,6 +396,10 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
+            if getattr(self.calibration, "_cpu_offload_mode", None) == "model":
+                from accelerate.hooks import remove_hook_from_submodules
+
+                remove_hook_from_submodules(self.model_context.model)
             clear_memory()
             self._inputs_cached = True
             return super().quantize()

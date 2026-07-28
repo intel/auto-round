@@ -143,6 +143,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._configured_block_names: tuple[str, ...] = ()
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
+        self._target_modules = config.target_modules
 
     def bind(self, orchestrator) -> None:
         super().bind(orchestrator)
@@ -158,7 +159,22 @@ class SVDQuantTransform(BasePreprocessor):
         self._block_groups.clear()
         if self.model is None:
             return
-        self.model._autoround_svdquant_model_adapter = self.config.model_adapter or "auto"
+        model_adapter = self.config.model_adapter or "auto"
+        if model_adapter == "auto":
+            model_config = getattr(self.model, "config", None)
+            class_name = (
+                model_config.get("_class_name", type(self.model).__name__)
+                if hasattr(model_config, "get")
+                else type(self.model).__name__
+            )
+            if "fluxtransformer" in str(class_name).lower():
+                model_adapter = "flux"
+        self.model._autoround_svdquant_model_adapter = model_adapter
+        self._target_modules = self.config.target_modules
+        if self._target_modules is None and model_adapter == "flux":
+            from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+            self._target_modules = FLUX_SVDQUANT_TARGET_MODULES
         for block_name in self._configured_block_names:
             block = self.model.get_submodule(block_name)
             self._block_groups[block_name] = discover_svdquant_groups(block, self._is_target)
@@ -631,8 +647,8 @@ class SVDQuantTransform(BasePreprocessor):
         if not isinstance(module, torch.nn.Linear):
             return False
         full_name = str(getattr(module, "global_name", name))
-        if self.config.target_modules and not any(
-            pattern in name or pattern in full_name for pattern in self.config.target_modules
+        if self._target_modules and not any(
+            pattern in name or pattern in full_name for pattern in self._target_modules
         ):
             return False
         if self.config.exclude_modules and any(
