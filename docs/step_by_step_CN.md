@@ -836,7 +836,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 ### 超参数调整
 #### 降低 GPU 显存占用
 以下方法可单独或组合使用，其中部分方式会增加训练耗时或带来轻微的精度损失：
-- 保持默认的 `enable_torch_compile=True`（开启 PyTorch 编译加速，不损失精度）
+- 非 Windows 平台保持默认开启 `torch.compile`；Windows 上如需开启，请显式设置 `enable_torch_compile=True`（开启 PyTorch 编译加速，不损失精度）
 - 开启 `low_gpu_mem_usage`（低显存模式，**增加训练耗时**）
 - 设置 `--bs 1 --gradient_accumulate_steps 8`（批次1+梯度累积8步，**增加训练耗时**）
 - 将 `bs` 降至 4（**可能会有轻微的精度损失**）
@@ -848,7 +848,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 #### 提升训练速度
 以下方法可单独或组合使用，其中部分方式可能带来精度损失：
-- 保持默认的 `enable_torch_compile=True`（无精度损失）
+- 非 Windows 平台保持默认开启 `torch.compile`；Windows 上如需开启，请显式设置 `enable_torch_compile=True`（无精度损失）
 - 使用 `auto-round-light` （小模型/ 2-bits 场景可能有明显精度损失）
 - 将 `seqlen` 降至 512（**部分场景可能出现大幅精度损失**）
 - 将 `bs` 降至 4（**仅有轻微精度损失**）

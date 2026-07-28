@@ -849,7 +849,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 - **Reduced GPU Memory Usage:**
     
-  - keep `enable_torch_compile=True` (the default)
+  - keep `torch.compile` enabled by default on non-Windows platforms; on Windows, pass `enable_torch_compile=True` to opt in
 
     - enable `low_gpu_mem_usage`(more tuning cost)
 
@@ -869,7 +869,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
       quantize_and_save API, as long as only one export format is specified.
 
 - **Speedup the tuning:**
-  - keep `enable_torch_compile=True` (the default)
+  - keep `torch.compile` enabled by default on non-Windows platforms; on Windows, pass `enable_torch_compile=True` to opt in
 
     - use `auto-round-light` configuration
 
