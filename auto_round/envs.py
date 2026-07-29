@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     LLAMA_CPP_ROOT: Optional[str] = None
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+    AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -85,6 +86,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Enables AutoScheme to score schemes in parallel. Disabled by default to
+    # avoid multiple model-loading workers exhausting host RAM or device memory.
+    "AR_ENABLE_AUTO_SCHEME_PARALLEL": lambda: os.getenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "0").lower()
+    in ("1", "true", "yes"),
 }
 
 

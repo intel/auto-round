@@ -34,10 +34,10 @@ def split_inputs(
 
     Mirrors the original ``Compressor._split_inputs`` exactly:
 
-    - For diffusion models, every key containing ``"hidden_state"`` is pulled
-      out into a dict and returned as ``input_ids``; the remaining kwargs are
-      returned as ``input_others``.  Keys in *shared_cache_keys* are kept in
-      ``input_others`` even if they match ``"hidden_state"``.
+        - For diffusion models, the block's primary ``hidden_states`` tensor is
+            pulled out and returned as ``input_ids``; auxiliary tensors such as
+            ``encoder_hidden_states`` remain in ``input_others`` so replayed block
+            forwards receive the same kwargs as the original model call.
     - Otherwise, ``inputs[first_input_name]`` is popped and returned as
       ``input_ids`` (may be ``None``); the remainder is ``input_others``.
 
@@ -45,7 +45,7 @@ def split_inputs(
     behaviour that downstream code relies on.
     """
     if is_diffusion:
-        input_id_str = [key for key in inputs.keys() if "hidden_state" in key and key not in shared_cache_keys]
+        input_id_str = [key for key in ("hidden_states",) if key in inputs and key not in shared_cache_keys]
         input_ids = {k: inputs.pop(k, None) for k in input_id_str}
         input_others = inputs
         return input_ids, input_others
