@@ -53,6 +53,18 @@ class SVDQuantConfig(QuantizationConfig):
             )
         if smooth_eps <= 0:
             raise ValueError(f"`smooth_eps` must be positive, got {smooth_eps!r}")
+        if not isinstance(low_rank_dtype, str) or low_rank_dtype.lower() not in {
+            "bf16",
+            "bfloat16",
+            "fp16",
+            "float16",
+            "fp32",
+            "float32",
+        }:
+            raise ValueError(
+                "`low_rank_dtype` must be one of bf16, bfloat16, fp16, float16, fp32, or float32, "
+                f"got {low_rank_dtype!r}"
+            )
         if type(residual_iters) is not int or residual_iters < 1:
             raise ValueError(f"`residual_iters` must be a positive integer, got {residual_iters!r}")
         if type(residual_early_stop) is not bool:

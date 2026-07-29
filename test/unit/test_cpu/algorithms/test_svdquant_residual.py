@@ -77,6 +77,7 @@ def test_svdquant_config_defaults_to_data_free_single_iteration():
         ({"smooth_enabled": 1}, "smooth_enabled"),
         ({"smooth_num_grids": 1}, "smooth_num_grids"),
         ({"smooth_max_calibration_calls": 0}, "smooth_max_calibration_calls"),
+        ({"low_rank_dtype": "bf116"}, "low_rank_dtype"),
         ({"residual_iters": 0}, "residual_iters"),
         ({"residual_quant_method": "signround"}, "residual_quant_method"),
     ],
@@ -84,6 +85,11 @@ def test_svdquant_config_defaults_to_data_free_single_iteration():
 def test_svdquant_config_rejects_invalid_structural_options(kwargs, field):
     with pytest.raises(ValueError, match=field):
         SVDQuantConfig(**kwargs)
+
+
+@pytest.mark.parametrize("dtype", ["bf16", "bfloat16", "fp16", "float16", "fp32", "float32"])
+def test_svdquant_config_accepts_supported_low_rank_dtype_aliases(dtype):
+    assert SVDQuantConfig(low_rank_dtype=dtype).low_rank_dtype == dtype
 
 
 def test_truncated_svd_returns_shared_down_factor_for_stacked_projection_group():
