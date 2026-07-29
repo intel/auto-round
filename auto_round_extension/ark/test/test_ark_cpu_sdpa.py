@@ -13,7 +13,8 @@ import math
 import sys
 from pathlib import Path
 
-import cpuinfo
+cpuinfo = pytest.importorskip("cpuinfo")
+
 import pytest
 import torch
 
