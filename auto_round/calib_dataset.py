@@ -357,25 +357,37 @@ def get_opencode_instruct_dataset(
     if split != "train":
         raise ValueError("OpenCodeInstruct supports only the train split.")
 
-    calib_dataset = load_dataset("nvidia/OpenCodeInstruct", split=split, streaming=True)
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
 
-    def tokenize_example_batch(examples):
+    dataset = load_dataset("nvidia/OpenCodeInstruct", split=split, streaming=True)
+    dataset = dataset.shuffle(seed=seed).take(10000)
+    samples = []
+    for data in dataset:
         if apply_chat_template:
-            messages = [
-                [
-                    {"role": "user", "content": input_text},
-                    {"role": "assistant", "content": output_text},
-                ]
-                for input_text, output_text in zip(examples["input"], examples["output"])
-            ]
-            return apply_chat_template_to_samples(messages, tokenizer, seqlen, system_prompt=system_prompt)
-        texts = [
-            f"{input_text}\n\n{output_text}" for input_text, output_text in zip(examples["input"], examples["output"])
-        ]
-        return tokenizer(texts, truncation=True, max_length=seqlen)
+            samples.append(
+                {
+                    "text": [
+                        {"role": "user", "content": data["input"]},
+                        {"role": "assistant", "content": data["output"]},
+                    ]
+                }
+            )
+        else:
+            samples.append({"text": f"{data['input']}\n\n{data['output']}"})
+    random.Random(seed).shuffle(samples)
 
-    return calib_dataset.map(tokenize_example_batch, batched=True)
+    calib_dataset = Dataset.from_list(samples)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+
+    return calib_dataset
 
 
 @register_dataset(["HuggingFaceH4/ultrachat_200k", "ultrachat_200k"])
