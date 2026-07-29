@@ -147,7 +147,7 @@ def search_mx_scale(tensor, bits, qw=None, data_type=None):
     # for tmp_scale in (0.25, 0.5, 2.0, 4.0):
     for scale_value in range(50, 152):
         tmp_scale = scale_value / 100.0
-        if tmp_scale==1.0:
+        if tmp_scale == 1.0:
             continue
         torch.mul(max_val, tmp_scale, out=scale_buf)
 
@@ -203,7 +203,7 @@ def quant_mx_opt_rtn(
     max_val = torch.amax(torch.abs(tensor), dim=-1, keepdim=True)
     max_val.mul_(max_scales)
 
-    shared_exp = torch.where(max_val == 0,torch.ones_like(max_val),torch.log2(max_val))
+    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
     shared_exp.floor_()
 
     scale_emax = 2.0 ** (8 - 1) - 1
@@ -215,11 +215,11 @@ def quant_mx_opt_rtn(
     scale = torch.pow(2.0, shared_exp)
 
     tensor.div_(scale)
-    if v!=0:
+    if v != 0:
         tensor.add_(v)
 
-    tensor.clamp_(min=-max_norm,max=max_norm)
-    tensor = quant_element(tensor, ebits,mbits, max_norm, mantissa_rounding)
+    tensor.clamp_(min=-max_norm, max=max_norm)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
     tensor.mul_(scale)
     tensor = revert_tensor_by_pad(
         tensor,
@@ -228,6 +228,7 @@ def quant_mx_opt_rtn(
     )
 
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
+
 
 def quant_mx(
     tensor,

@@ -188,7 +188,7 @@ class AlgorithmComposer:
                 can_compile_block_forward = bool(user_torch_compile)
 
             if "nv_fp" in orchestrator.data_type:
-                can_compile_block_forward= False
+                can_compile_block_forward = False
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (

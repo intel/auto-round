@@ -259,8 +259,6 @@ def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     return qdq_res.to(orig_dtype), scale, None
 
 
-
-
 def safe_reciprocal(x):
     if isinstance(x, torch.Tensor):
         out = torch.empty_like(x)
@@ -272,7 +270,6 @@ def safe_reciprocal(x):
         return 0.0 if x == 0 else 1.0 / x
     else:
         raise TypeError("Input must be a float, int, or torch.Tensor.")
-
 
 
 def cast_to_fp4_fast(x):
@@ -296,9 +293,11 @@ def cast_to_fp4_fast(x):
 
     return out
 
+
 @torch._dynamo.disable()
 def to_float8_e4m3fn(tensor):
     return tensor.to(torch.float8_e4m3fn).to(torch.float32)
+
 
 def quantize_nvfp4_fast(
     tensor,
@@ -326,9 +325,7 @@ def quantize_nvfp4_fast(
 
     scale = to_float8_e4m3fn(scale)
 
-    output_scale = get_reciprocal(
-        scale * get_reciprocal(global_scale)
-    )
+    output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
 
     qdq = tensor.to(torch.float32)
     qdq.mul_(output_scale)
@@ -346,7 +343,6 @@ def quantize_nvfp4_fast(
     qdq.mul_(get_reciprocal(output_scale))
 
     return qdq.reshape(m, n), scale
-
 
 
 @register_dtype("rtn_nv_fp4")
@@ -372,11 +368,7 @@ def fast_nvfp4(
 
     if global_scale is None:
         tensor_max = tensor.abs().max().to(torch.float32)
-        global_scale = (
-            FLOAT8_E4M3_MAX
-            * FLOAT4_E2M1_MAX
-            * get_reciprocal(tensor_max)
-        )
+        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
 
     global_scale = global_scale.to(
         tensor.device,
@@ -463,6 +455,7 @@ def search_fast_nvfp4_scale(
 
     return scales
 
+
 @register_dtype("opt_rtn_nv_fp4")
 def opt_rtn_fast_nvfp4(
     tensor,
@@ -471,10 +464,10 @@ def opt_rtn_fast_nvfp4(
     v=0,
     global_scale=None,
     max_scale=1.0,
-    imatrix = 1.0,
+    imatrix=1.0,
     **kwargs,
 ):
-    tensor,orig_shape,pad_len = reshape_pad_tensor_by_group_size(tensor,group_size)
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if imatrix is None:
         qw = 1.0
     else:
@@ -485,10 +478,9 @@ def opt_rtn_fast_nvfp4(
         imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
         qw = imatrix
 
-    init_scale = search_fast_nvfp4_scale(tensor,4,qw)
-    tensor = revert_tensor_by_pad(tensor,orig_shape,pad_len)
-    return fast_nvfp4(tensor,bits,group_size,v,global_scale,max_scale,init_scale=init_scale)
-
+    init_scale = search_fast_nvfp4_scale(tensor, 4, qw)
+    tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
+    return fast_nvfp4(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
 
 
 @register_dtype("rtn_nv_fp4_with_static_gs")
@@ -529,11 +521,7 @@ def fast_nvfp4_with_static_gs(
         if tensor_max.numel() != 1:
             tensor_max = tensor_max.abs().max()
 
-    global_scale = (
-        FLOAT8_E4M3_MAX
-        * FLOAT4_E2M1_MAX
-        * get_reciprocal(tensor_max)
-    )
+    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
 
     global_scale = global_scale.to(
         tensor.device,
@@ -554,8 +542,6 @@ def fast_nvfp4_with_static_gs(
     )
 
     return qdq_res.to(orig_dtype), scale, None
-
-
 
 
 if __name__ == "__main__":
