@@ -284,12 +284,13 @@ def benchmark_preprocess_stages(
         )
         stage_ms: dict[str, float] = {}
 
-        key_mean, stage_ms["key_mean"] = bench_with_output(
+        key_mean, key_mean_ms = bench_with_output(
             lambda: ark._sequence_mean_native_layout(ctx.key, ctx.tensor_layout),
             warmup=0,
             iters=1,
         )
-        (pooled_q, sim_qblocks, q_int8_hnd, q_scale), stage_ms["pool_q_block64"] = bench_with_output(
+        stage_ms["key_mean"] = key_mean_ms
+        (pooled_q, sim_qblocks, q_int8_hnd, q_scale), pool_q_block64_ms = bench_with_output(
             lambda: _get_pool_sim_triton_simmean_fuse_quant(
                 ctx.query,
                 None,
@@ -300,8 +301,9 @@ def benchmark_preprocess_stages(
             warmup=0,
             iters=1,
         )
-        (pooled_k, sim_kblocks, k_int8_hnd, k_scale), stage_ms["pool_k_block64"] = bench_with_output(
-            lambda: _get_pool_sim_triton_simmean_fuse_quant(
+        stage_ms["pool_q_block64"] = pool_q_block64_ms
+        (pooled_k, sim_kblocks, k_int8_hnd, k_scale), pool_k_block64_ms = bench_with_output(
+            lambda key_mean=key_mean: _get_pool_sim_triton_simmean_fuse_quant(
                 ctx.key,
                 key_mean,
                 ctx.quant_block_size,
@@ -311,8 +313,9 @@ def benchmark_preprocess_stages(
             warmup=0,
             iters=1,
         )
+        stage_ms["pool_k_block64"] = pool_k_block64_ms
 
-        def qtile_stage():
+        def qtile_stage(pooled_q=pooled_q, sim_qblocks=sim_qblocks):
             if ctx.blocks_per_qtile <= 1:
                 return pooled_q, sim_qblocks
             tile_pooled_q = []
@@ -337,17 +340,23 @@ def benchmark_preprocess_stages(
                 tile_sim_q.append(sim_tile[:, :, 0])
             return torch.stack(tile_pooled_q, dim=2), torch.stack(tile_sim_q, dim=2)
 
-        (pooled_q_for_routing, sim_q_for_routing), stage_ms["pool_q_tile"] = bench_with_output(
+        (pooled_q_for_routing, sim_q_for_routing), pool_q_tile_ms = bench_with_output(
             qtile_stage,
             warmup=0,
             iters=1,
         )
+        stage_ms["pool_q_tile"] = pool_q_tile_ms
 
         kv_head_index = torch.arange(ctx.num_heads_q, device=ctx.query.device, dtype=torch.int64) // (
             ctx.num_heads_q // ctx.num_heads_kv
         )
 
-        def routing_stage():
+        def routing_stage(
+            pooled_k=pooled_k,
+            sim_kblocks=sim_kblocks,
+            sim_q_for_routing=sim_q_for_routing,
+            pooled_q_for_routing=pooled_q_for_routing,
+        ):
             pooled_k_for_q = pooled_k[:, kv_head_index]
             sim_k_for_q = sim_kblocks[:, kv_head_index]
             sim_k_expand = sim_k_for_q.unsqueeze(-2).expand(-1, -1, ctx.num_q_tiles, -1)
@@ -378,9 +387,8 @@ def benchmark_preprocess_stages(
             sim_k_expand,
             sim_q_expand,
             causal_mask,
-        ), stage_ms[
-            "pooled_score_softmax_sort"
-        ] = bench_with_output(routing_stage, warmup=0, iters=1)
+        ), pooled_score_softmax_sort_ms = bench_with_output(routing_stage, warmup=0, iters=1)
+        stage_ms["pooled_score_softmax_sort"] = pooled_score_softmax_sort_ms
 
         _, _, _, num_k_blocks = pooled_prob.shape
         num_to_select = (
@@ -390,7 +398,13 @@ def benchmark_preprocess_stages(
             .contiguous()
         )
 
-        def fill_stage():
+        def fill_stage(
+            pooled_prob=pooled_prob,
+            sim_k_expand=sim_k_expand,
+            sim_q_expand=sim_q_expand,
+            sorted_prob=sorted_prob,
+            causal_mask=causal_mask,
+        ):
             final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
             final_tile_map[~sim_k_expand] = True
             final_tile_map[~sim_q_expand] = True
@@ -399,24 +413,27 @@ def benchmark_preprocess_stages(
                 final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_blocks)
             return final_tile_map
 
-        final_tile_map, stage_ms["fill_block_map"] = bench_with_output(fill_stage, warmup=0, iters=1)
+        final_tile_map, fill_block_map_ms = bench_with_output(fill_stage, warmup=0, iters=1)
+        stage_ms["fill_block_map"] = fill_block_map_ms
 
         q_block_to_tile = (
             torch.arange((ctx.seq_len_q + ctx.quant_block_size - 1) // ctx.quant_block_size, device=ctx.query.device)
             * ctx.quant_block_size
         ) // ctx.query_tile_tokens
         q_block_to_tile = q_block_to_tile.clamp_max(ctx.num_q_tiles - 1)
-        raw_block_map, stage_ms["tile_to_qblock_index"] = bench_with_output(
-            lambda: final_tile_map.index_select(2, q_block_to_tile).contiguous(),
+        raw_block_map, tile_to_qblock_index_ms = bench_with_output(
+            lambda final_tile_map=final_tile_map: final_tile_map.index_select(2, q_block_to_tile).contiguous(),
             warmup=0,
             iters=1,
         )
+        stage_ms["tile_to_qblock_index"] = tile_to_qblock_index_ms
 
-        (lut, valid_block_num), stage_ms["block_map_to_lut"] = bench_with_output(
-            lambda: _block_map_lut_triton(raw_block_map),
+        (lut, valid_block_num), block_map_to_lut_ms = bench_with_output(
+            lambda raw_block_map=raw_block_map: _block_map_lut_triton(raw_block_map),
             warmup=0,
             iters=1,
         )
+        stage_ms["block_map_to_lut"] = block_map_to_lut_ms
 
         if _ >= warmup:
             for name in stage_names:
