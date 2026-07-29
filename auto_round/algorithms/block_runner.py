@@ -123,6 +123,7 @@ class BlockForwardRunner:
         self.shared_cache_keys = shared_cache_keys
         self.output_config = output_config if output_config is not None else ["hidden_states"]
         self.enable_torch_compile = enable_torch_compile
+        self.last_output_dict = None
         self.block_forward = block_forward
         if self.enable_torch_compile:
             from auto_round.utils import compile_func
@@ -192,6 +193,8 @@ class BlockForwardRunner:
         else:
             device = inputs.device
 
+        self.last_output_dict = None
+        output_dict = {}
         if indices is None:
             indices = torch.arange(num_samples, dtype=torch.long, device=device)
         elif not isinstance(indices, torch.Tensor):
@@ -205,10 +208,17 @@ class BlockForwardRunner:
             batch_indices = indices[i : i + self.batch_size]
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
             raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
+            batch_output_dict = self._get_diffusion_output_dict(raw_output, block)
             output = self._normalize_output(raw_output, block)
             if is_returned_list and self.batch_size != 1:  # split  it to 1
+                if batch_output_dict:
+                    for key, value in batch_output_dict.items():
+                        output_dict.setdefault(key, []).extend(self.split_outputs(value))
                 output = self.split_outputs(output)
             else:
+                if batch_output_dict:
+                    for key, value in batch_output_dict.items():
+                        output_dict.setdefault(key, []).append(value)
                 output = [output]
             outputs.extend(output)
 
@@ -216,12 +226,26 @@ class BlockForwardRunner:
             raise RuntimeError("BlockForwardRunner.forward: no outputs collected.")
 
         if is_returned_list:
-            return [o.to(out_device) for o in outputs]
+            result = [o.to(out_device) for o in outputs]
+            if output_dict:
+                self.last_output_dict = {key: [o.to(out_device) for o in values] for key, values in output_dict.items()}
+                self.last_output_dict["hidden_states"] = result
+            return result
         else:
             if self.batch_size == 1:
                 outputs = [output.unsqueeze(dim=self.batch_dim).to(out_device) for output in outputs]
+                if output_dict:
+                    output_dict = {
+                        key: [value.unsqueeze(dim=self.batch_dim).to(out_device) for value in values]
+                        for key, values in output_dict.items()
+                    }
 
             outputs = torch.cat(outputs, dim=self.batch_dim).to(out_device)
+            if output_dict:
+                self.last_output_dict = {
+                    key: torch.cat(values, dim=self.batch_dim).to(out_device) for key, values in output_dict.items()
+                }
+                self.last_output_dict["hidden_states"] = outputs
 
         return outputs.to(out_device)
 
@@ -312,6 +336,23 @@ class BlockForwardRunner:
         if isinstance(first, torch.Tensor):
             return first
         raise TypeError(f"Block output[0] must be tensor, got {type(first).__name__}.")
+
+    def _get_diffusion_output_dict(
+        self, output: Any, block: "torch.nn.Module" = None
+    ) -> dict[str, torch.Tensor] | None:
+        if not self.is_diffusion or isinstance(output, torch.Tensor) or not isinstance(output, (tuple, list)):
+            return None
+        block_cls_name = block.__class__.__name__ if block is not None else None
+        output_config = (
+            _DIFFUSION_OUTPUT_REGISTRY.get(block_cls_name, self.output_config) if block_cls_name else self.output_config
+        )
+        output_dict = {}
+        for idx, key in enumerate(output_config):
+            if idx >= len(output):
+                break
+            if isinstance(output[idx], torch.Tensor):
+                output_dict[key] = output[idx]
+        return output_dict or None
 
     def _select_batch(self, inputs, input_others, indices):
         """Select a subset of inputs by indices."""

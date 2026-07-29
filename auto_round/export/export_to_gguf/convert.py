@@ -202,6 +202,17 @@ def get_restored_tensors(cls) -> Iterator[RestoredTensor]:
             yield RestoredTensor(name, lambda tensor=tensor: tensor, pending.hf_names, pending.transform_kind)
 
 
+# gguf's canonical (architecture-independent) tensor names for the three merged MoE FFN
+# weights -> the HF checkpoint weight-kind token used inside each per-expert weight's name
+# (see e.g. glm.py/deepseek.py/qwen.py `modify_tensors`, which always buffer/merge experts as
+# "down_proj", "gate_proj", "up_proj").
+_MOE_EXP_SUFFIX_TO_HF_WNAME = {
+    "ffn_gate_exps.weight": "gate_proj",
+    "ffn_up_exps.weight": "up_proj",
+    "ffn_down_exps.weight": "down_proj",
+}
+
+
 def _quant_data_with_args(
     data_torch, data_qtype, scale, zp, d_scale=None, wmin=None, d_wmin=None, imatrix=None, device=None
 ):
@@ -1000,43 +1011,54 @@ def prepare_tensors(cls):
                     data_qtype = gguf.GGMLQuantizationType.F16
                     data = gguf.quants.quantize(data, data_qtype)
             else:
-                # for deepseek v2
+                # for deepseek v2 / GLM_DSA style MLA models: kv_b_proj is split (by row) into
+                # k_b_proj and v_b_proj, and k_b_proj is additionally transposed so its rows
+                # become the lora-rank axis. The stored scale/zp/wmin/d_scale/d_wmin are grouped
+                # along the (pre-transpose) lora-rank axis; after the k_b_proj transpose, that
+                # group axis lands on the row axis, where a single GGUF quant block cannot share
+                # one scale value across multiple output rows. Reusing those tensors as-is (as the
+                # code used to do, via a plain view/split/transpose mirroring the weight transform)
+                # produces a scale whose element count no longer matches the number of quant blocks
+                # (e.g. a "size of tensor a must match tensor b" crash in q8_0/q4_k packing) or,
+                # worse, a wrong-but-same-sized scale. So always let ggml_quant recompute scale/zp
+                # for both k_b_proj and v_b_proj from the split (and possibly transposed) data.
                 if hf_name.endswith("kv_b_proj.weight") and cls.model_arch.name in ("DEEPSEEK2", "GLM_DSA"):
                     layer_name = hf_name[: -len(".weight")]
                     module = get_module(cls.model, layer_name)
-                    n_head_kv = cls.hparams["num_key_value_heads"]
-                    v_head_dim = cls.hparams["v_head_dim"]
-                    qk_nope_head_dim = cls.hparams["qk_nope_head_dim"]
+
+                    name_kb = modify_name.replace("kv_b_proj", "k_b_proj")
+                    is_k_b = new_name == cls.map_tensor_name(name_kb)
 
                     attr_list = {"scale": None, "zp": None, "d_scale": None, "wmin": None, "d_wmin": None}
-                    for attr in attr_list:
-                        if hasattr(module, attr) or hasattr(module, "w_" + attr):
-                            if attr in ["scale", "zp"]:
-                                attr_tensor = getattr(module, attr)
-                            else:
-                                attr_tensor = getattr(module, "w_" + attr)
-                            if attr_tensor is None or not isinstance(attr_tensor, torch.Tensor):
-                                continue
-                            kv_b = attr_tensor.view(n_head_kv, v_head_dim + qk_nope_head_dim, -1)
-                            k_b, v_b = torch.split(kv_b, [qk_nope_head_dim, v_head_dim], dim=1)
-                            k_b = k_b.transpose(1, 2)
-
-                            name_kb = modify_name.replace("kv_b_proj", "k_b_proj")
-                            if new_name == cls.map_tensor_name(name_kb):
-                                attr_list[attr] = k_b
-                            else:
-                                attr_list[attr] = v_b
-                    attr_list["imatrix"] = module.imatrix if hasattr(module, "imatrix") else None
+                    # v_b_proj is only row-subset, not transposed, so its column axis (lora-rank)
+                    # is unchanged and the per-input-channel imatrix still lines up; k_b_proj's
+                    # column axis becomes qk_nope_head_dim after the transpose, so imatrix (indexed
+                    # by lora-rank) would no longer apply to the right axis and must be dropped too.
+                    imatrix = getattr(module, "imatrix", None)
+                    attr_list["imatrix"] = imatrix if (not is_k_b and isinstance(imatrix, torch.Tensor)) else None
                     data = _quant_data_with_args(data_torch, data_qtype, device=device, **attr_list)
 
                 # for MOE model
                 elif len(data_torch.shape) == 3 and len(re.findall(r"\d+", hf_name)) == 2:
+                    # `hf_name` is the checkpoint name of whichever single expert tensor happened
+                    # to complete the buffering in modify_tensors (it collects down_proj/gate_proj/
+                    # up_proj for all experts before yielding); all three merged tensors
+                    # (ffn_down_exps/ffn_gate_exps/ffn_up_exps) are yielded from that SAME call, so
+                    # `hf_name`'s own weight-kind token (e.g. "up_proj") only matches the tensor kind
+                    # actually being packed here by coincidence. Reusing it as-is for the other two
+                    # kinds silently fetches a DIFFERENT expert weight's module, whose scale/zp/
+                    # imatrix are then wrongly applied here (same shape, unrelated values) instead of
+                    # safely failing, so this must be corrected before looking up per-expert modules.
+                    hf_w_name = next((v for k, v in _MOE_EXP_SUFFIX_TO_HF_WNAME.items() if new_name.endswith(k)), None)
                     new_data = []
                     for idx, arr in enumerate(data_torch):
                         arr_name = hf_name.split(".")
                         for i in range(len(arr_name) - 1, -1, -1):
                             if arr_name[i].isdecimal() and int(arr_name[i]) == (data_torch.shape[0] - 1):
                                 arr_name[i] = str(idx)
+                                if hf_w_name is not None and i + 1 < len(arr_name):
+                                    arr_name[i + 1] = hf_w_name
+                                break
                         arr_name = ".".join(arr_name)
                         arr, data_qtype = _quant_data(
                             cls, arr, data_qtype, arr_name, modify_name, new_name, bid, device=device
