@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_ENABLE_AUTO_SCHEME_PARALLEL
+- **描述**：启用 AutoScheme 候选方案之间的多进程并行。当并行加载多个模型可能耗尽主机内存或显存时，请保持关闭。
+- **默认值**：`False`（串行评分各方案）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用并行评分；其他值保持关闭
+- **用途**：运行 AutoScheme 前设置，以启用候选方案并行评分
+
+```bash
+export AR_ENABLE_AUTO_SCHEME_PARALLEL=1
+```
+
 ## 使用示例
 
 ### 设置环境变量

@@ -52,9 +52,9 @@ from auto_round.wrapper import WrapperWALayer
 
 from .config import check_compressed_tensors_supported
 from .export_to_static_fp import (
-    _append_attention_group,
     _configure_gaudi2_fp8_dtype,
     _construct_kv_scheme,
+    _get_attention_config,
     _use_fp8_attention,
     _use_fp8_kv,
 )
@@ -204,7 +204,9 @@ def _build_mixed_fp_quantization_config(
 
     use_fp8_attention = _use_fp8_attention(static_attention_dtype)
     if use_fp8_attention:
-        _append_attention_group(config_groups, model)
+        attention_config = _get_attention_config(model)
+    else:
+        attention_config = None
     quantization_config = initialize_quantization(
         scheme=None,
         config_groups=config_groups,
@@ -219,6 +221,8 @@ def _build_mixed_fp_quantization_config(
         quantization_config["config_groups"][group_name]["format"] = fmt
     quantization_config["provider"] = "auto-round"
     _configure_gaudi2_fp8_dtype(quantization_config)
+    if attention_config is not None:
+        quantization_config["attention_input_activations"] = attention_config
 
     return quantization_config
 
@@ -347,11 +351,15 @@ def save_quantized_as_fp(
             ignore=ignore,
         )
         if use_fp8_attention:
-            _append_attention_group(quantization_config.config_groups, model)
+            attention_config = _get_attention_config(model)
+        else:
+            attention_config = None
         setattr(quantization_config, "format", format)
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
         _configure_gaudi2_fp8_dtype(quantization_config)
+        if attention_config is not None:
+            quantization_config["attention_input_activations"] = attention_config
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
