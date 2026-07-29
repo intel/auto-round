@@ -15,9 +15,9 @@ This module covers behavior that is intentionally outside the public
 import math
 import sys
 from pathlib import Path
-
-import cpuinfo
 import pytest
+cpuinfo = pytest.importorskip("cpuinfo")
+
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
