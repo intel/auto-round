@@ -27,6 +27,38 @@ if TYPE_CHECKING:
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = False
+    AR_DISK_STREAM_MODEL: bool = False
+    AR_RESUME_DIR: Optional[str] = None
+
+
+def _get_optional_positive_int_env(name: str) -> Optional[int]:
+    """Read an optional env var that must be a positive integer when set."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
+environment_variables: dict[str, Callable[[], Any]] = {
+    # this is used for configuring the default logging level
+    "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
+    "AR_ENABLE_COMPILE_PACKING": lambda: os.getenv("AR_ENABLE_COMPILE_PACKING", "0").lower() in ("1", "true", "yes"),
+    "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE", "False").lower() in ["1", "true"],
+    "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space").lower(),
+    "AR_ENABLE_UNIFY_MOE_INPUT_SCALE": lambda: os.getenv("AR_ENABLE_UNIFY_MOE_INPUT_SCALE", "False").lower()
+    in ["1", "true"],
+    "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
+    "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
+    "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
+    "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
+    in ("1", "true", "yes"),
+    # Device for the disk-streamed calibration forward pass in
     # LLMCalibrator.collect()'s calibrate_on_cpu branch (targeted block
     # re-quantization). Unset = upstream behavior (cpu). Set to e.g. "cuda:0"
     # to run the whole pass on GPU -- see el_requantize_blocks.py.
