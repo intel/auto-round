@@ -69,6 +69,7 @@ pip install auto-round
 - `HuggingFaceH4/ultrachat_200k`：用于对话数据
 - `madao33/new-title-chinese`：用于中文场景
 - `mbpp`：用于代码场景
+- `nvidia/OpenCodeInstruct`：用于代码指令数据
 - `openbmb/Ultra-FineWeb`
 
 ### 自定义数据集

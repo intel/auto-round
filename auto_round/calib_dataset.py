@@ -361,11 +361,18 @@ def get_opencode_instruct_dataset(
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
 
     def tokenize_example_batch(examples):
+        if apply_chat_template:
+            messages = [
+                [
+                    {"role": "user", "content": input_text},
+                    {"role": "assistant", "content": output_text},
+                ]
+                for input_text, output_text in zip(examples["input"], examples["output"])
+            ]
+            return apply_chat_template_to_samples(messages, tokenizer, seqlen, system_prompt=system_prompt)
         texts = [
             f"{input_text}\n\n{output_text}" for input_text, output_text in zip(examples["input"], examples["output"])
         ]
-        if apply_chat_template:
-            return apply_chat_template_to_samples(texts, tokenizer, seqlen, system_prompt=system_prompt)
         return tokenizer(texts, truncation=True, max_length=seqlen)
 
     return calib_dataset.map(tokenize_example_batch, batched=True)
