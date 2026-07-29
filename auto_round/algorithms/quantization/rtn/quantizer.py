@@ -76,9 +76,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         if (
-                self.scheme is not None
-                and self.scheme.data_type
-                and ("nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type)
+            self.scheme is not None
+            and self.scheme.data_type
+            and ("nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type)
         ):
             logger.warning_once(
                 "opt-rtn does not support NVFP or MXFP. It behaves the same as RTN but is much slower. "
