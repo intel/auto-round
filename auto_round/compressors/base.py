@@ -827,10 +827,6 @@ class BaseOrchestrator(object):
         if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
-        # TODO: fix https://github.com/intel/auto-round/issues/1109
-        if self.enable_torch_compile and is_raw_nv_fp:
-            self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
