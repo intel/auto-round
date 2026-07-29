@@ -92,11 +92,7 @@ else()
 endif()
 list(APPEND libs bestla)
 
-set(SRCS
-  ${CMAKE_CURRENT_SOURCE_DIR}/ark.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/sdpa.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/sdpa_sparse.cpp
-)
+file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
 
@@ -175,9 +171,6 @@ if(ARK_XPU AND ARK_SYCL_TLA)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
-  # if(DEFINED ENV{MKLROOT} AND EXISTS "$ENV{MKLROOT}/include")
-  #   target_include_directories(${PY_NAME} SYSTEM PRIVATE "$ENV{MKLROOT}/include")
-  # endif()
   # Use SYSTEM include directories for sycl-tla to suppress warnings/errors from third-party headers
   # (e.g., std::common_type specialization issues in traits.hpp)
   foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
@@ -204,9 +197,6 @@ if(ARK_UT)
     if(ARK_XPU AND ARK_SYCL_TLA)
       target_compile_definitions(${TEST_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
       target_include_directories(${TEST_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
-      # if(DEFINED ENV{MKLROOT} AND EXISTS "$ENV{MKLROOT}/include")
-      #   target_include_directories(${TEST_NAME} SYSTEM PRIVATE "$ENV{MKLROOT}/include")
-      # endif()
       foreach(_inc_dir IN LISTS _sycl_tla_include_dirs)
         if(EXISTS "${_inc_dir}")
           target_include_directories(${TEST_NAME} SYSTEM PRIVATE "${_inc_dir}")
