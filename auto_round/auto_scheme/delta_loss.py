@@ -1134,7 +1134,12 @@ def get_score_for_scheme(
                 if mllm_loader is None:
                     raise
                 model_forward_low_gpu(
-                    model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag, disk_index=disk_index
+                    model,
+                    mllm_loader,
+                    major_device=major_device,
+                    pbar=pbar,
+                    scheme_tag=scheme_tag,
+                    disk_index=disk_index,
                 )
     else:
         for n, m in model.named_modules():
