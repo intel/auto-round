@@ -190,9 +190,6 @@ static void matmul_sycl_tla(torch_ptr stream, int m, int n, int k, torch_ptr A, 
                                       (BTLA_DTYPE)Bdt, (void*)C, (BTLA_DTYPE)Cdt, (void*)bias, BT);
 }
 
-// Tensor layout codes passed from Python (tensor_layout argument).
-constexpr int TENSOR_LAYOUT_HND = 0;  // [B, H, S, D]
-constexpr int TENSOR_LAYOUT_NHD = 1;  // [B, S, H, D]
 
 static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
                  int q_dtype, int k_dtype, int o_dtype,
