@@ -244,8 +244,10 @@ class AutoRound:
                 seed=seed,
                 low_cpu_mem_usage=low_cpu_mem_usage,
                 layer_config=layer_config,
+                dataset=dataset,
                 nsamples=nsamples,
                 seqlen=seqlen,
+                batch_size=batch_size,
                 **entry_kwargs,
             )
 
