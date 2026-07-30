@@ -393,6 +393,12 @@ class BaseOrchestrator(object):
         # second AutoRound(...) call reuses the previous instance and silently keeps
         # stale values (e.g. low_cpu_mem_usage=True from a prior run).
         CompressContext.reset_context()
+        # When the model was built as a meta skeleton (AR_DISK_STREAM_MODEL=1),
+        # give the offloader the original checkpoint path so it can materialize
+        # each block on first touch directly from disk instead of assuming
+        # blocks already hold real weights (see OffloadManager._reload).
+        if self.model_context.disk_stream_model_dir is not None:
+            self._offloader.model_dir = self.model_context.disk_stream_model_dir
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -403,6 +409,11 @@ class BaseOrchestrator(object):
             static_attention_dtype=self.static_attention_dtype,
         )
         self.shard_writer = None
+        # Resumability state deferred from Orchestrator._quantize_data_driven() until
+        # quantize_and_save()'s save_quantized() call actually succeeds; see the
+        # comment in quantize() near "is_immediate_saving" for why clearing is
+        # deferred.
+        self._resume_states = None
 
         # Flag for post_init idempotency.  Set to False here so post_init() can be called
         # either via quantize_and_save() (preferred, outside inference_mode) or directly
@@ -1624,6 +1635,14 @@ class BaseOrchestrator(object):
         # Save the quantized model in the specified format_list
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
         memory_monitor.log_summary()
+
+        # Only now -- after the full export (packing pass, config/tokenizer
+        # writes) has actually succeeded -- is it safe to drop the resume
+        # manifest. See the deferral comment in Orchestrator._quantize_data_driven().
+        if self._resume_states:
+            for rs in self._resume_states:
+                rs.clear()
+            self._resume_states = None
 
         return model, folders
 
