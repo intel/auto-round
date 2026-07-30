@@ -98,5 +98,5 @@ stages:
         displayName: 'Install dependencies'
 
       - bash: |
-          uv run python -c "import auto_round; print(auto_round.__version__)"
+          uv run python .azure-pipelines/scripts/compat_smoke_test.py
         displayName: 'Run compatibility test'
