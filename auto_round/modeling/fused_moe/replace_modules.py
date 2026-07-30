@@ -155,14 +155,12 @@ def release_original_module_(model: torch.nn.Module) -> None:
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
-    # If no replacement happened, move model to CPU directly
-    if global_state.replaced_module_count == 0:
+    """Move a model to CPU unless it still contains unmaterialized meta tensors."""
+    has_meta_tensor = any(param.device.type == "meta" for param in model.parameters()) or any(
+        buffer.device.type == "meta" for buffer in model.buffers()
+    )
+    if not has_meta_tensor:
         model.to("cpu")
-        return
-    else:
-        # TODO: (yiliu30) there might be some edge cases where some modules are replaced
-        # and we need to move them to CPU safely.
-        pass
 
 
 class ReplacementModuleBase(ABC, torch.nn.Module):

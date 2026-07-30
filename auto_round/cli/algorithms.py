@@ -334,6 +334,12 @@ class AutoRound(AlgorithmHandler):
             action=argparse.BooleanOptionalAction,
             help="Use the Adam-based SignRound variant.",
         )
+        group.add_argument(
+            "--enable_lfq",
+            default=False,
+            action=argparse.BooleanOptionalAction,
+            help="Enable last-block LM cross-entropy (LFQ) loss for the final transformer block (experimental).",
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
@@ -351,6 +357,7 @@ class AutoRound(AlgorithmHandler):
             not_use_best_mse=getattr(args, "not_use_best_mse", False),
             enable_quanted_input=getattr(args, "enable_quanted_input", True),
             enable_adam=getattr(args, "enable_adam", False),
+            enable_lfq=getattr(args, "enable_lfq", False),
             **common_kwargs,
         )
 
