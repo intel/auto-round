@@ -144,11 +144,11 @@ def search_mx_scale(tensor, bits, qw=None, data_type=None):
 
     # MX shared exponent only changes when crossing powers of two.
     # exp_offset = 0 has already been evaluated.
-    # for tmp_scale in (0.25, 0.5, 2.0, 4.0):
-    for scale_value in range(50, 152):
-        tmp_scale = scale_value / 100.0
-        if tmp_scale == 1.0:
-            continue
+    for tmp_scale in ( 0.5, 2.0):
+    # for scale_value in range(50, 152):
+    #     tmp_scale = scale_value / 100.0
+    #     if tmp_scale == 1.0:
+    #         continue
         torch.mul(max_val, tmp_scale, out=scale_buf)
 
         qdq_t = qdq_mxfp(
@@ -292,7 +292,8 @@ def quant_mx(
 
 
 def quant_mx_rceil(
-    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0,
+        mantissa_rounding="even", data_type="mx_fp", **kwargs
 ):
     """Quantize the given tensor using the specified parameters.
 
