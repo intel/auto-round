@@ -1165,7 +1165,6 @@ class BaseOrchestrator(object):
             # layer_config to look up bits/group_size for each layer).
             for pre in self._alg_composer.preprocessors:
                 pre.layer_config = block_quantizer.layer_config
-                pre.scale_dtype = plan.scale_dtype
 
     @property
     def alg_composer(self) -> Any:
