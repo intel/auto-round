@@ -45,10 +45,12 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 * [2026/05] 现已支持**免模型架构量化**模式, `auto-round-rtn` 现在会默认启用免模型方式: [文档](https://github.com/intel/auto-round/blob/main/docs/step_by_step_CN.md#%E5%85%8D%E6%A8%A1%E5%9E%8B%E6%9E%B6%E6%9E%84%E9%87%8F%E5%8C%96%E6%A8%A1%E5%BC%8F).
 
+* [2026/04] 初步支持 **Nemotron-H / Nemotron-Cascade-2**（Mamba2 + Attention + MoE 混合架构）。集成说明详见 [adapt-unfused-moe](./.claude/skills/adapt-unfused-moe/SKILL.md)。
+
 * [2026/03] 支持**Block-wise FP8**，只需要将scheme改成 `--scheme FP8_BLOCK`.为了更快的量化，我们推荐使用RTN模式，即`auto-round-rtn`
 
 * [2026/03] 支持**MTP层量化** 
- 
+
 * [2025/12] 发布 **SignRoundV2** 论文。如果要复现论文成果，可启用 `enable_alg_ext`，并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
 
 * [2025/11] **LLM-Compressor** 已支持 AutoRound 算法。相关链接：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。

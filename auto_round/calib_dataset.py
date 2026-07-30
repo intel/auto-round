@@ -134,6 +134,49 @@ def get_tokenizer_function(tokenizer, seqlen, apply_chat_template=False, system_
     return default_tokenizer_function
 
 
+@register_dataset(["nvidia/Nemotron-Pretraining-Dataset-sample", "nemotron-pretraining"])
+def get_nemotron_pretraining_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="nvidia/Nemotron-Pretraining-Dataset-sample",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+):
+    """Calibration data from Nvidia's Nemotron pretraining corpus (public sample).
+
+    Uses the Nemotron-CC-High-Quality config — filtered high-quality web text from
+    the same distribution as Nemotron-H / Nemotron-Cascade-2 pretraining.
+    """
+    from datasets import load_dataset
+
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
+    try:
+        calib_dataset = load_dataset(
+            dataset_name,
+            name="Nemotron-CC-High-Quality",
+            split="train",
+            streaming=True,
+        )
+        calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+        calib_dataset = Dataset.from_list(list(calib_dataset))
+    except Exception as e:
+        logger.error(f"Failed to load {dataset_name}: {e}")
+        sys.exit(1)
+    calib_dataset = calib_dataset.shuffle(seed=seed)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+    return calib_dataset
+
+
 @register_dataset(["NeelNanda/pile-10k", "pile-10k"])
 def get_pile_dataset(
     tokenizer,
