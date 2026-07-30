@@ -1,7 +1,6 @@
 import argparse
 
 from auto_round import AutoRound
-from auto_round.compressors.entry import PipelineCompressor as NewAutoRound
 
 
 def test_argparse_check(tiny_opt_model_path):
@@ -16,7 +15,7 @@ def test_argparse_check(tiny_opt_model_path):
     # so CalibrationState defaulted to 1 regardless of the user's value.
     steps = 8
 
-    ar = NewAutoRound(
+    ar = AutoRound(
         tiny_opt_model_path,
         scheme="W4A16",
         gradient_accumulate_steps=steps,

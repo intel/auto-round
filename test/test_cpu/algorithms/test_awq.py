@@ -28,7 +28,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig, SignRoundConfig
 
 from ...helpers import generate_prompt, get_model_path, opt_name_or_path, save_tiny_model
 
@@ -50,7 +50,7 @@ class TestAWQNormalLLM:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=32,
@@ -74,7 +74,7 @@ class TestAWQNormalLLM:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -98,7 +98,7 @@ class TestAWQNormalLLM:
             bits=bits,
             group_size=group_size,
             sym=sym,
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -117,7 +117,7 @@ class TestAWQNonIntegerSchemes:
     """Regression: AWQ smoothing must run under non-integer schemes (MX/NV-FP).
 
     AWQ's grid-search / clip loss reproduces the block quantizer's weight QDQ.
-    The reported failure mode was an end-to-end ``algorithm='awq'`` run raising
+    The reported failure mode was an end-to-end AWQ run raising
     under an MXFP/NVFP scheme.
     """
 
@@ -126,7 +126,7 @@ class TestAWQNonIntegerSchemes:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme=scheme,
-            algorithm="awq,signround",
+            alg_configs=[AWQConfig(n_grid=1), SignRoundConfig()],
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -158,7 +158,7 @@ class TestAWQW8A8LLMCompressor:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="INT8",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             nsamples=2,
             seqlen=8,
             n_grid=1,
@@ -246,7 +246,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -280,7 +280,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=32,

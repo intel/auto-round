@@ -293,8 +293,8 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
+    from auto_round import AutoRound
     from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
-    from auto_round.compressors.entry import PipelineCompressor
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -356,10 +356,10 @@ def tune(args):
 
     from auto_round.utils import clear_memory
 
-    autoround: BaseCompressor = PipelineCompressor(
+    autoround: BaseCompressor = AutoRound(
         model_name,
-        scheme,
-        alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        scheme=scheme,
+        alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,

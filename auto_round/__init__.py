@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from auto_round.autoround import AutoRound
-
-# support for old api
-from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam, AutoRoundDiffusion
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import (
     AdamRoundConfig,
@@ -36,10 +33,6 @@ from .version import __version__
 __all__ = [
     "__version__",
     "AutoRound",
-    "AutoRoundLLM",
-    "AutoRoundMLLM",
-    "AutoRoundAdam",
-    "AutoRoundDiffusion",
     "AutoScheme",
     "QuantizationScheme",
     "RTNConfig",

@@ -17,34 +17,21 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from auto_round.autoround import AutoRoundCompatible
     from auto_round.compressors.base import BaseOrchestrator, BaseCompressor
-    from auto_round.compressors.entry import PipelineCompressor
     from auto_round.compressors.model_free import ModelFreeCompressor
     from auto_round.compressors.orchestrator import CompressionOrchestrator
 
 __all__ = [
-    "PipelineCompressor",
     "BaseOrchestrator",
     "BaseCompressor",  # backward-compat alias
     "CompressionOrchestrator",
-    "AutoRoundCompatible",
     "ModelFreeCompressor",
 ]
 
 
 def __getattr__(name):
     """Lazy import to avoid circular dependencies."""
-    if name == "PipelineCompressor":
-        from auto_round.compressors.entry import PipelineCompressor
-
-        return PipelineCompressor
-    elif name == "AutoRoundCompatible":
-        # Backward-compatible alias for the old-API entry (now folded into AutoRound).
-        from auto_round.autoround import AutoRoundCompatible
-
-        return AutoRoundCompatible
-    elif name in ("BaseOrchestrator", "BaseCompressor"):
+    if name in ("BaseOrchestrator", "BaseCompressor"):
         from auto_round.compressors.base import BaseOrchestrator
 
         return BaseOrchestrator

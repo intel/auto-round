@@ -1107,7 +1107,7 @@ def get_score_for_scheme(
 
                 # Unified mllm-aware forward (casts pixel_values/images to
                 # model.dtype, handles dict-with-text/str/tuple paths the same
-                # way AutoRoundMLLM.calib does).
+                # way the multimodal compressor calibration does).
                 output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
                 output.loss.backward()
 

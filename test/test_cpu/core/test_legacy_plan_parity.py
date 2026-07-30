@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round import AutoRound
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round import AutoRound, SignRoundConfig
 
 
-def test_legacy_and_algorithm_config_entries_build_equivalent_plans(tiny_opt_model_path):
+def test_direct_and_algorithm_config_entries_build_equivalent_plans(tiny_opt_model_path):
     common = {
         "model": tiny_opt_model_path,
         "scheme": "W4A16",
@@ -26,11 +25,11 @@ def test_legacy_and_algorithm_config_entries_build_equivalent_plans(tiny_opt_mod
         "dataset": ["local calibration sample"],
         "low_cpu_mem_usage": False,
     }
-    legacy = AutoRound(bits=4, group_size=128, **common)
-    modern = AutoRound(alg_configs=RTNConfig(bits=4, group_size=128), **common)
+    direct = AutoRound(bits=4, group_size=128, **common)
+    configured = AutoRound(alg_configs=SignRoundConfig(bits=4, group_size=128, iters=0), **common)
 
-    legacy.post_init()
-    modern.post_init()
+    direct.post_init()
+    configured.post_init()
 
-    assert legacy.compression_plan.scheme.value == modern.compression_plan.scheme.value
-    assert legacy.compression_plan.layer_config == modern.compression_plan.layer_config
+    assert direct.compression_plan.scheme.value == configured.compression_plan.scheme.value
+    assert direct.compression_plan.layer_config == configured.compression_plan.layer_config

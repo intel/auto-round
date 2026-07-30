@@ -14,16 +14,16 @@
 
 import inspect
 
+from auto_round import AutoRound, RTNConfig
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.entry import PipelineCompressor
 
 
 def test_post_init_builds_authoritative_compression_plan(tiny_opt_model_path):
-    compressor = PipelineCompressor(
+    compressor = AutoRound(
         tiny_opt_model_path,
         scheme="W4A16",
+        alg_configs=RTNConfig(),
         format="auto_round",
-        iters=0,
         nsamples=1,
         seqlen=8,
         dataset=["local calibration sample"],
@@ -42,11 +42,11 @@ def test_post_init_builds_authoritative_compression_plan(tiny_opt_model_path):
 
 
 def test_legacy_state_views_cannot_mutate_authoritative_plan(tiny_opt_model_path):
-    compressor = PipelineCompressor(
+    compressor = AutoRound(
         tiny_opt_model_path,
         scheme="W4A16",
+        alg_configs=RTNConfig(),
         format="auto_round",
-        iters=0,
         nsamples=1,
         seqlen=8,
         dataset=["local calibration sample"],

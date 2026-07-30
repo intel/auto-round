@@ -22,7 +22,7 @@ import ast
 import inspect
 
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-from auto_round.compressors.entry import (
+from auto_round.autoround import (
     _collect_config_scheme_overrides,
     _preview_resolved_attrs,
     _select_rtn_compressor_base_cls,
