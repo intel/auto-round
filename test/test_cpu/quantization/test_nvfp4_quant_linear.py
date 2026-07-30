@@ -26,6 +26,15 @@ def fixed_seed():
     # (Optional) cleanup or reset after test
 
 
+def test_calculate_gparam_with_float8_input():
+    tensor = torch.tensor([[-2.0, 0.0, 1.0]], dtype=torch.float32).to(torch.float8_e4m3fn)
+
+    global_scale = calculate_gparam(tensor)
+
+    assert global_scale.dtype == torch.float32
+    assert torch.isfinite(global_scale)
+
+
 @pytest.mark.parametrize("scheme", [AutoRoundExportFormat.NVFP4.value])
 @torch.inference_mode()
 def test_nvfp4_quantlinear_from_original_and_forward(scheme):

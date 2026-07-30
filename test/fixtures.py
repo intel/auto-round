@@ -388,12 +388,14 @@ def tiny_qwen3_omni_moe_model_path():
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
-# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
+# Mock FP8 capability checks without letting the fake capability affect Inductor code generation.
 @pytest.fixture()
 def mock_fp8_capable_device():
     from unittest.mock import patch
 
-    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch(
+        "torch.compile", side_effect=lambda function, *args, **kwargs: function
+    ):
         yield
 
 
