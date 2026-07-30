@@ -18,7 +18,9 @@ cpuinfo = pytest.importorskip("cpuinfo")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import auto_round_kernel
+auto_round_kernel = pytest.importorskip(
+    "auto_round_kernel", reason="compiled ARK extension not built in this environment"
+)
 
 
 CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))

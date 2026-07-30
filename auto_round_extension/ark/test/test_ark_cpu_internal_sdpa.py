@@ -22,7 +22,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import auto_round_kernel
+auto_round_kernel = pytest.importorskip(
+    "auto_round_kernel", reason="compiled ARK extension not built in this environment"
+)
 
 
 _TOL = {torch.float16: (3e-2, 3e-2), torch.bfloat16: (8e-2, 8e-2)}
@@ -100,6 +102,17 @@ def _alibi_slope(h: int, head_num: int) -> float:
 
 
 def _scalar_attn_ref(q_f32, k_rt_f32, v_rt_f32, scale, *, use_tanh=False, slopes=None, n_valid=None):
+    """Pure-Python reference for non-standard attention variants.
+
+    PyTorch's ``F.scaled_dot_product_attention`` does not support ALiBi slopes,
+    TANH30 activation, or per-batch-item padding-right.  This scalar
+    implementation serves as the ground-truth reference for validating the
+    BestLA kernel against those features.
+
+    .. warning::
+       This function uses nested Python loops and is **extremely slow**.
+       It is only suitable for tiny test shapes (seq <= 32, heads <= 8).
+    """
     B, Hq, Sq, D = q_f32.shape
     _, Hkv, Sk, _ = k_rt_f32.shape
     gqa_ratio = Hq // Hkv
