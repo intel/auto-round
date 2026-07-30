@@ -56,3 +56,15 @@ jobs:
         run: |
           echo "=== Public CPU SDPA suite ==="
           python -m pytest test/test_ark_cpu_sdpa.py -v --tb=short
+
+      - name: Run CPU mixed SDPA tests
+        working-directory: auto_round_extension/ark
+        run: |
+          echo "=== Mixed-dtype CPU SDPA suite ==="
+          python -m pytest test/test_ark_cpu_mixed_bestla_sdpa.py -v --tb=short
+
+      - name: Run CPU SDPA benchmark (smoke)
+        working-directory: auto_round_extension/ark
+        run: |
+          echo "=== CPU SDPA benchmark smoke ==="
+          python test/bench_ark_cpu_sdpa.py --dtype float32 --shape decode --warmup 1 --runs 2

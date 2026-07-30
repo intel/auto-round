@@ -324,13 +324,8 @@ class _XPUKVCacheMeta:
         return cls(batch, num_heads_kv, capacity, head_dim, key_cache.dtype, key_cache.device)
 
 
-# -----------------------------------------------------------------------------
-# Module-level lib loading (replaces the previous singleton ``ARK`` class).
-# -----------------------------------------------------------------------------
-
 cpu_lib = None
 xpu_lib = None
-
 
 try:
     from . import auto_round_kernel_cpu as _cpu_lib_mod
@@ -3587,6 +3582,32 @@ def woq_linear(
     )
     out.copy_(result)
     return out
+
+
+# -----------------------------------------------------------------------------
+# Module-level lib loading (replaces the previous singleton ``ARK`` class).
+#
+# NOTE: placed at the end of the module to avoid circular imports during
+# package initialization.  pybind11-compiled .so modules may trigger a
+# PyImport_AddModule lookup of the parent ``auto_round_kernel`` package;
+# deferring the import until all definitions are complete ensures that the
+# parent is fully registered in sys.modules.
+# -----------------------------------------------------------------------------
+
+try:
+    from . import auto_round_kernel_cpu as _cpu_lib_mod
+
+    cpu_lib = _cpu_lib_mod
+except ImportError as _e:
+    print(f"ARK is unable to load CPU lib: {_e}")
+
+if torch.xpu.is_available():
+    try:
+        from . import auto_round_kernel_xpu as _xpu_lib_mod
+
+        xpu_lib = _xpu_lib_mod
+    except ImportError as _e:
+        print(f"ARK is unable to load XPU lib: {_e}")
 
 
 if __name__ == "__main__":

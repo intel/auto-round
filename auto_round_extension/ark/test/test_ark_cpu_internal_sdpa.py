@@ -26,15 +26,18 @@ auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"
 )
 
+if auto_round_kernel.cpu_lib is None:
+    pytest.skip("ARK CPU extension not available", allow_module_level=True)
 
 _TOL = {torch.float16: (3e-2, 3e-2), torch.bfloat16: (8e-2, 8e-2)}
+_cpu_lib = auto_round_kernel.cpu_lib
 INTERNAL_CPU = auto_round_kernel.internal.cpu
 CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
 HAS_AVX2 = "avx2" in CPU_FLAGS
 HAS_AVX512F = "avx512f" in CPU_FLAGS
 HAS_AMX_BF16 = "amx_bf16" in CPU_FLAGS
-BUILD_HAS_BF16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE)
-INTERNAL_FEATURES_ENABLED = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_INTERNAL_FEATURES_ENABLED)
+BUILD_HAS_BF16_ROUTE = bool(getattr(_cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE", False))
+INTERNAL_FEATURES_ENABLED = bool(getattr(_cpu_lib, "ARK_CPU_SDPA_INTERNAL_FEATURES_ENABLED", False))
 pytestmark = pytest.mark.skipif(
     not INTERNAL_FEATURES_ENABLED,
     reason="internal SDPA features are disabled; rebuild with -DARK_ENABLE_INTERNAL_SDPA_FEATURES=ON",

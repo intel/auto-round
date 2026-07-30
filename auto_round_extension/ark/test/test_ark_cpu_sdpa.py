@@ -22,15 +22,18 @@ auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"
 )
 
+if auto_round_kernel.cpu_lib is None:
+    pytest.skip("ARK CPU extension not available", allow_module_level=True)
 
 CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
 HAS_AVX512_FP16 = "avx512_fp16" in CPU_FLAGS
 HAS_AMX_BF16 = "amx_bf16" in CPU_FLAGS
-BUILD_HAS_FP16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_FP16_ROUTE)
-BUILD_HAS_BF16_ROUTE = bool(auto_round_kernel.cpu_lib.ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE)
-ROUTE_SCALAR = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_SCALAR
-ROUTE_HOMOGENEOUS_FP16 = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_FP16
-ROUTE_HOMOGENEOUS_BF16 = auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16
+_cpu_lib = auto_round_kernel.cpu_lib
+BUILD_HAS_FP16_ROUTE = bool(getattr(_cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_FP16_ROUTE", False))
+BUILD_HAS_BF16_ROUTE = bool(getattr(_cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE", False))
+ROUTE_SCALAR = getattr(_cpu_lib, "ARK_CPU_SDPA_ROUTE_SCALAR", 0)
+ROUTE_HOMOGENEOUS_FP16 = getattr(_cpu_lib, "ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_FP16", 3)
+ROUTE_HOMOGENEOUS_BF16 = getattr(_cpu_lib, "ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16", 4)
 
 
 def test_public_xpu_attention_api_keeps_return_lse_kwargs():
