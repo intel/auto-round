@@ -1529,14 +1529,54 @@ def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_pa
 
 
 def _scheme_repr(s):
-    """Normalize a scheme (str/QuantizationScheme/dict) to a hashable repr."""
+    """Normalize a scheme to a stable representation independent of preset aliases."""
     if isinstance(s, str):
-        return s
+        try:
+            s = preset_name_to_scheme(s)
+        except KeyError:
+            return s.upper()
     if isinstance(s, QuantizationScheme):
-        return json.dumps(asdict(s), sort_keys=True, default=str)
+        s = asdict(s)
     if isinstance(s, dict):
-        return json.dumps(s, sort_keys=True, default=str)
+        return {key: value for key, value in sorted(s.items()) if value is not None}
     return str(s)
+
+
+def _stable_model_id(model_name):
+    """Return a portable model identifier for local paths and Hub model IDs."""
+    if not isinstance(model_name, str):
+        return model_name
+    normalized = model_name.rstrip("/\\")
+    return os.path.basename(normalized) or normalized
+
+
+def _autoscheme_cache_config(
+    model_name,
+    dataset,
+    nsamples,
+    seqlen,
+    batch_size,
+    quant_layer_names,
+    fixed_layer_scheme,
+    scheme,
+    force_mllm,
+    low_gpu_mem_usage,
+    need_weight_grad=False,
+):
+    """Build the portable, implementation-independent identity of a scoring run."""
+    return {
+        "model_id": _stable_model_id(model_name),
+        "dataset": dataset,
+        "nsamples": nsamples,
+        "seqlen": seqlen,
+        "batch_size": batch_size,
+        "quant_layer_names": sorted(quant_layer_names),
+        "fixed_layer_scheme": {key: _scheme_repr(value) for key, value in sorted(fixed_layer_scheme.items())},
+        "scheme": _scheme_repr(scheme),
+        "force_mllm": force_mllm,
+        "low_gpu_mem_usage": low_gpu_mem_usage,
+        "need_weight_grad": need_weight_grad,
+    }
 
 
 def _autoscheme_cache_key(
@@ -1560,19 +1600,19 @@ def _autoscheme_cache_key(
     so caching is granular: adding/removing schemes doesn't invalidate cached
     scores for unchanged schemes.
     """
-    key_data = {
-        "model_name": model_name,
-        "dataset": dataset,
-        "nsamples": nsamples,
-        "seqlen": seqlen,
-        "batch_size": batch_size,
-        "quant_layer_names": sorted(quant_layer_names),
-        "fixed_layer_scheme": {k: v for k, v in sorted(fixed_layer_scheme.items())},
-        "scheme": _scheme_repr(scheme),
-        "force_mllm": force_mllm,
-        "low_gpu_mem_usage": low_gpu_mem_usage,
-        "need_weight_grad": need_weight_grad,
-    }
+    key_data = _autoscheme_cache_config(
+        model_name,
+        dataset,
+        nsamples,
+        seqlen,
+        batch_size,
+        quant_layer_names,
+        fixed_layer_scheme,
+        scheme,
+        force_mllm,
+        low_gpu_mem_usage,
+        need_weight_grad,
+    )
     key_str = json.dumps(key_data, sort_keys=True, default=str)
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
 
@@ -1604,6 +1644,7 @@ def _save_autoscheme_scores(
     layer_scores,
     total_loss_for_scheme,
     total_params,
+    cache_config,
 ):
     """Persist scoring results for **a single scheme** to *cache_path* as JSON.
 
@@ -1611,12 +1652,13 @@ def _save_autoscheme_scores(
     or changing unrelated parameters (e.g., target_bits) doesn't invalidate cached
     scores for unchanged schemes.
 
-    Schema version 3 (per-scheme, per-op cache)::
+        Schema version 1 (portable per-scheme, per-op cache)::
 
         {
-          "version": 3,
+                    "version": 1,
           "score_granularity": "per_op",
           "cache_key": "<hex>",
+                    "cache_config": { ... scoring inputs ... },
           "scheme_index": 0,
           "scheme": { ... scheme dict ... },
           "created_at": "<ISO datetime>",
@@ -1632,9 +1674,10 @@ def _save_autoscheme_scores(
     # re-apply grouping when loading a cache so the on-disk format stays
     # per-op and backward/forward compatible.
     data = {
-        "version": 3,
+        "version": 1,
         "score_granularity": "per_op",
         "cache_key": cache_key,
+        "cache_config": cache_config,
         "scheme_index": scheme_index,
         "scheme": scheme_dict,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1651,20 +1694,20 @@ def _save_autoscheme_scores(
 
 
 def _load_autoscheme_scores(cache_path):
-    """Load and validate a **single-scheme** per-op scoring cache file (version 3).
+    """Load and validate a **single-scheme** per-op scoring cache file (version 1).
 
     Returns the parsed dict with keys ``layer_scores``, ``total_loss_for_scheme``,
     and ``total_params`` on success, or ``None`` if the file is missing, malformed,
     or fails the version sanity check.
     """
-    _required = ("layer_scores", "total_loss_for_scheme", "total_params")
+    _required = ("cache_config", "layer_scores", "total_loss_for_scheme", "total_params")
     try:
         with open(cache_path, encoding="utf-8") as _f:
             data = json.load(_f)
-        if data.get("version") != 3 or data.get("score_granularity") != "per_op":
+        if data.get("version") != 1 or data.get("score_granularity") != "per_op":
             logger.warning(
                 "AutoScheme: per-scheme cache schema mismatch "
-                "(expected version=3, score_granularity=per_op; got version=%s, score_granularity=%s)",
+                "(expected version=1, score_granularity=per_op; got version=%s, score_granularity=%s)",
                 data.get("version"),
                 data.get("score_granularity"),
             )
@@ -1683,6 +1726,42 @@ def _is_per_op_cache_compatible(cached_data, quant_layer_names, fixed_layer_sche
     """Return whether a cache contains exactly one score for every non-fixed quant layer."""
     expected_layers = set(quant_layer_names) - set(fixed_layer_scheme)
     return set(cached_data["layer_scores"]) == expected_layers
+
+
+def _find_compatible_autoscheme_cache(
+    expected_path,
+    cache_config,
+    quant_layer_names,
+    fixed_layer_scheme,
+    total_params,
+):
+    """Find a compatible cache even when a downloaded JSON has a different filename."""
+    candidates = [expected_path]
+    cache_dir = os.path.dirname(expected_path)
+    try:
+        candidates.extend(
+            os.path.join(cache_dir, filename)
+            for filename in sorted(os.listdir(cache_dir))
+            if filename.endswith(".json") and os.path.join(cache_dir, filename) != expected_path
+        )
+    except OSError:
+        pass
+
+    for candidate in candidates:
+        if not os.path.isfile(candidate):
+            continue
+        cached_data = _load_autoscheme_scores(candidate)
+        if cached_data is None or not _is_per_op_cache_compatible(cached_data, quant_layer_names, fixed_layer_scheme):
+            continue
+        if cached_data["cache_config"] != cache_config:
+            continue
+        if cached_data.get("total_params") != total_params:
+            continue
+        cached_data["_cache_path"] = candidate
+        if candidate != expected_path:
+            logger.info("AutoScheme: using compatible downloaded cache %s", candidate)
+        return cached_data
+    return None
 
 
 def _refresh_cached_layer_bits(
@@ -2244,6 +2323,16 @@ def _gen_layer_config(
 
         pbar = tqdm(total=pbar_cnt, desc="Generating AutoScheme")
         scored_layer_names = set(quant_layer_names + embedding_layers_names)
+        cache_total_params = sum(
+            (
+                module.weight.numel()
+                if hasattr(module, "weight") and module.weight is not None
+                else getattr(module, "_cached_weight_numel", 0)
+            )
+            for name, module in model.named_modules()
+            if name in scored_layer_names
+        )
+        scheme_cache_configs = []
 
         def _group_per_op_scores(index, per_op_scores):
             """Apply the current shared-layer grouping without mutating cached per-op scores."""
@@ -2289,21 +2378,15 @@ def _gen_layer_config(
                 scheme_dict=scheme_dict,
                 layer_scores={name: list(score) for name, score in per_op_scores.items()},
                 total_loss_for_scheme=sum(score[1] for score in per_op_scores.values()),
-                total_params=sum(
-                    (
-                        module.weight.numel()
-                        if hasattr(module, "weight") and module.weight is not None
-                        else getattr(module, "_cached_weight_numel", 0)
-                    )
-                    for name, module in model.named_modules()
-                    if name in scored_layer_names
-                ),
+                total_params=cache_total_params,
+                cache_config=scheme_cache_configs[index],
             )
 
         scheme_cache_meta = []
         for index, scheme in enumerate(schemes):
             if check_bf16_scheme(scheme) or _model_id_for_cache is None:
                 scheme_cache_meta.append((None, None, None))
+                scheme_cache_configs.append(None)
                 if check_bf16_scheme(scheme):
                     logger.info(
                         "AutoScheme: scheme %d/%d (%s) is a BF16 baseline; skipping scoring and cache lookup.",
@@ -2312,7 +2395,7 @@ def _gen_layer_config(
                         _scheme_short_name(scheme),
                     )
                 continue
-            cache_key = _autoscheme_cache_key(
+            cache_config = _autoscheme_cache_config(
                 model_name=_model_id_for_cache,
                 dataset=dataset,
                 nsamples=nsamples,
@@ -2325,18 +2408,17 @@ def _gen_layer_config(
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
                 need_weight_grad=need_weight_grad,
             )
+            cache_key = hashlib.sha256(json.dumps(cache_config, sort_keys=True, default=str).encode()).hexdigest()[:16]
             cache_path = _autoscheme_cache_path(cache_key, index)
-            cached_data = _load_autoscheme_scores(cache_path) if os.path.exists(cache_path) else None
-            if cached_data is not None and not _is_per_op_cache_compatible(
-                cached_data, quant_layer_names, fixed_layer_scheme
-            ):
-                logger.warning(
-                    "AutoScheme: cache %s does not contain complete per-op scores; rescoring scheme %d",
-                    cache_path,
-                    index,
-                )
-                cached_data = None
+            cached_data = _find_compatible_autoscheme_cache(
+                cache_path,
+                cache_config,
+                quant_layer_names,
+                fixed_layer_scheme,
+                cache_total_params,
+            )
             scheme_cache_meta.append((cache_key, cache_path, cached_data))
+            scheme_cache_configs.append(cache_config)
 
         uncached_indices = [
             index
@@ -2460,11 +2542,12 @@ def _gen_layer_config(
                             bits, _ = compute_layer_bits(get_module(model, name), auto_scheme.ignore_scale_zp_bits)
                             per_op_scores[name] = [bits, 0.0]
                     elif cached_data is not None:
+                        loaded_cache_path = cached_data.get("_cache_path", cache_path)
                         logger.info(
                             "AutoScheme: loading per-scheme cache for scheme %d from %s."
                             " Delete this file to disable reuse and rescore.",
                             index,
-                            cache_path,
+                            loaded_cache_path,
                         )
                         per_op_scores = _refresh_cached_layer_bits(
                             model,
@@ -2517,11 +2600,12 @@ def _gen_layer_config(
                 cache_key, cache_path, cached_data = scheme_cache_meta[index]
 
                 if cached_data is not None:
+                    loaded_cache_path = cached_data.get("_cache_path", cache_path)
                     logger.info(
                         "AutoScheme: loading per-scheme cache for scheme %d from %s."
                         " Delete this file to disable reuse and rescore.",
                         index,
-                        cache_path,
+                        loaded_cache_path,
                     )
                     per_op_scores = _refresh_cached_layer_bits(
                         model,

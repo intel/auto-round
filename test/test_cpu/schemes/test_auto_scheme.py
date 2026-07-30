@@ -434,7 +434,7 @@ class TestAutoScheme:
         for path in cache_files:
             data = _load_autoscheme_scores(path)
             assert data is not None, f"Cache file {path} could not be loaded"
-            assert data["version"] == 3
+            assert data["version"] == 1
             assert data["score_granularity"] == "per_op"
             assert "layer_scores" in data
             assert "total_loss_for_scheme" in data
@@ -591,6 +591,49 @@ def test_autoscheme_cache_key_insensitive_to_layer_order():
     assert key1 == key2  # Should match after internal sorting
 
 
+def test_autoscheme_cache_key_is_portable_across_model_paths():
+    """A locally downloaded model should keep the same key when its parent directory changes."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    kwargs = {
+        "dataset": "pile-10k",
+        "nsamples": 16,
+        "seqlen": 256,
+        "batch_size": 8,
+        "quant_layer_names": ["layer.0"],
+        "fixed_layer_scheme": {},
+        "scheme": "W4A16",
+        "force_mllm": False,
+        "low_gpu_mem_usage": True,
+    }
+
+    assert _autoscheme_cache_key(model_name="/models/org/test-model", **kwargs) == _autoscheme_cache_key(
+        model_name="/tmp/downloads/test-model", **kwargs
+    )
+
+
+def test_autoscheme_cache_key_normalizes_preset_scheme():
+    """A preset name and its resolved scheme should identify the same scoring run."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+    from auto_round.schemes import preset_name_to_scheme
+
+    kwargs = {
+        "model_name": "test-model",
+        "dataset": "pile-10k",
+        "nsamples": 16,
+        "seqlen": 256,
+        "batch_size": 8,
+        "quant_layer_names": ["layer.0"],
+        "fixed_layer_scheme": {},
+        "force_mllm": False,
+        "low_gpu_mem_usage": True,
+    }
+
+    assert _autoscheme_cache_key(scheme="W4A16", **kwargs) == _autoscheme_cache_key(
+        scheme=preset_name_to_scheme("W4A16"), **kwargs
+    )
+
+
 def test_autoscheme_cache_key_changes_only_with_scoring_config():
     """Execution settings that affect scoring invalidate the cache; bit accounting does not."""
     from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
@@ -659,6 +702,7 @@ def test_autoscheme_cache_save_and_load(tmp_path):
     }
     total_loss = 2.1
     total_params = 1000000
+    cache_config = {"model_id": "test-model", "scheme": scheme_dict}
 
     _save_autoscheme_scores(
         cache_path,
@@ -668,6 +712,7 @@ def test_autoscheme_cache_save_and_load(tmp_path):
         layer_scores,
         total_loss,
         total_params,
+        cache_config,
     )
 
     loaded = _load_autoscheme_scores(cache_path)
@@ -675,6 +720,64 @@ def test_autoscheme_cache_save_and_load(tmp_path):
     assert loaded["layer_scores"] == layer_scores
     assert loaded["total_loss_for_scheme"] == total_loss
     assert loaded["total_params"] == total_params
+
+
+def test_find_compatible_downloaded_autoscheme_cache(tmp_path):
+    """A compatible downloaded cache should work without renaming it to the locally computed key."""
+    from auto_round.auto_scheme.delta_loss import (
+        _autoscheme_cache_config,
+        _find_compatible_autoscheme_cache,
+        _save_autoscheme_scores,
+    )
+    from auto_round.schemes import preset_name_to_scheme
+
+    quant_layer_names = ["layer.0", "layer.1"]
+    cache_config = _autoscheme_cache_config(
+        model_name="/models/test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=quant_layer_names,
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+        low_gpu_mem_usage=True,
+    )
+    downloaded_path = tmp_path / "downloaded-from-release.json"
+    layer_scores = {"layer.0": [4, 1.2], "layer.1": [4, 0.9]}
+    _save_autoscheme_scores(
+        downloaded_path,
+        "key-from-another-commit",
+        0,
+        preset_name_to_scheme("W4A16").to_dict(),
+        layer_scores,
+        2.1,
+        1000,
+        cache_config=cache_config,
+    )
+
+    loaded = _find_compatible_autoscheme_cache(
+        str(tmp_path / "scheme_00_current-key.json"),
+        cache_config,
+        quant_layer_names,
+        {},
+        1000,
+    )
+
+    assert loaded is not None
+    assert loaded["layer_scores"] == layer_scores
+    assert loaded["_cache_path"] == str(downloaded_path)
+    assert (
+        _find_compatible_autoscheme_cache(
+            str(tmp_path / "scheme_00_current-key.json"),
+            cache_config,
+            quant_layer_names,
+            {},
+            999,
+        )
+        is None
+    )
 
 
 def test_autoscheme_cache_path_is_independent_from_workspace(tmp_path, monkeypatch):
@@ -888,7 +991,7 @@ def test_per_op_cache_compatibility_rejects_grouped_scores():
     )
 
 
-def test_version_two_cache_is_rejected(tmp_path):
+def test_non_version_one_cache_is_rejected(tmp_path):
     import json
 
     from auto_round.auto_scheme.delta_loss import _load_autoscheme_scores
@@ -897,7 +1000,7 @@ def test_version_two_cache_is_rejected(tmp_path):
     cache_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "layer_scores": {"layer.0": [4, 1.0]},
                 "total_loss_for_scheme": 1.0,
                 "total_params": 4,
