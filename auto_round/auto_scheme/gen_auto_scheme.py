@@ -100,9 +100,14 @@ class GenScheme:
         processor=None,
     ):
         self.auto_scheme = auto_scheme
-        if self.auto_scheme.low_cpu_mem_usage:
-            logger.info("force not using `low_cpu_mem_usage` in AutoScheme")
-            self.auto_scheme.low_cpu_mem_usage = False
+        # Upstream unconditionally forced low_cpu_mem_usage=False here
+        # (commit 0c9c5b1d, "reduce memory consumption... for gguf") because of an
+        # acknowledged bug for mixed INT4/INT8 schemes under the old OffloadManager-
+        # based streaming path (see an earlier commit's "low_cpu_mem_usage: bool =
+        # False # TODO bug for INT4 INT8 mixed bug"). We don't use that old path at
+        # all -- see delta_loss.py's materialize_module/free_module-based streaming,
+        # gated on this same flag -- so the bug that motivated disabling it doesn't
+        # apply here.
         self.model = model
         self.tokenizer = tokenizer
         self.processor = processor
