@@ -10,8 +10,10 @@ pr:
     include:
       - auto_round
       - auto_round_extension
+      - pyproject.toml
       - setup.py
       - setup.cfg
+      - MANIFEST.in
       - requirements.txt
       - requirements-cpu.txt
       - .azure-pipelines/compatibility-test.yml
@@ -43,6 +45,9 @@ stages:
           Python314_Linux:
             python_version: '3.14'
             vmImage: 'ubuntu-latest'
+          Python314t_Linux:
+            python_version: '3.14t'
+            vmImage: 'ubuntu-latest'
 
           Python310_Windows:
             python_version: '3.10'
@@ -59,18 +64,29 @@ stages:
           Python314_Windows:
             python_version: '3.14'
             vmImage: 'windows-latest'
+          Python314t_Windows:
+            python_version: '3.14t'
+            vmImage: 'windows-latest'
             
       pool:
         vmImage: $(vmImage)
 
       steps:
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: '$(python_version)'
-        displayName: 'Use Python $(python_version)'
+      - bash: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "##vso[task.prependpath]$HOME/.local/bin"
+        condition: ne(variables['Agent.OS'], 'Windows_NT')
+        displayName: 'Install uv (Linux)'
+
+      - powershell: |
+          irm https://astral.sh/uv/install.ps1 | iex
+          Write-Host "##vso[task.prependpath]$env:USERPROFILE\.local\bin"
+        condition: eq(variables['Agent.OS'], 'Windows_NT')
+        displayName: 'Install uv (Windows)'
 
       - bash: |
-          python -m pip install --upgrade pip uv
+          uv python install $(python_version)
+          uv venv --python $(python_version)
           uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
           uv build
           uv pip install dist/*.tar.gz && uv pip uninstall auto-round
@@ -79,9 +95,8 @@ stages:
         env:
           PYTHONUNBUFFERED: '1'
           UV_NO_PROGRESS: '1'
-          UV_SYSTEM_PYTHON: '1'
         displayName: 'Install dependencies'
 
       - bash: |
-          python -c "import auto_round; print(auto_round.__version__)"
+          uv run python -c "import auto_round; print(auto_round.__version__)"
         displayName: 'Run compatibility test'
