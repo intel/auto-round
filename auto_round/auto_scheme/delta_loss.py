@@ -1580,7 +1580,8 @@ def _autoscheme_cache_key(
 def _autoscheme_cache_path(cache_key, scheme_index):
     """Return the full path to the JSON cache file for a **single scheme**.
 
-    Each scheme gets its own cache file under ``{AR_WORK_SPACE}/auto_scheme_cache/``
+    Each scheme gets its own cache file under ``AR_AUTO_SCHEME_CACHE`` or the
+    default ``~/.cache/auto_round`` directory
     to enable granular reuse: adding/removing schemes or changing non-scoring
     parameters (e.g., target_bits) doesn't invalidate caches for unmodified schemes.
 
@@ -1590,7 +1591,7 @@ def _autoscheme_cache_path(cache_key, scheme_index):
     """
     from auto_round import envs as _envs
 
-    cache_dir = os.path.join(_envs.AR_WORK_SPACE, "auto_scheme_cache")
+    cache_dir = os.path.expanduser(_envs.AR_AUTO_SCHEME_CACHE or "~/.cache/auto_round")
     os.makedirs(cache_dir, exist_ok=True)
     return os.path.join(cache_dir, f"scheme_{scheme_index:02d}_{cache_key}.json")
 

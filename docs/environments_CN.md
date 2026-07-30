@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_CACHE
+- **描述**：存放可持久复用的 AutoScheme 单方案评分 JSON 文件。该目录独立于用于临时工作数据的 `AR_WORK_SPACE`。
+- **默认值**：`~/.cache/auto_round`
+- **有效值**：任意可写目录路径
+- **用途**：将可复用的 AutoScheme 评分结果保存到其他缓存目录
+
+```bash
+export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
+```
+
 ### AR_ENABLE_AUTO_SCHEME_PARALLEL
 - **描述**：启用 AutoScheme 候选方案之间的多进程并行。可与 `AR_DISK_STREAM_MODEL=1` 同时使用；此时每个 worker 会构建独立的 meta 模型骨架并分别流式加载 block。当并发 worker 可能耗尽主机内存或显存时，请将其关闭。
 - **默认值**：`"1"`（满足多进程要求时并行评分各方案）

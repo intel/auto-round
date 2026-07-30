@@ -60,6 +60,15 @@ def test_env_ar_auto_scheme_batch_size_zero_raises(monkeypatch):
         _ = envs.AR_AUTO_SCHEME_BATCH_SIZE
 
 
+def test_env_ar_auto_scheme_cache(monkeypatch, tmp_path):
+    """AR_AUTO_SCHEME_CACHE should expose an independent cache directory."""
+    import auto_round.envs as envs
+
+    cache_dir = str(tmp_path / "auto_scheme_cache")
+    monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", cache_dir)
+    assert envs.AR_AUTO_SCHEME_CACHE == cache_dir
+
+
 def test_env_ar_enable_auto_scheme_parallel(monkeypatch):
     import auto_round.envs as envs
 
@@ -404,8 +413,8 @@ class TestAutoScheme:
 
         from auto_round.auto_scheme.delta_loss import _load_autoscheme_scores
 
-        cache_dir = str(tmp_path / "ar_work_space")
-        monkeypatch.setenv("AR_WORK_SPACE", cache_dir)
+        cache_dir = str(tmp_path / "auto_scheme_cache")
+        monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", cache_dir)
 
         scheme = AutoScheme(
             avg_bits=3,
@@ -417,7 +426,7 @@ class TestAutoScheme:
         _, layer_config = ar.quantize()
 
         # Cache files must exist — one per scheme (2 schemes here)
-        cache_files = glob.glob(f"{cache_dir}/auto_scheme_cache/scheme_*.json")
+        cache_files = glob.glob(f"{cache_dir}/scheme_*.json")
         assert (
             len(cache_files) == 2
         ), f"Expected 2 cache files (one per scheme), found {len(cache_files)}: {cache_files}"
@@ -666,6 +675,31 @@ def test_autoscheme_cache_save_and_load(tmp_path):
     assert loaded["layer_scores"] == layer_scores
     assert loaded["total_loss_for_scheme"] == total_loss
     assert loaded["total_params"] == total_params
+
+
+def test_autoscheme_cache_path_is_independent_from_workspace(tmp_path, monkeypatch):
+    """AutoScheme caches default to the user cache and ignore AR_WORK_SPACE."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_path
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path / "workspace"))
+    monkeypatch.delenv("AR_AUTO_SCHEME_CACHE", raising=False)
+
+    cache_path = _autoscheme_cache_path("cache_key", 1)
+
+    assert cache_path == str(tmp_path / "home" / ".cache" / "auto_round" / "scheme_01_cache_key.json")
+
+
+def test_autoscheme_cache_path_can_be_overridden(tmp_path, monkeypatch):
+    """AR_AUTO_SCHEME_CACHE overrides the default user cache directory."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_path
+
+    cache_dir = tmp_path / "custom_cache"
+    monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", str(cache_dir))
+
+    cache_path = _autoscheme_cache_path("cache_key", 2)
+
+    assert cache_path == str(cache_dir / "scheme_02_cache_key.json")
 
 
 def test_parallel_progress_events_are_applied_in_parent():

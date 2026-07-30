@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_CACHE
+- **Description**: Stores persistent per-scheme AutoScheme scoring JSON files. This directory is independent of `AR_WORK_SPACE`, which is reserved for temporary working data.
+- **Default**: `~/.cache/auto_round`
+- **Valid Values**: any writable directory path
+- **Usage**: Set this to place reusable AutoScheme scores in a different cache directory
+
+```bash
+export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
+```
+
 ### AR_ENABLE_AUTO_SCHEME_PARALLEL
 - **Description**: Enables multiprocessing across AutoScheme candidates. It can be combined with `AR_DISK_STREAM_MODEL=1`; each worker then builds its own meta-model skeleton and streams blocks independently. Disable it when concurrent workers could exhaust host RAM or device memory.
 - **Default**: `"1"` (schemes are scored in parallel when multiprocessing requirements are met)
