@@ -23,12 +23,40 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
 from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
+from packaging.version import Version
 from torch.utils.data import DataLoader
 
 from . import envs
 from .utils import is_local_path, logger
 
 CALIB_DATASETS = {}
+_GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
+
+
+def get_code_calibration_dataset(nsamples, datasets_version=None):
+    """Build an exact-size code calibration mix compatible with datasets."""
+    if datasets_version is None:
+        import datasets
+
+        datasets_version = datasets.__version__
+    parsed_version = Version(str(datasets_version))
+    sources = [("opencode-instruct", 50), ("github-code-clean", 40), ("mbpp:split=train", 10)]
+    if parsed_version > _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION:
+        sources = [source for source in sources if source[0] != "github-code-clean"]
+        logger.warning(
+            "datasets %s does not support the script-based github-code-clean dataset; "
+            "using the normalized OpenCodeInstruct/MBPP mix instead.",
+            parsed_version,
+        )
+
+    weights = [weight for _, weight in sources]
+    raw_counts = [nsamples * weight / sum(weights) for weight in weights]
+    counts = [int(count) for count in raw_counts]
+    remainder = nsamples - sum(counts)
+    order = sorted(range(len(weights)), key=lambda index: (-(raw_counts[index] - counts[index]), index))
+    for index in order[:remainder]:
+        counts[index] += 1
+    return ",".join(f"{name}:num={count}" for (name, _), count in zip(sources, counts) if count)
 
 
 def register_dataset(name):

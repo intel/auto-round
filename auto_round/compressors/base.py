@@ -448,6 +448,23 @@ class BaseOrchestrator(object):
             setattr(self, key, value)
 
         self.need_calib = self._check_need_calib()
+        calibrator_kind = self._get_calibrator_kind()
+        # The default pile dataset is model-adaptive for pure-text LLMs. Any
+        # non-default dataset remains untouched.
+        if self.need_calib and self.dataset == "NeelNanda/pile-10k" and calibrator_kind == "llm":
+            from auto_round.calib_dataset import get_code_calibration_dataset
+            from auto_round.utils.model import is_code_model
+
+            detection_config = model_config or getattr(self.model_context.model, "config", None)
+            if is_code_model(model, detection_config):
+                self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
+                logger.info("Automatically selected code calibration dataset: %s", self.dataset)
+            else:
+                logger.info(
+                    "No explicit code-specialization signal was found; using default calibration dataset %s.",
+                    self.dataset,
+                )
+            self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
         """Whether this compressor instance actually needs calibration data.
