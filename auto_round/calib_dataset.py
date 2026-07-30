@@ -366,14 +366,22 @@ def get_opencode_instruct_dataset(
     samples = []
     for data in dataset:
         if apply_chat_template:
-            samples.append(
-                {
-                    "text": [
-                        {"role": "user", "content": data["input"]},
-                        {"role": "assistant", "content": data["output"]},
-                    ]
-                }
+            messages = []
+            if system_prompt is not None and system_prompt != "":
+                messages.append({"role": "system", "content": system_prompt})
+            messages.extend(
+                [
+                    {"role": "user", "content": data["input"]},
+                    {"role": "assistant", "content": data["output"]},
+                ]
             )
+            try:
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            except:
+                logger.warning("Failed to apply chat template. removing the system role in chat history.")
+                messages = [message for message in messages if message["role"] != "system"]
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            samples.append({"text": text})
         else:
             samples.append({"text": f"{data['input']}\n\n{data['output']}"})
     random.Random(seed).shuffle(samples)
@@ -386,6 +394,48 @@ def get_opencode_instruct_dataset(
             calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
         ),
     )
+
+    calib_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    input_ids, concat_input_ids = [eg["input_ids"] for eg in calib_dataset], []
+    attention_mask_list, attention_mask = [], torch.ones([seqlen]).to(torch.int64)
+    buffer_input_id = torch.Tensor().to(torch.int64)
+    bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
+    os_cnt, have_bos, have_eos = 0, False, False
+
+    for input_id in input_ids:
+        if input_id[0] == bos_token_id:
+            input_id = input_id[1:]
+            os_cnt, have_bos = os_cnt + 1, True
+        if input_id[-1] == eos_token_id:
+            input_id = input_id[:-1]
+            os_cnt, have_eos = os_cnt + 1, True
+
+        if buffer_input_id.shape[-1] + input_id.shape[-1] + os_cnt > seqlen:
+            idx_keep = seqlen - buffer_input_id.shape[-1] - os_cnt
+            input_id_to_append = [buffer_input_id, input_id[:idx_keep]]
+            if have_bos:
+                input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
+            if have_eos:
+                input_id_to_append.append(torch.tensor([eos_token_id]))
+
+            concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64).tolist())
+            attention_mask_list.append(attention_mask.tolist())
+            buffer_input_id = input_id[idx_keep:]
+        else:
+            buffer_input_id = torch.cat([buffer_input_id, input_id])
+
+        if buffer_input_id.shape[-1] + os_cnt == seqlen:
+            input_id_to_append = [buffer_input_id]
+            if have_bos:
+                input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
+            if have_eos:
+                input_id_to_append.append(torch.tensor([eos_token_id]))
+            concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64).tolist())
+            attention_mask_list.append(attention_mask.tolist())
+            buffer_input_id = torch.Tensor().to(torch.int64)
+
+    data = [{"input_ids": a, "attention_mask": b} for a, b in zip(concat_input_ids, attention_mask_list)]
+    calib_dataset = Dataset.from_list(data)
 
     return calib_dataset
 
