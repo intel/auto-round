@@ -132,15 +132,15 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
         if self.grad_mode:
             with torch.no_grad():
-                self.max_act_value = torch.abs(x).max()
-                if torch.abs(x).max() != 0:
+                max_act_value = torch.abs(x).max()
+                self.max_act_value = max_act_value
+                if max_act_value != 0:
                     self.act_cnt += 1
-                x_diff = x - qdq_x
-                self.x_diff = x_diff.to("cpu")
+                x_diff = (x - qdq_x).to("cpu")
 
             def save_grad(grad):
                 """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
-                if self.max_act_value == 0:
+                if max_act_value == 0:
                     if torch.abs(grad).max() != 0:
                         raise ValueError
                 """
@@ -149,13 +149,12 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                     def test_multi_card(self):
                      model_name = "/models/Qwen3-8B"
                 """
-                if torch.isnan(grad).any() or torch.isnan(self.x_diff).any():
+                if torch.isnan(grad).any() or torch.isnan(x_diff).any():
                     self.act_cnt -= 1
                     return None
 
-                self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
+                self.act_score += torch.abs((grad * x_diff.to(grad.device))).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                self.x_diff = None
                 return None
 
             if qdq_x.requires_grad:
@@ -286,15 +285,15 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         qdq_x, scale, zp = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
         if self.grad_mode:
             with torch.no_grad():
-                self.max_act_value = torch.abs(x).max()
-                if torch.abs(x).max() != 0:
+                max_act_value = torch.abs(x).max()
+                self.max_act_value = max_act_value
+                if max_act_value != 0:
                     self.act_cnt += 1
-                x_diff = x - qdq_x
-                self.x_diff = x_diff.to("cpu")
+                x_diff = (x - qdq_x).to("cpu")
 
             def save_grad(grad):
                 """Backward hook: accumulate activation score from grad * (x - qdq_x)."""
-                if self.max_act_value == 0:
+                if max_act_value == 0:
                     if torch.abs(grad).max() != 0:
                         raise ValueError
                 """
@@ -303,13 +302,12 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                     def test_multi_card(self):
                      model_name = "/models/Qwen3-8B"
                 """
-                if torch.isnan(grad).any() or torch.isnan(self.x_diff).any():
+                if torch.isnan(grad).any() or torch.isnan(x_diff).any():
                     self.act_cnt -= 1
                     return None
 
-                self.act_score += torch.abs((grad * self.x_diff.to(grad.device))).sum().item()
+                self.act_score += torch.abs((grad * x_diff.to(grad.device))).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                self.x_diff = None
                 return None
 
             if qdq_x.requires_grad:
@@ -560,9 +558,6 @@ class MyCustomError(Exception):
         super().__init__(message)
 
 
-last_grad_input = None
-
-
 def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu", disk_index=None):
     """Wrap every block's forward so that, for one calibration batch, it (1) moves itself to
     ``major_device`` on demand, (2) records its own inputs into ``block_inputs`` (on CPU) so
@@ -700,6 +695,20 @@ def model_forward(model, data, **forward_kwargs):
     return model(**prepared, **forward_kwargs), prepared
 
 
+def _prepare_replay_input(block_input_args, block_input_kwargs, block_name):
+    """Find the floating hidden-state tensor whose gradient feeds the preceding block."""
+    candidates = []
+    if "hidden_states" in block_input_kwargs:
+        candidates.append(block_input_kwargs["hidden_states"])
+    candidates.extend(block_input_args)
+    candidates.extend(value for key, value in block_input_kwargs.items() if key != "hidden_states")
+    for value in candidates:
+        if isinstance(value, torch.Tensor) and value.is_floating_point():
+            value.requires_grad_(True)
+            return value
+    raise RuntimeError(f"No floating replay input found for block {block_name}")
+
+
 def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None, disk_index=None):
     """Run one full scoring pass (all calibration batches) in low-GPU-memory mode.
 
@@ -722,130 +731,126 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
         module = get_module(model, name)
         module.orig_forward = module.forward
 
+    captured_grad = None
+
     def backward_pre_hook(module, grad_input):
         """Hook executed before backward propagation."""
-        global last_grad_input
-        last_grad_input = grad_input
+        nonlocal captured_grad
+        captured_grad = grad_input
         get_current_device_manager().synchronize()
         raise MyCustomError("Interrupt backward pass")
 
     for batch_idx, data in enumerate(dataloader, start=1):
-        prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar, disk_index=disk_index)
-
-        # lm_head sits outside every decoder block, so it never gets `grad_mode=True`
-        # in the manual block-by-block backward below. Scope the fix narrowly to
-        # just lm_head (rather than every non-block module) to avoid enabling grad
-        # tracking / scoring hooks on unrelated out-of-block layers, which would
-        # add extra autograd-graph memory for no benefit. The backward flow is:
-        #   loss → lm_head (hook fires here) → norm → last_block (hook raises error)
-        head_name = get_lm_head_name(model)
-        if head_name is not None:
-            # Once lm_head has been wrapped for scoring, `get_lm_head_name` resolves
-            # to the inner original Linear (e.g. "lm_head.orig_layer") rather than
-            # the wrapper itself ("lm_head") -- strip the suffix to reach the wrapper.
-            head_name = head_name.removesuffix(".orig_layer")
-            head_module = get_module(model, head_name)
-            if hasattr(head_module, "grad_mode"):
-                head_module.grad_mode = True
-
-        # Register backward hook on the last block
-        last_block = get_module(model, block_names[-1])
-        last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
-
-        data = to_device(data, model.device)
-        # VLM datasets often already include ``labels``; LLM ones don't. Strip
-        # any pre-existing ``labels`` from kwargs so we don't pass it twice.
-        labels = data["labels"] if isinstance(data, dict) and "labels" in data else data["input_ids"]
-        if isinstance(data, dict):
-            data_for_forward = {k: v for k, v in data.items() if k != "labels"}
-        else:
-            data_for_forward = data
-        # Route through the unified mllm forward so ``pixel_values`` /
-        # ``images`` get cast to ``model.dtype`` (otherwise the vision tower
-        # is silently bypassed on dtype mismatch and vision grad stays 0).
-        output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
-        clear_memory(device_list=major_device)
-        memory_monitor.log_summary()
-
+        captured_grad = None
+        interrupted = False
+        last_block_backward_hook = None
         try:
-            # Backward pass (will be interrupted by the hook)
-            output.loss.to(torch.float32).backward()
-        except MyCustomError:
-            pass
+            prepare_model_low_gpu(model, block_inputs, major_device=major_device, pbar=pbar, disk_index=disk_index)
 
-        current_grad = last_grad_input
+            # lm_head sits outside every decoder block, so it never gets `grad_mode=True`
+            # in the manual block-by-block backward below. Scope the fix narrowly to
+            # just lm_head (rather than every non-block module) to avoid enabling grad
+            # tracking / scoring hooks on unrelated out-of-block layers, which would
+            # add extra autograd-graph memory for no benefit. The backward flow is:
+            #   loss → lm_head (hook fires here) → norm → last_block (hook raises error)
+            head_name = get_lm_head_name(model)
+            if head_name is not None:
+                # Once lm_head has been wrapped for scoring, `get_lm_head_name` resolves
+                # to the inner original Linear (e.g. "lm_head.orig_layer") rather than
+                # the wrapper itself ("lm_head") -- strip the suffix to reach the wrapper.
+                head_name = head_name.removesuffix(".orig_layer")
+                head_module = get_module(model, head_name)
+                if hasattr(head_module, "grad_mode"):
+                    head_module.grad_mode = True
+
+            last_block = get_module(model, block_names[-1])
+            last_block_backward_hook = last_block.register_full_backward_pre_hook(backward_pre_hook)
+
+            data = to_device(data, model.device)
+            # VLM datasets often already include ``labels``; LLM ones don't. Strip
+            # any pre-existing ``labels`` from kwargs so we don't pass it twice.
+            labels = data["labels"] if isinstance(data, dict) and "labels" in data else data["input_ids"]
+            if isinstance(data, dict):
+                data_for_forward = {k: v for k, v in data.items() if k != "labels"}
+            else:
+                data_for_forward = data
+            # Route through the unified mllm forward so ``pixel_values`` /
+            # ``images`` get cast to ``model.dtype`` (otherwise the vision tower
+            # is silently bypassed on dtype mismatch and vision grad stays 0).
+            output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
+            clear_memory(device_list=major_device)
+            memory_monitor.log_summary()
+
+            try:
+                output.loss.to(torch.float32).backward()
+            except MyCustomError:
+                interrupted = True
+            if not interrupted or captured_grad is None:
+                raise RuntimeError("AutoScheme failed to capture the last block gradient for replay")
+            current_grad = captured_grad
+        finally:
+            if last_block_backward_hook is not None:
+                last_block_backward_hook.remove()
+            for name in block_names:
+                module = get_module(model, name)
+                module.forward = module.orig_forward
+
         del output, data
 
         # Manually compute gradients block by block
-        last_block_backward_hook.remove()
-
-        for name in block_names:
-            module = get_module(model, name)
-            module.forward = module.orig_forward
-        index = 0
         for block_name in reversed(block_names):
-            index += 1
             # Retrieve stored inputs for the block
             block_input_info = block_inputs.get(block_name, {})
 
             block_input_args = to_device(block_input_info.get("args", []), major_device)
             block_input_kwargs = to_device(block_input_info.get("kwargs", {}), major_device)
-            block_input_args[0].requires_grad_(True)
+            replay_input = _prepare_replay_input(block_input_args, block_input_kwargs, block_name)
 
             # Move the block module to GPU
             block_module = get_module(model, block_name)
             for n, m in block_module.named_modules():
                 if hasattr(m, "grad_mode"):
                     m.grad_mode = True
-            if disk_index is not None:
-                from auto_round.utils.disk_stream_util import materialize_module
+            materialized = False
+            try:
+                if disk_index is not None:
+                    from auto_round.utils.disk_stream_util import materialize_module
 
-                materialize_module(block_module, block_name, disk_index, device=major_device)
-            move_module_to_tuning_device(block_module, major_device=major_device)
+                    materialize_module(block_module, block_name, disk_index, device=major_device)
+                    materialized = True
+                move_module_to_tuning_device(block_module, major_device=major_device)
 
-            # Set the block to eval mode while enabling gradient computation
-            block_module.eval()
+                block_module.eval()
+                block_output = block_module(*block_input_args, **block_input_kwargs)
 
-            # Recompute the block output
-            block_output = block_module(*block_input_args, **block_input_kwargs)
-
-            # Ensure the output requires gradients
-            if isinstance(block_output, tuple):
-                # For tuple outputs, we usually care about the first element (hidden states)
-                main_output = block_output[0]
-                if isinstance(main_output, torch.Tensor) and main_output.is_floating_point():
-                    main_output = main_output.requires_grad_(True)
-            elif isinstance(block_output, torch.Tensor) and block_output.is_floating_point():
-                main_output = block_output.requires_grad_(True)
-            else:
-                main_output = block_output
-
-            # Backward pass for the current block
-            torch.autograd.backward(
-                tensors=main_output,
-                # inputs=block_input_args,
-                grad_tensors=current_grad,
-                retain_graph=True,  # False may lead to zero gradients for some cases (e.g., MXFP4)
-            )
-
-            # Extract gradients w.r.t. the block input
-            if block_input_args and isinstance(block_input_args[0], torch.Tensor):
-                if block_input_args[0].grad is not None:
-                    current_grad = block_input_args[0].grad.detach().clone()
+                if isinstance(block_output, tuple):
+                    main_output = block_output[0]
+                    if isinstance(main_output, torch.Tensor) and main_output.is_floating_point():
+                        main_output = main_output.requires_grad_(True)
+                elif isinstance(block_output, torch.Tensor) and block_output.is_floating_point():
+                    main_output = block_output.requires_grad_(True)
                 else:
+                    main_output = block_output
+
+                torch.autograd.backward(
+                    tensors=main_output,
+                    grad_tensors=current_grad,
+                    retain_graph=True,  # False may lead to zero gradients for some cases (e.g., MXFP4)
+                )
+
+                if replay_input.grad is None:
                     logger.warning(f"No gradient found for input of {block_name}, stopping backward replay")
                     break
-            else:
-                logger.warning(f"No suitable input gradient found for {block_name}")
-                break
+                current_grad = replay_input.grad.detach().clone()
+            finally:
+                for parameter in block_module.parameters():
+                    parameter.grad = None
+                if disk_index is not None and materialized:
+                    from auto_round.utils.disk_stream_util import free_module
 
-            del block_output, main_output, block_input_args, block_input_kwargs
-            if disk_index is not None:
-                from auto_round.utils.disk_stream_util import free_module
-
-                free_module(block_module)
-            else:
-                block_module.to("cpu")
+                    free_module(block_module)
+                elif disk_index is None:
+                    block_module.to("cpu")
 
             # clear_memory(device_list=major_device) # this one is very slow and seems does not affect max ram usage
             memory_monitor.update()
@@ -1422,6 +1427,14 @@ def _get_scheme_bits(scheme):
     return scheme.get("bits", 16)
 
 
+def _get_next_scheme_bits(schemes, indices, floor_bits):
+    """Return the smallest candidate bit width strictly above ``floor_bits``."""
+    higher_bits = {
+        _get_scheme_bits(schemes[index]) for index in indices if _get_scheme_bits(schemes[index]) > floor_bits
+    }
+    return min(higher_bits, default=None)
+
+
 # Delta loss does not handle lm-head well, it is prone to assign low bit to lm-head which is not optimal
 def _apply_head_trick(head_name, schemes, sorted_indices, target_bits, target_params_cnt, total_scores):
 
@@ -1537,6 +1550,7 @@ def _autoscheme_cache_key(
     scheme,
     force_mllm,
     low_gpu_mem_usage,
+    need_weight_grad=False,
 ):
     """Return a 16-char hex digest that uniquely identifies a **single-scheme** scoring run.
 
@@ -1557,6 +1571,7 @@ def _autoscheme_cache_key(
         "scheme": _scheme_repr(scheme),
         "force_mllm": force_mllm,
         "low_gpu_mem_usage": low_gpu_mem_usage,
+        "need_weight_grad": need_weight_grad,
     }
     key_str = json.dumps(key_data, sort_keys=True, default=str)
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
@@ -1787,11 +1802,22 @@ def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_us
     )
 
 
-def _load_disk_stream_scheme_worker_model(model_name):
+def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=False):
     """Build an isolated meta model and checkpoint index for a scoring worker."""
     from auto_round.utils.disk_stream_util import build_meta_model
 
-    return build_meta_model(model_name)
+    model, tokenizer, disk_index = build_meta_model(model_name)
+    if use_model_replacements:
+        from auto_round.special_model_handler import _handle_special_model, update_module
+
+        model = update_module(model, formats=None, cleanup_original=False)
+        model = _handle_special_model(model)
+    return model, tokenizer, disk_index
+
+
+def _prefer_disk_stream_scheme_worker(model_id, is_vlm, low_gpu_mem_usage):
+    """Prefer block-wise disk streaming whenever the worker scoring path supports it."""
+    return model_id is not None and not is_vlm and low_gpu_mem_usage
 
 
 def _score_scheme_worker(args):
@@ -1829,20 +1855,32 @@ def _score_scheme_worker(args):
     from auto_round.utils import get_module as _get_module
 
     disk_index = None
-    try:
-        if disk_stream_model:
-            model, tokenizer, disk_index = _load_disk_stream_scheme_worker_model(model_name)
+    if disk_stream_model:
+        try:
+            model, tokenizer, disk_index = _load_disk_stream_scheme_worker_model(
+                model_name, use_model_replacements=use_model_replacements
+            )
             processor = None
-        else:
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_score_scheme_worker[%d]: disk-stream load failed for %r (%s); falling back to regular loading.",
+                index,
+                model_name,
+                exc,
+            )
+            disk_index = None
+
+    if disk_index is None:
+        try:
             model, tokenizer, processor, _, _, is_vlm, _ = _load_scheme_worker_model(
                 model_name,
                 use_model_replacements,
                 low_cpu_mem_usage,
             )
-    except Exception as exc:
-        raise RuntimeError(
-            f"_score_scheme_worker[{index}]: failed to load model {model_name!r}\n{_tb.format_exc()}"
-        ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"_score_scheme_worker[{index}]: failed to load model {model_name!r}\n{_tb.format_exc()}"
+            ) from exc
 
     safe_to_cpu_(model)
     block_names = _get_block_names(model, quant_vision=force_mllm)[0]
@@ -2284,6 +2322,7 @@ def _gen_layer_config(
                 scheme=scheme,
                 force_mllm=force_mllm,
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
+                need_weight_grad=need_weight_grad,
             )
             cache_path = _autoscheme_cache_path(cache_key, index)
             cached_data = _load_autoscheme_scores(cache_path) if os.path.exists(cache_path) else None
@@ -2306,6 +2345,9 @@ def _gen_layer_config(
         worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
         num_gpus = len(worker_device_pool)
         parallel_enabled = _envs.AR_ENABLE_AUTO_SCHEME_PARALLEL
+        worker_disk_stream_model = _prefer_disk_stream_scheme_worker(
+            _model_id_for_cache, is_vlm, auto_scheme.low_gpu_mem_usage
+        )
         # Vision scoring requires a full-model backward and therefore cannot use
         # the block-wise materialize/free path used by disk streaming.
         can_parallel = _can_parallel_scheme_scoring(
@@ -2314,12 +2356,18 @@ def _gen_layer_config(
             num_gpus,
             len(uncached_indices),
             need_imatrix,
-            disk_index is not None,
+            worker_disk_stream_model,
             is_vlm,
+        )
+        logger.info(
+            "AutoScheme scoring mode: parallel_configured=%s, parallel_enabled=%s, disk_stream_enabled=%s",
+            parallel_enabled,
+            can_parallel,
+            worker_disk_stream_model and can_parallel,
         )
         if not parallel_enabled and len(uncached_indices) >= 2:
             logger.info(
-                "AutoScheme: parallel scoring is disabled; set AR_ENABLE_AUTO_SCHEME_PARALLEL=1 to enable it. "
+                "AutoScheme: parallel scoring was disabled by AR_ENABLE_AUTO_SCHEME_PARALLEL=0; "
                 "scoring %d uncached non-BF16 schemes serially.",
                 len(uncached_indices),
             )
@@ -2374,7 +2422,7 @@ def _gen_layer_config(
                             worker_devices[slot],
                             len(schemes),
                             progress_queue,
-                            disk_index is not None,
+                            worker_disk_stream_model,
                         )
                         for slot, index in enumerate(uncached_indices)
                     ]
@@ -2635,15 +2683,14 @@ def _gen_layer_config(
                 if not candidates:
                     candidates = list(sorted_indices)
         else:
-            # Not shared lm_head: prefer options with bits < floor(target_bits)
+            # Not shared lm_head: prefer the nearest available bit width at or
+            # above floor(target_bits), then choose the lowest-loss option at
+            # that width.
             floor_bits = math.floor(target_bits)
             candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) == floor_bits]
             if not candidates:
-                # find the first bits that greater than floor bits
-                embedding_bits = [bits for idx in sorted_indices if _get_scheme_bits(schemes[idx]) > floor_bits]
-                if len(embedding_bits) > 0:
-                    sorted(embedding_bits)
-                    embedding_bits = embedding_bits[0]
+                embedding_bits = _get_next_scheme_bits(schemes, sorted_indices, floor_bits)
+                if embedding_bits is not None:
                     candidates = [idx for idx in sorted_indices if _get_scheme_bits(schemes[idx]) == embedding_bits]
             candidates.extend(sorted_indices)  # to make sure if the above candidate exceed the budget
 
@@ -2751,8 +2798,6 @@ def _gen_layer_config(
         for n, m in model.named_parameters():
             if hasattr(m, "grad"):
                 m.grad = None
-    global last_grad_input
-    last_grad_input = None
     clear_memory(device_list=device_list)
 
     # # Log AutoScheme memory usage

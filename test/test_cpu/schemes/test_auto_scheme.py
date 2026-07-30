@@ -64,9 +64,9 @@ def test_env_ar_enable_auto_scheme_parallel(monkeypatch):
     import auto_round.envs as envs
 
     monkeypatch.delenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", raising=False)
-    assert envs.AR_ENABLE_AUTO_SCHEME_PARALLEL is False
-    monkeypatch.setenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "1")
     assert envs.AR_ENABLE_AUTO_SCHEME_PARALLEL is True
+    monkeypatch.setenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "0")
+    assert envs.AR_ENABLE_AUTO_SCHEME_PARALLEL is False
 
 
 def test_build_layer_config_header_rows_merges_adjacent_prefixes():
@@ -133,6 +133,60 @@ def test_choose_bits_per_layer_reconstructs_optimal_path():
 
     assert loss == 4.0
     assert path == [(["layer.0"], 1), (["layer.1"], 0)]
+
+
+def test_activation_scoring_handles_reused_wrapper():
+    """Each forward call should keep its own activation error until backward."""
+    import types
+
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import AutoSchemeWrapperLinear
+
+    wrapper = AutoSchemeWrapperLinear.__new__(AutoSchemeWrapperLinear)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.orig_layer = types.SimpleNamespace(act_bits=8)
+    wrapper.act_qdq_func = lambda x, *_args, **_kwargs: (x * 0.5, 1.0, None)
+    wrapper.grad_mode = True
+    wrapper.act_cnt = 0
+    wrapper.act_score = 0.0
+    wrapper.weight_score = 0.0
+    wrapper.mix_score = 0.0
+    wrapper.max_act_value = 0
+
+    first = torch.tensor([1.0, -2.0], requires_grad=True)
+    second = torch.tensor([3.0, -4.0], requires_grad=True)
+    qdq_first, _, _ = wrapper._qdq_act(first)
+    qdq_second, _, _ = wrapper._qdq_act(second)
+
+    (qdq_first.sum() + qdq_second.sum()).backward()
+
+    assert wrapper.act_cnt == 2
+    assert wrapper.act_score == pytest.approx(5.0)
+    assert wrapper.mix_score == pytest.approx(5.0)
+
+
+def test_prepare_replay_input_supports_keyword_hidden_states():
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import _prepare_replay_input
+
+    hidden_states = torch.randn(2, 4)
+    attention_mask = torch.ones(2, 4, dtype=torch.int64)
+
+    replay_input = _prepare_replay_input([], {"attention_mask": attention_mask, "hidden_states": hidden_states}, "0")
+
+    assert replay_input is hidden_states
+    assert replay_input.requires_grad
+
+
+def test_prepare_replay_input_rejects_missing_floating_tensor():
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import _prepare_replay_input
+
+    with pytest.raises(RuntimeError, match="No floating replay input found for block 0"):
+        _prepare_replay_input([], {"attention_mask": torch.ones(2, dtype=torch.int64)}, "0")
 
 
 def test_build_expert_groups_groups_experts_per_block():
@@ -547,6 +601,17 @@ def test_autoscheme_cache_key_changes_only_with_scoring_config():
     baseline = _autoscheme_cache_key(**kwargs)
 
     assert baseline != _autoscheme_cache_key(**{**kwargs, "low_gpu_mem_usage": False})
+    assert baseline != _autoscheme_cache_key(**{**kwargs, "need_weight_grad": True})
+
+
+def test_get_next_scheme_bits_is_order_independent():
+    from auto_round.auto_scheme.delta_loss import _get_next_scheme_bits
+
+    schemes = [{"bits": 8}, {"bits": 4}, {"bits": 6}]
+
+    assert _get_next_scheme_bits(schemes, [0, 1, 2], 5) == 6
+    assert _get_next_scheme_bits(schemes, [2, 1, 0], 5) == 6
+    assert _get_next_scheme_bits(schemes, [0, 1, 2], 8) is None
 
 
 def test_refresh_cached_layer_bits_preserves_loss():
@@ -686,6 +751,21 @@ def test_parallel_scheme_scoring_rejects_disk_stream_vlm():
     assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
 
 
+@pytest.mark.parametrize(
+    "model_id,is_vlm,low_gpu_mem_usage,expected",
+    [
+        ("local-model", False, True, True),
+        ("local-model", True, True, False),
+        ("local-model", False, False, False),
+        (None, False, True, False),
+    ],
+)
+def test_prefer_disk_stream_scheme_worker(model_id, is_vlm, low_gpu_mem_usage, expected):
+    from auto_round.auto_scheme.delta_loss import _prefer_disk_stream_scheme_worker
+
+    assert _prefer_disk_stream_scheme_worker(model_id, is_vlm, low_gpu_mem_usage) is expected
+
+
 def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
     from test.helpers import opt_name_or_path
 
@@ -720,6 +800,40 @@ def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
     monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
 
     assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
+
+
+def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
+    from auto_round import special_model_handler
+    from auto_round.auto_scheme import delta_loss
+    from auto_round.utils import disk_stream_util
+
+    model = object()
+    updated_model = object()
+    handled_model = object()
+    tokenizer = object()
+    disk_index = object()
+    calls = []
+
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: (model, tokenizer, disk_index))
+
+    def fake_update_module(input_model, formats, cleanup_original):
+        calls.append(("update", input_model, formats, cleanup_original))
+        return updated_model
+
+    def fake_handle_special_model(input_model):
+        calls.append(("handle", input_model))
+        return handled_model
+
+    monkeypatch.setattr(special_model_handler, "update_module", fake_update_module)
+    monkeypatch.setattr(special_model_handler, "_handle_special_model", fake_handle_special_model)
+
+    result = delta_loss._load_disk_stream_scheme_worker_model("local-model", use_model_replacements=True)
+
+    assert result == (handled_model, tokenizer, disk_index)
+    assert calls == [
+        ("update", model, None, False),
+        ("handle", updated_model),
+    ]
 
 
 def test_per_op_cache_compatibility_rejects_grouped_scores():

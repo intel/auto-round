@@ -142,17 +142,17 @@ export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
 ### AR_ENABLE_AUTO_SCHEME_PARALLEL
-- **Description**: Enables multiprocessing across AutoScheme candidates. It can be combined with `AR_DISK_STREAM_MODEL=1`; each worker then builds its own meta-model skeleton and streams blocks independently. Keep it disabled when concurrent workers could exhaust host RAM or device memory.
-- **Default**: `False` (schemes are scored serially)
-- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) enable parallel scoring; any other value keeps parallel scoring disabled
-- **Usage**: Set this before running AutoScheme to enable parallel candidate scoring
+- **Description**: Enables multiprocessing across AutoScheme candidates. It can be combined with `AR_DISK_STREAM_MODEL=1`; each worker then builds its own meta-model skeleton and streams blocks independently. Disable it when concurrent workers could exhaust host RAM or device memory.
+- **Default**: `"1"` (schemes are scored in parallel when multiprocessing requirements are met)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) enable parallel scoring; any other value disables parallel scoring
+- **Usage**: Set this to `0` before running AutoScheme to force serial candidate scoring
 
 ```bash
-export AR_ENABLE_AUTO_SCHEME_PARALLEL=1
+export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
 ```
 
 ### AR_DISK_STREAM_MODEL
-- **Description**: When enabled, `AutoRound(model=<path>, ...)` builds the model as a meta-device skeleton instead of fully materializing the checkpoint on CPU RAM up front, and streams each decoder block's real weights from the checkpoint's safetensors shards on demand -- materializing right before a block is used (calibration, tuning, or `AutoScheme` sensitivity scoring) and freeing it back to meta right after. This keeps peak CPU RAM roughly flat regardless of checkpoint size, instead of proportional to it. Non-block parameters (embeddings, `lm_head`, final norm) are still loaded up front, since they are typically small. Text-model AutoScheme scoring also supports combining this with `AR_ENABLE_AUTO_SCHEME_PARALLEL=1`; each worker streams its own block copy.
+- **Description**: When enabled, `AutoRound(model=<path>, ...)` builds the model as a meta-device skeleton instead of fully materializing the checkpoint on CPU RAM up front, and streams each decoder block's real weights from the checkpoint's safetensors shards on demand -- materializing right before a block is used (calibration, tuning, or `AutoScheme` sensitivity scoring) and freeing it back to meta right after. This keeps peak CPU RAM roughly flat regardless of checkpoint size, instead of proportional to it. Non-block parameters (embeddings, `lm_head`, final norm) are still loaded up front, since they are typically small. Text-model AutoScheme scoring also supports combining this with parallel scoring, which is enabled by default; each worker streams its own block copy.
 - **Default**: `False`
 - **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
 - **Usage**: Enable this to quantize checkpoints larger than available CPU RAM + GPU VRAM combined. Only applies when `model` is a string (local directory) path; has no effect on already-loaded model objects.
