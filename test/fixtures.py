@@ -399,13 +399,6 @@ def mock_fp8_capable_device():
         yield
 
 
-@pytest.fixture(autouse=True)
-def disable_torch_compile(request, monkeypatch):
-    """Skip compilation overhead unless a test explicitly validates torch.compile."""
-    if request.node.get_closest_marker("real_torch_compile") is None:
-        monkeypatch.setattr(torch, "compile", lambda function, *args, **kwargs: function)
-
-
 @pytest.fixture(autouse=True, scope="session")
 def clean_tmp_model_folder():
     yield

@@ -14,7 +14,6 @@ from ...envs import require_gguf
 from ...helpers import get_model_path, get_tiny_model
 
 
-@pytest.mark.real_torch_compile
 class TestTorchCompile:
     save_dir = "./saved"
 
