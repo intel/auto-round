@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 markers = [
     "perf: performance benchmark tests (excluded from default CI runs; select with `-m perf`)",
+    "real_torch_compile: tests that must execute the real torch.compile implementation",
 ]
 
 [tool.codespell]
