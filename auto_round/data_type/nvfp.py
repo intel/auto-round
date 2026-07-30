@@ -259,7 +259,6 @@ def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     return qdq_res.to(orig_dtype), scale, None
 
 
-
 @register_dtype("nv_fp4_rtn")
 def nv_fp4_rtn(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, init_scale=1.0, **kwargs):
     orig_dtype = tensor.dtype
@@ -277,9 +276,11 @@ def nv_fp4_rtn(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
 
+
 @torch._dynamo.disable()
 def to_float8_e4m3fn(tensor):
     return tensor.to(torch.float8_e4m3fn).to(torch.float32)
+
 
 def ref_nvfp4_quant_inplace(
     x,
@@ -316,9 +317,7 @@ def ref_nvfp4_quant_inplace(
     scale = to_float8_e4m3fn(scale)
 
     # output_scale reuse scale buffer
-    output_scale = get_reciprocal(
-        scale * get_reciprocal(global_scale)
-    )
+    output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
 
     # allocate once
     if out is None:
@@ -398,6 +397,7 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
         best_scale[mask] = test_scale[mask]
 
     return best_scale
+
 
 @register_dtype("opt_rtn_nv_fp4")
 def opt_rtn_fast_nvfp4(
