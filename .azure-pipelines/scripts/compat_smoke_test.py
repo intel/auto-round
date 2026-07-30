@@ -17,6 +17,7 @@ import sys
 import auto_round
 from auto_round import AutoRound
 
+print(f"auto_round imported from: {auto_round.__file__}")
 print(f"auto_round {auto_round.__version__} imported successfully (AutoRound={AutoRound.__name__})")
 
 # Verify the console_scripts entry point was installed and is runnable.
