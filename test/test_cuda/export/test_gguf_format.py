@@ -51,7 +51,13 @@ class TestAutoRound:
 
         from auto_round.modeling.fused_moe.qwen3_5_moe import SequentialQwen3_5MoeExperts
 
-        autoround = AutoRound(tiny_qwen35_moe_model_path, iters=0, nsamples=1, seqlen=8)
+        autoround = AutoRound(
+            tiny_qwen35_moe_model_path,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            disable_opt_rtn=True,
+        )
         quantized_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
         expert_count = quantized_model.config.get_text_config().num_experts
         live_expert_containers = [

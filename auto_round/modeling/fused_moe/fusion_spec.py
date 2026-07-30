@@ -84,13 +84,14 @@ def build_standard_moe_fusion_spec(
     projections = []
     for checkpoint_projection, config in detected_projections.items():
         source_projections = tuple(config.get("split_into") or (checkpoint_projection,))
+        concat_dim = config.get("concat_dim", 1 if len(source_projections) > 1 else None)
         checkpoint_bias_name = f"{checkpoint_projection}_bias"
         checkpoint_bias = checkpoint_bias_name if getattr(module, checkpoint_bias_name, None) is not None else None
         projections.append(
             ProjectionFusionSpec(
                 checkpoint_projection=checkpoint_projection,
                 source_projections=source_projections,
-                concat_dim=1 if len(source_projections) > 1 else None,
+                concat_dim=concat_dim,
                 checkpoint_transposed=checkpoint_transposed,
                 checkpoint_bias=checkpoint_bias,
             )

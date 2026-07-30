@@ -126,6 +126,18 @@ def test_transposed_view_reconstructs_checkpoint_weight():
     assert torch.equal(views["layers.0.experts.gate_up_proj"].tensor_fn(), gate_up.transpose(1, 2))
 
 
+def test_standard_spec_supports_custom_weight_concat_dimension():
+    model = _Model()
+    spec = build_standard_moe_fusion_spec(
+        detected_projections={"gate_up_proj": {"split_into": ["gate_proj", "up_proj"], "concat_dim": 0}},
+        num_experts=2,
+        checkpoint_transposed=True,
+        module=model.layers[0].experts,
+    )
+
+    assert spec.projections[0].concat_dim == 0
+
+
 def test_bias_views_reconstruct_checkpoint_without_weight_transpose():
     model = _Model(bias=True)
     experts = model.layers[0].experts

@@ -16,6 +16,8 @@ from auto_round.modeling.fused_moe.utils import _update_parameter
 
 
 class LinearQwen3_5MoeSparseMoeBlock(ReplacementModuleBase):
+    supports_gguf_fused_moe = True
+
     def __init__(self, original, config):
         super().__init__(original)
         self.gate = original.gate
