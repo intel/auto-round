@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = False
+    AR_DISK_STREAM_MODEL: bool = False
+    AR_RESUME_DIR: Optional[str] = None
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -56,6 +58,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
+    # Device for the disk-streamed calibration forward pass in
+    # LLMCalibrator.collect()'s calibrate_on_cpu branch (targeted block
+    # re-quantization). Unset = upstream behavior (cpu). Set to e.g. "cuda:0"
+    # to run the whole pass on GPU -- see el_requantize_blocks.py.
+    "AR_CALIB_STREAM_DEVICE": lambda: os.getenv("AR_CALIB_STREAM_DEVICE", None),
     "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
     "AR_ENABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_ENABLE_ACT_MINMAX_TUNING", "0").lower()
     in ("1", "true", "yes"),
@@ -90,6 +97,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # avoid multiple model-loading workers exhausting host RAM or device memory.
     "AR_ENABLE_AUTO_SCHEME_PARALLEL": lambda: os.getenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "0").lower()
     in ("1", "true", "yes"),
+    # When set, the model is built as a meta-device skeleton and streamed
+    # block-by-block from disk during quantization instead of being fully
+    # materialized on CPU RAM up front.
+    "AR_DISK_STREAM_MODEL": lambda: os.getenv("AR_DISK_STREAM_MODEL", "0").lower() in ("1", "true", "yes"),
+    # When set to a directory path, the per-block tuning loop checkpoints its
+    # progress there after each completed block, and resumes from the first
+    # not-yet-completed block on a fresh run against the same directory --
+    # instead of restarting the whole tuning pass from block 0 after a
+    # crash/kill. See auto_round/utils/resume.py.
+    "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
 }
 
 

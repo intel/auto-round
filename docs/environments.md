@@ -100,7 +100,7 @@ export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `enable_torch_compile=True`. The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
+- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
 - **Default**: `16`
 - **Valid Values**: positive integer
 - **Usage**: Increase if your model has more than 16 distinct linear-weight shapes per block (rare).
@@ -149,6 +149,26 @@ export AR_AUTO_SCHEME_BATCH_SIZE=1
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=1
+```
+
+### AR_DISK_STREAM_MODEL
+- **Description**: When enabled, `AutoRound(model=<path>, ...)` builds the model as a meta-device skeleton instead of fully materializing the checkpoint on CPU RAM up front, and streams each decoder block's real weights from the checkpoint's safetensors shards on demand -- materializing right before a block is used (calibration, tuning, or `AutoScheme` sensitivity scoring) and freeing it back to meta right after. This keeps peak CPU RAM roughly flat regardless of checkpoint size, instead of proportional to it. Non-block parameters (embeddings, `lm_head`, final norm) are still loaded up front, since they are typically small.
+- **Default**: `False`
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
+- **Usage**: Enable this to quantize checkpoints larger than available CPU RAM + GPU VRAM combined. Only applies when `model` is a string (local directory) path; has no effect on already-loaded model objects.
+
+```bash
+export AR_DISK_STREAM_MODEL=1
+```
+
+### AR_RESUME_DIR
+- **Description**: When set to a directory path, the per-block tuning loop checkpoints its progress there after each completed block, and resumes from the first not-yet-completed block on a fresh run against the same directory -- instead of restarting the whole tuning pass from block 0 after a crash or kill.
+- **Default**: unset (no resumability)
+- **Valid Values**: any writable directory path
+- **Usage**: Set this for long-running quantization jobs on large checkpoints where a mid-run crash would otherwise be expensive to restart from scratch.
+
+```bash
+export AR_RESUME_DIR=/path/to/resume/state
 ```
 
 ## Usage Examples
