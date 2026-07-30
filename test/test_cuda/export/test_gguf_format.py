@@ -52,7 +52,7 @@ class TestAutoRound:
         from auto_round.modeling.fused_moe.qwen3_5_moe import SequentialQwen3_5MoeExperts
 
         autoround = AutoRound(tiny_qwen35_moe_model_path, iters=0, nsamples=1, seqlen=8)
-        quantized_model, _ = autoround.quantize()
+        quantized_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
         expert_count = quantized_model.config.get_text_config().num_experts
         live_expert_containers = [
             module for module in quantized_model.modules() if isinstance(module, SequentialQwen3_5MoeExperts)
@@ -76,7 +76,6 @@ class TestAutoRound:
                 for expert in experts
             )
 
-        autoround.save_quantized(output_dir=self.save_dir, format="gguf:q4_0")
         text_gguf_files = [
             os.path.join(self.save_dir, filename)
             for filename in os.listdir(self.save_dir)
