@@ -1150,42 +1150,40 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
 def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
     from auto_round.utils.common import LazyImport
 
-    # Then check if model_index.json exists for diffusion pipeline,
-    # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
-        # Quick check to avoid config loading attempts and unnecessary warnings
         if is_gguf_model(model_or_path):
             return False
 
-        # First check if it's a known diffusion pipeline by config/model_type
-        # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+        if os.path.isdir(model_or_path):
+            index_file = os.path.join(model_or_path, "model_index.json")
+            if os.path.isfile(index_file):
+                check_diffusers_installed()
+                return True
+        elif os.path.isabs(model_or_path) or model_or_path.startswith(("./", "../")):
+            # Missing local pipeline components are not Hugging Face repo ids.
+            return False
+
+        # NextStep is a diffusion model without the standard pipeline index.
         try:
             from transformers import AutoConfig
 
             config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=trust_remote_code)
             model_type = getattr(config, "model_type", "")
-            # A special case for NextStep
             if model_type == "nextstep":
                 return True
-        except:
-            logger.warning(
-                f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
-            )
-        index_file = None
+        except Exception:
+            logger.debug("Failed to load AutoConfig while checking whether %s is a diffusion model", model_or_path)
+
         if not os.path.isdir(model_or_path):
             try:
                 from huggingface_hub import hf_hub_download
 
                 index_file = hf_hub_download(model_or_path, "model_index.json")
                 check_diffusers_installed()
-            except Exception as e:
-                print(e)
-                index_file = None
-
-        elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
-            check_diffusers_installed()
-            index_file = os.path.join(model_or_path, "model_index.json")
-        return index_file is not None
+                return index_file is not None
+            except Exception:
+                logger.debug("No model_index.json found while checking %s", model_or_path)
+        return False
     elif not isinstance(model_or_path, torch.nn.Module):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")

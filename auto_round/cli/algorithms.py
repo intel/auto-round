@@ -230,6 +230,96 @@ class AWQ(AlgorithmHandler):
         )
 
 
+class SVDQuant(AlgorithmHandler):
+    name = "svdquant"
+    aliases = ("svdquant",)
+    summary = "SVD low-rank decomposition before residual quantization."
+    config_factory = None
+
+    def register(self, group) -> None:
+        group.add_argument("--svdquant-rank", default=32, type=int, help="SVDQuant low-rank size.")
+        group.add_argument(
+            "--enable-svdquant-smooth",
+            dest="svdquant_smooth_enabled",
+            default=False,
+            action="store_true",
+            help="Enable SVDQuant activation-aware smoothing.",
+        )
+        group.add_argument(
+            "--svdquant-smooth-num-grids",
+            default=20,
+            type=int,
+            help="Number of candidates per SVDQuant smooth search grid family.",
+        )
+        group.add_argument(
+            "--svdquant-smooth-max-calibration-calls",
+            default=128,
+            type=int,
+            help="Maximum calibration calls retained per SVDQuant smooth group.",
+        )
+        group.add_argument(
+            "--svdquant-residual-iters",
+            default=1,
+            type=int,
+            help="Number of alternating low-rank and residual quantization iterations.",
+        )
+        group.add_argument(
+            "--enable-svdquant-residual-early-stop",
+            dest="svdquant_residual_early_stop",
+            default=False,
+            action="store_true",
+            help="Stop residual iteration when reconstruction error no longer improves.",
+        )
+        group.add_argument(
+            "--svdquant-residual-quant-method",
+            default="rtn",
+            choices=["rtn"],
+            help="Residual outer iteration quantizer; fixed to RTN independently of the terminal quantizer.",
+        )
+        group.add_argument(
+            "--svdquant-low-rank-dtype",
+            default="bf16",
+            choices=["bf16", "bfloat16", "fp16", "float16", "fp32", "float32"],
+            help="Data type for the SVDQuant low-rank branch.",
+        )
+        group.add_argument(
+            "--svdquant-target-modules",
+            default=None,
+            type=str,
+            help="Comma-separated module-name substrings to transform.",
+        )
+        group.add_argument(
+            "--svdquant-exclude-modules",
+            default=None,
+            type=str,
+            help="Comma-separated module-name substrings to exclude.",
+        )
+        group.add_argument(
+            "--svdquant-model-adapter",
+            default="auto",
+            choices=["auto", "identity", "flux"],
+            help="Architecture adapter used by SVDQuant export.",
+        )
+
+    def build(self, args, common_kwargs: dict[str, Any]):
+        from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+        return SVDQuantConfig(
+            rank=getattr(args, "svdquant_rank", 32),
+            smooth_enabled=getattr(args, "svdquant_smooth_enabled", False),
+            smooth_num_grids=getattr(args, "svdquant_smooth_num_grids", 20),
+            smooth_max_calibration_calls=getattr(args, "svdquant_smooth_max_calibration_calls", 128),
+            residual_iters=getattr(args, "svdquant_residual_iters", 1),
+            residual_early_stop=getattr(args, "svdquant_residual_early_stop", False),
+            residual_quant_method=getattr(args, "svdquant_residual_quant_method", "rtn"),
+            low_rank_dtype=getattr(args, "svdquant_low_rank_dtype", "bf16"),
+            target_modules=getattr(args, "svdquant_target_modules", None),
+            exclude_modules=getattr(args, "svdquant_exclude_modules", None),
+            model_adapter=getattr(args, "svdquant_model_adapter", "auto"),
+            **common_kwargs,
+        )
+
+
 class RTN(AlgorithmHandler):
     name = "rtn"
     aliases = ("rtn",)
@@ -422,6 +512,7 @@ def _register_builtin_algorithm_factories() -> None:
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
     from auto_round.algorithms.transforms.awq.config import AWQConfig
     from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 
     register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, cli_handler=RTN, summary=RTN.summary)
     register_algorithm(
@@ -432,6 +523,13 @@ def _register_builtin_algorithm_factories() -> None:
         summary=AutoRound.summary,
     )
     register_algorithm("awq", aliases=("awq",), config_factory=AWQConfig, cli_handler=AWQ, summary=AWQ.summary)
+    register_algorithm(
+        "svdquant",
+        aliases=("svdquant",),
+        config_factory=SVDQuantConfig,
+        cli_handler=SVDQuant,
+        summary=SVDQuant.summary,
+    )
     register_algorithm(
         "hadamard",
         aliases=("hadamard", "random_hadamard", "quarot_hadamard"),

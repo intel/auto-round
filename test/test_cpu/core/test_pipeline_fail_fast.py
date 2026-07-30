@@ -142,6 +142,30 @@ def test_compat_entry_preserves_spinquant_dict_config(monkeypatch):
     assert spinquant_cfg.trainable_smooth is rotation_config["trainable_smooth"]
 
 
+def test_compat_entry_forwards_calibration_data_with_algorithm_configs(monkeypatch):
+    captured = {}
+    dataset = [{"text": "calibration prompt"}]
+
+    def _fake_new_autoround(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("auto_round.compressors.entry.AutoRound", _fake_new_autoround)
+
+    from auto_round.autoround import AutoRound as CompatAutoRound
+
+    CompatAutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        alg_configs=[RTNConfig(disable_opt_rtn=True)],
+        dataset=dataset,
+        batch_size=1,
+    )
+
+    assert captured["dataset"] is dataset
+    assert captured["batch_size"] == 1
+
+
 def test_entry_warns_and_drops_unsupported_kwargs(monkeypatch, tiny_opt_model_path):
     calls = []
 

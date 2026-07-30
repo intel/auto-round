@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import inspect
+import json
 import os
 from typing import Any, Optional, Union
 
@@ -27,6 +28,28 @@ from auto_round.utils.device import (
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
 from auto_round.utils.model import rename_weights_files
+
+
+def _rewrite_svdquant_nunchaku_pipeline_index(output_dir: str, component_names: list[str]) -> None:
+    """Point quantized Diffusers components at their Nunchaku runtime classes."""
+    from safetensors import safe_open
+
+    model_index_path = os.path.join(output_dir, "model_index.json")
+    with open(model_index_path, encoding="utf-8") as file:
+        model_index = json.load(file)
+
+    for name in component_names:
+        weight_path = os.path.join(output_dir, name, "diffusion_pytorch_model.safetensors")
+        with safe_open(weight_path, framework="pt", device="cpu") as file:
+            metadata = file.metadata() or {}
+        model_class = metadata.get("model_class")
+        if not model_class:
+            raise ValueError(f"{weight_path} is missing required safetensors metadata 'model_class'")
+        model_index[name] = ["nunchaku", model_class]
+
+    with open(model_index_path, "w", encoding="utf-8") as file:
+        json.dump(model_index, file, indent=2, sort_keys=True)
+        file.write("\n")
 
 
 class DiffusionMixin:
@@ -373,6 +396,10 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
+            if getattr(self.calibration, "_cpu_offload_mode", None) == "model":
+                from accelerate.hooks import remove_hook_from_submodules
+
+                remove_hook_from_submodules(self.model_context.model)
             clear_memory()
             self._inputs_cached = True
             return super().quantize()
@@ -486,7 +513,7 @@ class DiffusionMixin:
     def save_quantized(
         self,
         output_dir: Optional[str] = None,
-        format: Union[str, list] = "auto_round",
+        format: Optional[Union[str, list]] = None,
         inplace: bool = True,
         return_folders: bool = False,
         **kwargs,
@@ -517,11 +544,14 @@ class DiffusionMixin:
         has_multiple_quantized_transformers = bool(quantized_transformers)
 
         # Handle multi-format (convert string to list if needed)
-        _format = format
+        _format = format if format is not None else getattr(self, "formats", None) or "auto_round"
         if isinstance(_format, str):
             from auto_round.formats import get_formats
 
             _format = get_formats(_format, self)
+
+        is_svdquant_nunchaku = any(item.format_name == "svdquant_nunchaku" for item in _format)
+        quantized_component_names = []
 
         for name in pipe.components.keys():
             val = getattr(pipe, name)
@@ -556,6 +586,7 @@ class DiffusionMixin:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
                 self.model_context.model = saved_model
                 self.layer_config = saved_lc
+                quantized_component_names.append(name)
             elif val is self.model_context.model:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving
@@ -574,6 +605,7 @@ class DiffusionMixin:
                 self.compress_context.is_immediate_saving = saved_immediate_saving
                 if saved_subfolder is not None:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                quantized_component_names.append(name)
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
                 continue
@@ -589,11 +621,12 @@ class DiffusionMixin:
             pipe.config.save_pretrained(output_dir)
         else:
             # FrozenDict / plain dict — write model_index.json manually
-            import json
-
             model_index_path = os.path.join(output_dir, "model_index.json")
             with open(model_index_path, "w", encoding="utf-8") as f:
                 f.write(json.dumps(dict(pipe.config), indent=2, sort_keys=True) + "\n")
+
+        if is_svdquant_nunchaku:
+            _rewrite_svdquant_nunchaku_pipeline_index(output_dir, quantized_component_names)
 
         if return_folders:
             return compressed_model, folders
