@@ -12,11 +12,9 @@ import inspect
 import math
 import sys
 from pathlib import Path
-
-cpuinfo = pytest.importorskip("cpuinfo")
-
 import pytest
 import torch
+cpuinfo = pytest.importorskip("cpuinfo")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
