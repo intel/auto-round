@@ -151,6 +151,8 @@ class TestLLMC:
         assert kv_cache_scheme["symmetric"] is True
 
     def test_mxfp8_llmcompressor_attention_config(self, tiny_opt_model_path, tmp_path):
+        from safetensors import safe_open
+
         ar = AutoRound(
             model=tiny_opt_model_path,
             iters=0,
@@ -184,6 +186,11 @@ class TestLLMC:
 
         assert quantization_config["kv_cache_scheme"] is not None
         assert getattr(compressed_model.model.decoder.layers[0].self_attn, "q_scale", None) is not None
+
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as checkpoint:
+            keys = list(checkpoint.keys())
+        assert any(key.endswith(".self_attn.q_scale") for key in keys), "q_scale not found in checkpoint"
+        assert not any(key.endswith(".q_max") for key in keys), "q_max should not be exported"
 
     def test_mixed_precision_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = AutoScheme(

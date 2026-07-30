@@ -22,6 +22,7 @@ import torch
 from auto_round.compressors.utils import _get_save_folder_name
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
+from auto_round.experimental.attention import is_attention_calibration_tensor_name
 from auto_round.logger import logger
 from auto_round.utils import (
     get_lm_head_name,
@@ -157,6 +158,8 @@ class ShardWriter:
         for k, v in sd.items():
             if not isinstance(v, torch.Tensor):
                 continue
+            if is_attention_calibration_tensor_name(k):
+                continue
             param_name = f"{prefix}.{k}"
             self._add_tensor(param_name, v)
 
@@ -196,6 +199,9 @@ class ShardWriter:
         return list(expanded.items())
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
+        if is_attention_calibration_tensor_name(name):
+            return
+
         if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
             self.skipped_meta_tensors.append(name)
             return
