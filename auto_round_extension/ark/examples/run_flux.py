@@ -24,6 +24,19 @@ def env_flag(name, default="0"):
     return os.getenv(name, default).lower() not in {"0", "false", "no", "off"}
 
 
+def env_sparse_kernel(name="FLUX_SPARSE_KERNEL", default="int8"):
+    value = os.getenv(name, default).strip().lower()
+    aliases = {
+        "int8": "int8",
+        "qks8": "int8",
+        "bf16": "bf16",
+    }
+    normalized = aliases.get(value)
+    if normalized is None:
+        raise ValueError(f"{name} must be one of: int8, bf16")
+    return normalized
+
+
 benchmark_enabled = env_flag("FLUX_BENCHMARK_ENABLE", "0")
 profiler_enabled = env_flag("FLUX_PROFILER_ENABLE", "0")
 benchmark_scope = os.getenv("FLUX_BENCHMARK_SCOPE", "full").strip().lower()
@@ -53,11 +66,15 @@ guidance_scale = float(os.getenv("FLUX_GUIDANCE_SCALE", "3.5"))
 max_sequence_length = int(os.getenv("FLUX_MAX_SEQUENCE_LENGTH", "512"))
 seed = int(os.getenv("FLUX_SEED", "0"))
 use_sparse = os.getenv("FLUX_USE_SPARSE", "1").lower() not in {"0", "false", "no", "off"}
+sparse_kernel = env_sparse_kernel()
 
-output_file = (
-    f"flux_output_{height}x{width}_{num_inference_steps}steps_"
-    f"{guidance_scale}gs_sparse{os.getenv('FLUX_SPARSE_TOPK', '0.5')}.png"
-)
+if use_sparse:
+    output_file = (
+        f"flux_output_{height}x{width}_{num_inference_steps}steps_"
+        f"{guidance_scale}gs_sparse_{sparse_kernel}_topk{os.getenv('FLUX_SPARSE_TOPK', '0.5')}.png"
+    )
+else:
+    output_file = f"flux_output_{height}x{width}_{num_inference_steps}steps_{guidance_scale}gs_dense.png"
 output_path = os.getenv("FLUX_OUTPUT", output_file)
 
 prompt = os.getenv("FLUX_PROMPT", "A cat holding a sign that says hello world")
@@ -195,7 +212,8 @@ def sparse_patch_context():
     if not use_sparse:
         return contextlib.nullcontext(None)
     print(
-        f"[flux_sparse] enabled attention sparse patch: topk={os.getenv('FLUX_SPARSE_TOPK', '0.5')} "
+        f"[flux_sparse] enabled attention sparse patch: kernel={sparse_kernel}"
+        f" topk={os.getenv('FLUX_SPARSE_TOPK', '0.5')} "
         f"smooth_k={os.getenv('FLUX_SPARSE_SMOOTH_K', '1')}"
         f" q_tile={os.getenv('FLUX_SPARSE_Q_TILE_OVERRIDE', '0')}"
         f" q_block={os.getenv('FLUX_SPARSE_Q_BLOCK_TOKENS', 'default')}"
@@ -524,6 +542,7 @@ def run_block_benchmark(current_run_tag):
             "max_sequence_length": max_sequence_length,
             "seed": seed,
             "use_sparse": use_sparse,
+            "sparse_kernel": sparse_kernel if use_sparse else None,
             "cpu_offload_enabled": cpu_offload_enabled,
             "block_kind": block_state["block_kind"],
             "block_index": block_state["block_index"],
@@ -543,7 +562,7 @@ def run_block_benchmark(current_run_tag):
     return result
 
 
-run_tag = "sparse" if use_sparse else "dense"
+run_tag = f"sparse_{sparse_kernel}" if use_sparse else "dense"
 
 
 def maybe_run_with_profiler(run_callable, current_run_tag, record_label="flux_generate"):
@@ -615,6 +634,7 @@ def run_benchmark(run_callable, current_run_tag, benchmark_scope):
             "max_sequence_length": max_sequence_length,
             "seed": seed,
             "use_sparse": use_sparse,
+            "sparse_kernel": sparse_kernel if use_sparse else None,
             "sparse_topk": os.getenv("FLUX_SPARSE_TOPK", "0.5"),
             "sparse_smooth_k": os.getenv("FLUX_SPARSE_SMOOTH_K", "1"),
             "output_path": output_path,
@@ -704,6 +724,7 @@ def run_denoising_benchmark(current_run_tag):
             "max_sequence_length": max_sequence_length,
             "seed": seed,
             "use_sparse": use_sparse,
+            "sparse_kernel": sparse_kernel if use_sparse else None,
             "sparse_topk": os.getenv("FLUX_SPARSE_TOPK", "0.5"),
             "sparse_smooth_k": os.getenv("FLUX_SPARSE_SMOOTH_K", "1"),
             "output_path": output_path,

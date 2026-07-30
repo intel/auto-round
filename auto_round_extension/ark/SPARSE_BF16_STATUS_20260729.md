@@ -167,3 +167,39 @@ Conclusion:
 - The previous BF16 mismatch was caused by stale extension loading and an unreliable masked-XPU reference path in the test harness.
 - For long sequences, BF16 sparse is a valid accuracy-oriented sparse path with meaningful speedup over dense BF16.
 - INT8 sparse is still the fastest sparse option, but it gives up substantial accuracy relative to BF16 sparse on the exact fixed-LUT check.
+
+## July 30 Rerun Summary
+
+On Thursday, July 30, 2026, the `75k / topk=0.5` case was rerun on an idle `XPU 7` with oneAPI 2025 and the BF16-capable sparse extension explicitly loaded from `auto_round_kernel/xbuild_bf16_v2/auto_round_kernel_xpu.cpython-313-x86_64-linux-gnu.so`.
+
+Shape and config:
+
+- `B=1, Hq=40, Hkv=40, S=75000, D=128`
+- layout: `HND`
+- `topk=0.5`
+- `q_tile_override=256`
+- `sparse_q_block_tokens=256`
+- `sparse_k_block_tokens=64`
+- warmup `2`, iters `3`
+
+Sparse selection stats:
+
+- `selected_ratio=0.502557`
+- `selected_blocks_per_row=588.997`
+
+Latency and throughput summary:
+
+| Mode | Latency (ms) | Speedup vs Torch BF16 | Speedup vs SageV1 BF16 | Baseline TFLOPS | Effective TFLOPS |
+|---|---:|---:|---:|---:|---:|
+| `dense_torch_sdpa_bf16` | 1263.297 | 1.000 | 0.595 | 91.190 | 91.190 |
+| `dense_sagev1_bf16` | 751.410 | 1.681 | 1.000 | 153.312 | 153.312 |
+| `sparse_qtile256_row64k_kernel_only` | 398.381 | 3.305 | 1.944 | 289.171 | 145.325 |
+| `sparse_qtile256_row64k_e2e` | 514.271 | 2.560 | 1.506 | 224.007 | 112.576 |
+| `sparse_bf16_qtile256_row64k_kernel_only` | 812.091 | 1.556 | 0.925 | 141.856 | 71.291 |
+| `sparse_bf16_qtile256_row64k_e2e` | 928.958 | 1.360 | 0.809 | 124.010 | 62.322 |
+
+Notes:
+
+- `kernel_only` is sparse kernel time after preprocess.
+- `e2e` includes preprocess plus kernel.
+- On this rerun, BF16 sparse is faster than dense torch BF16 SDPA, but still slower than dense `sagev1_bf16`.

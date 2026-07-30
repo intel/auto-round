@@ -167,3 +167,39 @@ sparse 时延：
 - 之前 BF16 mismatch 的主要原因是旧扩展被错误加载，以及测试里使用了不可靠的 masked XPU 参考路径。
 - 对长序列来说，BF16 sparse 是一个兼顾精度的 sparse 路径，并且相对 dense BF16 有明显加速。
 - `int8_sparse` 仍然是最快的 sparse 方案，但在精确 fixed-LUT 检查里，相比 `bf16_sparse` 牺牲了明显精度。
+
+## 2026-07-30 复测摘要
+
+在 2026 年 7 月 30 日（星期四），对 `75k / topk=0.5` 用例进行了重新测试。测试使用空闲的 `XPU 7`、oneAPI 2025，并且显式加载了带 BF16 sparse 能力的扩展 `auto_round_kernel/xbuild_bf16_v2/auto_round_kernel_xpu.cpython-313-x86_64-linux-gnu.so`。
+
+Shape 和配置：
+
+- `B=1, Hq=40, Hkv=40, S=75000, D=128`
+- layout：`HND`
+- `topk=0.5`
+- `q_tile_override=256`
+- `sparse_q_block_tokens=256`
+- `sparse_k_block_tokens=64`
+- warmup `2`，iters `3`
+
+sparse 选择统计：
+
+- `selected_ratio=0.502557`
+- `selected_blocks_per_row=588.997`
+
+时延和吞吐摘要：
+
+| Mode | Latency (ms) | Speedup vs Torch BF16 | Speedup vs SageV1 BF16 | Baseline TFLOPS | Effective TFLOPS |
+|---|---:|---:|---:|---:|---:|
+| `dense_torch_sdpa_bf16` | 1263.297 | 1.000 | 0.595 | 91.190 | 91.190 |
+| `dense_sagev1_bf16` | 751.410 | 1.681 | 1.000 | 153.312 | 153.312 |
+| `sparse_qtile256_row64k_kernel_only` | 398.381 | 3.305 | 1.944 | 289.171 | 145.325 |
+| `sparse_qtile256_row64k_e2e` | 514.271 | 2.560 | 1.506 | 224.007 | 112.576 |
+| `sparse_bf16_qtile256_row64k_kernel_only` | 812.091 | 1.556 | 0.925 | 141.856 | 71.291 |
+| `sparse_bf16_qtile256_row64k_e2e` | 928.958 | 1.360 | 0.809 | 124.010 | 62.322 |
+
+说明：
+
+- `kernel_only` 表示 preprocess 之后仅 kernel 的时间。
+- `e2e` 表示 preprocess 加 kernel 的总时间。
+- 这次复测中，BF16 sparse 比 dense torch BF16 SDPA 更快，但仍然慢于 dense `sagev1_bf16`。
