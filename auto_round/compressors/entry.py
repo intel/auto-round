@@ -335,7 +335,7 @@ class AutoRound(object):
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         iters: int = None,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         layer_config=None,
@@ -369,7 +369,12 @@ class AutoRound(object):
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
-        route_decision_kwargs = dict(route_kwargs, format=format)
+        route_decision_kwargs = dict(
+            route_kwargs,
+            format=format,
+            static_kv_dtype=base_kwargs.get("static_kv_dtype"),
+            static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+        )
         if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
             from auto_round.compressors.model_free import ModelFreeCompressor
 
@@ -387,6 +392,7 @@ class AutoRound(object):
                 layer_config=layer_config,
                 tokenizer=tokenizer,
                 device_map=device_map,
+                enable_torch_compile=enable_torch_compile,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,
@@ -677,7 +683,7 @@ class AutoRoundCompatible:
         gradient_accumulate_steps: int = 1,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         algorithm: str = None,
@@ -717,6 +723,7 @@ class AutoRoundCompatible:
                 tokenizer=tokenizer,
                 device_map=device_map,
                 low_cpu_mem_usage=low_cpu_mem_usage,
+                enable_torch_compile=enable_torch_compile,
                 **compressor_only_kwargs,
                 **kwargs,
             )
