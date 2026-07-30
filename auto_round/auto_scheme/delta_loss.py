@@ -1762,6 +1762,20 @@ def _get_scheme_worker_count(num_schemes, num_gpus):
     return num_schemes
 
 
+def _can_parallel_scheme_scoring(
+    parallel_enabled, model_id, num_gpus, uncached_count, need_imatrix, disk_stream_model, is_vlm
+):
+    """Return whether candidate schemes can be scored in separate workers."""
+    return (
+        parallel_enabled
+        and model_id is not None
+        and num_gpus >= 1
+        and uncached_count >= 2
+        and not need_imatrix
+        and (not disk_stream_model or not is_vlm)
+    )
+
+
 def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage):
     """Load an isolated worker model without an extra full-size CPU initialization copy."""
     return load_model(
@@ -1771,6 +1785,13 @@ def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_us
         use_model_replacements=use_model_replacements,
         low_cpu_mem_usage=low_cpu_mem_usage,
     )
+
+
+def _load_disk_stream_scheme_worker_model(model_name):
+    """Build an isolated meta model and checkpoint index for a scoring worker."""
+    from auto_round.utils.disk_stream_util import build_meta_model
+
+    return build_meta_model(model_name)
 
 
 def _score_scheme_worker(args):
@@ -1798,6 +1819,7 @@ def _score_scheme_worker(args):
         worker_device,
         total_schemes,
         progress_queue,
+        disk_stream_model,
     ) = args
 
     from auto_round.auto_scheme.utils import _scheme_short_name as _short_name
@@ -1806,12 +1828,17 @@ def _score_scheme_worker(args):
     from auto_round.utils import get_block_names as _get_block_names
     from auto_round.utils import get_module as _get_module
 
+    disk_index = None
     try:
-        model, tokenizer, processor, _, _, is_vlm, _ = _load_scheme_worker_model(
-            model_name,
-            use_model_replacements,
-            low_cpu_mem_usage,
-        )
+        if disk_stream_model:
+            model, tokenizer, disk_index = _load_disk_stream_scheme_worker_model(model_name)
+            processor = None
+        else:
+            model, tokenizer, processor, _, _, is_vlm, _ = _load_scheme_worker_model(
+                model_name,
+                use_model_replacements,
+                low_cpu_mem_usage,
+            )
     except Exception as exc:
         raise RuntimeError(
             f"_score_scheme_worker[{index}]: failed to load model {model_name!r}\n{_tb.format_exc()}"
@@ -1819,6 +1846,10 @@ def _score_scheme_worker(args):
 
     safe_to_cpu_(model)
     block_names = _get_block_names(model, quant_vision=force_mllm)[0]
+    if disk_index is not None:
+        from auto_round.utils.disk_stream_util import materialize_non_block_params
+
+        materialize_non_block_params(model, block_names, disk_index, device="cpu")
     for block_name in block_names:
         block = _get_module(model, block_name)
         block.in_block = True
@@ -1833,7 +1864,8 @@ def _score_scheme_worker(args):
 
     from auto_round.modeling.fused_moe.replace_modules import materialize_model_
 
-    materialize_model_(model)
+    if disk_index is None:
+        materialize_model_(model)
     # MoE materialization can replace fused expert modules with newly-created
     # Linear layers. Assign tuning metadata only after the final module tree exists.
     for layer_name in quant_layer_names:
@@ -1888,6 +1920,7 @@ def _score_scheme_worker(args):
         force_mllm=force_mllm,
         model_name=model_name,
         scheme_tag=f"{index + 1}/{total_schemes} {_short_name(scheme)}",
+        disk_index=disk_index,
     )
     return index, scores, _get_worker_memory_report(worker_device)
 
@@ -2273,19 +2306,16 @@ def _gen_layer_config(
         worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
         num_gpus = len(worker_device_pool)
         parallel_enabled = _envs.AR_ENABLE_AUTO_SCHEME_PARALLEL
-        can_parallel = (
-            parallel_enabled
-            and _model_id_for_cache is not None
-            and num_gpus >= 1
-            and len(uncached_indices) >= 2
-            and not need_imatrix
-            # Each parallel worker fully loads its own copy of the model
-            # (_load_scheme_worker_model) in a separate process -- incompatible
-            # with a meta-device streaming skeleton, whose entire point is to
-            # avoid ever materializing a full copy. Force serial scoring
-            # (which honors disk_index via materialize_module/free_module)
-            # instead when streaming is active.
-            and disk_index is None
+        # Vision scoring requires a full-model backward and therefore cannot use
+        # the block-wise materialize/free path used by disk streaming.
+        can_parallel = _can_parallel_scheme_scoring(
+            parallel_enabled,
+            _model_id_for_cache,
+            num_gpus,
+            len(uncached_indices),
+            need_imatrix,
+            disk_index is not None,
+            is_vlm,
         )
         if not parallel_enabled and len(uncached_indices) >= 2:
             logger.info(
@@ -2344,6 +2374,7 @@ def _gen_layer_config(
                             worker_devices[slot],
                             len(schemes),
                             progress_queue,
+                            disk_index is not None,
                         )
                         for slot, index in enumerate(uncached_indices)
                     ]

@@ -142,7 +142,7 @@ export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
 ### AR_ENABLE_AUTO_SCHEME_PARALLEL
-- **描述**：启用 AutoScheme 候选方案之间的多进程并行。当并行加载多个模型可能耗尽主机内存或显存时，请保持关闭。
+- **描述**：启用 AutoScheme 候选方案之间的多进程并行。可与 `AR_DISK_STREAM_MODEL=1` 同时使用；此时每个 worker 会构建独立的 meta 模型骨架并分别流式加载 block。当并发 worker 可能耗尽主机内存或显存时，请保持关闭。
 - **默认值**：`False`（串行评分各方案）
 - **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用并行评分；其他值保持关闭
 - **用途**：运行 AutoScheme 前设置，以启用候选方案并行评分
@@ -152,7 +152,7 @@ export AR_ENABLE_AUTO_SCHEME_PARALLEL=1
 ```
 
 ### AR_DISK_STREAM_MODEL
-- **描述**：启用后，`AutoRound(model=<path>, ...)` 会将模型构建为 meta 设备骨架，而不是先把整个 checkpoint 完全加载到 CPU 内存；随后按需从 checkpoint 的 safetensors 分片中流式加载每个解码器块的真实权重——在该块被使用前（校准、调优或 `AutoScheme` 敏感度评分）才实体化，用完后立即释放回 meta。这样峰值 CPU 内存基本保持平稳，而不会随 checkpoint 大小成比例增长。非块参数(embedding、`lm_head`、最终归一化层)体积通常较小，仍会一次性加载。
+- **描述**：启用后，`AutoRound(model=<path>, ...)` 会将模型构建为 meta 设备骨架，而不是先把整个 checkpoint 完全加载到 CPU 内存；随后按需从 checkpoint 的 safetensors 分片中流式加载每个解码器块的真实权重——在该块被使用前（校准、调优或 `AutoScheme` 敏感度评分）才实体化，用完后立即释放回 meta。这样峰值 CPU 内存基本保持平稳，而不会随 checkpoint 大小成比例增长。非块参数（embedding、`lm_head`、最终归一化层）体积通常较小，仍会一次性加载。文本模型的 AutoScheme 评分也支持同时设置 `AR_ENABLE_AUTO_SCHEME_PARALLEL=1`；每个 worker 会流式加载自己的 block 副本。
 - **默认值**：`False`
 - **有效值**：`"1"`、`"true"`、`"yes"`(不区分大小写)表示启用；其他任何值表示禁用
 - **用途**：用于量化体积超过可用 CPU 内存 + GPU 显存总和的 checkpoint。仅在 `model` 为字符串(本地目录)路径时生效，对已加载的模型对象无效。

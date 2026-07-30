@@ -674,6 +674,18 @@ def test_scheme_worker_count_rejects_no_gpu():
         _get_scheme_worker_count(2, 0)
 
 
+def test_parallel_scheme_scoring_supports_disk_stream_model():
+    from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
+
+    assert _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, False)
+
+
+def test_parallel_scheme_scoring_rejects_disk_stream_vlm():
+    from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
+
+    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
+
+
 def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
     from test.helpers import opt_name_or_path
 
@@ -698,6 +710,16 @@ def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
         "use_model_replacements": True,
         "low_cpu_mem_usage": True,
     }
+
+
+def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
+    from auto_round.auto_scheme import delta_loss
+    from auto_round.utils import disk_stream_util
+
+    expected = (object(), object(), object())
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
+
+    assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
 
 
 def test_per_op_cache_compatibility_rejects_grouped_scores():
