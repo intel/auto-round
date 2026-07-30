@@ -33,7 +33,7 @@ class CompressContext(BaseContext):
         self,
         low_cpu_mem_usage: bool = True,
         low_gpu_mem_usage: bool = False,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: bool = True,
         is_immediate_packing: bool = False,
         is_immediate_saving: bool = False,
         formats: Union[list, str] = None,

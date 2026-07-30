@@ -67,6 +67,10 @@ class BaseRotationConfig:
     #: Human-readable algorithm name, must be unique across all subclasses.
     algorithm: str = "base"
 
+    def can_compile_block_forward(self) -> bool:
+        """Whether block replay can be compiled after applying this rotation."""
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Algorithm base
