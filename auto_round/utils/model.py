@@ -356,11 +356,22 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    if "dtype" in kwargs:
+        torch_dtype = kwargs.pop("dtype")
+        kwargs.pop("torch_dtype", None)
+    elif "torch_dtype" in kwargs:
+        torch_dtype = kwargs.pop("torch_dtype")
+    dtype_key = (
+        "dtype"
+        if platform == "hf" and version.parse(transformers.__version__) >= version.parse("4.56.0")
+        else "torch_dtype"
+    )
     load_kwargs = {
-        "torch_dtype": torch_dtype,
+        dtype_key: torch_dtype,
         "trust_remote_code": trust_remote_code,
         "device_map": "auto" if use_auto_mapping else None,
     }
+    load_kwargs.update(kwargs)
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -923,6 +934,119 @@ def diffusion_load_model(
             setattr(comp, "save_pretrained", partial(model_save_pretrained, comp))
 
     return pipe, model.to(device)
+
+
+def load_model(
+    pretrained_model_name_or_path: Union[str, torch.nn.Module],
+    platform: str = "hf",
+    model_dtype: str = None,
+    trust_remote_code: bool = True,
+    device: str = "cpu",
+    use_auto_mapping: bool = None,
+    use_model_replacements: bool = False,
+    **kwargs,
+) -> tuple:
+    """Unified model loader supporting LLM, MLLM (VLM), and diffusion models.
+
+    Automatically detects model type (text-only LLM / multimodal MLLM / diffusion
+    pipeline) via ``is_mllm_model`` / ``is_diffusion_model`` and dispatches to the
+    corresponding loader.  When a pre-loaded ``torch.nn.Module`` is passed the
+    function skips loading and only performs type detection.
+
+    Args:
+        pretrained_model_name_or_path: HuggingFace model ID, local path, or an
+            already-loaded ``torch.nn.Module``.
+        platform: ``"hf"`` (default) or ``"model_scope"``.
+        model_dtype: Cast the model to this dtype after loading (e.g. ``"bf16"``).
+        trust_remote_code: Passed through to every HF ``from_pretrained`` call.
+        device: Device to load the model onto (default ``"cpu"``).
+        use_auto_mapping: Override ``device_map="auto"`` for MLLM/diffusion loaders.
+            ``None`` means each sub-loader decides its own default.
+        use_model_replacements: Apply AutoRound replacement modules and special-model
+            forward patches after loading. Intended for isolated quantization workers.
+        **kwargs: Extra keyword arguments forwarded verbatim to the active sub-loader.
+
+    Returns:
+        A 7-tuple ``(model, tokenizer, processor, image_processor, pipe, is_mllm,
+        is_diffusion)`` where unused fields are ``None`` / ``False``.
+    """
+
+    def _prepare_model(model):
+        if not use_model_replacements:
+            return model
+        from auto_round.special_model_handler import _handle_special_model, update_module
+
+        model = update_module(model, formats=None, cleanup_original=False)
+        return _handle_special_model(model)
+
+    model = None
+    tokenizer = None
+    processor = None
+    image_processor = None
+    pipe = None
+    _is_mllm = False
+    _is_diffusion = False
+
+    if isinstance(pretrained_model_name_or_path, str):
+        if is_mllm_model(pretrained_model_name_or_path, platform=platform):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            model, processor, tokenizer, image_processor = mllm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            _is_mllm = True
+
+        elif is_diffusion_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            pipe, model = diffusion_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            _is_diffusion = True
+
+        else:
+            # Plain text LLM
+            # Apply class-level block patches (e.g. unfused-MoE replacements) before
+            # ``from_pretrained`` so the model is loaded with the correct architecture.
+            from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+
+            apply_model_monkey_patches(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            _kwargs.update(kwargs)
+            model, tokenizer = llm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+    else:
+        # Already a loaded model object – detect type without triggering any file I/O.
+        try:
+            _is_mllm = is_mllm_model(pretrained_model_name_or_path)
+        except Exception:
+            pass
+        if not _is_mllm:
+            try:
+                _is_diffusion = is_diffusion_model(pretrained_model_name_or_path)
+            except Exception:
+                pass
+        model = _prepare_model(pretrained_model_name_or_path)
+
+    return model, tokenizer, processor, image_processor, pipe, _is_mllm, _is_diffusion
 
 
 def is_pure_text_model(model):
@@ -2310,6 +2434,11 @@ def is_model_free_route(
 
     explicit = bool(kwargs.get("model_free", False))
     disabled = bool(kwargs.get("disable_model_free", False))
+    has_static_attention_quantization = any(
+        kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
+    )
+    if has_static_attention_quantization:
+        return False
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).

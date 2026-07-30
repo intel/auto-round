@@ -43,6 +43,7 @@ class TestAutoRound:
             iters=0,
             disable_opt_rtn=True,
             low_cpu_mem_usage=False,
+            disable_model_free=True,
         )
         quantized_model, quantized_model_path = autoround.quantize_and_save(format="auto_round", output_dir=output_dir)
         assert quantized_model is not None, "Quantized model should not be None."

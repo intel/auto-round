@@ -77,11 +77,19 @@ class BlockContext:
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
+    block_cnt: int = 0  # total number of blocks being quantized in this run
 
 
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
+def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: bool) -> bool:
+    """Return whether every component participating in block replay supports compilation."""
+    if not user_enabled or not block_quantizer.can_compile_block_forward():
+        return False
+    return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
+
+
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -180,11 +188,19 @@ class AlgorithmComposer:
         can_compile_block_forward = False
         self.block_quantizer = block_quantizers[0]
         if orchestrator is not None:
-            if self.block_quantizer is not None and self.block_quantizer.can_compile_block_forward():
-                user_torch_compile = getattr(
-                    getattr(orchestrator, "compress_context", None), "enable_torch_compile", False
-                )
-                can_compile_block_forward = bool(user_torch_compile)
+            user_torch_compile = bool(
+                getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
+            )
+            rotation_configs = getattr(orchestrator, "rotation_configs", ())
+            can_compile_block_forward = _can_compile_block_forward(
+                self.block_quantizer, rotation_configs, user_torch_compile
+            )
+            if (
+                user_torch_compile
+                and not can_compile_block_forward
+                and any(not getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
+            ):
+                logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
@@ -274,7 +290,7 @@ class AlgorithmComposer:
         handles.extend(self.block_quantizer.register_qinput_forward_hooks(block))
         return handles
 
-    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_input, q_input) -> None:
+    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_inputs, q_inputs) -> None:
         """Compute and attach act_max for an outside-block layer from cached inputs.
 
         Mirrors the hook-based act_max collection done for in-block layers, but
@@ -282,14 +298,14 @@ class AlgorithmComposer:
 
         Args:
             layer: The layer module to attach act_max to.
-            fp_input: List of FP input tensors collected during calibration.
-            q_input: Optional list of quantized input tensors; used instead of
-                ``fp_input`` when provided.
+            fp_inputs: List of FP input tensors collected during calibration.
+            q_inputs: Optional list of quantized input tensors; used instead of
+                ``fp_inputs`` when provided.
         """
         from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
-        target_input = q_input or fp_input
+        target_input = q_inputs or fp_inputs
         act_group_size = getattr(layer, "act_group_size")
         if act_group_size is None:
             act_group_size = layer.group_size
@@ -340,7 +356,7 @@ class AlgorithmComposer:
         input_others,
         block_ctx: BlockContext,
         q_inputs=None,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
@@ -358,7 +374,7 @@ class AlgorithmComposer:
             input_ids: Full-precision (FP) cached inputs.
             input_others: Auxiliary kwargs (attention_mask, position_ids, …).
             ctx: Per-block lifecycle context (:class:`BlockContext`).
-            q_input: Quantized-input tensors from the previous block, or ``None``.
+            q_inputs: Quantized-input tensors from the previous block, or ``None``.
             valid_token_mask: Optional mask for per-token loss weighting.
 
         Returns:
@@ -441,7 +457,7 @@ class AlgorithmComposer:
             reference_output,
             q_inputs,
             block_ctx,
-            valid_token_mask=valid_token_mask,
+            input_ids=input_ids,
         )
 
         # ── Step 5: post_quantize_block ─────────────────────────────────────────
@@ -461,10 +477,10 @@ class AlgorithmComposer:
     def compress_layer_outside_block(
         self,
         layer: "torch.nn.Module",
-        fp_input=None,
-        q_input=None,
-        valid_token_mask=None,
+        fp_inputs=None,
+        q_inputs=None,
         disable_opt_rtn=None,  # TODO wenhuach rename this to search_init_scale
+        input_ids=None,
     ) -> None:
         """Quantize a single layer that lives outside transformer blocks.
 
@@ -475,14 +491,14 @@ class AlgorithmComposer:
         Args:
             layer: The layer module to quantize. Must have a ``global_name``
                 attribute.
-            fp_input: Per-sample FP activations for calibration, or ``None``
+            fp_inputs: Per-sample FP activations for calibration, or ``None``
                 to fall back to zero-shot RTN.
-            q_input: Optional quantized activations from a previous stage.
+            q_inputs: Optional quantized activations from a previous stage.
             valid_token_mask: Per-sample token masks for loss weighting.
             disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
         """
         # Attach act_max for static activation quantization when inputs are available.
-        if fp_input is not None:
+        if fp_inputs is not None:
             from auto_round.compressors.utils import is_nv_fp
 
             act_data_type = getattr(layer, "act_data_type")
@@ -490,7 +506,7 @@ class AlgorithmComposer:
                 act_data_type = "fp"
             act_dynamic = getattr(layer, "act_dynamic", True)
             if is_nv_fp(act_data_type) or not act_dynamic:
-                self._attach_act_max_for_outside_layer(layer, fp_input, q_input)
+                self._attach_act_max_for_outside_layer(layer, fp_inputs, q_inputs)
 
         # Infrastructure: move layer to the tuning device before handing off to the quantizer.
         device = getattr(layer, "tuning_device", device_manager.device)  # TODO this should be handled by compressor
@@ -498,10 +514,10 @@ class AlgorithmComposer:
 
         return self.block_quantizer.quantize_layer_outside_block(
             layer,
-            fp_input=fp_input,
-            q_input=q_input,
-            valid_token_mask=valid_token_mask,
+            fp_inputs=fp_inputs,
+            q_inputs=q_inputs,
             disable_opt_rtn=disable_opt_rtn,
+            input_ids=input_ids,
         )
 
     # ── Convenience act-calib helpers ────────────────────────────────────────

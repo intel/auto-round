@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
@@ -652,7 +652,7 @@ class AutoRound:
         gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
