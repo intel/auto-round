@@ -68,6 +68,7 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 - `HuggingFaceH4/ultrachat_200k` for chat data
 - `madao33/new-title-chinese` for Chinese
 - `mbpp` for code
+- `nvidia/OpenCodeInstruct` for code instruction data
 - `openbmb/Ultra-FineWeb`
 
 ### Customized Dataset
