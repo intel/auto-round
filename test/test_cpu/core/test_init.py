@@ -34,8 +34,7 @@ def test_cli_dataset_tracks_explicit_value():
     parser = build_quantize_parser()
     assert parser.parse_args(["--model", "test-model"]).dataset is None
     assert (
-        parser.parse_args(["--model", "test-model", "--dataset", "NeelNanda/pile-10k"]).dataset
-        == "NeelNanda/pile-10k"
+        parser.parse_args(["--model", "test-model", "--dataset", "NeelNanda/pile-10k"]).dataset == "NeelNanda/pile-10k"
     )
 
 

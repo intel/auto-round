@@ -42,9 +42,7 @@ def test_automatic_code_dataset_and_non_default_override(tiny_opt_model_path, tm
     autoround = AutoRound(str(code_model_path), **common)
     assert autoround.dataset == "opencode-instruct:concat=true:num=5,mbpp:split=train:concat=true:num=1"
 
-    autoround = AutoRound(
-        str(code_model_path), dataset="NeelNanda/pile-10k", alg_configs="auto_round", **common
-    )
+    autoround = AutoRound(str(code_model_path), dataset="NeelNanda/pile-10k", alg_configs="auto_round", **common)
     assert autoround.dataset == "NeelNanda/pile-10k"
 
     autoround = AutoRound(str(code_model_path), dataset="pile-10k", alg_configs="auto_round", **common)
