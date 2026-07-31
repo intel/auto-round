@@ -17,7 +17,8 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.formats.backends.gptq_awq import AutoAWQFormat, AutoGPTQFormat
+from auto_round.formats.backends.auto_awq import AutoAWQFormat
+from auto_round.formats.backends.auto_gptq import AutoGPTQFormat
 from auto_round.formats.backends.mlx import MLXFormat
 from auto_round.formats.base import BackendDataType, OutputFormat, _check_divisible_by_32
 from auto_round.logger import logger

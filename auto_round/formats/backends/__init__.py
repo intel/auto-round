@@ -16,7 +16,8 @@ from auto_round.formats.backends.autoround import AutoRoundFormat
 from auto_round.formats.backends.fake import FakeFormat
 from auto_round.formats.backends.fp8 import FP8Format
 from auto_round.formats.backends.gguf import GGUFFormat
-from auto_round.formats.backends.gptq_awq import AutoAWQFormat, AutoGPTQFormat
+from auto_round.formats.backends.auto_awq import AutoAWQFormat
+from auto_round.formats.backends.auto_gptq import AutoGPTQFormat
 from auto_round.formats.backends.llm_compressor import LLMCompressorFormat
 from auto_round.formats.backends.mlx import MLXFormat
 
