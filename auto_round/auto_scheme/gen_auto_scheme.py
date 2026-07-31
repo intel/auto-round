@@ -96,7 +96,7 @@ class GenScheme:
         dataset: str = "pile-10k",
         device_map: Union[str, torch.device, int, dict, None] = None,
         tokenizer=None,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         processor=None,
     ):
         self.auto_scheme = auto_scheme
