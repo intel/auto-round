@@ -121,6 +121,11 @@ class AlgorithmHandler(ABC):
         if not ({"awq", "rtn", "auto_round"} & seen):
             canonical.append("rtn" if getattr(args, "iters", 0) == 0 else "auto_round")
 
+        # Keep the legacy API rule even when the user explicitly spells out
+        # ``--algorithm auto_round``: zero iterations select RTN.
+        if getattr(args, "iters", None) == 0:
+            canonical = ["rtn" if name == "auto_round" else name for name in canonical]
+
         return [cls.get(name).build(args, common_kwargs) for name in canonical]
 
     @classmethod

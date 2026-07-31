@@ -114,6 +114,40 @@ def test_new_entry_defaults_to_autoround_config(monkeypatch):
     assert isinstance(captured["config"][0], SignRoundConfig)
 
 
+def test_new_entry_zero_iters_defaults_to_rtn_config(monkeypatch):
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(Compressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    NewAutoRound("dummy-model", scheme="W4A16", iters=0, disable_opt_rtn=True, disable_model_free=True)
+
+    assert isinstance(captured["config"], list)
+    assert isinstance(captured["config"][0], RTNConfig)
+    assert captured["config"][0].disable_opt_rtn is True
+
+
+def test_new_entry_accepts_rotation_config_in_algorithm_list(monkeypatch):
+    captured = {}
+
+    def _fake_init(self, config, **kwargs):
+        captured["config"] = config
+
+    monkeypatch.setattr(Compressor, "__init__", _fake_init)
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda *args, **kwargs: "llm")
+
+    NewAutoRound(
+        "dummy-model",
+        scheme="MXFP4",
+        alg_configs=[SignRoundConfig(iters=1), RotationConfig()],
+    )
+
+    assert any(isinstance(config, RotationConfig) for config in captured["config"])
+
+
 def test_entry_rejects_configs_without_quantization_members():
     with pytest.raises(TypeError, match="alg_configs entries must be algorithm aliases"):
         NewAutoRound("dummy-model", scheme="W4A16", alg_configs=[RotationConfig()])

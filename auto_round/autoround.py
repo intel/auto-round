@@ -365,6 +365,7 @@ _SIGNROUND_FIELDS = {
     "enable_quanted_input",
     "optimizer",
     "enable_adam",
+    "enable_lfq",
 }
 _RTN_FIELDS = {"disable_opt_rtn", "enable_opt_rtn"}
 _AWQ_FIELDS = {
@@ -383,9 +384,7 @@ _AWQ_FIELDS = {
     "mappings",
 }
 _ROTATION_FIELDS = {
-    "algorithm",
     "hadamard_type",
-    "backend",
     "block_size",
     "fuse_online_to_weight",
     "allow_online_rotation",
@@ -430,18 +429,30 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config
+    from auto_round.algorithms.transforms import normalize_rotation_config
+    from auto_round.algorithms.transforms.base import BaseRotationConfig
 
     direct_kwargs = dict(direct_kwargs or {})
     if "algorithm" in direct_kwargs:
-        logger.error("'algorithm' is a legacy selector. Use 'alg_configs' instead; the value is ignored.")
-        direct_kwargs.pop("algorithm")
-    config_kwargs = {
-        key: value
-        for key, value in direct_kwargs.items()
-        if key not in _ENTRY_KWARG_OWNERS and key != "rotation_config"
-    }
+        raise ValueError(
+            "Algorithm selection must be passed through `alg_configs`; "
+            "rotation algorithms must be nested in `rotation_config`."
+        )
+    if "backend" in direct_kwargs:
+        raise ValueError(
+            "Rotation backend selection must be nested in `rotation_config`; "
+            "do not pass it as AutoRound(..., backend=...)."
+        )
+    rotation_config = direct_kwargs.pop("rotation_config", None)
+    config_kwargs = {key: value for key, value in direct_kwargs.items() if key not in _ENTRY_KWARG_OWNERS}
     if alg_configs is None:
-        raw_configs = ["signround"]
+        # Preserve the legacy entry semantics: zero iterations are RTN, while
+        # positive iterations use SignRound.  RTN-only kwargs also select RTN
+        # so they are not silently ignored by the default SignRound config.
+        if direct_kwargs.get("iters") == 0:
+            raw_configs = ["rtn"]
+        else:
+            raw_configs = ["signround"]
     elif isinstance(alg_configs, (list, tuple)):
         raw_configs = list(alg_configs)
     else:
@@ -450,12 +461,23 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     configs = []
     for raw_config in raw_configs:
         config = resolve_alg_config(raw_config) if isinstance(raw_config, str) else raw_config
-        if not isinstance(config, QuantizationConfig):
+        if not isinstance(config, (QuantizationConfig, BaseRotationConfig)):
             raise TypeError(
-                f"alg_configs entries must be algorithm aliases or QuantizationConfig instances, "
+                f"alg_configs entries must be algorithm or QuantizationConfig instances, "
                 f"got {type(config).__name__}."
             )
         configs.append(normalize_algorithm_config(config))
+
+    if rotation_config is not None:
+        normalized_rotation = normalize_rotation_config(rotation_config)
+        if normalized_rotation is not None:
+            configs.append(normalized_rotation)
+
+    if not any(isinstance(config, QuantizationConfig) for config in configs):
+        raise TypeError(
+            "alg_configs entries must be algorithm aliases or QuantizationConfig instances, "
+            "and must include at least one quantization algorithm config."
+        )
 
     preprocessors, block_configs = split_quantization_configs(configs)
     if preprocessors and not block_configs:
@@ -486,14 +508,20 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
                 key,
             )
             continue
-        setattr(targets[0], key, value)
+        target = targets[0]
+        if key in ("disable_opt_rtn", "enable_opt_rtn"):
+            if key == "disable_opt_rtn" or value:
+                target.disable_opt_rtn = False if key == "enable_opt_rtn" else value
+                target.orig_disable_opt_rtn = target.disable_opt_rtn
+        else:
+            setattr(target, key, value)
         logger.warning(
             "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
             "'alg_configs=%sConfig(...)'.",
             key,
             type(targets[0]).__name__.replace("Config", ""),
         )
-    return configs
+    return [normalize_algorithm_config(config) for config in configs]
 
 
 def _prepare_entry_kwargs(alg_configs, direct_kwargs):
@@ -659,6 +687,11 @@ class AutoRound:
         **kwargs,
     ) -> "BaseCompressor":
         direct_kwargs = dict(kwargs)
+        legacy_device = direct_kwargs.pop("device", None)
+        if legacy_device is not None:
+            logger.warning_once("`device` is deprecated, please use `device_map` instead")
+            if device_map in (None, 0):
+                device_map = legacy_device
         if iters is not None:
             direct_kwargs["iters"] = iters
         if gradient_accumulate_steps is not None:

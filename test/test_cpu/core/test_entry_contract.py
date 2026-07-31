@@ -37,3 +37,14 @@ def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):
 
     assert all(not values for values in grouped.values())
     assert "unknown_option" in warnings[0]
+
+
+def test_cli_explicit_auto_round_with_zero_iters_selects_rtn():
+    from argparse import Namespace
+
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    args = Namespace(algorithm="auto_round", iters=0)
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert type(configs[0]).__name__ == "RTNConfig"
