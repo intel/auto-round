@@ -632,6 +632,33 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // inline bit-manipulation path at compile time. The choice is driven at
 // launch time by the env var `ARK_FP8_DECODE_USE_LUT` (default: ON).
 // ----------------------------------------------------------------------------
+
+// Vectorized inner accumulation over CHUNK consecutive K elements (CHUNK weight
+// bytes + a vec<ScalarT,CHUNK> activation block). Templated on CHUNK so the
+// caller can run a wide (32) stage first and a narrower (16) stage for the
+// remainder, mirroring the int4/int8 paths. sycl::vec only supports widths of
+// 1, 2, 3, 4, 8 or 16, so CHUNK is processed in 16-wide sub-blocks. The math is
+// identical to the scalar path.
+template <typename ScalarT, bool IsE4M3, bool UseLut, int CHUNK>
+static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float scale, float& acc) {
+  static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+  static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
+  constexpr int SUB = 16;
+  using ActVec = sycl::vec<uint16_t, SUB>;
+  using ByteVec = sycl::vec<uint8_t, SUB>;
+#pragma unroll
+  for (int s = 0; s < CHUNK / SUB; ++s) {
+    const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
+    const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_ptr + s * SUB);
+#pragma unroll
+    for (int u = 0; u < SUB; ++u) {
+      const float w = decode_fp8<IsE4M3, UseLut>(wv[u]) * scale;
+      const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
+      acc += static_cast<float>(a) * w;
+    }
+  }
+}
+
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
                 ScalarT* outputs, const int* expert_id_per_token, int total_tokens, int N, int K, int group_size) {
@@ -669,27 +696,24 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
          for (int g = 0; g < num_groups_k; ++g) {
            const float scale = static_cast<float>(s_row[g]);
            const int k_base = g * group_size;
-           // Vectorized: 16 weights (16 bytes) + 16 activations per load.
-           // Decode each FP8 byte to float inline, then apply the per-group
-           // scale. group_size is typically 128 (mult of 16); scalar tail
-           // covers anything that doesn't divide evenly.
-           constexpr int CHUNK = 16;
-           using ActVec = sycl::vec<uint16_t, CHUNK>;
-           using ByteVec = sycl::vec<uint8_t, CHUNK>;
-           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
-                         "ScalarT must be a 16-bit floating type");
-           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           // Vectorized ladder mirroring the int4/int8 paths: process 32
+           // K-elements (32 weight bytes + vec<ScalarT,32> activations) at a
+           // time, then a 16-wide stage for the remainder, then a scalar tail.
+           // Decode each FP8 byte to float, then apply the per-group scale.
+           // Widening the first stage amortizes the per-group scale load for
+           // the shipped group sizes (32/64/128/256).
            int kk = 0;
-           for (; kk < chunk_end; kk += CHUNK) {
-             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
-             const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_row + k_base + kk);
-#pragma unroll
-             for (int u = 0; u < CHUNK; ++u) {
-               const uint8_t raw = wv[u];
-               const float w = decode_fp8<IsE4M3, UseLut>(raw) * scale;
-               const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
-               acc += static_cast<float>(a) * w;
-             }
+           constexpr int CHUNK32 = 32;
+           const int end32 = (group_size / CHUNK32) * CHUNK32;
+           for (; kk < end32; kk += CHUNK32) {
+             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK32>(act_row + k_base + kk, w_row + k_base + kk, scale,
+                                                               acc);
+           }
+           constexpr int CHUNK16 = 16;
+           const int end16 = kk + ((group_size - kk) / CHUNK16) * CHUNK16;
+           for (; kk < end16; kk += CHUNK16) {
+             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK16>(act_row + k_base + kk, w_row + k_base + kk, scale,
+                                                               acc);
            }
            for (; kk < group_size; ++kk) {
              const uint8_t raw = w_row[k_base + kk];
