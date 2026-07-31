@@ -215,27 +215,36 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
 template <typename ScalarT, bool Asym, int CHUNK>
 static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float scale, float zero,
                                      float& acc) {
-  using ActVec = sycl::vec<uint16_t, CHUNK>;
-  using PackVec = sycl::vec<uint8_t, CHUNK / 2>;
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
-  const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr);
-  const PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr);
+  static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
+  // sycl::vec only supports widths of 1, 2, 3, 4, 8 or 16, so a single
+  // vec<uint16_t, 32> load is illegal. Process the chunk in 16-wide sub-blocks
+  // (16 activations + 8 packed weight bytes each), which keeps CHUNK == 32
+  // valid while reusing the same code path for CHUNK == 16.
+  constexpr int SUB = 16;
+  using ActVec = sycl::vec<uint16_t, SUB>;
+  using PackVec = sycl::vec<uint8_t, SUB / 2>;
 #pragma unroll
-  for (int b = 0; b < CHUNK / 2; ++b) {
-    int q0, q1;
-    decode_int4_pair<Asym>(pv[b], q0, q1);
-    float w0, w1;
-    if constexpr (Asym) {
-      w0 = (static_cast<float>(q0) - zero) * scale;
-      w1 = (static_cast<float>(q1) - zero) * scale;
-    } else {
-      w0 = static_cast<float>(q0) * scale;
-      w1 = static_cast<float>(q1) * scale;
+  for (int s = 0; s < CHUNK / SUB; ++s) {
+    const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
+    const PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr + s * (SUB / 2));
+#pragma unroll
+    for (int b = 0; b < SUB / 2; ++b) {
+      int q0, q1;
+      decode_int4_pair<Asym>(pv[b], q0, q1);
+      float w0, w1;
+      if constexpr (Asym) {
+        w0 = (static_cast<float>(q0) - zero) * scale;
+        w1 = (static_cast<float>(q1) - zero) * scale;
+      } else {
+        w0 = static_cast<float>(q0) * scale;
+        w1 = static_cast<float>(q1) * scale;
+      }
+      const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
+      const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
+      acc += static_cast<float>(a0) * w0;
+      acc += static_cast<float>(a1) * w1;
     }
-    const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
-    const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
-    acc += static_cast<float>(a0) * w0;
-    acc += static_cast<float>(a1) * w1;
   }
 }
 
