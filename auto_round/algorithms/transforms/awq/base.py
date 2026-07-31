@@ -38,9 +38,10 @@ import torch
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
+    AWQ_DYNAMIC_MAPPING_REGISTRY,
+    AWQ_MAPPING_REGISTRY,
     ResolvedMapping,
     _extract_block_prefix,
-    check_model_compatibility,
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
@@ -102,6 +103,45 @@ def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
     return result
 
 
+def _slice_seq_tensor(v: Any, actual_seq: int, seqlen: int) -> Any:
+    """Slice a value's sequence dimension to *seqlen*, recursing into containers."""
+    if isinstance(v, torch.Tensor):
+        if v.ndim == 3 and v.shape[1] == actual_seq:
+            return v[:, :seqlen]
+        if v.ndim == 2 and v.shape[1] == actual_seq:
+            return v[:, :seqlen]
+        if v.ndim == 4 and v.shape[2] == actual_seq and v.shape[3] == actual_seq:
+            return v[:, :, :seqlen, :seqlen]
+        if v.ndim == 4 and v.shape[2] == actual_seq:
+            return v[:, :, :seqlen]
+        return v
+    if isinstance(v, (tuple, list)):
+        return type(v)(_slice_seq_tensor(t, actual_seq, seqlen) for t in v)
+    return v
+
+
+def _detect_actual_seq(values) -> int | None:
+    """Infer sequence length from the first 3-D tensor, including nested containers."""
+    for v in values:
+        if isinstance(v, torch.Tensor) and v.ndim == 3:
+            return v.shape[1]
+        if isinstance(v, (tuple, list)):
+            nested = _detect_actual_seq(v)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _truncate_args_kwargs(args: tuple, kwargs: dict, seqlen: int) -> tuple[tuple, dict]:
+    """Truncate parent-forward positional args and kwargs to at most *seqlen* tokens."""
+    actual_seq = _detect_actual_seq(list(args) + list(kwargs.values()))
+    if actual_seq is None or actual_seq <= seqlen:
+        return args, kwargs
+    new_args = tuple(_slice_seq_tensor(v, actual_seq, seqlen) for v in args)
+    new_kwargs = {k: _slice_seq_tensor(v, actual_seq, seqlen) for k, v in kwargs.items()}
+    return new_args, new_kwargs
+
+
 @register_pipeline_member(AWQConfig)
 class AWQTransform(BasePreprocessor):
     """AWQ transform: activation-aware weight smoothing pre-processor.
@@ -124,6 +164,11 @@ class AWQTransform(BasePreprocessor):
         self.clip_max_shrink: float = getattr(config, "clip_max_shrink", 0.5)
         self.clip_n_sample_token: int = getattr(config, "clip_n_sample_token", 512)
 
+        # Cap parent-forward samples used by the expensive scale search.
+        # A value <= 0 disables truncation and uses the full calibration sequence.
+        smooth_seqlen = getattr(config, "smooth_seqlen", 512)
+        self._smooth_seqlen: int | None = smooth_seqlen if smooth_seqlen > 0 else None
+
         # Single source of truth for "QDQ a candidate weight under the target
         # block-quantizer scheme", used as AWQ's grid-search / clip loss. AWQ
         # composes this instead of re-implementing block-quantizer dispatch;
@@ -135,6 +180,7 @@ class AWQTransform(BasePreprocessor):
         )
 
         self._user_mappings: list[dict] | None = config.mappings
+        self._skip_moe: bool = getattr(config, "skip_moe", False)
 
         # Set at runtime by the compressor's post_init() via ``pre.layer_config = self.layer_config``.
         self.layer_config: dict | None = None
@@ -143,8 +189,7 @@ class AWQTransform(BasePreprocessor):
         self._block_mappings: dict[str, list[ResolvedMapping]] = {}
 
         self._activation_stats: dict[str, list] = {}
-        self._parent_args_cache: dict[torch.nn.Module, list[dict]] = {}
-        self._parent_signatures: dict[int, inspect.Signature] = {}
+        self._parent_args_cache: dict[torch.nn.Module, list[tuple[tuple, dict]]] = {}
         # Per-mapping balance-layer input features captured for the clip search
         # (keyed by smooth_name). Only populated when ``apply_clip`` is set.
         self._clip_input_feat: dict[str, torch.Tensor] = {}
@@ -165,14 +210,11 @@ class AWQTransform(BasePreprocessor):
             exit(-1)
 
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
-        """Validate compatibility, resolve model-wide mappings, and group by block prefix."""
+        """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
-        report = check_model_compatibility(model, self._user_mappings)
-        for warning in report["warnings"]:
-            logger.warning(warning)
 
         # ── Resolve all model-level mappings (name-only, no module caching) ──
-        self._resolved_mappings = resolve_mappings(model, self._user_mappings)
+        self._resolved_mappings = resolve_mappings(model, self._user_mappings, skip_moe=self._skip_moe)
         if not self._resolved_mappings:
             raise ValueError(
                 "AWQ: no layer mappings were resolved for this model. "
@@ -181,11 +223,38 @@ class AWQTransform(BasePreprocessor):
                 "add an entry to auto_round/algorithms/transforms/awq/mappings.py."
             )
 
-        # Group mappings by block prefix for O(1) lookup during block iteration.
+        cls_name = type(model).__name__
+        if (
+            self._user_mappings is None
+            and cls_name not in AWQ_MAPPING_REGISTRY
+            and cls_name not in AWQ_DYNAMIC_MAPPING_REGISTRY
+        ):
+            logger.warning(
+                "AWQ: model class '%s' is not in any AWQ mapping registry; using "
+                "default Llama-like mappings. If quantization quality is poor, "
+                "provide explicit mappings via AWQConfig(mappings=[...]).",
+                cls_name,
+            )
+
+        from auto_round.utils.common import flatten_list
+        from auto_round.utils.model import get_block_names
+
+        try:
+            iter_block_names = [b for b in flatten_list(get_block_names(model)) if b]
+        except Exception:  # noqa: BLE001 - fall back to prefix heuristic if block discovery fails
+            iter_block_names = []
+        iter_block_names.sort(key=len, reverse=True)
+
         self._block_mappings = {}
         for m in self._resolved_mappings:
-            prefix = _extract_block_prefix(m.smooth_name)
-            self._block_mappings.setdefault(prefix, []).append(m)
+            key = None
+            for block_name in iter_block_names:
+                if m.smooth_name == block_name or m.smooth_name.startswith(block_name + "."):
+                    key = block_name
+                    break
+            if key is None:
+                key = _extract_block_prefix(m.smooth_name)
+            self._block_mappings.setdefault(key, []).append(m)
 
         if composer is not None:
             self._qdq_tool.configure(composer)
@@ -226,11 +295,22 @@ class AWQTransform(BasePreprocessor):
         # The compressor sets ``layer_config`` after ``prepare_run``; keep the
         # QDQ service in sync before it is used for the grid-search / clip loss.
         self._qdq_tool.layer_config = self.layer_config
-        self._smooth_block(block_name, block_mappings)
+        active_mappings = [m for m in block_mappings if not self._mapping_has_ignored_layer(m)]
+        skipped = len(block_mappings) - len(active_mappings)
+        if skipped:
+            logger.warning_once(
+                "AWQ: skipped %d smoothing mapping(s) in block '%s' that include "
+                "ignore_layers / full-precision layers (kept pure).",
+                skipped,
+                block_name,
+            )
+        if not active_mappings:
+            return
+        self._smooth_block(block_name, active_mappings)
         if self.apply_clip:
-            self._clip_block(block_name, block_mappings)
+            self._clip_block(block_name, active_mappings)
         modified = []
-        for mapping in block_mappings:
+        for mapping in active_mappings:
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
 
@@ -260,7 +340,6 @@ class AWQTransform(BasePreprocessor):
             return
         self._activation_stats.clear()
         self._parent_args_cache.clear()
-        self._parent_signatures.clear()
         self._clip_input_feat.clear()
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
@@ -365,41 +444,34 @@ class AWQTransform(BasePreprocessor):
             def _make_parent_hook(parent_module: torch.nn.Module):
 
                 def hook_fn(mod, args, kwargs):
-                    cls_id = id(type(mod))
-                    if cls_id not in self._parent_signatures:
-                        self._parent_signatures[cls_id] = inspect.signature(mod.forward)
-                    sig = self._parent_signatures[cls_id]
-                    try:
-                        bound = sig.bind(*args, **kwargs)
-                        bound.apply_defaults()
-                    except TypeError:
-                        return  # signature mismatch; skip this sample
-
                     param = next(mod.parameters(), None)
                     w_dtype = param.dtype if param is not None else None
 
-                    stored: dict[str, Any] = {}
-                    for k, v in bound.arguments.items():
+                    def _proc(v):
                         if isinstance(v, torch.Tensor):
                             v = v.detach()
                             if w_dtype and v.is_floating_point() and v.dtype != w_dtype:
                                 v = v.to(w_dtype)
-                            stored[k] = v
-                        elif isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v):
-                            stored[k] = tuple(
+                            return v.to("cpu", non_blocking=False)
+                        if isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v):
+                            return tuple(
                                 (
-                                    t.detach().to(w_dtype)
+                                    t.detach().to(w_dtype).to("cpu")
                                     if (w_dtype and isinstance(t, torch.Tensor) and t.is_floating_point())
-                                    else (t.detach() if isinstance(t, torch.Tensor) else t)
+                                    else (t.detach().to("cpu") if isinstance(t, torch.Tensor) else t)
                                 )
                                 for t in v
                             )
-                        elif hasattr(v, "key_cache"):
-                            stored[k] = None  # Null out KV cache objects
-                        else:
-                            stored[k] = v
+                        if hasattr(v, "key_cache"):
+                            return None
+                        return v
 
-                    self._parent_args_cache[parent_module].append(stored)
+                    proc_args = tuple(_proc(a) for a in args)
+                    proc_kwargs = {k: _proc(v) for k, v in kwargs.items()}
+
+                    if self._smooth_seqlen is not None:
+                        proc_args, proc_kwargs = _truncate_args_kwargs(proc_args, proc_kwargs, self._smooth_seqlen)
+                    self._parent_args_cache[parent_module].append((proc_args, proc_kwargs))
 
                 return hook_fn
 
@@ -409,6 +481,23 @@ class AWQTransform(BasePreprocessor):
         return handles
 
     # ── Smoothing (grid search + scale apply) ─────────────────────────────────
+
+    def _mapping_has_ignored_layer(self, mapping: ResolvedMapping) -> bool:
+        """Return True if the smooth layer or any balance layer is kept full precision."""
+        layer_config = self._qdq_tool.layer_config or {}
+        if not layer_config:
+            return False
+
+        def _is_fp(layer: torch.nn.Module) -> bool:
+            name = getattr(layer, "global_name", None)
+            if not name or name not in layer_config:
+                return False
+            bits = layer_config[name].get("bits", None)
+            return bits is not None and bits >= 16
+
+        if _is_fp(mapping.smooth_layer):
+            return True
+        return any(_is_fp(bl) for bl in mapping.balance_layers)
 
     def _smooth_block(self, block_prefix: str, block_mappings: list) -> None:
         """Run grid search and apply AWQ scales for one block.
@@ -587,11 +676,23 @@ class AWQTransform(BasePreprocessor):
     def _run_parent_samples(
         self,
         parent: torch.nn.Module,
-        kwargs_list: list[dict],
+        kwargs_list: list[tuple[tuple, dict]],
     ) -> list[torch.Tensor]:
+        param = next(parent.parameters(), None)
+        device = param.device if param is not None else torch.device("cpu")
+
+        def _to_device(v):
+            if isinstance(v, torch.Tensor):
+                return v.to(device)
+            if isinstance(v, (tuple, list)):
+                return type(v)(_to_device(t) for t in v)
+            return v
+
         outputs = []
-        for stored_kwargs in kwargs_list:
-            out = parent(**stored_kwargs)
+        for stored_args, stored_kwargs in kwargs_list:
+            call_args = tuple(_to_device(a) for a in stored_args)
+            call_kwargs = {k: _to_device(v) for k, v in stored_kwargs.items()}
+            out = parent(*call_args, **call_kwargs)
             if isinstance(out, tuple):
                 out = out[0]
             outputs.append(out)

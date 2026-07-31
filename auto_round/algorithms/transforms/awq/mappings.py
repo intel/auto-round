@@ -70,6 +70,10 @@ class ResolvedMapping:
     activation_hook_target: str | None = None
 
 
+# Matches routed MoE expert modules, e.g. "...mlp.experts.3.gate_proj".
+_ROUTED_EXPERT_RE = re.compile(r"\.experts\.\d+\.")
+
+
 # ── Mapping definitions ─────────────────────────
 # Reference: vllm-project/llm-compressor src/llmcompressor/modifiers/awq/mappings.py
 
@@ -435,6 +439,7 @@ def _get_mappings_for_model(model: torch.nn.Module) -> list[AWQMapping]:
 def resolve_mappings(
     model: torch.nn.Module,
     user_mappings: list[dict] | None = None,
+    skip_moe: bool = False,
 ) -> list[ResolvedMapping]:
     """Resolve AWQ mappings for the given model.
 
@@ -444,6 +449,14 @@ def resolve_mappings(
       2. ``AWQ_MAPPING_REGISTRY`` — model-class-name lookup
       3. ``default_mappings`` — Llama-like fallback.
 
+    Args:
+        model: The model to resolve mappings against.
+        user_mappings: Optional explicit mappings; when provided they are used
+            verbatim and ``skip_moe`` is ignored.
+        skip_moe: When True, drop routed MoE experts (module names matching
+            ``.experts.<N>.``) from the resolved mappings so AWQ leaves each
+            routed expert to the downstream block quantizer.
+
     Returns:
         List of ``ResolvedMapping`` objects ready for AWQ grid search.
     """
@@ -452,7 +465,36 @@ def resolve_mappings(
     else:
         mapping_defs = _get_mappings_for_model(model)
 
-    return _resolve_mapping_defs(model, mapping_defs)
+    resolved = _resolve_mapping_defs(model, mapping_defs)
+
+    if skip_moe and user_mappings is None:
+        resolved = _drop_routed_experts(model, resolved)
+
+    return resolved
+
+
+def _drop_routed_experts(model: torch.nn.Module, resolved: list[ResolvedMapping]) -> list[ResolvedMapping]:
+    """Remove routed MoE experts from resolved mappings for ``skip_moe``."""
+    kept: list[ResolvedMapping] = []
+    dropped_experts = 0
+    for mapping in resolved:
+        if _ROUTED_EXPERT_RE.search(mapping.smooth_name):
+            dropped_experts += len(mapping.balance_names)
+            continue
+
+        keep_idx = [i for i, name in enumerate(mapping.balance_names) if not _ROUTED_EXPERT_RE.search(name)]
+        dropped_experts += len(mapping.balance_names) - len(keep_idx)
+        if not keep_idx:
+            continue
+        if len(keep_idx) < len(mapping.balance_names):
+            mapping.balance_names = [mapping.balance_names[i] for i in keep_idx]
+            mapping.balance_layers = [mapping.balance_layers[i] for i in keep_idx]
+            mapping.parent_name, mapping.parent = _find_parent(model, mapping.balance_names)
+        kept.append(mapping)
+
+    if dropped_experts:
+        logger.info(f"AWQ skip_moe: excluded {dropped_experts} routed-expert balance layer(s) from smoothing.")
+    return kept
 
 
 def _resolve_mapping_defs(
@@ -554,13 +596,7 @@ def _resolve_mapping_defs(
             "AWQConfig(mappings=[...])."
         )
     else:
-        first_prefix = next(iter(block_modules))
-        n_blocks = len(block_modules)
-        mappings_per_block = sum(1 for r in resolved if r.smooth_name.startswith(first_prefix))
-        logger.info(
-            f"AWQ resolved {matched_count} smooth-balance mappings "
-            f"({mappings_per_block} per block × {n_blocks} blocks)."
-        )
+        logger.info(f"AWQ resolved {matched_count} smooth-balance mappings.")
 
     return resolved
 
@@ -585,11 +621,11 @@ def check_model_compatibility(
     """
     warnings_list = []
     cls_name = _get_model_class_name(model)
-    in_registry = cls_name in AWQ_MAPPING_REGISTRY
+    in_registry = cls_name in AWQ_MAPPING_REGISTRY or cls_name in AWQ_DYNAMIC_MAPPING_REGISTRY
 
     if not in_registry and user_mappings is None:
         warnings_list.append(
-            f"Model class '{cls_name}' is not in AWQ_MAPPING_REGISTRY. "
+            f"Model class '{cls_name}' is not in any AWQ mapping registry. "
             f"Using default Llama-like mappings. If quantization quality is "
             f"poor, provide explicit mappings via AWQConfig(mappings=[...])."
         )

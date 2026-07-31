@@ -241,6 +241,117 @@ class TestAWQMoE:
 
         del model
 
+    def test_awq_moe_skip_moe(self, tiny_qwen_moe_model_path):
+        """skip_moe should drop routed-expert balance layers/mappings but keep dense paths."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping, _drop_routed_experts
+
+        model = nn.Module()
+        ln = nn.LayerNorm(8)
+        q = nn.Linear(8, 8, bias=False)
+        shared_gate = nn.Linear(8, 16, bias=False)
+        e0_gate = nn.Linear(8, 16, bias=False)
+        e1_gate = nn.Linear(8, 16, bias=False)
+        e0_up = nn.Linear(8, 16, bias=False)
+        e0_down = nn.Linear(16, 8, bias=False)
+
+        resolved = [
+            ResolvedMapping(
+                smooth_name="model.layers.0.input_layernorm",
+                smooth_layer=ln,
+                balance_names=["model.layers.0.self_attn.q_proj"],
+                balance_layers=[q],
+                parent_name="model.layers.0.self_attn",
+                parent=nn.Module(),
+            ),
+            ResolvedMapping(
+                smooth_name="model.layers.0.post_attention_layernorm",
+                smooth_layer=ln,
+                balance_names=[
+                    "model.layers.0.mlp.shared_expert.gate_proj",
+                    "model.layers.0.mlp.experts.0.gate_proj",
+                    "model.layers.0.mlp.experts.1.gate_proj",
+                ],
+                balance_layers=[shared_gate, e0_gate, e1_gate],
+                parent_name="model.layers.0.mlp",
+                parent=nn.Module(),
+            ),
+            ResolvedMapping(
+                smooth_name="model.layers.0.mlp.experts.0.up_proj",
+                smooth_layer=e0_up,
+                balance_names=["model.layers.0.mlp.experts.0.down_proj"],
+                balance_layers=[e0_down],
+                parent_name="model.layers.0.mlp.experts.0",
+                parent=nn.Module(),
+            ),
+        ]
+
+        kept = _drop_routed_experts(model, resolved)
+        smooth_names = [m.smooth_name for m in kept]
+
+        assert "model.layers.0.mlp.experts.0.up_proj" not in smooth_names
+        assert "model.layers.0.input_layernorm" in smooth_names
+        mixed = next(m for m in kept if m.smooth_name.endswith("post_attention_layernorm"))
+        assert mixed.balance_names == ["model.layers.0.mlp.shared_expert.gate_proj"]
+
+        del model
+
+    def test_awq_ignored_layer_skips_mapping(self):
+        """A mapping containing an ignore_layers / bits>=16 layer is skipped so it stays pure."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+
+        ln = nn.LayerNorm(8)
+        q = nn.Linear(8, 8, bias=False)
+        q.global_name = "model.layers.0.self_attn.q_proj"
+        k = nn.Linear(8, 8, bias=False)
+        k.global_name = "model.layers.0.self_attn.k_proj"
+
+        mapping = ResolvedMapping(
+            smooth_name="model.layers.0.input_layernorm",
+            smooth_layer=ln,
+            balance_names=[q.global_name, k.global_name],
+            balance_layers=[q, k],
+            parent_name="model.layers.0.self_attn",
+            parent=nn.Module(),
+        )
+
+        transform._qdq_tool.layer_config = {}
+        assert transform._mapping_has_ignored_layer(mapping) is False
+
+        transform._qdq_tool.layer_config = {q.global_name: {"bits": 4}, k.global_name: {"bits": 4}}
+        assert transform._mapping_has_ignored_layer(mapping) is False
+
+        transform._qdq_tool.layer_config = {q.global_name: {"bits": 4}, k.global_name: {"bits": 16}}
+        assert transform._mapping_has_ignored_layer(mapping) is True
+
+    def test_awq_smooth_seqlen_truncates_parent_forward_inputs(self):
+        """smooth_seqlen replay cache should truncate matching sequence dimensions consistently."""
+        from auto_round.algorithms.transforms.awq.base import _truncate_args_kwargs
+
+        hidden_states = torch.zeros(1, 16, 8)
+        position_ids = torch.arange(16).reshape(1, 16)
+        attention_mask = torch.zeros(1, 1, 16, 16)
+        rotary = (torch.zeros(1, 16, 8), torch.ones(1, 16, 8))
+
+        args, kwargs = _truncate_args_kwargs(
+            (hidden_states,),
+            {"position_ids": position_ids, "attention_mask": attention_mask, "position_embeddings": rotary},
+            seqlen=4,
+        )
+
+        assert args[0].shape == (1, 4, 8)
+        assert kwargs["position_ids"].shape == (1, 4)
+        assert kwargs["attention_mask"].shape == (1, 1, 4, 4)
+        assert kwargs["position_embeddings"][0].shape == (1, 4, 8)
+        assert kwargs["position_embeddings"][1].shape == (1, 4, 8)
+
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP."""
         ar = AutoRound(

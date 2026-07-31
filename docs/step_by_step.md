@@ -344,11 +344,11 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ### AWQ Algorithm
 
-**Experimental feature: our current implementation does not apply weight clipping yet, so accuracy may drop compared to the original AWQ algorithm.**
+**Experimental feature:** AWQ weight clipping is optional. Enable it with `--awq-apply-clip` when you want to match the original AWQ flow more closely.
 
 AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
 
-The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **W8A8** with AWQ smoothing can also be served via vLLM's compressed_tensors backend (cutlass INT8 GEMM).
+The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
 #### CLI Usage
 
@@ -356,19 +356,41 @@ The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA 
 auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
 ```
 
+INT8/W8A8 with AWQ smoothing and RTN:
+
+```bash
+auto-round \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --scheme INT8 \
+  --algorithm awq,rtn \
+  --nsamples 256 \
+  --seqlen 512 \
+  --awq-apply-clip \
+  --format auto_round:llm_compressor
+```
+
+For `INT8`, `disable_opt_rtn` defaults to `True`, so the command above uses plain RTN without requiring `--disable_opt_rtn`.
+
 AWQ-specific options:
-- `--duo_scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
-- `--n_grid`: Number of grid points for scaling ratio search (default: 20).
+- `--awq-duo-scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
+- `--awq-n-grid`: Number of grid points for scaling ratio search (default: 20).
+- `--awq-apply-clip`: Search and apply AWQ weight clipping after smoothing.
+
+API-only AWQ options:
+- `AWQConfig(smooth_seqlen=512)`: Caps the parent-forward replay length used by AWQ scale search. Set a value `<= 0` to use the full calibration sequence.
+- `AWQConfig(skip_moe=True)`: Skips routed MoE experts during AWQ smoothing while keeping attention and dense/shared paths. Explicit `mappings` are used as provided.
 
 #### API Usage
 
 ```python
-from auto_round import AutoRound
+from auto_round import AWQConfig, AutoRound, RTNConfig
 
 ar = AutoRound(
-    "Qwen/Qwen3-0.6B",
+    "meta-llama/Llama-3.1-8B-Instruct",
     scheme="INT8",
-    algorithm="awq",
+    alg_configs=[AWQConfig(apply_clip=True), RTNConfig()],
+    nsamples=256,
+    seqlen=512,
 )
 
 output_dir = "./tmp_awq"
@@ -499,19 +521,39 @@ auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
 # AWQ + AutoRound optimization
 auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
 
+# INT8/W8A8 + AWQ + RTN. disable_opt_rtn defaults to True for INT8.
+auto-round \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --scheme INT8 \
+  --algorithm awq,rtn \
+  --nsamples 256 \
+  --seqlen 512 \
+  --awq-apply-clip \
+  --format auto_round:llm_compressor
+
 # AWQ flags
---duo-scaling true|false|both  (default: true)
---n-grid 20                    (default: 20)
+--awq-duo-scaling true|false|both  (default: true)
+--awq-n-grid 20                    (default: 20)
+--awq-apply-clip
 ```
+
+`AWQConfig` also supports `smooth_seqlen=512` to cap AWQ scale-search replay length and `skip_moe=True` to leave routed MoE experts to the downstream block quantizer.
 
 #### API Usage
 ```python
-from auto_round import AutoRound
-from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round import AWQConfig, AutoRound, RTNConfig, SignRoundConfig
 
 # AWQ + default RTN (simplest)
 ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
+
+# INT8/W8A8 + AWQ + RTN
+ar = AutoRound(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    alg_configs=[AWQConfig(apply_clip=True), RTNConfig()],
+    scheme="INT8",
+    nsamples=256,
+    seqlen=512,
+)
 
 # AWQ + AutoRound via alg_configs (explicit pipeline)
 ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
