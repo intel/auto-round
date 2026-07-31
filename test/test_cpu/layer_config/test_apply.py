@@ -14,8 +14,8 @@
 
 import torch.nn as nn
 
-from auto_round.layer_config import apply_plan_to_model
-from auto_round.planning import CompressionPlan, ResolvedScheme
+from auto_round.compressors.layer_config import apply_plan_to_model
+from auto_round.compressors.planning import CompressionPlan, ResolvedScheme
 from auto_round.schemes import QuantizationScheme
 
 

@@ -19,8 +19,8 @@ from typing import Union
 import torch
 from torch.amp import autocast
 
+from auto_round.compressors.planning import LayerConfigResolutionError
 from auto_round.logger import logger
-from auto_round.planning import LayerConfigResolutionError
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -256,13 +256,13 @@ def set_layer_config(
     fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """Compatibility adapter for the pure layer-config resolver and explicit apply phase."""
-    from auto_round.layer_config import (
+    from auto_round.compressors.layer_config import (
         apply_plan_to_model,
         extract_regex_config,
         has_quantized_layer_outside_blocks,
         resolve_layer_config,
     )
-    from auto_round.planning import CompressionPlan, ResolvedScheme, resolve_scheme_value
+    from auto_round.compressors.planning import CompressionPlan, ResolvedScheme, resolve_scheme_value
     from auto_round.schemes import get_gguf_scheme
 
     if isinstance(default_scheme, ResolvedScheme):
@@ -317,16 +317,17 @@ def set_layer_config(
     )
 
 
+from auto_round.compressors.layer_config.resolver import get_fp_layer_names
+
 # Explicit compatibility exports for callers that historically imported GGUF and
 # ignore-layer helpers from compressors.utils.
-from auto_round.formats.backends.gguf import (
+from auto_round.export.formats.backends.gguf import (
     _apply_gguf_shape_fallback,
     _infer_gguf_n_layers_from_model,
     _resolve_gguf_n_layers,
     get_layer_config_by_gguf_format,
     gguf_type_fallback,
 )
-from auto_round.layer_config.resolver import get_fp_layer_names
 
 
 def get_shared_keys(model):

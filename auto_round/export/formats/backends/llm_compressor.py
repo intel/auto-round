@@ -17,9 +17,9 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.formats.base import BackendDataType, OutputFormat
+from auto_round.compressors.planning.errors import FormatCompatibilityError
+from auto_round.export.formats.base import BackendDataType, OutputFormat
 from auto_round.logger import logger
-from auto_round.planning.errors import FormatCompatibilityError
 from auto_round.schemes import QuantizationScheme
 
 

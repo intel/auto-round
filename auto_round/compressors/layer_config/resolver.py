@@ -22,20 +22,86 @@ from typing import Union
 
 import torch
 
-from auto_round.layer_config.special_cases import apply_layer_config_special_cases
+from auto_round.compressors.planning import CompressionPlan, ResolvedScheme
+from auto_round.compressors.planning.contracts import LayerConfig, freeze_mapping
 from auto_round.logger import logger
-from auto_round.planning import CompressionPlan, ResolvedScheme
-from auto_round.planning.contracts import LayerConfig, freeze_mapping
-from auto_round.schemes import QuantizationScheme, get_gguf_scheme
+from auto_round.schemes import QuantizationScheme, get_gguf_scheme, is_mx_fp, is_nv_fp
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compress_layer_names,
+    get_layer_names_in_block,
     infer_bits_by_data_type,
     to_standard_regex,
 )
 from auto_round.utils.model import get_module
+
+
+def apply_layer_config_special_cases(
+    layer_config,
+    model,
+    default_dict,
+    supported_types,
+    inner_supported_types,
+    quant_block_list,
+    quant_lm_head,
+    gguf_name,
+) -> tuple[dict, bool, str | None, bool]:
+    """Apply lm-head, shape-divisibility, and block-membership layer rules."""
+    from auto_round.utils.model import get_lm_head_name
+
+    lm_head_name = get_lm_head_name(model)
+    tie_word_embeddings = bool(getattr(getattr(model, "config", None), "tie_word_embeddings", False))
+    if lm_head_name in layer_config:
+        quant_lm_head = True
+    if quant_lm_head and tie_word_embeddings and not gguf_name:
+        quant_lm_head = False
+        logger.warning(
+            "reset `quant_lm_head` to false as quantizing lm_head with tied weights has not been supported currently"
+        )
+    if lm_head_name not in layer_config and quant_lm_head:
+        layer_config[lm_head_name] = copy.deepcopy(default_dict)
+    if not quant_lm_head and not gguf_name:
+        layer_config.pop(lm_head_name, None)
+
+    if default_dict["data_type"] == "int" and default_dict["act_bits"] >= 16 and not gguf_name:
+        for n, m in model.named_modules():
+            if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
+                if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
+                    layer_config.setdefault(n, copy.deepcopy(default_dict))
+                    layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+
+    if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
+        skipped_layers = []
+        for n, m in model.named_modules():
+            if type(m) in supported_types or m.__class__.__name__ in inner_supported_types:
+                if m.weight.shape[1] % default_dict["group_size"]:
+                    layer_config.setdefault(n, copy.deepcopy(default_dict))
+                    layer_config[n].update(
+                        {"bits": 16, "data_type": "fp", "act_bits": 16, "act_data_type": "fp", "fixed_by_user": True}
+                    )
+                    skipped_layers.append(n)
+        compressed_skipped_layers = compress_layer_names(skipped_layers)
+        if compressed_skipped_layers:
+            logger.warning_once(
+                f"some layers are skipped quantization (shape not divisible by {default_dict['group_size']}): "
+                f"{compressed_skipped_layers}"
+            )
+
+    for name in get_layer_names_in_block(model, supported_types, quant_block_list, inner_supported_types):
+        if name not in layer_config:
+            layer_config[name] = copy.deepcopy(default_dict)
+            layer_config[name]["fixed_by_user"] = False
+        layer_config[name]["in_blocks"] = True
+
+    has_qlayer_outside_block = False
+    for cfg in layer_config.values():
+        if "in_blocks" not in cfg:
+            cfg["in_blocks"] = False
+        if not cfg["in_blocks"] and check_to_quantized(cfg):
+            has_qlayer_outside_block = True
+    return layer_config, has_qlayer_outside_block, lm_head_name, tie_word_embeddings
 
 
 def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> list:
@@ -351,7 +417,7 @@ def resolve_layer_config(
         gguf_name,
     )
     if gguf_name:
-        from auto_round.formats.backends.gguf import apply_gguf_layer_defaults
+        from auto_round.export.formats.backends.gguf import apply_gguf_layer_defaults
 
         resolved, _ = apply_gguf_layer_defaults(
             dict(resolved),

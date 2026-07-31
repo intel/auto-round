@@ -14,8 +14,8 @@
 
 import pytest
 
-from auto_round.formats import resolve_formats
-from auto_round.planning import FormatCompatibilityError, resolve_scheme_value
+from auto_round.compressors.planning import FormatCompatibilityError, resolve_scheme_value
+from auto_round.export.formats import resolve_formats
 
 
 def test_resolve_formats_does_not_mutate_inputs():

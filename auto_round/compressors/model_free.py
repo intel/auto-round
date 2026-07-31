@@ -104,9 +104,9 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round import envs
+from auto_round.compressors.planning import thaw_mapping
 from auto_round.compressors.utils import is_mx_fp
 from auto_round.logger import logger
-from auto_round.planning import thaw_mapping
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func, memory_monitor

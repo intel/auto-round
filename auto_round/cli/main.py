@@ -24,8 +24,8 @@ from auto_round.cli.parser import (
     build_quantize_parser,
     build_root_parser,
 )
+from auto_round.compressors.planning import PlanningError
 from auto_round.logger import logger
-from auto_round.planning import PlanningError
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -144,7 +144,7 @@ RECIPES = {
 def list_item(argv=None):
     args = build_list_parser().parse_args(argv)
     if args.item in {"format", "formats"}:
-        from auto_round.formats import OutputFormat
+        from auto_round.export.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")
         print(OutputFormat.get_support_matrix())

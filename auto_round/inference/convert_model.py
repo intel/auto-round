@@ -21,7 +21,7 @@ from packaging.version import Version
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.formats import BackendDataType
+from auto_round.export.formats import BackendDataType
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,

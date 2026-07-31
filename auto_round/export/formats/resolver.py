@@ -19,14 +19,14 @@ from typing import Iterable
 
 import torch
 
-from auto_round.formats.backends.gguf import GGUFFormat
-from auto_round.formats.base import OutputFormat
-from auto_round.planning import (
+from auto_round.compressors.planning import (
     FormatCompatibilityError,
     FormatResolution,
     ResolvedScheme,
     thaw_mapping,
 )
+from auto_round.export.formats.backends.gguf import GGUFFormat
+from auto_round.export.formats.base import OutputFormat
 from auto_round.schemes import get_gguf_scheme
 from auto_round.utils import SUPPORTED_FORMATS, logger
 

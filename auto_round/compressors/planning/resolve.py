@@ -17,8 +17,14 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping
 
-from auto_round.planning.contracts import CompressionPlan, FormatResolution, LayerConfig, ResolvedScheme, thaw_mapping
-from auto_round.planning.errors import SchemeResolutionError
+from auto_round.compressors.planning.contracts import (
+    CompressionPlan,
+    FormatResolution,
+    LayerConfig,
+    ResolvedScheme,
+    thaw_mapping,
+)
+from auto_round.compressors.planning.errors import SchemeResolutionError
 from auto_round.schemes import QuantizationScheme, parse_scheme
 
 

@@ -27,24 +27,24 @@ from auto_round.algorithms.transforms import (
     apply_rotation,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.shard_writer import ShardWriter
-from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp
-from auto_round.context.compress import CompressContext
-from auto_round.context.model import ModelContext
-from auto_round.formats import OutputFormat, resolve_formats
-from auto_round.layer_config import (
+from auto_round.compressors.layer_config import (
     apply_plan_to_model,
     extract_regex_config,
     has_quantized_layer_outside_blocks,
     resolve_layer_config,
 )
-from auto_round.logger import logger
-from auto_round.planning import (
+from auto_round.compressors.planning import (
     FormatResolution,
     ResolvedScheme,
     build_compression_plan,
     thaw_mapping,
 )
+from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp
+from auto_round.context.compress import CompressContext
+from auto_round.context.model import ModelContext
+from auto_round.export.formats import OutputFormat, resolve_formats
+from auto_round.logger import logger
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
@@ -1285,7 +1285,7 @@ class BaseOrchestrator(object):
 
         Work performed:
           - Converts a string ``self.formats`` to a list of
-            :class:`~auto_round.formats.OutputFormat` objects via
+            :class:`~auto_round.export.formats.OutputFormat` objects via
             :meth:`_resolve_format_string`, which also propagates any scheme
             correction (e.g. GGUF's ``gguf_args_check``) onto ``self.scheme``,
             ``self.scheme_context``, the algorithm configs that share it, and

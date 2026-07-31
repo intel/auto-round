@@ -5,7 +5,7 @@ from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _MXFPLinear
 from auto_round.export.export_to_autoround.qlinear_int import QuantLinear as _MXINTLinear
-from auto_round.formats import BackendDataType
+from auto_round.export.formats import BackendDataType
 from auto_round.schemes import PRESET_SCHEMES
 
 mx_schemes = [BackendDataType.MXFP8.value, BackendDataType.MXFP4.value]

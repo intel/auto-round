@@ -18,7 +18,7 @@ from typing import Callable, Union
 import torch
 import transformers
 
-from auto_round.formats.base import OutputFormat, _check_divisible_by_32
+from auto_round.export.formats.base import OutputFormat, _check_divisible_by_32
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 

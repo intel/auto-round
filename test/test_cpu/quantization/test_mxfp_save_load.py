@@ -10,7 +10,7 @@ from auto_round import AutoRound
 from auto_round import schemes as ar_schemes
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround import qlinear_fp as ar_qlinear_fp
-from auto_round.formats import BackendDataType
+from auto_round.export.formats import BackendDataType
 from auto_round.inference.backend import MX_TENSOR_DATA_TYPES
 
 from ...envs import has_module

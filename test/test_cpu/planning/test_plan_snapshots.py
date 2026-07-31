@@ -16,8 +16,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.formats import resolve_formats
-from auto_round.planning import build_compression_plan, resolve_scheme_value
+from auto_round.compressors.planning import build_compression_plan, resolve_scheme_value
+from auto_round.export.formats import resolve_formats
 
 EXPECTED_PLAN_SNAPSHOTS = {
     "w4_autoround": {

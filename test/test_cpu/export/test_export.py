@@ -8,12 +8,12 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.compressors.planning import ResolvedScheme
 from auto_round.export.export_to_autogptq import export as autogptq_export
 from auto_round.export.export_to_autoround import export as autoround_export
 from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
 from auto_round.export.export_to_awq import export as awq_export
-from auto_round.formats import resolve_formats
-from auto_round.planning import ResolvedScheme
+from auto_round.export.formats import resolve_formats
 
 from ...helpers import forbid_threaded_packing, get_model_path
 

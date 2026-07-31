@@ -17,7 +17,7 @@ from typing import Callable, Union
 
 import torch
 
-from auto_round.formats.base import OutputFormat
+from auto_round.export.formats.base import OutputFormat
 from auto_round.schemes import QuantizationScheme
 
 

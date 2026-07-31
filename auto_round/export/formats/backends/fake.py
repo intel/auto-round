@@ -16,7 +16,7 @@ from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.formats.base import OutputFormat
+from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device

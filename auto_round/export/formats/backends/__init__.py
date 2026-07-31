@@ -12,32 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.formats.backends import (
-    AutoAWQFormat,
-    AutoGPTQFormat,
-    AutoRoundFormat,
-    FakeFormat,
-    FP8Format,
-    GGUFFormat,
-    LLMCompressorFormat,
-    MLXFormat,
-)
-from auto_round.formats.base import (
-    BackendDataType,
-    OutputFormat,
-)
-from auto_round.formats.resolver import resolve_formats
+from auto_round.export.formats.backends.autoround import AutoRoundFormat
+from auto_round.export.formats.backends.fake import FakeFormat
+from auto_round.export.formats.backends.fp8 import FP8Format
+from auto_round.export.formats.backends.gguf import GGUFFormat
+from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
+from auto_round.export.formats.backends.auto_gptq import AutoGPTQFormat
+from auto_round.export.formats.backends.llm_compressor import LLMCompressorFormat
+from auto_round.export.formats.backends.mlx import MLXFormat
 
 __all__ = [
-    "BackendDataType",
-    "AutoRoundFormat",
     "AutoAWQFormat",
     "AutoGPTQFormat",
+    "AutoRoundFormat",
     "FakeFormat",
     "FP8Format",
     "GGUFFormat",
     "LLMCompressorFormat",
     "MLXFormat",
-    "OutputFormat",
-    "resolve_formats",
 ]

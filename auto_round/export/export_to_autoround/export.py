@@ -28,6 +28,7 @@ from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
+from auto_round.export.formats import BackendDataType
 from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
@@ -37,7 +38,6 @@ from auto_round.export.utils import (
     save_model,
     save_pretrained_artifact,
 )
-from auto_round.formats import BackendDataType
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
