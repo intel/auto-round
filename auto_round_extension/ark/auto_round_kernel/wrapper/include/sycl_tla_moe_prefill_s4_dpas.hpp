@@ -178,24 +178,6 @@ enum class MoePrefillS4PolicyMode {
   W16A16,
 };
 
-inline bool moe_prefill_dpas_s4_force_direct() {
-  const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
-  if (env != nullptr) {
-    std::string s(env);
-    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "1" || s == "true" || s == "on" || s == "yes" ||
-        s == "direct" || s == "force" || s == "packed") return true;
-  }
-
-  const char* policy = std::getenv("ARK_MOE_PREFILL_DPAS_S4_POLICY");
-  if (policy == nullptr) return false;
-  std::string p(policy);
-  for (auto& c : p) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return p == "w16a16" || p == "w16" || p == "w8a16" || p == "w8" ||
-         p == "w8a16_m16" || p == "w8_m16" || p == "m16" ||
-         p == "w8a16_m32" || p == "w8_m32" || p == "m32";
-}
-
 inline MoePrefillS4PolicyMode moe_prefill_dpas_s4_policy_mode() {
   const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4_POLICY");
   if (env == nullptr) return MoePrefillS4PolicyMode::Auto;
@@ -815,11 +797,14 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 }
 
 // ---------------------------------------------------------------------------
-// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4`. The packed-nibble direct
-// DPAS path is opt-in and uses the auto policy above by default. Current BMG
-// MiniMax measurements prefer the w8a16_m32 tile family for real prefill
-// distributions; callers can still force another policy for experiments via
-// `ARK_MOE_PREFILL_DPAS_S4_POLICY=w16a16|w8a16|w8a16_m16|w8a16_m32`.
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default ON). The packed-nibble
+// direct DPAS path is the fast INT4 path: it reads the halved packed-B stream
+// and folds the nibble->act upcast into the DPAS mainloop, so it must stay
+// enabled by default to preserve INT4 MoE performance. By default it uses the
+// auto policy above (our dedicated four-tier `w4a16` tiles). Callers can still
+// pin another tile family for experiments via
+// `ARK_MOE_PREFILL_DPAS_S4_POLICY=w16a16|w8a16|w8a16_m16|w8a16_m32`, which only
+// selects the GEMM tile -- it does not gate the path.
 //
 // Truthy values (case-insensitive): "1", "true", "on", "yes".
 // Explicit "0" / "false" / "off" / "no" disable. Re-read on every
@@ -837,11 +822,11 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 // ---------------------------------------------------------------------------
 inline bool moe_prefill_dpas_s4_enabled() {
   const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
-  if (env == nullptr) return false;
+  if (env == nullptr) return true;  // default ON -- fast INT4 direct path
   std::string s(env);
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return moe_prefill_dpas_s4_force_direct();
+  return true;
 }
 
 // ---------------------------------------------------------------------------
