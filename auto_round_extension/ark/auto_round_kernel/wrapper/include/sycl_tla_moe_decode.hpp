@@ -477,6 +477,54 @@ void launch_int8(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // Asym=false: signed 2-bit value in [-2, 1]; dequant = q * scale
 // Asym=true : unsigned 2-bit value in [0, 3]; dequant = (q - zero) * scale
 // ----------------------------------------------------------------------------
+
+// Vectorized inner accumulation over CHUNK consecutive K elements (CHUNK/4
+// packed weight bytes + a vec<ScalarT,CHUNK> activation block). Templated on
+// CHUNK so the caller can run a wide (32) stage first and a narrower (16) stage
+// for the remainder, mirroring the int4/int8 paths. sycl::vec only supports
+// widths of 1, 2, 3, 4, 8 or 16, so CHUNK is processed in 16-wide sub-blocks
+// (16 activations + 4 packed bytes each). The math is identical to the scalar
+// path.
+template <typename ScalarT, bool Asym, int CHUNK>
+static inline void int2_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float scale, float zero,
+                                     float& acc) {
+  static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+  static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
+  constexpr int SUB = 16;
+  using ActVec = sycl::vec<uint16_t, SUB>;
+  using PackVec = sycl::vec<uint8_t, SUB / 4>;
+#pragma unroll
+  for (int s = 0; s < CHUNK / SUB; ++s) {
+    const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
+    const PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr + s * (SUB / 4));
+#pragma unroll
+    for (int b = 0; b < SUB / 4; ++b) {
+      int qq[4];
+      decode_int2_quad<Asym>(pv[b], qq);
+      float w0, w1, w2, w3;
+      if constexpr (Asym) {
+        w0 = (static_cast<float>(qq[0]) - zero) * scale;
+        w1 = (static_cast<float>(qq[1]) - zero) * scale;
+        w2 = (static_cast<float>(qq[2]) - zero) * scale;
+        w3 = (static_cast<float>(qq[3]) - zero) * scale;
+      } else {
+        w0 = static_cast<float>(qq[0]) * scale;
+        w1 = static_cast<float>(qq[1]) * scale;
+        w2 = static_cast<float>(qq[2]) * scale;
+        w3 = static_cast<float>(qq[3]) * scale;
+      }
+      const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 0]));
+      const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 1]));
+      const ScalarT a2 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 2]));
+      const ScalarT a3 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 3]));
+      acc += static_cast<float>(a0) * w0;
+      acc += static_cast<float>(a1) * w1;
+      acc += static_cast<float>(a2) * w2;
+      acc += static_cast<float>(a3) * w3;
+    }
+  }
+}
+
 template <typename ScalarT, bool Asym>
 void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
                  const ScalarT* zeros, ScalarT* outputs, const int* expert_id_per_token, int total_tokens, int N,
@@ -530,47 +578,23 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              zero = static_cast<float>(z_row[g]);
            }
            const int k_base = g * group_size;
-           // Vectorized: 16 K-elements per chunk = 4 packed bytes (4 values
-           // each) plus a vec<uint16_t,16> activation block. group_size is a
-           // multiple of 4 and typically 128 (mult of 16); scalar tail covers
-           // any leftover. We load activations via uint16_t to stay portable
-           // across SYCL implementations that may not provide
-           // sycl::vec<bfloat16, N>.
-           constexpr int CHUNK = 16;
-           using ActVec = sycl::vec<uint16_t, CHUNK>;
-           using PackVec = sycl::vec<uint8_t, CHUNK / 4>;
-           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
-                         "ScalarT must be a 16-bit floating type");
-           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           // Vectorized ladder mirroring the int4/int8 paths: process 32
+           // K-elements (8 packed bytes + vec<ScalarT,32> activations) at a
+           // time, then a 16-wide stage for the remainder, then a scalar tail.
+           // group_size is a multiple of 4; the wide stage amortizes the
+           // per-group scale load for the shipped group sizes (32/64/128/256).
            int kk = 0;
-           for (; kk < chunk_end; kk += CHUNK) {
-             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
-             const PackVec pv = *reinterpret_cast<const PackVec*>(w_row + (k_base + kk) / 4);
-#pragma unroll
-             for (int b = 0; b < CHUNK / 4; ++b) {
-               int q[4];
-               decode_int2_quad<Asym>(pv[b], q);
-               float w0, w1, w2, w3;
-               if constexpr (Asym) {
-                 w0 = (static_cast<float>(q[0]) - zero) * scale;
-                 w1 = (static_cast<float>(q[1]) - zero) * scale;
-                 w2 = (static_cast<float>(q[2]) - zero) * scale;
-                 w3 = (static_cast<float>(q[3]) - zero) * scale;
-               } else {
-                 w0 = static_cast<float>(q[0]) * scale;
-                 w1 = static_cast<float>(q[1]) * scale;
-                 w2 = static_cast<float>(q[2]) * scale;
-                 w3 = static_cast<float>(q[3]) * scale;
-               }
-               const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 0]));
-               const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 1]));
-               const ScalarT a2 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 2]));
-               const ScalarT a3 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * b + 3]));
-               acc += static_cast<float>(a0) * w0;
-               acc += static_cast<float>(a1) * w1;
-               acc += static_cast<float>(a2) * w2;
-               acc += static_cast<float>(a3) * w3;
-             }
+           constexpr int CHUNK32 = 32;
+           const int end32 = (group_size / CHUNK32) * CHUNK32;
+           for (; kk < end32; kk += CHUNK32) {
+             int2_decode_chunk<ScalarT, Asym, CHUNK32>(act_row + k_base + kk, w_row + (k_base + kk) / 4, scale,
+                                                       zero, acc);
+           }
+           constexpr int CHUNK16 = 16;
+           const int end16 = kk + ((group_size - kk) / CHUNK16) * CHUNK16;
+           for (; kk < end16; kk += CHUNK16) {
+             int2_decode_chunk<ScalarT, Asym, CHUNK16>(act_row + k_base + kk, w_row + (k_base + kk) / 4, scale,
+                                                       zero, acc);
            }
            // Scalar tail (4 values per byte).
            for (; kk < group_size; kk += 4) {
