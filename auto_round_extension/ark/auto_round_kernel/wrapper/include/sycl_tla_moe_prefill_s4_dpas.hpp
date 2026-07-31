@@ -776,22 +776,13 @@ void moe_prefill_s4_dpas_per_group_dispatch(
   num_tokens_per_expert, E, group_size, prefetch_dist,                     \
   prefetch_dist_scale, atomic_buffer);
 
-<<<<<<< HEAD
-  // Four-tier bucketing on the average tokens-per-expert, matching the
-  // reference `w4a16` dispatch in vllm-xpu-kernels
-  // (`grouped_gemm_xe2_interface.hpp`): tiny M uses an 8-row tile, and the
-  // 32-row tile now covers M up to 128 (instead of jumping to the wide
-  // large-M tile at 33) so mid-size chunked-prefill batches avoid the
-  // padding waste of the 128-row tile.
-  if (A_avg_M <= 4) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_8);
-  } else if (A_avg_M <= 8) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_16);
-  } else if (A_avg_M <= 128) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_32);
-  } else {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy);
-=======
+  // Explicit env overrides (from the opt_moe_kernel policy infrastructure)
+  // take precedence and let benchmarks pin a specific tile family. The
+  // default (Auto) path uses our dedicated four-tier `w4a16` bucketing:
+  // the halved packed-B stream lets a wider N tile pay off, tiny M uses an
+  // 8-row tile, and the 32-row tile covers M up to 128 (instead of jumping
+  // to the wide large-M tile at 33) so mid-size chunked-prefill batches
+  // avoid the padding waste of the 128-row tile.
   if (policy_mode == MoePrefillS4PolicyMode::W16A16) {
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w16a16_policy);
   } else if (policy_mode == MoePrefillS4PolicyMode::W8A16M16) {
@@ -807,18 +798,16 @@ void moe_prefill_s4_dpas_per_group_dispatch(
       ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
     }
   } else {
-    // Auto policy for the direct path. On BMG MiniMax prefill shapes the
-    // small-M w8a16_m32 tile is much faster than larger tiles even up to
-    // 8K prompts (average M ~= 341), because per-expert token counts are
-    // highly skewed and many experts underfill larger M tiles.
-    if (A_avg_M <= 8) {
-      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-    } else if (A_avg_M <= 512) {
-      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+    // Auto policy for the direct path -- dedicated w4a16 tiles.
+    if (A_avg_M <= 4) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_8);
+    } else if (A_avg_M <= 8) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_16);
+    } else if (A_avg_M <= 128) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_32);
     } else {
-      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy);
     }
->>>>>>> origin/opt_moe_kernel
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
 
