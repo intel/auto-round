@@ -637,10 +637,16 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // bytes + a vec<ScalarT,CHUNK> activation block). Templated on CHUNK so the
 // caller can run a wide (32) stage first and a narrower (16) stage for the
 // remainder, mirroring the int4/int8 paths. sycl::vec only supports widths of
-// 1, 2, 3, 4, 8 or 16, so CHUNK is processed in 16-wide sub-blocks. The math is
-// identical to the scalar path.
+// 1, 2, 3, 4, 8 or 16, so CHUNK is processed in 16-wide sub-blocks.
+//
+// The per-group scale is constant across the whole group, so it is NOT applied
+// here: this accumulates the raw dot product (sum of act * decoded_fp8) and the
+// caller multiplies the group total by the scale once (Σ a·(w·s) == s·Σ a·w).
+// For the per-expert / per-tensor scale case (group_size == K, one scale per
+// output row) this collapses the whole K reduction to a single scale multiply,
+// removing one multiply per K element on the decode hot path.
 template <typename ScalarT, bool IsE4M3, bool UseLut, int CHUNK>
-static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float scale, float& acc) {
+static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float& acc) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
   static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
   constexpr int SUB = 16;
@@ -652,7 +658,7 @@ static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr
     const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_ptr + s * SUB);
 #pragma unroll
     for (int u = 0; u < SUB; ++u) {
-      const float w = decode_fp8<IsE4M3, UseLut>(wv[u]) * scale;
+      const float w = decode_fp8<IsE4M3, UseLut>(wv[u]);
       const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
       acc += static_cast<float>(a) * w;
     }
@@ -699,27 +705,32 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
            // Vectorized ladder mirroring the int4/int8 paths: process 32
            // K-elements (32 weight bytes + vec<ScalarT,32> activations) at a
            // time, then a 16-wide stage for the remainder, then a scalar tail.
-           // Decode each FP8 byte to float, then apply the per-group scale.
-           // Widening the first stage amortizes the per-group scale load for
-           // the shipped group sizes (32/64/128/256).
+           // The per-group scale is constant across the group, so accumulate the
+           // raw dot product here and apply the scale once below (Σ a·(w·s) ==
+           // s·Σ a·w). Widening the first stage amortizes the per-group scale
+           // load for the shipped group sizes (32/64/128/256); hoisting the
+           // scale removes one multiply per K element, which is the dominant
+           // cost for the per-expert / per-tensor scale case (group_size == K).
+           float group_acc = 0.0f;
            int kk = 0;
            constexpr int CHUNK32 = 32;
            const int end32 = (group_size / CHUNK32) * CHUNK32;
            for (; kk < end32; kk += CHUNK32) {
-             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK32>(act_row + k_base + kk, w_row + k_base + kk, scale,
-                                                               acc);
+             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK32>(act_row + k_base + kk, w_row + k_base + kk,
+                                                                group_acc);
            }
            constexpr int CHUNK16 = 16;
            const int end16 = kk + ((group_size - kk) / CHUNK16) * CHUNK16;
            for (; kk < end16; kk += CHUNK16) {
-             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK16>(act_row + k_base + kk, w_row + k_base + kk, scale,
-                                                               acc);
+             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK16>(act_row + k_base + kk, w_row + k_base + kk,
+                                                                group_acc);
            }
            for (; kk < group_size; ++kk) {
              const uint8_t raw = w_row[k_base + kk];
-             const float w = decode_fp8<IsE4M3, UseLut>(raw) * scale;
-             acc += static_cast<float>(act_row[k_base + kk]) * w;
+             const float w = decode_fp8<IsE4M3, UseLut>(raw);
+             group_acc += static_cast<float>(act_row[k_base + kk]) * w;
            }
+           acc += group_acc * scale;
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
