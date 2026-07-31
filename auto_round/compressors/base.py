@@ -210,7 +210,7 @@ class BaseOrchestrator(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -220,9 +220,8 @@ class BaseOrchestrator(object):
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
 
-        self.dataset = dataset
-        if self.dataset is None:
-            self.dataset = "NeelNanda/pile-10k"
+        self.dataset_was_explicitly_set = dataset is not None
+        self.dataset = dataset if self.dataset_was_explicitly_set else "NeelNanda/pile-10k"
         batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
@@ -451,7 +450,7 @@ class BaseOrchestrator(object):
         calibrator_kind = self._get_calibrator_kind()
         # The default pile dataset is model-adaptive for pure-text LLMs. Any
         # non-default dataset remains untouched.
-        if self.need_calib and self.dataset == "NeelNanda/pile-10k" and calibrator_kind == "llm":
+        if self.need_calib and not self.dataset_was_explicitly_set and calibrator_kind == "llm":
             from auto_round.calib_dataset import get_code_calibration_dataset
             from auto_round.utils.model import is_code_model
 

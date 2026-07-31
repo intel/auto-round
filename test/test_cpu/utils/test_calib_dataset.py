@@ -18,9 +18,9 @@ from ...helpers import get_model_path, opt_name_or_path
     [
         (
             "3.6.0",
-            "opencode-instruct:num=64,github-code-clean:num=51,mbpp:split=train:num=13",
+            "opencode-instruct:concat=true:num=64,github-code-clean:num=51,mbpp:split=train:concat=true:num=13",
         ),
-        ("5.0.0", "opencode-instruct:num=107,mbpp:split=train:num=21"),
+        ("5.0.0", "opencode-instruct:concat=true:num=107,mbpp:split=train:concat=true:num=21"),
     ],
 )
 def test_code_calibration_dataset(datasets_version, expected):
@@ -28,7 +28,7 @@ def test_code_calibration_dataset(datasets_version, expected):
 
 
 def test_tiny_code_calibration_dataset_omits_zero_sample_sources():
-    assert get_code_calibration_dataset(1, "3.6.0") == "opencode-instruct:num=1"
+    assert get_code_calibration_dataset(1, "3.6.0") == "opencode-instruct:concat=true:num=1"
 
 
 def test_automatic_code_dataset_and_non_default_override(tiny_opt_model_path, tmp_path, monkeypatch):
@@ -40,7 +40,12 @@ def test_automatic_code_dataset_and_non_default_override(tiny_opt_model_path, tm
     common = dict(iters=1, nsamples=6, seqlen=8, device_map="cpu", low_cpu_mem_usage=False)
 
     autoround = AutoRound(str(code_model_path), **common)
-    assert autoround.dataset == "opencode-instruct:num=5,mbpp:split=train:num=1"
+    assert autoround.dataset == "opencode-instruct:concat=true:num=5,mbpp:split=train:concat=true:num=1"
+
+    autoround = AutoRound(
+        str(code_model_path), dataset="NeelNanda/pile-10k", alg_configs="auto_round", **common
+    )
+    assert autoround.dataset == "NeelNanda/pile-10k"
 
     autoround = AutoRound(str(code_model_path), dataset="pile-10k", alg_configs="auto_round", **common)
     assert autoround.dataset == "pile-10k"

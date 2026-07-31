@@ -40,7 +40,7 @@ def get_code_calibration_dataset(nsamples, datasets_version=None):
 
         datasets_version = datasets.__version__
     parsed_version = Version(str(datasets_version))
-    sources = [("opencode-instruct", 50), ("github-code-clean", 40), ("mbpp:split=train", 10)]
+    sources = [("opencode-instruct:concat=true", 50), ("github-code-clean", 40), ("mbpp:split=train:concat=true", 10)]
     if parsed_version > _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION:
         sources = [source for source in sources if source[0] != "github-code-clean"]
         logger.warning(
