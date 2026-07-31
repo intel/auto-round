@@ -291,6 +291,26 @@ these fail:
 - `group_size ∈ {32, 64, 128, 256}`
 - `asym == false` (asym S4 is out of scope for both DPAS paths)
 
+**S4 DPAS tile policies** — the single-pass mainloop (precedence 1)
+now selects a dedicated 4-bit tile policy by the average tokens-per-
+expert (`A_avg_M = total_tokens / E`), mirroring the reference
+`w4a16` dispatch in `vllm-project/vllm-xpu-kernels`
+(`grouped_gemm_xe2_interface.hpp`). Because the packed-nibble B stream
+is half the byte volume of the INT8 path, the large-M tile is widened
+to `128×256×32` (vs. the INT8 `128×128×16`) so the DPAS accumulators
+and the halved B-side bandwidth are better utilised:
+
+| `A_avg_M` bucket | WG tile (M×N×K) | Policy (`sycl_tla_moe_prefill_fp8_dpas.hpp`) |
+| ---------------- | --------------- | -------------------------------------------- |
+| `≤ 4`            | `8×64×32`       | `dpas_w4a16_policy_m_8`                       |
+| `≤ 8`            | `16×64×32`      | `dpas_w4a16_policy_m_16` (= `w8a16_m_16`)     |
+| `≤ 128`          | `32×64×32`      | `dpas_w4a16_policy_m_32` (= `w8a16_m_32`)     |
+| `> 128`          | `128×256×32`    | `dpas_w4a16_policy`                           |
+
+The mid-size `32×64` tile now covers `A_avg_M` up to 128 (previously it
+jumped to the wide tile at 33), which avoids padding waste on the
+common chunked-prefill batch sizes.
+
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`,
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +

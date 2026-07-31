@@ -222,6 +222,24 @@ S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 - `group_size ∈ {32, 64, 128, 256}`
 - `asym == false`(asym S4 不在两条 DPAS 路径的支持范围内)
 
+**S4 DPAS tile 策略** — 单遍 mainloop(优先级 1)现在按每专家平均
+token 数(`A_avg_M = total_tokens / E`)选择专用的 4-bit tile 策略,
+与参考实现 `vllm-project/vllm-xpu-kernels`
+(`grouped_gemm_xe2_interface.hpp`)的 `w4a16` 分派一致。由于 packed-
+nibble 的 B 流字节量是 INT8 路径的一半,大 M tile 加宽到 `128×256×32`
+(相比 INT8 的 `128×128×16`),以更充分利用 DPAS 累加器与减半的 B 侧
+带宽:
+
+| `A_avg_M` 分档 | WG tile (M×N×K) | 策略(`sycl_tla_moe_prefill_fp8_dpas.hpp`) |
+| -------------- | --------------- | ------------------------------------------ |
+| `≤ 4`          | `8×64×32`       | `dpas_w4a16_policy_m_8`                     |
+| `≤ 8`          | `16×64×32`      | `dpas_w4a16_policy_m_16`(= `w8a16_m_16`)   |
+| `≤ 128`        | `32×64×32`      | `dpas_w4a16_policy_m_32`(= `w8a16_m_32`)   |
+| `> 128`        | `128×256×32`    | `dpas_w4a16_policy`                         |
+
+中等大小的 `32×64` tile 现在覆盖 `A_avg_M` 至 128(此前在 33 就跳到大
+tile),避免了常见 chunked-prefill batch 大小下的 padding 浪费。
+
 精度对齐由
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +

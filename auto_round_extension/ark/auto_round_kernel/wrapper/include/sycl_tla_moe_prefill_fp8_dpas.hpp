@@ -194,6 +194,35 @@ class dpas_w8a16_policy_m_32 : public dpas_policy_base {
 };
 
 // ---------------------------------------------------------------------------
+// 4-bit (S4 / w4a16) tile policies.
+//
+// The S4 mixed-input prefill mainloop (`sycl_tla_moe_prefill_s4_dpas.hpp`)
+// reads a *halved* B-side byte stream (two nibbles per byte). With the same
+// M/N footprint the packed weight fits in half the L2/GRF traffic of the INT8
+// path, so a larger N tile pays off: the default large-M policy uses a
+// 128x256x32 WG tile (vs. the INT8 128x128x16), matching the reference
+// `w4a16_policy` in vllm-xpu-kernels `csrc/xpu/grouped_gemm/xe_2/
+// gemm_xe2_policy.hpp`. The small-M buckets (m_8/m_16/m_32) reuse the same
+// 64-wide N tiles as the INT8 path -- the reference uses identical shapes
+// there. Only the default (large-M) tile and the new m_8 bucket differ, so we
+// define those two here and alias m_16/m_32 to the shared shapes in the S4
+// header.
+// ---------------------------------------------------------------------------
+class dpas_w4a16_policy : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_128, _256, _32>;
+  using SGLayout = Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>;
+
+  using GmemTiledCopyD = XE_STORE_2D<16, 8, 32>;
+};
+
+class dpas_w4a16_policy_m_8 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_8, _64, _32>;
+  using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
+};
+
+// ---------------------------------------------------------------------------
 // `apply_scale` -- inline-asm per-lane multiply of a bf16/fp16 fragment by
 // an FP32 scalar. Copied verbatim from vllm-xpu-kernels `gemm_xe2.hpp`.
 // Only compiled inside the device path (`__SYCL_DEVICE_ONLY__`
