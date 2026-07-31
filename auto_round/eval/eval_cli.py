@@ -102,7 +102,9 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "Float between 0-1: fraction of total examples.",
         )
         self.add_argument("--num_fewshot", "--num-fewshot", default=None, type=int, help="Number of few-shot examples.")
-        self.add_argument("--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval.")
+        self.add_argument(
+            "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
+        )
         self.add_argument(
             "--eval_backend",
             default="hf",

@@ -208,7 +208,9 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--limit", type=float, default=None, metavar="N|0<N<1", help="Evaluation example limit as a count or fraction."
     )
     ev.add_argument("--num_fewshot", "--num-fewshot", default=None, type=int, help="Number of few-shot examples.")
-    ev.add_argument("--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval.")
+    ev.add_argument(
+        "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
+    )
     ev.add_argument("--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching.")
     ev.add_argument(
         "--eval_backend", default="hf", type=str, choices=["hf", "vllm"], help="Backend to use for evaluation."
