@@ -129,6 +129,15 @@ using ::ark::moe_dpas_fp8::dpas_w16a16_policy;
 using ::ark::moe_dpas_fp8::dpas_w8a16_policy;
 using ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_16;
 using ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_32;
+// Dedicated 4-bit tile policies. The default (large-M) tile is 128x256x32
+// (halved packed-B stream lets a wider N tile pay off) and the m_8 bucket is
+// new; both mirror the reference `w4a16_policy*` in vllm-xpu-kernels. The
+// m_16 / m_32 buckets share the INT8 64-wide N tiles, so they are aliased to
+// the existing `dpas_w8a16_policy_m_16 / _m_32` shapes rather than duplicated.
+using ::ark::moe_dpas_fp8::dpas_w4a16_policy;
+using ::ark::moe_dpas_fp8::dpas_w4a16_policy_m_8;
+using dpas_w4a16_policy_m_16 = ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_16;
+using dpas_w4a16_policy_m_32 = ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_32;
 using ::ark::moe_dpas_fp8::ScaleMode;
 using ::ark::moe_dpas_fp8::cute_scalar;
 using ::ark::moe_dpas_fp8::cute_scalar_t;
@@ -649,12 +658,20 @@ void moe_prefill_s4_dpas_per_group_dispatch(
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
       num_tokens_per_expert, E, group_size, atomic_buffer);
 
-  if (A_avg_M <= 8) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+  // Four-tier bucketing on the average tokens-per-expert, matching the
+  // reference `w4a16` dispatch in vllm-xpu-kernels
+  // (`grouped_gemm_xe2_interface.hpp`): tiny M uses an 8-row tile, and the
+  // 32-row tile now covers M up to 128 (instead of jumping to the wide
+  // large-M tile at 33) so mid-size chunked-prefill batches avoid the
+  // padding waste of the 128-row tile.
+  if (A_avg_M <= 4) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_8);
+  } else if (A_avg_M <= 8) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_16);
+  } else if (A_avg_M <= 128) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_32);
   } else {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy);
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
 

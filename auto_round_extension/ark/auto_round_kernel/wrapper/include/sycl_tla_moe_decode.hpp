@@ -204,6 +204,50 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
 // of byte i, the value at k = 2*i+1 is the HIGH nibble. This matches the
 // existing CPU/XPU `packq` layout for S4_CLIP weights.
 // ----------------------------------------------------------------------------
+
+// Vectorized inner accumulation over CHUNK consecutive K elements (CHUNK/2
+// packed weight bytes + a vec<ScalarT,CHUNK> activation block). Templated on
+// CHUNK so the caller can run a wide (32) stage first and a narrower (16)
+// stage for the remainder, which keeps the fast path active for group sizes
+// that are a multiple of 32 (32/64/128/256 -- the shipped quant configs)
+// without regressing group_size == 16 (which drops straight to the 16-wide
+// stage). The math is identical to the scalar path.
+template <typename ScalarT, bool Asym, int CHUNK>
+static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float scale, float zero,
+                                     float& acc) {
+  static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+  static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
+  // sycl::vec only supports widths of 1, 2, 3, 4, 8 or 16, so a single
+  // vec<uint16_t, 32> load is illegal. Process the chunk in 16-wide sub-blocks
+  // (16 activations + 8 packed weight bytes each), which keeps CHUNK == 32
+  // valid while reusing the same code path for CHUNK == 16.
+  constexpr int SUB = 16;
+  using ActVec = sycl::vec<uint16_t, SUB>;
+  using PackVec = sycl::vec<uint8_t, SUB / 2>;
+#pragma unroll
+  for (int s = 0; s < CHUNK / SUB; ++s) {
+    const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
+    const PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr + s * (SUB / 2));
+#pragma unroll
+    for (int b = 0; b < SUB / 2; ++b) {
+      int q0, q1;
+      decode_int4_pair<Asym>(pv[b], q0, q1);
+      float w0, w1;
+      if constexpr (Asym) {
+        w0 = (static_cast<float>(q0) - zero) * scale;
+        w1 = (static_cast<float>(q1) - zero) * scale;
+      } else {
+        w0 = static_cast<float>(q0) * scale;
+        w1 = static_cast<float>(q1) * scale;
+      }
+      const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
+      const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
+      acc += static_cast<float>(a0) * w0;
+      acc += static_cast<float>(a1) * w1;
+    }
+  }
+}
+
 template <typename ScalarT, bool Asym>
 void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
                  const ScalarT* zeros, ScalarT* outputs, const int* expert_id_per_token, int total_tokens, int N,
@@ -253,39 +297,27 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
              zero = static_cast<float>(z_row[g]);
            }
            const int k_base = g * group_size;
-           // Vectorized path: process 16 K-elements at a time, which is
-           // 8 packed weight bytes and a vec<ScalarT,16> activation block.
-           // group_size is a multiple of 16 in every supported config
-           // (group_size >= 32, even); a scalar tail loop covers leftovers.
-           constexpr int CHUNK = 16;
-           using ActVec = sycl::vec<uint16_t, CHUNK>;
-           using PackVec = sycl::vec<uint8_t, CHUNK / 2>;
-           static_assert(sizeof(ScalarT) == sizeof(uint16_t),
-                         "ScalarT must be a 16-bit floating type");
-           const int chunk_end = (group_size / CHUNK) * CHUNK;
+           // Vectorized ladder: process 32 K-elements at a time (16 packed
+           // weight bytes + vec<ScalarT,32> activation block), then a 16-wide
+           // stage for the remainder, then a scalar tail. Widening the first
+           // stage to 32 amortizes the per-group scale load and loop overhead
+           // across twice as many multiply-adds for the shipped group sizes
+           // (32/64/128/256), while the 16-wide stage keeps group_size == 16
+           // on the fast path.
            int kk = 0;
-           for (; kk < chunk_end; kk += CHUNK) {
-             const ActVec av = *reinterpret_cast<const ActVec*>(act_row + k_base + kk);
-             const PackVec pv = *reinterpret_cast<const PackVec*>(w_row + (k_base + kk) / 2);
-#pragma unroll
-             for (int b = 0; b < CHUNK / 2; ++b) {
-               int q0, q1;
-               decode_int4_pair<Asym>(pv[b], q0, q1);
-               float w0, w1;
-               if constexpr (Asym) {
-                 w0 = (static_cast<float>(q0) - zero) * scale;
-                 w1 = (static_cast<float>(q1) - zero) * scale;
-               } else {
-                 w0 = static_cast<float>(q0) * scale;
-                 w1 = static_cast<float>(q1) * scale;
-               }
-               const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
-               const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
-               acc += static_cast<float>(a0) * w0;
-               acc += static_cast<float>(a1) * w1;
-             }
+           constexpr int CHUNK32 = 32;
+           const int end32 = (group_size / CHUNK32) * CHUNK32;
+           for (; kk < end32; kk += CHUNK32) {
+             int4_decode_chunk<ScalarT, Asym, CHUNK32>(act_row + k_base + kk, w_row + (k_base + kk) / 2, scale,
+                                                       zero, acc);
            }
-           // Scalar tail for group_size not divisible by CHUNK.
+           constexpr int CHUNK16 = 16;
+           const int end16 = kk + ((group_size - kk) / CHUNK16) * CHUNK16;
+           for (; kk < end16; kk += CHUNK16) {
+             int4_decode_chunk<ScalarT, Asym, CHUNK16>(act_row + k_base + kk, w_row + (k_base + kk) / 2, scale,
+                                                       zero, acc);
+           }
+           // Scalar tail for group_size not divisible by 16.
            for (; kk < group_size; kk += 2) {
              const uint8_t packed = w_row[(k_base + kk) / 2];
              int q0, q1;
