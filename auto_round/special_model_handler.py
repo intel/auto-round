@@ -393,7 +393,8 @@ def _handle_special_model(model):
 def update_module(
     model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
 ):
-    model = apply_replacements(model)
+    gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
+    model = apply_replacements(model, gguf_export=gguf_export)
 
     if cleanup_original:
         release_original_module_(model)

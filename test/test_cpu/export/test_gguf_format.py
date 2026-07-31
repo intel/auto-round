@@ -23,8 +23,8 @@ def test_update_module_applies_replacements_for_gguf(monkeypatch):
     replaced_model = object()
     calls = []
 
-    def apply_replacements(candidate):
-        calls.append(candidate)
+    def apply_replacements(candidate, **kwargs):
+        calls.append((candidate, kwargs))
         return replaced_model
 
     class GGUFFormat:
@@ -37,7 +37,7 @@ def test_update_module_applies_replacements_for_gguf(monkeypatch):
     result = special_model_handler.update_module(model, formats=[GGUFFormat()], cleanup_original=False)
 
     assert result is replaced_model
-    assert calls == [model]
+    assert calls == [(model, {"gguf_export": True})]
 
 
 class TestGGUF:
