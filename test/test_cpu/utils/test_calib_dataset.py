@@ -82,7 +82,7 @@ class TestLocalCalibDataset:
         autoround.quantize()
 
     def test_combine_dataset(self, tiny_qwen_model_path):
-        dataset = "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp"
+        dataset = "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp" + "," + "opencode-instruct"
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             tiny_qwen_model_path,
