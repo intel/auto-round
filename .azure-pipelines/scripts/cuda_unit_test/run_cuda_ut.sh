@@ -65,8 +65,8 @@ function run_unit_test() {
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test/test_cuda/requirements.txt
-    uv pip install -r test/test_cuda/requirements_diffusion.txt
+    uv pip install -r test/unit/test_cuda/requirements.txt
+    uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip install -U pytest-cov
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
@@ -85,12 +85,12 @@ function run_unit_test() {
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
-    if [ "$test_part" -le "$r" ]; then
+    if [ "$test_part" -lt "$r" ]; then
         chunk_size=$(( q + 1 ))
-        start_line=$(( (test_part - 1) * chunk_size + 1 ))
+        start_line=$(( test_part * chunk_size + 1 ))
     else
         chunk_size=$q
-        start_line=$(( r * (q + 1) + (test_part - r - 1) * q + 1 ))
+        start_line=$(( r * (q + 1) + (test_part - r) * q + 1 ))
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
@@ -115,7 +115,7 @@ function run_unit_test_llmc() {
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
-        -r test/unit/test_cuda/requirements_llmc.txt \
+        -r test/integration/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install -U chardet
@@ -145,7 +145,7 @@ function run_unit_test_sglang() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
-    uv pip install -r test/test_cuda/requirements_sglang.txt \
+    uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
@@ -176,7 +176,7 @@ function run_unit_test_vllm() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
-    uv pip install -r test/test_cuda/requirements_vllm.txt \
+    uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
@@ -203,16 +203,14 @@ function run_unit_test_vllm() {
 
 function main() {
     setup_environment
-    if [ "${test_case}" == "vlm" ]; then
-        run_unit_test_vlm
-    elif [ "${test_case}" == "specific" ]; then
+    if [ "${test_case}" == "nightly" ]; then
         run_unit_test_sglang
         run_unit_test_llmc
         run_unit_test_vllm
-    elif [ "${test_case}" == "all" ]; then
+    elif [ "${test_case}" == "ci" ]; then
         run_unit_test
     else
-        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'specific', or 'all'."
+        echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."
         exit 1
     fi
     check_storage_usage
