@@ -13,15 +13,17 @@
 # limitations under the License.
 import copy
 import gc
+import os
 import time
 from functools import partial
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model
 from tqdm import tqdm
 
+from auto_round import envs
 from auto_round.calibration import CalibrationContext
 from auto_round.calibration.utils import (
     _update_inputs,
@@ -58,6 +60,9 @@ from auto_round.utils.device import (
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperMultiblock
 
+if TYPE_CHECKING:
+    from auto_round.utils.resume import ResumeState
+
 
 # TODO wenhuach align all the API args
 class CompressionOrchestrator(BaseOrchestrator):
@@ -72,7 +77,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         **kwargs,
@@ -177,7 +182,9 @@ class CompressionOrchestrator(BaseOrchestrator):
         nblocks: int = 1,
         pbar: tqdm | None = None,
         input_others_extra_blocks: dict | None = None,
-        valid_token_mask: list[torch.Tensor] | None = None,
+        token_ids: list[torch.Tensor] | None = None,
+        resume_state: Optional["ResumeState"] = None,
+        resume_input_ids=None,
     ):
         """Quantize and dequantize the weights of the specified blocks in the model.
 
@@ -187,6 +194,20 @@ class CompressionOrchestrator(BaseOrchestrator):
         block_names: The names of the blocks to be quantized and dequantized.
         nblocks: The number of blocks to quantize and dequantize.
         device: The device for quantization and dequantization.
+        resume_state: when set and already partway through this block group
+            (`resume_state.resume_index > 0`), the caller has already
+            substituted `inputs`/`q_input` for the first not-yet-done block;
+            this method just needs to start its loop there instead of at
+            index 0, and record each block as done afterward. See
+            auto_round/utils/resume.py.
+        resume_input_ids: the exact `input_ids` value the interrupted run had
+            live for the first not-yet-done block (cached by
+            `ResumeState.mark_block_done`). `inputs` still supplies
+            `input_others` (legitimately re-sourced from the same pre-cache
+            every iteration regardless of resuming), but the chained
+            hidden-state tensor itself must come from here, not be re-derived
+            from `inputs` -- see auto_round/utils/resume.py's module
+            docstring for why those two aren't interchangeable.
 
         Returns:
         None
@@ -196,11 +217,14 @@ class CompressionOrchestrator(BaseOrchestrator):
             m.requires_grad_(False)
 
         input_ids, input_others = self._preprocess_block_inputs(inputs)
+        if resume_input_ids is not None:
+            input_ids = resume_input_ids
 
         if pbar is None:
             pbar = tqdm(range(0, len(block_names), nblocks))
 
-        for i in range(0, len(block_names), nblocks):
+        start_index = resume_state.resume_index if resume_state is not None and nblocks == 1 else 0
+        for i in range(start_index, len(block_names), nblocks):
             if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
                 input_others = input_others_extra_blocks[block_names[i]]
                 _, input_others = self._preprocess_block_inputs(input_others)
@@ -217,7 +241,19 @@ class CompressionOrchestrator(BaseOrchestrator):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            if self.compress_context.low_cpu_mem_usage:
+            # Also reload when `AR_DISK_STREAM_MODEL` is set even if
+            # `low_cpu_mem_usage` has been forced False (e.g. GGUF export --
+            # see base.py's `_finalize_compress_context`, which disables
+            # `low_cpu_mem_usage` for gguf formats for reasons unrelated to disk
+            # streaming). Under streaming, a block starts on the meta device
+            # regardless of `low_cpu_mem_usage`, which only ever controlled whether
+            # to *free* it again after use -- without this, the block below is never
+            # materialized at all and `m.to(device)` crashes with "Cannot copy out
+            # of meta tensor". The block intentionally stays real afterward (no
+            # matching post-tune offload runs when `low_cpu_mem_usage` is False --
+            # see the `is_immediate_saving`-adjacent offload call further down),
+            # matching upstream's own choice not to cycle blocks for these formats.
+            if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL:
                 if nblocks == 1:
                     self._offloader.reload(model, n)
                 else:
@@ -229,7 +265,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             materialize_model_(m)
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
 
-            m, _, _ = self.alg_composer.dispatch_block(m, input_ids, input_others)
+            m = self.alg_composer.dispatch_block(m, input_ids, input_others)
 
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.composer import BlockContext
@@ -250,6 +286,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 is_mllm=self.model_context.is_mllm,
                 is_diffusion=self.model_context.is_diffusion,
                 pbar=pbar,
+                block_cnt=(len(block_names) + nblocks - 1) // nblocks,
             )
 
             # ── Run block pipeline (calibration → quantization → collection) ──
@@ -258,8 +295,8 @@ class CompressionOrchestrator(BaseOrchestrator):
                 input_ids,
                 input_others,
                 block_ctx=ctx,
-                q_input=q_input,
-                valid_token_mask=valid_token_mask,
+                q_inputs=q_input,
+                input_ids=token_ids,
             )
 
             # ── Infrastructure: memory management ─────────────────────────────
@@ -283,6 +320,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
+            clear_memory(device_list=device_manager.device_list)
             memory_monitor.log_summary()
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
@@ -302,6 +340,17 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             if self.compress_context.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)
+                # ShardWriter only actually flushes to disk once its
+                # shard-size budget is reached (`_flush_shard`, private but
+                # there's no public equivalent) -- `write()` above may just
+                # buffer this block's tensors in memory. Force a flush here
+                # whenever resumability is active, since marking a block
+                # "done" in the resume manifest is a lie if a crash before
+                # the next natural flush would lose its tensors entirely.
+                # Only pay this extra small-shard-fragmentation cost when
+                # AR_RESUME_DIR is actually set.
+                if resume_state is not None:
+                    self.shard_writer._flush_shard()
 
             if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                 if nblocks == 1:
@@ -309,6 +358,19 @@ class CompressionOrchestrator(BaseOrchestrator):
                 else:
                     for name in names:
                         self._offloader(model, name, overwrite=True)
+
+            # Record this block as durably done (its quantized weights are
+            # either flushed to a shard on disk via ShardWriter, or saved to
+            # the offloader's temp dir) only now, after that write has
+            # happened -- so a crash before this point correctly re-does the
+            # block on resume instead of skipping it with incomplete/missing
+            # output. See auto_round/utils/resume.py.
+            if resume_state is not None and nblocks == 1:
+                # `input_ids` was already reassigned to `next_input_ids`
+                # above -- it now holds the value the *next* block should use
+                # as its chained hidden-state input, which is exactly what
+                # needs to be persisted here.
+                resume_state.mark_block_done(n, q_input, input_ids)
         if pbar is not None:
             pbar.update(1)
 
@@ -433,7 +495,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                 memory_monitor.log_summary()
                 pbar.update(1)
 
-        cnt = 1
         remain_layer_names = []
         block_name_set = set(name for block in all_blocks for name in block)
         for n, m in self.model.named_modules():
@@ -446,10 +507,10 @@ class CompressionOrchestrator(BaseOrchestrator):
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
-            cnt += 1
-            if cnt % 10 == 0:
-                clear_memory()
-                memory_monitor.log_summary()
+            # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
+            # log a summary after each one.
+            clear_memory()
+            memory_monitor.log_summary()
 
         # Convert remaining fp8
         convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
@@ -513,8 +574,8 @@ class CompressionOrchestrator(BaseOrchestrator):
             to_cache_layer_names,
             last_cache_name=_last_cache_name,
         )
-        # Whether the token is pad token or not. For signround, the pad token should not be taken into account in loss
-        valid_token_mask = all_inputs.pop("valid_token_mask", None)
+        # Raw token IDs from the tokenizer, cached during calibration for use in quantize_block.
+        input_ids_cache = all_inputs.pop("input_ids", None)
         self.inputs = all_inputs
 
         all_q_inputs = None
@@ -549,6 +610,17 @@ class CompressionOrchestrator(BaseOrchestrator):
                 )
                 if not self._offloader.enabled:
                     self.compress_context.low_cpu_mem_usage = False
+            elif self.model_context._disk_stream_index is not None:
+                # Dense (non-MoE-patched) models normally get low_cpu_mem_usage
+                # disabled here because the per-block offload/reload dance is
+                # pointless when the whole model is already CPU-resident from
+                # the initial full load -- there's no memory to save. That
+                # assumption doesn't hold when the model started as a meta
+                # skeleton (AR_DISK_STREAM_MODEL=1): blocks are still on meta
+                # and must go through the same reload()-before/offload()-after
+                # cycle to get materialized from disk one at a time and freed
+                # again, so keep it enabled here.
+                pass
             else:
                 self.compress_context.low_cpu_mem_usage = False
         if len(all_blocks) > 1:
@@ -560,41 +632,156 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         self.alg_composer.prepare_run()
 
-        for block_names in all_blocks:
-            inputs = all_inputs[block_names[0]]
-            all_inputs.pop(block_names[0])
-            q_inputs = None
-            if all_q_inputs is not None:
-                q_inputs = all_q_inputs[block_names[0]]
-                all_q_inputs.pop(block_names[0])
+        # Build one ResumeState per block group (almost always just one group
+        # for text-only dense models) when AR_RESUME_DIR is set, so a
+        # crash/kill mid-tuning can resume from the first not-yet-quantized
+        # block instead of restarting from block 0. See auto_round/utils/resume.py.
+        resume_states = None
+        if envs.AR_RESUME_DIR:
+            if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
+                logger.warning(
+                    "AR_RESUME_DIR is set but neither immediate saving nor "
+                    "low_cpu_mem_usage is active. Without low_cpu_mem_usage, "
+                    "already-quantized blocks are never offloaded anywhere a "
+                    "resumed process could find them (see OffloadManager's "
+                    "deterministic resume directory in offload.py), so a "
+                    "resumed run's in-memory model will have meta/empty "
+                    "weights for blocks completed in a PRIOR process. Pass "
+                    "low_cpu_mem_usage=True (or a format= to quantize_and_save) "
+                    "for resumability to be meaningful here."
+                )
+            from auto_round.utils.resume import ResumeState, compute_run_signature, layer_config_fingerprint
 
-            inputs, q_inputs = _update_inputs(inputs, q_inputs)
-
-            clear_memory(self.inputs)
-
-            self._quantize_blocks(
-                self.model_context.model,
-                inputs,
-                block_names,
-                q_input=q_inputs if q_inputs is not None else None,
-                nblocks=self.nblocks,
-                pbar=pbar,
-                input_others_extra_blocks=all_inputs,
-                valid_token_mask=valid_token_mask,
+            model_dir = getattr(self.model_context, "disk_stream_model_dir", None) or getattr(
+                getattr(self.model_context.model, "config", None), "_name_or_path", None
             )
-            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
-                raise ValueError(
-                    f"Expected exactly one packing format when 'immediate_packing' is True, "
-                    f"but got {len(self.formats)} formats."
+            dataset_desc = str(getattr(self, "dataset", None))
+            # str(self.scheme) alone is bits-blind for AutoScheme runs: two runs
+            # with different avg_bits share it, so include the resolved
+            # per-layer allocation (see layer_config_fingerprint docstring).
+            scheme_desc = (
+                str(self.scheme)
+                + "|"
+                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
+            )
+            resume_states = []
+            for group_idx, block_names in enumerate(all_blocks):
+                sig = compute_run_signature(
+                    model_dir,
+                    scheme_desc,
+                    dataset_desc,
+                    self.calibration_context.nsamples,
+                    self.calibration_context.seqlen,
+                    block_names,
+                )
+                resume_states.append(
+                    ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
                 )
 
-        # ── Pipeline lifecycle: finalize_quantization (model-level teardown)
-        self.alg_composer.finalize_run()
+        try:
+            for group_idx, block_names in enumerate(all_blocks):
+                inputs = all_inputs[block_names[0]]
+                all_inputs.pop(block_names[0])
+                q_inputs = None
+                if all_q_inputs is not None:
+                    q_inputs = all_q_inputs[block_names[0]]
+                    all_q_inputs.pop(block_names[0])
+
+                inputs, q_inputs = _update_inputs(inputs, q_inputs)
+
+                clear_memory(self.inputs)
+
+                resume_state = resume_states[group_idx] if resume_states is not None else None
+                resume_input_ids = None
+                if resume_state is not None and resume_state.resume_index > 0:
+                    if self.nblocks != 1:
+                        logger.warning(
+                            "AR_RESUME_DIR is set but nblocks != 1; resuming mid-group is only "
+                            "supported for nblocks=1 -- restarting this group from block 0."
+                        )
+                        resume_state = None
+                    else:
+                        resume_name = block_names[resume_state.resume_index]
+                        # Only used here for `input_others` (position/mask info,
+                        # which is legitimately re-sourced from this same cache
+                        # every iteration regardless of resuming); the actual
+                        # chained `input_ids` comes from `resume_input_ids`
+                        # below, not this cache -- see
+                        # auto_round/utils/resume.py's module docstring for why
+                        # the two aren't interchangeable.
+                        if resume_name in all_inputs:
+                            inputs = all_inputs.pop(resume_name)
+                        q_inputs = resume_state.load_q_input()
+                        resume_input_ids = resume_state.load_input_ids()
+                        if resume_input_ids is None:
+                            logger.warning(
+                                "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
+                                "restarting this group from block 0 instead of resuming with a "
+                                "possibly-inconsistent chain value."
+                            )
+                            resume_state = None
+                        else:
+                            pbar.update(resume_state.resume_index)
+
+                self._quantize_blocks(
+                    self.model_context.model,
+                    inputs,
+                    block_names,
+                    q_input=q_inputs if q_inputs is not None else None,
+                    nblocks=self.nblocks,
+                    pbar=pbar,
+                    input_others_extra_blocks=all_inputs,
+                    token_ids=input_ids_cache,
+                    resume_state=resume_state,
+                    resume_input_ids=resume_input_ids,
+                )
+                if self.compress_context.is_immediate_packing and len(self.formats) != 1:
+                    raise ValueError(
+                        f"Expected exactly one packing format when 'immediate_packing' is True, "
+                        f"but got {len(self.formats)} formats."
+                    )
+            if resume_states is not None:
+                if self.compress_context.is_immediate_saving:
+                    # Don't clear resume state yet when exporting to shards --
+                    # a crash in the save/export step that follows this method
+                    # returning (config writing, tokenizer copy, format-specific
+                    # global packing pass) would otherwise force a full
+                    # re-tune from block 0 on the next attempt, even though
+                    # every block's weights are already correctly flushed to
+                    # disk. quantize_and_save() clears these once
+                    # save_quantized() actually succeeds.
+                    self._resume_states = resume_states
+                else:
+                    for rs in resume_states:
+                        rs.clear()
+        finally:
+            # ── Pipeline lifecycle: finalize_quantization (model-level teardown)
+            self.alg_composer.finalize_run()
         pbar.set_description("Quantizing done")
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
-            self._offloader.reload(self.model_context.model)
-        self._quantize_layers_outside_blocks(layer_names, all_inputs, valid_token_mask=valid_token_mask)
+            if envs.AR_RESUME_DIR and not self.compress_context.is_immediate_saving:
+                # `reload(names=None)` only reloads names in
+                # `self._offloader._saved` -- populated by THIS process's own
+                # offload() calls. A resumed process never touches blocks it
+                # skipped via ResumeState (they're left exactly as the meta
+                # skeleton started), so they'd never be in `_saved` and would
+                # stay meta in the returned model. Request every block
+                # explicitly so _reload()'s discovery check (see offload.py)
+                # gets a chance to pull each skipped block's real quantized
+                # weights back from a prior crashed process's offload dir.
+                #
+                # Skipped entirely under is_immediate_saving: ShardWriter has
+                # already flushed every block's packed weights to disk (both
+                # this run's and, via its own discovery, a prior crashed run's),
+                # and the `shard_writer.write(is_finalize=True)` call right
+                # below would treat any block reloaded back to real memory here
+                # as newly-dirty and re-emit its raw, unpacked weight tensor
+                # alongside the already-packed one.
+                self._offloader.reload(self.model_context.model, flatten_list(all_blocks))
+            elif not self.compress_context.is_immediate_saving:
+                self._offloader.reload(self.model_context.model)
+        self._quantize_layers_outside_blocks(layer_names, all_inputs, token_ids=input_ids_cache)
 
         convert_module_to_hp_if_necessary(
             self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
@@ -651,7 +838,10 @@ class CompressionOrchestrator(BaseOrchestrator):
     #         module.to("meta")
 
     def _quantize_layers_outside_blocks(
-        self, layer_names: list, layer_inputs: dict, valid_token_mask: list[torch.Tensor] | None = None
+        self,
+        layer_names: list,
+        layer_inputs: dict,
+        token_ids: list[torch.Tensor] | None = None,
     ) -> None:
         """Quantizes specified layers based on inputs and configuration.
 
@@ -691,7 +881,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 self.alg_composer.compress_layer_outside_block(
                     get_module(self.model, layer_name),
                     disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
-                    valid_token_mask=valid_token_mask,  # TODO wenhuach has not filter out loss
+                    input_ids=token_ids,
                 )
                 layer_names.remove(layer_name)
                 if self.compress_context.is_immediate_packing:
@@ -732,7 +922,10 @@ class CompressionOrchestrator(BaseOrchestrator):
             q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
             q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             self.alg_composer.compress_layer_outside_block(
-                get_module(self.model, layer_name), fp_input=layer_input, q_input=q_layer_input
+                get_module(self.model, layer_name),
+                fp_inputs=layer_input,
+                q_inputs=q_layer_input,
+                input_ids=token_ids,
             )
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.layer_config)
@@ -847,7 +1040,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 block_name=getattr(block, "global_name", ""),
                 block_index=0,
             )
-            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None, valid_token_mask=None)
+            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None)
 
             mv_module_from_gpu(block)
             return None, None
@@ -940,7 +1133,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             input_ids,
             input_others,
             block_ctx=ctx,
-            q_input=q_input,
+            q_inputs=q_input,
         )
 
         # ── Cleanup ───────────────────────────────────────────────────────────

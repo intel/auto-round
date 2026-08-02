@@ -35,6 +35,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
+* [2026/07] 除 Windows 外默认启用 `torch.compile`，以加速量化。由于编译器优化，与未编译路径相比可能会出现细微的数值差异，这是符合预期的。如需关闭，可在 Python API 中传入 `enable_torch_compile=False`，或在命令行中使用 `--disable_torch_compile`。
 
 * [2026/06] AutoScheme对gguf格式优化，精度有所提升。具体结果请参考[文档](docs/auto_scheme_acc.md)。不过这些精度提升是以更高的调优时间和计算开销为代价的。
 
@@ -252,7 +253,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### 设备 / 速度配置
 
-- ​**​`enable_torch_compile`​**（bool）：通常建议设为 `True` 来提升量化速度、降低资源消耗，但是有极小概率会触发异常，建议使用最新的 tiron 版本。
+- ​**​`enable_torch_compile`​**（bool）：启用 `torch.compile` 可能提升量化速度，但编译开销会改变峰值内存，某些模型或量化方案的峰值内存可能增加。除 Windows 外默认开启；Windows 上默认关闭，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。在 Windows 上可通过 Python 参数 `enable_torch_compile=True` 或命令行参数 `--enable_torch_compile` 强制开启；其他平台可使用 `enable_torch_compile=False` 或 `--disable_torch_compile` 关闭。
 - ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
 - ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `False`）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。

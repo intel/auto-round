@@ -21,7 +21,6 @@ import sys
 import tempfile
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
-from itertools import combinations
 from threading import Lock
 from typing import Any, Callable, Optional, Union
 
@@ -814,15 +813,14 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     return 1.0, False  # Default ratio for non-MoE models
 
 
-def estimate_tuning_block_mem(
-    block: torch.nn.Module, input_ids: list[torch.Tensor], batch_size: int
-) -> tuple[dict, float]:
+def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size: int) -> tuple[dict, float]:
     """
     Calculates the memory consumption of a specific block in the model.
 
     Args:
         block (torch.nn.Module): The block of the model to analyze.
-        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+        input_ids: Cached block inputs as a tensor, a list of tensors, or a dictionary containing
+            ``hidden_states`` and auxiliary block inputs.
         batch_size (int): Number of samples to consider for memory estimation.
 
     Returns:
@@ -838,9 +836,23 @@ def estimate_tuning_block_mem(
 
     layer_memory_dict = {}
 
-    # Calculate batch_size and sequence_length from input_ids for output memory estimation
-    seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
-    element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
+    def iter_input_tensors(value):
+        if isinstance(value, torch.Tensor):
+            yield value
+        elif isinstance(value, dict):
+            for nested_value in value.values():
+                yield from iter_input_tensors(nested_value)
+        elif isinstance(value, (list, tuple)):
+            for nested_value in value:
+                yield from iter_input_tensors(nested_value)
+
+    input_tensors = list(iter_input_tensors(input_ids))
+    hidden_states = input_ids.get("hidden_states") if isinstance(input_ids, dict) else input_ids
+    reference_tensor = next(iter_input_tensors(hidden_states), input_tensors[0] if input_tensors else None)
+
+    # Calculate sequence length and dtype from hidden states for output memory estimation.
+    seq_len = reference_tensor.shape[1] if reference_tensor is not None and reference_tensor.ndim >= 2 else 1
+    element_size = reference_tensor.element_size() if reference_tensor is not None else 2
 
     moe_ratio, has_moe = get_moe_memory_ratio(block)  # Get MoE memory ratio (1.0 for non-MoE models)
 
@@ -881,7 +893,7 @@ def estimate_tuning_block_mem(
             }
 
     # Assuming bfloat16 or float32, input and output
-    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_tensors) / 1024**3
 
     # Roughly estimate additional memory for attention and other operations
     # For MoE expert layers, multiply activation memory by the ratio of active experts
@@ -987,6 +999,12 @@ def set_auto_device_map_for_block_with_tuning(
     card_1_left_memory = max(0, device_1_memory - loss_memory) if card_0_in_high_risk else device_1_memory
     loss_device = device_1 if card_0_in_high_risk else output_device
 
+    if not layer_memory_dict:
+        output_device = device_0 if output_device is None else output_device
+        block.to(output_device)
+        logger.debug(f"No layers require tuning; moved the block to {output_device}")
+        return card_0_in_high_risk, loss_device
+
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory + card_1_left_memory
     for i in range(2, len(gpu_devices)):
@@ -1026,66 +1044,36 @@ def partition_dict_numbers(number_dict, n):
     """
     Partition a dictionary of numbers into N groups with approximately equal sums
     """
-    # Edge cases
-    if n > len(number_dict):
-        groups = []
-        for key, value in number_dict.items():
-            groups.append({key: value})
-        for _ in range(n - len(number_dict)):
-            groups.append({})
-        return groups
-
-    if n == len(number_dict):
-        return [{key: value} for key, value in number_dict.items()]
-
-    total_sum = sum(number_dict.values())
-    # target = total_sum / n  # Use float for better precision
+    # Quick handling of edge cases
+    if n <= 0:
+        return []
 
     items = list(number_dict.items())
-    result = []
-    remaining = items.copy()
+    m = len(items)
 
-    def find_optimal_subset(arr, target):
-        """Find subset with sum closest to target"""
-        best_subset = []
-        best_diff = float("inf")
+    if n >= m:
+        # Put each item in its own bucket, then pad empty buckets
+        groups = [{k: v} for k, v in items]
+        groups.extend({} for _ in range(n - m))
+        return groups
 
-        # Try all possible subset sizes
-        for r in range(1, len(arr) + 1):
-            for combo in combinations(arr, r):
-                current_sum = sum(value for _, value in combo)
-                current_diff = abs(current_sum - target)
+    # Greedy largest-first balancing (Longest Processing Time / LPT-like):
+    #  - Sort items by value descending
+    #  - Assign each item to the group with the current smallest sum
+    # Complexity: O(m log n) which scales well for large m (layers)
+    groups_sums = [0.0] * n
+    groups = [dict() for _ in range(n)]
 
-                # If we found a perfect match, return immediately
-                if current_diff == 0:
-                    return list(combo)
+    # Sort items descending by size
+    items_sorted = sorted(items, key=lambda kv: kv[1], reverse=True)
 
-                # Update the best subset if this is better
-                if current_diff < best_diff and current_sum <= total_sum:
-                    best_diff = current_diff
-                    best_subset = list(combo)
+    for key, val in items_sorted:
+        # choose the group with minimum current sum
+        idx = min(range(n), key=lambda i: groups_sums[i])
+        groups[idx][key] = val
+        groups_sums[idx] += val
 
-        return best_subset
-
-    # Distribute items into n-1 groups
-    for i in range(n - 1):
-        if not remaining:
-            break
-
-        # Calculate dynamic target based on remaining items
-        remaining_target = sum(value for _, value in remaining) / (n - i)
-        subset = find_optimal_subset(remaining, remaining_target)
-
-        result.append(dict(subset))
-
-        # Remove allocated items
-        for item in subset:
-            remaining.remove(item)
-
-    # Last group gets all remaining items
-    result.append(dict(remaining))
-
-    return result
+    return groups
 
 
 def dispatch_model_block_wise(model: torch.nn.Module, device_map: str, max_mem_ratio=0.9):
@@ -1338,13 +1326,24 @@ class MemoryMonitor:
         self.peak_vram = {}  # {device_id: peak_mb}
         self.enabled = True
 
+    @staticmethod
+    def _process_tree_rss() -> float:
+        """Return the combined RSS of this process and all live descendants in GB."""
+        process = psutil.Process()
+        rss = process.memory_info().rss
+        for child in process.children(recursive=True):
+            try:
+                rss += child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return rss / 1024**3
+
     def update(self, device_list=None):
         """Update current memory usage and track peaks."""
         if not self.enabled:
             return
         # Track RAM
-        process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = self._process_tree_rss()
         self.peak_ram = max(self.peak_ram, current_ram)
         if device_list is None:  # TODO this has issue, wait for clean_memory all pass device_list
             device_list = [0]
@@ -1386,8 +1385,7 @@ class MemoryMonitor:
     def update_cpu(self):
         if not self.enabled:
             return
-        process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = self._process_tree_rss()
         self.peak_ram = max(self.peak_ram, current_ram)
 
     def update_hpu(self, device_list=None):

@@ -1,14 +1,13 @@
 import dataclasses
-import gc
 import json
+import multiprocessing
 import multiprocessing.resource_tracker
 import shutil
-import sys
+import traceback
 from pathlib import Path
 from test.helpers import get_model_path, qwen_name_or_path
 
 import pytest
-import sglang as sgl
 import torch
 
 from auto_round import AutoRound
@@ -26,6 +25,34 @@ def _patched_stop(self, *args, _orig=_original_stop, **kwargs):
 
 
 multiprocessing.resource_tracker.ResourceTracker._stop = _patched_stop
+
+
+def _run_sglang_worker(model_path, connection):
+    try:
+        import sglang as sgl
+        from sglang.srt.server_args import ServerArgs
+
+        fields = {field.name for field in dataclasses.fields(ServerArgs)}
+        engine_kwargs = {"model_path": model_path, "mem_fraction_static": 0.5}
+        if "disable_piecewise_cuda_graph" in fields:
+            engine_kwargs["disable_piecewise_cuda_graph"] = True
+            if "cuda_graph_bs" in fields:
+                engine_kwargs["cuda_graph_bs"] = [1]
+        elif "disable_cuda_graph" in fields:
+            engine_kwargs["disable_cuda_graph"] = True
+            if "cuda_graph_bs_decode" in fields:
+                engine_kwargs["cuda_graph_bs_decode"] = [1]
+
+        llm = sgl.Engine(**engine_kwargs)
+        try:
+            outputs = llm.generate(["Hello, my name is"], {"temperature": 0.6, "top_p": 0.95})
+            connection.send((True, outputs[0]["text"]))
+        finally:
+            llm.shutdown()
+    except BaseException:
+        connection.send((False, traceback.format_exc()))
+    finally:
+        connection.close()
 
 
 class TestAutoRound:
@@ -65,36 +92,26 @@ class TestAutoRound:
             except Exception:
                 pass
 
-        def _server_arg_fields():
-            try:
-                from sglang.srt.server_args import ServerArgs
-
-                return {f.name for f in dataclasses.fields(ServerArgs)}
-            except Exception:
-                return set()
-
-        engine_kwargs = {"model_path": str(model_path), "mem_fraction_static": 0.5}
-        fields = _server_arg_fields()
-        if "disable_piecewise_cuda_graph" in fields:
-            engine_kwargs["disable_piecewise_cuda_graph"] = True
-            if "cuda_graph_bs" in fields:
-                engine_kwargs["cuda_graph_bs"] = [1]
-        elif "disable_cuda_graph" in fields:
-            engine_kwargs["disable_cuda_graph"] = True
-            if "cuda_graph_bs_decode" in fields:
-                engine_kwargs["cuda_graph_bs_decode"] = [1]
-
-        llm = sgl.Engine(**engine_kwargs)
+        context = multiprocessing.get_context("spawn")
+        parent_connection, child_connection = context.Pipe(duplex=False)
+        process = context.Process(target=_run_sglang_worker, args=(str(model_path), child_connection))
+        process.start()
+        child_connection.close()
         try:
-            prompts = ["Hello, my name is"]
-            sampling_params = {"temperature": 0.6, "top_p": 0.95}
-            outputs = llm.generate(prompts, sampling_params)
-            return outputs[0]["text"]
+            if not parent_connection.poll(600):
+                process.terminate()
+                pytest.fail("SGLang inference timed out after 600 seconds")
+            succeeded, result = parent_connection.recv()
         finally:
-            llm.shutdown()
-            del llm
-            gc.collect()
-            torch.cuda.empty_cache()
+            parent_connection.close()
+            process.join(timeout=30)
+            if process.is_alive():
+                process.kill()
+                process.join()
+
+        if not succeeded:
+            pytest.fail(f"SGLang worker failed:\n{result}")
+        return result
 
     def test_ar_format_sglang(self, dataloader):
         autoround = AutoRound(
