@@ -1858,7 +1858,13 @@ def _get_scheme_worker_count(num_schemes, num_gpus):
 
 
 def _can_parallel_scheme_scoring(
-    parallel_enabled, model_id, num_gpus, uncached_count, need_imatrix, disk_stream_model, is_vlm,
+    parallel_enabled,
+    model_id,
+    num_gpus,
+    uncached_count,
+    need_imatrix,
+    disk_stream_model,
+    is_vlm,
     low_gpu_mem_usage=True,
 ):
     """Return whether candidate schemes can be scored in separate workers."""
