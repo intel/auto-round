@@ -1613,11 +1613,59 @@ class TestMXFPAutoRoundFormat:
             ignored_layers=ignored,
         )
         extra = cfg.get("extra_config", {})
-        assert extra.get("lm_head") == {"bits": 16, "data_type": "float"}
-        assert extra.get("model.layers.0.mlp.gate") == {"bits": 16, "data_type": "float"}
+        full_precision = {"bits": 16, "data_type": "float", "act_bits": 16, "act_data_type": "float"}
+        assert extra.get("lm_head") == full_precision
+        assert extra.get("model.layers.0.mlp.gate") == full_precision
         # embed / conv are non-Linear — filtered out
         assert "model.embed_tokens" not in extra
         assert "model.conv1" not in extra
+
+    @require_compressed_tensors
+    def test_ignored_lm_head_loads_as_full_precision(self):
+        """An ignored lm_head must not inherit MXFP activation quantization."""
+        from types import SimpleNamespace
+
+        from transformers import OPTConfig, OPTForCausalLM
+
+        from auto_round.inference.convert_model import get_layer_config
+        from auto_round.utils import check_to_quantized
+
+        default = {
+            "bits": 4,
+            "group_size": 32,
+            "sym": True,
+            "data_type": "mx_fp",
+            "act_bits": 4,
+            "act_data_type": "mx_fp",
+            "act_dynamic": True,
+            "act_group_size": 32,
+            "act_sym": True,
+        }
+        quantization_config = _build_mxfp_autoround_quantization_config(
+            default,
+            quantized_layers=["model.decoder.layers.0.fc1"],
+            ignored_layers=["lm_head"],
+            block_name_to_quantize="model.decoder.layers",
+        )
+        model = OPTForCausalLM(
+            OPTConfig(
+                hidden_size=32,
+                ffn_dim=64,
+                num_hidden_layers=1,
+                num_attention_heads=4,
+                vocab_size=64,
+                word_embed_proj_dim=32,
+            )
+        )
+
+        layer_configs = get_layer_config(model, SimpleNamespace(**quantization_config))
+        lm_head_config = layer_configs["lm_head"]
+
+        assert lm_head_config.bits == 16
+        assert lm_head_config.act_bits == 16
+        assert lm_head_config.data_type == "float"
+        assert lm_head_config.act_data_type == "float"
+        assert not check_to_quantized(lm_head_config)
 
     @require_compressed_tensors
     def test_quantized_lm_head_in_extra_config(self):
@@ -1709,7 +1757,12 @@ class TestMXFPAutoRoundFormat:
         assert qc["model_free"] is True
         # lm_head kept full-precision → extra_config entry
         extra = qc.get("extra_config", {})
-        assert extra.get("lm_head") == {"bits": 16, "data_type": "float"}
+        assert extra.get("lm_head") == {
+            "bits": 16,
+            "data_type": "float",
+            "act_bits": 16,
+            "act_data_type": "float",
+        }
 
     @require_compressed_tensors
     def test_e2e_mxfp4_weight_tensors(self, tmp_path):
