@@ -18,7 +18,12 @@ from typing import Callable, Union
 
 import torch
 
-from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
+from auto_round.export.utils import (
+    is_immediate_saving_mode,
+    save_config_artifact,
+    save_model,
+    save_pretrained_artifact,
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -227,7 +232,7 @@ def save_quantized_as_llmcompressor(
         return model
 
     # save model.config, model.state_dict()
-    model.config.save_pretrained(output_dir)
+    save_config_artifact(model, output_dir)
 
     save_model(model, output_dir, safe_serialization=safe_serialization, immediate_saving=immediate_saving)
 
