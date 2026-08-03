@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import transformers
 
 from auto_round.eval import eval_cli
 
@@ -656,10 +657,13 @@ class TestLoadGgufModelIfNeeded:
         monkeypatch.setattr(eval_cli.os.path, "exists", lambda value: value == str(tmp_path) or value == str(gguf_path))
         monkeypatch.setattr(eval_cli.os, "listdir", lambda value: ["model.gguf"] if value == str(tmp_path) else [])
         monkeypatch.setattr(eval_cli, "get_model_dtype", lambda value="auto": "auto")
-        monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda *args, **kwargs: object())
-        monkeypatch.setattr(
-            "transformers.AutoModelForCausalLM.from_pretrained",
-            lambda *args, **kwargs: fake_model,
+        monkeypatch.setitem(
+            transformers.__dict__, "AutoTokenizer", SimpleNamespace(from_pretrained=lambda *args, **kwargs: object())
+        )
+        monkeypatch.setitem(
+            transformers.__dict__,
+            "AutoModelForCausalLM",
+            SimpleNamespace(from_pretrained=lambda *args, **kwargs: fake_model),
         )
 
         model, tokenizer, is_gguf, gguf_file = eval_cli._load_gguf_model_if_needed(
@@ -683,10 +687,13 @@ class TestLoadGgufModelIfNeeded:
         )
         monkeypatch.setattr(eval_cli.os, "listdir", lambda value: ["model.gguf"])
         monkeypatch.setattr(eval_cli, "get_model_dtype", lambda value="auto": "auto")
-        monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", lambda *args, **kwargs: object())
-        monkeypatch.setattr(
-            "transformers.AutoModelForCausalLM.from_pretrained",
-            lambda *args, **kwargs: fake_model,
+        monkeypatch.setitem(
+            transformers.__dict__, "AutoTokenizer", SimpleNamespace(from_pretrained=lambda *args, **kwargs: object())
+        )
+        monkeypatch.setitem(
+            transformers.__dict__,
+            "AutoModelForCausalLM",
+            SimpleNamespace(from_pretrained=lambda *args, **kwargs: fake_model),
         )
 
         model, tokenizer, is_gguf, gguf_file = eval_cli._load_gguf_model_if_needed(

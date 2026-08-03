@@ -38,19 +38,23 @@ def _make_mock_model(cls, hparams=None):
     obj.lora_needs_transpose = True
     rope_parameters = hparams.get("rope_parameters", hparams.get("rope_scaling")) or {}
     obj.rope_parameters = dict(rope_parameters) if isinstance(rope_parameters, dict) else {}
-    partial_rotary_factor = hparams.get("partial_rotary_factor") or hparams.get("rope_pct") or hparams.get(
-        "rope_percent"
+    partial_rotary_factor = (
+        hparams.get("partial_rotary_factor") or hparams.get("rope_pct") or hparams.get("rope_percent")
     )
     original_max_position_embeddings = hparams.get("original_max_position_embeddings")
     rope_theta = hparams.get(
-        "global_rope_theta", hparams.get("rope_global_theta", hparams.get("rope_theta_global", hparams.get(
-            "rope_theta", hparams.get("rotary_emb_base")
-        )))
+        "global_rope_theta",
+        hparams.get(
+            "rope_global_theta",
+            hparams.get("rope_theta_global", hparams.get("rope_theta", hparams.get("rotary_emb_base"))),
+        ),
     )
     local_rope_theta = hparams.get(
-        "local_rope_theta", hparams.get("rope_local_theta", hparams.get("rope_theta_local", hparams.get(
-            "swa_rope_theta", hparams.get("rope_local_base_freq")
-        )))
+        "local_rope_theta",
+        hparams.get(
+            "rope_local_theta",
+            hparams.get("rope_theta_local", hparams.get("swa_rope_theta", hparams.get("rope_local_base_freq"))),
+        ),
     )
     if "full_attention" not in obj.rope_parameters and "sliding_attention" not in obj.rope_parameters:
         if local_rope_theta is not None:
