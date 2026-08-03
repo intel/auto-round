@@ -409,6 +409,8 @@ def clean_tmp_model_folder():
     shutil.rmtree("./tmp", ignore_errors=True)  # unittest default workspace
     shutil.rmtree("./ar_work_space", ignore_errors=True)  # autoround default workspace
     shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default model output path
+    # autoround default AutoScheme cache path
+    shutil.rmtree(os.path.expanduser("~/.cache/auto_round"), ignore_errors=True)
 
 
 # Create objective fixtures for testing
