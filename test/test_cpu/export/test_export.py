@@ -659,3 +659,33 @@ def test_immediate_saving_mode(tiny_opt_model_path, tmp_path, low_cpu_mem_usage,
     with safe_open(os.path.join(quantized_model_path, safetensor_files[0]), framework="pt") as f:
         keys = f.keys()
         assert len(keys) > 0, "Safetensors file has no tensors"
+
+
+def test_save_model_writes_diffusers_config(tmp_path):
+    """A diffusers config is a FrozenDict with no save_pretrained; the export must still write it."""
+    diffusers = pytest.importorskip("diffusers")
+
+    from auto_round.export.utils import save_model
+
+    model = diffusers.SD3Transformer2DModel(
+        sample_size=8,
+        patch_size=2,
+        in_channels=4,
+        num_layers=1,
+        attention_head_dim=32,
+        num_attention_heads=2,
+        joint_attention_dim=64,
+        caption_projection_dim=64,
+        pooled_projection_dim=64,
+        out_channels=4,
+    )
+    assert not hasattr(model.config, "save_pretrained")
+    model.config.quantization_config = {"quant_method": "auto-round", "bits": 4}
+
+    # immediate_saving: weights are already on disk, only the configs are written
+    save_model(model, str(tmp_path), immediate_saving=True)
+
+    with open(os.path.join(tmp_path, "config.json")) as f:
+        config = json.load(f)
+    assert config["_class_name"] == "SD3Transformer2DModel"
+    assert config["quantization_config"] == {"quant_method": "auto-round", "bits": 4}
