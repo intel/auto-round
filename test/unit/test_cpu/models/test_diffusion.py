@@ -172,6 +172,43 @@ def test_flux(setup_flux):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
+def _build_empty_modular_pipeline():
+    """A ModularPipeline with no components, so nothing is downloaded or loaded."""
+    from diffusers.modular_pipelines import SequentialPipelineBlocks
+
+    class EmptyBlocks(SequentialPipelineBlocks):
+        block_classes = []
+        block_names = []
+
+    return EmptyBlocks().init_pipeline()
+
+
+def test_modular_pipeline_is_detected_as_diffusion():
+    """A ModularPipeline is not a DiffusionPipeline, but it is still a diffusion model."""
+    pytest.importorskip("diffusers.modular_pipelines")
+
+    from auto_round.utils.model import detect_model_type, is_diffusion_model, is_mllm_model
+
+    pipe = _build_empty_modular_pipeline()
+
+    assert is_mllm_model(pipe) is False
+    assert is_diffusion_model(pipe) is True
+    assert detect_model_type(pipe) == "diffusion"
+
+
+def test_modular_model_index_dir_is_detected_as_diffusion(tmp_path):
+    """Modular Diffusers ships modular_model_index.json instead of model_index.json."""
+    pytest.importorskip("diffusers.modular_pipelines")
+
+    from auto_round.utils.model import diffusion_load_model, is_diffusion_model
+
+    (tmp_path / "modular_model_index.json").write_text("{}", encoding="utf-8")
+
+    assert is_diffusion_model(str(tmp_path)) is True
+    with pytest.raises(NotImplementedError, match="Modular Diffusers"):
+        diffusion_load_model(str(tmp_path))
+
+
 # def test_flux_calib(setup_flux):
 #     pipe, output_dir = setup_flux
 #     autoround = AutoRound(
