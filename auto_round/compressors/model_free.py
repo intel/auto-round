@@ -1691,6 +1691,10 @@ def _validate_supported_scheme(
     # Activation quantization for MXFP is dynamic at inference time, so the
     # weight-only RTN path here is independent of act_bits.
     if is_mx_fp(data_type):
+        if scheme_obj.act_data_type not in (None, "mx_fp"):
+            raise ValueError(
+                "Model-free MXFP supports only act_data_type='mx_fp', " f"but got '{scheme_obj.act_data_type}'."
+            )
         # Restrict to the two explicitly supported MXFP presets when a string
         # name is provided.  Variants such as MXFP4_RCEIL / MXFP8_RCEIL use a
         # different activation format; silently mapping them to "MXFP4" /
@@ -2623,6 +2627,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             quant_lm_head=quant_lm_head,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
+        # Scheme fields are consumed above from ``kwargs``. Preserve them when
+        # a later format check falls back to the regular AutoRound flow.
+        fallback_init.update(self.user_scheme_overrides)
 
         self._fallback_init_kwargs = fallback_init
         if quant_nontext_module:

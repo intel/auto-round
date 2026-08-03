@@ -607,11 +607,18 @@ class _CompressorBuilder(object):
         # route predicate; otherwise the fast path silently drops them and
         # cannot emit the required export metadata.
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
-        if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
+        route_scheme = (
+            scheme
+            if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
+            else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
+        )
+        if is_model_free_route(
+            model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs
+        ):
             # Direct scheme fields are consumed into ``quant_config`` during
             # entry normalization. Pass the fully resolved scheme onward so
             # model-free export does not silently fall back to preset defaults.
-            model_free_scheme = QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
+            model_free_scheme = scheme if hasattr(scheme, "options") and hasattr(scheme, "avg_bits") else route_scheme
             return _build_model_free_compressor(
                 model,
                 model_free_scheme,
