@@ -220,8 +220,8 @@ class BaseOrchestrator(object):
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
 
-        self.dataset_was_explicitly_set = dataset is not None
-        self.dataset = dataset if self.dataset_was_explicitly_set else "NeelNanda/pile-10k"
+        dataset_was_explicitly_set = dataset is not None
+        self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
         batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
@@ -450,7 +450,7 @@ class BaseOrchestrator(object):
         calibrator_kind = self._get_calibrator_kind()
         # The default pile dataset is model-adaptive for pure-text LLMs. Any
         # non-default dataset remains untouched.
-        if self.need_calib and not self.dataset_was_explicitly_set and calibrator_kind == "llm":
+        if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
             from auto_round.calib_dataset import get_code_calibration_dataset
             from auto_round.utils.model import is_code_model
 
