@@ -180,7 +180,7 @@ static inline constexpr dnnl::memory::data_type to_dt() {
     return dnnl::memory::data_type::u8;
   } else if constexpr (std::is_same_v<T, bestla::utils::bf16>) {
     return dnnl::memory::data_type::bf16;
-  else
+  } else {
     static_assert(sizeof(T) == 0, "unsupported data type for to_dt<T>()");
 }
 
