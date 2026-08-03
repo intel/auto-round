@@ -15,7 +15,9 @@ This module covers behavior that is intentionally outside the public
 import math
 import sys
 from pathlib import Path
+
 import pytest
+
 cpuinfo = pytest.importorskip("cpuinfo")
 
 import torch
@@ -541,6 +543,12 @@ def test_debug_route_ignores_nonstandard_kwargs_for_homogeneous_paths():
     k_bf16 = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
     v_bf16 = torch.randn(batch, heads, seq, head_dim, dtype=torch.bfloat16)
 
-    assert _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16, use_alibi=True) == _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16)
-    assert _resolved_cpu_sdpa_route(q_bf16, k_bf16, v_bf16, prefer_fp32=True) == _resolved_cpu_sdpa_route(q_bf16, k_bf16, v_bf16)
-    assert _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16, n_padding=[seq]) == _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16)
+    assert _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16, use_alibi=True) == _resolved_cpu_sdpa_route(
+        q_fp16, k_fp16, v_fp16
+    )
+    assert _resolved_cpu_sdpa_route(q_bf16, k_bf16, v_bf16, prefer_fp32=True) == _resolved_cpu_sdpa_route(
+        q_bf16, k_bf16, v_bf16
+    )
+    assert _resolved_cpu_sdpa_route(q_fp16, k_fp16, v_fp16, n_padding=[seq]) == _resolved_cpu_sdpa_route(
+        q_fp16, k_fp16, v_fp16
+    )

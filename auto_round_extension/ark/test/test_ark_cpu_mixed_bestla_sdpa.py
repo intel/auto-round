@@ -72,7 +72,9 @@ def test_bestla_mixed_sdpa_matches_torch(kv_dtype, is_causal, layout):
         q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=is_causal
     )
     try:
-        actual = _mixed_sdpa(_to_layout(q, layout), _to_layout(k, layout), _to_layout(v, layout), scale, is_causal, layout)
+        actual = _mixed_sdpa(
+            _to_layout(q, layout), _to_layout(k, layout), _to_layout(v, layout), scale, is_causal, layout
+        )
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
 

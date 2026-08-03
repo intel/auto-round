@@ -245,15 +245,20 @@ def run_packed_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, warmup
 
     if not hasattr(auto_round_kernel, "internal") or not hasattr(auto_round_kernel.internal, "cpu"):
         raise NotImplementedError("internal.cpu namespace is unavailable")
-    cache_k, cache_v = auto_round_kernel.internal.cpu.packed_kv_alloc(
-        batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype
-    )
+    cache_k, cache_v = auto_round_kernel.internal.cpu.packed_kv_alloc(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
     auto_round_kernel.internal.cpu.update_packed_kv(cache_k, cache_v, k, v, 0, seq_kv)
 
     def packed_call():
         return auto_round_kernel.internal.cpu.bestla_sdpa_packed(
-            q, cache_k, cache_v, seq_kv, seq_kv, heads_kv,
-            is_causal=False, scale=scale, tensor_layout="HND",
+            q,
+            cache_k,
+            cache_v,
+            seq_kv,
+            seq_kv,
+            heads_kv,
+            is_causal=False,
+            scale=scale,
+            tensor_layout="HND",
         )
 
     actual = packed_call()
@@ -338,7 +343,9 @@ def _print_raw_vs_packed(raw_rows, packed_rows):
     print("\n[mixed raw vs packed decode]")
     print(header)
     print("-" * len(header))
-    packed_index = {(r["batch"], r["heads_q"], r["heads_kv"], r["head_dim"], r["seq_kv"], r["kv_dtype"]): r for r in packed_rows}
+    packed_index = {
+        (r["batch"], r["heads_q"], r["heads_kv"], r["head_dim"], r["seq_kv"], r["kv_dtype"]): r for r in packed_rows
+    }
     for raw in raw_rows:
         key = (raw["batch"], raw["heads_q"], raw["heads_kv"], raw["head_dim"], raw["seq_kv"], raw["kv_dtype"])
         packed = packed_index.get(key)
@@ -356,9 +363,27 @@ def _write_csv(path, rows):
     if not path or not rows:
         return
     fieldnames = [
-        "section", "shape", "batch", "heads_q", "heads_kv", "head_dim", "seq_q", "seq_kv",
-        "dtype", "q_dtype", "kv_dtype", "route", "ark_ms", "packed_ms", "ref_ms",
-        "ark_best_ms", "packed_best_ms", "ref_best_ms", "speedup", "max_abs_err", "passed",
+        "section",
+        "shape",
+        "batch",
+        "heads_q",
+        "heads_kv",
+        "head_dim",
+        "seq_q",
+        "seq_kv",
+        "dtype",
+        "q_dtype",
+        "kv_dtype",
+        "route",
+        "ark_ms",
+        "packed_ms",
+        "ref_ms",
+        "ark_best_ms",
+        "packed_best_ms",
+        "ref_best_ms",
+        "speedup",
+        "max_abs_err",
+        "passed",
     ]
     with open(path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -389,7 +414,11 @@ def main(argv=None):
     public_rows = []
     for dtype in PUBLIC_DTYPES:
         for shape_kind, batch, hq, hkv, hd, seq in _build_cases(args.shape):
-            public_rows.append(run_public_case(shape_kind, batch, hq, hkv, hd, seq, dtype, args.warmup, args.runs, args.atol, args.rtol))
+            public_rows.append(
+                run_public_case(
+                    shape_kind, batch, hq, hkv, hd, seq, dtype, args.warmup, args.runs, args.atol, args.rtol
+                )
+            )
     all_passed = _print_public_rows(public_rows)
 
     mixed_raw_rows = []
@@ -402,12 +431,15 @@ def main(argv=None):
                 mixed_raw_rows.append(
                     run_mixed_raw_case(batch, hq, hkv, hd, seq, kv_dtype, args.warmup, args.runs, args.atol, args.rtol)
                 )
-        all_passed = _print_mixed_rows(
-            mixed_raw_rows,
-            "mixed raw decode — q=float32, kv=fp16/bf16",
-            "ark_ms",
-            "raw(ms)",
-        ) and all_passed
+        all_passed = (
+            _print_mixed_rows(
+                mixed_raw_rows,
+                "mixed raw decode — q=float32, kv=fp16/bf16",
+                "ark_ms",
+                "raw(ms)",
+            )
+            and all_passed
+        )
 
         for kv_dtype in MIXED_KV_DTYPES:
             for _, batch, hq, hkv, hd, seq in decode_cases:
@@ -422,12 +454,15 @@ def main(argv=None):
             if packed_error is not None:
                 break
         if packed_rows:
-            all_passed = _print_mixed_rows(
-                packed_rows,
-                "packed kv decode — q=float32, kv=fp16/bf16",
-                "packed_ms",
-                "packed(ms)",
-            ) and all_passed
+            all_passed = (
+                _print_mixed_rows(
+                    packed_rows,
+                    "packed kv decode — q=float32, kv=fp16/bf16",
+                    "packed_ms",
+                    "packed(ms)",
+                )
+                and all_passed
+            )
             _print_raw_vs_packed(mixed_raw_rows, packed_rows)
         else:
             print("\n[packed kv decode — q=float32, kv=fp16/bf16]")

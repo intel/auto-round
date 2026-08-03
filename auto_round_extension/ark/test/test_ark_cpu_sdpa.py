@@ -12,8 +12,10 @@ import inspect
 import math
 import sys
 from pathlib import Path
+
 import pytest
 import torch
+
 cpuinfo = pytest.importorskip("cpuinfo")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -75,6 +77,7 @@ def _resolved_cpu_sdpa_route(query, key, value, **kwargs):
 
 def _public_fp16_hom_route_expected():
     return ROUTE_HOMOGENEOUS_FP16 if (HAS_AVX512_FP16 and BUILD_HAS_FP16_ROUTE) else ROUTE_SCALAR
+
 
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
 def test_ark_cpu_sdpa_decode_matches_torch_for_layout(layout):
@@ -173,9 +176,7 @@ def test_ark_cpu_sdpa_decode_spans_multiple_kv_tiles(seq_kv):
     k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32)
     v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32)
 
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, scale=scale, enable_gqa=True, is_causal=False
-    )
+    expected = torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=scale, enable_gqa=True, is_causal=False)
     actual = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
     torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
@@ -192,9 +193,7 @@ def test_ark_cpu_sdpa_prefill_causal_multi_tile(layout):
     k_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.float32)
     v_hnd = torch.randn(batch, heads, seq, head_dim, dtype=torch.float32)
 
-    expected_hnd = torch.nn.functional.scaled_dot_product_attention(
-        q_hnd, k_hnd, v_hnd, scale=scale, is_causal=True
-    )
+    expected_hnd = torch.nn.functional.scaled_dot_product_attention(q_hnd, k_hnd, v_hnd, scale=scale, is_causal=True)
     actual = auto_round_kernel.sdpa(
         _to_layout(q_hnd, layout),
         _to_layout(k_hnd, layout),
@@ -262,9 +261,7 @@ def test_homogeneous_half_preserves_sdpa_semantics(dtype):
     k = torch.randn(batch, heads, seq, head_dim, dtype=dtype)
     v = torch.randn(batch, heads, seq, head_dim, dtype=dtype)
 
-    expected = torch.nn.functional.scaled_dot_product_attention(
-        q.float(), k.float(), v.float(), scale=scale
-    )
+    expected = torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float(), scale=scale)
 
     out = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
