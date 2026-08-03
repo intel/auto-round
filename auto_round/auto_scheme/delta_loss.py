@@ -1858,11 +1858,19 @@ def _get_scheme_worker_count(num_schemes, num_gpus):
 
 
 def _can_parallel_scheme_scoring(
-    parallel_enabled, model_id, num_gpus, uncached_count, need_imatrix, disk_stream_model, is_vlm
+    parallel_enabled,
+    model_id,
+    num_gpus,
+    uncached_count,
+    need_imatrix,
+    disk_stream_model,
+    is_vlm,
+    low_gpu_mem_usage=True,
 ):
     """Return whether candidate schemes can be scored in separate workers."""
     return (
         parallel_enabled
+        and low_gpu_mem_usage
         and model_id is not None
         and num_gpus >= 1
         and uncached_count >= 2
@@ -2441,6 +2449,7 @@ def _gen_layer_config(
             need_imatrix,
             worker_disk_stream_model,
             is_vlm,
+            low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
         )
         logger.info(
             "AutoScheme scoring mode: parallel_configured=%s, parallel_enabled=%s, disk_stream_enabled=%s",
