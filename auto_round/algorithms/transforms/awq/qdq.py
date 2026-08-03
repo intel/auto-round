@@ -164,6 +164,7 @@ class QDQTool:
             )
             if init_scale is not None:
                 quant_kwargs["init_scale"] = init_scale
+                quant_kwargs["imatrix"] = imatrix if isinstance(imatrix, torch.Tensor) else torch.ones_like(weight)
                 active_quant_func = opt_quant_func
 
         qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)

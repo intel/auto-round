@@ -2645,7 +2645,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         logger.info(
             "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
-            format,
+            self.format,
         )
         logger.info(
             "fallbacked_init_kwargs: %s",

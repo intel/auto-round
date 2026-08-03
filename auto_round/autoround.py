@@ -305,13 +305,11 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
     # AutoScheme always requires calibration data for delta-loss based scheme
     # selection, regardless of whether imatrix is needed.
     quant_config.enable_imatrix = enable_imatrix
-    if enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme):
+    needs_optimized_rtn = enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme)
+    if needs_optimized_rtn:
         if not isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = OptimizedRTNConfig
-
-    if isinstance(quant_config, OptimizedRTNConfig):
-        pass  # keep OptimizedRTNConfig as-is
-    elif not (enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme)):
+    else:
         # Pure zero-shot RTN: downgrade to basic RTNConfig
         if isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = RTNConfig
@@ -492,6 +490,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
         else:
             targets = [config for config in configs if key in _config_fields(config)]
         if not targets:
+            # ``iters`` is a legacy route selector.  RTN intentionally has no
+            # iterative parameter, so ``iters=0`` must not be reported as an
+            # ignored algorithm-specific error after selecting RTN.
+            if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
+                continue
             owner = "AWQ" if key in _AWQ_FIELDS else "the selected algorithm"
             logger.error(
                 "%s-specific parameter '%s' was provided, but %s is not enabled by alg_configs. "
@@ -626,6 +629,7 @@ class _CompressorBuilder(object):
                 tokenizer,
                 device_map,
                 announced_via_flag=bool(route_kwargs.get("model_free", False)),
+                enable_torch_compile=enable_torch_compile,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,
