@@ -973,7 +973,7 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch(
 
   if (A_avg_M <= 8) {
     ARK_DPAS_PT_LAUNCH(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 512) {
+  } else if (A_avg_M <= 32) {
     ARK_DPAS_PT_LAUNCH(dpas_w8a16_policy_m_32);
   } else {
     ARK_DPAS_PT_LAUNCH(dpas_w8a16_policy);
