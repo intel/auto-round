@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from auto_round.autoround import AutoRound
+from auto_round.autoround import AutoRound, AutoRoundAdam, AutoRoundDiffusion, AutoRoundLLM, AutoRoundMLLM
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import (
     AdamRoundConfig,
@@ -33,6 +33,10 @@ from .version import __version__
 __all__ = [
     "__version__",
     "AutoRound",
+    "AutoRoundLLM",
+    "AutoRoundMLLM",
+    "AutoRoundAdam",
+    "AutoRoundDiffusion",
     "AutoScheme",
     "QuantizationScheme",
     "RTNConfig",

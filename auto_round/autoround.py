@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
-from auto_round.logger import logger
+from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.device_manager import normalize_default_device_map
 
@@ -602,7 +602,11 @@ class _CompressorBuilder(object):
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
-        route_decision_kwargs = dict(route_kwargs, format=format)
+        # Model-free eligibility also depends on base-level options such as
+        # static KV/attention quantization. Keep those options visible to the
+        # route predicate; otherwise the fast path silently drops them and
+        # cannot emit the required export metadata.
+        route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
         if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
             return _build_model_free_compressor(
                 model,
@@ -719,3 +723,30 @@ class AutoRound:
             seqlen=seqlen,
             **runtime_kwargs,
         )
+
+
+# Keep legacy entry points available for downstream integrations such as
+# Neural Compressor. They delegate to the unified entry point.
+@deprecated("AutoRound")
+class AutoRoundLLM:
+    def __new__(cls, *args, **kwargs):
+        return AutoRound(*args, **kwargs)
+
+
+@deprecated("AutoRound")
+class AutoRoundAdam:
+    def __new__(cls, *args, **kwargs):
+        kwargs.setdefault("enable_adam", True)
+        return AutoRound(*args, **kwargs)
+
+
+@deprecated("AutoRound")
+class AutoRoundMLLM:
+    def __new__(cls, *args, **kwargs):
+        return AutoRound(*args, **kwargs)
+
+
+@deprecated("AutoRound")
+class AutoRoundDiffusion:
+    def __new__(cls, *args, **kwargs):
+        return AutoRound(*args, **kwargs)

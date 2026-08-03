@@ -2021,6 +2021,9 @@ class _ModelFreeCompressorCore:
 
     def _parse_scheme(self) -> None:
         scheme_in = self.scheme_input
+        scheme_overrides = getattr(self, "user_scheme_overrides", None)
+        if scheme_overrides:
+            scheme_in = _apply_scheme_overrides(scheme_in, scheme_overrides)
         if isinstance(scheme_in, str) and scheme_in.upper() == "W4A16_MIXED":
             # Match regular-flow mixed recipe behavior in model-free mode:
             # default non-expert linear layers use 8-bit; expert overrides are
