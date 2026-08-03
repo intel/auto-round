@@ -18,5 +18,7 @@ def test_awq_plus_autoround_quantize_smoke(tiny_opt_model_path, dataloader):
 
     model, layer_config = ar.quantize()
 
+    assert [type(pre).__name__ for pre in ar.alg_composer.preprocessors] == ["AWQTransform"]
+    assert type(ar.alg_composer.block_quantizer).__name__ == "SignRoundQuantizer"
     assert model is not None
     assert layer_config

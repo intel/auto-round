@@ -22,6 +22,7 @@ from auto_round.algorithms.registry import (
     iter_algorithm_entries,
     register_algorithm,
     resolve_algorithm_alias,
+    resolve_algorithm_names,
 )
 
 # ============================================================================
@@ -108,14 +109,11 @@ class AlgorithmHandler(ABC):
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
 
-        # Resolve aliases, drop unknowns, deduplicate preserving order
-        seen: set[str] = set()
-        canonical: list[str] = []
-        for n in names:
-            c = cls.resolve_alias(n)
-            if c and c not in seen:
-                canonical.append(c)
-                seen.add(c)
+        # Resolve aliases, drop unknowns, deduplicate preserving order.
+        # Python API strings use this same resolver so their composition
+        # semantics cannot drift apart again.
+        canonical = resolve_algorithm_names(names, ignore_unknown=True)
+        seen = set(canonical)
 
         # Default quantization algorithm if none was specified
         if not ({"awq", "rtn", "auto_round"} & seen):

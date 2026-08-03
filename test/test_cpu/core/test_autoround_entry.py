@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
@@ -15,6 +17,12 @@ def test_default_alg_configs_is_signround():
     configs = _normalize_alg_configs(None)
 
     assert _types(configs) == ["SignRoundConfig"]
+
+
+def test_public_entry_keeps_legacy_algorithm_parameter():
+    from auto_round import AutoRound
+
+    assert "algorithm" in inspect.signature(AutoRound.__new__).parameters
 
 
 @pytest.mark.parametrize(
@@ -66,9 +74,85 @@ def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():
     assert configs[0].disable_opt_rtn is True
 
 
-def test_direct_algorithm_is_rejected():
-    with pytest.raises(ValueError, match="alg_configs"):
-        _normalize_alg_configs(None, direct_kwargs={"algorithm": "rtn"})
+@pytest.mark.parametrize("algorithm", ["signround", "auto_round", "autoround"])
+def test_legacy_signround_alias_with_zero_iters_selects_rtn(algorithm):
+    legacy_configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": algorithm, "iters": 0})
+    unified_configs = _normalize_alg_configs(algorithm, direct_kwargs={"iters": 0})
+
+    assert len(legacy_configs) == len(unified_configs) == 1
+    assert isinstance(legacy_configs[0], RTNConfig)
+    assert isinstance(unified_configs[0], RTNConfig)
+
+
+def test_explicit_zero_iter_signround_config_selects_rtn():
+    configs = _normalize_alg_configs(SignRoundConfig(iters=0))
+
+    assert len(configs) == 1
+    assert isinstance(configs[0], RTNConfig)
+
+
+def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
+    configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,signround", "iters": 0})
+
+    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "expected_types"),
+    [
+        ("rtn", ["OptimizedRTNConfig"]),
+        ("awq", ["AWQConfig", "OptimizedRTNConfig"]),
+        ("signround", ["SignRoundConfig"]),
+        ("awq,signround", ["AWQConfig", "SignRoundConfig"]),
+    ],
+)
+def test_legacy_algorithm_matches_alg_configs_aliases(algorithm, expected_types):
+    legacy_configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": algorithm})
+    unified_configs = _normalize_alg_configs(algorithm)
+
+    assert _types(legacy_configs) == expected_types
+    assert _types(unified_configs) == expected_types
+
+
+def test_algorithm_and_alg_configs_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="cannot be used together"):
+        _normalize_alg_configs("signround", direct_kwargs={"algorithm": "rtn"})
+
+
+def test_string_and_string_sequence_use_same_alias_deduplication():
+    comma_configs = _normalize_alg_configs("awq,awq,signround")
+    sequence_configs = _normalize_alg_configs(["awq", "awq", "signround"])
+
+    assert _types(comma_configs) == ["AWQConfig", "SignRoundConfig"]
+    assert _types(sequence_configs) == _types(comma_configs)
+
+
+def test_legacy_combined_algorithm_forwards_each_algorithm_option():
+    configs = _normalize_alg_configs(
+        None,
+        direct_kwargs={"algorithm": "awq,signround", "n_grid": 7, "iters": 3, "enable_alg_ext": False},
+    )
+
+    assert _types(configs) == ["AWQConfig", "SignRoundConfig"]
+    assert configs[0].n_grid == 7
+    assert configs[1].iters == 3
+    assert configs[1].enable_alg_ext is False
+
+
+@pytest.mark.parametrize(
+    "configs",
+    [
+        lambda: _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,signround", "iters": 3}),
+        lambda: _normalize_alg_configs([AWQConfig(), SignRoundConfig(iters=3)]),
+    ],
+)
+def test_legacy_and_unified_composition_select_same_v1_quantizer(configs):
+    from auto_round.algorithms.composer import AlgorithmComposer
+
+    composer = AlgorithmComposer(configs())
+
+    assert [type(pre).__name__ for pre in composer.preprocessors] == ["AWQTransform"]
+    assert type(composer.block_quantizer).__name__ == "SignRoundQuantizer"
 
 
 def test_direct_enable_opt_rtn_forces_optimized_rtn():

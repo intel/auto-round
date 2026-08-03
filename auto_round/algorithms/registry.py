@@ -90,6 +90,39 @@ def resolve_algorithm_alias(alias: str) -> str | None:
     return _ALIAS_TO_NAME.get(alias.strip().lower())
 
 
+def resolve_algorithm_names(algorithms, *, ignore_unknown: bool = False) -> list[str]:
+    """Resolve one algorithm string or sequence to ordered canonical names.
+
+    A comma-separated string and a sequence use exactly the same semantics.
+    Duplicate aliases are removed while preserving the first occurrence.
+    """
+    if isinstance(algorithms, str):
+        raw_names = algorithms.split(",")
+    else:
+        raw_names = list(algorithms)
+
+    canonical_names = []
+    seen = set()
+    for raw_name in raw_names:
+        if not isinstance(raw_name, str):
+            raise TypeError(f"Algorithm names must be strings, got {type(raw_name).__name__}.")
+        name = raw_name.strip()
+        if not name:
+            continue
+        canonical = resolve_algorithm_alias(name)
+        if canonical is None:
+            if ignore_unknown:
+                continue
+            raise ValueError(
+                f"Unknown algorithm alias '{name}'. Supported aliases: {sorted(_ALIAS_TO_NAME.keys())}. "
+                "If you are adding a new algorithm, register it via auto_round.algorithms.registry.register_algorithm()."
+            )
+        if canonical not in seen:
+            canonical_names.append(canonical)
+            seen.add(canonical)
+    return canonical_names
+
+
 def get_algorithm_entry(name: str) -> AlgRegistryEntry:
     _ensure_builtin_algorithms_registered()
     canonical = resolve_algorithm_alias(name)

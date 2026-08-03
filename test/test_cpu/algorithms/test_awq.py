@@ -456,6 +456,12 @@ class TestAWQUseV2ScaleSearch:
             assert init_scale is not None, dt
             assert init_scale.shape[0] == weight_reshape.shape[0]
 
+        # Scalar imatrix sentinels mean uniform importance and must not enter
+        # the tensor reshape path.
+        scalar_init_scale = search_optimized_init_scale(weight_reshape, "mx_fp4", 4, 1.0)
+        assert scalar_init_scale is not None
+        assert scalar_init_scale.shape == init_scale.shape
+
         # asym int and *_dq are not part of the optimized init-scale path.
         assert search_optimized_init_scale(torch.randn(4, 128), "int_asym", 4, None) is None
         assert search_optimized_init_scale(torch.randn(4, 128), "int_sym_dq", 4, None) is None
