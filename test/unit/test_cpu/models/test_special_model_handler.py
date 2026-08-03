@@ -465,118 +465,60 @@ class TestPreDefinedIgnoreLayers:
 
 
 class TestCheckMllmModelBatch:
-    """Test check_mllm_model_batch function."""
+    """Test check_mllm_only_support_bs1 function.
 
-    def _create_mock_model(self, model_type):
+    Note: ``check_mllm_model_batch`` was replaced by ``check_mllm_only_support_bs1``
+    during the compressor/quantizer refactor (#2039). The new helper returns a bool
+    indicating whether the model only supports ``batch_size == 1`` instead of
+    clamping the batch size itself.
+    """
+
+    def _create_mock_model(self, model_type, architectures=None):
         mock_model = MagicMock()
         mock_model.config.model_type = model_type
+        if architectures is not None:
+            mock_model.config.architectures = architectures
         return mock_model
 
-    def test_llava_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
+    @pytest.mark.parametrize(
+        "model_type",
+        [
+            "llava",
+            "qwen2_vl",
+            "phi3_v",
+            "mllama",
+            "qwen2_5_omni",
+            "qwen3_omni_moe",
+            "glm_image",
+            "mimo_audio",
+            "qwen3_tts",
+        ],
+    )
+    def test_mllm_requires_batch_size_1(self, model_type):
+        from auto_round.special_model_handler import check_mllm_only_support_bs1
 
-        mock_model = self._create_mock_model("llava")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
+        mock_model = self._create_mock_model(model_type)
+        assert check_mllm_only_support_bs1(mock_model) is True
 
-    def test_qwen2_vl_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("qwen2_vl")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_qwen2_5_omni_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("qwen2_5_omni")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_qwen3_omni_moe_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("qwen3_omni_moe")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_glm_image_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("glm_image")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_mimo_audio_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("mimo_audio")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_qwen3_tts_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("qwen3_tts")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_phi3_v_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("phi3_v")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_mllama_rejects_batch_greater_than_1(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("mllama")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 2, gradient_accumulate_steps=1)
-        assert result_bs == 1
-        assert result_gas == 2
-
-    def test_single_batch_allowed(self):
-        from auto_round.special_model_handler import check_mllm_model_batch
-
-        mock_model = self._create_mock_model("llava")
-        result_bs, result_gas = check_mllm_model_batch(mock_model, 1)
-        assert result_bs == 1
-        assert result_gas == 1
-
-    def test_non_mllm_batch_allowed(self):
-        from auto_round.special_model_handler import check_mllm_model_batch
+    def test_non_mllm_allows_batch_greater_than_1(self):
+        from auto_round.special_model_handler import check_mllm_only_support_bs1
 
         mock_model = self._create_mock_model("gpt2")
-        result_bs, result_gas = check_mllm_model_batch(mock_model, 4)
-        assert result_bs == 4
-        assert result_gas == 1
+        assert check_mllm_only_support_bs1(mock_model) is False
 
-    def test_gradient_accumulate_steps(self, caplog):
-        from auto_round.special_model_handler import check_mllm_model_batch
+    def test_model_without_config_returns_false(self):
+        from auto_round.special_model_handler import check_mllm_only_support_bs1
 
-        mock_model = self._create_mock_model("llava")
-        with caplog.at_level("WARNING"):
-            result_bs, result_gas = check_mllm_model_batch(mock_model, 4, gradient_accumulate_steps=2)
-        assert result_bs == 1
-        assert result_gas == 8
+        mock_model = MagicMock()
+        mock_model.config = None
+        assert check_mllm_only_support_bs1(mock_model) is False
+
+    def test_architecture_based_override(self):
+        """MiMo-Audio has architecture MiMoAudioModel but model_type qwen2."""
+        from auto_round.special_model_handler import check_mllm_only_support_bs1
+
+        mock_model = self._create_mock_model("qwen2", architectures=["MiMoAudioModel"])
+        assert check_mllm_only_support_bs1(mock_model) is True
 
 
 class TestNormalizeGemma4PerLayerInput:

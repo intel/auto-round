@@ -23,7 +23,7 @@ class TestSplitInputs:
     """Tests for split_inputs."""
 
     def test_diffusion_extracts_hidden_state(self):
-        """Test diffusion mode extracts all hidden_state keys."""
+        """Diffusion mode extracts the primary hidden_states; aux tensors stay for replay."""
         inputs = {
             "hidden_states": torch.randn(2, 4),
             "hidden_state_v2": torch.randn(2, 4),
@@ -32,7 +32,7 @@ class TestSplitInputs:
         input_ids, input_others = split_inputs(inputs, "input_ids", is_diffusion=True)
 
         assert "hidden_states" in input_ids
-        assert "hidden_state_v2" in input_ids
+        assert "hidden_state_v2" in input_others
         assert "attention_mask" in input_others
         assert "hidden_states" not in input_others
         # Original dict was mutated

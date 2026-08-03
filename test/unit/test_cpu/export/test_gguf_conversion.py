@@ -36,7 +36,36 @@ def _make_mock_model(cls, hparams=None):
     obj._experts = None
     obj.lerp_weights = {}
     obj.lora_needs_transpose = True
-    obj.rope_parameters = hparams.get("rope_parameters", {})
+    rope_parameters = hparams.get("rope_parameters", hparams.get("rope_scaling")) or {}
+    obj.rope_parameters = dict(rope_parameters) if isinstance(rope_parameters, dict) else {}
+    partial_rotary_factor = hparams.get("partial_rotary_factor") or hparams.get("rope_pct") or hparams.get(
+        "rope_percent"
+    )
+    original_max_position_embeddings = hparams.get("original_max_position_embeddings")
+    rope_theta = hparams.get(
+        "global_rope_theta", hparams.get("rope_global_theta", hparams.get("rope_theta_global", hparams.get(
+            "rope_theta", hparams.get("rotary_emb_base")
+        )))
+    )
+    local_rope_theta = hparams.get(
+        "local_rope_theta", hparams.get("rope_local_theta", hparams.get("rope_theta_local", hparams.get(
+            "swa_rope_theta", hparams.get("rope_local_base_freq")
+        )))
+    )
+    if "full_attention" not in obj.rope_parameters and "sliding_attention" not in obj.rope_parameters:
+        if local_rope_theta is not None:
+            obj.rope_parameters["sliding_attention"] = {"rope_theta": local_rope_theta}
+        if "rope_theta" not in obj.rope_parameters and rope_theta is not None:
+            obj.rope_parameters["rope_theta"] = rope_theta
+        if "rope_type" not in obj.rope_parameters and obj.rope_parameters.get("type") is not None:
+            obj.rope_parameters["rope_type"] = obj.rope_parameters["type"]
+        if "partial_rotary_factor" not in obj.rope_parameters and partial_rotary_factor is not None:
+            obj.rope_parameters["partial_rotary_factor"] = partial_rotary_factor
+        if (
+            "original_max_position_embeddings" not in obj.rope_parameters
+            and original_max_position_embeddings is not None
+        ):
+            obj.rope_parameters["original_max_position_embeddings"] = original_max_position_embeddings
     obj.fuse_gate_up_exps = False
     obj.hparams_vision = hparams.get("hparams_vision")
     obj.global_config = hparams.get("global_config", {})
@@ -491,7 +520,7 @@ class TestNemotronConversion:
                 "factor": 4.0,
             },
         )
-        obj.rope_parameters = {"rope_type": "linear", "factor": 4.0}
+        obj.rope_parameters = {"rope_type": "linear", "factor": 4.0, "partial_rotary_factor": 0.25}
 
         obj.set_gguf_parameters()
 
@@ -1336,6 +1365,10 @@ class TestStep3Conversion:
                 "partial_rotary_factors": [1.0] * 2,
             },
         )
+        # Step35Model.index_tensors() normally stashes the trunk layer count into
+        # this class attribute before filter_tensors() runs; the mock bypasses
+        # __init__/index_tensors, so set it explicitly here.
+        Step35Model._n_main_layers = 2
 
         name, gen = "model.layers.0.moe.router_bias", lambda: None
         result = obj.filter_tensors((name, gen))
@@ -4685,7 +4718,7 @@ class TestPhiConversion:
                 "intermediate_size": 8192,
             },
         )
-        obj.rope_parameters = {"full_attention": {"rope_theta": 10000.0}}
+        obj.rope_parameters = {"full_attention": {"rope_theta": 10000.0}, "original_max_position_embeddings": 4096}
         obj.set_gguf_parameters()
         w = obj.gguf_writer
         w.add_context_length.assert_called_once_with(4096)
@@ -4717,7 +4750,7 @@ class TestPhiConversion:
                 "sliding_window": 512,
             },
         )
-        obj.rope_parameters = {"rope_theta": 10000.0}
+        obj.rope_parameters = {"rope_theta": 10000.0, "original_max_position_embeddings": 4096}
         obj.set_gguf_parameters()
         obj.gguf_writer.add_sliding_window.assert_called_once_with(512)
 
@@ -4744,7 +4777,13 @@ class TestPhiConversion:
                 },
             },
         )
-        obj.rope_parameters = {"rope_theta": 10000.0}
+        obj.rope_parameters = {
+            "rope_theta": 10000.0,
+            "original_max_position_embeddings": 4096,
+            "rope_type": "longrope",
+            "long_factor": [1.0] * 48,
+            "short_factor": [1.0] * 48,
+        }
         results = list(obj.generate_extra_tensors())
         # Should yield 2 tensors: long and short factors
         assert len(results) == 2

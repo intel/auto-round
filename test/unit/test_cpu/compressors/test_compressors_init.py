@@ -30,17 +30,16 @@ class TestCompressorsLazyImports:
         assert BaseCompressor is not None
         assert isinstance(BaseCompressor, type)
 
-    def test_data_driven_compressor_lazy_import(self):
-        DataDrivenCompressor = compressors.DataDrivenCompressor
-        assert DataDrivenCompressor is not None
-
-    def test_calibrated_rtn_compressor_lazy_import(self):
-        CalibratedRTNCompressor = compressors.CalibratedRTNCompressor
-        assert CalibratedRTNCompressor is not None
+    def test_compression_orchestrator_lazy_import(self):
+        CompressionOrchestrator = compressors.CompressionOrchestrator
+        assert CompressionOrchestrator is not None
+        assert isinstance(CompressionOrchestrator, type)
 
     def test_zero_shot_compressor_lazy_import(self):
+        # Backward-compat alias resolving to CompressionOrchestrator
         ZeroShotCompressor = compressors.ZeroShotCompressor
         assert ZeroShotCompressor is not None
+        assert ZeroShotCompressor is compressors.CompressionOrchestrator
 
     def test_model_free_compressor_lazy_import(self):
         ModelFreeCompressor = compressors.ModelFreeCompressor
@@ -52,12 +51,11 @@ class TestCompressorsLazyImports:
 
     def test_all_contains_expected(self):
         assert "AutoRound" in compressors.__all__
+        assert "BaseOrchestrator" in compressors.__all__
         assert "BaseCompressor" in compressors.__all__
-        assert "DataDrivenCompressor" in compressors.__all__
-        assert "CalibratedRTNCompressor" in compressors.__all__
-        assert "ZeroShotCompressor" in compressors.__all__
-        assert "ModelFreeCompressor" in compressors.__all__
+        assert "CompressionOrchestrator" in compressors.__all__
         assert "AutoRoundCompatible" in compressors.__all__
+        assert "ModelFreeCompressor" in compressors.__all__
 
     def test_caching_same_object(self):
         """Second access returns the same object."""

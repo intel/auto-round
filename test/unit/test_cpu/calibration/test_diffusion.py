@@ -22,7 +22,6 @@ import torch
 from auto_round.calibration.diffusion import DiffusionCalibrator
 from auto_round.calibration.register import get_calibrator
 from auto_round.utils.device_manager import device_manager
-from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
 
 class FakeTqdm:
@@ -50,6 +49,7 @@ class FakePipeline:
     def __init__(self, device=torch.device("cpu"), fn=None):
         self.device = device
         self._fn = fn or (lambda *args, **kwargs: None)
+        self._autoround_pipeline_fn = None
 
     def __call__(self, *args, **kwargs):
         return self._fn(*args, **kwargs)
@@ -57,6 +57,13 @@ class FakePipeline:
     def to(self, device):
         self.device = torch.device(device)
         return self
+
+
+class ImagePipeline(FakePipeline):
+    """I2V-style pipeline whose ``__call__`` requires a positional ``image``."""
+
+    def __call__(self, image, prompt=None, **kwargs):
+        return self._fn(image, prompt=prompt, **kwargs)
 
 
 class TestDiffusionCalibrator:
@@ -67,24 +74,34 @@ class TestDiffusionCalibrator:
 
     @pytest.fixture()
     def calibrator(self, monkeypatch):
+        # DiffusionCalibrator copies compressor state at __init__ (see
+        # Calibrator.__init__ / DiffusionCalibrator.__init__), so build a
+        # compressor namespace exposing every attribute those constructors read.
+        model = SimpleNamespace(hf_device_map={"cpu": 0}, device="cpu")
+        pipe = FakePipeline()
         compressor = SimpleNamespace(
             dataset="mock",
-            batch_size=2,
             seed=0,
-            nsamples=4,
-            gradient_accumulate_steps=1,
+            low_gpu_mem_usage=False,
+            has_variable_block_shape=False,
             guidance_scale=7.5,
             num_inference_steps=1,
             generator_seed=None,
-            seqlen=128,
-            inputs={},
-            dataloader=None,
-            model=SimpleNamespace(hf_device_map={"cpu": 0}, device="cpu"),
-            model_context=SimpleNamespace(pipe=FakePipeline()),
+            pipe=pipe,
+            model=model,
+            model_context=SimpleNamespace(
+                model=model,
+                tokenizer=None,
+                shared_cache_keys=(),
+            ),
+            calibration_context=SimpleNamespace(
+                batch_size=2,
+                batch_dim=0,
+                seqlen=128,
+            ),
         )
 
-        calib = DiffusionCalibrator(SimpleNamespace(compress_context=SimpleNamespace()))
-        calib.compressor = compressor
+        calib = DiffusionCalibrator(compressor)
 
         monkeypatch.setattr(device_manager, "device", "cpu")
         monkeypatch.setattr("auto_round.calibration.diffusion.logger.warning", lambda *args, **kwargs: None)
@@ -93,7 +110,9 @@ class TestDiffusionCalibrator:
         return calib
 
     def test_should_stop_never_stops(self, calibrator):
-        assert calibrator.should_stop("any_block") is False
+        # DiffusionCalibrator inherits the base always-False stop policy so all
+        # denoising steps execute during calibration.
+        assert calibrator._should_stop_cache_forward("any_block") is False
 
     def test_wrap_block_forward_delegates_to_utility(self, calibrator):
         seen = []
@@ -102,7 +121,7 @@ class TestDiffusionCalibrator:
             seen.append((hidden_states, kwargs))
             return (hidden_states,)
 
-        wrapped = calibrator.wrap_block_forward(base_hook)
+        wrapped = calibrator._wrap_block_forward(base_hook)
 
         class DummyBlock:
             def forward(self, hidden_states, encoder_hidden_states, temb=None):
@@ -118,50 +137,35 @@ class TestDiffusionCalibrator:
         assert seen == [(torch.ones(1), {"encoder_hidden_states": torch.ones(1), "temb": torch.ones(1)})]
 
     def test_calib_raises_when_pipeline_missing(self, calibrator):
-        calibrator.compressor.model_context.pipe = None
+        calibrator.pipe = None
 
         with pytest.raises(ValueError, match="Diffusion pipeline not found"):
             calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_string_dataset_reloads_dataloader(self, calibrator):
         new_dataloader = [("id0", ["p1", "p2"])]
-        calibrator.compressor.dataset = "mock_dataset"
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor._autoround_pipeline_fn = None
-
-        def fake_calib(nsamples, bs):
-            calibrator.compressor.inputs = {"block_0": {"positional_inputs": ["p1", "p2"]}}
-
-        calibrator.compressor.calib = fake_calib
+        calibrator.dataset = "mock_dataset"
+        calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch(
             "auto_round.compressors.diffusion.dataset.get_diffusion_dataloader",
-            return_value=(new_dataloader, 2, 1),
-        ), patch("auto_round.calibration.diffusion.tqdm", FakeTqdm), patch(
-            "auto_round.calibration.diffusion.device_manager",
-            SimpleNamespace(device="cpu"),
-        ):
+            return_value=(new_dataloader, 2),
+        ), patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=2, bs=1)
 
-        assert calibrator.compressor.dataloader is new_dataloader
-        assert calibrator.compressor.batch_size == 2
+        assert calibrator.dataloader is new_dataloader
+        assert calibrator.batch_size == 2
 
     def test_calib_non_string_dataset_keeps_existing_dataloader(self, calibrator):
-        calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor._autoround_pipeline_fn = None
-
-        def fake_calib(nsamples, bs):
-            calibrator.compressor.inputs = {"block_0": {"positional_inputs": ["p1", "p2"]}}
-
-        calibrator.compressor.calib = fake_calib
+        calibrator.dataset = [("id0", ["p1", "p2"])]
+        calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=2, bs=1)
 
-        assert calibrator.compressor.dataloader is calibrator.compressor.dataset
+        assert calibrator.dataloader is calibrator.dataset
 
     def test_calib_uses_dataloader_len_when_available(self, calibrator):
         class FakeDataloader:
@@ -171,52 +175,45 @@ class TestDiffusionCalibrator:
             def __iter__(self):
                 return iter([("id0", ["p1"])])
 
-        calibrator.compressor.dataset = FakeDataloader()
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
-        calibrator.compressor._requires_calibration_image = lambda: False
+        calibrator.dataset = FakeDataloader()
+        calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
 
-        assert len(calibrator.compressor.inputs) == 0
+        # No block hooks fire against the fake pipe, so inputs stays empty.
+        assert calibrator.inputs == {}
 
     def test_calib_exits_on_multi_device_offload(self, calibrator):
-        calibrator.compressor.model.hf_device_map = {"cpu": 0, "cuda:0": 1}
-        calibrator.compressor.model.device = "cpu"
-        calibrator.compressor.model_context.pipe = FakePipeline(
+        calibrator.model.hf_device_map = {"cpu": 0, "cuda:0": 1}
+        calibrator.model.device = "cuda:0"
+        calibrator.pipe = FakePipeline(
             device=torch.device("cpu"),
             fn=lambda *args, **kwargs: None,
         )
-        calibrator.compressor.dataset = "mock"
+        calibrator.dataset = "mock"
 
         with patch(
             "auto_round.compressors.diffusion.dataset.get_diffusion_dataloader",
-            return_value=([], 2, 1),
-        ), patch(
-            "auto_round.calibration.diffusion.device_manager",
-            SimpleNamespace(device="cuda:0"),
+            return_value=([], 2),
         ):
             with pytest.raises(SystemExit):
                 calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_moves_pipeline_to_target_device(self, calibrator):
         seen = []
-        calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(
+        calibrator.dataset = [("id0", ["p1", "p2"])]
+        calibrator.pipe = FakePipeline(
             device=torch.device("cpu"),
             fn=lambda *args, **kwargs: None,
         )
 
         def fake_to(device):
             seen.append(device)
-            return calibrator.compressor.model_context.pipe
+            return calibrator.pipe
 
-        calibrator.compressor.model_context.pipe.to = fake_to
-
-        def fake_calib(nsamples, bs):
-            calibrator.compressor.inputs = {"block_0": {"positional_inputs": ["p1", "p2"]}}
-
-        calibrator.compressor.calib = fake_calib
+        calibrator.pipe.to = fake_to
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm), patch(
             "auto_round.calibration.diffusion.device_manager",
@@ -232,14 +229,10 @@ class TestDiffusionCalibrator:
         def pipeline_fn(pipe, prompts, **kwargs):
             calls.append((pipe, prompts, kwargs))
 
-        calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = pipeline_fn
-
-        def fake_calib(nsamples, bs):
-            calibrator.compressor.inputs = {"block_0": {"positional_inputs": ["p1", "p2"]}}
-
-        calibrator.compressor.calib = fake_calib
+        calibrator.dataset = [("id0", ["p1", "p2"])]
+        calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
+        calibrator.pipe._autoround_pipeline_fn = pipeline_fn
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=2, bs=1)
@@ -255,10 +248,9 @@ class TestDiffusionCalibrator:
         def fake_pipe(prompts, **kwargs):
             calls.append((prompts, kwargs))
 
-        calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=fake_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1", "p2"])]
+        calibrator.pipe = FakePipeline(fn=fake_pipe)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=2, bs=1)
@@ -267,18 +259,11 @@ class TestDiffusionCalibrator:
         assert calls[0][0] == ["p1", "p2"]
 
     def test_calib_passes_image_when_required(self, calibrator):
-        calls = []
         seen_images = []
-
-        def fake_pipe(image, prompt=None, **kwargs):
-            calls.append((image, prompt, kwargs))
-            seen_images.append(image)
-
-        calibrator.compressor.dataset = [("id0", ["p1"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=fake_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: True
-        calibrator.compressor._get_calibration_image = lambda batch_size: torch.randn(batch_size, 4, 64, 64)
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = ImagePipeline(fn=lambda image, prompt=None, **kwargs: seen_images.append(image))
+        calibrator._requires_calibration_image = lambda: True
+        calibrator._get_calibration_image = lambda batch_size: torch.randn(batch_size, 4, 64, 64)
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
@@ -289,24 +274,22 @@ class TestDiffusionCalibrator:
         def failing_pipe(*args, **kwargs):
             raise NotImplementedError("unsupported op")
 
-        calibrator.compressor.dataset = [("id0", ["p1"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=failing_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = FakePipeline(fn=failing_pipe)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
 
-        assert calibrator.compressor.inputs == {}
+        assert calibrator.inputs == {}
 
     def test_calib_other_exceptions_propagate(self, calibrator):
         def failing_pipe(*args, **kwargs):
             raise RuntimeError("unexpected")
 
-        calibrator.compressor.dataset = [("id0", ["p1"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=failing_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = FakePipeline(fn=failing_pipe)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             with pytest.raises(RuntimeError, match="unexpected"):
@@ -318,10 +301,9 @@ class TestDiffusionCalibrator:
         def fake_pipe(prompts, **kwargs):
             seen.append(len(prompts) if isinstance(prompts, list) else 1)
 
-        calibrator.compressor.dataset = [("id0", ["p1", "p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=fake_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1", "p2"])]
+        calibrator.pipe = FakePipeline(fn=fake_pipe)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=2, bs=2)
@@ -329,10 +311,9 @@ class TestDiffusionCalibrator:
         assert seen == [2]
 
     def test_calib_zero_samples_exits(self, calibrator):
-        calibrator.compressor.dataset = [("id0", [])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", [])]
+        calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             with pytest.raises(SystemExit):
@@ -342,24 +323,24 @@ class TestDiffusionCalibrator:
         def fake_pipe(prompts, **kwargs):
             return None
 
-        calibrator.compressor.dataset = [("id0", ["p1"]), ("id1", ["p2"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=fake_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1"]), ("id1", ["p2"])]
+        calibrator.pipe = FakePipeline(fn=fake_pipe)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+            # total_cnt (2) < nsamples (3) but >= batch_size (2): the warning /
+            # truncation path runs without raising.
             calibrator.calib(nsamples=3, bs=2)
 
-        assert all(len(v["positional_inputs"]) == 2 for v in calibrator.compressor.inputs.values())
+        assert calibrator.inputs == {}
 
     def test_calib_insufficient_below_batch_size_raises(self, calibrator):
         def fake_pipe(prompts, **kwargs):
             return None
 
-        calibrator.compressor.dataset = [("id0", ["p1"])]
-        calibrator.compressor.model_context.pipe = FakePipeline(fn=fake_pipe)
-        calibrator.compressor._requires_calibration_image = lambda: False
-        calibrator.compressor.model_context.pipe._autoround_pipeline_fn = None
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = FakePipeline(fn=fake_pipe)
+        calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             with pytest.raises(ValueError, match="valid samples is less than batch_size"):

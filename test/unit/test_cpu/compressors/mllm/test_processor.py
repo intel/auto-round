@@ -128,11 +128,10 @@ class TestBasicProcessor:
         p = BasicProcessor()
         model = DummyModel()
         tok = DummyTokenizer()
-        p.post_init(model, tok, image_processor="my_img_proc", use_rtn=True)
+        p.post_init(model, tok, image_processor="my_img_proc")
         assert p.model is model
         assert p.tokenizer is tok
         assert p.image_processor == "my_img_proc"
-        assert p.use_rtn is True
 
     def test_post_init_default_image_processor(self):
         p = BasicProcessor()
@@ -167,23 +166,14 @@ class TestBasicProcessor:
         assert data["a"].tolist() == [1, 2]
         assert data["b"].tolist() == [3, 4]
 
-    def test_check_image_processor_raises_when_none_and_not_rtn(self):
+    def test_check_image_processor_is_noop(self):
+        # After the compressor refactor, BasicProcessor.check_image_processor is a
+        # no-op (image-processor enforcement only lives in HF-style subclasses).
+        # It must never raise, regardless of image_processor state.
         p = BasicProcessor()
         p.image_processor = None
-        p.use_rtn = False
-        with pytest.raises(ValueError, match="image processor"):
-            p.check_image_processor()
-
-    def test_check_image_processor_ok_when_rtn(self):
-        p = BasicProcessor()
-        p.image_processor = None
-        p.use_rtn = True
         p.check_image_processor()
-
-    def test_check_image_processor_ok_with_processor(self):
-        p = BasicProcessor()
         p.image_processor = "something"
-        p.use_rtn = False
         p.check_image_processor()
 
 

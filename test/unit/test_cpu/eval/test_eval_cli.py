@@ -71,7 +71,9 @@ class TestEvalArgumentParser:
     def test_model_name_default(self):
         parser = eval_cli.EvalArgumentParser()
         args = parser.parse_args([])
-        assert args.model_name == "facebook/opt-125m"
+        # No default model: the CLI requires an explicit positional `model` or
+        # `--model_name` (enforced by `run_eval`'s assertion).
+        assert args.model_name is None
 
     def test_model_alias_updates_model_name(self):
         parser = eval_cli.EvalArgumentParser()
@@ -189,7 +191,7 @@ class TestEval:
     """Tests for the main `eval` entry point."""
 
     def test_diffusion_model_path_skips_lm_eval(self, monkeypatch):
-        args = SimpleNamespace(model="diffusion-model", eval_backend="hf")
+        args = SimpleNamespace(model_name="diffusion-model", eval_backend="hf")
         captured = {}
 
         def fake_diffusion_eval(evaluation_args, pipe):
@@ -209,7 +211,7 @@ class TestEval:
         def fake_eval_with_vllm(args):
             captured["args"] = args
 
-        args = SimpleNamespace(model="vllm-model", eval_backend="vllm")
+        args = SimpleNamespace(model_name="vllm-model", eval_backend="vllm")
         monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
         monkeypatch.setattr(eval_cli, "eval_with_vllm", fake_eval_with_vllm)
         eval_cli.eval(args)
@@ -217,7 +219,7 @@ class TestEval:
 
     def test_gguf_branch_uses_user_model(self, monkeypatch, capsys):
         args = SimpleNamespace(
-            model="/model.gguf",
+            model_name="/model.gguf",
             eval_backend="hf",
             eval_bs=None,
             mllm=False,
@@ -249,7 +251,7 @@ class TestEval:
 
     def test_mllm_warning_when_auto_batch_size(self, monkeypatch, capsys):
         args = SimpleNamespace(
-            model="/model",
+            model_name="/model",
             eval_backend="hf",
             eval_bs=None,
             mllm=True,
@@ -283,7 +285,7 @@ class TestEval:
 
     def test_non_mllm_uses_hf_model_name(self, monkeypatch, capsys):
         args = SimpleNamespace(
-            model="/model",
+            model_name="/model",
             eval_backend="hf",
             eval_bs=8,
             mllm=False,
@@ -322,7 +324,7 @@ class TestEvalWithVllm:
 
     def test_tensor_parallel_size_from_device_map(self, monkeypatch):
         args = SimpleNamespace(
-            model="model-id",
+            model_name="model-id",
             device_map="0,1",
             eval_bs=8,
             eval_model_dtype="auto",
@@ -367,7 +369,7 @@ class TestEvalWithVllm:
 
     def test_mllm_uses_vllm_vlm(self, monkeypatch):
         args = SimpleNamespace(
-            model="model-id",
+            model_name="model-id",
             device_map="0",
             eval_bs=8,
             eval_model_dtype="auto",
@@ -409,7 +411,7 @@ class TestEvalWithVllm:
 
     def test_existing_device_env_is_not_overwritten(self, monkeypatch):
         args = SimpleNamespace(
-            model="model-id",
+            model_name="model-id",
             device_map="0",
             eval_bs=8,
             eval_model_dtype="auto",

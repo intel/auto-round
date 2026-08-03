@@ -157,8 +157,14 @@ def _deepseek_v3_cfg():
 
 
 def _ernie_cfg():
-    """Ernie uses different field names (``moe_*``)."""
+    """Ernie uses different field names (``moe_*``).
+
+    transformers' ``Ernie4_5_MoeTopKRouter`` reads the standard
+    ``num_experts``/``num_experts_per_tok`` names.
+    """
     return SimpleNamespace(
+        num_experts=4,
+        num_experts_per_tok=2,
         moe_num_experts=4,
         moe_k=2,
         moe_num_shared_experts=1,
