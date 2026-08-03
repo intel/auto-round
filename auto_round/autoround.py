@@ -608,9 +608,13 @@ class _CompressorBuilder(object):
         # cannot emit the required export metadata.
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
         if is_model_free_route(model, scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
+            # Direct scheme fields are consumed into ``quant_config`` during
+            # entry normalization. Pass the fully resolved scheme onward so
+            # model-free export does not silently fall back to preset defaults.
+            model_free_scheme = QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
             return _build_model_free_compressor(
                 model,
-                scheme,
+                model_free_scheme,
                 layer_config,
                 tokenizer,
                 device_map,

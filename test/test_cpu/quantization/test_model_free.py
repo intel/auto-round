@@ -84,6 +84,23 @@ def test_model_free_preserves_explicit_scheme_overrides():
     assert compressor.default_scheme["sym"] is False
 
 
+def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
+    from auto_round import AutoRound
+
+    compressor = AutoRound(
+        tiny_opt_model_path,
+        scheme="W4A16",
+        sym=False,
+        iters=0,
+        disable_opt_rtn=True,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.scheme_input.sym is False
+
+
 from ...envs import require_compressed_tensors
 
 # ---------------------------------------------------------------------------
