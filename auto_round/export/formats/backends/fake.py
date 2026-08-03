@@ -135,8 +135,10 @@ class FakeFormat(OutputFormat):
         if not has_meta_device:
             model = model.to("cpu")
             model.save_pretrained(output_dir)
-        elif hasattr(model, "config") and model.config is not None:
-            model.config.save_pretrained(output_dir)
+        else:
+            from auto_round.export.utils import save_config_artifact
+
+            save_config_artifact(model, output_dir)
 
         # Some save flows write wrapper keys first; normalize to plain Linear keys
         # so HF loading does not report UNEXPECTED/MISSING pairs.
