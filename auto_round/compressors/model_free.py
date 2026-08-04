@@ -578,9 +578,8 @@ def _quantize_single_tensor(
     layer_name = tensor_name.rsplit(".", 1)[0]
 
     if not _is_eligible_weight(tensor_name, tensor):
-        if tensor_name.endswith(".weight"):
-            return layer_name, {tensor_name: tensor}, None, layer_name
-        return layer_name, {tensor_name: tensor}, None, None
+        ignored_layer = layer_name if tensor_name.endswith(".weight") and tensor.dim() > 1 else None
+        return layer_name, {tensor_name: tensor}, None, ignored_layer
 
     if matcher.should_ignore(tensor_name):
         logger.debug(f"Ignoring (user-specified): {layer_name}")
@@ -964,10 +963,15 @@ def _process_shard(
 
     raw_tensors = split_fused_expert_tensors(raw_tensors)
 
-    # Snapshot eligible weight layer names *before* any preprocessing so that
-    # the ignored-layer list can be derived by dict comparison at the end.
+    # Snapshot candidate weight layer names *before* any preprocessing. 1D
+    # weights (for example LayerNorm) are not quantization targets, while 3D
+    # weights remain tracked so unsupported layouts are visible as ignored.
     input_weight_layers: list[str] = list(
-        dict.fromkeys(k.rsplit(".", 1)[0] for k in raw_tensors if k.endswith(".weight"))
+        dict.fromkeys(
+            name.rsplit(".", 1)[0]
+            for name, tensor in raw_tensors.items()
+            if name.endswith(".weight") and tensor.dim() > 1
+        )
     )
 
     # Preserve original tensors for ignored/skipped layers so that already-
@@ -1145,6 +1149,7 @@ def _build_mxfp_autoround_quantization_config(
     quantized_layers: list[str],
     ignored_layers: list[str],
     layer_config: dict | None = None,
+    block_name_to_quantize: Optional[str] = None,
 ) -> dict:
     """Build an auto-round style quantization_config for MXFP4 / MXFP8.
 
@@ -1203,6 +1208,8 @@ def _build_mxfp_autoround_quantization_config(
         "autoround_version": __version__,
         "enable_quanted_input": False,
     }
+    if block_name_to_quantize:
+        qconfig["block_name_to_quantize"] = block_name_to_quantize
 
     # Carry activation quantization fields from the scheme (e.g. MXFP4 has
     # act_bits=4, act_data_type="mx_fp", act_dynamic=True, act_group_size=32,
@@ -1219,19 +1226,15 @@ def _build_mxfp_autoround_quantization_config(
     non_linear_re = re.compile("|".join(re.escape(op) for op in non_linear_ops))
 
     if layer_config:
+        from auto_round.export.export_to_autoround.utils import check_neq_config
+
+        expected_scheme = {key: qconfig.get(key) for key in scheme_keys}
         for layer_name, cfg in layer_config.items():
             if not isinstance(cfg, dict):
                 continue
-            cfg_bits = cfg.get("bits", bits)
-            if cfg_bits >= 16:
-                extra_config[layer_name] = {k: cfg[k] for k in scheme_keys if cfg.get(k) is not None}
-                continue
-            differs = any(
-                cfg.get(key) is not None and cfg[key] != default_scheme.get(key)
-                for key in ("bits", "group_size", "sym", "data_type")
-            )
-            if differs:
-                extra_config[layer_name] = {k: cfg[k] for k in scheme_keys if cfg.get(k) is not None}
+            neq_keys = check_neq_config(cfg, **expected_scheme)
+            if neq_keys:
+                extra_config[layer_name] = {key: cfg[key] for key in neq_keys if cfg.get(key) is not None}
 
     quantized_set = set(quantized_layers)
     unique_ignored = list(dict.fromkeys(ignored_layers))
@@ -1240,7 +1243,12 @@ def _build_mxfp_autoround_quantization_config(
             continue
         if non_linear_re.search(layer_name):
             continue
-        extra_config[layer_name] = {"bits": 16, "data_type": "float"}
+        extra_config[layer_name] = {
+            "bits": 16,
+            "data_type": "float",
+            "act_bits": 16,
+            "act_data_type": "float",
+        }
 
     # lm_head: when explicitly quantized, record its full scheme in extra_config
     # (mirrors the regular AutoRound MXFP export behavior).
@@ -1357,7 +1365,7 @@ def _build_quantization_config(
     ignore_patterns: list[str],
     quantized_layers: list[str],
     ignored_layers: list[str],
-    block_name_to_quantize: Optional[list[str]] = None,
+    block_name_to_quantize: Optional[str] = None,
     format: str = "auto_round",
 ) -> dict:
     """Build a quantization_config dict compatible with auto-round format."""
@@ -1378,6 +1386,7 @@ def _build_quantization_config(
                 quantized_layers=quantized_layers,
                 ignored_layers=ignored_layers,
                 layer_config=layer_config,
+                block_name_to_quantize=block_name_to_quantize,
             )
         return _build_mxfp_quantization_config(
             default_scheme=default_scheme,
@@ -1829,13 +1838,15 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
 
 def _convert_auto_scheme_layer_config(
     generated: dict[str, dict],
+    preferred_base_scheme: Union[str, QuantizationScheme, None] = None,
 ) -> tuple[QuantizationScheme, dict[str, dict], list[str]]:
     """Convert an AutoScheme-generated ``layer_config`` into model-free inputs.
 
     Returns ``(base_scheme, per_layer_overrides, fp16_layers)`` where:
 
-    * ``base_scheme`` is the most common quantized scheme across layers, used
-      as the model-free default (top-level config.json ``bits``/``group_size``).
+        * ``base_scheme`` is ``preferred_base_scheme`` when provided, matching the
+            primary scheme selected by the regular AutoRound path. Otherwise the
+            most common quantized scheme is used as a fallback.
     * ``per_layer_overrides`` maps every quantized layer name to its resolved
       :class:`QuantizationScheme` fields.
     * ``fp16_layers`` lists layers AutoScheme kept at >= 16 bits (added to the
@@ -1889,13 +1900,16 @@ def _convert_auto_scheme_layer_config(
     if not counter:
         raise ValueError("AutoScheme did not assign any quantizable layers for model-free mode.")
 
-    (base_bits, base_group_size, base_sym, base_dtype), _ = counter.most_common(1)[0]
-    base_scheme = QuantizationScheme(
-        bits=base_bits,
-        group_size=base_group_size,
-        sym=base_sym,
-        data_type=base_dtype,
-    )
+    if preferred_base_scheme is not None:
+        base_scheme = copy.deepcopy(_normalize_scheme(preferred_base_scheme))
+    else:
+        (base_bits, base_group_size, base_sym, base_dtype), _ = counter.most_common(1)[0]
+        base_scheme = QuantizationScheme(
+            bits=base_bits,
+            group_size=base_group_size,
+            sym=base_sym,
+            data_type=base_dtype,
+        )
     return base_scheme, per_layer, fp16_layers
 
 
@@ -2318,12 +2332,22 @@ class _ModelFreeCompressorCore:
         _write_index_file(self._quant_output_dir, self.output_weight_map)
 
     def _write_config_files(self) -> None:
+        block_prefixes = []
+        for layer_name in self.all_quantized_layers:
+            parts = layer_name.split(".")
+            for index, part in enumerate(parts):
+                if part.isdigit() and index > 0:
+                    block_prefixes.append(".".join(parts[:index]))
+                    break
+        block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
+
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
             ignore_patterns=self.ignore_patterns,
             quantized_layers=self.all_quantized_layers,
             ignored_layers=self.all_ignored_layers,
+            block_name_to_quantize=block_name_to_quantize,
             format=self.format,
         )
 
@@ -2730,7 +2754,17 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         )
 
         generated = self._run_auto_scheme_selection(auto_scheme)
-        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
+        preferred_base_scheme = None
+        for option in auto_scheme.options:
+            option_scheme = _normalize_scheme(option)
+            act_bits = option_scheme.act_bits if option_scheme.act_bits is not None else 16
+            if (option_scheme.bits or 0) < 16 or act_bits < 16:
+                preferred_base_scheme = option_scheme
+                break
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(
+            generated,
+            preferred_base_scheme=preferred_base_scheme,
+        )
 
         # Merge the generated per-layer overrides; any user-provided
         # layer_config entries take priority.
