@@ -104,6 +104,7 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round import envs
+from auto_round.compressors.config_resolution import thaw_mapping
 from auto_round.compressors.utils import is_mx_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
@@ -1690,6 +1691,10 @@ def _validate_supported_scheme(
     # Activation quantization for MXFP is dynamic at inference time, so the
     # weight-only RTN path here is independent of act_bits.
     if is_mx_fp(data_type):
+        if scheme_obj.act_data_type not in (None, "mx_fp"):
+            raise ValueError(
+                "Model-free MXFP supports only act_data_type='mx_fp', " f"but got '{scheme_obj.act_data_type}'."
+            )
         # Restrict to the two explicitly supported MXFP presets when a string
         # name is provided.  Variants such as MXFP4_RCEIL / MXFP8_RCEIL use a
         # different activation format; silently mapping them to "MXFP4" /
@@ -2020,6 +2025,9 @@ class _ModelFreeCompressorCore:
 
     def _parse_scheme(self) -> None:
         scheme_in = self.scheme_input
+        scheme_overrides = getattr(self, "user_scheme_overrides", None)
+        if scheme_overrides:
+            scheme_in = _apply_scheme_overrides(scheme_in, scheme_overrides)
         if isinstance(scheme_in, str) and scheme_in.upper() == "W4A16_MIXED":
             # Match regular-flow mixed recipe behavior in model-free mode:
             # default non-expert linear layers use 8-bit; expert overrides are
@@ -2619,6 +2627,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             quant_lm_head=quant_lm_head,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
+        # Scheme fields are consumed above from ``kwargs``. Preserve them when
+        # a later format check falls back to the regular AutoRound flow.
+        fallback_init.update(self.user_scheme_overrides)
 
         self._fallback_init_kwargs = fallback_init
         if quant_nontext_module:
@@ -2634,7 +2645,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         logger.info(
             "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
-            format,
+            self.format,
         )
         logger.info(
             "fallbacked_init_kwargs: %s",
@@ -2718,7 +2729,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             if not callable(post_init):
                 raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
             post_init()  # pylint: disable=E1102
-            layer_config = copy.deepcopy(getattr(compressor, "layer_config", {}) or {})
+            layer_config = thaw_mapping(getattr(compressor, "layer_config", {}) or {})
         finally:
             # Release the model that was loaded only for scoring so the
             # packing phase keeps model-free's low memory footprint.
