@@ -388,12 +388,14 @@ def tiny_qwen3_omni_moe_model_path():
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
-# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
+# Mock FP8 capability checks without letting the fake capability affect Inductor code generation.
 @pytest.fixture()
 def mock_fp8_capable_device():
     from unittest.mock import patch
 
-    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch(
+        "torch.compile", side_effect=lambda function, *args, **kwargs: function
+    ):
         yield
 
 
@@ -403,6 +405,8 @@ def clean_tmp_model_folder():
     shutil.rmtree("./tmp", ignore_errors=True)  # unittest default workspace
     shutil.rmtree("./ar_work_space", ignore_errors=True)  # autoround default workspace
     shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default model output path
+    # autoround default AutoScheme cache path
+    shutil.rmtree(os.path.expanduser("~/.cache/auto_round"), ignore_errors=True)
 
 
 # Create objective fixtures for testing

@@ -3,7 +3,7 @@
 import pytest
 
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer
+from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -29,6 +29,16 @@ class NoWeightClipConfig(RTNConfig):
     pass
 
 
+class CompileCompatibleRotation:
+    def can_compile_block_forward(self):
+        return True
+
+
+class CompileCompatibleQuantizer:
+    def can_compile_block_forward(self):
+        return True
+
+
 def test_split_awq_plus_rtn():
     pre, block = split_quantization_configs([AWQConfig(), RTNConfig()])
     assert len(pre) == 1 and type(pre[0]).__name__ == "AWQConfig"
@@ -49,6 +59,15 @@ def test_pipeline_duplicate_preprocessor_rejected():
 def test_pipeline_multiple_block_quantizers_rejected():
     with pytest.raises(ValueError, match="exactly one block-quantization config"):
         AlgorithmComposer([RTNConfig(), SignRoundConfig()])
+
+
+def test_hadamard_disables_only_block_forward_compile():
+    quantizer = CompileCompatibleQuantizer()
+    hadamard = RotationConfig()
+
+    assert not _can_compile_block_forward(quantizer, [hadamard], user_enabled=True)
+    assert _can_compile_block_forward(quantizer, [CompileCompatibleRotation()], user_enabled=True)
+    assert not _can_compile_block_forward(quantizer, [], user_enabled=False)
 
 
 def test_registry_builtin_aliases_and_unknown():

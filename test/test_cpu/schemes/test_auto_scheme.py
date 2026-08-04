@@ -60,13 +60,22 @@ def test_env_ar_auto_scheme_batch_size_zero_raises(monkeypatch):
         _ = envs.AR_AUTO_SCHEME_BATCH_SIZE
 
 
+def test_env_ar_auto_scheme_cache(monkeypatch, tmp_path):
+    """AR_AUTO_SCHEME_CACHE should expose an independent cache directory."""
+    import auto_round.envs as envs
+
+    cache_dir = str(tmp_path / "auto_scheme_cache")
+    monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", cache_dir)
+    assert envs.AR_AUTO_SCHEME_CACHE == cache_dir
+
+
 def test_env_ar_enable_auto_scheme_parallel(monkeypatch):
     import auto_round.envs as envs
 
     monkeypatch.delenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", raising=False)
-    assert envs.AR_ENABLE_AUTO_SCHEME_PARALLEL is False
-    monkeypatch.setenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "1")
     assert envs.AR_ENABLE_AUTO_SCHEME_PARALLEL is True
+    monkeypatch.setenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "0")
+    assert envs.AR_ENABLE_AUTO_SCHEME_PARALLEL is False
 
 
 def test_build_layer_config_header_rows_merges_adjacent_prefixes():
@@ -133,6 +142,60 @@ def test_choose_bits_per_layer_reconstructs_optimal_path():
 
     assert loss == 4.0
     assert path == [(["layer.0"], 1), (["layer.1"], 0)]
+
+
+def test_activation_scoring_handles_reused_wrapper():
+    """Each forward call should keep its own activation error until backward."""
+    import types
+
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import AutoSchemeWrapperLinear
+
+    wrapper = AutoSchemeWrapperLinear.__new__(AutoSchemeWrapperLinear)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.orig_layer = types.SimpleNamespace(act_bits=8)
+    wrapper.act_qdq_func = lambda x, *_args, **_kwargs: (x * 0.5, 1.0, None)
+    wrapper.grad_mode = True
+    wrapper.act_cnt = 0
+    wrapper.act_score = 0.0
+    wrapper.weight_score = 0.0
+    wrapper.mix_score = 0.0
+    wrapper.max_act_value = 0
+
+    first = torch.tensor([1.0, -2.0], requires_grad=True)
+    second = torch.tensor([3.0, -4.0], requires_grad=True)
+    qdq_first, _, _ = wrapper._qdq_act(first)
+    qdq_second, _, _ = wrapper._qdq_act(second)
+
+    (qdq_first.sum() + qdq_second.sum()).backward()
+
+    assert wrapper.act_cnt == 2
+    assert wrapper.act_score == pytest.approx(5.0)
+    assert wrapper.mix_score == pytest.approx(5.0)
+
+
+def test_prepare_replay_input_supports_keyword_hidden_states():
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import _prepare_replay_input
+
+    hidden_states = torch.randn(2, 4)
+    attention_mask = torch.ones(2, 4, dtype=torch.int64)
+
+    replay_input = _prepare_replay_input([], {"attention_mask": attention_mask, "hidden_states": hidden_states}, "0")
+
+    assert replay_input is hidden_states
+    assert replay_input.requires_grad
+
+
+def test_prepare_replay_input_rejects_missing_floating_tensor():
+    import torch
+
+    from auto_round.auto_scheme.delta_loss import _prepare_replay_input
+
+    with pytest.raises(RuntimeError, match="No floating replay input found for block 0"):
+        _prepare_replay_input([], {"attention_mask": torch.ones(2, dtype=torch.int64)}, "0")
 
 
 def test_build_expert_groups_groups_experts_per_block():
@@ -350,8 +413,8 @@ class TestAutoScheme:
 
         from auto_round.auto_scheme.delta_loss import _load_autoscheme_scores
 
-        cache_dir = str(tmp_path / "ar_work_space")
-        monkeypatch.setenv("AR_WORK_SPACE", cache_dir)
+        cache_dir = str(tmp_path / "auto_scheme_cache")
+        monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", cache_dir)
 
         scheme = AutoScheme(
             avg_bits=3,
@@ -363,7 +426,7 @@ class TestAutoScheme:
         _, layer_config = ar.quantize()
 
         # Cache files must exist — one per scheme (2 schemes here)
-        cache_files = glob.glob(f"{cache_dir}/auto_scheme_cache/scheme_*.json")
+        cache_files = glob.glob(f"{cache_dir}/scheme_*.json")
         assert (
             len(cache_files) == 2
         ), f"Expected 2 cache files (one per scheme), found {len(cache_files)}: {cache_files}"
@@ -371,7 +434,7 @@ class TestAutoScheme:
         for path in cache_files:
             data = _load_autoscheme_scores(path)
             assert data is not None, f"Cache file {path} could not be loaded"
-            assert data["version"] == 3
+            assert data["version"] == 1
             assert data["score_granularity"] == "per_op"
             assert "layer_scores" in data
             assert "total_loss_for_scheme" in data
@@ -528,6 +591,49 @@ def test_autoscheme_cache_key_insensitive_to_layer_order():
     assert key1 == key2  # Should match after internal sorting
 
 
+def test_autoscheme_cache_key_is_portable_across_model_paths():
+    """A locally downloaded model should keep the same key when its parent directory changes."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+
+    kwargs = {
+        "dataset": "pile-10k",
+        "nsamples": 16,
+        "seqlen": 256,
+        "batch_size": 8,
+        "quant_layer_names": ["layer.0"],
+        "fixed_layer_scheme": {},
+        "scheme": "W4A16",
+        "force_mllm": False,
+        "low_gpu_mem_usage": True,
+    }
+
+    assert _autoscheme_cache_key(model_name="/models/org/test-model", **kwargs) == _autoscheme_cache_key(
+        model_name="/tmp/downloads/test-model", **kwargs
+    )
+
+
+def test_autoscheme_cache_key_normalizes_preset_scheme():
+    """A preset name and its resolved scheme should identify the same scoring run."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
+    from auto_round.schemes import preset_name_to_scheme
+
+    kwargs = {
+        "model_name": "test-model",
+        "dataset": "pile-10k",
+        "nsamples": 16,
+        "seqlen": 256,
+        "batch_size": 8,
+        "quant_layer_names": ["layer.0"],
+        "fixed_layer_scheme": {},
+        "force_mllm": False,
+        "low_gpu_mem_usage": True,
+    }
+
+    assert _autoscheme_cache_key(scheme="W4A16", **kwargs) == _autoscheme_cache_key(
+        scheme=preset_name_to_scheme("W4A16"), **kwargs
+    )
+
+
 def test_autoscheme_cache_key_changes_only_with_scoring_config():
     """Execution settings that affect scoring invalidate the cache; bit accounting does not."""
     from auto_round.auto_scheme.delta_loss import _autoscheme_cache_key
@@ -547,6 +653,17 @@ def test_autoscheme_cache_key_changes_only_with_scoring_config():
     baseline = _autoscheme_cache_key(**kwargs)
 
     assert baseline != _autoscheme_cache_key(**{**kwargs, "low_gpu_mem_usage": False})
+    assert baseline != _autoscheme_cache_key(**{**kwargs, "need_weight_grad": True})
+
+
+def test_get_next_scheme_bits_is_order_independent():
+    from auto_round.auto_scheme.delta_loss import _get_next_scheme_bits
+
+    schemes = [{"bits": 8}, {"bits": 4}, {"bits": 6}]
+
+    assert _get_next_scheme_bits(schemes, [0, 1, 2], 5) == 6
+    assert _get_next_scheme_bits(schemes, [2, 1, 0], 5) == 6
+    assert _get_next_scheme_bits(schemes, [0, 1, 2], 8) is None
 
 
 def test_refresh_cached_layer_bits_preserves_loss():
@@ -585,6 +702,7 @@ def test_autoscheme_cache_save_and_load(tmp_path):
     }
     total_loss = 2.1
     total_params = 1000000
+    cache_config = {"model_id": "test-model", "scheme": scheme_dict}
 
     _save_autoscheme_scores(
         cache_path,
@@ -594,6 +712,7 @@ def test_autoscheme_cache_save_and_load(tmp_path):
         layer_scores,
         total_loss,
         total_params,
+        cache_config,
     )
 
     loaded = _load_autoscheme_scores(cache_path)
@@ -601,6 +720,89 @@ def test_autoscheme_cache_save_and_load(tmp_path):
     assert loaded["layer_scores"] == layer_scores
     assert loaded["total_loss_for_scheme"] == total_loss
     assert loaded["total_params"] == total_params
+
+
+def test_find_compatible_downloaded_autoscheme_cache(tmp_path):
+    """A compatible downloaded cache should work without renaming it to the locally computed key."""
+    from auto_round.auto_scheme.delta_loss import (
+        _autoscheme_cache_config,
+        _find_compatible_autoscheme_cache,
+        _save_autoscheme_scores,
+    )
+    from auto_round.schemes import preset_name_to_scheme
+
+    quant_layer_names = ["layer.0", "layer.1"]
+    cache_config = _autoscheme_cache_config(
+        model_name="/models/test-model",
+        dataset="pile-10k",
+        nsamples=16,
+        seqlen=256,
+        batch_size=8,
+        quant_layer_names=quant_layer_names,
+        fixed_layer_scheme={},
+        scheme="W4A16",
+        force_mllm=False,
+        low_gpu_mem_usage=True,
+    )
+    downloaded_path = tmp_path / "downloaded-from-release.json"
+    layer_scores = {"layer.0": [4, 1.2], "layer.1": [4, 0.9]}
+    _save_autoscheme_scores(
+        downloaded_path,
+        "key-from-another-commit",
+        0,
+        preset_name_to_scheme("W4A16").to_dict(),
+        layer_scores,
+        2.1,
+        1000,
+        cache_config=cache_config,
+    )
+
+    loaded = _find_compatible_autoscheme_cache(
+        str(tmp_path / "scheme_00_current-key.json"),
+        cache_config,
+        quant_layer_names,
+        {},
+        1000,
+    )
+
+    assert loaded is not None
+    assert loaded["layer_scores"] == layer_scores
+    assert loaded["_cache_path"] == str(downloaded_path)
+    assert (
+        _find_compatible_autoscheme_cache(
+            str(tmp_path / "scheme_00_current-key.json"),
+            cache_config,
+            quant_layer_names,
+            {},
+            999,
+        )
+        is None
+    )
+
+
+def test_autoscheme_cache_path_is_independent_from_workspace(tmp_path, monkeypatch):
+    """AutoScheme caches default to the user cache and ignore AR_WORK_SPACE."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_path
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path / "workspace"))
+    monkeypatch.delenv("AR_AUTO_SCHEME_CACHE", raising=False)
+
+    cache_path = _autoscheme_cache_path("cache_key", 1)
+
+    assert cache_path == str(tmp_path / "home" / ".cache" / "auto_round" / "scheme_01_cache_key.json")
+
+
+def test_autoscheme_cache_path_can_be_overridden(tmp_path, monkeypatch):
+    """AR_AUTO_SCHEME_CACHE overrides the default user cache directory."""
+    from auto_round.auto_scheme.delta_loss import _autoscheme_cache_path
+
+    cache_dir = tmp_path / "custom_cache"
+    monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", str(cache_dir))
+
+    cache_path = _autoscheme_cache_path("cache_key", 2)
+
+    assert cache_path == str(cache_dir / "scheme_02_cache_key.json")
 
 
 def test_parallel_progress_events_are_applied_in_parent():
@@ -674,6 +876,33 @@ def test_scheme_worker_count_rejects_no_gpu():
         _get_scheme_worker_count(2, 0)
 
 
+def test_parallel_scheme_scoring_supports_disk_stream_model():
+    from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
+
+    assert _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, False)
+
+
+def test_parallel_scheme_scoring_rejects_disk_stream_vlm():
+    from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
+
+    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
+
+
+@pytest.mark.parametrize(
+    "model_id,is_vlm,low_gpu_mem_usage,expected",
+    [
+        ("local-model", False, True, True),
+        ("local-model", True, True, False),
+        ("local-model", False, False, False),
+        (None, False, True, False),
+    ],
+)
+def test_prefer_disk_stream_scheme_worker(model_id, is_vlm, low_gpu_mem_usage, expected):
+    from auto_round.auto_scheme.delta_loss import _prefer_disk_stream_scheme_worker
+
+    assert _prefer_disk_stream_scheme_worker(model_id, is_vlm, low_gpu_mem_usage) is expected
+
+
 def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
     from test.helpers import opt_name_or_path
 
@@ -700,6 +929,50 @@ def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
     }
 
 
+def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
+    from auto_round.auto_scheme import delta_loss
+    from auto_round.utils import disk_stream_util
+
+    expected = (object(), object(), object())
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
+
+    assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
+
+
+def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
+    from auto_round import special_model_handler
+    from auto_round.auto_scheme import delta_loss
+    from auto_round.utils import disk_stream_util
+
+    model = object()
+    updated_model = object()
+    handled_model = object()
+    tokenizer = object()
+    disk_index = object()
+    calls = []
+
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: (model, tokenizer, disk_index))
+
+    def fake_update_module(input_model, formats, cleanup_original):
+        calls.append(("update", input_model, formats, cleanup_original))
+        return updated_model
+
+    def fake_handle_special_model(input_model):
+        calls.append(("handle", input_model))
+        return handled_model
+
+    monkeypatch.setattr(special_model_handler, "update_module", fake_update_module)
+    monkeypatch.setattr(special_model_handler, "_handle_special_model", fake_handle_special_model)
+
+    result = delta_loss._load_disk_stream_scheme_worker_model("local-model", use_model_replacements=True)
+
+    assert result == (handled_model, tokenizer, disk_index)
+    assert calls == [
+        ("update", model, None, False),
+        ("handle", updated_model),
+    ]
+
+
 def test_per_op_cache_compatibility_rejects_grouped_scores():
     from auto_round.auto_scheme.delta_loss import _is_per_op_cache_compatible
 
@@ -718,7 +991,7 @@ def test_per_op_cache_compatibility_rejects_grouped_scores():
     )
 
 
-def test_version_two_cache_is_rejected(tmp_path):
+def test_non_version_one_cache_is_rejected(tmp_path):
     import json
 
     from auto_round.auto_scheme.delta_loss import _load_autoscheme_scores
@@ -727,7 +1000,7 @@ def test_version_two_cache_is_rejected(tmp_path):
     cache_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "layer_scores": {"layer.0": [4, 1.0]},
                 "total_loss_for_scheme": 1.0,
                 "total_params": 4,

@@ -200,7 +200,7 @@ class BaseOrchestrator(object):
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         layer_config: Optional[dict] = None,
@@ -210,7 +210,7 @@ class BaseOrchestrator(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -220,9 +220,8 @@ class BaseOrchestrator(object):
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
 
-        self.dataset = dataset
-        if self.dataset is None:
-            self.dataset = "NeelNanda/pile-10k"
+        dataset_was_explicitly_set = dataset is not None
+        self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
         batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
@@ -347,6 +346,19 @@ class BaseOrchestrator(object):
 
         self.nblocks = nblocks
 
+        if enable_torch_compile is None:
+            enable_torch_compile = sys.platform != "win32"
+            if not enable_torch_compile:
+                logger.warning_once(
+                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                    "`--enable_torch_compile` to force enable it."
+                )
+        elif enable_torch_compile and sys.platform == "win32":
+            logger.warning_once(
+                "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
+                "is not installed or not available on PATH."
+            )
         self.enable_torch_compile = enable_torch_compile
 
         # Whether to pack the layer immediately after tuning
@@ -393,6 +405,12 @@ class BaseOrchestrator(object):
         # second AutoRound(...) call reuses the previous instance and silently keeps
         # stale values (e.g. low_cpu_mem_usage=True from a prior run).
         CompressContext.reset_context()
+        # When the model was built as a meta skeleton (AR_DISK_STREAM_MODEL=1),
+        # give the offloader the original checkpoint path so it can materialize
+        # each block on first touch directly from disk instead of assuming
+        # blocks already hold real weights (see OffloadManager._reload).
+        if self.model_context.disk_stream_model_dir is not None:
+            self._offloader.model_dir = self.model_context.disk_stream_model_dir
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -403,6 +421,11 @@ class BaseOrchestrator(object):
             static_attention_dtype=self.static_attention_dtype,
         )
         self.shard_writer = None
+        # Resumability state deferred from Orchestrator._quantize_data_driven() until
+        # quantize_and_save()'s save_quantized() call actually succeeds; see the
+        # comment in quantize() near "is_immediate_saving" for why clearing is
+        # deferred.
+        self._resume_states = None
 
         # Flag for post_init idempotency.  Set to False here so post_init() can be called
         # either via quantize_and_save() (preferred, outside inference_mode) or directly
@@ -424,6 +447,23 @@ class BaseOrchestrator(object):
             setattr(self, key, value)
 
         self.need_calib = self._check_need_calib()
+        calibrator_kind = self._get_calibrator_kind()
+        # The default pile dataset is model-adaptive for pure-text LLMs. Any
+        # non-default dataset remains untouched.
+        if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
+            from auto_round.calib_dataset import get_code_calibration_dataset
+            from auto_round.utils.model import is_code_model
+
+            detection_config = model_config or getattr(self.model_context.model, "config", None)
+            if is_code_model(model, detection_config):
+                self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
+                logger.info("Automatically selected code calibration dataset: %s", self.dataset)
+            else:
+                logger.info(
+                    "No explicit code-specialization signal was found; using default calibration dataset %s.",
+                    self.dataset,
+                )
+            self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
         """Whether this compressor instance actually needs calibration data.
@@ -786,7 +826,7 @@ class BaseOrchestrator(object):
     def diffusion(self) -> bool:
         return self.model_context.is_diffusion
 
-    def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool]:
         """Return raw dtype state used by torch.compile guard rules."""
         # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
         cfg = self.quantize_config
@@ -796,7 +836,10 @@ class BaseOrchestrator(object):
         raw_scheme_upper = raw_scheme.upper()
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
-        is_valid_act_static = cfg.act_dynamic is False and (getattr(cfg, "act_bits", 16) or 16) <= 8
+        has_static_global_scale = "static_gs" in raw_adt or "NVFP4" in raw_scheme_upper
+        is_valid_act_static = (cfg.act_dynamic is False or has_static_global_scale) and (
+            getattr(cfg, "act_bits", 16) or 16
+        ) <= 8
 
         return is_raw_nv_fp, is_valid_act_static
 
@@ -814,14 +857,13 @@ class BaseOrchestrator(object):
         ):
             logger.info(
                 "%s",
-                "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
+                "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+        _, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_valid_act_static:
@@ -1620,6 +1662,14 @@ class BaseOrchestrator(object):
         # Save the quantized model in the specified format_list
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
         memory_monitor.log_summary()
+
+        # Only now -- after the full export (packing pass, config/tokenizer
+        # writes) has actually succeeded -- is it safe to drop the resume
+        # manifest. See the deferral comment in Orchestrator._quantize_data_driven().
+        if self._resume_states:
+            for rs in self._resume_states:
+                rs.clear()
+            self._resume_states = None
 
         return model, folders
 

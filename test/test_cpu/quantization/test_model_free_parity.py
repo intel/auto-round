@@ -15,8 +15,9 @@
 """Parity tests between ``AutoRound(model_free=True)`` and the regular
 ``AutoRound(iters=0, disable_opt_rtn=True, disable_model_free=True)`` flow.
 
-Both code paths perform RTN integer weight-only quantization in the
-``auto_round`` packing format.  These tests assert that:
+The integer tests compare RTN weight-only quantization in the ``auto_round``
+packing format. The MXFP test compares the AutoRound-format quantization
+metadata produced for a mixed MXFP4/MXFP8 AutoScheme. These tests assert that:
 
 1. The ``quantization_config`` keys ``bits``, ``group_size``, ``sym``,
    ``data_type`` (family), ``quant_method``, ``packing_format`` agree.
@@ -141,6 +142,7 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
         disable_opt_rtn=True,
         model_free=True,
         device_map=device,
+        enable_torch_compile=False,  # disable torch.compile to ensure model is loaded in full precision
     )
     assert getattr(ar_a, "model_free", False) is True
     # Model must NOT be loaded into memory in the model-free path.
@@ -159,6 +161,7 @@ def test_parity_model_free_vs_disable_opt_rtn(tmp_path, tiny_opt_model_path, sch
         disable_model_free=True,  # opt out of auto-routing
         device_map=device,
         amp=False,  # disable_amp to ensure model is loaded in full precision
+        enable_torch_compile=False,  # disable torch.compile to ensure model is loaded in full precision
     )
     assert getattr(ar_b, "model_free", False) is False
     # Confirm the regular path actually loaded the model on the requested
@@ -248,3 +251,69 @@ def test_disable_model_free_opt_out(tiny_opt_model_path):
     )
     assert getattr(ar, "model_free", False) is False
     assert ar.model is not None
+
+
+def test_mxfp_auto_scheme_quantization_config_parity(tmp_path, tiny_opt_model_path):
+    """Mixed MXFP AutoScheme must serialize the same scheme metadata in both paths."""
+    pytest.importorskip("compressed_tensors")
+
+    from auto_round import AutoRound, AutoScheme
+
+    out_model_free = str(tmp_path / "mxfp_model_free")
+    out_regular = str(tmp_path / "mxfp_regular")
+    scheme_kwargs = {
+        "avg_bits": 6.0,
+        "options": ("MXFP4", "MXFP8"),
+        "nsamples": 1,
+        "ignore_scale_zp_bits": True,
+    }
+
+    torch.manual_seed(42)
+    model_free = AutoRound(
+        tiny_opt_model_path,
+        scheme=AutoScheme(**scheme_kwargs),
+        iters=0,
+        disable_opt_rtn=True,
+        model_free=True,
+        nsamples=1,
+        device_map=_device_str(),
+    )
+    _, out_model_free = model_free.quantize_and_save(format="auto_round", output_dir=out_model_free)
+
+    torch.manual_seed(42)
+    regular = AutoRound(
+        tiny_opt_model_path,
+        scheme=AutoScheme(**scheme_kwargs),
+        iters=0,
+        disable_opt_rtn=True,
+        disable_model_free=True,
+        nsamples=1,
+        device_map=_device_str(),
+    )
+    _, out_regular = regular.quantize_and_save(format="auto_round", output_dir=out_regular)
+
+    model_free_config = _read_qconfig(out_model_free)
+    regular_config = _read_qconfig(out_regular)
+
+    scheme_keys = (
+        "bits",
+        "group_size",
+        "sym",
+        "data_type",
+        "act_bits",
+        "act_group_size",
+        "act_sym",
+        "act_data_type",
+        "act_dynamic",
+    )
+    for key in scheme_keys:
+        assert model_free_config.get(key) == regular_config.get(key), (
+            f"qconfig[{key}] differs: model_free={model_free_config.get(key)} " f"regular={regular_config.get(key)}"
+        )
+
+    assert model_free_config["bits"] == 4
+    assert model_free_config["act_bits"] == 4
+    assert model_free_config["packing_format"] == regular_config["packing_format"]
+    assert model_free_config.get("block_name_to_quantize") == regular_config.get("block_name_to_quantize")
+    assert model_free_config.get("extra_config", {}) == regular_config.get("extra_config", {})
+    assert any(cfg.get("bits") == 8 for cfg in model_free_config.get("extra_config", {}).values())

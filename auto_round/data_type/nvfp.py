@@ -59,7 +59,7 @@ def calculate_gparam(tensor, group_size=16, device="cpu"):
     if isinstance(tensor, (float, int)):
         tensor_amax = torch.tensor(tensor, device=device, dtype=torch.float32).abs()
     elif isinstance(tensor, torch.Tensor):
-        tensor_amax = tensor.abs().max().to(torch.float32)
+        tensor_amax = tensor.to(torch.float32).abs().max()
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
     return global_scale
 
@@ -86,7 +86,7 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0,
     init_scale = 1.0 if init_scale is None else init_scale
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
-        tensor_max = tensor.abs().max().to(torch.float32)
+        tensor_max = tensor.to(torch.float32).abs().max()
         global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     if isinstance(max_scale, torch.Tensor):
@@ -105,14 +105,14 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, *
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
-        tensor_max = tensor.abs().max().to(torch.float32)
+        tensor_max = tensor.to(torch.float32).abs().max()
     else:
         if not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         else:
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
-            tensor_max = tensor_max.abs().max()
+            tensor_max = tensor_max.to(torch.float32).abs().max()
 
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(tensor.device)
@@ -218,12 +218,12 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
-        tensor_max = tensor.abs().max().to(torch.float32)
+        tensor_max = tensor.to(torch.float32).abs().max()
     elif tensor_max is not None:
         if not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
-            tensor_max = tensor.abs().max().to(torch.float32)
+            tensor_max = tensor.to(torch.float32).abs().max()
     global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
