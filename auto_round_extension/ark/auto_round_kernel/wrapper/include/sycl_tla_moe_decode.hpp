@@ -780,7 +780,12 @@ inline bool moe_decode_dpas_s4_enabled() {
 //                                   unsigned with zero-points when asym==true)
 //   BTLA_DTYPE::S4_CLIP           : packed int4 weights [E, N, K/2] (uint8),
 //                                   scales [E, N, K/group_size] in act dtype,
-//                                   zeros optional (asym==true requires it)
+//                                   zeros optional (asym==true requires it).
+//                                   Sym weights are routed to the shared
+//                                   per-group S4 DPAS grouped GEMM by default
+//                                   (`ARK_MOE_DECODE_DPAS_S4`, default ON);
+//                                   asym, a disabled flag, or a shape-gate
+//                                   miss falls back to the scalar GEMV.
 //   BTLA_DTYPE::S2_CLIP           : packed int2 weights [E, N, K/4] (uint8),
 //                                   4 values per byte, sym/asym like int4
 //   BTLA_DTYPE::F8_E4M3 / F8_E5M2 : FP8 weights [E, N, K] (uint8 buffer),

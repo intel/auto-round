@@ -370,8 +370,45 @@ class TestMoEGemmDecodePerf:
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    @pytest.mark.parametrize("asym", [False, True])
-    def test_perf_int8(self, dtype, asym):
+    def test_perf_int4_sym_dpas_vs_scalar(self, monkeypatch, dtype):
+        """int4-sym decode: compare the S4 DPAS path (ARK_MOE_DECODE_DPAS_S4=1)
+        against the scalar GEMV fallback (ARK_MOE_DECODE_DPAS_S4=0).
+
+        ``speedup`` here is ``scalar / dpas`` (the DPAS path is the "ark"
+        column), isolating the DPAS routing win from the dequant reference.
+        Only shapes that clear the DPAS shape gate are timed on both paths.
+        """
+        group_size = 128
+        _print_header(
+            f"INT4 sym DPAS vs scalar (group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- scalar GEMV (baseline) vs S4 DPAS (ark)"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0 or N % 64 != 0 or K % 32 != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            def _run():
+                return ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    weight_bits=4,
+                    group_size=group_size,
+                    asym=False,
+                )
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+            scalar_ms = _xpu_time_ms(_run)
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+            dpas_ms = _xpu_time_ms(_run)
+            _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
         group_size = 128
         kind = "asym" if asym else "sym"
         _print_header(
