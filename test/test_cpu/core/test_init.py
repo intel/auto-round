@@ -17,11 +17,26 @@ def test_torch_compile_platform_default_is_deferred():
     assert inspect.signature(BaseOrchestrator.__init__).parameters["enable_torch_compile"].default is None
 
 
+def test_dataset_default_is_deferred():
+    assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is None
+    assert inspect.signature(NewAutoRound.__new__).parameters["dataset"].default is None
+    assert inspect.signature(AutoRoundCompatible.__new__).parameters["dataset"].default is None
+    assert inspect.signature(BaseOrchestrator.__init__).parameters["dataset"].default is None
+
+
 def test_cli_torch_compile_flags():
     parser = build_quantize_parser()
     assert parser.parse_args(["--model", "test-model"]).enable_torch_compile is None
     assert parser.parse_args(["--model", "test-model", "--enable_torch_compile"]).enable_torch_compile is True
     assert parser.parse_args(["--model", "test-model", "--disable_torch_compile"]).enable_torch_compile is False
+
+
+def test_cli_dataset_tracks_explicit_value():
+    parser = build_quantize_parser()
+    assert parser.parse_args(["--model", "test-model"]).dataset is None
+    assert (
+        parser.parse_args(["--model", "test-model", "--dataset", "NeelNanda/pile-10k"]).dataset == "NeelNanda/pile-10k"
+    )
 
 
 def test_auto_scheme_inherits_torch_compile_setting():
