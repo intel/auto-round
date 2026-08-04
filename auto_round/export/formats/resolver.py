@@ -19,7 +19,7 @@ from typing import Iterable
 
 import torch
 
-from auto_round.compressors.planning import (
+from auto_round.compressors.config_resolution import (
     FormatCompatibilityError,
     FormatResolution,
     ResolvedScheme,

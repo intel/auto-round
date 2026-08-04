@@ -104,7 +104,7 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round import envs
-from auto_round.compressors.planning import thaw_mapping
+from auto_round.compressors.config_resolution import thaw_mapping
 from auto_round.compressors.utils import is_mx_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme

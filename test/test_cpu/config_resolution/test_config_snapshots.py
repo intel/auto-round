@@ -16,7 +16,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.compressors.planning import resolve_quantization_config, resolve_scheme_value
+from auto_round.compressors.config_resolution import resolve_quantization_config, resolve_scheme_value
 from auto_round.export.formats import resolve_formats
 
 EXPECTED_PLAN_SNAPSHOTS = {

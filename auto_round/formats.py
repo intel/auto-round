@@ -16,7 +16,7 @@
 
 from enum import Enum
 
-from auto_round.compressors.planning import ResolvedScheme
+from auto_round.compressors.config_resolution import ResolvedScheme
 from auto_round.export.formats import (
     AutoAWQFormat,
     AutoGPTQFormat,

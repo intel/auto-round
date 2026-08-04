@@ -21,8 +21,8 @@ from typing import Any, Callable, Union
 import torch
 import transformers
 
-from auto_round.compressors.planning.contracts import thaw_mapping
-from auto_round.compressors.planning.errors import FormatCompatibilityError
+from auto_round.compressors.config_resolution.contracts import thaw_mapping
+from auto_round.compressors.config_resolution.errors import FormatCompatibilityError
 from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, GGUF_CONFIG, GGUF_INNER_CONFIG, QK_K, ModelType
 from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector, gguf_format_to_ftype
 from auto_round.export.formats.base import OutputFormat

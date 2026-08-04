@@ -19,7 +19,7 @@ from typing import Union
 import torch
 from torch.amp import autocast
 
-from auto_round.compressors.planning import LayerConfigResolutionError
+from auto_round.compressors.config_resolution import LayerConfigResolutionError
 from auto_round.logger import logger
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
@@ -256,13 +256,17 @@ def set_layer_config(
     fill_default_value=True,
 ) -> tuple[dict, bool, dict]:
     """Compatibility adapter for the pure layer-config resolver and explicit apply phase."""
+    from auto_round.compressors.config_resolution import (
+        ResolvedQuantizationConfig,
+        ResolvedScheme,
+        resolve_scheme_value,
+    )
     from auto_round.compressors.layer_config import (
         apply_plan_to_model,
         extract_regex_config,
         has_quantized_layer_outside_blocks,
         resolve_layer_config,
     )
-    from auto_round.compressors.planning import ResolvedQuantizationConfig, ResolvedScheme, resolve_scheme_value
     from auto_round.schemes import get_gguf_scheme
 
     if isinstance(default_scheme, ResolvedScheme):

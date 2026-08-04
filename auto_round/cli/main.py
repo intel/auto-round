@@ -24,7 +24,7 @@ from auto_round.cli.parser import (
     build_quantize_parser,
     build_root_parser,
 )
-from auto_round.compressors.planning import PlanningError
+from auto_round.compressors.config_resolution import ConfigResolutionError
 from auto_round.logger import logger
 
 
@@ -498,7 +498,7 @@ def run():
             run_eval(command_argv)
             return
         start(argv=command_argv)
-    except PlanningError as error:
+    except ConfigResolutionError as error:
         logger.error(str(error))
         raise SystemExit(2) from error
 

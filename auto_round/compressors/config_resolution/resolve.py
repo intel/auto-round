@@ -17,14 +17,14 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping
 
-from auto_round.compressors.planning.contracts import (
+from auto_round.compressors.config_resolution.contracts import (
     FormatResolution,
     LayerConfig,
     ResolvedQuantizationConfig,
     ResolvedScheme,
     thaw_mapping,
 )
-from auto_round.compressors.planning.errors import SchemeResolutionError
+from auto_round.compressors.config_resolution.errors import SchemeResolutionError
 from auto_round.schemes import QuantizationScheme, parse_scheme
 
 
@@ -54,7 +54,7 @@ def resolve_quantization_config(
     regex_config: LayerConfig | None = None,
     has_qlayer_outside_block: bool = False,
 ) -> ResolvedQuantizationConfig:
-    """Combine immutable resolution results into the compressor's authoritative plan."""
+    """Combine immutable resolution results into the authoritative quantization config."""
     merged = thaw_mapping(format_resolution.layer_config_patch)
     for name, config in layer_config.items():
         merged.setdefault(name, {}).update(dict(config))

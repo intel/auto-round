@@ -31,7 +31,7 @@ import torch.nn as nn
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.planning import FormatResolution, ResolvedScheme
+from auto_round.compressors.config_resolution import FormatResolution, ResolvedScheme
 from auto_round.export.formats import resolve_formats
 from auto_round.schemes import QuantizationScheme, parse_scheme
 

@@ -14,7 +14,7 @@
 
 import pytest
 
-from auto_round.compressors.planning import FormatCompatibilityError, resolve_scheme_value
+from auto_round.compressors.config_resolution import FormatCompatibilityError, resolve_scheme_value
 from auto_round.export.formats import resolve_formats
 
 

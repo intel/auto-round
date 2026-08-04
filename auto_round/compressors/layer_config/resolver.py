@@ -22,8 +22,8 @@ from typing import Union
 
 import torch
 
-from auto_round.compressors.planning import ResolvedQuantizationConfig, ResolvedScheme
-from auto_round.compressors.planning.contracts import LayerConfig, freeze_mapping
+from auto_round.compressors.config_resolution import ResolvedQuantizationConfig, ResolvedScheme
+from auto_round.compressors.config_resolution.contracts import LayerConfig, freeze_mapping
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, is_mx_fp, is_nv_fp
 from auto_round.utils import (

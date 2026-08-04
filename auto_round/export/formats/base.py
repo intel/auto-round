@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional, Union
 import torch
 import transformers
 
-from auto_round.compressors.planning.errors import FormatCompatibilityError
+from auto_round.compressors.config_resolution.errors import FormatCompatibilityError
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (

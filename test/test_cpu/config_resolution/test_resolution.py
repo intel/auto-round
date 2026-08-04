@@ -19,7 +19,7 @@ import pytest
 
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.cli import main as cli_main
-from auto_round.compressors.planning import (
+from auto_round.compressors.config_resolution import (
     FormatCompatibilityError,
     ResolvedScheme,
     SchemeResolutionError,

@@ -27,17 +27,17 @@ from auto_round.algorithms.transforms import (
     apply_rotation,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.compressors.config_resolution import (
+    FormatResolution,
+    ResolvedScheme,
+    resolve_quantization_config,
+    thaw_mapping,
+)
 from auto_round.compressors.layer_config import (
     apply_plan_to_model,
     extract_regex_config,
     has_quantized_layer_outside_blocks,
     resolve_layer_config,
-)
-from auto_round.compressors.planning import (
-    FormatResolution,
-    ResolvedScheme,
-    resolve_quantization_config,
-    thaw_mapping,
 )
 from auto_round.compressors.shard_writer import ShardWriter
 from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp
