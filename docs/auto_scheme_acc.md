@@ -30,6 +30,102 @@ evalscope eval --model qwen3-8b --api-url http://127.0.0.1:8001/v1   --api-key E
 | qwen3.5-4b: Fake quantized model                          | 0.505               | 0.3172                  | 0.5948   |
 
 
+### GGUF Format results
+**using lm_eval to eval**
+```bash
+lm_eval --model hf --model_args pretrained=test_gguf/,gguf_file=Qwen3-8B-Q4_K_M.gguf --device cuda:0 --tasks arc_challenge,arc_easy,boolq,hellaswag,lambada_openai,mmlu,openbookqa,piqa,truthfulqa_mc1,winogrande
+```
+| Qwen3-8B | Quant Type | Actual Bits | Avg Acc | arc_challenge | arc_easy | boolq | hellaswag | lambada_openai | openbookqa | piqa | truthfulqa_mc1 | winogrande | mmlu |
+
+|--------|------------|-------------|---------|---------------|----------|-------|-----------|----------------|------------|------|----------------|------------|------|
+
+| f16 | f16 | 16 | | | | | | | | | | | |
+
+| unsloth | Q2_K | 3.20 | 0.6075 | 0.5145 | 0.8051 | 0.8526 | 0.5309 | 0.6255 | 0.3166 | 0.7530 | 0.3452 | 0.6590 | 0.6729 |
+
+| unsloth | Q2_K_L | 3.34 | 0.6078 | 0.5128 | 0.8068 | 0.8529 | 0.5295 | 0.6276 | 0.3189 | 0.7546 | 0.3427 | 0.6567 | 0.6750 |
+
+| bartowski | Q2_K | 3.20 | 0.6071 | 0.5128 | 0.8018 | 0.8511 | 0.5312 | 0.6257 | 0.3100 | 0.7568 | 0.3366 | 0.6677 | 0.6772 |
+
+| bartowski | Q2_K_L | 3.79 | 0.5761 | 0.5162 | 0.8018 | 0.5306 | 0.5306 | 0.6266 | 0.3120 | 0.7606 | 0.3305 | 0.6717 | 0.6806 |
+
+| auto_round | 2.5b mixed[q2,q3,q4] | 3.23 | 0.6153 | 0.5239 | 0.8102 | 0.8615 | 0.5242 | 0.6598 | 0.3140 | 0.7503 | 0.3390 | 0.6756 | 0.6943 |
+
+| auto_round | 2.5b mixed[q2,q3,q4] lm_head Q6K | 3.25 | 0.6093 | 0.5060 | 0.8093 | 0.8538 | 0.5119 | 0.6598 | 0.3040 | 0.7459 | 0.3256 | 0.6835 | 0.6929 |
+
+| auto_round | 2.5b mixed[q2,q3,q4,q6] | 3.24 | 0.6074 | 0.5034 | 0.8131 | 0.8508 | 0.5109 | 0.6571 | 0.3020 | 0.7470 | 0.3317 | 0.6685 | 0.6897 |
+
+| auto_round | 2.5b mixed[q2,q3,q4,q6] iters 200 | 3.25 | 0.6046 | 0.5060 | 0.8136 | 0.8541 | 0.5234 | 0.6565 | 0.3040 | 0.7606 | 0.3403 | 0.6827 | 0.6919 |
+
+| unsloth | Q3_K_M | 4.02 | 0.6260 | 0.5503 | 0.8270 | 0.8596 | 0.5589 | 0.6301 | 0.3120 | 0.7655 | 0.3770 | 0.6677 | 0.7115 |
+
+| bartowski | Q3_K_M | 4.02 | 0.6246 | 0.5478 | 0.8304 | 0.8606 | 0.5554 | 0.6321 | 0.3200 | 0.7661 | 0.3647 | 0.6575 | 0.7118 |
+
+| auto_round | 3.5b mixed[q2,q3,q4] | 4.17 | 0.6284 | 0.5478 | 0.8300 | 0.8648 | 0.5651 | 0.6429 | 0.3100 | 0.7612 | 0.3574 | 0.6819 | 0.7225 |
+
+| auto_round | 3.5b mixed[q2,q3,q4] lm_head Q6K | 4.19 | 0.6251 | 0.5384 | 0.8338 | 0.8609 | 0.5581 | 0.6354 | 0.3160 | 0.7612 | 0.3574 | 0.6725 | 0.7175 |
+
+| auto_round | 3.5b mixed[q2,q3,q4,q6] | 4.19 | 0.6246 | 0.5401 | 0.8259 | 0.8624 | 0.5582 | 0.6387 | 0.3080 | 0.7628 | 0.3586 | 0.6725 | 0.7191 |
+
+| auto_round | 3.5b mixed[q2,q3,q4,q6] iters 200 | 4.19 | 0.6318 | 0.5520 | 0.8346 | 0.8676 | 0.5624 | 0.6404 | 0.3160 | 0.7682 | 0.3696 | 0.6890 | 0.7183 |
+
+| unsloth | Q4_K_M | 4.90 | 0.6308 | 0.5520 | 0.8329 | 0.8691 | 0.5685 | 0.6437 | 0.3180 | 0.7568 | 0.3623 | 0.6803 | 0.7248 |
+
+| bartowski | Q4_K_M | 4.90 | 0.6301 | 0.5546 | 0.8359 | 0.8654 | 0.5655 | 0.6443 | 0.3120 | 0.7612 | 0.3599 | 0.6748 | 0.7269 |
+
+**using llama-server and evalscope to eval**
+```bash
+llama-server \
+    --model test_gguf/Qwen3-8B-Q2_K_S.gguf \
+    --host 127.0.0.1 \
+    --port 8001 \
+    --alias qwen \
+    --ctx-size 65536 \
+    --gpu-layers all \
+    --parallel 16 \
+    --predict 2048 \
+    --reasoning off \
+    --no-webui \
+```
+```bash
+evalscope eval \
+    --model qwen \
+    --api-url http://127.0.0.1:8001/v1 \
+    --api-key EMPTY \
+    --datasets math_500 \
+    --eval-batch-size 16
+```
+
+| Qwen3-8B | Quant Type | Actual Bits | gpqa_diamond | math_500 |
+
+|--------|------------|-------------|--------------|----------|
+
+| f16 | f16 | 16 | 0.4596 | 0.798 |
+
+| unsloth | Q2_K | 3.20 | 0.3131 | 0.726 |
+
+| unsloth | Q2_K_L | 3.34 | 0.3788 | 0.732 |
+
+| auto_round | 2.5b mixed[q2,q3,q4] | 3.23 | 0.3636 | 0.706 |
+
+| auto_round | 2.5b mixed[q2,q3,q4] lm_head Q6K | 3.25 | 0.3485 | 0.714 |
+
+| auto_round | 2.5b mixed[q2,q3,q4,q6] | 3.24 | 0.3687 | 0.698 |
+
+| auto_round | 2.5b mixed[q2,q3,q4,q6] iters 200 | 3.25 | 0.3990 | 0.700 |
+
+| unsloth | Q3_K_M | 4.02 | 0.4192 | 0.778 |
+
+| auto_round | 3.5b mixed[q2,q3,q4] | 4.17 | 0.4495 | 0.816 |
+
+| auto_round | 3.5b mixed[q2,q3,q4] lm_head Q6K | 4.19 | 0.4495 | 0.788 |
+
+| auto_round | 3.5b mixed[q2,q3,q4,q6] | 4.19 | 0.4444 | 0.814 |
+
+| auto_round | 3.5b mixed[q2,q3,q4,q6] iters 200 | 4.19 | 0.5051 | 0.788 |
+
+| unsloth | Q4_K_M | 4.90 | 0.4545 | 0.792 |
+
 ### Other results
 
 We use **lm-eval** for evaluation. For LLaMA, we enabled `add_bos_token` and
