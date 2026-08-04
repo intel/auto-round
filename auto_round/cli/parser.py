@@ -115,9 +115,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
     )
-    rt.add_argument(
-        "--dataset", default="NeelNanda/pile-10k", type=str, help="Calibration dataset or local dataset path."
-    )
+    rt.add_argument("--dataset", default=None, type=str, help="Calibration dataset or local dataset path.")
     rt.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
