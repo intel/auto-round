@@ -48,6 +48,9 @@ typedef uintptr_t torch_ptr;
 namespace ark {
 namespace py = pybind11;
 
+constexpr int TENSOR_LAYOUT_HND = 0;  // [B, H, S, D]
+constexpr int TENSOR_LAYOUT_NHD = 1;  // [B, S, H, D]
+
 static std::vector<int> parse_batch_n_padding(py::handle n_padding_obj, int batch, const char* func_name) {
   if (n_padding_obj.is_none()) {
     return {};

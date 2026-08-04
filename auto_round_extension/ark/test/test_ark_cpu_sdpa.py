@@ -63,7 +63,16 @@ def _to_layout(tensor_hnd, layout):
     if layout == "HND":
         return tensor_hnd.contiguous()
     if layout == "NHD":
-        return tensor_hnd.transpose(1, 2).contiguous()
+        tensor_nhd = tensor_hnd.transpose(1, 2)
+        _, seq_len, num_heads, head_dim = tensor_nhd.shape
+        canonical_nhd = torch.empty_strided(
+            tensor_nhd.shape,
+            (seq_len * num_heads * head_dim, num_heads * head_dim, head_dim, 1),
+            dtype=tensor_nhd.dtype,
+            device=tensor_nhd.device,
+        )
+        canonical_nhd.copy_(tensor_nhd)
+        return canonical_nhd
     raise ValueError(layout)
 
 
@@ -238,16 +247,14 @@ def test_homogeneous_additive_mask_falls_back_to_scalar(dtype):
     torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
 
 
-def test_ark_cpu_sdpa_accepts_strided_hnd_inputs():
+def test_ark_cpu_sdpa_rejects_strided_hnd_inputs():
     torch.manual_seed(3006)
     q = torch.randn(1, 2, 16, 8, dtype=torch.float32)[:, :, ::2, :]
     k = torch.randn(1, 2, 24, 8, dtype=torch.float32)[:, :, ::2, :]
     v = torch.randn(1, 2, 24, 8, dtype=torch.float32)[:, :, ::2, :]
 
-    expected = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-    actual = auto_round_kernel.sdpa(q, k, v)
-
-    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+    with pytest.raises(ValueError, match="do not match canonical"):
+        auto_round_kernel.sdpa(q, k, v)
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])

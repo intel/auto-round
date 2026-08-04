@@ -453,24 +453,6 @@ class _XPUKVCacheMeta:
 cpu_lib = None
 xpu_lib = None
 
-try:
-    from . import auto_round_kernel_cpu as _cpu_lib_mod
-
-    cpu_lib = _cpu_lib_mod
-except ImportError as _e:
-    print(f"ARK is unable to load CPU lib: {_e}")
-    cpu_lib = None
-
-if torch.xpu.is_available():
-    try:
-        from . import auto_round_kernel_xpu as _xpu_lib_mod
-
-        xpu_lib = _xpu_lib_mod
-    except ImportError as _e:
-        print(f"ARK is unable to load XPU lib: {_e}")
-        xpu_lib = None
-
-
 def get_lib(A: torch.Tensor):
     lib = None
     if A.device.type == "xpu":
@@ -893,10 +875,9 @@ def sdpa(
     lib = get_lib(query)
     stream = get_stream(query)
 
-    if query.device.type == "xpu":
-        _validate_canonical_strides(query, "Q", tensor_layout)
-        _validate_canonical_strides(key, "K", tensor_layout)
-        _validate_canonical_strides(value, "V", tensor_layout)
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
 
     # Mixed precision (F32 Q + F16/BF16 K/V) accumulates in and emits F32; the
     # homogeneous path keeps the operand dtype.
