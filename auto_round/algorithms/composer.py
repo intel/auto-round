@@ -202,6 +202,9 @@ class AlgorithmComposer:
             ):
                 logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
 
+            if "nv_fp" in orchestrator.data_type:
+                can_compile_block_forward = False
+
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
                 BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward)
@@ -440,7 +443,7 @@ class AlgorithmComposer:
 
                 if is_nv_fp(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block_ctx.model, data_type, group_size)
+                update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)

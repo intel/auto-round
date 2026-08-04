@@ -318,6 +318,7 @@ class TestAutoRound:
             assert weight_name in f.keys()
             assert f.get_tensor(weight_name).shape == torch.Size([1])
             assert f.get_tensor(weight_name).dtype == torch.float32 or f.get_tensor(weight_name).dtype == torch.bfloat16
+        assert "model.decoder.layers.8.self_attn.q_max" not in f.keys()
 
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
