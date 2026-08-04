@@ -58,7 +58,7 @@ class TestAutoRound:
             seqlen=8,
             disable_opt_rtn=True,
         )
-        quantized_model, _ = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
+        quantized_model, save_folder = autoround.quantize_and_save(output_dir=self.save_dir, format="gguf:q4_0")
         expert_count = quantized_model.config.get_text_config().num_experts
         live_expert_containers = [
             module for module in quantized_model.modules() if isinstance(module, SequentialQwen3_5MoeExperts)
@@ -83,8 +83,8 @@ class TestAutoRound:
             )
 
         text_gguf_files = [
-            os.path.join(self.save_dir, filename)
-            for filename in os.listdir(self.save_dir)
+            os.path.join(save_folder, filename)
+            for filename in os.listdir(save_folder)
             if filename.endswith(".gguf") and "mmproj" not in filename
         ]
         assert len(text_gguf_files) == 1
