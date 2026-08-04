@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 import torch
 
-from auto_round.formats import OutputFormat
+from auto_round.export.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import is_moe_model_via_config, logger
 

@@ -24,6 +24,8 @@ from auto_round.cli.parser import (
     build_quantize_parser,
     build_root_parser,
 )
+from auto_round.compressors.config_resolution import ConfigResolutionError
+from auto_round.logger import logger
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -142,7 +144,7 @@ RECIPES = {
 def list_item(argv=None):
     args = build_list_parser().parse_args(argv)
     if args.item in {"format", "formats"}:
-        from auto_round.formats import OutputFormat
+        from auto_round.export.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")
         print(OutputFormat.get_support_matrix())
@@ -288,8 +290,8 @@ def tune(args):
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
+    from auto_round import AutoRound
     from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -383,10 +385,10 @@ def tune(args):
 
     from auto_round.utils import clear_memory
 
-    autoround: BaseCompressor = PipelineAutoRound(
+    autoround: BaseCompressor = AutoRound(
         model_name,
-        scheme,
-        alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        scheme=scheme,
+        alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -481,20 +483,24 @@ def _print_help(topic=None):
 
 
 def run():
-    argv = list(sys.argv[1:])
-    command, command_argv = _normalize_cli_invocation(argv)
+    try:
+        argv = list(sys.argv[1:])
+        command, command_argv = _normalize_cli_invocation(argv)
 
-    if command == "help":
-        root_args = build_root_parser().parse_args(argv)
-        _print_help(root_args.topic)
-        return
-    if command == "list":
-        list_item(command_argv)
-        return
-    if command == "eval":
-        run_eval(command_argv)
-        return
-    start(argv=command_argv)
+        if command == "help":
+            root_args = build_root_parser().parse_args(argv)
+            _print_help(root_args.topic)
+            return
+        if command == "list":
+            list_item(command_argv)
+            return
+        if command == "eval":
+            run_eval(command_argv)
+            return
+        start(argv=command_argv)
+    except ConfigResolutionError as error:
+        logger.error(str(error))
+        raise SystemExit(2) from error
 
 
 def run_best():

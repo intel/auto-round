@@ -5,22 +5,16 @@ from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import BaseOrchestrator
-from auto_round.compressors.entry import AutoRound as NewAutoRound
-from auto_round.compressors.entry import AutoRoundCompatible
 from auto_round.utils.device_manager import default_enable_torch_compile
 
 
 def test_torch_compile_platform_default_is_deferred():
     assert inspect.signature(AutoRound.__new__).parameters["enable_torch_compile"].default is None
-    assert inspect.signature(NewAutoRound.__new__).parameters["enable_torch_compile"].default is None
-    assert inspect.signature(AutoRoundCompatible.__new__).parameters["enable_torch_compile"].default is None
     assert inspect.signature(BaseOrchestrator.__init__).parameters["enable_torch_compile"].default is None
 
 
 def test_dataset_default_is_deferred():
     assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is None
-    assert inspect.signature(NewAutoRound.__new__).parameters["dataset"].default is None
-    assert inspect.signature(AutoRoundCompatible.__new__).parameters["dataset"].default is None
     assert inspect.signature(BaseOrchestrator.__init__).parameters["dataset"].default is None
 
 
@@ -109,7 +103,7 @@ def test_argparse_check(tiny_opt_model_path):
     # so CalibrationState defaulted to 1 regardless of the user's value.
     steps = 8
 
-    ar = NewAutoRound(
+    ar = AutoRound(
         tiny_opt_model_path,
         scheme="W4A16",
         gradient_accumulate_steps=steps,

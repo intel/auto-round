@@ -61,9 +61,10 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     assert (
         single_expert_cnt == config.num_local_experts
     ), f"Expected {config.num_local_experts} GPTOssSingleExpert modules, found {single_expert_cnt}."
+    expected_quant_linear_cnt = config.num_hidden_layers * 3 * config.num_local_experts
     assert (
-        quant_linear_cnt == config.num_hidden_layers * 3 * config.num_local_experts
-    ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
+        quant_linear_cnt == expected_quant_linear_cnt
+    ), f"Expected {expected_quant_linear_cnt} QuantLinear modules, found {quant_linear_cnt}."
 
     # verify the quantized model can be loaded and run inference
     loaded_model = GptOssForCausalLM.from_pretrained(save_folder)

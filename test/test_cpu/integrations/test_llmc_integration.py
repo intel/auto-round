@@ -7,7 +7,7 @@ from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig
 from auto_round.calib_dataset import get_dataset
 
 from ...envs import multi_card
@@ -253,7 +253,7 @@ def test_llmc_awq_w8a8_export_config_args(tiny_opt_model_path, tmp_path):
     ar = AutoRound(
         tiny_opt_model_path,
         scheme="INT8",
-        algorithm="awq",
+        alg_configs=AWQConfig(),
         nsamples=2,
         seqlen=32,
         batch_size=2,

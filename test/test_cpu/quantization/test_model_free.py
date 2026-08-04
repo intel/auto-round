@@ -74,6 +74,33 @@ from auto_round.compressors.model_free import (
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils.model import is_model_free_route
 
+
+def test_model_free_preserves_explicit_scheme_overrides():
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    compressor = ModelFreeCompressor("unused-model-path", scheme="W8A16", sym=False)
+    compressor._parse_scheme()
+
+    assert compressor.default_scheme["sym"] is False
+
+
+def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
+    from auto_round import AutoRound
+
+    compressor = AutoRound(
+        tiny_opt_model_path,
+        scheme="W4A16",
+        sym=False,
+        iters=0,
+        disable_opt_rtn=True,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.scheme_input.sym is False
+
+
 from ...envs import require_compressed_tensors
 
 # ---------------------------------------------------------------------------
