@@ -36,8 +36,8 @@ class TestAutoRoundFP:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path, dataloader):
-        model_name = tiny_deepseek_v2_model_path
+    def test_nvfp4_moe_actmax_rtn(self, tiny_deepseek_v2_model_path_cpu, dataloader):
+        model_name = tiny_deepseek_v2_model_path_cpu
         layer_config = {
             "self_attn": {"bits": 16, "act_bits": 16},
             "mlp.shared_experts": {"bits": 16, "act_bits": 16},

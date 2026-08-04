@@ -79,6 +79,24 @@ def tiny_deepseek_v2_model_path():
 
 
 @pytest.fixture(scope="session")
+def tiny_deepseek_v2_model_path_cpu():
+    """Reduced fixture for CPU-only tests (2 MoE layers, 8 experts)."""
+    model_name_or_path = deepseek_v2_name_or_path
+    tiny_model_path = "./tmp/tiny_deepseek_v2_model_path_cpu"
+    tiny_model_path = save_tiny_model(
+        model_name_or_path,
+        tiny_model_path,
+        num_layers=2,
+        num_experts=8,
+        trust_remote_code=False,
+        use_config=True,
+        config_overrides={"first_k_dense_replace": 0},
+    )
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
 def tiny_gemma_model_path():
     model_name_or_path = gemma_name_or_path
     tiny_model_path = "./tmp/tiny_gemma_model_path"

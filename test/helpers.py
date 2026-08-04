@@ -341,6 +341,7 @@ def get_tiny_model(
             if config.model_type == "qwen3_omni_moe":
                 config.initializer_range = 0.02  # Default initializer range for weight initialization
             _reduce_config_layers(config, num_layers, num_experts)
+            _apply_config_overrides(config, config_overrides)
 
             # Pick the right model class
             base_lib = transformers
