@@ -377,6 +377,12 @@ class TestMoEGemmDecodePerf:
         ``speedup`` here is ``scalar / dpas`` (the DPAS path is the "ark"
         column), isolating the DPAS routing win from the dequant reference.
         Only shapes that clear the DPAS shape gate are timed on both paths.
+
+        Observed crossover: at bs1 (8 tokens, ~1 token/expert) the DPAS tile is
+        nearly empty and the scalar GEMV wins (~0.5x), but by bs32 (256 tokens)
+        the shared S4 DPAS grouped-GEMM already wins ~2x. The auto-dispatch
+        default threshold (`_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS`) is therefore kept
+        small so 256-token batches are routed to prefill/DPAS, not decode.
         """
         group_size = 128
         _print_header(

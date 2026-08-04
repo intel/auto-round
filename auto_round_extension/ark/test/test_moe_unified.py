@@ -92,7 +92,7 @@ _UNIFIED_SKIP = _unified_skip_reason()
 # tokens) -- keep wall-clock low.
 # ---------------------------------------------------------------------------
 
-_AUTO_DECODE_SHAPE = dict(num_experts=4, tokens_per_expert=[64, 64, 64, 64], N=128, K=256)  # total_tokens=256
+_AUTO_DECODE_SHAPE = dict(num_experts=4, tokens_per_expert=[4, 4, 4, 4], N=128, K=256)  # total_tokens=16
 _AUTO_PREFILL_SHAPE = dict(num_experts=4, tokens_per_expert=[80, 80, 80, 80], N=128, K=256)  # total_tokens=320
 
 
@@ -193,7 +193,7 @@ class TestMoeUnifiedDispatch:
             group_size=group_size,
             asym=False,
         )
-        # total tokens = 256 (<= default threshold 256) -> dispatched to decode
+        # total tokens = 16 (<= default threshold 32) -> dispatched to decode
         # -> output must be bit-identical to moe_gemm_decode.
         torch.testing.assert_close(out_auto, out_decode, rtol=0, atol=0)
 
@@ -238,6 +238,7 @@ class TestMoeUnifiedDispatch:
         activations, packed, scales, _ = _make_int4_sym(E, N, K, group_size, dtype, decode_total_tokens)
         ntpe = torch.tensor(decode_shape["tokens_per_expert"], dtype=torch.int32, device="xpu")
 
+        # A threshold strictly below the shape's total tokens forces prefill.
         out_auto = ark.moe(
             activations,
             packed,
@@ -247,7 +248,7 @@ class TestMoeUnifiedDispatch:
             group_size=group_size,
             asym=False,
             phase="auto",
-            decode_threshold=128,
+            decode_threshold=decode_total_tokens - 1,
         )
         out_prefill = ark.moe_gemm_prefill(
             activations,

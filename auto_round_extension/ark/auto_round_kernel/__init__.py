@@ -2348,7 +2348,16 @@ def _native_fp8_prefill_enabled() -> bool:
 # when `activations.shape[0] <= threshold`, otherwise prefill. This threshold
 # is hardware-dependent and can be overridden via
 # `ARK_MOE_AUTO_DECODE_MAX_TOKENS`.
-_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 256
+#
+# Empirically (see `test_perf_int4_sym_dpas_vs_scalar`) the shared S4 DPAS
+# grouped-GEMM that the prefill path uses already beats the scalar-GEMV decode
+# kernel by ~2x once total tokens reach 256 (bs32), while it loses (~0.5x) only
+# at the single-stream bs1 extreme (8 tokens). The crossover therefore sits far
+# below 256, so the default is kept small: the scalar decode kernel is only
+# preferred for the tiny single-/few-stream case where every expert sees well
+# under one DPAS tile row. Mirrors vLLM-xpu-kernels' `w4a16` dispatch, which
+# buckets on average tokens-per-expert rather than a large total-token cutoff.
+_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 32
 
 _MOE_VALID_PHASES = ("auto", "decode", "prefill")
 
@@ -2417,7 +2426,7 @@ def moe(
               Use when the model knows it is in the prefill phase.
         decode_threshold: Total-token threshold for ``"auto"`` mode. If not
             provided, uses ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` when set to a
-            valid positive integer, otherwise defaults to 256. Explicit
+            valid positive integer, otherwise defaults to 32. Explicit
             argument values take precedence over the environment variable.
 
     Returns:
