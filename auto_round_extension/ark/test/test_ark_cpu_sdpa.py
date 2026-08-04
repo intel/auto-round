@@ -223,6 +223,34 @@ def test_ark_cpu_sdpa_additive_mask_multi_tile_matches_torch():
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_homogeneous_additive_mask_falls_back_to_scalar(dtype):
+    torch.manual_seed(3005)
+    q = torch.randn(1, 2, 4, 16, dtype=dtype)
+    k = torch.randn(1, 2, 8, 16, dtype=dtype)
+    v = torch.randn(1, 2, 8, 16, dtype=dtype)
+    mask = torch.randn(1, 1, 4, 8, dtype=torch.float32)
+
+    route = _resolved_cpu_sdpa_route(q, k, v, attn_mask=mask)
+    expected = torch.nn.functional.scaled_dot_product_attention(q.float(), k.float(), v.float(), attn_mask=mask)
+    actual = auto_round_kernel.sdpa(q, k, v, attn_mask=mask)
+
+    assert route == ROUTE_SCALAR
+    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
+
+
+def test_ark_cpu_sdpa_accepts_strided_hnd_inputs():
+    torch.manual_seed(3006)
+    q = torch.randn(1, 2, 16, 8, dtype=torch.float32)[:, :, ::2, :]
+    k = torch.randn(1, 2, 24, 8, dtype=torch.float32)[:, :, ::2, :]
+    v = torch.randn(1, 2, 24, 8, dtype=torch.float32)[:, :, ::2, :]
+
+    expected = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    actual = auto_round_kernel.sdpa(q, k, v)
+
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_ark_cpu_sdpa_decode_half_dtypes_match_torch(dtype):
     torch.manual_seed(3004)
     batch, heads_q, heads_kv, head_dim, seq_kv = 1, 8, 2, 16, 300

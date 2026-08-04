@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from collections import OrderedDict
 from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Optional
@@ -200,6 +201,131 @@ def _empty_attention_output(
     layout = _normalize_tensor_layout(tensor_layout)
     shape = (batch, num_heads, seq_len, head_dim) if layout == "HND" else (batch, seq_len, num_heads, head_dim)
     return torch.empty(shape, device=device, dtype=dtype)
+
+
+@dataclass
+class _CpuPackedKVCacheEntry:
+    descriptor: object
+    cache_k: torch.Tensor
+    cache_v: torch.Tensor
+    seq_len: int
+    key_version: int
+    value_version: int
+
+
+_CPU_PUBLIC_PACKED_KV_CACHE_MAX = 8
+_CPU_PUBLIC_PACKED_KV_CACHE: "OrderedDict[tuple, _CpuPackedKVCacheEntry]" = OrderedDict()
+
+
+def _cpu_public_packed_kv_available() -> bool:
+    return (
+        cpu_lib is not None
+        and hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed_desc")
+        and hasattr(cpu_lib, "ark_cpu_update_packed_k_desc")
+        and hasattr(cpu_lib, "ark_cpu_update_packed_v_desc")
+    )
+
+
+def _cpu_public_packed_kv_cache_key(key: torch.Tensor, value: torch.Tensor, tensor_layout: str) -> tuple:
+    batch, num_heads_kv, _, head_dim = _attention_shape(key, tensor_layout)
+    return (
+        key.device.type,
+        key.device.index,
+        key.dtype,
+        value.dtype,
+        key.data_ptr(),
+        value.data_ptr(),
+        key.stride(),
+        value.stride(),
+        batch,
+        num_heads_kv,
+        head_dim,
+        _normalize_tensor_layout(tensor_layout),
+    )
+
+
+def _attention_seq_slice(tensor: torch.Tensor, tensor_layout: str, start: int, end: int) -> torch.Tensor:
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        return tensor[:, :, start:end, :]
+    return tensor[:, start:end, :, :]
+
+
+def _cpu_public_get_packed_kv_entry(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    tensor_layout: str,
+) -> tuple[_CpuPackedKVCacheEntry, int]:
+    layout = _normalize_tensor_layout(tensor_layout)
+    batch, num_heads_kv, seq_len_kv, head_dim = _attention_shape(key, layout)
+    cache_key = _cpu_public_packed_kv_cache_key(key, value, layout)
+    key_version = int(key._version)
+    value_version = int(value._version)
+    entry = _CPU_PUBLIC_PACKED_KV_CACHE.get(cache_key)
+
+    if entry is None or seq_len_kv > int(entry.descriptor.logical_capacity):
+        descriptor = ark_cpu_packed_kv_descriptor(batch, num_heads_kv, seq_len_kv, head_dim, dtype=key.dtype)
+        cache_k, cache_v = ark_cpu_packed_kv_alloc_from_descriptor(descriptor, dtype=key.dtype, device=key.device)
+        entry = _CpuPackedKVCacheEntry(descriptor, cache_k, cache_v, 0, -1, -1)
+        _CPU_PUBLIC_PACKED_KV_CACHE[cache_key] = entry
+    else:
+        _CPU_PUBLIC_PACKED_KV_CACHE.move_to_end(cache_key)
+
+    if len(_CPU_PUBLIC_PACKED_KV_CACHE) > _CPU_PUBLIC_PACKED_KV_CACHE_MAX:
+        _CPU_PUBLIC_PACKED_KV_CACHE.popitem(last=False)
+
+    if entry.key_version == key_version and entry.value_version == value_version:
+        if seq_len_kv > entry.seq_len:
+            ark_cpu_update_packed_kv_from_descriptor(
+                entry.descriptor,
+                entry.cache_k,
+                entry.cache_v,
+                _attention_seq_slice(key, layout, entry.seq_len, seq_len_kv),
+                _attention_seq_slice(value, layout, entry.seq_len, seq_len_kv),
+                entry.seq_len,
+                tensor_layout=layout,
+                no_zeroing=False,
+            )
+            entry.seq_len = seq_len_kv
+        return entry, seq_len_kv
+
+    ark_cpu_update_packed_kv_from_descriptor(
+        entry.descriptor,
+        entry.cache_k,
+        entry.cache_v,
+        key,
+        value,
+        0,
+        tensor_layout=layout,
+        no_zeroing=False,
+    )
+    entry.seq_len = seq_len_kv
+    entry.key_version = key_version
+    entry.value_version = value_version
+    return entry, seq_len_kv
+
+
+def _cpu_public_mixed_sdpa_packed(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    is_causal: bool,
+    scale: float | None,
+    tensor_layout: str,
+) -> torch.Tensor:
+    entry, seq_len_kv = _cpu_public_get_packed_kv_entry(key, value, tensor_layout=tensor_layout)
+    return ark_cpu_bestla_sdpa_packed_from_descriptor(
+        entry.descriptor,
+        query,
+        entry.cache_k,
+        entry.cache_v,
+        seq_len_kv,
+        is_causal=is_causal,
+        scale=scale,
+        tensor_layout=tensor_layout,
+    )
 
 
 def _validate_attention_mask(
@@ -726,6 +852,8 @@ def sdpa(
     """
     if query.device.type not in ("cpu", "xpu"):
         raise NotImplementedError(f"sdpa is not supported on {query.device.type}")
+    if query.device.type == "cpu" and return_lse:
+        raise NotImplementedError("return_lse is not supported on CPU")
 
     supported_dtypes = (
         (torch.float32, torch.float16, torch.bfloat16)
@@ -765,9 +893,10 @@ def sdpa(
     lib = get_lib(query)
     stream = get_stream(query)
 
-    _validate_canonical_strides(query, "Q", tensor_layout)
-    _validate_canonical_strides(key, "K", tensor_layout)
-    _validate_canonical_strides(value, "V", tensor_layout)
+    if query.device.type == "xpu":
+        _validate_canonical_strides(query, "Q", tensor_layout)
+        _validate_canonical_strides(key, "K", tensor_layout)
+        _validate_canonical_strides(value, "V", tensor_layout)
 
     # Mixed precision (F32 Q + F16/BF16 K/V) accumulates in and emits F32; the
     # homogeneous path keeps the operand dtype.
@@ -792,6 +921,15 @@ def sdpa(
     # function has a different signature without these; they are not passed for
     # that path (rejected by the device check above when non-default).
     if query.device.type == "cpu":
+        if mixed_kv and attn_mask is None and _cpu_public_packed_kv_available():
+            return _cpu_public_mixed_sdpa_packed(
+                query,
+                key,
+                value,
+                is_causal=bool(is_causal),
+                scale=scale,
+                tensor_layout=tensor_layout,
+            )
         lib.sdpa(
             stream,
             query.data_ptr(),
@@ -1060,62 +1198,6 @@ def debug_cpu_sdpa_route(
         bool(prefer_fp32),
         normalized_n_padding,
     )
-
-
-def debug_route4_raw(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    *,
-    is_causal: bool = False,
-    scale: float | None = None,
-    tensor_layout: str = "HND",
-) -> torch.Tensor:
-    """Debug-only: call the raw Route 4 kernel directly (bypassing the
-     mha_dense_forward mitigation). Requires ARK_DEBUG_ROUTE4_NAN=1 for NaN
-     instrumentation. Q/K/V must be bf16 and satisfy the Route 4 contract
-    (no GQA, PLAIN layout). Returns the kernel output tensor."""
-    if query.device.type != "cpu":
-        raise NotImplementedError("debug_route4_raw is only supported on CPU")
-    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_debug_route4_raw"):
-        raise NotImplementedError("ARK CPU debug route4 raw is not available")
-    if key.dtype != query.dtype or value.dtype != query.dtype:
-        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
-    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
-        query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
-    )
-    O = _empty_attention_output(B, Hq, Sq, D, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout)
-    q_strides = _attention_strides_qko(query, tensor_layout)
-    k_strides = _attention_strides_qko(key, tensor_layout)
-    v_strides = _attention_strides_v(value, tensor_layout)
-    o_strides = _attention_strides_qko(O, tensor_layout)
-    cpu_lib.ark_cpu_debug_route4_raw(
-        query.data_ptr(),
-        key.data_ptr(),
-        value.data_ptr(),
-        O.data_ptr(),
-        0,  # attn_mask
-        *q_strides,
-        *k_strides,
-        *v_strides,
-        *o_strides,
-        cvt_dtype(query.dtype),
-        cvt_dtype(key.dtype),
-        cvt_dtype(O.dtype),
-        B,
-        Hq,
-        Hkv,
-        Sq,
-        Skv,
-        D,
-        float(scale) if scale is not None else 1.0 / (D**0.5),
-        bool(is_causal),
-        False,  # use_alibi
-        False,  # use_tanh
-        False,  # prefer_fp32
-        None,  # n_padding
-    )
-    return O
 
 
 def sage(
@@ -3441,7 +3523,6 @@ class _ArkInternalCpuNamespace:
     """Internal/experimental CPU helpers and backend lifecycle tools."""
 
     debug_resolve_sdpa_route = staticmethod(debug_cpu_sdpa_route)
-    debug_route4_raw = staticmethod(debug_route4_raw)
     kv_cache_alloc = staticmethod(ark_cpu_kv_cache_alloc)
     kv_update = staticmethod(ark_cpu_kv_update)
     packed_kv_descriptor = staticmethod(ark_cpu_packed_kv_descriptor)

@@ -182,6 +182,7 @@ static inline constexpr dnnl::memory::data_type to_dt() {
     return dnnl::memory::data_type::bf16;
   } else {
     static_assert(sizeof(T) == 0, "unsupported data type for to_dt<T>()");
+  }
 }
 
 static inline constexpr dnnl::memory::data_type to_dt(BTLA_DTYPE bt) {

@@ -1025,7 +1025,8 @@ static bool can_dispatch_homogeneous_fp16(const CpuSdpaRequest& req) {
   const bool gqa_ok = req.num_heads_kv > 0 && req.num_heads_q > 0 && (req.num_heads_q % req.num_heads_kv) == 0;
   const bool causal_shape_ok = !req.is_causal || req.seq_len_q <= req.seq_len_kv;
   const bool v_plain_ok = req.v_stride_d == 1;
-  return cpu->AVX512_FP16() && gqa_ok && causal_shape_ok && v_plain_ok && ark::CpuWrapper::get_threading() != nullptr;
+  return cpu->AVX512_FP16() && gqa_ok && causal_shape_ok && v_plain_ok && !req.mask &&
+         ark::CpuWrapper::get_threading() != nullptr;
 #endif
 }
 
@@ -1055,7 +1056,7 @@ static bool can_dispatch_homogeneous_bf16(const CpuSdpaRequest& req) {
   const bool causal_shape_ok = !req.is_causal || req.seq_len_q <= req.seq_len_kv;
   const bool k_plain_ok = req.k_stride_d == 1;
   const bool v_plain_ok = req.v_stride_d == 1;
-  return cpu->AMX_BF16() && no_gqa && causal_shape_ok && k_plain_ok && v_plain_ok &&
+  return cpu->AMX_BF16() && no_gqa && causal_shape_ok && k_plain_ok && v_plain_ok && !req.mask &&
          ark::CpuWrapper::get_threading() != nullptr;
  #endif
 }
@@ -1220,32 +1221,6 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
      dispatch_scalar(req);
      return;
   }
-}
-
-// Debug-only: call the raw Route 4 kernel directly (bypassing the
-// mha_dense_forward mitigation) with NaN instrumentation enabled via
-// ARK_DEBUG_ROUTE4_NAN=1. Returns 0 on success, throws on error.
-static int ark_cpu_debug_route4_raw(torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
-                                    int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
-                                    int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b,
-                                    int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
-                                    int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype,
-                                    int k_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv,
-                                    int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-                                    bool is_causal, bool use_alibi, bool use_tanh, bool prefer_fp32_flag,
-                                    py::object n_padding_arg) {
-  std::vector<int> n_padding_storage = parse_batch_n_padding(n_padding_arg, batch, "ark_cpu_debug_route4_raw");
-  const CpuSdpaRequest req{
-      Q,           K,        V,    O,    mask,         q_stride_s, q_stride_d, q_stride_h, q_stride_b,
-      k_stride_s,  k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b,
-      o_stride_s,  o_stride_d, o_stride_h, o_stride_b, static_cast<BTLA_DTYPE>(q_dtype),
-      static_cast<BTLA_DTYPE>(k_dtype), static_cast<BTLA_DTYPE>(o_dtype), batch,
-      num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-      is_causal,   use_alibi,  use_tanh, prefer_fp32_flag, n_padding_storage,
-  };
-  auto hargs = make_bestla_attn_args(req);
-  ark::cpu::debug_bestla_sdpa_forward_route4_raw(hargs);
-  return 0;
 }
 
 static int ark_cpu_debug_resolve_sdpa_route(torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
@@ -1607,7 +1582,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif  // ARK_SYCL_TLA
-#elif !defined(ARK_XPU)
+#if !defined(ARK_XPU)
   pybind11::class_<ark::cpu::ReorderKVShape>(m, "ArkCpuPackedKVDescriptor")
       .def(pybind11::init<>())
       .def_readonly("dtype", &ark::cpu::ReorderKVShape::dtype)
@@ -1648,7 +1623,6 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.attr("ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE") = pybind11::bool_(CompileBF16());
   m.attr("ARK_CPU_SDPA_INTERNAL_FEATURES_ENABLED") = pybind11::bool_(ARK_ENABLE_INTERNAL_SDPA_FEATURES);
   m.def("ark_cpu_debug_resolve_sdpa_route", &ark::ark_cpu_debug_resolve_sdpa_route);
-  m.def("ark_cpu_debug_route4_raw", &ark::ark_cpu_debug_route4_raw);
   m.def("ark_cpu_kv_update", &ark::ark_cpu_kv_update);
   m.def("ark_cpu_packed_kv_descriptor", &ark::ark_cpu_packed_kv_descriptor);
   m.def("ark_cpu_packed_kv_elems", &ark::ark_cpu_packed_kv_elems);
