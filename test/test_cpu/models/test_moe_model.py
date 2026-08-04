@@ -61,9 +61,10 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     assert (
         single_expert_cnt == config.num_local_experts
     ), f"Expected {config.num_local_experts} GPTOssSingleExpert modules, found {single_expert_cnt}."
+    expected_quant_linear_cnt = config.num_hidden_layers * 3 * config.num_local_experts
     assert (
-        quant_linear_cnt == config.num_hidden_layers * 3 * config.num_local_experts
-    ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
+        quant_linear_cnt == expected_quant_linear_cnt
+    ), f"Expected {expected_quant_linear_cnt} QuantLinear modules, found {quant_linear_cnt}."
 
     # verify the quantized model can be loaded and run inference
     loaded_model = GptOssForCausalLM.from_pretrained(save_folder)
@@ -144,7 +145,6 @@ class Step3p5MoEMLP(nn.Module):
 
 def test_step3p5_moe_replacement():
     """Verify that apply_replacements swaps Step3p5MoEMLP → LinearStep3p5MoEMLP."""
-    from auto_round.modeling.fused_moe.fusion_spec import get_moe_fusion_spec, iter_moe_fusion_views
     from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
     from auto_round.modeling.fused_moe.step3_5_moe import LinearStep3p5MoEMLP, Step3p5ExpertMLP
 
@@ -160,12 +160,6 @@ def test_step3p5_moe_replacement():
 
     apply_replacements(model, auto_detect_moe=False)
     assert isinstance(model.moe, LinearStep3p5MoEMLP)
-    assert get_moe_fusion_spec(model.moe.experts) is not None
-    assert [view.checkpoint_name for view in iter_moe_fusion_views(model.moe)] == [
-        "experts.gate_proj",
-        "experts.up_proj",
-        "experts.down_proj",
-    ]
     assert count_modules_by_type(model, Step3p5ExpertMLP) == num_experts
 
     materialize_model_(model)

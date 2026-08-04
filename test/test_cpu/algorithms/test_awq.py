@@ -131,6 +131,7 @@ class TestAWQNonIntegerSchemes:
             nsamples=2,
             seqlen=8,
             batch_size=2,
+            dataset=["local AWQ calibration sample with enough tokens for quantization"] * 2,
         )
         model, layer_config = ar.quantize()
 
@@ -465,3 +466,15 @@ class TestAWQUseV2ScaleSearch:
         # asym int and *_dq are not part of the optimized init-scale path.
         assert search_optimized_init_scale(torch.randn(4, 128), "int_asym", 4, None) is None
         assert search_optimized_init_scale(torch.randn(4, 128), "int_sym_dq", 4, None) is None
+
+    def test_nvfp4_opt_rtn_accepts_uniform_imatrix_sentinel(self):
+        """AWQ's SignRound-V1 QDQ may call optimized RTN without a collected imatrix."""
+        import torch
+
+        from auto_round.data_type.nvfp import opt_rtn_fast_nvfp4
+
+        weight = torch.randn(8, 32)
+        qdq_weight, _, _ = opt_rtn_fast_nvfp4(weight, bits=4, group_size=16, imatrix=1.0)
+
+        assert qdq_weight.shape == weight.shape
+        assert torch.isfinite(qdq_weight).all()

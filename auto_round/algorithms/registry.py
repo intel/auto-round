@@ -113,9 +113,11 @@ def resolve_algorithm_names(algorithms, *, ignore_unknown: bool = False) -> list
         if canonical is None:
             if ignore_unknown:
                 continue
+            supported_aliases = sorted(_ALIAS_TO_NAME.keys())
             raise ValueError(
-                f"Unknown algorithm alias '{name}'. Supported aliases: {sorted(_ALIAS_TO_NAME.keys())}. "
-                "If you are adding a new algorithm, register it via auto_round.algorithms.registry.register_algorithm()."
+                f"Unknown algorithm alias '{name}'. Supported aliases: {supported_aliases}. "
+                "If you are adding a new algorithm, register it via "
+                "auto_round.algorithms.registry.register_algorithm()."
             )
         if canonical not in seen:
             canonical_names.append(canonical)
