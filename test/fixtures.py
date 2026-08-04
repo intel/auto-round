@@ -322,6 +322,10 @@ def tiny_qwen35_moe_model_path():
     config.num_hidden_layers = 1
     config.text_config.layer_types = config.text_config.layer_types[: config.text_config.num_hidden_layers]
     config.text_config.use_cache = False
+    # This tiny model doesn't materialize the MTP block, so keep block_count aligned
+    # with the actual number of exported layers to avoid a gguf tensor mismatch
+    # (e.g. missing "blk.N.attn_norm.weight") when loading with llama.cpp.
+    config.text_config.mtp_num_hidden_layers = 0
     model = Qwen3_5MoeForConditionalGeneration(config)
     model.save_pretrained(tiny_model_path)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
