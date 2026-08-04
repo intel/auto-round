@@ -481,6 +481,55 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    @pytest.mark.parametrize("tokens_per_expert", [[1, 0, 1, 1], [1, 1, 1, 1], [2, 0, 0, 1]])
+    def test_decode_int4_sym_dpas_matches_scalar(self, monkeypatch, dtype, group_size, tokens_per_expert):
+        """int4-sym decode: the S4 DPAS path (ARK_MOE_DECODE_DPAS_S4=1, default)
+        must match both the scalar GEMV fallback (ARK_MOE_DECODE_DPAS_S4=0) and
+        the dequant->bmm reference within quantization tolerance.
+
+        Shapes satisfy the DPAS per-group shape gate (N%64==0, K%32==0,
+        group_size in {32,64,128,256}) so the fast path is actually taken.
+        """
+        num_experts = 4
+        total_tokens = sum(tokens_per_expert)
+        N, K = 320, 256  # N%64==0, K%32==0
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int4_sym(w_float, scales, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                weight_bits=4,
+                group_size=group_size,
+                asym=False,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+        out_dpas = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        out_scalar = _run()
+
+        assert out_dpas.shape == (total_tokens, N)
+        assert out_scalar.shape == (total_tokens, N)
+        # Both kernels approximate the same dequant reference.
+        torch.testing.assert_close(out_dpas, ref, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(out_scalar, ref, rtol=5e-2, atol=5e-2)
+        # And they must agree with each other within the same tolerance.
+        torch.testing.assert_close(out_dpas, out_scalar, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_decode_int4_asym(self, dtype):
         num_experts = 4
         group_size = 128
