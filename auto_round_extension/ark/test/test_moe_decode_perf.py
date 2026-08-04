@@ -409,6 +409,10 @@ class TestMoEGemmDecodePerf:
             monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
             dpas_ms = _xpu_time_ms(_run)
             _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    def test_perf_int8(self, dtype, asym):
         group_size = 128
         kind = "asym" if asym else "sym"
         _print_header(
