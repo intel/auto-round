@@ -1,14 +1,52 @@
 import json
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.calib_dataset import get_code_calibration_dataset
 
 from ...helpers import get_model_path, opt_name_or_path
+
+
+@pytest.mark.parametrize(
+    "datasets_version,expected",
+    [
+        (
+            "3.6.0",
+            "opencode-instruct:concat=true:num=64,github-code-clean:num=64",
+        ),
+        ("5.0.0", "opencode-instruct:concat=true:num=128"),
+    ],
+)
+def test_code_calibration_dataset(datasets_version, expected):
+    assert get_code_calibration_dataset(128, datasets_version) == expected
+
+
+def test_tiny_code_calibration_dataset_omits_zero_sample_sources():
+    assert get_code_calibration_dataset(1, "3.6.0") == "opencode-instruct:concat=true:num=1"
+
+
+def test_automatic_code_dataset_and_non_default_override(tiny_opt_model_path, tmp_path, monkeypatch):
+    import datasets
+
+    monkeypatch.setattr(datasets, "__version__", "5.0.0")
+    code_model_path = tmp_path / "Qwen3-Coder-smoke"
+    code_model_path.symlink_to(Path(tiny_opt_model_path).resolve(), target_is_directory=True)
+    common = dict(iters=1, nsamples=6, seqlen=8, device_map="cpu", low_cpu_mem_usage=False)
+
+    autoround = AutoRound(str(code_model_path), **common)
+    assert autoround.dataset == "opencode-instruct:concat=true:num=6"
+
+    autoround = AutoRound(str(code_model_path), dataset="NeelNanda/pile-10k", alg_configs="auto_round", **common)
+    assert autoround.dataset == "NeelNanda/pile-10k"
+
+    autoround = AutoRound(str(code_model_path), dataset="pile-10k", alg_configs="auto_round", **common)
+    assert autoround.dataset == "pile-10k"
 
 
 class TestLocalCalibDataset:

@@ -719,7 +719,7 @@ class AutoRound:
         platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         iters: int | None = None,
         seqlen: int = 2048,
         nsamples: int = 128,

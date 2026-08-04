@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,38 @@ from auto_round.utils.common import (
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
+from auto_round.utils.model import is_code_model
+
+
+@pytest.mark.parametrize(
+    "model,config",
+    [
+        ("Qwen/Qwen3-Coder-30B", None),
+        ("/models/CodeLlama-7b", None),
+        ("bigcode/starcoder2-15b", None),
+        ("generic/model", SimpleNamespace(architectures=["DeepseekCoderForCausalLM"])),
+        ("generic/model", SimpleNamespace(finetuning_task="code-generation")),
+        ("generic/model", SimpleNamespace(task_specific_params={"text-to-code": {}})),
+    ],
+)
+def test_is_code_model(model, config):
+    assert is_code_model(model, config)
+
+
+@pytest.mark.parametrize(
+    "model,config",
+    [
+        ("Qwen/Qwen3-4B", None),
+        ("org/encoder-decoder", None),
+        ("org/audio-codec", None),
+        ("/srv/code/checkpoints/Llama-3", None),
+        ("org/notstarcoder-model", None),
+        ("generic/model", SimpleNamespace(_name_or_path="/srv/code/checkpoints/Llama-3")),
+        ("generic/model", SimpleNamespace(architectures=["SomeEncoderDecoderModel"])),
+    ],
+)
+def test_is_not_code_model(model, config):
+    assert not is_code_model(model, config)
 
 
 class TestPackingWithNumba:
