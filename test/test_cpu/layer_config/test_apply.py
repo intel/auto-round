@@ -15,13 +15,13 @@
 import torch.nn as nn
 
 from auto_round.compressors.layer_config import apply_plan_to_model
-from auto_round.compressors.planning import CompressionPlan, ResolvedScheme
+from auto_round.compressors.planning import ResolvedQuantizationConfig, ResolvedScheme
 from auto_round.schemes import QuantizationScheme
 
 
 def test_apply_plan_is_the_explicit_model_write_boundary():
     model = nn.Sequential(nn.Linear(32, 32))
-    plan = CompressionPlan(
+    plan = ResolvedQuantizationConfig(
         scheme=ResolvedScheme.from_scheme(QuantizationScheme()),
         formats=(),
         layer_config={"0": {"bits": 4, "data_type": "int"}},

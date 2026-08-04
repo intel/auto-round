@@ -18,9 +18,9 @@ import copy
 from typing import Any, Mapping
 
 from auto_round.compressors.planning.contracts import (
-    CompressionPlan,
     FormatResolution,
     LayerConfig,
+    ResolvedQuantizationConfig,
     ResolvedScheme,
     thaw_mapping,
 )
@@ -47,18 +47,18 @@ def resolve_scheme_value(scheme: Any, overrides: Mapping[str, Any]) -> ResolvedS
     return ResolvedScheme.from_scheme(QuantizationScheme.from_dict(final_attrs), preset_name=preset_name)
 
 
-def build_compression_plan(
+def resolve_quantization_config(
     format_resolution: FormatResolution,
     layer_config: LayerConfig,
     *,
     regex_config: LayerConfig | None = None,
     has_qlayer_outside_block: bool = False,
-) -> CompressionPlan:
+) -> ResolvedQuantizationConfig:
     """Combine immutable resolution results into the compressor's authoritative plan."""
     merged = thaw_mapping(format_resolution.layer_config_patch)
     for name, config in layer_config.items():
         merged.setdefault(name, {}).update(dict(config))
-    return CompressionPlan(
+    return ResolvedQuantizationConfig(
         scheme=format_resolution.scheme,
         formats=format_resolution.formats,
         layer_config=merged,

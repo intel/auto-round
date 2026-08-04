@@ -262,7 +262,7 @@ def set_layer_config(
         has_quantized_layer_outside_blocks,
         resolve_layer_config,
     )
-    from auto_round.compressors.planning import CompressionPlan, ResolvedScheme, resolve_scheme_value
+    from auto_round.compressors.planning import ResolvedQuantizationConfig, ResolvedScheme, resolve_scheme_value
     from auto_round.schemes import get_gguf_scheme
 
     if isinstance(default_scheme, ResolvedScheme):
@@ -300,7 +300,7 @@ def set_layer_config(
         fill_default_value=fill_default_value,
     )
     has_outside = has_quantized_layer_outside_blocks(resolved)
-    plan = CompressionPlan(
+    plan = ResolvedQuantizationConfig(
         scheme=resolved_scheme,
         formats=(),
         layer_config=resolved,

@@ -16,7 +16,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.compressors.planning import build_compression_plan, resolve_scheme_value
+from auto_round.compressors.planning import resolve_quantization_config, resolve_scheme_value
 from auto_round.export.formats import resolve_formats
 
 EXPECTED_PLAN_SNAPSHOTS = {
@@ -89,7 +89,7 @@ def test_scheme_format_plan_snapshot(case_name):
         scale_dtype=torch.float16,
         model=nn.Sequential(nn.Linear(32, 32)),
     )
-    plan = build_compression_plan(resolution, {"layer": {"bits": resolution.scheme.value.bits}})
+    plan = resolve_quantization_config(resolution, {"layer": {"bits": resolution.scheme.value.bits}})
     scheme_value = plan.scheme.value
     snapshot = {
         "scheme_name": expected["scheme_name"],

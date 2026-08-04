@@ -36,7 +36,7 @@ from auto_round.compressors.layer_config import (
 from auto_round.compressors.planning import (
     FormatResolution,
     ResolvedScheme,
-    build_compression_plan,
+    resolve_quantization_config,
     thaw_mapping,
 )
 from auto_round.compressors.shard_writer import ShardWriter
@@ -750,7 +750,7 @@ class BaseOrchestrator(object):
             inner_supported_types=self.inner_supported_types,
             ignore_layers=self.ignore_layers,
         )
-        discovery_plan = build_compression_plan(
+        discovery_plan = resolve_quantization_config(
             (
                 replace(format_resolution, layer_config_patch={})
                 if format_resolution.layer_config_patch
@@ -947,7 +947,7 @@ class BaseOrchestrator(object):
         # plan, so drop it and rely solely on the fully-resolved layer configuration.
         if format_resolution.layer_config_patch:
             format_resolution = replace(format_resolution, layer_config_patch={})
-        self.compression_plan = build_compression_plan(
+        self.compression_plan = resolve_quantization_config(
             format_resolution,
             resolved_layer_config,
             regex_config=regex_config,

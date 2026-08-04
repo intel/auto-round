@@ -28,7 +28,7 @@ BlockGroups = Tuple[Tuple[str, ...], ...]
 def _deepcopy_mapping_proxy(value: MappingProxyType, memo: dict) -> MappingProxyType:
     """``copy.deepcopy`` has no built-in support for ``types.MappingProxyType`` (it isn't
     picklable), so any object graph that happens to contain one -- e.g. a
-    ``CompressionPlan``/``FormatResolution`` nested inside something a caller deep-copies
+    ``ResolvedQuantizationConfig``/``FormatResolution`` nested inside something a caller deep-copies
     wholesale -- would otherwise raise ``TypeError: cannot pickle 'mappingproxy' object``.
     Registering a dispatch entry here teaches ``copy.deepcopy`` to handle it everywhere,
     instead of requiring every call site that might transitively touch one of our frozen
@@ -111,7 +111,7 @@ class FormatResolution:
 
 
 @dataclass(frozen=True)
-class CompressionPlan:
+class ResolvedQuantizationConfig:
     scheme: ResolvedScheme
     formats: Tuple[Any, ...]
     layer_config: LayerConfig

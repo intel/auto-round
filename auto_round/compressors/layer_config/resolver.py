@@ -22,7 +22,7 @@ from typing import Union
 
 import torch
 
-from auto_round.compressors.planning import CompressionPlan, ResolvedScheme
+from auto_round.compressors.planning import ResolvedQuantizationConfig, ResolvedScheme
 from auto_round.compressors.planning.contracts import LayerConfig, freeze_mapping
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, is_mx_fp, is_nv_fp
@@ -479,7 +479,7 @@ def has_quantized_layer_outside_blocks(layer_config: LayerConfig) -> bool:
     )
 
 
-def apply_plan_to_model(model, plan: CompressionPlan) -> None:
+def apply_plan_to_model(model, plan: ResolvedQuantizationConfig) -> None:
     """Apply a resolved plan at the single explicit module-attribute write boundary."""
     scheme_keys = tuple(field.name for field in fields(QuantizationScheme)) + ("scale_dtype",)
     for module_name, module in model.named_modules():

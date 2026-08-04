@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from auto_round.compressors.planning.contracts import (
-    CompressionPlan,
+    ResolvedQuantizationConfig,
     FormatResolution,
     ResolvedScheme,
     thaw_mapping,
@@ -24,17 +24,17 @@ from auto_round.compressors.planning.errors import (
     PlanningError,
     SchemeResolutionError,
 )
-from auto_round.compressors.planning.resolve import build_compression_plan, resolve_scheme_value
+from auto_round.compressors.planning.resolve import resolve_quantization_config, resolve_scheme_value
 
 __all__ = [
-    "CompressionPlan",
+    "ResolvedQuantizationConfig",
     "FormatCompatibilityError",
     "FormatResolution",
     "LayerConfigResolutionError",
     "PlanningError",
     "ResolvedScheme",
     "SchemeResolutionError",
-    "build_compression_plan",
+    "resolve_quantization_config",
     "resolve_scheme_value",
     "thaw_mapping",
 ]
