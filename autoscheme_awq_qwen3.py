@@ -163,7 +163,7 @@ def scale_ln_fcs(ln, fcs, scales):
 @torch.no_grad()
 def scale_fc_fc(fc1, fc2, scales):
     scales = scales.to(fc1.weight.device)
-    fc1.weight[-scales.size(0):].div_(scales.view(-1, 1))
+    fc1.weight[-scales.size(0) :].div_(scales.view(-1, 1))
     if fc1.bias is not None:
         fc1.bias.div_(scales.view(-1))
     fc2.weight.mul_(scales.view(1, -1))
@@ -207,9 +207,7 @@ def build_layer_bits(model, tokenizer, avg_bits, options, group_size, dataset, d
     """
     # Only quantize linear layers inside the decoder blocks (exclude lm_head etc.)
     quant_layer_names = [
-        name
-        for name, m in model.named_modules()
-        if isinstance(m, nn.Linear) and name.startswith("model.layers.")
+        name for name, m in model.named_modules() if isinstance(m, nn.Linear) and name.startswith("model.layers.")
     ]
 
     # Rewrite every candidate option so AutoScheme scores/allocates bits using the
@@ -265,7 +263,17 @@ def build_layer_bits(model, tokenizer, avg_bits, options, group_size, dataset, d
 # AWQ (SFMP-style, Qwen3 only) with per-layer bits from AutoScheme
 # ---------------------------------------------------------------------------
 class AWQQwen3:
-    def __init__(self, model, tokenizer, per_layer_bits, device="cuda", n_grid=20, apply_clip=True, sym_override=None, duo_scaling=True):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        per_layer_bits,
+        device="cuda",
+        n_grid=20,
+        apply_clip=True,
+        sym_override=None,
+        duo_scaling=True,
+    ):
         self.model = model
         self.tokenizer = tokenizer
         self.per_layer_bits = per_layer_bits
@@ -531,7 +539,7 @@ class AWQQwen3:
 
         best_max_all, best_min_all = [], []
         for i_b in range(w.shape[0] // oc_bs):
-            wb = w[i_b * oc_bs:(i_b + 1) * oc_bs]
+            wb = w[i_b * oc_bs : (i_b + 1) * oc_bs]
             org_out = (input_feat * wb).sum(dim=-1)
             if sym:  # symmetric: shrink |max|, min = -max
                 org_max = wb.abs().amax(dim=-1, keepdim=True)
@@ -595,9 +603,7 @@ class AWQQwen3:
             def hook(m, x, y, name):
                 input_feat[name].append(x[0].detach().cpu())
 
-            handles = [
-                m.register_forward_hook(functools.partial(hook, name=n)) for n, m in named_linears.items()
-            ]
+            handles = [m.register_forward_hook(functools.partial(hook, name=n)) for n, m in named_linears.items()]
             inps = inps.to(self.dev)
             inps = layer(inps, **layer_kwargs)
             if isinstance(inps, tuple):
@@ -732,6 +738,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
