@@ -16,7 +16,7 @@ import gc
 import os
 import sys
 from dataclasses import asdict, dataclass, fields
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import Any, Optional, Union
 
 import torch
 from transformers import AutoConfig, set_seed
@@ -24,8 +24,6 @@ from transformers import AutoConfig, set_seed
 from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
-    apply_rotation,
-    normalize_rotation_config,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.shard_writer import ShardWriter
@@ -68,9 +66,6 @@ from auto_round.utils.device import (
 )
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.offload import OffloadManager
-
-if TYPE_CHECKING:
-    from auto_round.algorithms.transforms import BaseRotation
 
 
 @dataclass
@@ -318,9 +313,6 @@ class BaseOrchestrator(object):
         # and pairs with block-wise quantization. Only SpinQuant/QuaRot with
         # ``online_r1_rotation=True`` supports it.
         self.layerwise_rotation = kwargs.pop("layerwise_rotation", False)
-        # Prepared per-layer rotation instances (populated by ``_apply_rotations``
-        # when ``layerwise_rotation=True``). Empty in full-model mode.
-        self._rotation_transforms: "list[BaseRotation]" = []
 
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
         # Attention static dtype
@@ -903,7 +895,6 @@ class BaseOrchestrator(object):
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
-        self._apply_rotations()
 
         # Reclaim temporaries from Phases 1-4 (scheme resolution, format
         # parsing, model patching, layer-config walk) before Phase 5
@@ -917,6 +908,14 @@ class BaseOrchestrator(object):
         # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
         # so _build_composer must run first.
         self._build_composer()
+
+        # Phase 4.5 – Model-level pre-quantisation transforms (rotation).
+        # applies full-model rotation up-front (or prepares
+        # layer-wise rotation matrices). Runs here so every entry point — the full
+        # quantize() loop, the zero-shot loop, and the external single-block
+        # quantize_block() API — sees a consistently transformed model before any
+        # calibration data is collected.
+        self.model_context.model = self.alg_composer.apply_model_transforms(self.model_context.model)
 
         # Set block_forward torch compile for block forward
         # Final trim after all init phases.
@@ -1110,112 +1109,6 @@ class BaseOrchestrator(object):
                 self.layer_config = {}
             for _lname, _lval in _gguf_layer_cfg.items():
                 self.layer_config.setdefault(_lname, _lval)
-
-    def _apply_rotations(self) -> None:
-        """Phase 4.5 – Apply Hadamard / rotation transforms to the model.
-
-        Two modes are supported:
-
-        - **Full-model** (default): each rotation config is applied to the
-          entire model immediately via
-          :func:`~auto_round.algorithms.transforms.apply_rotation`, so the
-          model leaves this method with rotated weights and any online hooks
-          already installed.
-        - **Layer-wise** (``layerwise_rotation=True``): for configs whose
-          rotation algorithm reports ``supports_layerwise``, only the rotation
-          matrices are initialised here (lightweight, weights untouched). The
-          prepared rotation instances are stored in ``self._rotation_transforms``
-          and the actual per-block rotation is deferred to :meth:`_on_block_ready`
-          inside the block-quantization loop. Configs that do not support
-          layer-wise mode transparently fall back to full-model rotation.
-
-        Preconditions:
-          - Phase 3 complete: model topology is final (``apply_patches`` has
-            replaced / merged layers, e.g. MoE experts), so rotation operates
-            on the same modules that quantization will later see.
-          - Phase 4 complete: ``self.layer_config`` is built; rotation only
-            transforms weights and does not change layer names.
-          - ``self.quantize_config.data_type`` is final (rotation backend
-            dispatch depends on it).
-
-        Postconditions:
-          - Full-model configs: ``self.model_context.model`` carries the
-            rotated weights and any inserted online-Hadamard hooks.
-          - Layer-wise configs: ``self._rotation_transforms`` holds the prepared
-            rotation instances; model weights are unchanged until the block loop.
-        """
-        # Reset any state from a previous run (idempotent post_init).
-        self._rotation_transforms = []
-
-        if not self.rotation_configs:
-            return
-
-        from auto_round.algorithms.transforms.base import BaseRotation
-
-        logger.info("Applying Hadamard transform to the model.")
-        for rotation_cfg in self.rotation_configs:
-            if self.layerwise_rotation:
-                normalised = normalize_rotation_config(rotation_cfg)
-                if normalised is None:
-                    continue
-                rotation = BaseRotation.from_config(normalised)
-                if rotation.supports_layerwise:
-                    logger.info(
-                        "[Rotation] Layer-wise mode: preparing R matrices only "
-                        "(rotation deferred to per-block hook)."
-                    )
-                    rotation.prepare_layerwise(
-                        self.model_context.model,
-                        data_type=self.quantize_config.data_type,
-                    )
-                    self._rotation_transforms.append(rotation)
-                    continue
-                logger.warning(
-                    f"[Rotation] {rotation.__class__.__name__} does not support "
-                    f"layer-wise mode. Falling back to full-model rotation."
-                )
-            self.model_context.model = apply_rotation(
-                self.model_context.model,
-                rotation_cfg,
-                data_type=self.quantize_config.data_type,
-            )
-
-    # ------------------------------------------------------------------
-    # Block Lifecycle Hooks (layer-wise / block-wise rotation)
-    # ------------------------------------------------------------------
-
-    def _on_block_ready(self, block: torch.nn.Module, block_name, block_idx: int) -> None:
-        """Block lifecycle hook: apply layer-wise rotation to a block.
-
-        Called after a block is materialised and moved on-device, before
-        reference-output collection. No-op unless ``layerwise_rotation=True``
-        and at least one rotation config supports layer-wise mode.
-
-        Args:
-            block: The decoder block, already on the target device.
-            block_name: Block name(s) in the model tree. ``str`` (nblocks=1)
-                or ``list[str]`` (nblocks>1, WrapperMultiblock).
-            block_idx: Zero-based index in block_names (step of nblocks).
-        """
-        if not self._rotation_transforms:
-            return
-
-        if isinstance(block_name, (list, tuple)):
-            sub_modules = list(block.layers) if hasattr(block, "layers") else [block]
-            for j, sub_mod in enumerate(sub_modules):
-                for t in self._rotation_transforms:
-                    t.rotate_layer(sub_mod, layer_idx=block_idx + j)
-        else:
-            for t in self._rotation_transforms:
-                t.rotate_layer(block, layer_idx=block_idx)
-
-    def _finalize_block_processing(self, model) -> None:
-        """Finalize layer-wise rotation after all blocks are processed.
-
-        Safe to call even when no rotation transforms are active (no-op).
-        """
-        for t in self._rotation_transforms:
-            t.finalize_layerwise(model)
 
     def _patch_model(self) -> None:
         """Phase 3 – Model structure patching.

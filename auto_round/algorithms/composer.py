@@ -118,9 +118,17 @@ class AlgorithmComposer:
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.quantization.config import QuantizationConfig
-        from auto_round.algorithms.transforms.base import BasePreprocessor
+        from auto_round.algorithms.transforms.base import BasePreprocessor, BaseRotationConfig
 
         configs = list(configs)
+
+        # Rotation configs travel in the same config list but are not pipeline
+        # members (they are ``BaseRotationConfig``, not ``QuantizationConfig``).
+        # Capture them here so the composer owns the full rotation lifecycle
+        # (see ``apply_model_transforms`` / ``finalize_run``) and the orchestrator
+        # stays rotation-agnostic.
+        self._rotation_configs = [c for c in configs if isinstance(c, BaseRotationConfig)]
+        self._layerwise_rotation = bool(getattr(orchestrator, "layerwise_rotation", False))
 
         _, block_quantizer_configs = split_quantization_configs(configs)
         if not block_quantizer_configs:
@@ -196,6 +204,10 @@ class AlgorithmComposer:
             if self.block_quantizer is not None:
                 self.block_quantizer.bind_block_forward_runner(self.block_forward)
         self.scheme = getattr(orchestrator, "scheme_context", None)
+
+        # Rotation lifecycle state (populated by apply_model_transforms)
+        self._rotation_transforms: list = []
+        self._rotation_prepared: bool = False
 
     # ── Internal hook helpers (act_max calibration) ───────────────────────────
 
@@ -369,6 +381,12 @@ class AlgorithmComposer:
             - *reference_output*: FP reference output collected before optimization.
         """
         block_forward_fn = self.block_forward
+
+        # ── Step 0: Layer-wise rotation (before any reference/calibration) ────
+        # Rotates this block's weights and installs online hooks so all downstream
+        # calibration and reference collection operate on the rotated block. No-op
+        # unless layer-wise rotation is active.
+        self._run_block_ready_transforms(block, block_ctx)
 
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
         with torch.no_grad():
@@ -545,3 +563,110 @@ class AlgorithmComposer:
     def finalize_run(self):
         for alg in self.members():
             alg.finalize_run()
+        # Rotation teardown is part of the model-level finalize stage.
+        self._finalize_rotation(self._owning_model())
+
+    # ------------------------------------------------------------------
+    # Rotation lifecycle (owned entirely by the composer)
+    # ------------------------------------------------------------------
+    #
+    # Rotation is a model-level pre-quantisation transform. Full-model rotation
+    # must run *before* calibration data is cached, which is earlier than the
+    # per-member ``prepare_run`` stage; layer-wise rotation instead prepares its
+    # matrices here and rotates each block from within ``compress_block``. Both
+    # are driven internally so the orchestrator only calls the single generic
+    # entry point :meth:`apply_model_transforms`.
+
+    def _resolve_rotation_data_type(self) -> str:
+        """Best-effort resolution of the quantization data_type for rotation dispatch."""
+        if self.scheme is not None and getattr(self.scheme, "data_type", None):
+            return self.scheme.data_type
+        if self.block_quantizer is not None:
+            return getattr(self.block_quantizer.config, "data_type", "mx_fp")
+        return "mx_fp"
+
+    def _owning_model(self) -> "torch.nn.Module | None":
+        """Return the live model driven by this pipeline (via the block quantizer binding)."""
+        if self.block_quantizer is not None:
+            return getattr(self.block_quantizer, "model", None)
+        return None
+
+    def apply_model_transforms(self, model: "torch.nn.Module") -> "torch.nn.Module":
+        """Apply model-level pre-quantisation transforms (rotation) to *model*.
+
+        Generic entry point invoked once by the orchestrator before calibration
+        caching / the block loop. For full-model rotation the model is rotated
+        immediately and returned; for layer-wise rotation only the rotation
+        matrices are initialised and the per-block work is deferred to
+        :meth:`compress_block`. Idempotent — repeated calls are a no-op.
+
+        Returns:
+            The (possibly mutated) model.
+        """
+        if self._rotation_prepared:
+            return model
+
+        self._rotation_transforms = []
+        if not self._rotation_configs:
+            self._rotation_prepared = True
+            return model
+
+        from auto_round.algorithms.transforms import apply_rotation, normalize_rotation_config
+        from auto_round.algorithms.transforms.base import BaseRotation
+
+        data_type = self._resolve_rotation_data_type()
+        logger.info("Applying Hadamard transform to the model.")
+        for rotation_cfg in self._rotation_configs:
+            if self._layerwise_rotation:
+                normalised = normalize_rotation_config(rotation_cfg)
+                if normalised is None:
+                    continue
+                rotation = BaseRotation.from_config(normalised)
+                if rotation.supports_layerwise:
+                    logger.info(
+                        "[Rotation] Layer-wise mode: preparing R matrices only "
+                        "(rotation deferred to per-block hook)."
+                    )
+                    rotation.prepare_layerwise(model, data_type=data_type)
+                    self._rotation_transforms.append(rotation)
+                    continue
+                logger.warning(
+                    f"[Rotation] {rotation.__class__.__name__} does not support "
+                    f"layer-wise mode. Falling back to full-model rotation."
+                )
+            model = apply_rotation(model, rotation_cfg, data_type=data_type)
+
+        self._rotation_prepared = True
+        return model
+
+    def _run_block_ready_transforms(self, block: "torch.nn.Module", block_ctx: "BlockContext") -> None:
+        """Apply layer-wise rotation to a block before reference collection.
+
+        Called as the first step of :meth:`compress_block`. No-op when no
+        layer-wise rotation transforms are active. Uses the block's global
+        index (``block_ctx.block_index``) as the rotation layer index.
+        """
+        if not self._rotation_transforms:
+            return
+
+        block_idx = block_ctx.block_index
+        block_names = block_ctx.block_names
+        if isinstance(block_names, (list, tuple)) and len(block_names) > 1:
+            sub_modules = list(block.layers) if hasattr(block, "layers") else [block]
+            for j, sub_mod in enumerate(sub_modules):
+                for t in self._rotation_transforms:
+                    t.rotate_layer(sub_mod, layer_idx=block_idx + j)
+        else:
+            for t in self._rotation_transforms:
+                t.rotate_layer(block, layer_idx=block_idx)
+
+    def _finalize_rotation(self, model: "torch.nn.Module") -> None:
+        """Finalize layer-wise rotation after all blocks are processed (no-op when inactive)."""
+        for t in self._rotation_transforms:
+            t.finalize_layerwise(model)
+
+    @property
+    def has_layerwise_rotation(self) -> bool:
+        """Whether layer-wise rotation transforms are active."""
+        return bool(self._rotation_transforms)
+

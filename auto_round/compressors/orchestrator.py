@@ -231,9 +231,6 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             m, _, _ = self.alg_composer.dispatch_block(m, input_ids, input_others)
 
-            # ── Layer-wise rotation: rotate this block before reference collection ──
-            self._on_block_ready(m, block_name_or_names, i)
-
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.composer import BlockContext
 
@@ -375,6 +372,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 tied_weights_layers.append(lm_head_name)
 
         all_blocks = self.quant_block_list or get_block_names(self.model)
+
         pbar = tqdm(range(sum(len(block) for block in all_blocks)))
         _zs_block_idx = 0
         for block_names in all_blocks:
@@ -385,17 +383,16 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # ── Infrastructure: materialize ───────────────────────────
                 materialize_model_(block)
 
-                # ── Layer-wise rotation: rotate this block before quantization ──
-                self._on_block_ready(block, block_name, _zs_block_idx)
-                _zs_block_idx += 1
-
                 # ── Pure algorithm ────────────────────────────────────────
+                # ``block_index`` carries the global block index so compress_block
+                # can drive layer-wise rotation with the correct layer_idx.
                 ctx = BlockContext(
                     model=self.model,
                     block_names=[block_name],
                     block_name=block_name,
-                    block_index=0,
+                    block_index=_zs_block_idx,
                 )
+                _zs_block_idx += 1
                 # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
                 if is_nv_fp(self.act_data_type) or not self.act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
@@ -441,7 +438,8 @@ class CompressionOrchestrator(BaseOrchestrator):
                 memory_monitor.log_summary()
                 pbar.update(1)
 
-        self._finalize_block_processing(self.model)
+        # ── Pipeline lifecycle: model-level teardown (also finalizes rotation) ─
+        self.alg_composer.finalize_run()
 
         cnt = 1
         remain_layer_names = []
@@ -517,6 +515,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             )
         else:
             logger.info("start to cache block inputs")
+
         all_inputs = self.cache_data(
             to_cache_block_names,
             self.calibration_context.nsamples,
@@ -598,10 +597,9 @@ class CompressionOrchestrator(BaseOrchestrator):
                     f"but got {len(self.formats)} formats."
                 )
 
-        # ── Pipeline lifecycle: finalize_quantization (model-level teardown)
+        # ── Pipeline lifecycle: finalize_quantization (model-level teardown,
+        #    which also finalizes any layer-wise rotation) ──────────────────
         self.alg_composer.finalize_run()
-        # ── Layer-wise rotation: finalize after all blocks processed ─
-        self._finalize_block_processing(self.model_context.model)
         pbar.set_description("Quantizing done")
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
@@ -845,13 +843,13 @@ class CompressionOrchestrator(BaseOrchestrator):
         if not self._post_init_done:
             self.post_init()
 
-        # Layer-wise rotation is driven by the internal block loop in
-        # ``quantize()`` (rotate on ``_on_block_ready`` → cleanup on
-        # ``_finalize_block_processing``). This externally-driven single-block API
-        # cannot guarantee that lifecycle, and rotating here would desync the
-        # caller's own reference/teacher outputs (collected on the un-rotated
-        # block). Fail loudly instead of producing silently wrong results.
-        if self.layerwise_rotation and self._rotation_transforms:
+        # Layer-wise rotation is driven by the internal block loop inside
+        # ``AlgorithmComposer.compress_block`` (rotate as step 0, cleanup in
+        # ``finalize_run``). This externally-driven single-block API cannot
+        # guarantee that lifecycle, and rotating here would desync the caller's
+        # own reference/teacher outputs (collected on the un-rotated block).
+        # Fail loudly instead of producing silently wrong results.
+        if self.layerwise_rotation and self.alg_composer.has_layerwise_rotation:
             raise NotImplementedError(
                 "layerwise_rotation=True is not supported through the single-block "
                 "quantize_block() API (e.g. LLM-Compressor). Use the full AutoRound "
