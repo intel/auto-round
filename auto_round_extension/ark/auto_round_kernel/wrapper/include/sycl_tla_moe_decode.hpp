@@ -104,6 +104,7 @@ class MoEDecodeKernelInt4;
 template <typename ScalarT, bool Asym>
 class MoEDecodeKernelInt4Coalesced;
 
+template <typename ScalarT, bool Asym>
 class MoEDecodeRepackInt4;
 
 template <typename ScalarT, bool Asym>
@@ -460,7 +461,7 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
   {
     sycl::range<3> rp_global{static_cast<size_t>(num_experts), static_cast<size_t>(N),
                              static_cast<size_t>(k_packed)};
-    q->parallel_for<MoEDecodeRepackInt4>(rp_global, [=](sycl::id<3> id) {
+    q->parallel_for<MoEDecodeRepackInt4<ScalarT, Asym>>(rp_global, [=](sycl::id<3> id) {
       const int e = static_cast<int>(id[0]);
       const int n = static_cast<int>(id[1]);
       const int kb = static_cast<int>(id[2]);
