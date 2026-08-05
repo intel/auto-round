@@ -240,6 +240,20 @@ nibble 的 B 流字节量是 INT8 路径的一半,大 M tile 加宽到 `128×256
 中等大小的 `32×64` tile 现在覆盖 `A_avg_M` 至 128(此前在 33 就跳到大
 tile),避免了常见 chunked-prefill batch 大小下的 padding 浪费。
 
+**S4 DPAS decode 路径** — decode(生成)阶段(`sycl_tla_moe_decode.hpp`,
+int4-sym / `S4_CLIP`,`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)现在拥有
+独立的 dispatch `moe_decode_s4_dpas_per_group_dispatch`,移植自
+vLLM-xpu-kernels 专用的 `w4a16` *decode* dispatch。由于生成阶段每个专家
+最多只见到少量 token,它直接钉死 8 行的 `dpas_w4a16_policy_m_8` tile
+(prefill 的 `A_avg_M` 阶梯对 decode 规模的 batch 也只会选这个 tile),
+而不再运行整个阶梯。它复用共享的 per-group mainloop 的 2D VNNI 块加载
+(`get_block_2d_copy_A/B` + `make_block_2d_prefetch`)与寄存器驻留的
+per-N scale(`sg_scale[]`,每个 K-group 折叠一次),读取相同的
+`[E, N, K/2]` 打包权重 + `[E, N, K/group]` scale,无需重新打包。
+`ARK_MOE_DECODE_S4_DPAS_M8=0` 会回退到完整的 prefill 阶梯以便 A/B 对比
+(数值完全相同,仅 tile 形状不同)。**状态:NEEDS-HARDWARE-VALIDATION**
+(未经测试的移植)。
+
 精度对齐由
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +

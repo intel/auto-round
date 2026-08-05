@@ -311,6 +311,21 @@ The mid-size `32×64` tile now covers `A_avg_M` up to 128 (previously it
 jumped to the wide tile at 33), which avoids padding waste on the
 common chunked-prefill batch sizes.
 
+**S4 DPAS decode path** — the *decode* phase (`sycl_tla_moe_decode.hpp`,
+int4-sym / `S4_CLIP`, `!asym`, `ARK_MOE_DECODE_DPAS_S4` default ON) now
+has its own dedicated dispatch, `moe_decode_s4_dpas_per_group_dispatch`,
+ported from vLLM-xpu-kernels' dedicated `w4a16` *decode* dispatch.
+Because every expert sees at most a handful of tokens during generation,
+it hard-pins the 8-row `dpas_w4a16_policy_m_8` tile (the only tile the
+prefill `A_avg_M` ladder would ever pick for decode-sized batches) rather
+than re-running that ladder. It reuses the shared per-group mainloop's
+2D VNNI block load (`get_block_2d_copy_A/B` + `make_block_2d_prefetch`)
+and register-resident per-N scale (`sg_scale[]`, folded once per K-group),
+reading the same `[E, N, K/2]` packed weights + `[E, N, K/group]` scales
+with no repack. `ARK_MOE_DECODE_S4_DPAS_M8=0` defers to the full prefill
+bucket ladder for A/B comparison (numerically identical; only the tile
+shape differs). **Status: NEEDS-HARDWARE-VALIDATION** (untested port).
+
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`,
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +

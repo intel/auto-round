@@ -516,7 +516,14 @@ class TestMoEGemmDecode:
             )
 
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "1")
         out_dpas = _run()
+
+        # A/B escape: deferring to the prefill A_avg_M bucket ladder must be
+        # numerically identical (only the DPAS tile shape differs).
+        monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "0")
+        out_dpas_ladder = _run()
+        monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "1")
 
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
         out_scalar = _run()
@@ -528,6 +535,9 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out_scalar, ref, rtol=5e-2, atol=5e-2)
         # And they must agree with each other within the same tolerance.
         torch.testing.assert_close(out_dpas, out_scalar, rtol=5e-2, atol=5e-2)
+        # The m_8-pinned decode dispatch and the prefill bucket ladder are the
+        # same DPAS math on decode-sized batches.
+        torch.testing.assert_close(out_dpas, out_dpas_ladder, rtol=5e-2, atol=5e-2)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_decode_int4_asym(self, dtype):
