@@ -194,6 +194,19 @@ def fp8_static_scheme_checker(
     return config == FP8_STATIC
 
 
+def cute_nvfp4_e5m3_checker(in_feature: int, out_feature: int, config: QuantizationScheme) -> bool:
+    """Require CuTe DSL before selecting the optional NVFP4 E5M3 CUDA path."""
+    del out_feature
+    if not in_feature_checker_group_size(in_feature, 0, config):
+        return False
+    try:
+        from auto_round_extension.cuda.cute_nvfp4_e5m3 import is_cute_dsl_available
+
+        return torch.cuda.is_available() and is_cute_dsl_available() and torch.cuda.get_device_capability()[0] >= 8
+    except (ImportError, RuntimeError):
+        return False
+
+
 GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
@@ -385,9 +398,28 @@ BackendInfos["auto_round:torch_nvfp4_e5m3"] = BackendInfo(
     act_sym=[True],
     act_data_type=["fp4_v2"],
     act_dynamic=[True],
-    priority=0,
+    priority=3,
     checkers=[mxfp_nvfp_feature_checker],
     alias=["auto_round", "torch"],
+    requirements=["auto-round>0.12.0"],
+)
+
+BackendInfos["auto_round:cute_nvfp4_e5m3"] = BackendInfo(
+    device=["cuda"],
+    packing_format=NVFP4_E5M3_LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["fp4_v2"],
+    group_size=[16],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["fp4_v2"],
+    act_dynamic=[True],
+    priority=6,
+    checkers=[cute_nvfp4_e5m3_checker],
+    alias=["cute_nvfp4_e5m3"],
     requirements=["auto-round>0.12.0"],
 )
 
@@ -818,9 +850,11 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         return ar_qmodules.MXINT4QuantLinear
     if "torch_mxfp4" in backend:
         return ar_qmodules.MXFP4QuantLinear
+    if backend == "auto_round:cute_nvfp4_e5m3":
+        return ar_qmodules.CuteNVFP4E5M3QuantLinear
+    if backend == "auto_round:torch_nvfp4_e5m3":
+        return ar_qmodules.NVFP4E5M3QuantLinear
     if "torch_nvfp4" in backend:
-        if "e5m3" in backend:
-            return ar_qmodules.NVFP4E5M3QuantLinear
         return ar_qmodules.NVFP4QuantLinear
     if "auto_round:fake" in backend:
         return ar_qmodules.FakeActQuantLinear

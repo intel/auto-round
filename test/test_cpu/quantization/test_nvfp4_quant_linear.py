@@ -94,16 +94,27 @@ def test_nvfp4_e5m3_forward_caches_dequantized_weight_when_enabled():
     dequant_weight_online.assert_called_once_with()
 
 
-def test_nvfp4_e5m3_forward_uses_fused_output_when_available():
+def test_nvfp4_e5m3_torch_forward_does_not_call_cute():
     config = PRESET_SCHEMES["NVFP4_E5M3"]
     layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
     activation = torch.randn(2, 16)
-    fused_output = torch.randn(2, 8)
 
     with patch(
         "auto_round.experimental.qmodules.nvfp4_e5m3.try_cute_nvfp4_e5m3_linear",
-        return_value=fused_output,
-    ):
+    ) as cute_linear:
+        output = layer(activation)
+
+    assert output.shape == (2, 8)
+    cute_linear.assert_not_called()
+
+
+def test_nvfp4_e5m3_cute_forward_uses_fused_output_when_available():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.CuteNVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
+    activation = torch.randn(2, 16)
+    fused_output = torch.randn(2, 8)
+
+    with patch("auto_round.experimental.qmodules.nvfp4_e5m3.try_cute_nvfp4_e5m3_linear", return_value=fused_output):
         assert layer(activation) is fused_output
 
 

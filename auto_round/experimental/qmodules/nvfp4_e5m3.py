@@ -23,7 +23,7 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round_extension.cuda.cute_nvfp4_e5m3 import try_cute_fp4_v2_qdq, try_cute_nvfp4_e5m3_linear
 
-__all__ = ["NVFP4E5M3QuantLinear"]
+__all__ = ["CuteNVFP4E5M3QuantLinear", "NVFP4E5M3QuantLinear"]
 
 
 class NVFP4E5M3QuantLinear(QModuleBase):
@@ -91,10 +91,6 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         self._cached_weight = None
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
-        cute_qdq_activation = try_cute_fp4_v2_qdq(activation, self.config.act_group_size)
-        if cute_qdq_activation is not None:
-            return cute_qdq_activation
-
         original_dtype = activation.dtype
         qdq_activation, _, _ = fp4_v2(
             activation.to(torch.float32), bits=self.config.act_bits, group_size=self.config.act_group_size
@@ -103,10 +99,6 @@ class NVFP4E5M3QuantLinear(QModuleBase):
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        fused_output = try_cute_nvfp4_e5m3_linear(input, self.weight_packed, self.weight_scale, self.bias)
-        if fused_output is not None:
-            return fused_output
-
         qdq_input = self.qdq_input(input)
         weight = self.weight if self.cache_weight else self.dequant_weight_online()
         return torch.nn.functional.linear(qdq_input, weight.to(qdq_input.dtype), self.bias)
@@ -120,3 +112,20 @@ class NVFP4E5M3QuantLinear(QModuleBase):
             bias=original_layer.bias,
             dtype=original_layer.weight.dtype,
         )
+
+
+class CuteNVFP4E5M3QuantLinear(NVFP4E5M3QuantLinear):
+    """NVFP4 E5M3 linear that dispatches activation QDQ and GEMM to CuTe."""
+
+    def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
+        cute_qdq_activation = try_cute_fp4_v2_qdq(activation, self.config.act_group_size)
+        if cute_qdq_activation is not None:
+            return cute_qdq_activation
+        return super().qdq_input(activation)
+
+    @torch.inference_mode()
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        fused_output = try_cute_nvfp4_e5m3_linear(input, self.weight_packed, self.weight_scale, self.bias)
+        if fused_output is not None:
+            return fused_output
+        return super().forward(input)

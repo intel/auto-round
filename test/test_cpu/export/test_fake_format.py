@@ -88,6 +88,7 @@ class _TinyLoadModel(torch.nn.Module):
         super().__init__()
         self.block = torch.nn.Module()
         self.block.linear = torch.nn.Linear(16, 4)
+        self.lm_head = torch.nn.Linear(16, 4)
         self.config = SimpleNamespace(quantization_config=quantization_config)
 
 
@@ -122,6 +123,34 @@ def test_fake_config_replaces_linear_and_qdq_activation_on_load():
     assert not torch.equal(qdq_activation, activation)
     expected = torch.nn.functional.linear(qdq_activation, model.block.linear.weight, model.block.linear.bias)
     assert torch.equal(model.block.linear(activation), expected)
+
+
+def test_fake_config_keeps_modules_to_not_convert_in_full_precision():
+    quantization_config = SimpleNamespace(
+        bits=4,
+        group_size=16,
+        sym=True,
+        data_type="fp4_v2",
+        act_bits=4,
+        act_group_size=16,
+        act_sym=True,
+        act_data_type="fp4_v2",
+        act_dynamic=True,
+        quant_method="auto-round",
+        packing_format="auto_round:fake",
+        block_name_to_quantize="",
+        backend="auto",
+        extra_config={},
+        modules_to_not_convert=["lm_head"],
+    )
+    model = _TinyLoadModel(quantization_config)
+    original_lm_head = model.lm_head
+
+    model, used_backends = convert_hf_model(model, target_device="cpu")
+
+    assert used_backends == ["auto_round:fake"]
+    assert isinstance(model.block.linear, FakeActQuantLinear)
+    assert model.lm_head is original_lm_head
 
 
 def test_transformers_load_replaces_fake_linear(tmp_path):

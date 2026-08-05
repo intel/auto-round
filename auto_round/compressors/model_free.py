@@ -54,7 +54,9 @@ Output formats
 * **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``.
 * **MXFP schemes** → ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` format,
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
-* **NVFP4_E5M3** → fake format with high-precision QDQ ``.weight`` tensors.
+* **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
+    ``.weight_scale`` tensors; use ``format="fake"`` explicitly for high-precision
+    QDQ ``.weight`` tensors.
 
 Usage (CLI)
 -----------
@@ -686,9 +688,7 @@ def _quantize_single_tensor(
     if data_type == _NVFP4_E5M3_DATA_TYPE:
         try:
             quantize_e5m3 = (
-                _pack_weight_nvfp4_e5m3
-                if scheme.get("_output_format") == "llm_compressor"
-                else _quantize_weight_nvfp4_e5m3
+                _quantize_weight_nvfp4_e5m3 if scheme.get("_output_format") == "fake" else _pack_weight_nvfp4_e5m3
             )
             out = quantize_e5m3(
                 weight=tensor,
@@ -1510,7 +1510,7 @@ def _build_quantization_config(
     # vllm only support auto_round:auto_gptq, but transformers cannot load it correctly when sym=False.
     # So we keep auto_round for asymmetric quantization to maintain compatibility with both.
     if data_type == _NVFP4_E5M3_DATA_TYPE:
-        packing_format = "auto_round:fake"
+        packing_format = "auto_round:fake" if format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
     else:
         packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
 
@@ -1560,6 +1560,8 @@ def _build_quantization_config(
             if non_linear_re.search(layer_name):
                 continue
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
+            if data_type == _NVFP4_E5M3_DATA_TYPE:
+                extra_config[layer_name].update({"act_bits": 16, "act_data_type": "float"})
 
     quantized_layer_set = set(quantized_layers)
     if "lm_head" in quantized_layer_set and "lm_head" not in extra_config:
@@ -2110,7 +2112,7 @@ class _ModelFreeCompressorCore:
         self.scheme_input = scheme
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
-        self.format = format
+        self.format = format or "auto_round"
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
@@ -2166,12 +2168,6 @@ class _ModelFreeCompressorCore:
         _validate_supported_scheme(self.scheme_obj, self.scheme_input)
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
-        if (self.scheme_obj.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE and self.format not in (
-            "fake",
-            "llm_compressor",
-        ):
-            logger.warning("NVFP4_E5M3 model-free output uses fake format; resetting format to 'fake'.")
-            self.format = "fake"
         self.default_scheme["_output_format"] = self.format
 
     def _parse_layer_config(self) -> None:
@@ -2607,7 +2603,7 @@ class _ModelFreeCompressorCore:
             bits = self.default_scheme.get("bits", 4)
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
-            packing_format = "fake"
+            packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
             packing_format = "auto_round:auto_gptq"
 

@@ -41,6 +41,7 @@ class AutoRoundFormat(OutputFormat):
         "MXFP4",
         "MXFP8",
         "NVFP4",
+        "NVFP4_E5M3",
         "FPW8A16",
         "W2A16G64",
         "W2A16G32",
@@ -67,7 +68,7 @@ class AutoRoundFormat(OutputFormat):
                     )
                 if enable_awq:
                     self.backend = AutoAWQFormat("auto_round:auto_awq", scheme, ctx)
-            elif scheme.is_nv_fp() or scheme.is_mx_fp():
+            elif scheme.is_nv_fp() or scheme.is_mx_fp() or scheme.data_type == BackendDataType.NVFP4_E5M3.value:
                 self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
             elif scheme.is_mx_int() and scheme.bits == 4:  # only add mx_int4 now
                 self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
@@ -87,7 +88,9 @@ class AutoRoundFormat(OutputFormat):
         elif not format.startswith("auto_round"):
             if format == "mlx":
                 self.backend = MLXFormat("mlx", scheme, ctx)
-            elif format.upper() not in list(BackendDataType.__members__.keys()):
+            elif format.upper() not in list(BackendDataType.__members__.keys()) and format not in {
+                BackendDataType.NVFP4_E5M3.value
+            }:
                 raise KeyError(f"Unsupported backend format auto_round:{format}, please check")
             else:
                 self.output_format = f"auto_round:{format}"
@@ -131,7 +134,11 @@ class AutoRoundFormat(OutputFormat):
 
         backend = self.get_backend_name()
 
-        if self.output_format in [
+        if self.output_format == f"auto_round:{BackendDataType.NVFP4_E5M3.value}":
+            from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
+
+            pack_func = pack_layer
+        elif self.output_format in [
             f"auto_round:{BackendDataType.NV_FP.value}",
             f"auto_round:{BackendDataType.MX_FP.value}",
             f"auto_round:{BackendDataType.MX_FP_RCEIL.value}",
@@ -185,7 +192,12 @@ class AutoRoundFormat(OutputFormat):
                 **kwargs,
             )
         backend = self.get_backend_name()
-        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", backend):
+        if backend == f"auto_round:{BackendDataType.NVFP4_E5M3.value}":
+            from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
+
+            backend = "auto_round:llm_compressor_nvfp4_e5m3"
+            export_func = save_quantized_as_fp
+        elif re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", backend):
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import save_quantized_as_fp
 
             backend = "auto_round:llm_compressor"

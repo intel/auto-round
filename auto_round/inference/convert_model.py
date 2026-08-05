@@ -566,6 +566,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.NVFP4.value in layer_backend
         or BackendDataType.MXINT4.value in layer_backend
         or layer_backend == "auto_round:torch_nvfp4_e5m3"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3"
         or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
@@ -843,6 +844,7 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     if config_format == "nvfp4-e5m3-pack-quantized":
         config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
         ignored = config_dict.get("ignore") or []
+        # TODO: For experimental purpose, will delete when it's not necessary.
         quantization_config = SimpleNamespace(
             quant_method="auto-round",
             packing_format="auto_round:llm_compressor_nvfp4_e5m3",

@@ -336,18 +336,24 @@ def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     compressor.run()
 
     output_keys = _read_output_keys(output_dir)
-    assert "model.layers.0.self_attn.q_proj.weight" in output_keys
-    assert "model.layers.0.self_attn.q_proj.weight_packed" not in output_keys
-    assert "model.layers.0.self_attn.q_proj.weight_scale" not in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight" not in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight_packed" in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight_scale" in output_keys
     assert "lm_head.weight" in output_keys
-    assert compressor.format == "fake"
+    assert compressor.format == "auto_round"
     quantization_config = _read_qconfig(output_dir)
-    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["packing_format"] == "auto_round:llm_compressor_nvfp4_e5m3"
     assert quantization_config["data_type"] == "fp4_v2"
     assert quantization_config["act_bits"] == 4
     assert quantization_config["act_data_type"] == "fp4_v2"
     assert quantization_config["act_group_size"] == 16
     assert quantization_config["act_sym"] is True
+    assert quantization_config["extra_config"]["lm_head"] == {
+        "bits": 16,
+        "data_type": "float",
+        "act_bits": 16,
+        "act_data_type": "float",
+    }
     assert os.path.exists(os.path.join(output_dir, "quantization_config.json"))
 
 

@@ -21,5 +21,5 @@ from auto_round.experimental.qmodules.mx import (
 
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
 from auto_round.experimental.qmodules.nvfp4 import NVFP4QuantLinear
-from auto_round.experimental.qmodules.nvfp4_e5m3 import NVFP4E5M3QuantLinear
+from auto_round.experimental.qmodules.nvfp4_e5m3 import CuteNVFP4E5M3QuantLinear, NVFP4E5M3QuantLinear
 from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear
