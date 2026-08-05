@@ -16,14 +16,8 @@ class TestCompressorsLazyImports:
     """Test the lazy import __getattr__ function."""
 
     def test_auto_round_lazy_import(self):
-        AutoRound = compressors.AutoRound
-        assert AutoRound is not None
-        assert callable(AutoRound)
-
-    def test_auto_round_compatible_lazy_import(self):
-        AutoRoundCompatible = compressors.AutoRoundCompatible
-        assert AutoRoundCompatible is not None
-        assert callable(AutoRoundCompatible)
+        with pytest.raises(AttributeError, match="has no attribute"):
+            getattr(compressors, "AutoRound")
 
     def test_base_compressor_lazy_import(self):
         BaseCompressor = compressors.BaseCompressor
@@ -50,15 +44,13 @@ class TestCompressorsLazyImports:
             getattr(compressors, "UnknownClass123")
 
     def test_all_contains_expected(self):
-        assert "AutoRound" in compressors.__all__
         assert "BaseOrchestrator" in compressors.__all__
         assert "BaseCompressor" in compressors.__all__
         assert "CompressionOrchestrator" in compressors.__all__
-        assert "AutoRoundCompatible" in compressors.__all__
         assert "ModelFreeCompressor" in compressors.__all__
 
     def test_caching_same_object(self):
         """Second access returns the same object."""
-        ar1 = compressors.AutoRound
-        ar2 = compressors.AutoRound
+        ar1 = compressors.CompressionOrchestrator
+        ar2 = compressors.CompressionOrchestrator
         assert ar1 is ar2
