@@ -214,6 +214,32 @@ assert sum(_MINIMAX_TPE_BS32) == 256, sum(_MINIMAX_TPE_BS32)
 # Backwards-compatible alias (older code/tests referenced ``_MINIMAX_TPE``).
 _MINIMAX_TPE = _MINIMAX_TPE_BS1
 
+
+def _spread_tokens(total_tokens: int, num_experts: int = 192) -> list:
+    """Distribute ``total_tokens`` across ``num_experts`` round-robin.
+
+    Returns a ``[num_experts]`` histogram summing to ``total_tokens`` where the
+    load is striped across the expert range (expert ``i`` gets a token before
+    ``i+1`` gets its second), mirroring the spread a real top-k router produces
+    rather than clustering all tokens onto the first few experts. Used by the
+    threshold-sweep test to synthesise decode workloads of an exact size.
+    """
+    tpe = [0] * num_experts
+    for i in range(total_tokens):
+        tpe[i % num_experts] += 1
+    return tpe
+
+
+# Total-token counts swept by ``test_perf_int4_sym_dpas_vs_scalar_threshold``
+# to locate the DPAS-vs-scalar crossover for the auto-dispatch threshold.
+_INT4_THRESHOLD_TOKEN_COUNTS = [16, 32, 64, 128]
+
+# MiniMax-M2 up/down-proj (N, K) pairs reused by the threshold sweep.
+_INT4_THRESHOLD_NK = [
+    (1536, 3072),  # gate/up-proj
+    (3072, 1536),  # down-proj
+]
+
 DECODE_SHAPES = [
     # (label, num_experts, tokens_per_expert, N, K)
     # batch=1 decode (single-stream).
@@ -415,6 +441,55 @@ class TestMoEGemmDecodePerf:
             monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
             dpas_ms = _xpu_time_ms(_run)
             _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_perf_int4_sym_dpas_vs_scalar_threshold(self, monkeypatch, dtype):
+        """int4-sym decode threshold sweep: DPAS vs scalar GEMV across a range
+        of total-token counts (16/32/64/128) at ``group_size=32``.
+
+        Same comparison as ``test_perf_int4_sym_dpas_vs_scalar`` (``speedup`` is
+        ``scalar / dpas``, DPAS is the "ark" column) but instead of the fixed
+        MiniMax bs1/bs32 shapes it synthesises decode workloads of an exact
+        total-token size via :func:`_spread_tokens`. The ``speedup`` column
+        crosses 1.0x at the total-token count where the shared S4 DPAS
+        grouped-GEMM starts beating the scalar GEMV, which is the value to feed
+        into ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` / the ``moe(...)``
+        ``decode_threshold`` auto-dispatch cutoff.
+        """
+        group_size = 32
+        E = 192
+        _print_header(
+            f"INT4 sym DPAS vs scalar threshold sweep (group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- scalar GEMV (baseline) vs S4 DPAS (ark)"
+        )
+        for N, K in _INT4_THRESHOLD_NK:
+            if K % group_size != 0 or N % 64 != 0 or K % 32 != 0:
+                continue
+            for total_tokens in _INT4_THRESHOLD_TOKEN_COUNTS:
+                tpe = _spread_tokens(total_tokens, E)
+                label = f"int4 {N}x{K} t{total_tokens}"
+                activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+                w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+                scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+                packed = _pack_int4_sym(w_float, scales, group_size)
+                ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+                def _run():
+                    return ark.moe_gemm_decode(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        weight_bits=4,
+                        group_size=group_size,
+                        asym=False,
+                    )
+
+                monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+                scalar_ms = _xpu_time_ms(_run)
+                monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+                dpas_ms = _xpu_time_ms(_run)
+                _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
