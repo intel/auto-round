@@ -50,9 +50,7 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         self.dtype = dtype
         self._cached_weight = None
 
-        packed_weight = (
-            torch.zeros((out_features, in_features // 2), dtype=torch.uint8) if weight is None else weight
-        )
+        packed_weight = torch.zeros((out_features, in_features // 2), dtype=torch.uint8) if weight is None else weight
         self.register_buffer("weight_packed", packed_weight)
         scale = (
             torch.empty((out_features, in_features // self.group_size), dtype=torch.uint8)
@@ -74,9 +72,9 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         return 0
 
     def dequant_weight_online(self) -> torch.Tensor:
-        unpacked = unpack_fp4_from_uint8(
-            self.weight_packed, self.out_features, self.in_features, dtype=self.dtype
-        ).to(torch.float32)
+        unpacked = unpack_fp4_from_uint8(self.weight_packed, self.out_features, self.in_features, dtype=self.dtype).to(
+            torch.float32
+        )
         scale = e5m3_to_float_tensor(self.weight_scale).reshape(-1, 1)
         return (unpacked.reshape(-1, self.group_size) * scale).reshape(self.out_features, self.in_features)
 

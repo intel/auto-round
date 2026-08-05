@@ -45,9 +45,7 @@ def test_nvfp4_e5m3_compressed_tensors_loading_uses_no_global_scales():
             super().__init__()
             self.config = SimpleNamespace(model_type="tiny")
             self.model = torch.nn.Module()
-            self.model.layers = torch.nn.ModuleList(
-                [torch.nn.ModuleDict({"fc": torch.nn.Linear(16, 8)})]
-            )
+            self.model.layers = torch.nn.ModuleList([torch.nn.ModuleDict({"fc": torch.nn.Linear(16, 8)})])
 
     quantizer = AutoHfQuantizer.from_config(initialize_nvfp4_e5m3_quantization([]))
     model = quantizer._process_model_before_weight_loading(TinyModel())

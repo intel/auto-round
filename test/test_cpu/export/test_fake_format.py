@@ -19,8 +19,8 @@ from types import SimpleNamespace
 import torch
 from transformers import AutoModelForCausalLM, OPTConfig, OPTForCausalLM
 
-from auto_round.formats import FakeFormat
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
+from auto_round.formats import FakeFormat
 from auto_round.inference.convert_model import convert_hf_model
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.wrapper import WrapperWALayer
