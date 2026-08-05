@@ -2,7 +2,14 @@ import importlib.util
 import os
 import shutil
 import sys
-from test.helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, save_tiny_model
+from test.helpers import (
+    check_version,
+    eval_generated_prompt,
+    evaluate_accuracy,
+    generate_prompt,
+    get_model_path,
+    save_tiny_model,
+)
 
 import pytest
 import torch
@@ -14,14 +21,6 @@ from auto_round import AutoRound
 from auto_round.modeling.fused_moe.fusion_spec import get_moe_fusion_spec
 
 from ...envs import require_gguf
-from test.helpers import (
-    check_version,
-    eval_generated_prompt,
-    evaluate_accuracy,
-    generate_prompt,
-    get_model_path,
-    save_tiny_model,
-)
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
