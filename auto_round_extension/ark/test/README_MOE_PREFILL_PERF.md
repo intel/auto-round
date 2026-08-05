@@ -137,6 +137,29 @@ uneven E=8         8   4096   4096     610         28.9012        10.1234       
 2. **Speedup**: Higher is better - shows performance gain over baseline
 3. **Latency (ms)**: Lower is better - actual kernel execution time
 
+## BF16/FP16 Prefill Tile Selection
+
+The BF16/FP16 grouped GEMM (`ark.moe_gemm`, measured in `test_perf_fp` and
+used as the accumulation path by the quantized prefill kernels) selects its
+work-group tile from the output width `N`, mirroring the `w16a16` large-M
+policy heuristic in
+[`vllm-project/vllm-xpu-kernels`](https://github.com/vllm-project/vllm-xpu-kernels):
+
+| Condition   | Work-group tile | Sub-group layout |
+| ----------- | --------------- | ---------------- |
+| `N <= 64`   | `256x64x32`     | `8x1`            |
+| `N <= 512`  | `256x128x32`    | `8x2` (historical default) |
+| `N > 512`   | `256x256x32`    | `8x4`            |
+
+Prefill routes many tokens per expert (large M), so the wider `256x256` tile
+for large-`N` up/down projections raises sub-group utilization and lowers the
+number of work-group tiles launched. All three policies keep the same
+per-sub-group tile (`32x64x32`), so the 2D block copy atoms are shared.
+Implemented in `sycl_tla_moe.hpp`.
+
+Set `ARK_MOE_GEMM_FIXED_TILE=1` to force the historical fixed `256x128` (`8x2`)
+tile regardless of `N` (escape hatch for per-device tuning/regressions).
+
 ## Integration with CI/CD
 
 This test can be integrated into performance regression testing:
