@@ -679,6 +679,87 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 }
 
 // ---------------------------------------------------------------------------
+// Decode-specialized S4 (sym) per-K-group DPAS dispatch.
+//
+// Ported from vllm-xpu-kernels' dedicated `w4a16` *decode* dispatch: for the
+// generation (decode) phase every expert sees at most a handful of tokens, so
+// the 8-row `dpas_w4a16_policy_m_8` tile is always the right choice. Rather
+// than piggy-backing on `moe_prefill_s4_dpas_per_group_dispatch` and re-running
+// its four-tier `A_avg_M` bucket ladder (which only selects `_m_8` at the tiny
+// end anyway), this entry point hard-pins the 8-row tile.
+//
+// The underlying grouped-GEMM mainloop (`xe_gemm_*` per-group loop) is reused
+// verbatim: it already performs the 2D VNNI block load via
+// `get_block_2d_copy_A/B` + `make_block_2d_prefetch`, and caches the per-N
+// scale in the `sg_scale[]` register array, folding it once per K-group. So no
+// new mainloop math is written here -- only the tile selection differs from the
+// prefill dispatch.
+//
+// `ARK_MOE_DECODE_S4_DPAS_M8` (default ON) can be set to "0"/"false"/"off"/"no"
+// to fall back to the full prefill `A_avg_M` bucket ladder for A/B comparison
+// (the two paths are numerically identical; only the tile shape differs).
+// ---------------------------------------------------------------------------
+inline bool moe_decode_s4_dpas_m8_enabled() {
+  const char* env = std::getenv("ARK_MOE_DECODE_S4_DPAS_M8");
+  if (env == nullptr) return true;  // default ON
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
+  return true;
+}
+
+template <typename ScalarT>
+void moe_decode_s4_dpas_per_group_dispatch(
+    sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NKp,
+    const ScalarT* scales, ScalarT* outputs,
+    const int* num_tokens_per_expert, int E, int N, int K, int group_size,
+    int total_tokens) {
+  // A/B escape: defer to the prefill bucket ladder when the m_8 pin is
+  // disabled. Identical math; only the DPAS tile shape differs.
+  if (!moe_decode_s4_dpas_m8_enabled()) {
+    moe_prefill_s4_dpas_per_group_dispatch<ScalarT>(
+        q, activations, weights_NKp, scales, outputs, num_tokens_per_expert, E,
+        N, K, group_size, total_tokens);
+    return;
+  }
+
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+  if (K % group_size != 0) {
+    throw std::invalid_argument(
+        "moe_decode_s4_dpas(per-group): K must be a multiple of group_size");
+  }
+  if ((K & 1) != 0) {
+    throw std::invalid_argument(
+        "moe_decode_s4_dpas(per-group): K must be even (packed nibbles)");
+  }
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+  const auto* weights_i4 =
+      reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
+
+  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
+  if (atomic_buffer == nullptr) {
+    throw std::runtime_error(
+        "moe_decode_s4_dpas(per-group): failed to allocate atomic buffer");
+  }
+
+  // Hard-pin the 8-row tile -- the only tile the prefill ladder would ever
+  // select for decode-sized batches.
+  MoEGEMMLauncher_s4<'R', 'C', dpas_w4a16_policy_m_8>(
+      *q, activations_ca, weights_i4, scales_ca,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, group_size, atomic_buffer);
+
+  sycl::free(atomic_buffer, *q);
+}
+
+// ---------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default ON, semantics
 // identical to `moe_prefill_dpas_int_enabled` / `moe_prefill_dpas_fp8
 // _enabled`). Decoupled from `ARK_MOE_PREFILL_DPAS_INT8` so this new

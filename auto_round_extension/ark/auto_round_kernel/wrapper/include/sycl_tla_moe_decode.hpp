@@ -1012,12 +1012,16 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
 
 // ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_DPAS_S4` (default ON). When ON, int4-sym
-// (S4_CLIP, !asym) decode is routed to the shared per-group S4 DPAS grouped
-// GEMM (`moe_dpas_s4::moe_prefill_s4_dpas_per_group_dispatch`) instead of the
-// scalar FMA GEMV (`launch_int4`). The DPAS path already handles the tiny
-// total-token counts typical of decode (its `A_avg_M <= 4` bucket selects the
-// 8-row `dpas_w4a16_policy_m_8` tile) and reads the same `[E, N, K/2]` packed
-// weights + `[E, N, K/group]` scales, so no repack is needed.
+// (S4_CLIP, !asym) decode is routed to the dedicated decode-phase S4 DPAS
+// grouped GEMM (`moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch`) instead
+// of the scalar FMA GEMV (`launch_int4`). Ported from vLLM-xpu-kernels'
+// dedicated `w4a16` decode dispatch, this path hard-pins the 8-row
+// `dpas_w4a16_policy_m_8` tile (the only tile the prefill `A_avg_M` ladder
+// would ever pick for decode-sized batches) and reuses the shared per-group
+// mainloop's 2D VNNI block load + register-resident per-N scale. It reads the
+// same `[E, N, K/2]` packed weights + `[E, N, K/group]` scales, so no repack is
+// needed. (`ARK_MOE_DECODE_S4_DPAS_M8=0` defers to the full prefill bucket
+// ladder for A/B comparison; the two are numerically identical.)
 //
 // Setting the var to "0" / "false" / "off" / "no" (case-insensitive) forces
 // the legacy scalar GEMV, for A/B comparison and regression escape. Asym
@@ -1136,13 +1140,13 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
     if (!asym && moe_decode_dpas_s4_enabled() &&
         moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size)) {
       if (act_dtype == BTLA_DTYPE::F16) {
-        moe_dpas_s4::moe_prefill_s4_dpas_per_group_dispatch<sycl::half>(
+        moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch<sycl::half>(
             q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
             static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), num_tokens_per_expert,
             num_experts, N, K, group_size, total_tokens);
       } else {
         using BF = sycl::ext::oneapi::bfloat16;
-        moe_dpas_s4::moe_prefill_s4_dpas_per_group_dispatch<BF>(
+        moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch<BF>(
             q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
             static_cast<const BF*>(scales), static_cast<BF*>(outputs), num_tokens_per_expert, num_experts, N, K,
             group_size, total_tokens);
