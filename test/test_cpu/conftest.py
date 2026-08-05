@@ -1,8 +1,6 @@
-import pytest
-import torch
+"""CPU test-specific fixtures.
 
-
-@pytest.fixture(autouse=True)
-def disable_torch_compile(monkeypatch):
-    """Skip torch.compile overhead in CPU tests."""
-    monkeypatch.setattr(torch, "compile", lambda function, *args, **kwargs: function)
+torch.compile behavior is controlled in test/conftest.py:
+- default: disabled for all tests via a no-op patch
+- opt in: use @pytest.mark.enable_torch_compile
+"""

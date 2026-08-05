@@ -13,6 +13,8 @@ from auto_round.compressors.utils import block_forward
 from ...envs import require_gguf
 from ...helpers import get_model_path, get_tiny_model
 
+pytestmark = pytest.mark.enable_torch_compile
+
 
 class TestTorchCompile:
     save_dir = "./saved"
