@@ -1038,6 +1038,32 @@ inline bool moe_decode_coalesce_int4_enabled() {
 }
 
 // ----------------------------------------------------------------------------
+// Amortization gate for the coalesced int4 decode kernel. The coalesced path
+// repacks the *entire* weight tensor for all `num_experts` on every call
+// (cost proportional to num_experts * N * K/2) before running the GEMV. That
+// one-time repack only pays off when a work-group reuses each repacked weight
+// tile across many tokens -- i.e. when there are enough active tokens relative
+// to the number of experts. For tiny decode batches (e.g. 8 tokens spread
+// across 192 experts) the repack dominates and the coalesced kernel is far
+// slower than the per-lane-strided `launch_int4`, which reads the weights in
+// place with no repack. Require at least one full TOKEN_BLOCK worth of tokens
+// per expert on average before coalescing; otherwise fall back to `launch_int4`.
+// `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` overrides the threshold (tokens per
+// expert scaled by TOKEN_BLOCK); "0" disables the gate (always coalesce).
+// ----------------------------------------------------------------------------
+inline bool moe_decode_coalesce_int4_amortized(int total_tokens, int num_experts) {
+  if (num_experts <= 0) return true;
+  long long min_tokens = static_cast<long long>(num_experts) * TOKEN_BLOCK;
+  const char* env = std::getenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS");
+  if (env != nullptr) {
+    char* end = nullptr;
+    long long v = std::strtoll(env, &end, 10);
+    if (end != env && v >= 0) min_tokens = v;
+  }
+  return static_cast<long long>(total_tokens) >= min_tokens;
+}
+
+// ----------------------------------------------------------------------------
 //
 // weight_dtype:
 //   BTLA_DTYPE::F16  / BF16       : weights stored as [E, N, K] in matching
@@ -1112,7 +1138,8 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
     // default this uses the coalesced-load variant, which repacks the weights
     // on-device so sub-group loads are contiguous; `ARK_MOE_DECODE_COALESCE_INT4=0`
     // forces the legacy per-lane-strided kernel.
-    const bool coalesce = moe_decode_coalesce_int4_enabled();
+    const bool coalesce = moe_decode_coalesce_int4_enabled() &&
+                          moe_decode_coalesce_int4_amortized(total_tokens, num_experts);
     if (act_dtype == BTLA_DTYPE::F16) {
       if (asym) {
         if (coalesce) {
