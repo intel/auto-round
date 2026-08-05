@@ -378,11 +378,11 @@ class TestMLXFormat:
              config with ``false`` entries.
           5. ``rope_parameters`` has been flattened (``rope_theta`` surfaced).
         """
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
         save_dir = str(tmp_path / "qwen3_vl_9b_mlx")
         try:
-            ar = AutoRoundMLLM(
+            ar = AutoRound(
                 qwen_3_vl_9b_name_or_path,
                 scheme="W4A16",
                 bits=4,
@@ -467,11 +467,11 @@ class TestMLXFormat:
         from mlx_vlm.prompt_utils import apply_chat_template
         from mlx_vlm.utils import load_config
 
-        from auto_round import AutoRoundMLLM
+        from auto_round import AutoRound
 
         save_dir = str(tmp_path / "qwen3_vl_9b_mlx_run")
         try:
-            ar = AutoRoundMLLM(
+            ar = AutoRound(
                 qwen_3_vl_9b_name_or_path,
                 scheme="W4A16",
                 bits=4,

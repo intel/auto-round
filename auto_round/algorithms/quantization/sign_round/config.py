@@ -105,7 +105,7 @@ class SignRoundConfig(QuantizationConfig):
 
     def finalize_scheme(self) -> None:
         """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""
-        if self.lr is None:
+        if self.lr is None and self.iters > 0:
             # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
             if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
                 self.lr = 2.0 / self.iters

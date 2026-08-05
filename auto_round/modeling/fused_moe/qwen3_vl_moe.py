@@ -16,6 +16,7 @@ import torch
 import transformers
 from packaging import version
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, unsupported_meta_device
 
@@ -37,6 +38,8 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
     Calibration version of Qwen3VLMoeTextSparseMoeBlock that sends all tokens to all
     experts.
     """
+
+    supports_gguf_fused_moe = True
 
     is_permanent = True
 
@@ -141,6 +144,18 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_up_proj": {"split_into": ["gate_proj", "up_proj"]},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=True,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         intermediate_size = original.down_proj.shape[1]

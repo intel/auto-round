@@ -5,15 +5,17 @@ from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import BaseOrchestrator
-from auto_round.compressors.entry import AutoRound as NewAutoRound
-from auto_round.compressors.entry import AutoRoundCompatible
+from auto_round.utils.device_manager import default_enable_torch_compile
 
 
 def test_torch_compile_platform_default_is_deferred():
     assert inspect.signature(AutoRound.__new__).parameters["enable_torch_compile"].default is None
-    assert inspect.signature(NewAutoRound.__new__).parameters["enable_torch_compile"].default is None
-    assert inspect.signature(AutoRoundCompatible.__new__).parameters["enable_torch_compile"].default is None
     assert inspect.signature(BaseOrchestrator.__init__).parameters["enable_torch_compile"].default is None
+
+
+def test_dataset_default_is_deferred():
+    assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is None
+    assert inspect.signature(BaseOrchestrator.__init__).parameters["dataset"].default is None
 
 
 def test_cli_torch_compile_flags():
@@ -23,9 +25,22 @@ def test_cli_torch_compile_flags():
     assert parser.parse_args(["--model", "test-model", "--disable_torch_compile"]).enable_torch_compile is False
 
 
+def test_cli_dataset_tracks_explicit_value():
+    parser = build_quantize_parser()
+    assert parser.parse_args(["--model", "test-model"]).dataset is None
+    assert (
+        parser.parse_args(["--model", "test-model", "--dataset", "NeelNanda/pile-10k"]).dataset == "NeelNanda/pile-10k"
+    )
+
+
 def test_auto_scheme_inherits_torch_compile_setting():
     auto_scheme = AutoScheme(avg_bits=4.0, options=["W4A16"])
     assert auto_scheme.enable_torch_compile is None
+
+
+def test_xpu_torch_compile_is_disabled_by_default():
+    assert not default_enable_torch_compile("xpu", platform_name="linux")
+    assert default_enable_torch_compile("cuda", platform_name="linux")
 
 
 def test_torch_compile_runtime_defaults(tiny_opt_model_path):
@@ -88,7 +103,7 @@ def test_argparse_check(tiny_opt_model_path):
     # so CalibrationState defaulted to 1 regardless of the user's value.
     steps = 8
 
-    ar = NewAutoRound(
+    ar = AutoRound(
         tiny_opt_model_path,
         scheme="W4A16",
         gradient_accumulate_steps=steps,

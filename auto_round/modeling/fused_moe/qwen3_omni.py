@@ -11,6 +11,7 @@ Qwen3-Omni has MoE blocks in both thinker and talker:
 
 import torch
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
 from auto_round.utils import clear_memory, unsupported_meta_device
@@ -28,6 +29,8 @@ class LinearQwen3OmniThinkerSparseMoeBlock(ReplacementModuleBase):
 
     Structure: gate (router) + experts (unfused).
     """
+
+    supports_gguf_fused_moe = True
 
     def __init__(self, original, config):
         super().__init__(original)
@@ -85,6 +88,18 @@ class SequentialQwen3OmniThinkerExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Qwen3OmniMoeThinkerTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_up_proj": {"split_into": ["gate_proj", "up_proj"], "concat_dim": 0},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=False,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         """Unfuse fused expert weights into individual nn.Linear layers.
