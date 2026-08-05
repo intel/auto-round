@@ -1,10 +1,11 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
 from transformers.quantizers.auto import AutoHfQuantizer
 
-from auto_round.data_type.nvfp import calculate_gparam
+from auto_round.data_type.nvfp import calculate_gparam, fp4_v2
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
@@ -54,6 +55,56 @@ def test_nvfp4_e5m3_compressed_tensors_loading_uses_no_global_scales():
     assert isinstance(layer, ar_qmodules.NVFP4E5M3QuantLinear)
     assert set(layer.state_dict()) == {"bias", "weight_packed", "weight_scale"}
     assert quantizer._process_model_after_weight_loading(model) is model
+
+
+def test_nvfp4_e5m3_qdq_input_uses_reference_fallback_on_cpu():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
+    activation = torch.randn(2, 3, 16)
+
+    expected, _, _ = fp4_v2(activation, bits=config.act_bits, group_size=config.act_group_size)
+
+    assert torch.equal(layer.qdq_input(activation), expected)
+
+
+def test_nvfp4_e5m3_forward_does_not_cache_dequantized_weight_by_default():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
+    activation = torch.randn(2, 16)
+    dequantized_weight = torch.randn(8, 16)
+
+    with patch.object(layer, "dequant_weight_online", return_value=dequantized_weight) as dequant_weight_online:
+        layer(activation)
+        layer(activation)
+
+    assert layer._cached_weight is None
+    assert dequant_weight_online.call_count == 2
+
+
+def test_nvfp4_e5m3_forward_caches_dequantized_weight_when_enabled():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32, cache_weight=True)
+    activation = torch.randn(2, 16)
+    dequantized_weight = torch.randn(8, 16)
+
+    with patch.object(layer, "dequant_weight_online", return_value=dequantized_weight) as dequant_weight_online:
+        layer(activation)
+        layer(activation)
+
+    dequant_weight_online.assert_called_once_with()
+
+
+def test_nvfp4_e5m3_forward_uses_fused_output_when_available():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
+    activation = torch.randn(2, 16)
+    fused_output = torch.randn(2, 8)
+
+    with patch(
+        "auto_round.experimental.qmodules.nvfp4_e5m3.try_cute_nvfp4_e5m3_linear",
+        return_value=fused_output,
+    ):
+        assert layer(activation) is fused_output
 
 
 @pytest.mark.parametrize("scheme", [BackendDataType.NVFP4.value])

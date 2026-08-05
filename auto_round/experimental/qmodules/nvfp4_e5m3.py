@@ -21,6 +21,7 @@ from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
+from auto_round_extension.cuda.cute_nvfp4_e5m3 import try_cute_fp4_v2_qdq, try_cute_nvfp4_e5m3_linear
 
 __all__ = ["NVFP4E5M3QuantLinear"]
 
@@ -39,6 +40,7 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         weight_scale: Optional[torch.Tensor] = None,
         bias: Union[torch.Tensor, bool, None] = None,
         dtype=torch.bfloat16,
+        cache_weight: bool = False,
     ):
         super().__init__()
         assert dtype in self.SUPPORTED_COMPUTE_DTYPE
@@ -48,6 +50,7 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         self.group_size = config.group_size
         self.config = config
         self.dtype = dtype
+        self.cache_weight = cache_weight
         self._cached_weight = None
 
         packed_weight = torch.zeros((out_features, in_features // 2), dtype=torch.uint8) if weight is None else weight
@@ -84,7 +87,14 @@ class NVFP4E5M3QuantLinear(QModuleBase):
             self._cached_weight = self.dequant_weight_online()
         return self._cached_weight
 
+    def clear_weight_cache(self) -> None:
+        self._cached_weight = None
+
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
+        cute_qdq_activation = try_cute_fp4_v2_qdq(activation, self.config.act_group_size)
+        if cute_qdq_activation is not None:
+            return cute_qdq_activation
+
         original_dtype = activation.dtype
         qdq_activation, _, _ = fp4_v2(
             activation.to(torch.float32), bits=self.config.act_bits, group_size=self.config.act_group_size
@@ -93,8 +103,13 @@ class NVFP4E5M3QuantLinear(QModuleBase):
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        fused_output = try_cute_nvfp4_e5m3_linear(input, self.weight_packed, self.weight_scale, self.bias)
+        if fused_output is not None:
+            return fused_output
+
         qdq_input = self.qdq_input(input)
-        return torch.nn.functional.linear(qdq_input, self.dequant_weight_online().to(qdq_input.dtype), self.bias)
+        weight = self.weight if self.cache_weight else self.dequant_weight_online()
+        return torch.nn.functional.linear(qdq_input, weight.to(qdq_input.dtype), self.bias)
 
     @classmethod
     def from_original(cls, config: QuantizationScheme, original_layer: torch.nn.Linear):
@@ -102,6 +117,6 @@ class NVFP4E5M3QuantLinear(QModuleBase):
             in_features=original_layer.in_features,
             out_features=original_layer.out_features,
             config=config,
-            bias=original_layer.bias is not None,
+            bias=original_layer.bias,
             dtype=original_layer.weight.dtype,
         )
