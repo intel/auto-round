@@ -110,6 +110,7 @@ from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func, memory_monitor
+from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
 # ---------------------------------------------------------------------------
@@ -1990,7 +1991,11 @@ class _ModelFreeCompressorCore:
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
-        self.enable_torch_compile = sys.platform != "win32" if enable_torch_compile is None else enable_torch_compile
+        self.enable_torch_compile = (
+            default_enable_torch_compile(device, platform_name=sys.platform)
+            if enable_torch_compile is None
+            else enable_torch_compile
+        )
 
         # --- derived state populated during run() ---
         self.scheme_obj: QuantizationScheme | None = None

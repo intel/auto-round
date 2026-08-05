@@ -5,6 +5,7 @@ from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import BaseOrchestrator
+from auto_round.utils.device_manager import default_enable_torch_compile
 
 
 def test_torch_compile_platform_default_is_deferred():
@@ -35,6 +36,11 @@ def test_cli_dataset_tracks_explicit_value():
 def test_auto_scheme_inherits_torch_compile_setting():
     auto_scheme = AutoScheme(avg_bits=4.0, options=["W4A16"])
     assert auto_scheme.enable_torch_compile is None
+
+
+def test_xpu_torch_compile_is_disabled_by_default():
+    assert not default_enable_torch_compile("xpu", platform_name="linux")
+    assert default_enable_torch_compile("cuda", platform_name="linux")
 
 
 def test_torch_compile_runtime_defaults(tiny_opt_model_path):

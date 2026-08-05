@@ -77,7 +77,7 @@ from auto_round.utils.device import (
     patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
 from auto_round.utils.offload import OffloadManager
 
 
@@ -354,13 +354,19 @@ class BaseOrchestrator(object):
         self.nblocks = nblocks
 
         if enable_torch_compile is None:
-            enable_torch_compile = sys.platform != "win32"
+            enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
             if not enable_torch_compile:
-                logger.warning_once(
-                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
-                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
-                    "`--enable_torch_compile` to force enable it."
-                )
+                if self.device == "xpu":
+                    logger.warning_once(
+                        "`torch.compile` is disabled by default on XPU for compatibility. "
+                        "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
+                    )
+                else:
+                    logger.warning_once(
+                        "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                        "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                        "`--enable_torch_compile` to force enable it."
+                    )
         elif enable_torch_compile and sys.platform == "win32":
             logger.warning_once(
                 "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
