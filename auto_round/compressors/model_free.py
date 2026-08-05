@@ -597,6 +597,35 @@ def _quantize_weight_nvfp4_e5m3(
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
+def _pack_weight_nvfp4_e5m3(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+) -> dict[str, torch.Tensor]:
+    """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
+    from auto_round.data_type.nvfp import fp4_v2
+    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+
+    out_features, in_features = weight.shape
+    if group_size != 16 or in_features % group_size != 0:
+        raise ValueError(
+            f"NVFP4_E5M3 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
+        )
+    weight_dev = weight.to(device)
+    _, scale, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
+    linear = torch.nn.Linear(in_features, out_features, bias=False, device=device, dtype=weight.dtype)
+    linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
+    qlayer = QuantLinear(
+        4, group_size, in_features, out_features, False, data_type="fp4_v2", act_bits=4, act_data_type="fp4_v2"
+    )
+    qlayer.pack(linear, scale, device=device)
+    return {
+        f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
+        f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
+    }
+
+
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
@@ -656,7 +685,12 @@ def _quantize_single_tensor(
     # ---- NVFP4 E5M3 fake-quantization path ----
     if data_type == _NVFP4_E5M3_DATA_TYPE:
         try:
-            out = _quantize_weight_nvfp4_e5m3(
+            quantize_e5m3 = (
+                _pack_weight_nvfp4_e5m3
+                if scheme.get("_output_format") == "llm_compressor"
+                else _quantize_weight_nvfp4_e5m3
+            )
+            out = quantize_e5m3(
                 weight=tensor,
                 layer_name=layer_name,
                 group_size=group_size,
@@ -1089,6 +1123,21 @@ def _process_shard(
 # ---------------------------------------------------------------------------
 
 
+def _get_llm_compressor_metadata() -> dict[str, str]:
+    """Return AutoRound provenance for model-free llm-compressor output."""
+    # Keep metadata deterministic and installation-source agnostic.
+    return {"provider": "auto-round"}
+
+
+def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
+    """Build compressed-tensors metadata for NVFP4 E5M3 without global scales."""
+    from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+
+    qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignored_layers)
+    qconfig.update(_get_llm_compressor_metadata())
+    return qconfig
+
+
 def _build_mxfp_quantization_config(
     default_scheme: dict,
     quantized_layers: list[str],
@@ -1155,7 +1204,7 @@ def _build_mxfp_quantization_config(
             qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
-        qconfig["provider"] = "auto-round"
+        qconfig.update(_get_llm_compressor_metadata())
         return qconfig
 
     # Mixed MXFP: build one config_group per distinct bit-width.
@@ -1189,7 +1238,7 @@ def _build_mxfp_quantization_config(
     full_dict["format"] = "mixed-precision"
     for group_name, fmt in group_formats.items():
         full_dict["config_groups"][group_name]["format"] = fmt
-    full_dict["provider"] = "auto-round"
+    full_dict.update(_get_llm_compressor_metadata())
     return full_dict
 
 
@@ -1428,6 +1477,8 @@ def _build_quantization_config(
     data_type = (default_scheme.get("data_type") or "int").lower()
     default_bits = default_scheme.get("bits", 4)
     is_fp_default = (default_bits or 0) >= 16 and not is_mx_fp(data_type)
+    if data_type == _NVFP4_E5M3_DATA_TYPE and format == "llm_compressor":
+        return _build_nvfp4_e5m3_quantization_config(ignored_layers)
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
@@ -2115,9 +2166,13 @@ class _ModelFreeCompressorCore:
         _validate_supported_scheme(self.scheme_obj, self.scheme_input)
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
-        if (self.scheme_obj.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE and self.format != "fake":
+        if (self.scheme_obj.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE and self.format not in (
+            "fake",
+            "llm_compressor",
+        ):
             logger.warning("NVFP4_E5M3 model-free output uses fake format; resetting format to 'fake'.")
             self.format = "fake"
+        self.default_scheme["_output_format"] = self.format
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -2945,7 +3000,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
-            _accepted_formats = {"fake", "auto_round", "auto_round:auto_gptq"}
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}

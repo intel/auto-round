@@ -1,10 +1,14 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
+from transformers.quantizers.auto import AutoHfQuantizer
 
 from auto_round.data_type.nvfp import calculate_gparam
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
+from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 from auto_round.export.formats import BackendDataType
 from auto_round.schemes import PRESET_SCHEMES
 
@@ -33,6 +37,25 @@ def test_calculate_gparam_with_float8_input():
 
     assert global_scale.dtype == torch.float32
     assert torch.isfinite(global_scale)
+
+
+def test_nvfp4_e5m3_compressed_tensors_loading_uses_no_global_scales():
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(model_type="tiny")
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList(
+                [torch.nn.ModuleDict({"fc": torch.nn.Linear(16, 8)})]
+            )
+
+    quantizer = AutoHfQuantizer.from_config(initialize_nvfp4_e5m3_quantization([]))
+    model = quantizer._process_model_before_weight_loading(TinyModel())
+    layer = model.model.layers[0]["fc"]
+
+    assert isinstance(layer, ar_qmodules.NVFP4E5M3QuantLinear)
+    assert set(layer.state_dict()) == {"bias", "weight_packed", "weight_scale"}
+    assert quantizer._process_model_after_weight_loading(model) is model
 
 
 @pytest.mark.parametrize("scheme", [BackendDataType.NVFP4.value])

@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 import re
+from types import SimpleNamespace
 from typing import Union
 
 import torch
@@ -564,6 +565,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.MXFP4.value in layer_backend
         or BackendDataType.NVFP4.value in layer_backend
         or BackendDataType.MXINT4.value in layer_backend
+        or layer_backend == "auto_round:torch_nvfp4_e5m3"
         or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
@@ -833,6 +835,29 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     if is_transformers_version_greater_or_equal_5():
         disable_moe_conversion_mapping(model)
     quantization_config = model.config.quantization_config
+    config_format = (
+        quantization_config.get("format")
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "format", None)
+    )
+    if config_format == "nvfp4-e5m3-pack-quantized":
+        config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
+        ignored = config_dict.get("ignore") or []
+        quantization_config = SimpleNamespace(
+            quant_method="auto-round",
+            packing_format="auto_round:llm_compressor_nvfp4_e5m3",
+            bits=4,
+            group_size=16,
+            sym=True,
+            data_type="fp4_v2",
+            act_bits=4,
+            act_group_size=16,
+            act_sym=True,
+            act_data_type="fp4_v2",
+            act_dynamic=True,
+            extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
+        )
+        model.config.quantization_config = quantization_config
 
     # Check desc_act + static_groups
     if getattr(quantization_config, "desc_act", False):

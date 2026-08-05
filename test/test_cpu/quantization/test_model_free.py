@@ -350,6 +350,38 @@ def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     assert quantization_config["act_sym"] is True
     assert os.path.exists(os.path.join(output_dir, "quantization_config.json"))
 
+
+def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
+    tensors = {
+        "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
+        "lm_head.weight": torch.randn(64, 32),
+    }
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="NVFP4_E5M3",
+        format="llm_compressor",
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    prefix = "model.layers.0.self_attn.q_proj"
+    assert f"{prefix}.weight_packed" in output_keys
+    assert f"{prefix}.weight_scale" in output_keys
+    assert f"{prefix}.weight" not in output_keys
+    assert f"{prefix}.weight_global_scale" not in output_keys
+    assert f"{prefix}.input_global_scale" not in output_keys
+    quantization_config = _read_qconfig(output_dir)
+    group = quantization_config["config_groups"]["group_0"]
+    assert quantization_config["format"] == "nvfp4-e5m3-pack-quantized"
+    assert quantization_config["quant_method"] == "compressed-tensors"
+    assert quantization_config["provider"] == "auto-round"
+    assert group["weights"]["group_size"] == 16
+    assert group["input_activations"]["dynamic"] == "local"
+
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
         save_file(
