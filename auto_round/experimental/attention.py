@@ -42,6 +42,7 @@ from auto_round.utils import logger
 __all__ = [
     "QuantizedAttentionImpl",
     "init_hooked_attention",
+    "is_attention_calibration_tensor_name",
     "attention_quant_ctx",
 ]
 
@@ -50,6 +51,11 @@ ATTN_IMPL_ATTR_NAME = "impl"
 HOOKED_ATTENTION_NAME = "ct_hooked_attention"
 QUERY_SCALE_NAME = "q_scale"
 QUERY_MAX_NAME = "q_max"
+
+
+def is_attention_calibration_tensor_name(name: str) -> bool:
+    """Return True when a serialized tensor name is the transient attention q_max."""
+    return name.rsplit(".", 1)[-1] == QUERY_MAX_NAME
 
 
 class QuantizedAttentionImpl(torch.nn.Module):

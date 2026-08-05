@@ -8,12 +8,14 @@ from packaging import version
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.compressors.config_resolution import ResolvedScheme
 from auto_round.export.export_to_autogptq import export as autogptq_export
 from auto_round.export.export_to_autoround import export as autoround_export
 from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
 from auto_round.export.export_to_awq import export as awq_export
+from auto_round.export.formats import resolve_formats
 
-from ...helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
+from ...helpers import forbid_threaded_packing, get_model_path
 
 
 def _get_folder_size(path: str) -> float:
@@ -28,19 +30,17 @@ def _get_folder_size(path: str) -> float:
 
 
 class TestAutoRound:
-
-    @classmethod
-    def setup_class(self):
-        self.model_name = opt_name_or_path
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-
     @classmethod
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
     @pytest.fixture(autouse=True)
-    def _save_dir(self, tmp_path):
+    def _test_setup(self, tiny_opt_model_path, tmp_path):
+        self.model_name = tiny_opt_model_path
+        self.model = AutoModelForCausalLM.from_pretrained(
+            tiny_opt_model_path, torch_dtype="auto", trust_remote_code=True
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
         self.save_dir = str(tmp_path / "saved")
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
@@ -225,20 +225,19 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
-            assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
-            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+            assert "model.decoder.layers.0.self_attn.k_proj.input_scale" in f.keys()
+            assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.input_scale").shape == torch.Size([1])
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
             if static_kv_dtype == "fp8":
-                assert "model.decoder.layers.8.self_attn.k_scale" in f.keys()
-                assert "model.decoder.layers.8.self_attn.v_scale" in f.keys()
-                assert f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape == torch.Size([1])
-                assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape == torch.Size([1])
+                assert "model.decoder.layers.0.self_attn.k_scale" in f.keys()
+                assert "model.decoder.layers.0.self_attn.v_scale" in f.keys()
+                assert f.get_tensor("model.decoder.layers.0.self_attn.v_scale").shape == torch.Size([1])
+                assert f.get_tensor("model.decoder.layers.0.self_attn.k_scale").shape == torch.Size([1])
                 assert (
-                    f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.float32
-                    or f.get_tensor("model.decoder.layers.5.self_attn.k_scale").dtype == torch.bfloat16
+                    f.get_tensor("model.decoder.layers.0.self_attn.k_scale").dtype == torch.float32
+                    or f.get_tensor("model.decoder.layers.0.self_attn.k_scale").dtype == torch.bfloat16
                 )
-
         if static_kv_dtype is None:
             with torch.no_grad():
                 import transformers
@@ -289,10 +288,10 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
-            assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
-            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+            assert "model.decoder.layers.0.self_attn.k_proj.input_scale" in f.keys()
+            assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.input_scale").shape == torch.Size([1])
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
 
     def test_static_afp8_per_head_export(self):
         import os
@@ -315,10 +314,14 @@ class TestAutoRound:
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
-        assert f.get_tensor("model.decoder.layers.5.self_attn.k_scale").shape == torch.Size(
+        assert "model.decoder.layers.0.self_attn.k_proj.input_scale" in f.keys()
+        assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+        assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.input_scale").shape == torch.Size([1])
+        assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+        assert f.get_tensor("model.decoder.layers.0.self_attn.k_scale").shape == torch.Size(
             [model.config.num_attention_heads]
         )
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_scale").shape == torch.Size(
+        assert f.get_tensor("model.decoder.layers.0.self_attn.v_scale").shape == torch.Size(
             [model.config.num_attention_heads]
         )
 
@@ -347,16 +350,17 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
-        assert "model.decoder.layers.8.self_attn.k_proj.input_scale" in f.keys()
-        assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.input_scale").shape == torch.Size([1])
-        assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+        assert "model.decoder.layers.0.self_attn.k_proj.input_scale" in f.keys()
+        assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+        assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.input_scale").shape == torch.Size([1])
+        assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
         check_attrs = ["k_scale", "v_scale", "q_scale"]
         for attr in check_attrs:
-            weight_name = f"model.decoder.layers.8.self_attn.{attr}"
+            weight_name = f"model.decoder.layers.0.self_attn.{attr}"
             assert weight_name in f.keys()
             assert f.get_tensor(weight_name).shape == torch.Size([1])
             assert f.get_tensor(weight_name).dtype == torch.float32 or f.get_tensor(weight_name).dtype == torch.bfloat16
+        assert not any(key.endswith(".q_max") for key in f.keys())
 
     def test_static_fp8_per_head_attn(self):
         import os
@@ -378,7 +382,7 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         for attr in ("k_scale", "v_scale", "q_scale"):
-            weight_name = f"model.decoder.layers.5.self_attn.{attr}"
+            weight_name = f"model.decoder.layers.0.self_attn.{attr}"
             assert weight_name in f.keys()
             assert f.get_tensor(weight_name).shape == torch.Size([model.config.num_attention_heads])
 
@@ -449,14 +453,18 @@ class TestAutoRound:
         print(res)
 
     def test_export_format(self):
-        from auto_round.formats import get_formats
-
         autoround = AutoRound(
             self.model_name,
             scheme="FP8_STATIC",
         )
         autoround.post_init()
-        format_list = get_formats("auto_round, llm_compressor, auto_round:llm_compressor", autoround)
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(autoround.scheme_context),
+            format="auto_round, llm_compressor, auto_round:llm_compressor",
+            model=autoround.model_context.model,
+            scale_dtype=autoround.scale_dtype,
+        )
+        format_list = list(resolution.formats)
         assert len(format_list) == 3
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:fp8_static"
@@ -470,7 +478,13 @@ class TestAutoRound:
             scheme="W4A16",
         )
         autoround.post_init()
-        format_list = get_formats("auto_round:auto_awq, auto_gptq", autoround)
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(autoround.scheme_context),
+            format="auto_round:auto_awq, auto_gptq",
+            model=autoround.model_context.model,
+            scale_dtype=autoround.scale_dtype,
+        )
+        format_list = list(resolution.formats)
         assert format_list[0].output_format == "auto_round"
         assert format_list[0].get_backend_name() == "auto_round:auto_awq"
         assert format_list[1].output_format == "auto_gptq"
@@ -481,7 +495,13 @@ class TestAutoRound:
             scheme="INT8",
         )
         autoround.post_init()
-        format_list = get_formats("llm_compressor, auto_round:llm_compressor", autoround)
+        resolution = resolve_formats(
+            ResolvedScheme.from_scheme(autoround.scheme_context),
+            format="llm_compressor, auto_round:llm_compressor",
+            model=autoround.model_context.model,
+            scale_dtype=autoround.scale_dtype,
+        )
+        format_list = list(resolution.formats)
         assert format_list[0].output_format == "llm_compressor"
         assert format_list[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list[1].output_format == "auto_round"
@@ -493,15 +513,19 @@ class TestAutoRound:
             scheme="INT8_W8A8",
         )
         autoround_old.post_init()
-        format_list_old = get_formats("llm_compressor, auto_round:llm_compressor", autoround_old)
+        resolution_old = resolve_formats(
+            ResolvedScheme.from_scheme(autoround_old.scheme_context),
+            format="llm_compressor, auto_round:llm_compressor",
+            model=autoround_old.model_context.model,
+            scale_dtype=autoround_old.scale_dtype,
+        )
+        format_list_old = list(resolution_old.formats)
         assert format_list_old[0].output_format == "llm_compressor"
         assert format_list_old[0].get_backend_name() == "llm_compressor:int8_w8a8"
         assert format_list_old[1].output_format == "auto_round"
         assert format_list_old[1].get_backend_name() == "auto_round:llm_compressor:int8_w8a8"
 
     def test_export_format_with_scheme(self, tiny_qwen_model_path):
-        from auto_round.formats import get_formats
-
         ar = AutoRound(
             model=tiny_qwen_model_path,
             scheme="W4A16",
@@ -511,10 +535,20 @@ class TestAutoRound:
         )
         ar.post_init()
         with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
-            get_formats("auto_round:auto_awq", ar)
+            resolve_formats(
+                ResolvedScheme.from_scheme(ar.scheme_context),
+                format="auto_round:auto_awq",
+                model=ar.model_context.model,
+                scale_dtype=ar.scale_dtype,
+            )
 
         with pytest.raises(ValueError, match="but got bits=2, data_type=int"):
-            get_formats("auto_round:llm_compressor", ar)
+            resolve_formats(
+                ResolvedScheme.from_scheme(ar.scheme_context),
+                format="auto_round:llm_compressor",
+                model=ar.model_context.model,
+                scale_dtype=ar.scale_dtype,
+            )
 
         ar = AutoRound(
             model=tiny_qwen_model_path,
@@ -525,7 +559,12 @@ class TestAutoRound:
         )
         ar.post_init()
         with pytest.raises(ValueError, match="but got data_type=fp, bits=4"):
-            get_formats("auto_round:llm_compressor", ar)
+            resolve_formats(
+                ResolvedScheme.from_scheme(ar.scheme_context),
+                format="auto_round:llm_compressor",
+                model=ar.model_context.model,
+                scale_dtype=ar.scale_dtype,
+            )
 
         ar = AutoRound(
             model=tiny_qwen_model_path,
@@ -535,7 +574,12 @@ class TestAutoRound:
             sym=True,
         )
         ar.post_init()
-        get_formats("auto_round:auto_awq", ar)
+        resolve_formats(
+            ResolvedScheme.from_scheme(ar.scheme_context),
+            format="auto_round:auto_awq",
+            model=ar.model_context.model,
+            scale_dtype=ar.scale_dtype,
+        )
 
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
@@ -591,8 +635,8 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
-            assert "model.decoder.layers.8.self_attn.k_proj.weight_scale" in f.keys()
-            assert f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight").dtype == torch.int8
+            assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.int8
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
     @pytest.mark.parametrize(
@@ -620,10 +664,10 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="llm_compressor")
         with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
             # weights must be packed as int32 (compressed-tensors stores both int4 and int8 as torch.int32)
-            weight = f.get_tensor("model.decoder.layers.5.self_attn.v_proj.weight_packed")
+            weight = f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight_packed")
             assert weight.dtype == torch.int32, f"Expected int32 weight for {scheme}, got {weight.dtype}"
             # weight_scale must be present and be a float tensor
-            scale_key = "model.decoder.layers.8.self_attn.k_proj.weight_scale"
+            scale_key = "model.decoder.layers.0.self_attn.k_proj.weight_scale"
             assert scale_key in f.keys(), f"Missing {scale_key} for {scheme} export"
             scale = f.get_tensor(scale_key)
             assert scale.dtype in (

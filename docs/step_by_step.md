@@ -68,6 +68,7 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 - `HuggingFaceH4/ultrachat_200k` for chat data
 - `madao33/new-title-chinese` for Chinese
 - `mbpp` for code
+- `nvidia/OpenCodeInstruct` for code instruction data
 - `openbmb/Ultra-FineWeb`
 
 ### Customized Dataset
@@ -238,7 +239,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-    # enable_torch_compile=True,
+    # torch.compile is enabled by default except on Windows. On Windows, set True to force enable it.
 )
 
 output_dir = "./tmp_autoround"
@@ -362,12 +363,12 @@ AWQ-specific options:
 #### API Usage
 
 ```python
-from auto_round import AutoRound
+from auto_round import AWQConfig, AutoRound
 
 ar = AutoRound(
     "Qwen/Qwen3-0.6B",
     scheme="INT8",
-    algorithm="awq",
+    alg_configs=AWQConfig(),
 )
 
 output_dir = "./tmp_awq"
@@ -488,7 +489,7 @@ When using AutoScheme with `model_free=True`, only INT (`W2A16`/`W4A16`/`W8A16`)
 
 ### AWQ Quantization Algorithm
 
-AWQ (`algorithm="awq"`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
+AWQ (`alg_configs="awq"` or `alg_configs=AWQConfig()`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
 
 #### CLI Usage
 ```bash
@@ -505,21 +506,22 @@ auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
 
 #### API Usage
 ```python
-from auto_round import AutoRound
-from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round import AWQConfig, AutoRound, SignRoundConfig
+
+# String alias (AWQ defaults, with RTN appended automatically)
+ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
 
 # AWQ + default RTN (simplest)
-ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
+ar = AutoRound(model, tokenizer, alg_configs=AWQConfig(), scheme="W4A16")
 
 # AWQ + AutoRound via alg_configs (explicit pipeline)
 ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
 ar.quantize_and_save(output_dir="./qmodel")
 ```
 
-**Important Note**: `algorithm="awq"` (quantization algorithm) and `format="auto_awq"` (export format) are independent. You can use:
-- `algorithm="awq"` + `format="auto_round"`: AWQ smoothing + AutoRound packing
-- `algorithm="auto_round"` + `format="auto_awq"`: No AWQ smoothing + AutoAWQ packing
+**Important Note**: `alg_configs="awq"` or `alg_configs=AWQConfig()` (quantization algorithm) and `format="auto_awq"` (export format) are independent. You can use:
+- `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing + AutoRound packing
+- `alg_configs="signround"` + `format="auto_awq"`: No AWQ smoothing + AutoAWQ packing
 
 ### OPT RTN Mode
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
@@ -849,7 +851,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 - **Reduced GPU Memory Usage:**
     
-    - set `enable_torch_compile` to True
+  - keep `torch.compile` enabled by default on non-Windows platforms; on Windows, pass `enable_torch_compile=True` to opt in
 
     - enable `low_gpu_mem_usage`(more tuning cost)
 
@@ -869,7 +871,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
       quantize_and_save API, as long as only one export format is specified.
 
 - **Speedup the tuning:**
-    - set `enable_torch_compile` to True
+  - keep `torch.compile` enabled by default on non-Windows platforms; on Windows, pass `enable_torch_compile=True` to opt in
 
     - use `auto-round-light` configuration
 
@@ -878,6 +880,10 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
     - reduce the train bs to 4(little accuracy drop. )
 
     - or combine them
+
+  `torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC `cl.exe` compiler. Windows
+  users can pass `enable_torch_compile=True` to the Python API or use `--enable_torch_compile` to force enable it. On
+  other platforms, pass `enable_torch_compile=False` or use `--disable_torch_compile` to opt out.
 
 
 - **Enable quantized lm-head:**

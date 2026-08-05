@@ -42,6 +42,9 @@ if TYPE_CHECKING:
 #: Register new diffusion architectures with :func:`register_diffusion_output`.
 _DIFFUSION_OUTPUT_REGISTRY: dict[str, list[str]] = {}
 
+#: Maps decoder block class name to output keys that become the next block's inputs.
+_BLOCK_OUTPUT_REGISTRY: dict[str, list[str]] = {}
+
 
 def register_diffusion_output(block_cls_name: str, output_keys: list[str]) -> None:
     """Register the output key order for a diffusion transformer block class.
@@ -60,6 +63,11 @@ def register_diffusion_output(block_cls_name: str, output_keys: list[str]) -> No
     _DIFFUSION_OUTPUT_REGISTRY[block_cls_name] = output_keys
 
 
+def register_block_output(block_cls_name: str, output_keys: list[str]) -> None:
+    """Register tuple output keys that should be forwarded to the next block."""
+    _BLOCK_OUTPUT_REGISTRY[block_cls_name] = output_keys
+
+
 # Built-in diffusion block registrations.
 # Add new architectures here instead of editing BlockRunner internals.
 register_diffusion_output("FluxTransformerBlock", ["encoder_hidden_states", "hidden_states"])
@@ -68,6 +76,9 @@ register_diffusion_output("OvisImageTransformerBlock", ["encoder_hidden_states",
 register_diffusion_output("OvisImageSingleTransformerBlock", ["encoder_hidden_states", "hidden_states"])
 register_diffusion_output("StableAudioDiTBlock", ["hidden_states"])
 register_diffusion_output("WanTransformerBlock", ["hidden_states"])
+
+# GLM DSA full indexer layers return top-k indices for subsequent shared layers.
+register_block_output("GlmMoeDsaDecoderLayer", ["hidden_states", "prev_topk_indices"])
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +122,7 @@ class BlockForwardRunner:
         is_diffusion: bool = False,
         shared_cache_keys: tuple = (),
         output_config: list[str] | None = None,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: bool = True,
     ) -> None:
         self.batch_dim = batch_dim
         self.batch_size = batch_size
@@ -133,7 +144,7 @@ class BlockForwardRunner:
     # ── Factory ──────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_orchestrator(cls, orchestrator: "BaseOrchestrator", enable_torch_compile=False) -> "BlockForwardRunner":
+    def from_orchestrator(cls, orchestrator: "BaseOrchestrator", enable_torch_compile=True) -> "BlockForwardRunner":
         """Create from an orchestrator instance (called once at orchestrator init)."""
         model_ctx = getattr(orchestrator, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False
@@ -208,7 +219,7 @@ class BlockForwardRunner:
             batch_indices = indices[i : i + self.batch_size]
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
             raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
-            batch_output_dict = self._get_diffusion_output_dict(raw_output, block)
+            batch_output_dict = self._get_output_dict(raw_output, block)
             output = self._normalize_output(raw_output, block)
             if is_returned_list and self.batch_size != 1:  # split  it to 1
                 if batch_output_dict:
@@ -292,7 +303,7 @@ class BlockForwardRunner:
                 self.amp,
                 self.amp_dtype,
                 self.device,
-                0,
+                None,
             )
 
     def _count_samples(self, inputs: Any) -> int:
@@ -337,15 +348,20 @@ class BlockForwardRunner:
             return first
         raise TypeError(f"Block output[0] must be tensor, got {type(first).__name__}.")
 
-    def _get_diffusion_output_dict(
-        self, output: Any, block: "torch.nn.Module" = None
-    ) -> dict[str, torch.Tensor] | None:
-        if not self.is_diffusion or isinstance(output, torch.Tensor) or not isinstance(output, (tuple, list)):
+    def _get_output_dict(self, output: Any, block: "torch.nn.Module" = None) -> dict[str, torch.Tensor] | None:
+        if isinstance(output, torch.Tensor) or not isinstance(output, (tuple, list)):
             return None
         block_cls_name = block.__class__.__name__ if block is not None else None
-        output_config = (
-            _DIFFUSION_OUTPUT_REGISTRY.get(block_cls_name, self.output_config) if block_cls_name else self.output_config
-        )
+        if self.is_diffusion:
+            output_config = (
+                _DIFFUSION_OUTPUT_REGISTRY.get(block_cls_name, self.output_config)
+                if block_cls_name
+                else self.output_config
+            )
+        else:
+            output_config = _BLOCK_OUTPUT_REGISTRY.get(block_cls_name)
+            if output_config is None:
+                return None
         output_dict = {}
         for idx, key in enumerate(output_config):
             if idx >= len(output):

@@ -83,6 +83,13 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
+def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: bool) -> bool:
+    """Return whether every component participating in block replay supports compilation."""
+    if not user_enabled or not block_quantizer.can_compile_block_forward():
+        return False
+    return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
+
+
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -181,11 +188,22 @@ class AlgorithmComposer:
         can_compile_block_forward = False
         self.block_quantizer = block_quantizers[0]
         if orchestrator is not None:
-            if self.block_quantizer is not None and self.block_quantizer.can_compile_block_forward():
-                user_torch_compile = getattr(
-                    getattr(orchestrator, "compress_context", None), "enable_torch_compile", False
-                )
-                can_compile_block_forward = bool(user_torch_compile)
+            user_torch_compile = bool(
+                getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
+            )
+            rotation_configs = getattr(orchestrator, "rotation_configs", ())
+            can_compile_block_forward = _can_compile_block_forward(
+                self.block_quantizer, rotation_configs, user_torch_compile
+            )
+            if (
+                user_torch_compile
+                and not can_compile_block_forward
+                and any(not getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
+            ):
+                logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
+
+            if "nv_fp" in orchestrator.data_type:
+                can_compile_block_forward = False
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
@@ -425,7 +443,7 @@ class AlgorithmComposer:
 
                 if is_nv_fp(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block_ctx.model, data_type, group_size)
+                update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)

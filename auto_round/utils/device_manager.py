@@ -48,6 +48,7 @@ import contextlib
 import functools
 import gc
 import re
+import sys
 from typing import Optional, Union
 
 import torch
@@ -60,6 +61,7 @@ __all__ = [
     "device_manager",
     "normalize_default_device_map",
     "get_ar_device",
+    "default_enable_torch_compile",
     "get_current_device_manager",
     "get_current_device_type",
     "is_device_available",
@@ -890,6 +892,14 @@ device_manager = DeviceManager()
 def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> ARDevice:
     """Return the cached :class:`Device` handle for a specific backend type."""
     return device_manager.get_ar_device(device_type)
+
+
+def default_enable_torch_compile(
+    device: Union[None, str, int, torch.device] = None, platform_name: str | None = None
+) -> bool:
+    """Return the safe torch.compile default for a backend."""
+    device_type = _normalize_device_type(device) or get_current_device_type()
+    return device_type != "xpu" and (platform_name or sys.platform) != "win32"
 
 
 def get_current_device_manager() -> ARDevice:

@@ -29,7 +29,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig
 
 from ...helpers import eval_generated_prompt, evaluate_accuracy, generate_prompt, get_model_path, opt_name_or_path
 
@@ -52,7 +52,7 @@ class TestAWQLLM:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -77,7 +77,7 @@ class TestAWQLLM:
             bits=bits,
             group_size=group_size,
             sym=sym,
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -99,7 +99,7 @@ class TestAWQLLM:
         ar = AutoRound(
             model_name,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -159,7 +159,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             nsamples=2,
             n_grid=4,
             seqlen=32,
@@ -195,7 +195,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -239,7 +239,7 @@ class TestAWQEval:
         ar = AutoRound(
             self.model_name,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             nsamples=32,
             seqlen=32,
             batch_size=8,
