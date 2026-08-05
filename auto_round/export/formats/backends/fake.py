@@ -23,6 +23,16 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device
 
 
+def _serialize_quantization_config_value(value):
+    if isinstance(value, torch.dtype):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _serialize_quantization_config_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_quantization_config_value(item) for item in value]
+    return value
+
+
 @OutputFormat.register("fake")
 class FakeFormat(OutputFormat):
     support_schemes = None
@@ -75,7 +85,7 @@ class FakeFormat(OutputFormat):
                         delattr(orig_layer, attr_name)
                 set_module(model, name, orig_layer.to("cpu"))
 
-        quantization_config = dict(serialization_dict or {})
+        quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
         quantization_config["quant_method"] = "auto-round"
         quantization_config["packing_format"] = "auto_round:fake"
         quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
