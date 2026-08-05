@@ -426,6 +426,7 @@ def _normalize_batch_padding(n_padding, batch: int):
 cpu_lib = None
 xpu_lib = None
 
+
 def get_lib(A: torch.Tensor):
     lib = None
     if A.device.type == "xpu":
