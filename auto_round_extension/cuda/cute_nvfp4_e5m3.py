@@ -150,4 +150,5 @@ def try_cute_nvfp4_e5m3_linear(
     mainloop has been validated against the existing E5M3 checkpoint format.
     """
     del activation, weight_packed, weight_scale, bias
-    return None
+    fused_output: Optional[torch.Tensor] = None
+    return fused_output

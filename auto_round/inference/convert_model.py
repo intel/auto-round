@@ -71,7 +71,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     if modules_to_not_convert:
         for layer_name in layer_names:
             if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
-                layer_configs[layer_name] = {"bits": 16}
+                layer_configs[layer_name] = {"bits": 16, "act_bits": 16}
     return layer_configs
 
 
@@ -900,6 +900,12 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+    logger.info(
+        "Inference backend selection: requested=%s, packing_format=%s, selected=%s",
+        backend,
+        packing_format,
+        ", ".join(used_backends),
+    )
 
     # Apply rotation hooks (hadamard, spinquant, quarot, etc.) via unified dispatch.
     _has_rotation = getattr(quantization_config, "rotation_config", None) or getattr(
