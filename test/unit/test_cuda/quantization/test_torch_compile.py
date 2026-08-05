@@ -13,6 +13,8 @@ from auto_round.compressors.utils import block_forward
 
 from ...envs import require_gguf
 
+pytestmark = pytest.mark.enable_torch_compile
+
 
 class TestTorchCompile:
     save_dir = "./saved"
