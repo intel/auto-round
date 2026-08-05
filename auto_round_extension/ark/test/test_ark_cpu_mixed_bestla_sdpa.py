@@ -10,13 +10,9 @@ the separate internal-route test module.
 """
 
 import math
-import sys
-from pathlib import Path
 
 import pytest
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"

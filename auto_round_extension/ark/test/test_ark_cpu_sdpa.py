@@ -10,15 +10,11 @@ hit/fallback without touching internal mixed-route-only features.
 
 import inspect
 import math
-import sys
-from pathlib import Path
 
 import pytest
 import torch
 
 cpuinfo = pytest.importorskip("cpuinfo")
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"

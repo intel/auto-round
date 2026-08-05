@@ -13,16 +13,12 @@ This module covers behavior that is intentionally outside the public
 """
 
 import math
-import sys
-from pathlib import Path
 
 import pytest
 
 cpuinfo = pytest.importorskip("cpuinfo")
 
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"
