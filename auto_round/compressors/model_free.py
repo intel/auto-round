@@ -40,7 +40,12 @@ Model-free mode supports the following quantization families:
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
 
-Schemes that require special packing (FP8, NVFP4, GGUF, INT8_W8A8,
+**NVFP4 E5M3** (saved in fake format):
+
+* Preset name: ``NVFP4_E5M3``.
+* ``data_type="fp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
+
+Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
 ``ValueError``.  Use the standard AutoRound flow for those.
 
@@ -49,6 +54,7 @@ Output formats
 * **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``.
 * **MXFP schemes** → ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` format,
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
+* **NVFP4_E5M3** → fake format with high-precision QDQ ``.weight`` tensors.
 
 Usage (CLI)
 -----------
@@ -138,6 +144,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "W8A16",
     "MXFP4",
     "MXFP8",
+    "NVFP4_E5M3",
     "BF16",
 )
 
@@ -147,6 +154,8 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 
 # Allowed ``bits`` values for MXFP weight quantization.
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
+
+_NVFP4_E5M3_DATA_TYPE = "fp4_v2"
 
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
@@ -565,6 +574,29 @@ def _quantize_weight_mxfp(
     }
 
 
+def _quantize_weight_nvfp4_e5m3(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+) -> dict[str, torch.Tensor]:
+    """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
+    from auto_round.data_type.nvfp import fp4_v2
+
+    out_features, in_features = weight.shape
+    if group_size != 16:
+        raise ValueError(f"NVFP4_E5M3 requires group_size=16, got {group_size} for layer '{layer_name}'.")
+    if in_features % group_size != 0:
+        raise ValueError(
+            f"in_features={in_features} for layer '{layer_name}' is not divisible "
+            f"by NVFP4_E5M3 group_size={group_size}; cannot quantize."
+        )
+
+    weight_dev = weight.to(device)
+    qdq_weight, _, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
+    return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
+
+
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
@@ -619,6 +651,21 @@ def _quantize_single_tensor(
             return layer_name, out, layer_name, None
         except Exception as e:
             logger.warning(f"Failed to MXFP-quantize {layer_name}: {e}. Keeping original weight.")
+            return layer_name, {tensor_name: tensor}, None, layer_name
+
+    # ---- NVFP4 E5M3 fake-quantization path ----
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        try:
+            out = _quantize_weight_nvfp4_e5m3(
+                weight=tensor,
+                layer_name=layer_name,
+                group_size=group_size,
+                device=device,
+            )
+            logger.debug(f"Quantized (NVFP4_E5M3): {layer_name} (bits=4, group_size={group_size})")
+            return layer_name, out, layer_name, None
+        except Exception as e:
+            logger.warning(f"Failed to NVFP4_E5M3-quantize {layer_name}: {e}. Keeping original weight.")
             return layer_name, {tensor_name: tensor}, None, layer_name
 
     # ---- Integer WOQ path ----
@@ -1411,7 +1458,10 @@ def _build_quantization_config(
     scheme_keys = [f.name for f in fields(QuantizationScheme)]
     # vllm only support auto_round:auto_gptq, but transformers cannot load it correctly when sym=False.
     # So we keep auto_round for asymmetric quantization to maintain compatibility with both.
-    packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        packing_format = "auto_round:fake"
+    else:
+        packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
 
     qconfig = {
         "quant_method": "auto-round",
@@ -1424,6 +1474,12 @@ def _build_quantization_config(
         "model_free": True,
         "autoround_version": __version__,
     }
+
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        for act_key in ("act_bits", "act_data_type", "act_group_size", "act_sym", "act_dynamic"):
+            value = default_scheme.get(act_key)
+            if value is not None:
+                qconfig[act_key] = value
 
     if block_name_to_quantize:
         qconfig["block_name_to_quantize"] = block_name_to_quantize
@@ -1720,6 +1776,21 @@ def _validate_supported_scheme(
             )
         return
 
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        if bits != 4 or scheme_obj.group_size != 16 or act_bits != 4:
+            raise ValueError(
+                f"Model-free NVFP4_E5M3 requires bits=4, group_size=16, and act_bits=4, "
+                f"but '{scheme_input}' requests bits={bits}, group_size={scheme_obj.group_size}, "
+                f"act_bits={act_bits}."
+            )
+        if (scheme_obj.act_data_type or "").lower() != _NVFP4_E5M3_DATA_TYPE or scheme_obj.act_group_size != 16:
+            raise ValueError(
+                f"Model-free NVFP4_E5M3 requires act_data_type='fp4_v2' and act_group_size=16, "
+                f"but '{scheme_input}' requests act_data_type='{scheme_obj.act_data_type}', "
+                f"act_group_size={scheme_obj.act_group_size}."
+            )
+        return
+
     if act_bits < 16:
         raise ValueError(
             f"Model-free mode only supports weight-only quantization (WOQ) schemes "
@@ -1962,6 +2033,7 @@ class _ModelFreeCompressorCore:
     """
 
     SUPPORTED_FORMATS: tuple[str, ...] = (
+        "fake",
         "auto_round",
         "auto_round:auto_gptq",
         "llm_compressor",
@@ -2043,6 +2115,9 @@ class _ModelFreeCompressorCore:
         _validate_supported_scheme(self.scheme_obj, self.scheme_input)
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
+        if (self.scheme_obj.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE and self.format != "fake":
+            logger.warning("NVFP4_E5M3 model-free output uses fake format; resetting format to 'fake'.")
+            self.format = "fake"
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -2354,6 +2429,7 @@ class _ModelFreeCompressorCore:
                     break
         block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
 
+        os.makedirs(self._quant_output_dir, exist_ok=True)
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
@@ -2365,7 +2441,6 @@ class _ModelFreeCompressorCore:
         )
 
         self.config["quantization_config"] = quantization_config
-        os.makedirs(self._quant_output_dir, exist_ok=True)
         with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
 
@@ -2476,6 +2551,8 @@ class _ModelFreeCompressorCore:
         if is_mx_fp(data_type):
             bits = self.default_scheme.get("bits", 4)
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        elif data_type == _NVFP4_E5M3_DATA_TYPE:
+            packing_format = "fake"
         else:
             packing_format = "auto_round:auto_gptq"
 
@@ -2867,6 +2944,8 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
+            _accepted_formats = {"fake", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}

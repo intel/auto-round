@@ -67,6 +67,7 @@ from auto_round.compressors.model_free import (
     _process_shard,
     _process_single_shard_task,
     _quantize_weight_mxfp,
+    _quantize_weight_nvfp4_e5m3,
     _validate_auto_scheme_options,
     get_predefined_ignore_layers_from_config,
     is_model_free_supported_scheme,
@@ -305,6 +306,49 @@ class TestProcessShard:
         output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
         assert "layer.fc1" in quantized
         assert "layer.fc1.qweight" in output and "layer.fc1.bias" in output
+
+
+def test_nvfp4_e5m3_model_free_fake_quantization():
+    weight = torch.randn(8, 32)
+    output = _quantize_weight_nvfp4_e5m3(weight, "layer.fc", group_size=16)
+
+    assert set(output) == {"layer.fc.weight"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+    assert is_model_free_supported_scheme("NVFP4_E5M3")
+    assert not is_model_free_supported_scheme("UNVFP4")
+    assert not is_model_free_supported_scheme("NVFP4+")
+
+
+def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
+    tensors = {
+        "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
+        "lm_head.weight": torch.randn(64, 32),
+    }
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    with open(os.path.join(output_dir, "quantization_config.json"), "w") as f:
+        json.dump({"stale": True}, f)
+
+    compressor = _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3")
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    assert "model.layers.0.self_attn.q_proj.weight" in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight_packed" not in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight_scale" not in output_keys
+    assert "lm_head.weight" in output_keys
+    assert compressor.format == "fake"
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["data_type"] == "fp4_v2"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "fp4_v2"
+    assert quantization_config["act_group_size"] == 16
+    assert quantization_config["act_sym"] is True
+    assert os.path.exists(os.path.join(output_dir, "quantization_config.json"))
 
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")

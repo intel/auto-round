@@ -198,6 +198,7 @@ GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
+FAKE_FORMAT = ["auto_round:fake"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
 # CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot
@@ -332,6 +333,24 @@ BackendInfos["auto_round:torch_mxint4"] = BackendInfo(
 )
 
 # NVFP4
+
+BackendInfos["auto_round:fake"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=FAKE_FORMAT,
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["fp4_v2"],
+    group_size=[16],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["fp4_v2"],
+    priority=0,
+    checkers=[mxfp_nvfp_feature_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.12.0"],
+)
 
 BackendInfos["auto_round:torch_nvfp4"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
@@ -781,6 +800,8 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         return ar_qmodules.MXFP4QuantLinear
     if "torch_nvfp4" in backend:
         return ar_qmodules.NVFP4QuantLinear
+    if "auto_round:fake" in backend:
+        return ar_qmodules.FakeActQuantLinear
 
     if "auto_round_kernel" in backend or "ark" in backend:
         try:

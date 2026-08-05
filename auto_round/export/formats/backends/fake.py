@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 from typing import Any, Callable, Union
 
 import torch
@@ -47,7 +48,44 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
-        if not unsupported_meta_device(model):
+        has_meta_device = unsupported_meta_device(model)
+        if not inplace and not has_meta_device:
+            model = copy.deepcopy(model.to("cpu"))
+
+        from auto_round.utils.model import set_module
+        from auto_round.wrapper import WrapperLinear, WrapperWALayer
+
+        if not has_meta_device:
+            wrapped_modules = [
+                (name, module)
+                for name, module in model.named_modules()
+                if name and isinstance(module, (WrapperLinear, WrapperWALayer))
+            ]
+            wrapped_names = {name for name, _ in wrapped_modules}
+            for name, module in wrapped_modules:
+                if any(name.startswith(f"{parent}.") for parent in wrapped_names if parent != name):
+                    continue
+                orig_layer = module.orig_layer
+                while isinstance(orig_layer, (WrapperLinear, WrapperWALayer)):
+                    orig_layer = orig_layer.orig_layer
+                for attr_name in ("act_min_scale", "act_max_scale", "act_scale"):
+                    orig_layer._parameters.pop(attr_name, None)
+                    orig_layer._buffers.pop(attr_name, None)
+                    if hasattr(orig_layer, attr_name):
+                        delattr(orig_layer, attr_name)
+                set_module(model, name, orig_layer.to("cpu"))
+
+        quantization_config = dict(serialization_dict or {})
+        quantization_config["quant_method"] = "auto-round"
+        quantization_config["packing_format"] = "auto_round:fake"
+        quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+        from auto_round.export.utils import filter_quantization_config
+
+        filter_quantization_config(quantization_config)
+        if hasattr(model, "config") and model.config is not None:
+            model.config.quantization_config = quantization_config
+
+        if not has_meta_device:
             model = model.to("cpu")
             model.save_pretrained(output_dir)
         elif hasattr(model, "config") and model.config is not None:

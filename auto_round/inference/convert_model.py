@@ -564,6 +564,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.MXFP4.value in layer_backend
         or BackendDataType.NVFP4.value in layer_backend
         or BackendDataType.MXINT4.value in layer_backend
+        or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
 
