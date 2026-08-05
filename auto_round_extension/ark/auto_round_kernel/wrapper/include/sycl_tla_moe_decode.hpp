@@ -82,6 +82,16 @@ namespace moe_decode_detail {
 constexpr int SG_SIZE = 16;
 constexpr int N_TILE = SG_SIZE;  // one output element per sub-group lane
 
+// Token-blocking factor for the coalesced int4 decode GEMV. A work-item that
+// owns one (n_tile, lane) output column processes up to TOKEN_BLOCK consecutive
+// tokens, loading each packed weight byte from the (expert, n_tile) tile once
+// and applying it to every token in the block that routes to the same expert.
+// When decode routing is bursty (runs of tokens hitting the same expert), this
+// amortizes the dominant weight traffic across the block instead of re-reading
+// the tile once per token, moving the problem from pure GEMV toward GEMM. A
+// value of 1 reproduces the one-token-per-work-item behaviour exactly.
+constexpr int TOKEN_BLOCK = 4;
+
 // ----------------------------------------------------------------------------
 // Kernel name tags (one per specialization, required for SYCL kernel naming)
 // ----------------------------------------------------------------------------
@@ -405,6 +415,17 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // vectorized `int4_decode_chunk` (contiguous per-lane load) does not apply
 // here; the inner loop reads one packed byte per lane per step, which the
 // hardware coalesces across the sub-group into one wide transaction.
+//
+// On top of coalescing, this path blocks tokens: each work-item owns one
+// output column but processes up to `TOKEN_BLOCK` consecutive tokens. For each
+// distinct expert appearing in the block it makes a single weight-streaming
+// pass and reuses every loaded (coalesced) byte across all tokens in the block
+// routed to that expert. When decode routing is bursty -- runs of tokens
+// hitting the same expert -- this amortizes the dominant weight traffic across
+// the block (GEMV -> small GEMM). Fully-scattered routing degrades gracefully
+// to one pass per token with the same per-pass weight reads as before, so the
+// result is bit-identical to the one-token-per-work-item kernel regardless of
+// routing.
 // ----------------------------------------------------------------------------
 template <typename ScalarT, bool Asym>
 void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
@@ -452,68 +473,121 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
     });
   }
 
-  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(n_tiles * SG_SIZE)};
+  sycl::range<2> global{static_cast<size_t>((total_tokens + TOKEN_BLOCK - 1) / TOKEN_BLOCK),
+                        static_cast<size_t>(n_tiles * SG_SIZE)};
   sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
 
   q->parallel_for<MoEDecodeKernelInt4Coalesced<ScalarT, Asym>>(
        sycl::nd_range<2>(global, local),
        [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
-         const int token = static_cast<int>(it.get_global_id(0));
+         const int token_base = static_cast<int>(it.get_global_id(0)) * TOKEN_BLOCK;
          const int n_tile = static_cast<int>(it.get_group(1));
          const int lane = static_cast<int>(it.get_local_id(1));
          const int n_global = n_tile * N_TILE + lane;
 
-         const int expert = expert_id_per_token[token];
-         const ScalarT* act_row = activations + static_cast<size_t>(token) * K;
-
-         // Base of this (expert, n_tile) weight tile in the repacked buffer.
-         // Layout [E, N/16, K/2, 16]; this lane reads byte kb at
-         // w_tile[kb*16 + lane], so adjacent lanes read adjacent bytes.
-         const uint8_t* w_tile =
-             repacked + ((static_cast<size_t>(expert) * n_tiles + n_tile) * k_packed) * N_TILE;
-         const ScalarT* s_row =
-             scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
-         const ScalarT* z_row = Asym
-             ? zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k
-             : nullptr;
-
-         float acc = 0.0f;
-         for (int g = 0; g < num_groups_k; ++g) {
-           const float scale = static_cast<float>(s_row[g]);
-           float zero = 0.0f;
-           if constexpr (Asym) {
-             zero = static_cast<float>(z_row[g]);
-           }
-           const int k_base = g * group_size;
-           // Two partial accumulators break the fp32 dependency chain; the
-           // per-group scale/zero is folded once after the K-loop, exactly as
-           // in the scalar path. Each iteration processes two K-elements (one
-           // packed byte); the byte load is coalesced across the sub-group.
-           float acc_q0 = 0.0f;
-           float acc_q1 = 0.0f;
-           float acc_a = 0.0f;
-           const int kb_base = k_base / 2;
-           const int kb_count = group_size / 2;
-           for (int kb = 0; kb < kb_count; ++kb) {
-             const uint8_t packed = w_tile[(kb_base + kb) * N_TILE + lane];
-             int q0, q1;
-             decode_int4_pair<Asym>(packed, q0, q1);
-             const float fa0 = static_cast<float>(act_row[k_base + 2 * kb]);
-             const float fa1 = static_cast<float>(act_row[k_base + 2 * kb + 1]);
-             acc_q0 += fa0 * static_cast<float>(q0);
-             acc_q1 += fa1 * static_cast<float>(q1);
-             if constexpr (Asym) {
-               acc_a += fa0 + fa1;
-             }
-           }
-           float group_dot = acc_q0 + acc_q1;
-           if constexpr (Asym) {
-             group_dot -= zero * acc_a;
-           }
-           acc += scale * group_dot;
+         // Number of tokens this work-item owns (last block may be short).
+         int block = TOKEN_BLOCK;
+         if (token_base + block > total_tokens) {
+           block = total_tokens - token_base;
          }
 
-         outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
+         // Experts routed by each token in the block. The tile weight byte is
+         // loaded once per k-step and reused only for tokens whose expert
+         // matches the byte's owning expert, so blocking tokens that share an
+         // expert amortizes the dominant weight traffic; tokens with a
+         // different expert contribute nothing from this pass and are handled
+         // by the pass whose leader expert matches theirs.
+         int experts[TOKEN_BLOCK];
+         for (int b = 0; b < block; ++b) {
+           experts[b] = expert_id_per_token[token_base + b];
+         }
+
+         // Which distinct experts appear in this block. For each we make one
+         // weight-streaming pass, reusing every loaded byte across all tokens
+         // in the block routed to that expert. Bursty routing collapses to a
+         // single pass; fully-scattered routing degrades to one pass per token
+         // (i.e. the previous behaviour) with no extra weight reads per pass.
+         for (int lead = 0; lead < block; ++lead) {
+           const int expert = experts[lead];
+           // Skip experts already streamed by an earlier token in this block.
+           bool seen = false;
+           for (int p = 0; p < lead; ++p) {
+             if (experts[p] == expert) {
+               seen = true;
+               break;
+             }
+           }
+           if (seen) continue;
+
+           // Base of this (expert, n_tile) weight tile in the repacked buffer.
+           // Layout [E, N/16, K/2, 16]; this lane reads byte kb at
+           // w_tile[kb*16 + lane], so adjacent lanes read adjacent bytes.
+           const uint8_t* w_tile =
+               repacked + ((static_cast<size_t>(expert) * n_tiles + n_tile) * k_packed) * N_TILE;
+           const ScalarT* s_row =
+               scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
+           const ScalarT* z_row = Asym
+               ? zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k
+               : nullptr;
+
+           float acc[TOKEN_BLOCK];
+           for (int b = 0; b < block; ++b) acc[b] = 0.0f;
+
+           for (int g = 0; g < num_groups_k; ++g) {
+             const float scale = static_cast<float>(s_row[g]);
+             float zero = 0.0f;
+             if constexpr (Asym) {
+               zero = static_cast<float>(z_row[g]);
+             }
+             const int k_base = g * group_size;
+             // Per-token split accumulators; the per-group scale/zero is folded
+             // once after the K-loop, exactly as in the scalar path. Each
+             // iteration processes two K-elements (one packed byte); the byte
+             // load is coalesced across the sub-group and reused across every
+             // token in the block routed to `expert`.
+             float acc_q0[TOKEN_BLOCK];
+             float acc_q1[TOKEN_BLOCK];
+             float acc_a[TOKEN_BLOCK];
+             for (int b = 0; b < block; ++b) {
+               acc_q0[b] = 0.0f;
+               acc_q1[b] = 0.0f;
+               acc_a[b] = 0.0f;
+             }
+             const int kb_base = k_base / 2;
+             const int kb_count = group_size / 2;
+             for (int kb = 0; kb < kb_count; ++kb) {
+               const uint8_t packed = w_tile[(kb_base + kb) * N_TILE + lane];
+               int q0, q1;
+               decode_int4_pair<Asym>(packed, q0, q1);
+               const float fq0 = static_cast<float>(q0);
+               const float fq1 = static_cast<float>(q1);
+               for (int b = 0; b < block; ++b) {
+                 if (experts[b] != expert) continue;
+                 const ScalarT* act_row = activations + static_cast<size_t>(token_base + b) * K;
+                 const float fa0 = static_cast<float>(act_row[k_base + 2 * kb]);
+                 const float fa1 = static_cast<float>(act_row[k_base + 2 * kb + 1]);
+                 acc_q0[b] += fa0 * fq0;
+                 acc_q1[b] += fa1 * fq1;
+                 if constexpr (Asym) {
+                   acc_a[b] += fa0 + fa1;
+                 }
+               }
+             }
+             for (int b = 0; b < block; ++b) {
+               if (experts[b] != expert) continue;
+               float group_dot = acc_q0[b] + acc_q1[b];
+               if constexpr (Asym) {
+                 group_dot -= zero * acc_a[b];
+               }
+               acc[b] += scale * group_dot;
+             }
+           }
+
+           for (int b = 0; b < block; ++b) {
+             if (experts[b] != expert) continue;
+             outputs[static_cast<size_t>(token_base + b) * N + n_global] = static_cast<ScalarT>(acc[b]);
+           }
+         }
        });
 
   q->wait();

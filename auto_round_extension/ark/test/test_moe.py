@@ -622,6 +622,69 @@ class TestMoEGemmDecode:
         # the weight memory layout differs), so require a tight match.
         torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    def test_decode_int4_coalesced_token_blocking(self, monkeypatch, dtype, asym):
+        """The coalesced int4 fallback blocks up to TOKEN_BLOCK consecutive
+        tokens per work-item, reusing each loaded weight byte across tokens
+        routed to the same expert. This must stay bit-identical to the legacy
+        per-lane-strided kernel regardless of routing, so exercise:
+          - a run of many tokens on one expert (full + short trailing block),
+          - blocks that straddle an expert boundary (mixed experts per block),
+          - an expert with zero tokens.
+        Shapes keep N%16==0 so the N-tiled repack is exact.
+        """
+        num_experts = 4
+        # 7 tokens on expert 0, none on expert 1, 5 on expert 2, 3 on expert 3.
+        # With TOKEN_BLOCK=4 this yields full blocks, short trailing blocks and
+        # at least one block straddling the 0->2 and 2->3 expert boundaries.
+        tokens_per_expert = [7, 0, 5, 3]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 128
+        group_size = 32
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        if asym:
+            zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+        else:
+            zeros = None
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
+
+        # Force the scalar-GEMV fallback so the coalesce/token-blocking path runs.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        out_blocked = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+        out_scalar = _run()
+
+        assert out_blocked.shape == (total_tokens, N)
+        torch.testing.assert_close(out_blocked, ref, rtol=5e-2, atol=5e-2)
+        # Token blocking only changes weight reuse, not the dequant math, so the
+        # blocked and legacy kernels must match tightly for every routing shape.
+        torch.testing.assert_close(out_blocked, out_scalar, rtol=1e-3, atol=1e-3)
+
     def test_decode_validation_errors(self):
         """Sanity-check that Python-side validation catches misuse."""
         num_experts = 2
