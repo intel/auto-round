@@ -61,9 +61,10 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     assert (
         single_expert_cnt == config.num_local_experts
     ), f"Expected {config.num_local_experts} GPTOssSingleExpert modules, found {single_expert_cnt}."
+    expected_quant_linear_cnt = config.num_hidden_layers * 3 * config.num_local_experts
     assert (
-        quant_linear_cnt == config.num_hidden_layers * 3 * config.num_local_experts
-    ), f"Expected {config.num_hidden_layers * 3 * config.num_local_experts} QuantLinear modules, found {quant_linear_cnt}."
+        quant_linear_cnt == expected_quant_linear_cnt
+    ), f"Expected {expected_quant_linear_cnt} QuantLinear modules, found {quant_linear_cnt}."
 
     # verify the quantized model can be loaded and run inference
     loaded_model = GptOssForCausalLM.from_pretrained(save_folder)
@@ -142,8 +143,10 @@ class Step3p5MoEMLP(nn.Module):
         self.down_proj = _FakeMoELinear(num_experts, intermediate_size, hidden_size)
 
 
-def test_step3p5_moe_replacement():
+@pytest.mark.parametrize("gguf_export", [False, True])
+def test_step3p5_moe_replacement(gguf_export):
     """Verify that apply_replacements swaps Step3p5MoEMLP → LinearStep3p5MoEMLP."""
+    from auto_round.modeling.fused_moe.fusion_spec import get_moe_fusion_spec, iter_moe_fusion_views
     from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
     from auto_round.modeling.fused_moe.step3_5_moe import LinearStep3p5MoEMLP, Step3p5ExpertMLP
 
@@ -157,8 +160,14 @@ def test_step3p5_moe_replacement():
 
     orig_weights = {k: moe.get_parameter(k).clone() for k in ("gate_proj.weight", "up_proj.weight", "down_proj.weight")}
 
-    apply_replacements(model, auto_detect_moe=False)
+    apply_replacements(model, auto_detect_moe=False, gguf_export=gguf_export)
     assert isinstance(model.moe, LinearStep3p5MoEMLP)
+    assert get_moe_fusion_spec(model.moe.experts) is not None
+    assert [view.checkpoint_name for view in iter_moe_fusion_views(model.moe)] == [
+        "experts.gate_proj",
+        "experts.up_proj",
+        "experts.down_proj",
+    ]
     assert count_modules_by_type(model, Step3p5ExpertMLP) == num_experts
 
     materialize_model_(model)
@@ -170,3 +179,17 @@ def test_step3p5_moe_replacement():
 
     out = model.moe(torch.randn(1, 4, hidden_size))
     assert out.shape == (1, 4, hidden_size)
+
+
+def test_step3p5_gguf_skips_replacement_without_fusion_capability(monkeypatch):
+    from auto_round.modeling.fused_moe.replace_modules import apply_replacements
+    from auto_round.modeling.fused_moe.step3_5_moe import LinearStep3p5MoEMLP
+
+    model = nn.Module()
+    model.config = type("Cfg", (), {"model_type": "step3p5"})()
+    model.moe = Step3p5MoEMLP(num_experts=2)
+    monkeypatch.setattr(LinearStep3p5MoEMLP, "supports_gguf_fused_moe", False)
+
+    apply_replacements(model, auto_detect_moe=False, gguf_export=True)
+
+    assert isinstance(model.moe, Step3p5MoEMLP)

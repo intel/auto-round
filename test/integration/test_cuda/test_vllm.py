@@ -16,7 +16,7 @@ import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig
 
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
@@ -186,7 +186,7 @@ def test_vllm_awq_w8a8_llmc_inference(tiny_opt_model_path, tmp_path):
     ar = AutoRound(
         tiny_opt_model_path,
         scheme="INT8",
-        algorithm="awq",
+        alg_configs=AWQConfig(),
         nsamples=2,
         seqlen=32,
         batch_size=2,

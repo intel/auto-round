@@ -1079,6 +1079,86 @@ def get_model_name_or_path(model_or_path: Union[str, torch.nn.Module]) -> Option
     return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
 
 
+_CODE_MODEL_TOKENS = {"code", "coder", "coding", "programming", "swe", "devstral"}
+_CODE_MODEL_FAMILIES = {
+    "codellama",
+    "codegemma",
+    "codestral",
+    "deepseekcoder",
+    "granitecode",
+    "magicoder",
+    "opencoder",
+    "qwencoder",
+    "santacoder",
+    "stablecode",
+    "starcoder",
+    "wizardcoder",
+}
+_CODE_MODEL_TASKS = {"code-generation", "software-engineering", "text-to-code"}
+
+
+def _match_code_model_name(value) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    value = re.split(r"[/\\]", value.rstrip("/\\"))[-1]
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    token_matches = _CODE_MODEL_TOKENS.intersection(re.findall(r"[a-z]+", value.lower()))
+    if token_matches:
+        return sorted(token_matches)[0]
+    components = re.findall(r"[a-z0-9]+", value.lower())
+    for family in sorted(_CODE_MODEL_FAMILIES):
+        if any(component == family or re.fullmatch(rf"{family}\d+", component) for component in components):
+            return family
+    return None
+
+
+def _config_value(config, name: str):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name)
+    return getattr(config, name, None)
+
+
+def _get_code_model_match(model_or_path, config=None):
+    config = config or getattr(model_or_path, "config", None)
+    candidates = [
+        ("model name_or_path", get_model_name_or_path(model_or_path)),
+        ("config._name_or_path", _config_value(config, "_name_or_path")),
+        ("config.model_type", _config_value(config, "model_type")),
+    ]
+    architectures = _config_value(config, "architectures") or []
+    if isinstance(architectures, str):
+        architectures = [architectures]
+    candidates.extend(("config.architectures", architecture) for architecture in architectures)
+
+    for source, value in candidates:
+        match = _match_code_model_name(value)
+        if match:
+            return source, match
+
+    task_candidates = []
+    for field in ("finetuning_task", "task", "pipeline_tag"):
+        task_candidates.append((f"config.{field}", _config_value(config, field)))
+
+    task_specific_params = _config_value(config, "task_specific_params") or {}
+    if isinstance(task_specific_params, dict):
+        task_candidates.extend(("config.task_specific_params", task) for task in task_specific_params)
+    for source, task in task_candidates:
+        if isinstance(task, str) and task.lower().replace("_", "-") in _CODE_MODEL_TASKS:
+            return source, task
+    return None
+
+
+def is_code_model(model_or_path: Union[str, torch.nn.Module], config=None) -> bool:
+    """Return whether a pure-text model is explicitly specialized for code."""
+    match = _get_code_model_match(model_or_path, config)
+    if match is None:
+        return False
+    logger.info("Detected a code-specialized model from %s (matched %r).", *match)
+    return True
+
+
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
     from auto_round.utils.common import MM_KEYS
 

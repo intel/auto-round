@@ -29,7 +29,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig, SignRoundConfig
 
 
 class TestAWQNormalLLM:
@@ -49,7 +49,7 @@ class TestAWQNormalLLM:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=32,
@@ -73,7 +73,7 @@ class TestAWQNormalLLM:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -97,7 +97,7 @@ class TestAWQNormalLLM:
             bits=bits,
             group_size=group_size,
             sym=sym,
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -116,7 +116,7 @@ class TestAWQNonIntegerSchemes:
     """Regression: AWQ smoothing must run under non-integer schemes (MX/NV-FP).
 
     AWQ's grid-search / clip loss reproduces the block quantizer's weight QDQ.
-    The reported failure mode was an end-to-end ``algorithm='awq'`` run raising
+    The reported failure mode was an end-to-end AWQ run raising
     under an MXFP/NVFP scheme.
     """
 
@@ -125,11 +125,12 @@ class TestAWQNonIntegerSchemes:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme=scheme,
-            algorithm="awq,signround",
+            alg_configs=[AWQConfig(n_grid=1), SignRoundConfig()],
             n_grid=1,
             nsamples=2,
             seqlen=8,
             batch_size=2,
+            dataset=["local AWQ calibration sample with enough tokens for quantization"] * 2,
         )
         model, layer_config = ar.quantize()
 
@@ -157,7 +158,7 @@ class TestAWQW8A8LLMCompressor:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="INT8",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             nsamples=2,
             seqlen=8,
             n_grid=1,
@@ -245,7 +246,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=8,
@@ -279,7 +280,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
             nsamples=2,
             seqlen=32,
@@ -455,6 +456,24 @@ class TestAWQUseV2ScaleSearch:
             assert init_scale is not None, dt
             assert init_scale.shape[0] == weight_reshape.shape[0]
 
+        # Scalar imatrix sentinels mean uniform importance and must not enter
+        # the tensor reshape path.
+        scalar_init_scale = search_optimized_init_scale(weight_reshape, "mx_fp4", 4, 1.0)
+        assert scalar_init_scale is not None
+        assert scalar_init_scale.shape == init_scale.shape
+
         # asym int and *_dq are not part of the optimized init-scale path.
         assert search_optimized_init_scale(torch.randn(4, 128), "int_asym", 4, None) is None
         assert search_optimized_init_scale(torch.randn(4, 128), "int_sym_dq", 4, None) is None
+
+    def test_nvfp4_opt_rtn_accepts_uniform_imatrix_sentinel(self):
+        """AWQ's SignRound-V1 QDQ may call optimized RTN without a collected imatrix."""
+        import torch
+
+        from auto_round.data_type.nvfp import opt_rtn_fast_nvfp4
+
+        weight = torch.randn(8, 32)
+        qdq_weight, _, _ = opt_rtn_fast_nvfp4(weight, bits=4, group_size=16, imatrix=1.0)
+
+        assert qdq_weight.shape == weight.shape
+        assert torch.isfinite(qdq_weight).all()

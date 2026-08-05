@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
 from auto_round.utils import clear_memory, unsupported_meta_device
@@ -56,6 +57,19 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Step3p5ExpertMLP(hidden_size, intermediate_size, limit) for _ in range(self.num_experts)])
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_proj": {},
+                    "up_proj": {},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=False,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         """Split fused MoELinear weights into individual expert nn.Linear weights.
@@ -78,6 +92,8 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
 class LinearStep3p5MoEMLP(ReplacementModuleBase):
     """Replacement for Step3p5MoEMLP that splits fused MoELinear into
     individual nn.Linear per expert for quantization support."""
+
+    supports_gguf_fused_moe = True
 
     def __init__(self, original, config=None):
         super().__init__(original)

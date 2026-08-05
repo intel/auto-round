@@ -30,7 +30,7 @@ import pytest
 import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig
 
 # ---------------------------------------------------------------------------
 # Section 1: Normal LLM (OPT-125m) – W4A16 quantize, inference, export args
@@ -51,7 +51,7 @@ class TestAWQLLM:
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -76,7 +76,7 @@ class TestAWQLLM:
             bits=bits,
             group_size=group_size,
             sym=sym,
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -98,7 +98,7 @@ class TestAWQLLM:
         ar = AutoRound(
             model_name,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -158,7 +158,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             nsamples=2,
             n_grid=4,
             seqlen=32,
@@ -194,7 +194,7 @@ class TestAWQMoE:
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             n_grid=4,
             nsamples=2,
             seqlen=32,
@@ -238,7 +238,7 @@ class TestAWQEval:
         ar = AutoRound(
             self.model_name,
             scheme="W4A16",
-            algorithm="awq",
+            alg_configs=AWQConfig(),
             nsamples=32,
             seqlen=32,
             batch_size=8,

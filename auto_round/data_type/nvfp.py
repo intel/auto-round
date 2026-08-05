@@ -393,7 +393,7 @@ def opt_rtn_fast_nvfp4(
     **kwargs,
 ):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    if imatrix is None:
+    if not isinstance(imatrix, torch.Tensor):
         qw = 1.0
     else:
         imatrix = imatrix.reshape(1, -1)
