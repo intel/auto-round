@@ -560,6 +560,68 @@ class TestMoEGemmDecode:
         assert out.shape == (total_tokens, N)
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_int4_coalesced_matches_scalar(self, monkeypatch, dtype, asym, group_size):
+        """int4 scalar-GEMV fallback: the coalesced-load variant
+        (ARK_MOE_DECODE_COALESCE_INT4=1, default) must match both the legacy
+        per-lane-strided kernel (ARK_MOE_DECODE_COALESCE_INT4=0) and the
+        dequant->bmm reference within quantization tolerance.
+
+        The S4 DPAS fast path is disabled so both runs exercise the scalar
+        fallback (this is the only path the coalesce flag affects). Shapes use
+        N%16==0 so the N-tiled repack is exact.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        if asym:
+            zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+        else:
+            zeros = None
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
+
+        # Force the scalar-GEMV fallback so the coalesce flag actually applies.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        out_coalesced = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+        out_scalar = _run()
+
+        assert out_coalesced.shape == (total_tokens, N)
+        assert out_scalar.shape == (total_tokens, N)
+        torch.testing.assert_close(out_coalesced, ref, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(out_scalar, ref, rtol=5e-2, atol=5e-2)
+        # The two kernels are numerically identical (same dequant math, only
+        # the weight memory layout differs), so require a tight match.
+        torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
+
     def test_decode_validation_errors(self):
         """Sanity-check that Python-side validation catches misuse."""
         num_experts = 2

@@ -11,7 +11,11 @@
 //                            int8 per byte (sym: signed -128..127;
 //                            asym: unsigned 0..255 with zero-point)
 //   - weights (int4 packed): [num_experts, N, K/2]        row-major, two
-//                            4-bit values per byte (low nibble at lower K)
+//                            4-bit values per byte (low nibble at lower K).
+//                            The scalar-GEMV fallback repacks this on-device
+//                            into an N-tiled [E, N/16, K/2, 16] layout so that
+//                            sub-group weight loads are coalesced; the external
+//                            [E, N, K/2] contract is unchanged.
 //   - weights (int2 packed): [num_experts, N, K/4]        row-major, four
 //                            2-bit values per byte (field j at K index
 //                            4*i+j is bits [2j+1:2j])
@@ -86,6 +90,11 @@ class MoEDecodeKernelFP;
 
 template <typename ScalarT, bool Asym>
 class MoEDecodeKernelInt4;
+
+template <typename ScalarT, bool Asym>
+class MoEDecodeKernelInt4Coalesced;
+
+class MoEDecodeRepackInt4;
 
 template <typename ScalarT, bool Asym>
 class MoEDecodeKernelInt8;
@@ -369,6 +378,146 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
        });
+}
+
+// ----------------------------------------------------------------------------
+// INT4 (S4_CLIP) coalesced-load GEMV.
+//
+// The scalar `launch_int4` above is memory-bandwidth-bound: for a single decode
+// token it just streams the whole packed weight matrix once with ~1 MAC per
+// byte, so the arithmetic tweaks (split accumulators, hoisted scale) cannot
+// help. Its real cost is that weight loads are *not coalesced across the
+// sub-group*: with the `[E, N, K/2]` (K-contiguous) layout, lane `l` and lane
+// `l+1` of a sub-group read packed bytes `K/2` apart at a fixed `k`, so each
+// step issues 16 scattered transactions instead of one contiguous cache line.
+//
+// This path fixes that by first repacking the weights on-device into an
+// N-tiled layout `[E, N/16, K/2, 16]`: the trailing dim of 16 holds one packed
+// byte for each of the 16 columns owned by a sub-group tile, so at a fixed
+// packed-byte index the 16 lanes read 16 contiguous bytes -> a single coalesced
+// load. The dequant math is byte-for-byte identical to `launch_int4` (same
+// `decode_int4_pair`, same per-group scale/zero fold), only the weight memory
+// access pattern changes. The repack buffer is a transient USM device
+// allocation freed after the queue drains; the caller's `[E, N, K/2]` weight
+// contract is unchanged.
+//
+// The trailing lane stride means each lane's own K-bytes are 16 apart, so the
+// vectorized `int4_decode_chunk` (contiguous per-lane load) does not apply
+// here; the inner loop reads one packed byte per lane per step, which the
+// hardware coalesces across the sub-group into one wide transaction.
+// ----------------------------------------------------------------------------
+template <typename ScalarT, bool Asym>
+void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
+                           const ScalarT* scales, const ScalarT* zeros, ScalarT* outputs,
+                           const int* expert_id_per_token, int total_tokens, int N, int K, int group_size,
+                           int num_experts) {
+  if (N % N_TILE != 0) {
+    throw std::invalid_argument("moe_gemm_decode(int4): N must be a multiple of 16");
+  }
+  if (K % group_size != 0 || (group_size & 1) != 0) {
+    throw std::invalid_argument("moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
+  }
+  if (Asym && zeros == nullptr) {
+    throw std::invalid_argument("moe_gemm_decode(int4): zeros pointer required when asym=true");
+  }
+  if (total_tokens == 0) return;
+
+  const int n_tiles = N / N_TILE;
+  const int num_groups_k = K / group_size;
+  const int k_packed = K / 2;  // bytes of packed weight per (expert, n)
+
+  const size_t repacked_bytes =
+      static_cast<size_t>(num_experts) * static_cast<size_t>(n_tiles) *
+      static_cast<size_t>(k_packed) * static_cast<size_t>(N_TILE);
+  uint8_t* repacked = sycl::malloc_device<uint8_t>(repacked_bytes, *q);
+  if (repacked == nullptr) {
+    throw std::runtime_error("moe_gemm_decode(int4): failed to allocate repack buffer");
+  }
+
+  // Repack kernel: one work-item per (expert, column, packed byte). The write
+  // index places the 16 columns of a tile contiguously in the trailing dim.
+  {
+    sycl::range<3> rp_global{static_cast<size_t>(num_experts), static_cast<size_t>(N),
+                             static_cast<size_t>(k_packed)};
+    q->parallel_for<MoEDecodeRepackInt4>(rp_global, [=](sycl::id<3> id) {
+      const int e = static_cast<int>(id[0]);
+      const int n = static_cast<int>(id[1]);
+      const int kb = static_cast<int>(id[2]);
+      const int t = n / N_TILE;
+      const int l = n % N_TILE;
+      const size_t src = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed + kb;
+      const size_t dst =
+          ((static_cast<size_t>(e) * n_tiles + t) * k_packed + kb) * N_TILE + l;
+      repacked[dst] = weights[src];
+    });
+  }
+
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(n_tiles * SG_SIZE)};
+  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
+
+  q->parallel_for<MoEDecodeKernelInt4Coalesced<ScalarT, Asym>>(
+       sycl::nd_range<2>(global, local),
+       [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+         const int token = static_cast<int>(it.get_global_id(0));
+         const int n_tile = static_cast<int>(it.get_group(1));
+         const int lane = static_cast<int>(it.get_local_id(1));
+         const int n_global = n_tile * N_TILE + lane;
+
+         const int expert = expert_id_per_token[token];
+         const ScalarT* act_row = activations + static_cast<size_t>(token) * K;
+
+         // Base of this (expert, n_tile) weight tile in the repacked buffer.
+         // Layout [E, N/16, K/2, 16]; this lane reads byte kb at
+         // w_tile[kb*16 + lane], so adjacent lanes read adjacent bytes.
+         const uint8_t* w_tile =
+             repacked + ((static_cast<size_t>(expert) * n_tiles + n_tile) * k_packed) * N_TILE;
+         const ScalarT* s_row =
+             scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
+         const ScalarT* z_row = Asym
+             ? zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k
+             : nullptr;
+
+         float acc = 0.0f;
+         for (int g = 0; g < num_groups_k; ++g) {
+           const float scale = static_cast<float>(s_row[g]);
+           float zero = 0.0f;
+           if constexpr (Asym) {
+             zero = static_cast<float>(z_row[g]);
+           }
+           const int k_base = g * group_size;
+           // Two partial accumulators break the fp32 dependency chain; the
+           // per-group scale/zero is folded once after the K-loop, exactly as
+           // in the scalar path. Each iteration processes two K-elements (one
+           // packed byte); the byte load is coalesced across the sub-group.
+           float acc_q0 = 0.0f;
+           float acc_q1 = 0.0f;
+           float acc_a = 0.0f;
+           const int kb_base = k_base / 2;
+           const int kb_count = group_size / 2;
+           for (int kb = 0; kb < kb_count; ++kb) {
+             const uint8_t packed = w_tile[(kb_base + kb) * N_TILE + lane];
+             int q0, q1;
+             decode_int4_pair<Asym>(packed, q0, q1);
+             const float fa0 = static_cast<float>(act_row[k_base + 2 * kb]);
+             const float fa1 = static_cast<float>(act_row[k_base + 2 * kb + 1]);
+             acc_q0 += fa0 * static_cast<float>(q0);
+             acc_q1 += fa1 * static_cast<float>(q1);
+             if constexpr (Asym) {
+               acc_a += fa0 + fa1;
+             }
+           }
+           float group_dot = acc_q0 + acc_q1;
+           if constexpr (Asym) {
+             group_dot -= zero * acc_a;
+           }
+           acc += scale * group_dot;
+         }
+
+         outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
+       });
+
+  q->wait();
+  sycl::free(repacked, *q);
 }
 
 // ----------------------------------------------------------------------------
@@ -796,6 +945,24 @@ inline bool moe_decode_dpas_s4_enabled() {
 }
 
 // ----------------------------------------------------------------------------
+// Env-flag helper -- `ARK_MOE_DECODE_COALESCE_INT4` (default ON). When ON, the
+// int4 scalar-GEMV fallback (asym, or sym with the DPAS path disabled / shape
+// gate miss) uses `launch_int4_coalesced`, which repacks the weights on-device
+// into an N-tiled layout so sub-group weight loads are coalesced. Setting the
+// var to "0" / "false" / "off" / "no" (case-insensitive) forces the legacy
+// per-lane-strided `launch_int4`, for A/B comparison and regression escape.
+// Re-read on every call so tests / benchmarks can toggle it in-process.
+// ----------------------------------------------------------------------------
+inline bool moe_decode_coalesce_int4_enabled() {
+  const char* env = std::getenv("ARK_MOE_DECODE_COALESCE_INT4");
+  if (env == nullptr) return true;  // default ON
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
+  return true;
+}
+
+// ----------------------------------------------------------------------------
 //
 // weight_dtype:
 //   BTLA_DTYPE::F16  / BF16       : weights stored as [E, N, K] in matching
@@ -866,31 +1033,65 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
       }
       return;
     }
-    // Scalar FMA GEMV fallback (asym, flag off, or shape gate miss).
+    // Scalar FMA GEMV fallback (asym, flag off, or shape gate miss). By
+    // default this uses the coalesced-load variant, which repacks the weights
+    // on-device so sub-group loads are contiguous; `ARK_MOE_DECODE_COALESCE_INT4=0`
+    // forces the legacy per-lane-strided kernel.
+    const bool coalesce = moe_decode_coalesce_int4_enabled();
     if (act_dtype == BTLA_DTYPE::F16) {
       if (asym) {
-        moe_decode_detail::launch_int4<sycl::half, true>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-            static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        if (coalesce) {
+          moe_decode_detail::launch_int4_coalesced<sycl::half, true>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size,
+              num_experts);
+        } else {
+          moe_decode_detail::launch_int4<sycl::half, true>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
       } else {
-        moe_decode_detail::launch_int4<sycl::half, false>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-            static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        if (coalesce) {
+          moe_decode_detail::launch_int4_coalesced<sycl::half, false>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size,
+              num_experts);
+        } else {
+          moe_decode_detail::launch_int4<sycl::half, false>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
       }
     } else {
       using BF = sycl::ext::oneapi::bfloat16;
       if (asym) {
-        moe_decode_detail::launch_int4<BF, true>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-            expert_id_per_token_buf, total_tokens, N, K, group_size);
+        if (coalesce) {
+          moe_decode_detail::launch_int4_coalesced<BF, true>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size, num_experts);
+        } else {
+          moe_decode_detail::launch_int4<BF, true>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
       } else {
-        moe_decode_detail::launch_int4<BF, false>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-            expert_id_per_token_buf, total_tokens, N, K, group_size);
+        if (coalesce) {
+          moe_decode_detail::launch_int4_coalesced<BF, false>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size, num_experts);
+        } else {
+          moe_decode_detail::launch_int4<BF, false>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
       }
     }
     return;
