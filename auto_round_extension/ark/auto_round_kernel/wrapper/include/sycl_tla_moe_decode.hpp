@@ -218,10 +218,23 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
 // stage for the remainder, which keeps the fast path active for group sizes
 // that are a multiple of 32 (32/64/128/256 -- the shipped quant configs)
 // without regressing group_size == 16 (which drops straight to the 16-wide
-// stage). The math is identical to the scalar path.
+// stage).
+//
+// The per-group scale (and asym zero-point) is NOT applied here: this
+// accumulates the raw integer-weighted dot product ``Σ a·q`` into ``acc_q``
+// and, for the asym case, the plain activation sum ``Σ a`` into ``acc_a``.
+// The caller folds the group's scale/zero in once (Σ a·((q−z)·s) ==
+// s·(Σ a·q − z·Σ a); sym collapses to s·Σ a·q). Hoisting the scale removes one
+// float multiply per K element on the decode hot path, and because the scale
+// fold is exact-once per group the result stays well within the kernel's
+// existing quantization tolerance.
+//
+// Two independent partial accumulators (``acc_q0``/``acc_q1``) break the
+// single fp32 dependency chain so the FMA pipeline is not latency-bound; the
+// caller reduces the pair. ``acc_a`` (asym only) reuses the same split.
 template <typename ScalarT, bool Asym, int CHUNK>
-static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float scale, float zero,
-                                     float& acc) {
+static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float& acc_q0, float& acc_q1,
+                                     float& acc_a) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
   static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
   // sycl::vec only supports widths of 1, 2, 3, 4, 8 or 16, so a single
@@ -239,18 +252,15 @@ static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_pt
     for (int b = 0; b < SUB / 2; ++b) {
       int q0, q1;
       decode_int4_pair<Asym>(pv[b], q0, q1);
-      float w0, w1;
-      if constexpr (Asym) {
-        w0 = (static_cast<float>(q0) - zero) * scale;
-        w1 = (static_cast<float>(q1) - zero) * scale;
-      } else {
-        w0 = static_cast<float>(q0) * scale;
-        w1 = static_cast<float>(q1) * scale;
-      }
       const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
       const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
-      acc += static_cast<float>(a0) * w0;
-      acc += static_cast<float>(a1) * w1;
+      const float fa0 = static_cast<float>(a0);
+      const float fa1 = static_cast<float>(a1);
+      acc_q0 += fa0 * static_cast<float>(q0);
+      acc_q1 += fa1 * static_cast<float>(q1);
+      if constexpr (Asym) {
+        acc_a += fa0 + fa1;
+      }
     }
   }
 }
@@ -311,35 +321,50 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // across twice as many multiply-adds for the shipped group sizes
            // (32/64/128/256), while the 16-wide stage keeps group_size == 16
            // on the fast path.
+           //
+           // The scale (and asym zero) is constant across the group, so the
+           // wide stages accumulate the raw integer-weighted dot product
+           // ``Σ a·q`` (split across two partial accumulators to break the
+           // fp32 dependency chain) plus ``Σ a`` for asym, and the fold below
+           // applies the scale/zero exactly once per group:
+           //   sym : acc += scale * (acc_q0 + acc_q1)
+           //   asym: acc += scale * ((acc_q0 + acc_q1) - zero * acc_a)
+           float acc_q0 = 0.0f;
+           float acc_q1 = 0.0f;
+           float acc_a = 0.0f;
            int kk = 0;
            constexpr int CHUNK32 = 32;
            const int end32 = (group_size / CHUNK32) * CHUNK32;
            for (; kk < end32; kk += CHUNK32) {
-             int4_decode_chunk<ScalarT, Asym, CHUNK32>(act_row + k_base + kk, w_row + (k_base + kk) / 2, scale,
-                                                       zero, acc);
+             int4_decode_chunk<ScalarT, Asym, CHUNK32>(act_row + k_base + kk, w_row + (k_base + kk) / 2, acc_q0,
+                                                       acc_q1, acc_a);
            }
            constexpr int CHUNK16 = 16;
            const int end16 = kk + ((group_size - kk) / CHUNK16) * CHUNK16;
            for (; kk < end16; kk += CHUNK16) {
-             int4_decode_chunk<ScalarT, Asym, CHUNK16>(act_row + k_base + kk, w_row + (k_base + kk) / 2, scale,
-                                                       zero, acc);
+             int4_decode_chunk<ScalarT, Asym, CHUNK16>(act_row + k_base + kk, w_row + (k_base + kk) / 2, acc_q0,
+                                                       acc_q1, acc_a);
            }
-           // Scalar tail for group_size not divisible by 16.
+           // Scalar tail for group_size not divisible by 16. Uses the same
+           // raw-accumulation convention as the wide stages so the single
+           // scale/zero fold below stays valid.
            for (; kk < group_size; kk += 2) {
              const uint8_t packed = w_row[(k_base + kk) / 2];
              int q0, q1;
              decode_int4_pair<Asym>(packed, q0, q1);
-             float w0, w1;
+             const float fa0 = static_cast<float>(act_row[k_base + kk]);
+             const float fa1 = static_cast<float>(act_row[k_base + kk + 1]);
+             acc_q0 += fa0 * static_cast<float>(q0);
+             acc_q1 += fa1 * static_cast<float>(q1);
              if constexpr (Asym) {
-               w0 = (static_cast<float>(q0) - zero) * scale;
-               w1 = (static_cast<float>(q1) - zero) * scale;
-             } else {
-               w0 = static_cast<float>(q0) * scale;
-               w1 = static_cast<float>(q1) * scale;
+               acc_a += fa0 + fa1;
              }
-             acc += static_cast<float>(act_row[k_base + kk]) * w0;
-             acc += static_cast<float>(act_row[k_base + kk + 1]) * w1;
            }
+           float group_dot = acc_q0 + acc_q1;
+           if constexpr (Asym) {
+             group_dot -= zero * acc_a;
+           }
+           acc += scale * group_dot;
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
