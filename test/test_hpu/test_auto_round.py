@@ -27,6 +27,10 @@ def run_opt_125m_on_hpu():
     )
     q_model, qconfig = autoround.quantize()
     assert q_model is not None, "Expected q_model to be not None"
+    text = "Replace me by any text you'd like."
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    output = tokenizer.decode(q_model.generate(**inputs, max_new_tokens=10, do_sample=False)[0])
+    assert output is not None
 
 
 @pytest.mark.skipif(not is_hpex_available(), reason="HPU is not supported")
@@ -75,3 +79,7 @@ def test_w4a8(data_type):
     )
     q_model, qconfig = autoround.quantize()
     assert q_model is not None, "Expected q_model to be not None"
+    text = "Replace me by any text you'd like."
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    output = tokenizer.decode(q_model.generate(**inputs, max_new_tokens=10, do_sample=False)[0])
+    assert output is not None
