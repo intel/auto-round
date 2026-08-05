@@ -218,18 +218,37 @@ def _pack_int4_asym(w_float, scales, zeros, group_size):
     return packed
 
 
+def _unpack_int4_values(packed, *, signed: bool):
+    packed = packed.to(torch.uint8)
+    low = (packed & 0x0F).to(torch.int16)
+    high = ((packed >> 4) & 0x0F).to(torch.int16)
+    if signed:
+        low = torch.where(low >= 8, low - 16, low)
+        high = torch.where(high >= 8, high - 16, high)
+    values = torch.stack((low, high), dim=-1)
+    return values.reshape(*packed.shape[:-1], packed.shape[-1] * 2)
+
+
+def _unpack_int2_values(packed, *, signed: bool):
+    packed = packed.to(torch.uint8)
+    q0 = (packed & 0x03).to(torch.int16)
+    q1 = ((packed >> 2) & 0x03).to(torch.int16)
+    q2 = ((packed >> 4) & 0x03).to(torch.int16)
+    q3 = ((packed >> 6) & 0x03).to(torch.int16)
+    if signed:
+        q0 = torch.where(q0 >= 2, q0 - 4, q0)
+        q1 = torch.where(q1 >= 2, q1 - 4, q1)
+        q2 = torch.where(q2 >= 2, q2 - 4, q2)
+        q3 = torch.where(q3 >= 2, q3 - 4, q3)
+    values = torch.stack((q0, q1, q2, q3), dim=-1)
+    return values.reshape(*packed.shape[:-1], packed.shape[-1] * 4)
+
+
 def _dequant_int4_sym(packed, scales, group_size):
     """Inverse of _pack_int4_sym. Returns [E, N, K] in scales.dtype."""
     E, N, K_half = packed.shape
     K = K_half * 2
-    low = (packed & 0x0F).to(torch.int8)
-    high = ((packed >> 4) & 0x0F).to(torch.int8)
-    # Sign extend 4-bit -> 8-bit
-    low = torch.where(low >= 8, low - 16, low)
-    high = torch.where(high >= 8, high - 16, high)
-    q = torch.empty(E, N, K, dtype=torch.int8, device=packed.device)
-    q[..., 0::2] = low
-    q[..., 1::2] = high
+    q = _unpack_int4_values(packed, signed=True)
     q = q.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     return (q * scales.unsqueeze(-1)).reshape(E, N, K)
 
@@ -237,11 +256,7 @@ def _dequant_int4_sym(packed, scales, group_size):
 def _dequant_int4_asym(packed, scales, zeros, group_size):
     E, N, K_half = packed.shape
     K = K_half * 2
-    low = (packed & 0x0F).to(torch.int32)
-    high = ((packed >> 4) & 0x0F).to(torch.int32)
-    q = torch.empty(E, N, K, dtype=torch.int32, device=packed.device)
-    q[..., 0::2] = low
-    q[..., 1::2] = high
+    q = _unpack_int4_values(packed, signed=False)
     q = q.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     deq = (q - zeros.to(scales.dtype).unsqueeze(-1)) * scales.unsqueeze(-1)
     return deq.reshape(E, N, K)
@@ -346,29 +361,16 @@ def _pack_int2_asym(w_float, scales, zeros, group_size):
 def _dequant_int2_sym(packed, scales, group_size):
     E, N, K_q = packed.shape
     K = K_q * 4
-    p = packed.to(torch.int32)
-    fields = torch.empty(E, N, K, dtype=torch.int32, device=packed.device)
-    fields[..., 0::4] = p & 0x3
-    fields[..., 1::4] = (p >> 2) & 0x3
-    fields[..., 2::4] = (p >> 4) & 0x3
-    fields[..., 3::4] = (p >> 6) & 0x3
-    # Sign-extend 2-bit (>=2 means negative).
-    fields = torch.where(fields >= 2, fields - 4, fields).to(scales.dtype)
-    fields = fields.reshape(E, N, K // group_size, group_size)
+    fields = _unpack_int2_values(packed, signed=True)
+    fields = fields.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     return (fields * scales.unsqueeze(-1)).reshape(E, N, K)
 
 
 def _dequant_int2_asym(packed, scales, zeros, group_size):
     E, N, K_q = packed.shape
     K = K_q * 4
-    p = packed.to(torch.int32)
-    fields = torch.empty(E, N, K, dtype=torch.int32, device=packed.device)
-    fields[..., 0::4] = p & 0x3
-    fields[..., 1::4] = (p >> 2) & 0x3
-    fields[..., 2::4] = (p >> 4) & 0x3
-    fields[..., 3::4] = (p >> 6) & 0x3
-    fields = fields.to(scales.dtype)
-    fields = fields.reshape(E, N, K // group_size, group_size)
+    fields = _unpack_int2_values(packed, signed=False)
+    fields = fields.reshape(E, N, K // group_size, group_size).to(scales.dtype)
     deq = (fields - zeros.to(scales.dtype).unsqueeze(-1)) * scales.unsqueeze(-1)
     return deq.reshape(E, N, K)
 
