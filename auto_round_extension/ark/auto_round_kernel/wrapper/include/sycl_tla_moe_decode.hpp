@@ -531,8 +531,24 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
                ? zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k
                : nullptr;
 
+           // Compact the tokens routed to `expert` into a dense member list
+           // once per pass. Hoisting the routing filter out of the hot k-loop
+           // removes a per-(kb, token) branch and lets the compiler keep the
+           // per-member activation base pointers in registers; the numerics
+           // are identical to the previous per-kb `experts[b] != expert`
+           // filter.
+           int members[TOKEN_BLOCK];
+           const ScalarT* act_rows[TOKEN_BLOCK];
+           int nmembers = 0;
+           for (int b = 0; b < block; ++b) {
+             if (experts[b] != expert) continue;
+             members[nmembers] = b;
+             act_rows[nmembers] = activations + static_cast<size_t>(token_base + b) * K;
+             ++nmembers;
+           }
+
            float acc[TOKEN_BLOCK];
-           for (int b = 0; b < block; ++b) acc[b] = 0.0f;
+           for (int m = 0; m < nmembers; ++m) acc[m] = 0.0f;
 
            for (int g = 0; g < num_groups_k; ++g) {
              const float scale = static_cast<float>(s_row[g]);
@@ -549,10 +565,10 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
              float acc_q0[TOKEN_BLOCK];
              float acc_q1[TOKEN_BLOCK];
              float acc_a[TOKEN_BLOCK];
-             for (int b = 0; b < block; ++b) {
-               acc_q0[b] = 0.0f;
-               acc_q1[b] = 0.0f;
-               acc_a[b] = 0.0f;
+             for (int m = 0; m < nmembers; ++m) {
+               acc_q0[m] = 0.0f;
+               acc_q1[m] = 0.0f;
+               acc_a[m] = 0.0f;
              }
              const int kb_base = k_base / 2;
              const int kb_count = group_size / 2;
@@ -562,31 +578,30 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
                decode_int4_pair<Asym>(packed, q0, q1);
                const float fq0 = static_cast<float>(q0);
                const float fq1 = static_cast<float>(q1);
-               for (int b = 0; b < block; ++b) {
-                 if (experts[b] != expert) continue;
-                 const ScalarT* act_row = activations + static_cast<size_t>(token_base + b) * K;
-                 const float fa0 = static_cast<float>(act_row[k_base + 2 * kb]);
-                 const float fa1 = static_cast<float>(act_row[k_base + 2 * kb + 1]);
-                 acc_q0[b] += fa0 * fq0;
-                 acc_q1[b] += fa1 * fq1;
+               const int k0 = k_base + 2 * kb;
+               for (int m = 0; m < nmembers; ++m) {
+                 const ScalarT* act_row = act_rows[m];
+                 const float fa0 = static_cast<float>(act_row[k0]);
+                 const float fa1 = static_cast<float>(act_row[k0 + 1]);
+                 acc_q0[m] += fa0 * fq0;
+                 acc_q1[m] += fa1 * fq1;
                  if constexpr (Asym) {
-                   acc_a[b] += fa0 + fa1;
+                   acc_a[m] += fa0 + fa1;
                  }
                }
              }
-             for (int b = 0; b < block; ++b) {
-               if (experts[b] != expert) continue;
-               float group_dot = acc_q0[b] + acc_q1[b];
+             for (int m = 0; m < nmembers; ++m) {
+               float group_dot = acc_q0[m] + acc_q1[m];
                if constexpr (Asym) {
-                 group_dot -= zero * acc_a[b];
+                 group_dot -= zero * acc_a[m];
                }
-               acc[b] += scale * group_dot;
+               acc[m] += scale * group_dot;
              }
            }
 
-           for (int b = 0; b < block; ++b) {
-             if (experts[b] != expert) continue;
-             outputs[static_cast<size_t>(token_base + b) * N + n_global] = static_cast<ScalarT>(acc[b]);
+           for (int m = 0; m < nmembers; ++m) {
+             const int b = members[m];
+             outputs[static_cast<size_t>(token_base + b) * N + n_global] = static_cast<ScalarT>(acc[m]);
            }
          }
        });
