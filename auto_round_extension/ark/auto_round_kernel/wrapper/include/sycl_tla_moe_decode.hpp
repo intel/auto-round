@@ -1053,7 +1053,7 @@ inline bool moe_decode_coalesce_int4_enabled() {
 // ----------------------------------------------------------------------------
 inline bool moe_decode_coalesce_int4_amortized(int total_tokens, int num_experts) {
   if (num_experts <= 0) return true;
-  long long min_tokens = static_cast<long long>(num_experts) * TOKEN_BLOCK;
+  long long min_tokens = static_cast<long long>(num_experts) * moe_decode_detail::TOKEN_BLOCK;
   const char* env = std::getenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS");
   if (env != nullptr) {
     char* end = nullptr;
