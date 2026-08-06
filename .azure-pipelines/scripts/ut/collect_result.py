@@ -58,6 +58,8 @@ class XmlAnalyzer:
         "unittest_cuda_llmc_",
         "unittest_cuda_",
         "unittest_",
+        "integration_",
+        "e2e_",
     )
 
     def __init__(self, log_dir: Path, log_pattern: str = "*.log"):

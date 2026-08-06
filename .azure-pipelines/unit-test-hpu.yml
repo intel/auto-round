@@ -10,7 +10,7 @@ pr:
     include:
       - auto_round
       - auto_round_extension
-      - test/test_hpu
+      - test/unit/test_hpu
       - setup.py
       - requirements-hpu.txt
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh

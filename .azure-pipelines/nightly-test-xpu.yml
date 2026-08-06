@@ -1,0 +1,64 @@
+# Nightly XPU pipeline: runs the XPU unit tests plus the heavier XPU LLMC
+# integration test that is excluded from the fast PR pipeline (unit-test-xpu.yml).
+# Scheduled daily; can also be triggered manually from the Azure DevOps UI.
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 19 * * *"   # 03:00 Asia/Shanghai every day
+    displayName: Daily XPU nightly run
+    branches:
+      include:
+        - main
+    always: true
+
+# use XPU BMG B60 agent pool to run tests
+pool: B60
+
+variables:
+  IMAGE_NAME: "auto-round"
+  IMAGE_TAG: "py312-xpu"
+  DOCKERFILE_NAME: "Dockerfile_xpu"
+  UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
+  ARTIFACT_NAME: "Nightly_XPU_coverage_report"
+  REPO: $(Build.Repository.Uri)
+
+stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      enableChangeDetection: false
+      publishToTestPyPI: false
+
+  - stage: Nightly_xpu_test
+    displayName: Nightly XPU Test
+    dependsOn: [BuildArkWheel]
+    condition: in(dependencies.BuildArkWheel.result, 'Succeeded', 'Skipped')
+    jobs:
+      - job:
+        displayName: Nightly XPU Test
+        timeoutInMinutes: 180
+        steps:
+          - template: template/ut-template.yml
+            parameters:
+              dockerConfigName: "commonDockerConfig"
+              utScriptFileName: "run_ut_xpu"
+              # "integration" enables the XPU LLMC integration suite in run_ut_xpu.sh
+              utTestMode: "integration"
+              uploadPath: $(UPLOAD_PATH)
+              utArtifact: "nightly-xpu"
+              imageTag: $(IMAGE_TAG)
+              dockerFileName: $(DOCKERFILE_NAME)
+              utContainerName: "AutoRoundNightlyXPU$(NODE_LABEL)"
+              buildARKWheel: "false"
+
+          - task: UseDotNet@2
+            displayName: 'Use .NET Core sdk 7.0.x'
+            inputs:
+              version: 7.0.x
+
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
