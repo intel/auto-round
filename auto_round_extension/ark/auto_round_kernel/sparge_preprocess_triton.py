@@ -10,6 +10,10 @@ import torch
 import triton
 import triton.language as tl
 
+from ._xpu_triton_compat import apply_xpu_triton_workarounds
+
+apply_xpu_triton_workarounds()
+
 logger = logging.getLogger(__name__)
 
 _TRITON_FALLBACK_WARNING_LOGGED = False
