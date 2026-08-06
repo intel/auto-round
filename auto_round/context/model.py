@@ -64,6 +64,7 @@ class ModelContext(BaseContext):
         model_dtype: Optional[Union[str, torch.dtype]] = None,
         trust_remote_code: bool = True,
         config: Optional[AutoConfig] = None,
+        init_mode: str = "pretrained",
         amp: bool = True,
         need_calib: bool = True,
         is_act_quantize: bool = False,
@@ -101,6 +102,7 @@ class ModelContext(BaseContext):
         self.platform = platform
         self.model_dtype = model_dtype
         self.trust_remote_code = trust_remote_code
+        self.init_mode = init_mode
         self.config = config
         self.amp = amp
         self.need_calib = need_calib
@@ -196,7 +198,12 @@ class ModelContext(BaseContext):
         elif is_diffusion_model(self.model):
             self.is_diffusion = True
             self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                self.model,
+                platform=self.platform,
+                device="cpu",
+                model_dtype=self.model_dtype,
+                trust_remote_code=self.trust_remote_code,
+                init_mode=self.init_mode,
             )
         elif isinstance(self.model, str):
             config = self.config

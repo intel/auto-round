@@ -15,6 +15,7 @@ import collections
 import inspect
 import json
 import os
+import shutil
 import re
 from collections import UserDict
 from pathlib import Path
@@ -824,6 +825,118 @@ def _attach_diffusion_pipeline_fn(pipe):
         pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
 
 
+def _copy_path(src: str, dst: str) -> None:
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.isdir(src):
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+    elif os.path.isfile(src):
+        shutil.copy2(src, dst)
+
+
+class _SourceCopyComponentProxy:
+    def __init__(self, source_dir: str):
+        self.source_dir = source_dir
+
+    def save_pretrained(self, save_directory: str, **kwargs):
+        _copy_path(self.source_dir, save_directory)
+
+
+class _ConfigOnlyDiffusionPipeline:
+    def __init__(self, source_dir: str, model_index: dict, components: dict[str, object]):
+        self._autoround_source_dir = source_dir
+        self.config = UserDict(dict(model_index))
+        self.config.setdefault("_name_or_path", source_dir)
+        self.components = collections.OrderedDict()
+        for name, component in components.items():
+            self.components[name] = component
+            setattr(self, name, component)
+
+    @property
+    def dtype(self):
+        for component in self.components.values():
+            if isinstance(component, torch.nn.Module):
+                param = next(component.parameters(), None)
+                if param is not None:
+                    return param.dtype
+        return torch.float32
+
+    def to(self, *args, **kwargs):
+        for component in self.components.values():
+            if isinstance(component, torch.nn.Module):
+                component.to(*args, **kwargs)
+        return self
+
+    def load_config(self, *args, **kwargs):
+        return dict(self.config)
+
+    def save_config(self, save_directory: str):
+        os.makedirs(save_directory, exist_ok=True)
+        for name in os.listdir(self._autoround_source_dir):
+            if name in self.components or name == ".cache":
+                continue
+            _copy_path(os.path.join(self._autoround_source_dir, name), os.path.join(save_directory, name))
+        config_save_pretrained(self.config, "model_index.json", save_directory)
+
+
+def _instantiate_random_init_component(component_dir: str, source_lib: str, class_name: str, trust_remote_code: bool):
+    if source_lib == "diffusers":
+        import diffusers
+
+        cls = getattr(diffusers, class_name, None)
+        if cls is None or not hasattr(cls, "from_config"):
+            raise ValueError(f"Could not resolve diffusers class {class_name!r} for {component_dir}")
+        with open(os.path.join(component_dir, "config.json"), "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return cls.from_config(config)
+
+    if source_lib == "transformers":
+        config = transformers.AutoConfig.from_pretrained(component_dir, trust_remote_code=trust_remote_code)
+        cls = getattr(transformers, class_name, None)
+        if cls is not None and hasattr(cls, "_from_config"):
+            return cls._from_config(config)
+        return transformers.AutoModel.from_config(config, trust_remote_code=trust_remote_code)
+
+    raise ValueError(f"Unsupported component source library {source_lib!r} for {component_dir}")
+
+
+def _build_random_init_diffusion_pipeline(model_dir: str, trust_remote_code: bool = True):
+    model_index_path = os.path.join(model_dir, "model_index.json")
+    if not os.path.exists(model_index_path):
+        raise FileNotFoundError(f"init_mode='random' requires model_index.json under {model_dir}")
+
+    with open(model_index_path, "r", encoding="utf-8") as f:
+        model_index = json.load(f)
+
+    components = collections.OrderedDict()
+    for name, value in model_index.items():
+        if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
+            continue
+
+        component_dir = os.path.join(model_dir, name)
+        if not os.path.isdir(component_dir):
+            if name.startswith("transformer"):
+                raise FileNotFoundError(
+                    f"init_mode='random' requires a local {name}/ directory with config.json under {model_dir}"
+                )
+            continue
+
+        if name.startswith("transformer"):
+            config_path = os.path.join(component_dir, "config.json")
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(f"init_mode='random' requires {config_path}")
+            components[name] = _instantiate_random_init_component(component_dir, value[0], value[1], trust_remote_code)
+        else:
+            components[name] = _SourceCopyComponentProxy(component_dir)
+
+    if "transformer" not in components:
+        raise ValueError(
+            "init_mode='random' currently requires a primary transformer/ component in model_index.json."
+        )
+
+    pipe = _ConfigOnlyDiffusionPipeline(model_dir, model_index, components)
+    return pipe, pipe.transformer
+
+
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -832,6 +945,7 @@ def diffusion_load_model(
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
     model_dtype: str = None,
+    init_mode: str = "pretrained",
     **kwargs,
 ):
     from functools import partial
@@ -845,6 +959,20 @@ def diffusion_load_model(
         raise NotImplementedError(
             f"auto_round current only support hf as platform for diffusion model, but get {platform}"
         )
+
+    init_mode = str(init_mode).strip().lower()
+    if init_mode not in {"pretrained", "random"}:
+        raise ValueError(f"Unsupported init_mode {init_mode!r} for diffusion models")
+    if init_mode == "random":
+        check_diffusers_installed()
+        if not isinstance(pretrained_model_name_or_path, str) or not os.path.isdir(pretrained_model_name_or_path):
+            raise ValueError(
+                "init_mode='random' for diffusion models requires a local model directory path with model_index.json"
+            )
+        pipe, model = _build_random_init_diffusion_pipeline(pretrained_model_name_or_path, trust_remote_code)
+        pipe_config = pipe.load_config(pretrained_model_name_or_path)
+    else:
+        pipe_config = None
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -867,7 +995,7 @@ def diffusion_load_model(
         return pipe, pipe.model
 
     pipelines = LazyImport("diffusers.pipelines")
-    if isinstance(pretrained_model_name_or_path, str):
+    if init_mode == "pretrained" and isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
         with open(model_index, "r", encoding="utf-8") as file:
             config = json.load(file)
@@ -886,11 +1014,11 @@ def diffusion_load_model(
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
-    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+    elif init_mode == "pretrained" and isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
         pipe = pretrained_model_name_or_path
         pipe_config = pipe.load_config(pipe.config["_name_or_path"])
 
-    else:
+    elif init_mode == "pretrained":
         raise ValueError(
             f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
         )
@@ -2517,6 +2645,8 @@ def is_model_free_route(
     has_static_attention_quantization = any(
         kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
     )
+    if str(kwargs.get("init_mode", "pretrained")).strip().lower() == "random":
+        return False
     if has_static_attention_quantization:
         return False
     if explicit:

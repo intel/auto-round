@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
@@ -331,6 +332,7 @@ _ENTRY_KWARG_OWNERS = {
     "batch_size": "base",
     "model_dtype": "base",
     "trust_remote_code": "base",
+    "init_mode": "base",
     "amp": "base",
     "disable_deterministic_algorithms": "base",
     "enable_deterministic_algorithms": "base",
@@ -582,6 +584,50 @@ class _CompressorBuilder(object):
             return [cls._resolve_config(c) for c in config]
         return config
 
+    @staticmethod
+    def _validate_random_init_mode(model, scheme, quant_config, route_kwargs, base_kwargs) -> None:
+        init_mode = str(base_kwargs.get("init_mode", "pretrained")).strip().lower()
+        if init_mode != "random":
+            return
+
+        if route_kwargs.get("model_free", False):
+            raise ValueError("init_mode='random' cannot be combined with model_free=True.")
+        if not isinstance(model, str) or not os.path.isdir(model):
+            raise ValueError("init_mode='random' requires a local diffusion model directory path.")
+
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+        from auto_round.compressors.utils import check_need_act_calibration
+        from auto_round.utils.model import is_diffusion_model
+
+        if not is_diffusion_model(model, trust_remote_code=base_kwargs.get("trust_remote_code", True)):
+            raise ValueError("init_mode='random' currently supports only local diffusion model directories.")
+
+        if isinstance(scheme, AutoScheme):
+            raise ValueError("init_mode='random' does not support AutoScheme; use a fixed zero-shot scheme instead.")
+        if not isinstance(quant_config, RTNConfig) or getattr(quant_config, "disable_opt_rtn", None) is not True:
+            raise ValueError(
+                "init_mode='random' currently supports only pure RTN zero-shot quantization "
+                "(iters=0, disable_opt_rtn=True)."
+            )
+
+        _, _, resolved_attrs = parse_scheme(scheme, _preview_resolved_attrs(quant_config, scheme))
+        act_bits = resolved_attrs.get("act_bits")
+        act_data_type = resolved_attrs.get("act_data_type")
+        act_dynamic = resolved_attrs.get("act_dynamic")
+        needs_act_calib = act_bits is not None and act_bits <= 8 and check_need_act_calibration(
+            act_dynamic,
+            act_data_type,
+            act_bits,
+            static_kv_dtype=base_kwargs.get("static_kv_dtype"),
+            static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+        )
+        if needs_act_calib:
+            raise ValueError(
+                "init_mode='random' does not support activation-calibration-required schemes. "
+                "Use a pure weight-only zero-shot scheme such as W4A16."
+            )
+
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
@@ -637,6 +683,7 @@ class _CompressorBuilder(object):
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and
         # cannot emit the required export metadata.
+        cls._validate_random_init_mode(model, scheme, quant_config, route_kwargs, base_kwargs)
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
         route_scheme = (
             scheme

@@ -120,6 +120,10 @@ def test_model_free_route_rejects_static_attention_quantization(dtype_key, expli
     assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
 
 
+def test_model_free_route_rejects_random_init():
+    assert not is_model_free_route("model", "W4A16", 0, True, {"init_mode": "random"})
+
+
 _LLAMA_CFG = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
 _DEFAULT_SCHEME = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
 

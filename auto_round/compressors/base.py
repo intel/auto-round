@@ -309,6 +309,7 @@ class BaseOrchestrator(object):
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
+        init_mode = kwargs.pop("init_mode", "pretrained")
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
         device = kwargs.pop("device", None)
         if device is not None:
@@ -407,6 +408,7 @@ class BaseOrchestrator(object):
             model_dtype=model_dtype,
             trust_remote_code=trust_remote_code,
             config=model_config,
+            init_mode=init_mode,
             amp=amp,
             need_calib=self.need_calib,
             formats=self.formats,
