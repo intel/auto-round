@@ -107,6 +107,7 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields
+from functools import lru_cache
 from typing import Any, Callable, Optional, Union
 
 import torch
@@ -782,6 +783,99 @@ def _dequantize_with_device_fallback(
     return on_cpu()
 
 
+@lru_cache(maxsize=32)
+def _load_weight_map_from_index(index_path: str) -> dict[str, str]:
+    """Load weight_map from an index file with a small process-local cache."""
+    with open(index_path) as f:
+        index = json.load(f)
+    weight_map = index.get("weight_map", {})
+    return weight_map if isinstance(weight_map, dict) else {}
+
+
+def _hydrate_missing_fp8_scales_from_index(
+    raw_tensors: dict[str, torch.Tensor],
+    shard_path: str,
+    *,
+    shard_name: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Populate missing ``.weight_scale_inv`` tensors from sibling shards.
+
+    Some checkpoints shard FP8 weight and its corresponding scale tensor into
+    different ``.safetensors`` files. Model-free processing is shard-local, so
+    this helper hydrates missing ``<layer>.weight_scale_inv`` tensors by looking
+    up ``weight_map`` in ``*.safetensors.index.json`` and loading only the
+    needed tensors from referenced shards.
+    """
+    if not shard_path.endswith(".safetensors"):
+        return raw_tensors
+
+    weight_to_scale: dict[str, str] = {}
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
+            continue
+        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        if scale_inv_name not in raw_tensors:
+            weight_to_scale[name] = scale_inv_name
+
+    if not weight_to_scale:
+        return raw_tensors
+
+    shard_dir = os.path.dirname(shard_path)
+    index_path = os.path.join(shard_dir, "model.safetensors.index.json")
+    if not os.path.exists(index_path):
+        candidates = sorted(
+            os.path.join(shard_dir, f) for f in os.listdir(shard_dir) if f.endswith(".safetensors.index.json")
+        )
+        if not candidates:
+            return raw_tensors
+        index_path = candidates[0]
+
+    try:
+        weight_map = _load_weight_map_from_index(index_path)
+    except Exception:
+        return raw_tensors
+
+    current_shard = os.path.basename(shard_path)
+    scales_by_shard: dict[str, list[str]] = {}
+    for scale_name in weight_to_scale.values():
+        target_shard = weight_map.get(scale_name)
+        if not target_shard or target_shard == current_shard:
+            continue
+        scales_by_shard.setdefault(target_shard, []).append(scale_name)
+
+    if not scales_by_shard:
+        return raw_tensors
+
+    from safetensors import safe_open
+
+    hydrated = 0
+    for target_shard, scale_names in scales_by_shard.items():
+        target_path = os.path.join(shard_dir, target_shard)
+        if not os.path.exists(target_path):
+            continue
+        try:
+            with safe_open(target_path, framework="pt", device="cpu") as sf:
+                for scale_name in scale_names:
+                    if scale_name in raw_tensors:
+                        continue
+                    try:
+                        raw_tensors[scale_name] = sf.get_tensor(scale_name)
+                        hydrated += 1
+                    except Exception:
+                        # Tensor may be absent in this shard; skip lazily.
+                        continue
+        except Exception:
+            continue
+
+    if hydrated:
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        logger.info(f"{shard_prefix}Hydrated {hydrated} FP8 scale tensor(s) from sibling shard(s) using index mapping.")
+
+    return raw_tensors
+
+
 def _dequant_mxfp_tensors(
     raw_tensors: dict[str, torch.Tensor],
     device: str = "cpu",
@@ -935,6 +1029,7 @@ def _dequant_fp8_tensors(
     block_size: list | None = None,
     device: str = "cpu",
     shard_name: str | None = None,
+    shard_path: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Dequantize DeepSeek-V3-style FP8 weight tensors to bfloat16.
 
@@ -947,6 +1042,9 @@ def _dequant_fp8_tensors(
     :func:`_preprocess_model_type_source_tensors` / :func:`_handle_mxfp_source_tensors`.
     """
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+    if shard_path:
+        raw_tensors = _hydrate_missing_fp8_scales_from_index(raw_tensors, shard_path, shard_name=shard_name)
 
     quant_entries: list[tuple[str, str]] = []
     for name, tensor in raw_tensors.items():
@@ -1003,6 +1101,7 @@ def _process_shard(
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
+    source_quantization_config: dict | None = None,
     enable_torch_compile: bool = False,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
@@ -1077,7 +1176,11 @@ def _process_shard(
                 preserved_tensors[key] = raw_tensors.pop(key)
 
     # 1) model-type-specific preprocessing (format conversion only)
-    raw_tensors, source_state = _preprocess_model_type_source_tensors(raw_tensors, model_type=model_type)
+    raw_tensors, source_state = _preprocess_model_type_source_tensors(
+        raw_tensors,
+        model_type=model_type,
+        quantization_config=source_quantization_config,
+    )
 
     # 2) generic MXFP handling for both preprocessed and normal source models
     raw_tensors, passthrough_tensors, passthrough_layers = _handle_mxfp_source_tensors(
@@ -1095,6 +1198,7 @@ def _process_shard(
         block_size=fp8_block_size,
         device=device,
         shard_name=shard_name,
+        shard_path=shard_path,
     )
     raw_tensors.update(preserved_tensors)
 
@@ -1658,6 +1762,7 @@ def _process_single_shard_task(
     ignore_patterns: list[str],
     fp8_block_size: list | None,
     model_type: str | None,
+    source_quantization_config: dict | None = None,
     quant_output_dir: str,
     total_shards: int,
     enable_torch_compile: bool = False,
@@ -1686,6 +1791,7 @@ def _process_single_shard_task(
         device=device,
         fp8_block_size=fp8_block_size,
         model_type=model_type,
+        source_quantization_config=source_quantization_config,
         enable_torch_compile=enable_torch_compile,
     )
 
@@ -2410,6 +2516,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
+                        source_quantization_config=self.config.get("quantization_config", {}),
                         enable_torch_compile=self.enable_torch_compile,
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
@@ -3079,6 +3186,7 @@ def _preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
     group_size: int = 32,
+    quantization_config: dict | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
     """Apply model-type-specific source tensor normalization.
 
@@ -3091,15 +3199,28 @@ def _preprocess_model_type_source_tensors(
         ``(raw_tensors, source_state)`` where ``source_state[layer]`` is the
         source MXFP bits (4 or 8) for model-type preprocessed layers.
     """
-    if (model_type or "").lower() != "deepseek_v4":
+    model_type = (model_type or "").lower()
+    quantization_config = quantization_config or {}
+    is_deepseek_v4 = model_type == "deepseek_v4"
+    is_deepseek_v32_ue8m0 = (
+        model_type == "deepseek_v32"
+        and quantization_config.get("quant_method") == "fp8"
+        and str(quantization_config.get("fmt", "")).lower() == "e4m3"
+        and str(quantization_config.get("scale_fmt", "")).lower() == "ue8m0"
+    )
+    if not is_deepseek_v4 and not is_deepseek_v32_ue8m0:
         return raw_tensors, {}
 
     entries: list[tuple[str, str, bool]] = []  # (weight_name, scale_name, is_fp8)
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        scale_name = name[: -len(".weight")] + ".scale"
-        if scale_name not in raw_tensors:
+        layer_name = name[: -len(".weight")]
+        scale_candidates = [f"{layer_name}.scale"]
+        if is_deepseek_v32_ue8m0:
+            scale_candidates.extend((f"{layer_name}.weight_scale", f"{layer_name}.weight_scale_inv"))
+        scale_name = next((candidate for candidate in scale_candidates if candidate in raw_tensors), None)
+        if scale_name is None:
             continue
         if tensor.dtype == torch.float8_e4m3fn:
             entries.append((name, scale_name, True))
@@ -3135,7 +3256,7 @@ def _preprocess_model_type_source_tensors(
         raw_tensors[f"{layer_name}.weight_scale"] = weight_scale
 
     logger.info(
-        "Applied model_type preprocessing for deepseek_v4: "
+        f"Applied model_type preprocessing for {model_type}: "
         f"{n_fp8} MXFP8 layer(s), {n_fp4} MXFP4 layer(s) converted to llm-compressor naming."
     )
     return raw_tensors, source_state

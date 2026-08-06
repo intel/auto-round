@@ -496,6 +496,41 @@ class TestFP8Source:
         # non-ignored layer should be quantized normally
         assert "layer" in quantized
 
+    def test_dequant_fp8_hydrates_scale_from_sibling_shard(self, tmp_path):
+        """When scale_inv is sharded separately, dequant should hydrate it via index."""
+        shard_dir = tmp_path / "source"
+        shard_dir.mkdir(parents=True, exist_ok=True)
+
+        weight_name = "model.layers.0.mlp.experts.1.gate_proj.weight"
+        scale_name = "model.layers.0.mlp.experts.1.gate_proj.weight_scale_inv"
+
+        shard_a = shard_dir / "model-00001-of-00002.safetensors"
+        shard_b = shard_dir / "model-00002-of-00002.safetensors"
+        save_file({weight_name: torch.randn(2048, 7168, dtype=torch.bfloat16).to(torch.float8_e4m3fn)}, str(shard_a))
+        save_file({scale_name: torch.ones(16, 56, dtype=torch.float32)}, str(shard_b))
+
+        with open(shard_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(
+                {
+                    "metadata": {"total_size": 0},
+                    "weight_map": {
+                        weight_name: shard_a.name,
+                        scale_name: shard_b.name,
+                    },
+                },
+                f,
+            )
+
+        output, quantized, _ = _process_shard(
+            str(shard_a),
+            _DEFAULT_SCHEME,
+            {},
+            [],
+            fp8_block_size=[128, 128],
+        )
+        assert "model.layers.0.mlp.experts.1.gate_proj" in quantized
+        assert "model.layers.0.mlp.experts.1.gate_proj.qweight" in output
+
 
 # ===========================================================================
 #  Quantization config builder
