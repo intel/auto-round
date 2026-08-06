@@ -245,9 +245,16 @@ class XeSparseSageFwdKernel {
       auto dcV = const_cast<ElementV*>(p.V + offset_v);
       auto dcK_cache = const_cast<ElementK*>(p.K_cache + offset_k_cache);
       auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
-      int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
+      // scale_block_size is 0 on the native-precision sparse-SDPA path (no INT8 dequant);
+      // guard the pad computation so it does not divide by zero. The pads are only used
+      // inside the scale_block_size ? ... : nullptr ternaries below.
+      int seq_q_pad = params.mainloop.scale_block_size > 0
+                          ? (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size
+                          : 0;
       int seq_kv_total = seq_len_kv + seq_len_kv_cache;
-      int seq_kv_pad = (seq_kv_total + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
+      int seq_kv_pad = params.mainloop.scale_block_size > 0
+                           ? (seq_kv_total + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size
+                           : 0;
       auto scaleQ = params.mainloop.scale_block_size
                         ? (float*)params.mainloop.qscale + (idx_b * s.num_heads_q * seq_q_pad + head_q * seq_q_pad)
                         : nullptr;

@@ -208,7 +208,7 @@ class FluxSparseAttnProcessor:
                 device=query.device,
             )
             if self.sparse_kernel == "bf16":
-                hidden_states, sparsity = ark.sparge_sage2_attn_meansim_topk_xpu_bf16(
+                hidden_states, sparsity = ark.sparge_sage2_attn_meansim_topk_xpu_sdpa(
                     query,
                     key,
                     value,
@@ -307,7 +307,7 @@ def patch_flux_sparse_attention(
 ):
     ensure_ark_sparse_binding(
         required_symbols=(
-            ("sage_sparse_bf16", "sage_dynamic_quant_layout")
+            ("sage_sparse_sdpa", "sage_dynamic_quant_layout")
             if sparse_kernel == "bf16"
             else ("sage_sparse", "sage_dynamic_quant_layout")
         )

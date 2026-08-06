@@ -938,18 +938,13 @@ template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV,
           typename GmemTiledCopyK = void, typename GmemTiledCopyV = void, typename GmemTiledCopyO = void>
 struct SparseSageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
-  // The Q*K MMA must match ElementQ. The sparse mainloop dequantizes INT8 Q/K with
-  // qscale/kscale, so INT8 keeps an int32/int8 DPAS. Native BF16/FP16 Q/K must use a
-  // float/<ElementQ> DPAS; reusing the int8 DPAS on bf16 fragments hangs the device.
-  using MMAOperation = cute::conditional_t<
-      is_void_v<MMAOperation_>,
-      typename cute::conditional_t<
-          cute::is_same_v<ElementQ, cutlass::float_e5m2_t> || cute::is_same_v<ElementQ, cutlass::float_e4m3_t>,
-          XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, half_t>,
-          cute::conditional_t<cute::is_same_v<ElementQ, int8_t>,
-                              XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>,
-                              XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementQ>>>,
-      MMAOperation_>;
+  static_assert(cute::is_same_v<ElementQ, int8_t>,
+                "SparseSageConfig is INT8-only; use SparseSDPAConfig for native-precision BF16/FP16");
+  // INT8-only sparse SAGE path: Q/K are int8 and dequantized via qscale/kscale,
+  // so the Q*K MMA is always an int32/int8 DPAS. Native-precision BF16/FP16 sparse
+  // uses the separate SparseSDPAConfig (float/<ElementQ> DPAS).
+  using MMAOperation = cute::conditional_t<is_void_v<MMAOperation_>,
+                                           XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
   using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
                                              XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>, MMAOperation_>;
   using SubgroupLayoutPV =

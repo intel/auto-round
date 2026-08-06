@@ -62,10 +62,7 @@ def _resolve_sparse_binding(args: argparse.Namespace, *, required_symbols: tuple
 
 
 def ensure_sparse_binding(args: argparse.Namespace) -> None:
-    if args.dtype == "bf16":
-        required_symbols = ("sage_sparse", "sage_sparse_bf16", "sage_sparse_sdpa")
-    else:
-        required_symbols = ("sage_sparse", "sage_sparse_sdpa")
+    required_symbols = ("sage_sparse", "sage_sparse_sdpa")
     ext_path = _resolve_sparse_binding(args, required_symbols=required_symbols)
     if ext_path is not None:
         _load_sparse_binding(ext_path, required_symbols=required_symbols)
@@ -522,8 +519,6 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
             "dense_sagev1",
             "sparse_kernel_only",
             "sparse_e2e",
-            "sparse_bf16_kernel_only",
-            "sparse_bf16_e2e",
             "sparse_qtile256_row64k_kernel_only",
             "sparse_qtile256_row64k_e2e",
             "sparse_sdpa_bf16_kernel_only",
@@ -737,49 +732,6 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                     note=f"preprocess failed before e2e benchmark: {preprocess_note}",
                 )
             )
-            if dtype == torch.bfloat16:
-                rows.append(
-                    make_row(
-                        mode="sparse_bf16_kernel_only",
-                        batch=args.batch,
-                        num_heads_q=args.num_heads_q,
-                        num_heads_kv=args.num_heads_kv,
-                        seq_len=seq_len,
-                        tensor_layout=tensor_layout,
-                        head_dim=args.head_dim,
-                        dtype=dtype,
-                        is_causal=args.causal,
-                        warmup=args.warmup,
-                        iters=args.iters,
-                        requested_topk=topk,
-                        selected_ratio=None,
-                        selected_blocks_per_row=None,
-                        latency_ms=None,
-                        status=status,
-                        note=f"preprocess failed before bf16 kernel benchmark: {preprocess_note}",
-                    )
-                )
-                rows.append(
-                    make_row(
-                        mode="sparse_bf16_e2e",
-                        batch=args.batch,
-                        num_heads_q=args.num_heads_q,
-                        num_heads_kv=args.num_heads_kv,
-                        seq_len=seq_len,
-                        tensor_layout=tensor_layout,
-                        head_dim=args.head_dim,
-                        dtype=dtype,
-                        is_causal=args.causal,
-                        warmup=args.warmup,
-                        iters=args.iters,
-                        requested_topk=topk,
-                        selected_ratio=None,
-                        selected_blocks_per_row=None,
-                        latency_ms=None,
-                        status=status,
-                        note=f"preprocess failed before bf16 e2e benchmark: {preprocess_note}",
-                    )
-                )
             continue
 
         # try:
@@ -1063,109 +1015,6 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                 selected_blocks_per_row=selected_blocks_per_row,
             )
         )
-        if dtype == torch.bfloat16:
-            rows.append(
-                try_benchmark(
-                    "sparse_bf16_kernel_only",
-                    lambda preprocess=preprocess: (
-                        hnd_to_nhd(
-                            ark.sage_sparse_bf16(
-                                nhd_to_hnd(q_nhd_src),
-                                nhd_to_hnd(k_nhd_src),
-                                nhd_to_hnd(v_nhd_src),
-                                preprocess["lut"],
-                                preprocess["valid_block_num"],
-                                is_causal=args.causal,
-                                scale=scale,
-                                q_tile_override=args.q_tile_override,
-                                sparse_q_block_tokens=preprocess["sparse_q_block_tokens"],
-                                sparse_k_block_tokens=preprocess["sparse_k_block_tokens"],
-                                tensor_layout="HND",
-                            )
-                        )
-                        if tensor_layout == "HND"
-                        else ark.sage_sparse_bf16(
-                            q,
-                            k,
-                            v,
-                            preprocess["lut"],
-                            preprocess["valid_block_num"],
-                            is_causal=args.causal,
-                            scale=scale,
-                            q_tile_override=args.q_tile_override,
-                            sparse_q_block_tokens=preprocess["sparse_q_block_tokens"],
-                            sparse_k_block_tokens=preprocess["sparse_k_block_tokens"],
-                            tensor_layout=tensor_layout,
-                        )
-                    ),
-                    batch=args.batch,
-                    num_heads_q=args.num_heads_q,
-                    num_heads_kv=args.num_heads_kv,
-                    seq_len=seq_len,
-                    tensor_layout=tensor_layout,
-                    head_dim=args.head_dim,
-                    dtype=dtype,
-                    is_causal=args.causal,
-                    warmup=args.warmup,
-                    iters=args.iters,
-                    requested_topk=topk,
-                    selected_ratio=selected_ratio,
-                    selected_blocks_per_row=selected_blocks_per_row,
-                )
-            )
-            rows.append(
-                try_benchmark(
-                    "sparse_bf16_e2e",
-                    lambda topk=topk: (
-                        hnd_to_nhd(
-                            ark.sparge_sage2_attn_meansim_topk_xpu_bf16(
-                                nhd_to_hnd(q_nhd_src),
-                                nhd_to_hnd(k_nhd_src),
-                                nhd_to_hnd(v_nhd_src),
-                                is_causal=args.causal,
-                                scale=scale,
-                                smooth_k=True,
-                                simthreshd1=-1.0,
-                                topk=topk,
-                                attention_sink=False,
-                                tensor_layout="HND",
-                                q_tile_override=args.q_tile_override,
-                                sparse_q_block_tokens=args.sparse_q_block_tokens,
-                                sparse_k_block_tokens=args.sparse_k_block_tokens,
-                            )
-                        )
-                        if tensor_layout == "HND"
-                        else ark.sparge_sage2_attn_meansim_topk_xpu_bf16(
-                            q,
-                            k,
-                            v,
-                            is_causal=args.causal,
-                            scale=scale,
-                            smooth_k=True,
-                            simthreshd1=-1.0,
-                            topk=topk,
-                            attention_sink=False,
-                            tensor_layout=tensor_layout,
-                            q_tile_override=args.q_tile_override,
-                            sparse_q_block_tokens=args.sparse_q_block_tokens,
-                            sparse_k_block_tokens=args.sparse_k_block_tokens,
-                        )
-                    ),
-                    batch=args.batch,
-                    num_heads_q=args.num_heads_q,
-                    num_heads_kv=args.num_heads_kv,
-                    seq_len=seq_len,
-                    tensor_layout=tensor_layout,
-                    head_dim=args.head_dim,
-                    dtype=dtype,
-                    is_causal=args.causal,
-                    warmup=args.warmup,
-                    iters=args.iters,
-                    requested_topk=topk,
-                    selected_ratio=selected_ratio,
-                    selected_blocks_per_row=selected_blocks_per_row,
-                )
-            )
         del preprocess
         empty_xpu_cache()
 

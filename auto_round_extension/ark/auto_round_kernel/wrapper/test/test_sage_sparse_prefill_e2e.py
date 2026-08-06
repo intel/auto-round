@@ -240,114 +240,6 @@ def run_case(
         )
 
 
-def run_case_bf16(
-    head_dim: int,
-    *,
-    seq_len_q: int = 256,
-    seq_len_kv: int = 256,
-    num_heads_q: int = 4,
-    num_heads_kv: int | None = None,
-    is_causal: bool = False,
-    q_tile_override: int = 0,
-    sparse_q_block_tokens: int | None = None,
-    sparse_k_block_tokens: int | None = None,
-) -> None:
-    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_bf16"))
-    device = torch.device("xpu")
-    batch = 1
-    num_heads_kv = num_heads_q if num_heads_kv is None else num_heads_kv
-    scale = 1.0 / math.sqrt(head_dim)
-    query_tile_tokens = q_tile_override or (64 if head_dim == 64 else 256)
-    k_block_tokens = 64 if sparse_k_block_tokens is None else sparse_k_block_tokens
-    kv_blocks = (seq_len_kv + k_block_tokens - 1) // k_block_tokens
-    active_query_tiles = (seq_len_q + query_tile_tokens - 1) // query_tile_tokens
-    if not is_causal:
-        per_query_tile_selection = [list(range(max(1, min(kv_blocks, 3)))) for _ in range(active_query_tiles)]
-        if active_query_tiles > 1 and kv_blocks > 3:
-            per_query_tile_selection[-1] = list(range(kv_blocks - 3, kv_blocks))
-        case_name = "bf16_prefill"
-    else:
-        per_query_tile_selection = [list(range(min(kv_blocks, idx + 1))) for idx in range(active_query_tiles)]
-        case_name = "bf16_prefill_causal"
-    per_query_tile_selection = _clamp_selected_blocks(kv_blocks, per_query_tile_selection)
-
-    torch.manual_seed(6026 + head_dim + num_heads_q + (num_heads_kv * 13) + seq_len_q + seq_len_kv)
-    query = torch.randn((batch, num_heads_q, seq_len_q, head_dim), dtype=torch.bfloat16, device=device)
-    key = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.bfloat16, device=device)
-    value = torch.randn((batch, num_heads_kv, seq_len_kv, head_dim), dtype=torch.bfloat16, device=device)
-
-    effective_sparse_q_block_tokens = 64 if sparse_q_block_tokens is None else sparse_q_block_tokens
-    effective_sparse_k_block_tokens = 64 if sparse_k_block_tokens is None else sparse_k_block_tokens
-    lut, valid, dense_mask = build_sparse_metadata_and_mask(
-        batch,
-        num_heads_q,
-        seq_len_q,
-        64,
-        query_tile_tokens,
-        per_query_tile_selection,
-        device,
-        is_causal=is_causal,
-        sparse_q_block_tokens=effective_sparse_q_block_tokens,
-        sparse_k_block_tokens=effective_sparse_k_block_tokens,
-        seq_len_kv=seq_len_kv,
-    )
-
-    dense_out = bf16_sparse_reference(
-        query,
-        key,
-        value,
-        dense_mask,
-        scale=scale,
-        enable_gqa=num_heads_q != num_heads_kv,
-    )
-    sparse_out = ark.sage_sparse_bf16(
-        query,
-        key,
-        value,
-        lut,
-        valid,
-        is_causal=is_causal,
-        scale=scale,
-        q_tile_override=q_tile_override,
-        sparse_q_block_tokens=sparse_q_block_tokens,
-        sparse_k_block_tokens=sparse_k_block_tokens,
-        tensor_layout="HND",
-    )
-    e2e_out = ark.sparge_sage2_attn_meansim_topk_xpu_bf16(
-        query,
-        key,
-        value,
-        is_causal=is_causal,
-        scale=scale,
-        smooth_k=True,
-        simthreshd1=-1.0,
-        topk=0.5,
-        attention_sink=False,
-        tensor_layout="HND",
-        q_tile_override=q_tile_override,
-        sparse_q_block_tokens=sparse_q_block_tokens,
-        sparse_k_block_tokens=sparse_k_block_tokens,
-    )
-    torch.xpu.synchronize()
-
-    diff = (dense_out.float() - sparse_out.float()).abs()
-    e2e_diff = (e2e_out.float() - sparse_out.float()).abs()
-    max_diff = float(diff.max().cpu())
-    mean_diff = float(diff.mean().cpu())
-    e2e_max_diff = float(e2e_diff.max().cpu())
-    e2e_mean_diff = float(e2e_diff.mean().cpu())
-    print(
-        f"[sage_sparse_bf16][{case_name}] D={head_dim} Hq={num_heads_q} Hkv={num_heads_kv} "
-        f"Sq={seq_len_q} Skv={seq_len_kv} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f} "
-        f"e2e_max_diff={e2e_max_diff:.6f} e2e_mean_diff={e2e_mean_diff:.6f}"
-    )
-    if max_diff > 2e-2 or mean_diff > 2e-3:
-        raise RuntimeError(
-            f"sage_sparse_bf16 mismatch for D={head_dim}, Hq={num_heads_q}, Hkv={num_heads_kv}, "
-            f"Sq={seq_len_q}, Skv={seq_len_kv}, causal={is_causal}"
-        )
-
-
 def run_case_sdpa(
     dtype: torch.dtype,
     head_dim: int,
@@ -361,9 +253,9 @@ def run_case_sdpa(
     sparse_q_block_tokens: int | None = None,
     sparse_k_block_tokens: int | None = None,
 ) -> None:
-    """Validate the independent sparse-SDPA path (bf16/fp16) against the dense
-    reference and, for bf16, against the sparse-SAGE path (sage_sparse_bf16)."""
-    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_bf16", "sage_sparse_sdpa"))
+    """Validate the independent native-precision sparse-SDPA path (bf16/fp16)
+    against a dense reference built from the same block selection."""
+    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_sdpa"))
     device = torch.device("xpu")
     batch = 1
     num_heads_kv = num_heads_q if num_heads_kv is None else num_heads_kv
@@ -439,31 +331,6 @@ def run_case_sdpa(
             f"Sq={seq_len_q}, Skv={seq_len_kv}, causal={is_causal}"
         )
 
-    if dtype == torch.bfloat16:
-        sage_out = ark.sage_sparse_bf16(
-            query,
-            key,
-            value,
-            lut,
-            valid,
-            is_causal=is_causal,
-            scale=scale,
-            q_tile_override=q_tile_override,
-            sparse_q_block_tokens=sparse_q_block_tokens,
-            sparse_k_block_tokens=sparse_k_block_tokens,
-            tensor_layout="HND",
-        )
-        torch.xpu.synchronize()
-        sd_diff = (sparse_out.float() - sage_out.float()).abs()
-        sd_max = float(sd_diff.max().cpu())
-        sd_mean = float(sd_diff.mean().cpu())
-        print(f"  sparse-SDPA vs sparse-SAGE: max={sd_max:.6f} mean={sd_mean:.6f}")
-        if sd_max > 5e-3 or sd_mean > 5e-4:
-            raise RuntimeError(
-                f"sage_sparse_sdpa vs sage_sparse_bf16 mismatch for D={head_dim}, Hq={num_heads_q}, "
-                f"Hkv={num_heads_kv}, Sq={seq_len_q}, Skv={seq_len_kv}"
-            )
-
 
 def run_case_sdpa_full(
     dtype: torch.dtype,
@@ -477,7 +344,7 @@ def run_case_sdpa_full(
     sparse_k_block_tokens: int | None = None,
 ) -> None:
     """Dense gate: selecting every KV block must make sparse-SDPA match the dense reference."""
-    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_bf16", "sage_sparse_sdpa"))
+    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_sdpa"))
     device = torch.device("xpu")
     batch = 1
     scale = 1.0 / math.sqrt(head_dim)
@@ -670,20 +537,6 @@ def main() -> None:
     )
     run_case(64, is_causal=True)
     run_case(128, is_causal=True)
-    run_case_bf16(64)
-    run_case_bf16(64, seq_len_q=192, seq_len_kv=256, num_heads_q=16, num_heads_kv=4)
-    run_case_bf16(128, q_tile_override=64, num_heads_q=32, num_heads_kv=8)
-    run_case_bf16(
-        128,
-        seq_len_q=512,
-        seq_len_kv=768,
-        num_heads_q=32,
-        num_heads_kv=8,
-        q_tile_override=256,
-        sparse_q_block_tokens=256,
-        sparse_k_block_tokens=64,
-    )
-    run_case_bf16(128, is_causal=True, q_tile_override=64)
     # Independent sparse-SDPA path (bf16 + fp16)
     for dtype in (torch.bfloat16, torch.float16):
         run_case_sdpa(dtype, 64)

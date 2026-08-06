@@ -14,7 +14,7 @@
 
 // Independent native-precision sparse SDPA path (BF16 + FP16). This dispatches to
 // the sparse SDPA mainloop (SPARSESDPAFwdMainloop via SparseSDPAConfig), separate
-// from the INT8-centric sparse SAGE path in sdpa_sparse.cpp / sdpa_sparse_bf16.cpp.
+// from the INT8-centric sparse SAGE path in sdpa_sparse.cpp.
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 

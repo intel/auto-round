@@ -199,47 +199,6 @@ def sage_sparse(
     return O
 
 
-def sage_sparse_bf16(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    lut: torch.Tensor,
-    valid_block_num: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-    enable_gqa: bool = False,
-    q_tile_override: int = 0,
-    sparse_q_block_tokens: int | None = None,
-    sparse_k_block_tokens: int | None = None,
-    tensor_layout: str = "HND",
-) -> torch.Tensor:
-    """Low-level sparse BF16 attention routed by sparse LUT metadata.
-
-    Dispatched through the independent native-precision sparse-SDPA path
-    (``sage_sparse_sdpa``); kept as a bf16 convenience alias.
-    """
-    if query.dtype != torch.bfloat16 or key.dtype != torch.bfloat16 or value.dtype != torch.bfloat16:
-        raise ValueError(f"sage_sparse_bf16 requires bfloat16 Q/K/V, got Q={query.dtype}, K={key.dtype}, V={value.dtype}")
-    return sage_sparse_sdpa(
-        query,
-        key,
-        value,
-        lut,
-        valid_block_num,
-        attn_mask=attn_mask,
-        dropout_p=dropout_p,
-        is_causal=is_causal,
-        scale=scale,
-        enable_gqa=enable_gqa,
-        q_tile_override=q_tile_override,
-        sparse_q_block_tokens=sparse_q_block_tokens,
-        sparse_k_block_tokens=sparse_k_block_tokens,
-        tensor_layout=tensor_layout,
-    )
-
-
 def sage_sparse_sdpa(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -259,8 +218,8 @@ def sage_sparse_sdpa(
     """Low-level native-precision sparse attention (BF16/FP16) routed by sparse LUT metadata.
 
     Independent path built on the dense-SDPA sparse mainloop (SparseSDPAConfig).
-    Unlike ``sage_sparse_bf16`` it does not reuse the INT8-centric SAGE mainloop;
-    Q/K/V are native BF16/FP16 and the softmax scale is applied directly.
+    Unlike the INT8 ``sage_sparse`` path it does not reuse the INT8-centric SAGE
+    mainloop; Q/K/V are native BF16/FP16 and the softmax scale is applied directly.
     """
     del dropout_p, enable_gqa
     if query.device.type != "xpu":
@@ -558,8 +517,10 @@ def _normalize_per_head_hparam(
 
 
 def _query_tile_tokens_for_head_dim(head_dim: int) -> int:
+    # Keep the preprocess default aligned with the sparse e2e wrappers: for head_dim 64
+    # the wrappers default to 64-token query tiles, for head_dim 128 to 64 as well.
     if head_dim == 64:
-        return 128
+        return 64
     if head_dim == 128:
         return 64
     raise ValueError(f"Unsupported head_dim={head_dim}; supported: 64, 128")
@@ -1755,107 +1716,3 @@ def sparge_sage2_attn_meansim_topk_xpu_sdpa(
     return out
 
 
-def sparge_sage2_attn_meansim_topk_xpu_bf16(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-    smooth_k: bool = True,
-    simthreshd1: float | torch.Tensor = -0.1,
-    cdfthreshd: float | torch.Tensor | None = None,
-    topk: float | torch.Tensor = 0.5,
-    pvthreshd: float | torch.Tensor = 50,
-    attention_sink: bool = False,
-    tensor_layout: str = "HND",
-    output_dtype: torch.dtype | None = None,
-    return_sparsity: bool = False,
-    return_metadata: bool = False,
-    k_quant_granularity: int = 64,
-    query_tile_tokens: int | None = None,
-    q_tile_override: int = 0,
-    sparse_q_block_tokens: int | None = None,
-    sparse_k_block_tokens: int | None = None,
-) -> torch.Tensor | tuple[Any, ...]:
-    if query.device.type != "xpu":
-        raise NotImplementedError("sparge_sage2_attn_meansim_topk_xpu_bf16 is only supported on XPU")
-    if dropout_p != 0.0:
-        raise NotImplementedError("dropout_p must be 0.0 for sparge_sage2_attn_meansim_topk_xpu_bf16")
-    if attn_mask is not None and is_causal:
-        raise ValueError("attn_mask and is_causal cannot both be set")
-    if query.dtype != torch.bfloat16 or key.dtype != torch.bfloat16 or value.dtype != torch.bfloat16:
-        raise ValueError(
-            "sparge_sage2_attn_meansim_topk_xpu_bf16 requires bfloat16 Q/K/V, "
-            f"got Q={query.dtype}, K={key.dtype}, V={value.dtype}"
-        )
-    if output_dtype is not None and output_dtype != torch.bfloat16:
-        raise ValueError(f"output_dtype must be torch.bfloat16 in the current implementation, got {output_dtype}")
-    if pvthreshd not in (None, 50):
-        warnings.warn("pvthreshd is not supported by the current ARK sparse kernel and is ignored", stacklevel=2)
-
-    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout, expected_dtype=query.dtype)
-    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key.dtype)
-    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value.dtype)
-    if Bk != B or Bv != B:
-        raise ValueError("Batch size mismatch between Q/K/V")
-    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
-        raise ValueError("K/V shape mismatch")
-    if Dk != D:
-        raise ValueError("Head dim mismatch between Q and K/V")
-
-    effective_query_tile_tokens = query_tile_tokens
-    effective_q_tile_override = q_tile_override
-    if effective_query_tile_tokens is None and q_tile_override in (64, 128, 256):
-        effective_query_tile_tokens = q_tile_override
-    elif effective_query_tile_tokens is not None:
-        if q_tile_override == 0:
-            effective_q_tile_override = int(effective_query_tile_tokens)
-        elif q_tile_override != int(effective_query_tile_tokens):
-            raise ValueError(
-                "query_tile_tokens and q_tile_override must match when both are set; "
-                f"got query_tile_tokens={effective_query_tile_tokens}, q_tile_override={q_tile_override}"
-            )
-    _validate_sparse_q_tile_override_for_head_dim(D, effective_q_tile_override)
-
-    normalized_mask = _normalize_sparse_mask(attn_mask, B, Sq, Skv, query.device)
-    metadata = sparge_preprocess_topk(
-        query,
-        key,
-        is_causal=is_causal,
-        smooth_k=smooth_k,
-        simthreshd1=simthreshd1,
-        topk=topk,
-        cdfthreshd=cdfthreshd,
-        attention_sink=attention_sink,
-        quant_block_size=64,
-        tensor_layout=tensor_layout,
-        k_quant_granularity=k_quant_granularity,
-        query_tile_tokens=effective_query_tile_tokens,
-        sparse_q_block_tokens=sparse_q_block_tokens,
-        sparse_k_block_tokens=sparse_k_block_tokens,
-    )
-    _get_xpu_sparse_kernel_backend()
-    out = sage_sparse_bf16(
-        query,
-        key,
-        value,
-        metadata["lut"],
-        metadata["valid_block_num"],
-        attn_mask=normalized_mask,
-        is_causal=is_causal,
-        scale=scale,
-        q_tile_override=effective_q_tile_override,
-        sparse_q_block_tokens=metadata["sparse_q_block_tokens"],
-        sparse_k_block_tokens=metadata["sparse_k_block_tokens"],
-        tensor_layout=tensor_layout,
-    )
-    sparsity_ratio = metadata["stats"]["sparsity_ratio"]
-    if return_metadata and return_sparsity:
-        return out, sparsity_ratio, metadata
-    if return_metadata:
-        return out, metadata
-    if return_sparsity:
-        return out, sparsity_ratio
-    return out

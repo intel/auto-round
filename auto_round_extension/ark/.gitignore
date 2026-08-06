@@ -6,3 +6,4 @@ xbuild_bf16*
 *.csv
 *.so
 *.pyc
+benchmarks/results/
