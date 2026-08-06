@@ -3158,8 +3158,11 @@ def _expand_e8m0_block_scale(
 
     Because every fine MXFP group lies entirely inside a single coarse block,
     the expansion is a pure ``repeat_interleave`` along both axes (no
-    interpolation).  The returned tensor is ``uint8`` (raw E8M0 bytes), matching
-    the ``U8`` dtype used by llm-compressor ``weight_scale`` tensors.
+    interpolation). For DeepSeek variants that store *tail* blocks using
+    ceil-based 128x128 tiling (for example rows ``5 -> 576``), we expand with
+    128 repeats and then slice the tail. The returned tensor is ``uint8`` (raw
+    E8M0 bytes), matching the ``U8`` dtype used by llm-compressor
+    ``weight_scale`` tensors.
     """
     scale = scale.view(torch.uint8)
     if scale.dim() != 2:
@@ -3169,17 +3172,34 @@ def _expand_e8m0_block_scale(
     target_cols = in_features // group_size
     rows, cols = scale.shape
 
-    if target_rows % rows != 0 or target_cols % cols != 0:
-        raise ValueError(
-            f"Cannot expand E8M0 block scale {tuple(scale.shape)} to "
-            f"({target_rows}, {target_cols}); shapes are not divisible."
-        )
+    # Standard path: exact divisibility between coarse and target shapes.
+    if target_rows % rows == 0 and target_cols % cols == 0:
+        if target_rows != rows:
+            scale = scale.repeat_interleave(target_rows // rows, dim=0)
+        if target_cols != cols:
+            scale = scale.repeat_interleave(target_cols // cols, dim=1)
+        return scale.contiguous()
 
-    if target_rows != rows:
-        scale = scale.repeat_interleave(target_rows // rows, dim=0)
-    if target_cols != cols:
-        scale = scale.repeat_interleave(target_cols // cols, dim=1)
-    return scale.contiguous()
+    # DeepSeek FP8/UE8M0 path: coarse scales are laid out in ceil(./128) blocks.
+    # This handles tail blocks like rows=5 for out_features=576.
+    coarse_block = 128
+    expected_rows = (out_features + coarse_block - 1) // coarse_block
+    expected_cols = (in_features + coarse_block - 1) // coarse_block
+    if rows == expected_rows and cols == expected_cols:
+        if coarse_block % group_size != 0:
+            raise ValueError(
+                f"Cannot expand DeepSeek E8M0 block scale with group_size={group_size}; "
+                f"{coarse_block} is not divisible by group_size."
+            )
+        groups_per_block_col = coarse_block // group_size
+        scale = scale.repeat_interleave(coarse_block, dim=0)[:target_rows]
+        scale = scale.repeat_interleave(groups_per_block_col, dim=1)[:, :target_cols]
+        return scale.contiguous()
+
+    raise ValueError(
+        f"Cannot expand E8M0 block scale {tuple(scale.shape)} to "
+        f"({target_rows}, {target_cols}); unsupported coarse/block layout."
+    )
 
 
 def _preprocess_model_type_source_tensors(
@@ -3233,9 +3253,6 @@ def _preprocess_model_type_source_tensors(
     source_state: dict[str, int] = {}
     n_fp8 = 0
     n_fp4 = 0
-    # Track whether we already logged the fp32→UE8M0 conversion notice for
-    # this shard (one notice per shard is enough; per-layer logging is too verbose).
-    _logged_fp32_ue8m0_conversion = False
     for weight_name, scale_name, is_fp8 in entries:
         layer_name = weight_name[: -len(".weight")]
         weight = raw_tensors.pop(weight_name)
@@ -3254,13 +3271,11 @@ def _preprocess_model_type_source_tensors(
             # float32 layout: sign(1) | exponent(8) | mantissa(23)
             # → uint8 E8M0 = (view_as_int32 >> 23) & 0xFF
             if scale.dtype == torch.float32:
-                if not _logged_fp32_ue8m0_conversion:
-                    logger.info(
-                        f"[{model_type}] Scale tensor '{scale_name}' has dtype float32 with UE8M0 encoding "
-                        f"(only the 8-bit exponent is significant). "
-                        f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
-                    )
-                    _logged_fp32_ue8m0_conversion = True
+                logger.warning_once(
+                    f"[{model_type}] Scale tensor '<idx>' has dtype float32 with UE8M0 encoding "
+                    f"(only the 8-bit exponent is significant). "
+                    f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
+                )
                 scale = ((scale.view(torch.int32) >> 23) & 0xFF).to(torch.uint8)
         else:
             out_features = weight.shape[0]
