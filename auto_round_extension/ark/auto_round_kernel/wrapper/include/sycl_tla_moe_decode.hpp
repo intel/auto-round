@@ -34,6 +34,12 @@
 // so no cross-lane reduction is needed and activation reads are coalesced across
 // the sub-group through the L1 cache.
 //
+// The FP8 scalar path additionally offers a K-split mapping (one sub-group per
+// output element, lanes splitting K, `ARK_MOE_DECODE_FP8_KSPLIT`, default ON):
+// it trades a sub-group reduction for fully coalesced weight loads and 16x the
+// thread count, which is what the memory-bound decode GEMV is short of. See the
+// block comment above `launch_fp8_ksplit`.
+//
 // Copyright (C) 2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
@@ -153,6 +159,9 @@ class MoEDecodeKernelInt2;
 
 template <typename ScalarT, bool IsE4M3, moe_dequant::Fp8DecodeMode Mode>
 class MoEDecodeKernelFP8;
+
+template <typename ScalarT, bool IsE4M3, moe_dequant::Fp8DecodeMode Mode>
+class MoEDecodeKernelFP8KSplit;
 
 // ----------------------------------------------------------------------------
 // FP8 weight dequantization primitives + host-side env-var reader live in
@@ -1241,6 +1250,10 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 //
 //   * `kLut` / `kBits` -- the original per-byte `decode_fp8<IsE4M3, UseLut>`
 //     decoders, kept for A/B measurement and regression escape.
+//
+// Two lane mappings share those decoders: the legacy per-work-item GEMV
+// (`launch_fp8`) and the K-split GEMV (`launch_fp8_ksplit`, default, see its
+// block comment). `launch_fp8_by_mode` picks between them.
 // ----------------------------------------------------------------------------
 
 // Vectorized inner accumulation over CHUNK consecutive K elements (CHUNK weight
@@ -1398,26 +1411,198 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
        });
 }
 
+// ----------------------------------------------------------------------------
+// FP8 K-split (lane-parallel) decode GEMV.
+//
+// `launch_fp8` above maps one *work-item* to one output element, so a lane
+// walks a whole `[n_global, K]` weight row on its own. Two things follow from
+// that mapping, and both cost real bandwidth on a kernel that does ~1 MAC per
+// weight byte:
+//
+//   1. Weight loads are not coalesced. Lane `l` and lane `l+1` of a sub-group
+//      read bytes that are `K` apart, so every 16-byte load instruction turns
+//      into 16 scattered cache-line requests. The lines are eventually fully
+//      consumed (each lane walks its own row sequentially), so no DRAM byte is
+//      wasted -- but the memory controller sees `16 x resident sub-groups`
+//      independent streams instead of one per thread, which is exactly the
+//      access pattern DRAM row buffers handle worst.
+//   2. The grid is small. Decode runs `total_tokens * N / 16` sub-groups; for
+//      a batch-1 MiniMax-M2 step (8 tokens, N=1536) that is 768 SIMD16
+//      threads, below the thread slots of a BMG-class GPU, so there are not
+//      enough outstanding loads in flight to cover DRAM latency.
+//
+// This kernel transposes the lane mapping: a whole *sub-group* cooperates on
+// one output element and the lanes split K. Lane `l` owns the `KSPLIT_CH`
+// consecutive K elements at `l * KSPLIT_CH` inside each `KSPLIT_STEP`-wide
+// K-tile, so per instruction the sub-group covers `KSPLIT_STEP` *contiguous*
+// weight bytes (256 B -- four full cache lines) and `2 * KSPLIT_STEP`
+// contiguous activation bytes. Each thread now walks a single sequential
+// stream, and the grid grows by `SG_SIZE` (12288 sub-groups for the batch-1
+// step above), which is what puts enough requests in flight. The per-lane
+// partial sums are reduced once at the end with `reduce_over_group` -- a
+// handful of shuffles per output element against `K` multiply-adds.
+//
+// The int4 fallback solves the same coalescing problem by repacking the packed
+// weights into an N-tiled layout (`launch_int4_coalesced`), which costs a full
+// pass over the weight tensor and is therefore gated on a token-count
+// amortization heuristic. FP8 weights are one byte per element and already
+// K-contiguous, so K-splitting the lane mapping gets the same coalescing with
+// no repack, no scratch buffer and no extra kernel launch.
+//
+// Scale handling: a lane's chunk is `KSPLIT_CH` consecutive K elements
+// starting at a multiple of `KSPLIT_CH`, so with `group_size` a power of two
+// that is >= `KSPLIT_CH` (the shape gate below) the chunk always sits inside a
+// single K-group and its scale index is `k0 >> log2(group_size)` -- one shift,
+// no integer division in the hot loop. The scale is applied per chunk instead
+// of once per group; that is one extra multiply per `KSPLIT_CH` elements and
+// keeps the `Sigma a * (w * s) == s * Sigma a * w` fold exact-per-group,
+// including the folded `2^-8` E4M3 word-decode bias.
+// ----------------------------------------------------------------------------
+
+// K elements a lane owns per step. 16 FP8 bytes = one 16-byte weight load and
+// one `vec<ScalarT, 16>` (32-byte) activation load per lane, i.e. exactly the
+// transactions `fp8_decode_chunk` already issues, so the alignment contract is
+// unchanged.
+constexpr int KSPLIT_CH = 16;
+// K elements a sub-group covers per step: the contiguous span its 16 lanes
+// read in one instruction.
+constexpr int KSPLIT_STEP = SG_SIZE * KSPLIT_CH;
+// Sub-groups per work-group. Each owns one output column, so a work-group
+// covers `N_TILE` consecutive columns and `N % N_TILE == 0` (already required
+// by every decode path) is enough to tile N exactly.
+constexpr int KSPLIT_WG_SGS = N_TILE;
+
+// ----------------------------------------------------------------------------
+// Env-flag helper -- `ARK_MOE_DECODE_FP8_KSPLIT` (default ON). When ON, the FP8
+// scalar decode GEMV uses the K-split kernel above; setting the var to "0" /
+// "false" / "off" / "no" (case-insensitive) forces the legacy per-lane-strided
+// `launch_fp8`, for A/B comparison and regression escape. Re-read on every call
+// so tests and benchmarks can toggle the path in-process.
+// ----------------------------------------------------------------------------
+inline bool moe_decode_fp8_ksplit_enabled() {
+  return env_flag_enabled("ARK_MOE_DECODE_FP8_KSPLIT", true);  // default ON
+}
+
+// Shape gate for the K-split kernel. `group_size` must be a power of two of at
+// least `KSPLIT_CH` so that (a) a lane's chunk never straddles a K-group
+// boundary and (b) the group index is a shift rather than an integer division
+// on the hot path. Every shipped FP8 quant config (32 / 64 / 128 / 256) passes;
+// anything else keeps the legacy GEMV, which handles arbitrary group sizes.
+inline bool moe_decode_fp8_ksplit_shape_ok(int N, int K, int group_size) {
+  if (N % N_TILE != 0) return false;
+  if (group_size < KSPLIT_CH) return false;
+  if ((group_size & (group_size - 1)) != 0) return false;  // not a power of two
+  if (K % group_size != 0) return false;
+  return true;
+}
+
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode>
+void launch_fp8_ksplit(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
+                       ScalarT* outputs, const int* expert_id_per_token, int total_tokens, int N, int K,
+                       int group_size) {
+  if (!moe_decode_fp8_ksplit_shape_ok(N, K, group_size)) {
+    throw std::invalid_argument("moe_gemm_decode(fp8): K-split GEMV called on an unsupported shape");
+  }
+  if (total_tokens == 0) return;
+
+  const int num_groups_k = K / group_size;
+  int log2_group = 0;
+  while ((1 << log2_group) < group_size) ++log2_group;
+  // Undoes the exponent re-bias the word-native decode leaves behind (1.0f for
+  // every other mode). Exact power of two, applied once per lane chunk.
+  constexpr float kScaleBias = (Mode == Fp8DecodeMode::kWord) ? fp8_word_scale_bias<IsE4M3>() : 1.0f;
+
+  // One sub-group per (token, output column); `KSPLIT_WG_SGS` of them per
+  // work-group so the dispatcher sees `N / N_TILE` work-groups per token
+  // instead of `N` single-sub-group ones.
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(N) * SG_SIZE};
+  sycl::range<2> local{1, static_cast<size_t>(KSPLIT_WG_SGS * SG_SIZE)};
+
+  q->parallel_for<MoEDecodeKernelFP8KSplit<ScalarT, IsE4M3, Mode>>(
+       sycl::nd_range<2>(global, local),
+       [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+         const auto sg = it.get_sub_group();
+         const int token = static_cast<int>(it.get_global_id(0));
+         const int local_id = static_cast<int>(it.get_local_id(1));
+         // The work-group is one row of `KSPLIT_WG_SGS * SG_SIZE` work-items, so
+         // sub-group index and lane index are just the halves of the local id.
+         const int lane = local_id % SG_SIZE;
+         const int n_global = static_cast<int>(it.get_group(1)) * KSPLIT_WG_SGS + local_id / SG_SIZE;
+
+         const int expert = expert_id_per_token[token];
+         const ScalarT* act_row = activations + static_cast<size_t>(token) * K;
+         const uint8_t* w_row =
+             weights + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * K;
+         const ScalarT* s_row =
+             scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
+
+         // Each lane accumulates the scaled partial dot product of the chunks
+         // it owns; `fp8_decode_chunk` keeps two partial accumulators per chunk
+         // so the fp32 dependency chain stays broken.
+         float acc = 0.0f;
+         int k0 = lane * KSPLIT_CH;
+         // Two chunks per iteration: their loads are independent, so the pair
+         // doubles the number of weight requests a thread keeps in flight.
+         for (; k0 + KSPLIT_STEP + KSPLIT_CH <= K; k0 += 2 * KSPLIT_STEP) {
+           float a0 = 0.0f, a1 = 0.0f, b0 = 0.0f, b1 = 0.0f;
+           fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0, w_row + k0, a0, a1);
+           fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0 + KSPLIT_STEP,
+                                                              w_row + k0 + KSPLIT_STEP, b0, b1);
+           const float s0 = static_cast<float>(s_row[k0 >> log2_group]) * kScaleBias;
+           const float s1 = static_cast<float>(s_row[(k0 + KSPLIT_STEP) >> log2_group]) * kScaleBias;
+           acc += (a0 + a1) * s0 + (b0 + b1) * s1;
+         }
+         // Remainder (at most one chunk per lane, plus the lanes whose chunk
+         // falls past K when K < KSPLIT_STEP -- those simply contribute 0).
+         for (; k0 < K; k0 += KSPLIT_STEP) {
+           float p0 = 0.0f, p1 = 0.0f;
+           fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0, w_row + k0, p0, p1);
+           acc += (p0 + p1) * (static_cast<float>(s_row[k0 >> log2_group]) * kScaleBias);
+         }
+
+         const float total = sycl::reduce_over_group(sg, acc, sycl::plus<float>{});
+         if (lane == 0) {
+           outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(total);
+         }
+       });
+}
+
 // Runtime -> compile-time bridge for the decode-mode selector. Keeps the
 // `moe_gemm_decode` dispatch to one branch per (act dtype, format) instead of
-// re-nesting the mode selection at every call site.
+// re-nesting the mode selection at every call site. The K-split vs legacy
+// choice is made here as well, so all three decode modes run the same kernel
+// structure and `word` / `lut` / `bits` stay comparable to one another.
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode>
+void launch_fp8_dispatch(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
+                         const ScalarT* scales, ScalarT* outputs, const int* expert_id_per_token,
+                         int total_tokens, int N, int K, int group_size, bool ksplit) {
+  if (ksplit) {
+    launch_fp8_ksplit<ScalarT, IsE4M3, Mode>(q, activations, weights, scales, outputs, expert_id_per_token,
+                                             total_tokens, N, K, group_size);
+  } else {
+    launch_fp8<ScalarT, IsE4M3, Mode>(q, activations, weights, scales, outputs, expert_id_per_token,
+                                      total_tokens, N, K, group_size);
+  }
+}
+
 template <typename ScalarT, bool IsE4M3>
 void launch_fp8_by_mode(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
                         const ScalarT* scales, ScalarT* outputs, const int* expert_id_per_token,
                         int total_tokens, int N, int K, int group_size) {
+  const bool ksplit = moe_decode_fp8_ksplit_enabled() && moe_decode_fp8_ksplit_shape_ok(N, K, group_size);
   switch (fp8_decode_mode()) {
     case Fp8DecodeMode::kLut:
-      launch_fp8<ScalarT, IsE4M3, Fp8DecodeMode::kLut>(q, activations, weights, scales, outputs,
-                                                       expert_id_per_token, total_tokens, N, K, group_size);
+      launch_fp8_dispatch<ScalarT, IsE4M3, Fp8DecodeMode::kLut>(
+          q, activations, weights, scales, outputs, expert_id_per_token, total_tokens, N, K, group_size, ksplit);
       return;
     case Fp8DecodeMode::kBits:
-      launch_fp8<ScalarT, IsE4M3, Fp8DecodeMode::kBits>(q, activations, weights, scales, outputs,
-                                                        expert_id_per_token, total_tokens, N, K, group_size);
+      launch_fp8_dispatch<ScalarT, IsE4M3, Fp8DecodeMode::kBits>(
+          q, activations, weights, scales, outputs, expert_id_per_token, total_tokens, N, K, group_size, ksplit);
       return;
     case Fp8DecodeMode::kWord:
     default:
-      launch_fp8<ScalarT, IsE4M3, Fp8DecodeMode::kWord>(q, activations, weights, scales, outputs,
-                                                        expert_id_per_token, total_tokens, N, K, group_size);
+      launch_fp8_dispatch<ScalarT, IsE4M3, Fp8DecodeMode::kWord>(
+          q, activations, weights, scales, outputs, expert_id_per_token, total_tokens, N, K, group_size, ksplit);
       return;
   }
 }

@@ -750,6 +750,62 @@ class TestMoEGemmDecodePerf:
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    def test_perf_fp8_ksplit_vs_strided(self, monkeypatch, dtype, fp8_dtype):
+        """FP8 scalar-GEMV A/B: K-split lane mapping
+        (``ARK_MOE_DECODE_FP8_KSPLIT=1``, the default) vs the legacy
+        per-work-item mapping (``=0``).
+
+        ``speedup`` is ``strided / ksplit`` (the K-split kernel is the "ark"
+        column). Decode does ~1 multiply-add per weight byte, so the kernel is
+        bound by how fast the weight tile streams in, not by arithmetic. The
+        legacy mapping gives each work-item its own ``[n, K]`` weight row, so
+        the 16 lanes of a sub-group read bytes ``K`` apart and one load
+        instruction touches 16 cache lines; it also launches only
+        ``total_tokens * N / 16`` threads, too few to keep enough loads in
+        flight to hide DRAM latency at batch 1. The K-split mapping gives one
+        output element to a whole sub-group and splits K across its lanes, so a
+        load instruction covers 256 contiguous weight bytes and the thread
+        count grows 16x, at the cost of one sub-group reduction per output
+        element.
+
+        The FP8 DPAS fast path is disabled so both columns run the scalar GEMV.
+        """
+        group_size = 128
+        _print_header(
+            f"FP8 {str(fp8_dtype).split('.')[-1]} K-split vs strided GEMV (group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- per-work-item GEMV (baseline) vs K-split GEMV (ark)"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            def _run():
+                return ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    group_size=group_size,
+                    asym=False,
+                )
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "0")
+            strided_ms = _xpu_time_ms(_run)
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+            ksplit_ms = _xpu_time_ms(_run)
+            monkeypatch.delenv("ARK_MOE_DECODE_FP8_KSPLIT", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8", raising=False)
+            _print_row(label, N, K, total_tokens, strided_ms, ksplit_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     def test_perf_fp8_dpas_vs_scalar(self, monkeypatch, dtype, fp8_dtype):
         """FP8 decode: the per-group DPAS grouped GEMM
         (``ARK_MOE_DECODE_DPAS_FP8=1``) vs the scalar GEMV (``=0``).

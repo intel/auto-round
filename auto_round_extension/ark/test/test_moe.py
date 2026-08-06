@@ -1137,6 +1137,106 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out_scalar, ref, rtol=rtol, atol=atol)
         torch.testing.assert_close(out_dpas, out_scalar, rtol=rtol, atol=atol)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_ksplit_matches_strided(self, monkeypatch, dtype, fp8_dtype, group_size):
+        """FP8 decode: the K-split GEMV (``ARK_MOE_DECODE_FP8_KSPLIT=1``, the
+        default) must match the legacy per-work-item GEMV
+        (``ARK_MOE_DECODE_FP8_KSPLIT=0``) and the dequant reference.
+
+        The two kernels compute the same dot products with a different lane
+        mapping: the legacy one gives a whole K row to one work-item, the
+        K-split one gives one output element to a whole sub-group and splits K
+        across its 16 lanes, then reduces. Only the fp32 summation order
+        differs, so the two outputs are compared at the same tight tolerance
+        used by ``test_decode_fp8_modes_match``.
+
+        K is deliberately larger than one sub-group step (16 lanes x 16
+        elements = 256) so the kernel's unrolled main loop *and* its remainder
+        loop are both exercised; ``group_size`` covers a group narrower and a
+        group wider than a lane's 16-element chunk.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 640  # K = 2*256 + 128 -> main loop plus a partial step
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        # Compare the two scalar-GEMV lane mappings only: keep DPAS off.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+        out_ksplit = _run()
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "0")
+        out_strided = _run()
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+
+        assert out_ksplit.shape == (total_tokens, N)
+        torch.testing.assert_close(out_ksplit, out_strided, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out_ksplit, ref, rtol=rtol, atol=atol)
+        torch.testing.assert_close(out_strided, ref, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [48, 96])
+    def test_decode_fp8_ksplit_non_pow2_group_falls_back(self, monkeypatch, dtype, group_size):
+        """FP8 decode: a non-power-of-two ``group_size`` must still be correct.
+
+        The K-split GEMV indexes the scale array with a shift, which is only
+        valid when ``group_size`` is a power of two of at least 16 (a lane's
+        16-element chunk must sit inside one K-group). Other group sizes take
+        the legacy GEMV; this pins that fallback so a future gate change cannot
+        silently start feeding them to the shift-indexed kernel.
+
+        ``group_size`` stays a multiple of 16 because the shared vectorized
+        inner loop reads 16-element blocks from the start of every K-group.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 480  # divisible by both 48 and 96
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, torch.float8_e4m3fn)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
