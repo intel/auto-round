@@ -270,44 +270,58 @@ int4-sym(DPAS)为 0.31–0.34 ms / 1.55 ms,而 int4-asym(标量 GEMV)为
 "每专家 token 数" 阈值;设为 `0` 则关闭门控(只要形状门控通过就走 DPAS),
 精度测试与 DPAS/标量 对比性能测试即使用该设置。
 
-**sym 直接复用 asym 的 nibble 解码路径。** 在两者都走标量 GEMV 之后，
-int4-sym 在 *同一个* kernel 里仍比 int4-asym 慢约 1.9 倍（bs32：2.83 ms
-vs 1.49 ms），尽管 sym 的浮点运算严格更少。唯一的差异在于 nibble 解码：
-sym 使用 `(int8_t)(byte << 4) >> 4` 逐 nibble 做符号扩展，这是一条
-移位/截断/移位 的串行依赖链；而 asym 的 掩码+移位 形式可以在整个已加载
-的字节向量上向量化。现在 sym 改用符号翻转恒等式
-`signed == (unsigned ^ 8) - 8`：对打包字节做一次向量 `^ 0x88`，同时翻转
-两个 nibble 的符号位，之后 sym *就是* zero-point 恒为 8 的 asym 计算
-（相同的无符号解码、相同的 `sum a` 累加器、相同的每组一次 scale/zero
-折叠）。对全部 256 种字节取值，解码出的整数与原来的符号扩展逐位相同，
-唯一的变化是 sym 现在累加的是有偏置的和，最后再减去 `8 * sum a`，
-这正是 asym 一直在用的 fp32 累加方式；`launch_int4` 与 `launch_int4_coalesced`
-两个 kernel 均已应用。
+**基于 32 位字的 nibble 解码；sym 恢复真正的有符号 nibble。** 在两者都走
+标量 GEMV 之后，int4-sym 在 *同一个* kernel 里仍比 int4-asym 慢，尽管 sym
+的浮点运算严格更少。差异在于 nibble 解码，而第一次尝试的修复（符号翻转
+恒等式 `signed == (unsigned ^ 8) - 8`，即 `^ 0x88`）并没有弥合差距：它让
+sym 仍然停留在 8 位类型的运算上 —— 一次 `sycl::vec<uint8_t,N>` 的 XOR 加上
+逐字节的 掩码/移位 —— 而 Xe 会把这类窄类型运算展开，无法直接跑在原生
+32 位数据通路上；同时它还迫使 sym 携带一个恒为 8 的 zero-point（见下面的
+"激活求和"）。
+
+现在两种模式都通过共享的 `decode_int4_octet` 原语解码：它接收一个打包的
+*32 位字* 中的 8 个 nibble，每个 nibble 只用一对 DWORD 移位/掩码（asym）
+或一对 DWORD 左移 + 算术右移（sym）即可取出。没有 8 位类型的向量，没有
+XOR，没有窄化转换，并且每 8 个 K 元素只需一次 32 位加载而不是一次字节
+向量加载。在两种模式下，对全部 2^32 种输入字，逐 nibble 的结果都与
+`decode_int4_pair` 逐位相同（已穷举验证），因此这纯粹是指令选择层面的改动。
+它应用于 `launch_int4`、`launch_int4_coalesced`，并且由于该原语是共享的，
+prefill 的混合精度路径同样受益。
+
+由于 sym 重新恢复了 *真正的有符号* nibble，它的每组折叠退化为
+`acc += scale * Σ a·q`，完全没有 zero-point 项；asym 则仍是
+`acc += scale * (Σ a·q − zero · Σ a)`。
 
 **按 4 字节分块的 coalesced repack。** coalesced 回退路径
 (`launch_int4_coalesced`，`ARK_MOE_DECODE_COALESCE_INT4` 默认开启)会在设备端把
 `[E, N, K/2]` 权重重排，使 sub-group 的加载连续。原先的重排布局
 `[E, N/16, K/2, 16]` 每个 lane 每步只放一个字节，因此虽然 16 个 lane 合起来覆盖
-一条 cache line，每个 lane 仍然发出的是*字节*加载 —— 对 sym 而言还额外附带每字节
-一次标量 `^ 0x88`。现在布局改为 `[E, N/16, ceil(K/8), 16, 4]`：一个 chunk 为
+一条 cache line，每个 lane 仍然发出的是*字节*加载。现在布局改为
+`[E, N/16, ceil(K/8), 16, 4]`：一个 chunk 为
 tile 内 16 列中的每一列存放 4 个连续的打包字节，按 lane 主序排列，因此 lane `l`
 在 chunk 偏移 `l*4` 处读取自己的 4 个字节，sub-group 整体仍然覆盖 64 个连续字节。
-于是每个 lane 只需一次 `vec<uint8_t,4>` 加载而不是四次字节加载(权重加载指令数
-降为 1/4)，sym 的符号翻转也变成每个 chunk 一次向量 XOR 而不是四次标量 XOR ——
-这消除了该 kernel 中 sym 相对 asym 仅存的逐字节额外指令。group_size 为 8 的倍数时
+一个 lane 的这 4 个字节是连续的，因此恰好构成一个小端 32 位字：lane 只需发出
+一次 DWORD 加载(权重加载指令数降为 1/4)，并直接交给 `decode_int4_octet`，
+两种模式下 8 个 nibble 都用原生 32 位运算取出。group_size 为 8 的倍数时
 (16/32/64/128/256，即全部已发布的量化配置)每个 K 组都从 chunk 边界开始，向量
 阶段覆盖整个组；其他偶数 group_size 则通过标量前导/收尾循环在同一布局上处理。
 对外的 `[E, N, K/2]` 权重约定保持不变。
 
-**提取激活求和。** 两个 int4 GEMV 都按
+**提取激活求和(仅 asym)。** asym 的 int4 GEMV 按
 `scale * (Σ a·q − zero · Σ a)` 折叠每组的 scale/zero。`Σ a` 只依赖激活行与 K 组，
 与输出列无关，但此前它是在内层循环里重复计算的 —— 每个 sub-group lane 算一遍
 (16 倍冗余)，每个 N-tile work-group 再算一遍 —— 每个 K 元素多付出一次浮点加法。
 现在它被预先计算成一张 `[total_tokens, K/group_size]` 的 fp32 表
 (`launch_act_group_sums`)，GEMV 内层循环只累加 `Σ a·q`，每组读取一个 float。
-sym 获益最大：对 sym 来说 `Σ a` 的存在纯粹是为了承载 `^ 0x88` 解码引入的常数
-zero-point 8。求和顺序的变化仅带来几个 fp32 ULP 的差异，远在 kernel 现有的
-量化容差之内。
+求和顺序的变化仅带来几个 fp32 ULP 的差异，远在 kernel 现有的量化容差之内。
+
+**sym 完全跳过这一前置 pass。** `launch_act_group_sums` 是一个独立的
+`parallel_for`，在 in-order queue 上会完全串行地排在 GEMV 之前。对 decode
+规模而言这笔交易并不划算：它在一个本就受访存带宽限制的循环里省下每个 K
+元素一次浮点加法，却给一次 GEMV 仅几十微秒(bs1)的调用额外增加了一整次
+kernel 派发 —— 这正是让 sym 走"有偏置无符号解码"反而变*慢*的原因。现在
+sym 解码出真正的有符号 nibble，不含 zero-point 项，因此只有在 `Asym` 为真
+时才会计算该表(并派发该 kernel)。
 
 **用 scratch 池替代每次调用的 `malloc_device`。** repack 缓冲区原本是临时的 USM
 分配，每次 decode 调用都必须在一次阻塞的 `queue::wait()` 之后释放 —— 而 decode

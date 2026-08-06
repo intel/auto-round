@@ -346,54 +346,70 @@ expert.
 threshold; `0` disables the gate (always DPAS when the shape gate allows),
 which is what the accuracy and DPAS-vs-scalar perf tests set.
 
-**Sym decodes through the asym nibble path.** Once both modes shared the
-scalar GEMV, int4-sym was still ~1.9x slower than int4-asym in the *same*
-kernel (2.83 ms vs 1.49 ms at bs32) despite doing strictly fewer floating
-point operations. The only asymmetry was the nibble decode: sym
-sign-extended each nibble with `(int8_t)(byte << 4) >> 4`, a serial
-shift/narrow/shift chain per nibble, while asym used a plain mask+shift
-that vectorizes over the whole loaded byte vector. Sym now uses the
-sign-flip identity `signed == (unsigned ^ 8) - 8`: one vector XOR of the
-packed bytes with `0x88` flips both nibbles' sign bits, after which sym is
-*literally* the asym computation with a constant zero-point of 8 (same
-unsigned decode, same `sum a` accumulator, same single per-group
-scale/zero fold). The decoded integers are bit-identical to the previous
-sign-extending decode for all 256 byte values; the only change is that
-sym now accumulates the biased sum and subtracts `8 * sum a` at the end,
-which is exactly the fp32 accumulation pattern asym has always used. It
-applies to both `launch_int4` and `launch_int4_coalesced`.
+**Word-native nibble decode; sym keeps its signed nibbles.** Once both
+modes shared the scalar GEMV, int4-sym was still slower than int4-asym in
+the *same* kernel despite doing strictly fewer floating point operations.
+The asymmetry was the nibble decode, and the first attempt at fixing it
+(the `^ 0x88` sign-flip identity `signed == (unsigned ^ 8) - 8`) did not
+close the gap: it kept sym on 8-bit-typed operations — a `sycl::vec<uint8_t,N>`
+XOR plus per-byte mask/shift — which Xe expands into narrow-type ALU work
+rather than executing on the native 32-bit datapath, and it forced sym to
+carry a constant zero-point of 8 (see *activation sums* below).
+
+Both modes now decode through the shared `decode_int4_octet` primitive,
+which takes the 8 nibbles of a packed *32-bit word* and extracts each one
+with a single DWORD shift/mask pair (asym) or a DWORD shift-left +
+arithmetic shift-right pair (sym). No 8-bit-typed vector, no XOR, no
+narrowing casts, and one 32-bit load per 8 K elements instead of a byte
+vector. The per-nibble results are bit-identical to `decode_int4_pair` for
+every one of the 2^32 input words in both modes (verified exhaustively), so
+this is a pure instruction-selection change. It applies to `launch_int4`,
+`launch_int4_coalesced`, and — since the primitive is shared — the prefill
+mixed-dtype path.
+
+Because sym once again recovers *true signed* nibbles, its per-group fold
+collapses to `acc += scale * Σ a·q` with no zero-point term at all, whereas
+asym keeps `acc += scale * (Σ a·q − zero · Σ a)`.
 
 **4-byte-blocked coalesced repack.** The coalesced fallback
 (`launch_int4_coalesced`, `ARK_MOE_DECODE_COALESCE_INT4` default ON)
 repacks the `[E, N, K/2]` weights on-device so sub-group loads are
 contiguous. The original repack layout `[E, N/16, K/2, 16]` put one byte
 per lane per step, so although the 16 lanes together covered one cache
-line, each lane still issued a *byte* load — and for sym, one scalar
-`^ 0x88` per byte. The layout is now `[E, N/16, ceil(K/8), 16, 4]`: a
-chunk holds four consecutive packed bytes for each of the 16 columns of a
-tile, lane-major, so lane `l` reads its four bytes at chunk offset `l*4`
-and the sub-group still spans 64 contiguous bytes. Each lane therefore
-issues one `vec<uint8_t,4>` load instead of four byte loads (4× fewer
-weight-load instructions), and the sym sign flip becomes one vector XOR
-per chunk instead of four scalar XORs — removing the last per-byte
-instruction sym paid over asym in this kernel. Group sizes that are a
-multiple of 8 (16/32/64/128/256 — every shipped quant config) start each
-K-group on a chunk boundary so the vector stage covers the whole group;
-other even group sizes fall back to a scalar prologue/epilogue over the
-same layout. The external `[E, N, K/2]` weight contract is unchanged.
+line, each lane still issued a *byte* load. The layout is now
+`[E, N/16, ceil(K/8), 16, 4]`: a chunk holds four consecutive packed bytes
+for each of the 16 columns of a tile, lane-major, so lane `l` reads its
+four bytes at chunk offset `l*4` and the sub-group still spans 64
+contiguous bytes. A lane's four bytes are contiguous, hence exactly one
+little-endian 32-bit word: the lane issues a single DWORD load (4× fewer
+weight-load instructions) and feeds it straight to `decode_int4_octet`, so
+all eight nibbles come out with native 32-bit ops in both modes. Group
+sizes that are a multiple of 8 (16/32/64/128/256 — every shipped quant
+config) start each K-group on a chunk boundary so the vector stage covers
+the whole group; other even group sizes fall back to a scalar
+prologue/epilogue over the same layout. The external `[E, N, K/2]` weight
+contract is unchanged.
 
-**Hoisted activation sums.** Both int4 GEMVs fold the per-group
-scale/zero as `scale * (Σ a·q − zero · Σ a)`. `Σ a` depends only on the
-activation row and the K-group, not on the output column, yet it used to
-be recomputed inside the inner loop — once per sub-group lane (16×
+**Hoisted activation sums (asym only).** The asym int4 GEMVs fold the
+per-group scale/zero as `scale * (Σ a·q − zero · Σ a)`. `Σ a` depends only
+on the activation row and the K-group, not on the output column, yet it
+used to be recomputed inside the inner loop — once per sub-group lane (16×
 redundant) and again for every N-tile work-group — costing one extra float
 add per K element. It is now precomputed once into a
 `[total_tokens, K/group_size]` fp32 table (`launch_act_group_sums`), so
 the GEMV inner loop only accumulates `Σ a·q` and reads one float per
-group. Sym benefits most: for sym `Σ a` exists purely to carry the
-constant zero-point of 8 that the `^ 0x88` decode introduces. The
-summation order changes by a few fp32 ULPs, far inside the kernel's
-quantization tolerance.
+group. The summation order changes by a few fp32 ULPs, far inside the
+kernel's quantization tolerance.
+
+**Sym skips the pre-pass entirely.** `launch_act_group_sums` is a separate
+`parallel_for`, and on an in-order queue it fully serializes ahead of the
+GEMV. That is a poor trade at decode sizes: it saves one float add per K
+element in a loop that is already memory-bound, but adds a whole kernel
+dispatch to a call whose GEMV is only tens of microseconds at bs1 — which
+is why routing sym through the biased-unsigned decode made sym *slower*,
+not faster. Now that sym decodes true signed nibbles it has no zero-point
+term, so the table is computed (and the kernel launched) only when
+`Asym` is true.
 
 **Pooled scratch instead of per-call `malloc_device`.** The repack buffer
 used to be a transient USM allocation that had to be freed behind a
