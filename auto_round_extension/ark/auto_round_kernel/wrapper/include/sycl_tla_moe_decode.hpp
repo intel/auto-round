@@ -39,6 +39,7 @@
 
 #pragma once
 
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -85,6 +86,31 @@ namespace moe_decode_detail {
 
 constexpr int SG_SIZE = 16;
 constexpr int N_TILE = SG_SIZE;  // one output element per sub-group lane
+
+// ----------------------------------------------------------------------------
+// Allocation-free boolean env-var lookup.
+//
+// The int4 decode dispatch consults up to three of these on *every* call -- they
+// are deliberately re-read rather than cached so tests and benchmarks can toggle
+// a path in-process -- and decode issues one call per generated token. Building
+// a `std::string` per lookup put a heap allocation on that hot path for nothing,
+// so the comparison is done in place instead. The accepted spellings are
+// unchanged: "0" / "false" / "off" / "no" (case-insensitive) mean off, any other
+// value means on, and an unset variable falls back to `default_value`.
+// ----------------------------------------------------------------------------
+inline bool env_flag_enabled(const char* name, bool default_value) {
+  const char* env = std::getenv(name);
+  if (env == nullptr) return default_value;
+  auto iequals = [](const char* value, const char* lowercase_literal) {
+    const char* a = value;
+    const char* b = lowercase_literal;
+    for (; *a != '\0' && *b != '\0'; ++a, ++b) {
+      if (static_cast<char>(std::tolower(static_cast<unsigned char>(*a))) != *b) return false;
+    }
+    return *a == '\0' && *b == '\0';
+  };
+  return !(iequals(env, "0") || iequals(env, "false") || iequals(env, "off") || iequals(env, "no"));
+}
 
 // Token-blocking factor for the coalesced int4 decode GEMV. A work-item that
 // owns one (n_tile, lane) output column processes up to TOKEN_BLOCK consecutive
@@ -136,6 +162,7 @@ using moe_dequant::decode_fp8_e4m3_lut;
 using moe_dequant::decode_fp8_e5m2_bits;
 using moe_dequant::decode_fp8_e5m2_lut;
 using moe_dequant::decode_int2_quad;
+using moe_dequant::decode_int4_octet;
 using moe_dequant::decode_int4_pair;
 using moe_dequant::decode_int8;
 using moe_dequant::fp8_decode_use_lut;
@@ -324,21 +351,24 @@ inline DeviceScratchPool& act_group_sum_pool() {
 }
 
 // ----------------------------------------------------------------------------
-// Per-(token, K-group) activation sums.
+// Per-(token, K-group) activation sums (asym int4 only).
 //
-// Both int4 GEMV kernels fold their per-group scale/zero as
+// The asym int4 GEMVs fold their per-group scale/zero as
 // `scale * (Σ a·q - zero · Σ a)`, where `Σ a` runs over the group's K range.
 // `Σ a` depends only on the activation row and the group, *not* on the output
 // column, yet the GEMVs used to recompute it inside the inner loop -- once per
 // sub-group lane (16x redundant) and again for every N-tile work-group (N/16x
-// redundant). That cost one extra float add per K element on the hot path,
-// which for sym is pure overhead introduced by the constant zero-point of 8
-// that the `^0x88` decode relies on.
+// redundant). That cost one extra float add per K element on the hot path.
 //
 // This pass computes the `[total_tokens, K/group_size]` table once, so the
 // GEMVs only accumulate `Σ a·q` and read one float per group. The table is
 // tiny (tokens x groups floats) and comes from the scratch pool, so no
 // allocation happens in steady state.
+//
+// Sym does *not* use this at all: it decodes true signed nibbles, so its fold
+// carries no zero-point term. That keeps this extra kernel launch -- a
+// first-order cost when the GEMV itself is only tens of microseconds -- off the
+// sym decode timeline entirely.
 //
 // The summation order differs from the previous in-loop accumulation, so
 // results move by a few float ULPs -- far inside the kernel's quantization
@@ -409,34 +439,36 @@ float* compute_act_group_sums(sycl::queue* q, const ScalarT* activations, int to
 // without regressing group_size == 16 (which drops straight to the 16-wide
 // stage).
 //
-// Both sym and asym decode the nibbles through the *same* unsigned path.
-// Measurements on MiniMax-M2 decode shapes showed int4-sym ~1.9x slower than
-// int4-asym in this very kernel even though sym does strictly fewer floating
-// point operations. The only difference was the per-nibble sign extension
-// (`(int8_t)(byte << 4) >> 4`) -- a serial shift/narrow/shift chain per nibble
-// that defeats the byte-wise vectorization the asym mask+shift form gets. The
-// sym decode is therefore expressed with the standard sign-flip identity
+// The packed weights are consumed as 32-bit *words* (four packed bytes, eight
+// K elements) through the shared `decode_int4_octet` primitive rather than as
+// a `sycl::vec<uint8_t, N>` byte vector. On Xe the ALU is 32-bit-lane based
+// and byte-typed vector operations lower to restricted byte regioning that IGC
+// often has to expand, so every per-byte step in the hot loop -- the element
+// extraction *and*, for sym, the sign handling -- paid that expansion. In
+// word form both modes issue exactly two native DWORD operations per nibble:
 //
-//     signed_nibble == (unsigned_nibble ^ 8) - 8
+//     asym: (word >> 4j) & 0xF
+//     sym : (int)(word << (28 - 4j)) >> 28
 //
-// so XOR-ing the packed byte with `0x88` (flipping the sign bit of *both*
-// nibbles at once, on the whole loaded vector register) turns sym into exactly
-// the asym computation with a constant zero-point of 8. The decoded integers
-// are bit-identical to the sign-extending decode for all 256 byte values, so
-// the only change is that sym now accumulates the biased sum and subtracts
-// `8 * sum a` at the end -- exactly the fp32 accumulation pattern asym has
-// always used, and well inside the kernel's existing quantization tolerance.
+// so sym's sign extension is no longer a serial byte-typed shift/narrow/shift
+// chain and costs the same as asym's mask+shift. That removes the reason the
+// previous revision biased sym with a `^0x88` vector XOR and folded a constant
+// zero-point of 8: sym now accumulates *true signed* nibbles, which means it
+// no longer needs the `Σ a` term at all (see `launch_int4`) -- one fewer fp32
+// add per K element, one fewer table read per K-group, and one fewer device
+// kernel launch per decode call than asym. The decoded integers are
+// bit-identical to `decode_int4_pair` for every input word, so decode/prefill
+// parity is unchanged.
 //
-// The per-group scale and zero-point are NOT applied here: this accumulates the
-// raw integer-weighted dot product into `acc_q0`/`acc_q1`. The plain activation
-// sum `Σ a` that the fold also needs (for both modes -- sym carries the
-// constant zero-point of 8) is *not* accumulated here either: it is independent
-// of the output column and is precomputed once per (token, K-group) by
-// `launch_act_group_sums`. The caller folds the group's scale/zero in once
-// (sum a*((q-z)*s) == s*(sum a*q - z*sum a)). Hoisting the scale removes one
-// float multiply per K element on the decode hot path, hoisting `Σ a` removes
-// one float add per K element, and because the fold is exact-once per group the
-// result stays well within the kernel's existing quantization tolerance.
+// The per-group scale and zero-point are NOT applied here: this accumulates
+// the raw integer-weighted dot product into `acc_q0`/`acc_q1`. The caller
+// folds the group's scale (and, for asym, its zero-point against the
+// precomputed `Σ a`) in exactly once per group:
+//   sym : acc += scale * (acc_q0 + acc_q1)
+//   asym: acc += scale * ((acc_q0 + acc_q1) - zero * Σ a)
+// Hoisting the scale removes one float multiply per K element on the decode
+// hot path, and because the fold is exact-once per group the result stays well
+// within the kernel's existing quantization tolerance.
 //
 // Two independent partial accumulators (``acc_q0``/``acc_q1``) break the
 // single fp32 dependency chain so the FMA pipeline is not latency-bound; the
@@ -449,32 +481,29 @@ static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_pt
   // sycl::vec only supports widths of 1, 2, 3, 4, 8 or 16, so a single
   // vec<uint16_t, 32> load is illegal. Process the chunk in 16-wide sub-blocks
   // (16 activations + 8 packed weight bytes each), which keeps CHUNK == 32
-  // valid while reusing the same code path for CHUNK == 16.
+  // valid while reusing the same code path for CHUNK == 16. The 8 packed bytes
+  // are loaded as two 32-bit words in one 8-byte transaction -- the same
+  // access width (and the same 8-byte alignment requirement) as the byte
+  // vector it replaces.
   constexpr int SUB = 16;
+  constexpr int WORDS = SUB / 8;  // one 32-bit word per 8 K elements
   using ActVec = sycl::vec<uint16_t, SUB>;
-  using PackVec = sycl::vec<uint8_t, SUB / 2>;
+  using WordVec = sycl::vec<uint32_t, WORDS>;
 #pragma unroll
   for (int s = 0; s < CHUNK / SUB; ++s) {
     const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
-    PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr + s * (SUB / 2));
-    if constexpr (!Asym) {
-      // Sign-flip the whole packed vector in one vector XOR so the sym nibbles
-      // can be decoded by the (vectorizable) unsigned path below; the constant
-      // zero-point of 8 is folded by the caller.
-      pv = pv ^ PackVec(static_cast<uint8_t>(0x88));
-    }
+    const WordVec wv = *reinterpret_cast<const WordVec*>(w_ptr + s * (SUB / 2));
 #pragma unroll
-    for (int b = 0; b < SUB / 2; ++b) {
-      int q0, q1;
-      // Always the unsigned decode: asym nibbles are unsigned by definition and
-      // sym nibbles were biased by the XOR above.
-      decode_int4_pair<true>(pv[b], q0, q1);
-      const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
-      const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
-      const float fa0 = static_cast<float>(a0);
-      const float fa1 = static_cast<float>(a1);
-      acc_q0 += fa0 * static_cast<float>(q0);
-      acc_q1 += fa1 * static_cast<float>(q1);
+    for (int w = 0; w < WORDS; ++w) {
+      int q[8];
+      decode_int4_octet<Asym>(wv[w], q);
+#pragma unroll
+      for (int u = 0; u < 8; u += 2) {
+        const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[8 * w + u]));
+        const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[8 * w + u + 1]));
+        acc_q0 += static_cast<float>(a0) * static_cast<float>(q[u]);
+        acc_q1 += static_cast<float>(a1) * static_cast<float>(q[u + 1]);
+      }
     }
   }
 }
@@ -499,8 +528,16 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
   const int k_packed = K / 2;  // bytes of packed weight per (expert, n)
 
   // Per-(token, K-group) activation sums, shared by every lane and every
-  // N-tile instead of being recomputed inside the inner loop.
-  const float* a_sums = compute_act_group_sums<ScalarT>(q, activations, total_tokens, K, group_size);
+  // N-tile instead of being recomputed inside the inner loop. Only the *asym*
+  // fold needs them (`Σ a·(q - z) == Σ a·q - z·Σ a`): sym decodes true signed
+  // nibbles, so its fold is a plain per-group scale multiply with no
+  // zero-point term. Skipping the pre-pass keeps a whole extra kernel launch
+  // off the sym decode timeline -- on decode-sized batches the GEMV itself is
+  // only tens of microseconds, so an extra dispatch is a first-order cost.
+  [[maybe_unused]] const float* a_sums = nullptr;
+  if constexpr (Asym) {
+    a_sums = compute_act_group_sums<ScalarT>(q, activations, total_tokens, K, group_size);
+  }
 
   sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(n_tiles * SG_SIZE)};
   sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
@@ -515,26 +552,21 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 
          const int expert = expert_id_per_token[token];
          const ScalarT* act_row = activations + static_cast<size_t>(token) * K;
-         const float* a_sum_row = a_sums + static_cast<size_t>(token) * num_groups_k;
 
          const uint8_t* w_row =
              weights + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * k_packed;
          const ScalarT* s_row =
              scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
-         const ScalarT* z_row = Asym
-             ? zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k
-             : nullptr;
+         [[maybe_unused]] const ScalarT* z_row = nullptr;
+         [[maybe_unused]] const float* a_sum_row = nullptr;
+         if constexpr (Asym) {
+           z_row = zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
+           a_sum_row = a_sums + static_cast<size_t>(token) * num_groups_k;
+         }
 
          float acc = 0.0f;
          for (int g = 0; g < num_groups_k; ++g) {
            const float scale = static_cast<float>(s_row[g]);
-           // Sym uses the constant zero-point of 8 that the `^0x88` sign-flip
-           // in the decode introduces, so both modes run the identical fold.
-           // `if constexpr` keeps the null `z_row` out of the sym instantiation.
-           float zero = 8.0f;
-           if constexpr (Asym) {
-             zero = static_cast<float>(z_row[g]);
-           }
            const int k_base = g * group_size;
            // Vectorized ladder: process 32 K-elements at a time (16 packed
            // weight bytes + vec<ScalarT,32> activation block), then a 16-wide
@@ -547,12 +579,11 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // The scale and zero are constant across the group, so the wide
            // stages accumulate only the raw integer-weighted dot product
            // ``Σ a·q`` (split across two partial accumulators to break the
-           // fp32 dependency chain); ``Σ a`` comes from the precomputed
-           // per-(token, group) table. The fold below applies the scale/zero
-           // exactly once per group, identically for both modes:
-           //   acc += scale * ((acc_q0 + acc_q1) - zero * a_sum)
-           // with `zero` == the per-group zero-point (asym) or the constant 8
-           // that the `^0x88` sign-flip decode introduces (sym).
+           // fp32 dependency chain). The fold below applies the scale exactly
+           // once per group; asym additionally subtracts its per-group
+           // zero-point against the precomputed ``Σ a``:
+           //   sym : acc += scale * (acc_q0 + acc_q1)
+           //   asym: acc += scale * ((acc_q0 + acc_q1) - zero * a_sum)
            float acc_q0 = 0.0f;
            float acc_q1 = 0.0f;
            int kk = 0;
@@ -572,16 +603,19 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // raw-accumulation convention as the wide stages so the single
            // scale/zero fold below stays valid.
            for (; kk < group_size; kk += 2) {
-             uint8_t packed = w_row[(k_base + kk) / 2];
-             if constexpr (!Asym) packed ^= static_cast<uint8_t>(0x88);
+             const uint8_t packed = w_row[(k_base + kk) / 2];
              int q0, q1;
-             decode_int4_pair<true>(packed, q0, q1);
+             decode_int4_pair<Asym>(packed, q0, q1);
              const float fa0 = static_cast<float>(act_row[k_base + kk]);
              const float fa1 = static_cast<float>(act_row[k_base + kk + 1]);
              acc_q0 += fa0 * static_cast<float>(q0);
              acc_q1 += fa1 * static_cast<float>(q1);
            }
-           acc += scale * ((acc_q0 + acc_q1) - zero * a_sum_row[g]);
+           if constexpr (Asym) {
+             acc += scale * ((acc_q0 + acc_q1) - static_cast<float>(z_row[g]) * a_sum_row[g]);
+           } else {
+             acc += scale * (acc_q0 + acc_q1);
+           }
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
@@ -606,11 +640,7 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // `moe_decode_release_scratch`) drops the cached buffers.
 // ----------------------------------------------------------------------------
 inline bool moe_decode_int4_repack_cache_enabled() {
-  const char* env = std::getenv("ARK_MOE_DECODE_INT4_REPACK_CACHE");
-  if (env == nullptr) return false;  // default OFF -- see comment above
-  std::string s(env);
-  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return !(s == "0" || s == "false" || s == "off" || s == "no");
+  return env_flag_enabled("ARK_MOE_DECODE_INT4_REPACK_CACHE", false);  // default OFF -- see comment above
 }
 
 // ----------------------------------------------------------------------------
@@ -629,15 +659,14 @@ inline bool moe_decode_int4_repack_cache_enabled() {
 // four consecutive packed bytes for each of the 16 columns owned by a sub-group
 // tile, lane-major. Lane `l` therefore reads its four bytes at chunk offset
 // `l*4`, and the 16 lanes of a sub-group together cover 64 contiguous bytes ->
-// still a single coalesced transaction, but now each lane issues one
-// `vec<uint8_t,4>` load instead of four separate byte loads. For sym the
-// `^0x88` sign flip that lets the unsigned (vectorizable) nibble decode stand in
-// for the sign-extending one also becomes a single vector XOR per chunk instead
-// of one scalar XOR per byte -- the last remaining per-byte instruction sym paid
-// over asym in this kernel. The dequant math is otherwise identical to
-// `launch_int4` (same `decode_int4_pair`, same per-group scale/zero fold); only
-// the weight memory layout changes, and the caller's `[E, N, K/2]` weight
-// contract is unchanged.
+// still a single coalesced transaction, but now each lane issues one 32-bit
+// word load instead of four separate byte loads. That word is decoded with the
+// shared `decode_int4_octet` primitive, so all eight nibbles are extracted with
+// native DWORD shift/mask pairs and neither mode touches the 8-bit ALU (see
+// `int4_decode_chunk`). The dequant math is otherwise identical to
+// `launch_int4` (bit-identical nibbles, same per-group scale/zero fold, sym
+// accumulating true signed nibbles with no `Σ a` term); only the weight memory
+// layout changes, and the caller's `[E, N, K/2]` weight contract is unchanged.
 //
 // Group sizes that are a multiple of 8 (16/32/64/128/256 -- the shipped quant
 // configs) start every K-group on a chunk boundary, so the vectorized stage
@@ -723,8 +752,13 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
     });
   }
 
-  // Per-(token, K-group) activation sums, hoisted out of the inner loop.
-  const float* a_sums = compute_act_group_sums<ScalarT>(q, activations, total_tokens, K, group_size);
+  // Per-(token, K-group) activation sums, hoisted out of the inner loop. Only
+  // asym needs them -- sym decodes true signed nibbles and folds a plain scale
+  // -- so the sym path skips this kernel launch entirely (see `launch_int4`).
+  [[maybe_unused]] const float* a_sums = nullptr;
+  if constexpr (Asym) {
+    a_sums = compute_act_group_sums<ScalarT>(q, activations, total_tokens, K, group_size);
+  }
 
   sycl::range<2> global{static_cast<size_t>((total_tokens + TOKEN_BLOCK - 1) / TOKEN_BLOCK),
                         static_cast<size_t>(n_tiles * SG_SIZE)};
@@ -780,9 +814,10 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
               repacked + (static_cast<size_t>(expert) * n_tiles + n_tile) * k_chunks * chunk_stride;
           const ScalarT* s_row =
               scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
-          const ScalarT* z_row = Asym
-              ? zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k
-              : nullptr;
+          [[maybe_unused]] const ScalarT* z_row = nullptr;
+          if constexpr (Asym) {
+            z_row = zeros + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
+          }
 
           // Compact the tokens routed to `expert` into a dense member list
           // once per pass. Hoisting the routing filter out of the hot k-loop
@@ -792,13 +827,15 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
           // filter.
           int members[TOKEN_BLOCK];
           const ScalarT* act_rows[TOKEN_BLOCK];
-          const float* a_sum_rows[TOKEN_BLOCK];
+          [[maybe_unused]] const float* a_sum_rows[TOKEN_BLOCK];
           int nmembers = 0;
           for (int b = 0; b < block; ++b) {
             if (experts[b] != expert) continue;
             members[nmembers] = b;
             act_rows[nmembers] = activations + static_cast<size_t>(token_base + b) * K;
-            a_sum_rows[nmembers] = a_sums + static_cast<size_t>(token_base + b) * num_groups_k;
+            if constexpr (Asym) {
+              a_sum_rows[nmembers] = a_sums + static_cast<size_t>(token_base + b) * num_groups_k;
+            }
             ++nmembers;
           }
 
@@ -807,18 +844,11 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
 
           for (int g = 0; g < num_groups_k; ++g) {
             const float scale = static_cast<float>(s_row[g]);
-            // Constant zero-point of 8 for sym (see `int4_decode_chunk`): the
-            // `^0x88` sign-flip lets sym reuse the asym unsigned decode and
-            // fold, so both modes emit the identical instruction stream.
-            float zero = 8.0f;
-            if constexpr (Asym) {
-              zero = static_cast<float>(z_row[g]);
-            }
             const int k_base = g * group_size;
             // Per-token split accumulators for the raw integer-weighted dot
-            // product; the per-group scale/zero (and the precomputed activation
-            // sum) are folded once after the K-loop, exactly as in the scalar
-            // path.
+            // product; the per-group scale (and, for asym, the zero-point
+            // against the precomputed activation sum) are folded once after
+            // the K-loop, exactly as in the scalar path.
             float acc_q0[TOKEN_BLOCK];
             float acc_q1[TOKEN_BLOCK];
             for (int m = 0; m < nmembers; ++m) {
@@ -826,11 +856,9 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
               acc_q1[m] = 0.0f;
             }
 
-            // Decode one already-sign-biased packed byte (two K elements) and
-            // accumulate it into every token of this pass.
-            auto accumulate_byte = [&](uint8_t biased, int k0) {
-              int q0, q1;
-              decode_int4_pair<true>(biased, q0, q1);
+            // Accumulate one decoded nibble pair (two K elements) into every
+            // token of this pass.
+            auto accumulate_pair = [&](int q0, int q1, int k0) {
               const float fq0 = static_cast<float>(q0);
               const float fq1 = static_cast<float>(q1);
               for (int m = 0; m < nmembers; ++m) {
@@ -839,12 +867,13 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
                 acc_q1[m] += static_cast<float>(act_row[k0 + 1]) * fq1;
               }
             };
-            // Load a single packed byte through the chunked layout.
-            auto load_byte = [&](int b_abs) {
-              uint8_t packed = w_tile[static_cast<size_t>(b_abs / PACK_VEC) * chunk_stride +
-                                      static_cast<size_t>(lane) * PACK_VEC + (b_abs % PACK_VEC)];
-              if constexpr (!Asym) packed ^= static_cast<uint8_t>(0x88);
-              return packed;
+            // Load and decode a single packed byte through the chunked layout.
+            auto accumulate_byte = [&](int b_abs, int k0) {
+              const uint8_t packed = w_tile[static_cast<size_t>(b_abs / PACK_VEC) * chunk_stride +
+                                            static_cast<size_t>(lane) * PACK_VEC + (b_abs % PACK_VEC)];
+              int q0, q1;
+              decode_int4_pair<Asym>(packed, q0, q1);
+              accumulate_pair(q0, q1, k0);
             };
 
             const int kb_base = k_base / 2;
@@ -853,30 +882,38 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
             // Prologue to the next 4-byte chunk boundary. Empty whenever
             // group_size % 8 == 0, i.e. for every shipped quant config.
             for (; kb < kb_count && ((kb_base + kb) % PACK_VEC) != 0; ++kb) {
-              accumulate_byte(load_byte(kb_base + kb), k_base + 2 * kb);
+              accumulate_byte(kb_base + kb, k_base + 2 * kb);
             }
-            using PackVec = sycl::vec<uint8_t, PACK_VEC>;
+            // A lane's PACK_VEC == 4 bytes inside a chunk are contiguous, so
+            // they are exactly one little-endian 32-bit word: load it as such
+            // and decode all 8 nibbles with native DWORD ops (no 8-bit ALU,
+            // no sign-bias XOR for sym) via the shared octet primitive.
             for (; kb + PACK_VEC <= kb_count; kb += PACK_VEC) {
               const int b_abs = kb_base + kb;  // 4-byte aligned here
-              PackVec pv = *reinterpret_cast<const PackVec*>(
+              const uint32_t word = *reinterpret_cast<const uint32_t*>(
                   w_tile + static_cast<size_t>(b_abs / PACK_VEC) * chunk_stride +
                   static_cast<size_t>(lane) * PACK_VEC);
-              if constexpr (!Asym) {
-                // One vector XOR flips the sign bit of all 8 nibbles at once.
-                pv = pv ^ PackVec(static_cast<uint8_t>(0x88));
-              }
+              int qv[8];
+              decode_int4_octet<Asym>(word, qv);
 #pragma unroll
               for (int u = 0; u < PACK_VEC; ++u) {
-                accumulate_byte(pv[u], k_base + 2 * (kb + u));
+                accumulate_pair(qv[2 * u], qv[2 * u + 1], k_base + 2 * (kb + u));
               }
             }
             // Scalar tail for group sizes that are not a multiple of 8.
             for (; kb < kb_count; ++kb) {
-              accumulate_byte(load_byte(kb_base + kb), k_base + 2 * kb);
+              accumulate_byte(kb_base + kb, k_base + 2 * kb);
             }
 
-            for (int m = 0; m < nmembers; ++m) {
-              acc[m] += scale * ((acc_q0[m] + acc_q1[m]) - zero * a_sum_rows[m][g]);
+            if constexpr (Asym) {
+              const float zero = static_cast<float>(z_row[g]);
+              for (int m = 0; m < nmembers; ++m) {
+                acc[m] += scale * ((acc_q0[m] + acc_q1[m]) - zero * a_sum_rows[m][g]);
+              }
+            } else {
+              for (int m = 0; m < nmembers; ++m) {
+                acc[m] += scale * (acc_q0[m] + acc_q1[m]);
+              }
             }
           }
 
@@ -1323,12 +1360,7 @@ inline void moe_decode_release_scratch() {
 // benchmarks can toggle the path in-process.
 // ----------------------------------------------------------------------------
 inline bool moe_decode_dpas_s4_enabled() {
-  const char* env = std::getenv("ARK_MOE_DECODE_DPAS_S4");
-  if (env == nullptr) return true;  // default ON
-  std::string s(env);
-  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return true;
+  return moe_decode_detail::env_flag_enabled("ARK_MOE_DECODE_DPAS_S4", true);  // default ON
 }
 
 // ----------------------------------------------------------------------------
@@ -1374,12 +1406,7 @@ inline bool moe_decode_dpas_s4_occupancy_ok(int total_tokens, int num_experts) {
 // Re-read on every call so tests / benchmarks can toggle it in-process.
 // ----------------------------------------------------------------------------
 inline bool moe_decode_coalesce_int4_enabled() {
-  const char* env = std::getenv("ARK_MOE_DECODE_COALESCE_INT4");
-  if (env == nullptr) return true;  // default ON
-  std::string s(env);
-  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return true;
+  return moe_decode_detail::env_flag_enabled("ARK_MOE_DECODE_COALESCE_INT4", true);  // default ON
 }
 
 // ----------------------------------------------------------------------------

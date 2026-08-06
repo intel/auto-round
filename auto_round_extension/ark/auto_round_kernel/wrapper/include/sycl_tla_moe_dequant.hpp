@@ -211,17 +211,31 @@ inline void decode_int2_quad(uint8_t packed, int q[4]) {
 //   ...
 //   q[7] = byte3 high nibble (k_base + 7)
 //
-// The decoder is expressed as a `#pragma unroll` loop over `decode_int4_pair`,
-// so it is bit-identical by construction to four scalar decodes of the same
-// four bytes. This keeps the parity contract with the decode/GEMV path (which
-// only ever calls `decode_int4_pair`) trivially satisfied.
+// Collapsing that mapping, field `j` (K offset `j`) is simply bits
+// `[4j+3 : 4j]` of the word, so every field can be extracted with a pair of
+// *32-bit* ALU ops and the 8-bit datapath is never touched:
+//   asym: `(word >> 4j) & 0xF`
+//   sym : `(int)(word << (28 - 4j)) >> 28` -- park the nibble in the sign
+//         position, then arithmetic-shift it back down. This is exactly the
+//         32-bit form of `int8_t(byte << 4) >> 4`, so the decoded integers are
+//         bit-identical to `decode_int4_pair` for all inputs and the
+//         decode/prefill parity contract is preserved.
+//
+// The 32-bit form matters on Xe: `sycl::vec<uint8_t, N>` arithmetic and
+// per-byte extraction lower to byte-typed regioning that IGC frequently has to
+// expand, and that expansion is what made the sym sign-extension look
+// inherently more expensive than the asym mask+shift. Both modes now issue the
+// same two native DWORD operations per nibble.
 // ----------------------------------------------------------------------------
 template <bool Asym>
 inline void decode_int4_octet(uint32_t packed, int q[8]) {
 #pragma unroll
-  for (int i = 0; i < 4; ++i) {
-    const uint8_t byte = static_cast<uint8_t>((packed >> (i * 8)) & 0xFFu);
-    decode_int4_pair<Asym>(byte, q[2 * i], q[2 * i + 1]);
+  for (int j = 0; j < 8; ++j) {
+    if constexpr (Asym) {
+      q[j] = static_cast<int>((packed >> (4 * j)) & 0xFu);
+    } else {
+      q[j] = static_cast<int>(packed << (28 - 4 * j)) >> 28;
+    }
   }
 }
 
