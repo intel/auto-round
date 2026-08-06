@@ -50,7 +50,10 @@ class LinearErnie4_5_MoeSparseMoeBlock(nn.Module):
         if self.shared_experts is not None:
             shared_output = self.shared_experts(hidden_states)
 
-        _, top_k_index, top_k_weights = self.gate(hidden_states)
+        # transformers' Ernie4_5_MoeTopKRouter.forward returns
+        # (router_logits, routing_weights, selected_experts); unpack weights
+        # and indices in that order to match the current transformers API.
+        _, top_k_weights, top_k_index = self.gate(hidden_states)
         final_hidden_states = self.experts_forward(hidden_states, top_k_index, top_k_weights)
 
         if self.shared_experts is not None:
