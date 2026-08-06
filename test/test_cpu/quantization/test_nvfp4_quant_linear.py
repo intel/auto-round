@@ -92,6 +92,42 @@ def test_nvfp4_e5m3_forward_caches_dequantized_weight_when_enabled():
         layer(activation)
 
     dequant_weight_online.assert_called_once_with()
+    assert layer.weight_packed is None
+    assert layer.weight_scale is None
+
+
+def test_nvfp4_e5m3_cannot_clear_released_quantized_weight_buffers():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32, cache_weight=True)
+
+    layer(torch.randn(2, 16))
+
+    with pytest.raises(RuntimeError, match="quantized weight buffers have been released"):
+        layer.clear_weight_cache()
+
+
+def test_cute_nvfp4_e5m3_does_not_cache_dequantized_weight_by_default(monkeypatch):
+    monkeypatch.delenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", raising=False)
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.CuteNVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
+    activation = torch.randn(2, 16)
+    dequantized_weight = torch.randn(8, 16)
+
+    with patch.object(layer, "dequant_weight_online", return_value=dequantized_weight) as dequant_weight_online:
+        layer(activation)
+        layer(activation)
+
+    assert not layer.cache_weight
+    assert dequant_weight_online.call_count == 2
+
+
+def test_nvfp4_e5m3_cache_weight_environment_override(monkeypatch):
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    monkeypatch.setenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", "1")
+    assert ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32).cache_weight
+    assert ar_qmodules.CuteNVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32).cache_weight
+    monkeypatch.setenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", "0")
+    assert not ar_qmodules.CuteNVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32).cache_weight
 
 
 def test_nvfp4_e5m3_torch_forward_does_not_call_cute():
@@ -116,6 +152,23 @@ def test_nvfp4_e5m3_cute_forward_uses_fused_output_when_available():
 
     with patch("auto_round.experimental.qmodules.nvfp4_e5m3.try_cute_nvfp4_e5m3_linear", return_value=fused_output):
         assert layer(activation) is fused_output
+
+
+def test_cute_nvfp4_e5m3_uses_cached_weight_when_enabled():
+    config = PRESET_SCHEMES["NVFP4_E5M3"]
+    layer = ar_qmodules.CuteNVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32, cache_weight=True)
+    activation = torch.randn(2, 16)
+    dequantized_weight = torch.randn(8, 16)
+
+    with (
+        patch.object(layer, "dequant_weight_online", return_value=dequantized_weight) as dequant_weight_online,
+        patch("auto_round.experimental.qmodules.nvfp4_e5m3.try_cute_nvfp4_e5m3_linear") as cute_linear,
+    ):
+        layer(activation)
+        layer(activation)
+
+    dequant_weight_online.assert_called_once_with()
+    cute_linear.assert_not_called()
 
 
 @pytest.mark.parametrize("scheme", [BackendDataType.NVFP4.value])

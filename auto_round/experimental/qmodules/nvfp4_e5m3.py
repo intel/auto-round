@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Optional, Union
 
 import torch
@@ -21,15 +22,31 @@ from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-from auto_round_extension.cuda.cute_nvfp4_e5m3 import try_cute_fp4_v2_qdq, try_cute_nvfp4_e5m3_linear
+from auto_round_extension.cuda.cute_nvfp4_e5m3 import (
+    try_cute_fp4_v2_qdq,
+    try_cute_nvfp4_e5m3_linear,
+    try_cute_nvfp4_e5m3_weight_dq,
+)
 
 __all__ = ["CuteNVFP4E5M3QuantLinear", "NVFP4E5M3QuantLinear"]
+
+_CACHE_WEIGHT_ENV = "AR_NVFP4_E5M3_CACHE_HP_WEIGHT"
+
+
+def _resolve_cache_weight(cache_weight: Optional[bool], default: bool) -> bool:
+    if cache_weight is not None:
+        return cache_weight
+    value = os.getenv(_CACHE_WEIGHT_ENV)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 class NVFP4E5M3QuantLinear(QModuleBase):
     """FP4 E2M1 weights and activations with unsigned E5M3 block scales."""
 
     SUPPORTED_COMPUTE_DTYPE = [torch.bfloat16, torch.float16, torch.float32]
+    DEFAULT_CACHE_WEIGHT = False
 
     def __init__(
         self,
@@ -40,7 +57,7 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         weight_scale: Optional[torch.Tensor] = None,
         bias: Union[torch.Tensor, bool, None] = None,
         dtype=torch.bfloat16,
-        cache_weight: bool = False,
+        cache_weight: Optional[bool] = None,
     ):
         super().__init__()
         assert dtype in self.SUPPORTED_COMPUTE_DTYPE
@@ -50,7 +67,7 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         self.group_size = config.group_size
         self.config = config
         self.dtype = dtype
-        self.cache_weight = cache_weight
+        self.cache_weight = _resolve_cache_weight(cache_weight, self.DEFAULT_CACHE_WEIGHT)
         self._cached_weight = None
 
         packed_weight = torch.zeros((out_features, in_features // 2), dtype=torch.uint8) if weight is None else weight
@@ -85,9 +102,14 @@ class NVFP4E5M3QuantLinear(QModuleBase):
     def weight(self) -> torch.Tensor:
         if self._cached_weight is None:
             self._cached_weight = self.dequant_weight_online()
+            if self.cache_weight:
+                self.weight_packed = None
+                self.weight_scale = None
         return self._cached_weight
 
     def clear_weight_cache(self) -> None:
+        if self.weight_packed is None:
+            raise RuntimeError("Cannot clear the cached weight after quantized weight buffers have been released.")
         self._cached_weight = None
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
@@ -117,6 +139,12 @@ class NVFP4E5M3QuantLinear(QModuleBase):
 class CuteNVFP4E5M3QuantLinear(NVFP4E5M3QuantLinear):
     """NVFP4 E5M3 linear that dispatches activation QDQ and GEMM to CuTe."""
 
+    def dequant_weight_online(self) -> torch.Tensor:
+        cute_weight = try_cute_nvfp4_e5m3_weight_dq(self.weight_packed, self.weight_scale, self.dtype)
+        if cute_weight is not None:
+            return cute_weight
+        return super().dequant_weight_online()
+
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
         cute_qdq_activation = try_cute_fp4_v2_qdq(activation, self.config.act_group_size)
         if cute_qdq_activation is not None:
@@ -125,6 +153,8 @@ class CuteNVFP4E5M3QuantLinear(NVFP4E5M3QuantLinear):
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.cache_weight:
+            return super().forward(input)
         fused_output = try_cute_nvfp4_e5m3_linear(input, self.weight_packed, self.weight_scale, self.bias)
         if fused_output is not None:
             return fused_output

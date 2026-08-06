@@ -26,6 +26,7 @@ _SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 _GROUP_SIZE = 16
 _THREADS_PER_BLOCK = 256
 _FAILED_KERNEL_KEYS = set()
+_FAILED_WEIGHT_DQ_KERNEL_KEYS = set()
 
 
 @lru_cache(maxsize=1)
@@ -101,6 +102,68 @@ def _make_qdq_kernel():
     return launch_qdq
 
 
+def _make_weight_dq_kernel():
+    import cutlass
+    import cutlass.cute as cute
+    from cutlass._mlir_helpers import math
+
+    @cute.kernel
+    def weight_dq_kernel(weight_packed: cute.Tensor, weight_scale: cute.Tensor, output_tensor: cute.Tensor):
+        thread_idx, _, _ = cute.arch.thread_idx()
+        block_idx, _, _ = cute.arch.block_idx()
+        group_idx = block_idx * _THREADS_PER_BLOCK + thread_idx
+
+        if group_idx < output_tensor.shape[0]:
+            scale_byte = cutlass.Float32(weight_scale[group_idx, 0])
+            exponent = math.floor(scale_byte / cutlass.Float32(8.0))
+            mantissa = scale_byte - exponent * cutlass.Float32(8.0)
+            scale = (cutlass.Float32(1.0) + mantissa / cutlass.Float32(8.0)) * math.exp2(
+                exponent - cutlass.Float32(15.0)
+            )
+            if exponent == cutlass.Float32(0.0):
+                scale = mantissa * math.exp2(cutlass.Float32(-17.0))
+
+            for column_idx in range(_GROUP_SIZE):
+                packed = cutlass.Float32(weight_packed[group_idx, column_idx // 2])
+                packed_high = math.floor(packed / cutlass.Float32(16.0))
+                nibble = packed - packed_high * cutlass.Float32(16.0)
+                if column_idx % 2:
+                    nibble = packed_high
+
+                sign = cutlass.Float32(1.0)
+                if nibble >= cutlass.Float32(8.0):
+                    sign = cutlass.Float32(-1.0)
+                    nibble = nibble - cutlass.Float32(8.0)
+
+                value = cutlass.Float32(0.0)
+                if nibble == cutlass.Float32(1.0):
+                    value = cutlass.Float32(0.5)
+                elif nibble == cutlass.Float32(2.0):
+                    value = cutlass.Float32(1.0)
+                elif nibble == cutlass.Float32(3.0):
+                    value = cutlass.Float32(1.5)
+                elif nibble == cutlass.Float32(4.0):
+                    value = cutlass.Float32(2.0)
+                elif nibble == cutlass.Float32(5.0):
+                    value = cutlass.Float32(3.0)
+                elif nibble == cutlass.Float32(6.0):
+                    value = cutlass.Float32(4.0)
+                elif nibble == cutlass.Float32(7.0):
+                    value = cutlass.Float32(6.0)
+
+                output_tensor[group_idx, column_idx] = (sign * value * scale).to(output_tensor.element_type)
+
+    @cute.jit
+    def launch_weight_dq(weight_packed: cute.Tensor, weight_scale: cute.Tensor, output_tensor: cute.Tensor):
+        groups = output_tensor.shape[0]
+        weight_dq_kernel(weight_packed, weight_scale, output_tensor).launch(
+            grid=((groups + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK, 1, 1),
+            block=(_THREADS_PER_BLOCK, 1, 1),
+        )
+
+    return launch_weight_dq
+
+
 @lru_cache(maxsize=None)
 def _get_compiled_qdq_kernel(device_index: int, dtype: torch.dtype):
     import cutlass.cute as cute
@@ -111,6 +174,22 @@ def _get_compiled_qdq_kernel(device_index: int, dtype: torch.dtype):
     return cute.compile(
         _make_qdq_kernel(),
         from_dlpack(input_tensor).mark_layout_dynamic(),
+        from_dlpack(output_tensor).mark_layout_dynamic(),
+    )
+
+
+@lru_cache(maxsize=None)
+def _get_compiled_weight_dq_kernel(device_index: int, dtype: torch.dtype):
+    import cutlass.cute as cute
+    from cutlass.cute.runtime import from_dlpack
+
+    weight_packed = torch.empty((2, _GROUP_SIZE // 2), device=f"cuda:{device_index}", dtype=torch.uint8)
+    weight_scale = torch.empty((2, 1), device=f"cuda:{device_index}", dtype=torch.uint8)
+    output_tensor = torch.empty((2, _GROUP_SIZE), device=f"cuda:{device_index}", dtype=dtype)
+    return cute.compile(
+        _make_weight_dq_kernel(),
+        from_dlpack(weight_packed).mark_layout_dynamic(),
+        from_dlpack(weight_scale).mark_layout_dynamic(),
         from_dlpack(output_tensor).mark_layout_dynamic(),
     )
 
@@ -135,6 +214,43 @@ def try_cute_fp4_v2_qdq(activation: torch.Tensor, group_size: int) -> Optional[t
     except Exception as error:
         _FAILED_KERNEL_KEYS.add(kernel_key)
         logger.warning_once("CuTe NVFP4 E5M3 QDQ failed; falling back to PyTorch reference: %s", error)
+        return None
+
+
+def try_cute_nvfp4_e5m3_weight_dq(
+    weight_packed: torch.Tensor, weight_scale: torch.Tensor, dtype: torch.dtype
+) -> Optional[torch.Tensor]:
+    """Dequantize packed FP4 E5M3 weights with CuTe."""
+    if (
+        not is_cute_dsl_available()
+        or not weight_packed.is_cuda
+        or weight_packed.dtype != torch.uint8
+        or weight_scale.dtype != torch.uint8
+        or weight_packed.ndim != 2
+        or weight_scale.shape != (weight_packed.shape[0], weight_packed.shape[1] // (_GROUP_SIZE // 2))
+        or dtype not in _SUPPORTED_DTYPES
+        or torch.cuda.get_device_capability(weight_packed.device)[0] < 8
+        or torch.cuda.is_current_stream_capturing()
+    ):
+        return None
+
+    kernel_key = (weight_packed.device.index, dtype)
+    if kernel_key in _FAILED_WEIGHT_DQ_KERNEL_KEYS:
+        return None
+
+    try:
+        out_features = weight_packed.shape[0]
+        in_features = weight_packed.shape[1] * 2
+        groups = weight_scale.numel()
+        packed_groups = weight_packed.reshape(groups, _GROUP_SIZE // 2)
+        scale_groups = weight_scale.reshape(groups, 1)
+        output = torch.empty((groups, _GROUP_SIZE), device=weight_packed.device, dtype=dtype)
+        compiled_weight_dq = _get_compiled_weight_dq_kernel(*kernel_key)
+        compiled_weight_dq(packed_groups, scale_groups, output)
+        return output.reshape(out_features, in_features)
+    except Exception as error:
+        _FAILED_WEIGHT_DQ_KERNEL_KEYS.add(kernel_key)
+        logger.warning_once("CuTe NVFP4 E5M3 weight DQ failed; falling back to PyTorch reference: %s", error)
         return None
 
 
