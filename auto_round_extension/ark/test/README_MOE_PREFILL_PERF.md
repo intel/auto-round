@@ -513,6 +513,48 @@ checkpoints are produced by scaling to `finfo(float8_e4m3fn).max == 448`
 and clamping, so those two encodings cannot occur. Callers that need NaN
 propagation can select `ARK_FP8_DECODE_MODE=lut` or `=bits`.
 
+**K-split lane mapping (`ARK_MOE_DECODE_FP8_KSPLIT`, default ON).** Once
+the dequant is a couple of DWORD ops, the scalar GEMV is purely a
+bandwidth problem: at ~1 multiply-add per weight byte it can only run as
+fast as the expert tile streams in. The original mapping gave one output
+element to one *work-item*, so a lane walked a whole `[n, K]` weight row on
+its own. Two costs follow:
+
+* **Uncoalesced weight loads.** Lanes `l` and `l+1` of a sub-group read
+  bytes `K` apart, so each 16-byte load instruction is split into 16
+  cache-line requests. No DRAM byte is wasted (each lane consumes its lines
+  as it walks the row) but the memory controller sees 16 independent
+  streams per sub-group, the pattern DRAM row buffers handle worst.
+* **Too few threads.** The grid is `total_tokens × N / 16` sub-groups —
+  768 SIMD16 threads for a MiniMax-M2 batch-1 step (8 tokens, N=1536),
+  below the thread slots of a BMG-class GPU, so there are never enough
+  loads in flight to hide DRAM latency.
+
+`launch_fp8_ksplit` transposes the mapping: one *sub-group* per output
+element, with the 16 lanes splitting K. Lane `l` owns the 16 consecutive K
+elements at `l*16` inside each 256-element step, so one instruction covers
+256 **contiguous** weight bytes (four full cache lines) and 512 contiguous
+activation bytes, each thread walks a single sequential stream, and the
+thread count grows 16× (12288 sub-groups for that batch-1 step). The price
+is one `reduce_over_group` per output element — a handful of shuffles
+against `K` multiply-adds — and 16× more activation traffic out of L1,
+which has ample headroom at this arithmetic intensity.
+
+This is the same problem the int4 fallback solves by repacking weights
+into an N-tiled layout (`ARK_MOE_DECODE_COALESCE_INT4`), which costs a
+full extra pass over the weight tensor and a scratch buffer. FP8 weights
+are one byte per element and already K-contiguous, so K-splitting the lane
+mapping gets the same coalescing with no repack, no scratch and no extra
+kernel launch.
+
+The kernel indexes the scale array with a shift, so the shape gate
+requires a power-of-two `group_size ≥ 16` (every shipped FP8 config — 32 /
+64 / 128 / 256 — passes) plus `N%16==0`, `K%group_size==0` and `K ≥ 256` (so
+every lane of the sub-group owns at least one chunk); anything else keeps the
+legacy GEMV, which handles arbitrary group sizes. All three
+`ARK_FP8_DECODE_MODE` decoders run under both mappings, so the mode A/B
+stays apples-to-apples. **Status: NEEDS-HARDWARE-VALIDATION.**
+
 **FP8 DPAS decode dispatch.** `moe_decode_fp8_dpas_per_group_dispatch`
 (`sycl_tla_moe_prefill_fp8_dpas.hpp`, `ARK_MOE_DECODE_DPAS_FP8` default ON)
 is the FP8 twin of the S4 decode dispatch: same mainloop, same `[E, N, K]`
@@ -567,12 +609,16 @@ per-group shape gate (`N%64==0`, `K%32==0`, `K%group_size==0`,
 | `ARK_FP8_DECODE_USE_LUT` | unset | Legacy selector, still honoured when set explicitly and when `ARK_FP8_DECODE_MODE` is unset/unrecognised: truthy → `lut`, falsy → `bits`. Also still drives the mixed-input prefill path. |
 | `ARK_MOE_DECODE_DPAS_FP8` | ON | Route FP8 decode to the per-group DPAS grouped GEMM when the shape and occupancy gates pass; `0` forces the scalar GEMV. |
 | `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | Minimum tokens per expert before the DPAS path is taken; `0` disables the gate (what the parity/A-B tests set). |
+| `ARK_MOE_DECODE_FP8_KSPLIT` | ON | Scalar-GEMV lane mapping: one sub-group per output element with the lanes splitting K (coalesced weight loads, 16× the threads); `0` forces the legacy one-work-item-per-output-element GEMV. Shapes outside the gate (power-of-two `group_size ≥ 16`, `N%16==0`, `K%group_size==0`, `K ≥ 256`) always use the legacy mapping. |
 
 Perf A/B rows are `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
-(`speedup` is `lut / word`) and `::test_perf_fp8_dpas_vs_scalar`
+(`speedup` is `lut / word`), `::test_perf_fp8_ksplit_vs_strided`
+(`speedup` is `strided / ksplit`) and `::test_perf_fp8_dpas_vs_scalar`
 (`speedup` is `scalar / dpas`). Correctness is covered by
 `test_moe.py::test_decode_fp8_modes_match` (all three decoders agree, and
-each tracks the dequant reference) and
+each tracks the dequant reference),
+`::test_decode_fp8_ksplit_matches_strided` (both lane mappings agree, plus
+a non-power-of-two `group_size` fallback case) and
 `::test_decode_fp8_dpas_matches_scalar`.
 
 ## FP8 per-expert (per-tensor) perf tests

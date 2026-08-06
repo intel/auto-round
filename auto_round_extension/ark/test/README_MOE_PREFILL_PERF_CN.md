@@ -408,6 +408,42 @@ kernel 以 `sycl::vec<uint32_t, 4>` 读取权重 —— 与它替换掉的字节
 `finfo(float8_e4m3fn).max == 448` 缩放并 clamp 得到的,所以这两个编码不可能
 出现。需要 NaN 传播的调用方可以选择 `ARK_FP8_DECODE_MODE=lut` 或 `=bits`。
 
+**K-split lane 映射(`ARK_MOE_DECODE_FP8_KSPLIT`,默认 ON)。** 当 dequant
+只剩几条 DWORD 运算之后,scalar GEMV 就是一个纯粹的带宽问题:每个权重字节
+大约只做一次乘加,所以它最快只能跑到专家 tile 的搬运速度。原来的映射把一个
+输出元素交给一个 *work-item*,于是一个 lane 要独自走完整条 `[n, K]` 权重行。
+由此带来两笔开销:
+
+* **权重访存不合并。** 同一 sub-group 中 lane `l` 与 lane `l+1` 读到的字节
+  相距 `K`,因此每条 16 字节的 load 指令都会被拆成 16 个 cache line 请求。
+  DRAM 字节并没有浪费(每个 lane 会沿着自己的行把这些 line 用完),但内存
+  控制器看到的是每个 sub-group 16 条互相独立的数据流 —— 这正是 DRAM row
+  buffer 最不擅长的访问模式。
+* **线程太少。** grid 只有 `total_tokens × N / 16` 个 sub-group ——
+  MiniMax-M2 batch-1 一步(8 个 token,N=1536)只有 768 个 SIMD16 线程,
+  低于 BMG 级 GPU 的线程槽数量,飞行中的 load 永远不足以掩盖 DRAM 延迟。
+
+`launch_fp8_ksplit` 把映射转置过来:一个 *sub-group* 负责一个输出元素,由它
+的 16 个 lane 切分 K。lane `l` 在每个 256 元素的步长内拥有起点为 `l*16` 的
+16 个连续 K 元素,于是一条指令覆盖 256 字节**连续**权重(四条完整 cache
+line)和 512 字节连续激活,每个线程只走一条顺序数据流,线程数则提升 16×
+(上述 batch-1 场景为 12288 个 sub-group)。代价是每个输出元素一次
+`reduce_over_group` —— 相对 `K` 次乘加只是几条 shuffle —— 以及 16× 的 L1
+激活流量,而在这样的计算密度下 L1 有充足余量。
+
+int4 的回退路径解决的是同一个问题,办法是把权重 repack 成 N-tiled 布局
+(`ARK_MOE_DECODE_COALESCE_INT4`),那需要额外完整扫一遍权重张量并占用
+scratch 显存。FP8 权重每元素一个字节、本来就是 K 连续的,所以只切分 lane
+映射就能拿到同样的合并访存,无需 repack、无需 scratch、也不多一次 kernel
+启动。
+
+该 kernel 用移位来索引 scale 数组,因此形状门控要求 `group_size` 是 ≥ 16 的
+2 的幂(已发布的 FP8 配置 —— 32 / 64 / 128 / 256 —— 全部满足),另外还要
+`N%16==0`、`K%group_size==0` 以及 `K ≥ 256`(保证 sub-group 的每个 lane 至少
+分到一个 chunk);其余情况继续走老的 GEMV,它支持任意 group size。三种 `ARK_FP8_DECODE_MODE` 解码器在两种映射下都能运行,所以
+decode mode 的 A/B 依然是同口径对比。
+**状态:NEEDS-HARDWARE-VALIDATION。**
+
 **FP8 DPAS decode dispatch。** `moe_decode_fp8_dpas_per_group_dispatch`
 (`sycl_tla_moe_prefill_fp8_dpas.hpp`,`ARK_MOE_DECODE_DPAS_FP8` 默认 ON)
 是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的 `[E, N, K]`
@@ -457,12 +493,16 @@ decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffe
 | `ARK_FP8_DECODE_USE_LUT` | 未设置 | 旧的选择开关;当它被显式设置、且 `ARK_FP8_DECODE_MODE` 未设置或取值无法识别时仍然生效:truthy → `lut`,falsy → `bits`。它同时仍然驱动 mixed-input prefill 路径。 |
 | `ARK_MOE_DECODE_DPAS_FP8` | ON | 形状与占用率门控都通过时,把 FP8 decode 路由到 per-group DPAS grouped GEMM;`0` 强制走 scalar GEMV。 |
 | `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | 走 DPAS 路径所需的最小每专家 token 数;`0` 关闭门控(对齐/A-B 用例所设)。 |
+| `ARK_MOE_DECODE_FP8_KSPLIT` | ON | scalar GEMV 的 lane 映射:一个 sub-group 负责一个输出元素、由 lane 切分 K(访存合并,线程数 ×16);`0` 强制走老的「一个 work-item 一个输出元素」GEMV。未通过门控(`group_size` 为 ≥ 16 的 2 的幂、`N%16==0`、`K%group_size==0`、`K ≥ 256`)的形状始终使用老映射。 |
 
 性能 A/B 行是 `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
-(`speedup` 为 `lut / word`)与 `::test_perf_fp8_dpas_vs_scalar`
+(`speedup` 为 `lut / word`)、`::test_perf_fp8_ksplit_vs_strided`
+(`speedup` 为 `strided / ksplit`)与 `::test_perf_fp8_dpas_vs_scalar`
 (`speedup` 为 `scalar / dpas`)。正确性由
 `test_moe.py::test_decode_fp8_modes_match`(三种解码器互相一致,且各自都
-对齐 dequant 参考)与 `::test_decode_fp8_dpas_matches_scalar` 覆盖。
+对齐 dequant 参考)、`::test_decode_fp8_ksplit_matches_strided`(两种 lane
+映射一致,并覆盖非 2 的幂 `group_size` 的回退)与
+`::test_decode_fp8_dpas_matches_scalar` 覆盖。
 
 ## FP8 per-expert (per-tensor) 性能测试
 

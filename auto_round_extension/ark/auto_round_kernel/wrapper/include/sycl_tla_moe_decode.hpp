@@ -1474,7 +1474,7 @@ constexpr int KSPLIT_WG_SGS = N_TILE;
 
 // ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_FP8_KSPLIT` (default ON). When ON, the FP8
-// scalar decode GEMV uses the K-split kernel above; setting the var to "0" /
+// scalar decode GEMV uses the K-split kernel below; setting the var to "0" /
 // "false" / "off" / "no" (case-insensitive) forces the legacy per-lane-strided
 // `launch_fp8`, for A/B comparison and regression escape. Re-read on every call
 // so tests and benchmarks can toggle the path in-process.
@@ -1488,8 +1488,12 @@ inline bool moe_decode_fp8_ksplit_enabled() {
 // boundary and (b) the group index is a shift rather than an integer division
 // on the hot path. Every shipped FP8 quant config (32 / 64 / 128 / 256) passes;
 // anything else keeps the legacy GEMV, which handles arbitrary group sizes.
+// `K >= KSPLIT_STEP` additionally keeps every lane of the sub-group busy --
+// below that some lanes own no chunk at all and only pay the reduction, which
+// is the one regime where splitting K cannot pay for itself.
 inline bool moe_decode_fp8_ksplit_shape_ok(int N, int K, int group_size) {
   if (N % N_TILE != 0) return false;
+  if (K < KSPLIT_STEP) return false;
   if (group_size < KSPLIT_CH) return false;
   if ((group_size & (group_size - 1)) != 0) return false;  // not a power of two
   if (K % group_size != 0) return false;
@@ -1552,8 +1556,8 @@ void launch_fp8_ksplit(sycl::queue* q, const ScalarT* activations, const uint8_t
            const float s1 = static_cast<float>(s_row[(k0 + KSPLIT_STEP) >> log2_group]) * kScaleBias;
            acc += (a0 + a1) * s0 + (b0 + b1) * s1;
          }
-         // Remainder (at most one chunk per lane, plus the lanes whose chunk
-         // falls past K when K < KSPLIT_STEP -- those simply contribute 0).
+         // Remainder: the lanes whose last chunk does not have a partner a
+         // full step away. At most one chunk per lane given the shape gate.
          for (; k0 < K; k0 += KSPLIT_STEP) {
            float p0 = 0.0f, p1 = 0.0f;
            fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0, w_row + k0, p0, p1);
