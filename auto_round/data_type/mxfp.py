@@ -341,6 +341,7 @@ def quant_mx_rceil(
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
+
 """
 Implementation based on:
 
@@ -351,6 +352,8 @@ Jianlin Yu, Jing Lin, Linghui Kong, et al.
 arXiv:2607.24377, 2026.
 https://arxiv.org/abs/2607.24377
 """
+
+
 # Only for mxfp4
 def quant_mx_rceil_v2(
     tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
