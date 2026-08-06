@@ -415,16 +415,25 @@ inline bool fp8_decode_use_lut() {
 //
 // Re-read on every call (not cached) so tests and benchmarks can toggle the
 // path in-process; the result is passed into the kernel as a template argument,
-// so there is no per-element runtime branch.
+// so there is no per-element runtime branch. The comparison is done in place
+// rather than via `std::string` because decode issues one call per generated
+// token, and a heap allocation per lookup on that path buys nothing (same
+// reasoning as `moe_decode_detail::env_flag_enabled`).
 // ----------------------------------------------------------------------------
 inline Fp8DecodeMode fp8_decode_mode() {
   const char* mode = std::getenv("ARK_FP8_DECODE_MODE");
   if (mode != nullptr) {
-    std::string s(mode);
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "word") return Fp8DecodeMode::kWord;
-    if (s == "lut") return Fp8DecodeMode::kLut;
-    if (s == "bits") return Fp8DecodeMode::kBits;
+    auto iequals = [](const char* value, const char* lowercase_literal) {
+      const char* a = value;
+      const char* b = lowercase_literal;
+      for (; *a != '\0' && *b != '\0'; ++a, ++b) {
+        if (static_cast<char>(std::tolower(static_cast<unsigned char>(*a))) != *b) return false;
+      }
+      return *a == '\0' && *b == '\0';
+    };
+    if (iequals(mode, "word")) return Fp8DecodeMode::kWord;
+    if (iequals(mode, "lut")) return Fp8DecodeMode::kLut;
+    if (iequals(mode, "bits")) return Fp8DecodeMode::kBits;
     // Unrecognised value: fall through to the legacy variable / default.
   }
   if (std::getenv("ARK_FP8_DECODE_USE_LUT") != nullptr) {

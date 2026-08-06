@@ -802,6 +802,10 @@ class TestMoEGemmDecodePerf:
             monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8_MIN_TPE", raising=False)
             monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8", raising=False)
             _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    def test_perf_fp8_per_tensor(self, dtype, fp8_dtype):
         """Perf: FP8 per-expert (per-tensor) scale for the decode path.
 
         The C++ decode kernel does NOT expose a native ``[E]`` per-tensor
