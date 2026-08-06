@@ -266,10 +266,23 @@ bs32 只有 256 个 token,即平均每个专家 0.04–1.3 个 token;实测同�
 int4-sym(DPAS)为 0.31–0.34 ms / 1.55 ms,而 int4-asym(标量 GEMV)为
 0.12 ms / 1.45 ms。因此除非 batch 平均每个专家至少有 8 个 token,int4-sym
 的 decode 会被路由到与 int4-asym *完全相同* 的标量 GEMV kernel
-(`launch_int4` 及其 coalesced 变体,`Asym=false` — sym 少了 zero-point
-折叠,反而更快)。`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 可覆盖该
+(`launch_int4` 及其 coalesced 变体,`Asym=false`)。`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 可覆盖该
 "每专家 token 数" 阈值;设为 `0` 则关闭门控(只要形状门控通过就走 DPAS),
 精度测试与 DPAS/标量 对比性能测试即使用该设置。
+
+**sym 直接复用 asym 的 nibble 解码路径。** 在两者都走标量 GEMV 之后，
+int4-sym 在 *同一个* kernel 里仍比 int4-asym 慢约 1.9 倍（bs32：2.83 ms
+vs 1.49 ms），尽管 sym 的浮点运算严格更少。唯一的差异在于 nibble 解码：
+sym 使用 `(int8_t)(byte << 4) >> 4` 逐 nibble 做符号扩展，这是一条
+移位/截断/移位 的串行依赖链；而 asym 的 掩码+移位 形式可以在整个已加载
+的字节向量上向量化。现在 sym 改用符号翻转恒等式
+`signed == (unsigned ^ 8) - 8`：对打包字节做一次向量 `^ 0x88`，同时翻转
+两个 nibble 的符号位，之后 sym *就是* zero-point 恒为 8 的 asym 计算
+（相同的无符号解码、相同的 `sum a` 累加器、相同的每组一次 scale/zero
+折叠）。对全部 256 种字节取值，解码出的整数与原来的符号扩展逐位相同，
+唯一的变化是 sym 现在累加的是有偏置的和，最后再减去 `8 * sum a`，
+这正是 asym 一直在用的 fp32 累加方式；`launch_int4` 与 `launch_int4_coalesced`
+两个 kernel 均已应用。
 
 精度对齐由
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`

@@ -240,18 +240,36 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
 // without regressing group_size == 16 (which drops straight to the 16-wide
 // stage).
 //
-// The per-group scale (and asym zero-point) is NOT applied here: this
-// accumulates the raw integer-weighted dot product ``Σ a·q`` into ``acc_q``
-// and, for the asym case, the plain activation sum ``Σ a`` into ``acc_a``.
-// The caller folds the group's scale/zero in once (Σ a·((q−z)·s) ==
-// s·(Σ a·q − z·Σ a); sym collapses to s·Σ a·q). Hoisting the scale removes one
-// float multiply per K element on the decode hot path, and because the scale
-// fold is exact-once per group the result stays well within the kernel's
-// existing quantization tolerance.
+// Both sym and asym decode the nibbles through the *same* unsigned path.
+// Measurements on MiniMax-M2 decode shapes showed int4-sym ~1.9x slower than
+// int4-asym in this very kernel even though sym does strictly fewer floating
+// point operations. The only difference was the per-nibble sign extension
+// (`(int8_t)(byte << 4) >> 4`) -- a serial shift/narrow/shift chain per nibble
+// that defeats the byte-wise vectorization the asym mask+shift form gets. The
+// sym decode is therefore expressed with the standard sign-flip identity
+//
+//     signed_nibble == (unsigned_nibble ^ 8) - 8
+//
+// so XOR-ing the packed byte with `0x88` (flipping the sign bit of *both*
+// nibbles at once, on the whole loaded vector register) turns sym into exactly
+// the asym computation with a constant zero-point of 8. The decoded integers
+// are bit-identical to the sign-extending decode for all 256 byte values, so
+// the only change is that sym now accumulates the biased sum and subtracts
+// `8 * sum a` at the end -- exactly the fp32 accumulation pattern asym has
+// always used, and well inside the kernel's existing quantization tolerance.
+//
+// The per-group scale and zero-point are NOT applied here: this accumulates the
+// raw integer-weighted dot product into `acc_q0`/`acc_q1` and the plain
+// activation sum into `acc_a` (now needed by both modes, since sym carries the
+// constant zero-point of 8). The caller folds the group's scale/zero in once
+// (sum a*((q-z)*s) == s*(sum a*q - z*sum a)). Hoisting the scale removes one
+// float multiply per K element on the decode hot path, and because the fold is
+// exact-once per group the result stays well within the kernel's existing
+// quantization tolerance.
 //
 // Two independent partial accumulators (``acc_q0``/``acc_q1``) break the
 // single fp32 dependency chain so the FMA pipeline is not latency-bound; the
-// caller reduces the pair. ``acc_a`` (asym only) reuses the same split.
+// caller reduces the pair. ``acc_a`` reuses the same split.
 template <typename ScalarT, bool Asym, int CHUNK>
 static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float& acc_q0, float& acc_q1,
                                      float& acc_a) {
@@ -267,20 +285,26 @@ static inline void int4_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_pt
 #pragma unroll
   for (int s = 0; s < CHUNK / SUB; ++s) {
     const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
-    const PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr + s * (SUB / 2));
+    PackVec pv = *reinterpret_cast<const PackVec*>(w_ptr + s * (SUB / 2));
+    if constexpr (!Asym) {
+      // Sign-flip the whole packed vector in one vector XOR so the sym nibbles
+      // can be decoded by the (vectorizable) unsigned path below; the constant
+      // zero-point of 8 is folded by the caller.
+      pv = pv ^ PackVec(static_cast<uint8_t>(0x88));
+    }
 #pragma unroll
     for (int b = 0; b < SUB / 2; ++b) {
       int q0, q1;
-      decode_int4_pair<Asym>(pv[b], q0, q1);
+      // Always the unsigned decode: asym nibbles are unsigned by definition and
+      // sym nibbles were biased by the XOR above.
+      decode_int4_pair<true>(pv[b], q0, q1);
       const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b]));
       const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[2 * b + 1]));
       const float fa0 = static_cast<float>(a0);
       const float fa1 = static_cast<float>(a1);
       acc_q0 += fa0 * static_cast<float>(q0);
       acc_q1 += fa1 * static_cast<float>(q1);
-      if constexpr (Asym) {
-        acc_a += fa0 + fa1;
-      }
+      acc_a += fa0 + fa1;
     }
   }
 }
@@ -329,7 +353,10 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
          float acc = 0.0f;
          for (int g = 0; g < num_groups_k; ++g) {
            const float scale = static_cast<float>(s_row[g]);
-           float zero = 0.0f;
+           // Sym uses the constant zero-point of 8 that the `^0x88` sign-flip
+           // in the decode introduces, so both modes run the identical fold.
+           // `if constexpr` keeps the null `z_row` out of the sym instantiation.
+           float zero = 8.0f;
            if constexpr (Asym) {
              zero = static_cast<float>(z_row[g]);
            }
@@ -342,13 +369,14 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // (32/64/128/256), while the 16-wide stage keeps group_size == 16
            // on the fast path.
            //
-           // The scale (and asym zero) is constant across the group, so the
-           // wide stages accumulate the raw integer-weighted dot product
+           // The scale and zero are constant across the group, so the wide
+           // stages accumulate the raw integer-weighted dot product
            // ``Σ a·q`` (split across two partial accumulators to break the
-           // fp32 dependency chain) plus ``Σ a`` for asym, and the fold below
-           // applies the scale/zero exactly once per group:
-           //   sym : acc += scale * (acc_q0 + acc_q1)
-           //   asym: acc += scale * ((acc_q0 + acc_q1) - zero * acc_a)
+           // fp32 dependency chain) plus ``Σ a``, and the fold below applies
+           // the scale/zero exactly once per group, identically for both modes:
+           //   acc += scale * ((acc_q0 + acc_q1) - zero * acc_a)
+           // with `zero` == the per-group zero-point (asym) or the constant 8
+           // that the `^0x88` sign-flip decode introduces (sym).
            float acc_q0 = 0.0f;
            float acc_q1 = 0.0f;
            float acc_a = 0.0f;
@@ -369,22 +397,17 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
            // raw-accumulation convention as the wide stages so the single
            // scale/zero fold below stays valid.
            for (; kk < group_size; kk += 2) {
-             const uint8_t packed = w_row[(k_base + kk) / 2];
+             uint8_t packed = w_row[(k_base + kk) / 2];
+             if constexpr (!Asym) packed ^= static_cast<uint8_t>(0x88);
              int q0, q1;
-             decode_int4_pair<Asym>(packed, q0, q1);
+             decode_int4_pair<true>(packed, q0, q1);
              const float fa0 = static_cast<float>(act_row[k_base + kk]);
              const float fa1 = static_cast<float>(act_row[k_base + kk + 1]);
              acc_q0 += fa0 * static_cast<float>(q0);
              acc_q1 += fa1 * static_cast<float>(q1);
-             if constexpr (Asym) {
-               acc_a += fa0 + fa1;
-             }
+             acc_a += fa0 + fa1;
            }
-           float group_dot = acc_q0 + acc_q1;
-           if constexpr (Asym) {
-             group_dot -= zero * acc_a;
-           }
-           acc += scale * group_dot;
+           acc += scale * ((acc_q0 + acc_q1) - zero * acc_a);
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
@@ -552,7 +575,10 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
 
            for (int g = 0; g < num_groups_k; ++g) {
              const float scale = static_cast<float>(s_row[g]);
-             float zero = 0.0f;
+             // Constant zero-point of 8 for sym (see `int4_decode_chunk`): the
+             // `^0x88` sign-flip lets sym reuse the asym unsigned decode and
+             // fold, so both modes emit the identical instruction stream.
+             float zero = 8.0f;
              if constexpr (Asym) {
                zero = static_cast<float>(z_row[g]);
              }
@@ -573,9 +599,10 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
              const int kb_base = k_base / 2;
              const int kb_count = group_size / 2;
              for (int kb = 0; kb < kb_count; ++kb) {
-               const uint8_t packed = w_tile[(kb_base + kb) * N_TILE + lane];
+               uint8_t packed = w_tile[(kb_base + kb) * N_TILE + lane];
+               if constexpr (!Asym) packed ^= static_cast<uint8_t>(0x88);
                int q0, q1;
-               decode_int4_pair<Asym>(packed, q0, q1);
+               decode_int4_pair<true>(packed, q0, q1);
                const float fq0 = static_cast<float>(q0);
                const float fq1 = static_cast<float>(q1);
                const int k0 = k_base + 2 * kb;
@@ -585,17 +612,11 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
                  const float fa1 = static_cast<float>(act_row[k0 + 1]);
                  acc_q0[m] += fa0 * fq0;
                  acc_q1[m] += fa1 * fq1;
-                 if constexpr (Asym) {
-                   acc_a[m] += fa0 + fa1;
-                 }
+                 acc_a[m] += fa0 + fa1;
                }
              }
              for (int m = 0; m < nmembers; ++m) {
-               float group_dot = acc_q0[m] + acc_q1[m];
-               if constexpr (Asym) {
-                 group_dot -= zero * acc_a[m];
-               }
-               acc[m] += scale * group_dot;
+               acc[m] += scale * ((acc_q0[m] + acc_q1[m]) - zero * acc_a[m]);
              }
            }
 

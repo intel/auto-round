@@ -340,11 +340,28 @@ MiniMax-M2 (192 experts) bs1 is 8 tokens and bs32 is 256 tokens, i.e.
 0.31–0.34 ms/1.55 ms against int4-asym (scalar GEMV) at 0.12 ms/1.45 ms
 for the same shapes. int4-sym decode is therefore routed to the *same*
 scalar GEMV kernel that int4-asym uses (`launch_int4` / its coalesced
-variant, with `Asym=false` — sym is cheaper there because it skips the
-zero-point fold) unless the batch supplies at least 8 tokens per expert.
+variant, with `Asym=false`) unless the batch supplies at least 8 tokens per
+expert.
 `ARK_MOE_DECODE_DPAS_S4_MIN_TPE` overrides the tokens-per-expert
 threshold; `0` disables the gate (always DPAS when the shape gate allows),
 which is what the accuracy and DPAS-vs-scalar perf tests set.
+
+**Sym decodes through the asym nibble path.** Once both modes shared the
+scalar GEMV, int4-sym was still ~1.9x slower than int4-asym in the *same*
+kernel (2.83 ms vs 1.49 ms at bs32) despite doing strictly fewer floating
+point operations. The only asymmetry was the nibble decode: sym
+sign-extended each nibble with `(int8_t)(byte << 4) >> 4`, a serial
+shift/narrow/shift chain per nibble, while asym used a plain mask+shift
+that vectorizes over the whole loaded byte vector. Sym now uses the
+sign-flip identity `signed == (unsigned ^ 8) - 8`: one vector XOR of the
+packed bytes with `0x88` flips both nibbles' sign bits, after which sym is
+*literally* the asym computation with a constant zero-point of 8 (same
+unsigned decode, same `sum a` accumulator, same single per-group
+scale/zero fold). The decoded integers are bit-identical to the previous
+sign-extending decode for all 256 byte values; the only change is that
+sym now accumulates the biased sum and subtracts `8 * sum a` at the end,
+which is exactly the fp32 accumulation pattern asym has always used. It
+applies to both `launch_int4` and `launch_int4_coalesced`.
 
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`,
