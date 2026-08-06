@@ -30,22 +30,19 @@ namespace {
 using KernelLauncher = int (*)(detail::Options const& options);
 
 int launch_prefill_kernel_bf16_128_sparse_sdpa(detail::Options const& options) {
-  return detail::launch_sparse_sdpa_prefill_kernel_128<cute::bfloat16_t, cute::bfloat16_t, cute::bfloat16_t>(options);
+  return detail::launch_sparse_sage_prefill_kernel_128<cute::bfloat16_t, cute::bfloat16_t, cute::bfloat16_t>(
+      options);
 }
 
 int launch_prefill_kernel_bf16_128_sparse_sdpa_qtile64(detail::Options const& options) {
-  return detail::launch_sparse_sdpa_prefill_kernel_128_qtile64<
+  return detail::launch_sparse_sage_prefill_kernel_128_qtile64<
       cute::bfloat16_t, cute::bfloat16_t, cute::bfloat16_t>(
       options);
 }
 
 int launch_prefill_kernel_bf16_64_sparse_sdpa(detail::Options const& options) {
-  return detail::launch_sparse_sdpa_prefill_kernel_64<cute::bfloat16_t, cute::bfloat16_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_64_sparse_sdpa_qtile64(detail::Options const& options) {
-  return detail::launch_sparse_sdpa_prefill_kernel_64_qtile64<
-      cute::bfloat16_t, cute::bfloat16_t, cute::bfloat16_t>(options);
+  return detail::launch_sparse_sage_prefill_kernel_64<cute::bfloat16_t, cute::bfloat16_t, cute::bfloat16_t>(
+      options);
 }
 
 KernelLauncher select_sparse_bf16_prefill_launcher(int head_dim, int q_tile_override) {
@@ -55,8 +52,7 @@ KernelLauncher select_sparse_bf16_prefill_launcher(int head_dim, int q_tile_over
       if (q_tile_override != 0 && q_tile_override != 256) return nullptr;
       return launch_prefill_kernel_bf16_128_sparse_sdpa;
     case 64:
-      if (q_tile_override == 64) return launch_prefill_kernel_bf16_64_sparse_sdpa_qtile64;
-      if (q_tile_override != 0 && q_tile_override != 128) return nullptr;
+      if (q_tile_override != 0 && q_tile_override != 64 && q_tile_override != 128) return nullptr;
       return launch_prefill_kernel_bf16_64_sparse_sdpa;
     default:
       return nullptr;

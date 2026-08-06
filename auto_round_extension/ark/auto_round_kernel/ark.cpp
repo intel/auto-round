@@ -478,6 +478,65 @@ static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
   throw std::invalid_argument("ark::sage_sparse: unsupported head_dim; supported values are 64 and 128");
 }
 
+static void sage_sparse_bf16(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                             torch_ptr lut, torch_ptr valid_block_num, int num_q_blocks, int num_k_blocks,
+                             int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                             int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                             int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                             int o_stride_h, int o_stride_b, int batch, int num_heads_q, int num_heads_kv,
+                             int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_sparse_bf16: mask and is_causal cannot both be set");
+  }
+  if (!lut || !valid_block_num) {
+    throw std::invalid_argument("ark::sage_sparse_bf16: lut and valid_block_num must be provided");
+  }
+  auto matches_block_size = [](int seq_len, int num_blocks, int block_size) {
+    return block_size > 0 && num_blocks == ((seq_len + block_size - 1) / block_size);
+  };
+  const bool key_block_is_64 = matches_block_size(seq_len_kv, num_k_blocks, 64);
+  if (!key_block_is_64) {
+    throw std::invalid_argument("ark::sage_sparse_bf16: only key block size 64 is supported");
+  }
+  if (head_dim == 64) {
+    if (!matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      throw std::invalid_argument("ark::sage_sparse_bf16: head_dim=64 requires query block size 64");
+    }
+    ark::sdpa_impl_bf16_sparse_d64(
+        (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+        (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+        q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+        v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+        seq_len_kv, head_dim, softmax_scale, is_causal);
+    return;
+  }
+  if (head_dim == 128) {
+    if (matches_block_size(seq_len_q, num_q_blocks, 256)) {
+      if (q_tile_override != 256) {
+        throw std::invalid_argument("ark::sage_sparse_bf16: head_dim=128 query block size 256 requires q_tile_override=256");
+      }
+      ark::sdpa_impl_bf16_sparse_qtile256_row64k(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, is_causal);
+      return;
+    }
+    if (matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      ark::sdpa_impl_bf16_sparse_row_linear(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, is_causal);
+      return;
+    }
+    throw std::invalid_argument("ark::sage_sparse_bf16: head_dim=128 supports query block sizes 64 and 256 only");
+  }
+  throw std::invalid_argument("ark::sage_sparse_bf16: unsupported head_dim; supported values are 64 and 128");
+}
+
 static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
                              torch_ptr outputs, int dtype, int N, int K, torch_ptr num_tokens_per_expert,
                              int num_experts) {
@@ -784,6 +843,7 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_sparse", &ark::sage_sparse);
+  m.def("sage_sparse_bf16", &ark::sage_sparse_bf16);
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
