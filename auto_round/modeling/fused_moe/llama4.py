@@ -23,6 +23,7 @@ else:
     from transformers.initialization import no_init_weights
 from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextMLP
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
 from auto_round.utils import clear_memory, unsupported_meta_device
@@ -33,6 +34,18 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
         self.num_experts = original.gate_up_proj.shape[0]
         with no_init_weights(), torch.device("meta"):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_up_proj": {"split_into": ["gate_proj", "up_proj"]},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=True,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         if not unsupported_meta_device(original):
@@ -50,6 +63,8 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
 
 
 class SequentialLlama4TextMoe(ReplacementModuleBase):
+    supports_gguf_fused_moe = True
+
     def __init__(self, original, config):
         super().__init__(original)
         config = config.text_config

@@ -115,19 +115,30 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
     )
-    rt.add_argument(
-        "--dataset", default="NeelNanda/pile-10k", type=str, help="Calibration dataset or local dataset path."
-    )
+    rt.add_argument("--dataset", default=None, type=str, help="Calibration dataset or local dataset path.")
     rt.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
     )
+    # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
-        "--algorithm", default=None, type=str, help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'."
+        "--algorithm",
+        "--algorithms",
+        "--alg",
+        "--algs",
+        default=None,
+        type=str,
+        help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")
-    rt.add_argument("--options", default=None, type=str, help="AutoScheme options, for example 'W4A16,W8A16'.")
+    rt.add_argument(
+        "--options",
+        default=None,
+        type=str,
+        nargs="+",
+        help="AutoScheme options. Accepts comma-separated ('W4A16,W8A16') or space-separated (W4A16 W8A16).",
+    )
     rt.add_argument(
         "--low_gpu_mem_usage", action="store_true", help="Enable memory-efficient mode by offloading features to CPU."
     )
@@ -137,7 +148,20 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Deprecated compatibility flag. Low CPU memory mode is enabled by default.",
     )
     rt.add_argument("--disable_low_cpu_mem_usage", action="store_true", help="Disable low CPU memory mode.")
-    rt.add_argument("--enable_torch_compile", action="store_true", help="Enable torch.compile during quantization.")
+    torch_compile_group = rt.add_mutually_exclusive_group()
+    torch_compile_group.add_argument(
+        "--enable_torch_compile",
+        dest="enable_torch_compile",
+        action="store_true",
+        help="Enable torch.compile during quantization (force enable on Windows).",
+    )
+    torch_compile_group.add_argument(
+        "--disable_torch_compile",
+        dest="enable_torch_compile",
+        action="store_false",
+        help="Disable torch.compile during quantization.",
+    )
+    rt.set_defaults(enable_torch_compile=None)
     rt.add_argument(
         "--disable_trust_remote_code", action="store_true", help="Disable trust_remote_code when loading models."
     )
@@ -150,7 +174,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         nargs="+",
         action="append",
         default=None,
-        help="Ensure listed layers share the same quantization data type.",
+        help="Ensure listed layers share the same quantization data type."
+        " Accepts space-separated (--shared_layers l1 l2) or comma-separated ('l1,l2') per group.",
     )
     rt.add_argument(
         "--static_kv_dtype",

@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 import torch
 
-from auto_round.formats import OutputFormat
+from auto_round.export.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import is_moe_model_via_config, logger
 
@@ -393,10 +393,8 @@ def _handle_special_model(model):
 def update_module(
     model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
 ):
-    if formats is not None and any([format_.is_gguf() for format_ in formats]):
-        return model
-
-    model = apply_replacements(model)
+    gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
+    model = apply_replacements(model, gguf_export=gguf_export)
 
     if cleanup_original:
         release_original_module_(model)
@@ -941,20 +939,15 @@ def _qwen3_tts_forward(
     )
 
 
-def check_mllm_model_batch(model, batch_size, gradient_accumulate_steps=1):
+def check_mllm_only_support_bs1(model: torch.nn.Module):
     """
     Checks model configuration to determine if it's necessary to limit bs to avoid potential input shape mismatches.
     """
     effective_type = resolve_model_type(model) or ""
     for key in mllms_with_limited_bs:
-        if key in effective_type and batch_size != 1:
-            accumulate_steps = batch_size * gradient_accumulate_steps
-            logger.warning(
-                "To avoid the tensor concat mismatch problem, modified parameters to "
-                f"batch_size=1. As an alternative, set the gradient_accumulate_steps={accumulate_steps}"
-            )
-            return 1, accumulate_steps
-    return batch_size, gradient_accumulate_steps
+        if key in effective_type:
+            return True
+    return False
 
 
 class ModelNameMatcher:

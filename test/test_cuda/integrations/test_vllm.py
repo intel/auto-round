@@ -15,7 +15,7 @@ import pytest
 from vllm import LLM, SamplingParams
 from vllm.platforms import current_platform
 
-from auto_round import AutoRound
+from auto_round import AutoRound, AWQConfig
 
 from ...helpers import get_model_path
 
@@ -41,10 +41,13 @@ def _is_sm12_with_old_cuda() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    _is_sm12_with_old_cuda(),
-    reason="SM 12.x (Blackwell) GPU requires CUDA >= 12.9 for vLLM GPTQ marlin JIT kernels",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        _is_sm12_with_old_cuda(),
+        reason="SM 12.x (Blackwell) GPU requires CUDA >= 12.9 for vLLM GPTQ marlin JIT kernels",
+    ),
+    pytest.mark.enable_torch_compile,
+]
 
 MODELS = [
     "OPEA/Qwen2.5-0.5B-Instruct-int4-sym-inc",  ##auto_round:auto_gptq
@@ -187,7 +190,7 @@ def test_vllm_awq_w8a8_llmc_inference(tiny_opt_model_path, tmp_path):
     ar = AutoRound(
         tiny_opt_model_path,
         scheme="INT8",
-        algorithm="awq",
+        alg_configs=AWQConfig(),
         nsamples=2,
         seqlen=32,
         batch_size=2,

@@ -133,13 +133,7 @@ class AudioCapsDataset(Dataset):
         return self.caption_ids[i], self.captions[i]
 
 
-def get_diffusion_dataloader(
-    dataset="coco2014",
-    bs=1,
-    seed=42,
-    nsamples=128,
-    gradient_accumulate_steps=1,
-):
+def get_diffusion_dataloader(dataset="coco2014", bs=1, seed=42, nsamples=128):
     """Generate a DataLoader for calibration using specified parameters.
     Args:
         Dataset_name (str): The name or path of the dataset.
@@ -171,4 +165,4 @@ def get_diffusion_dataloader(
     set_seed(seed)
     dataloader_params = {"batch_size": bs, "shuffle": True}
 
-    return DataLoader(dataset, **dataloader_params), bs, gradient_accumulate_steps
+    return DataLoader(dataset, **dataloader_params), bs

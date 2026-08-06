@@ -82,7 +82,7 @@ class WrapperLinear(torch.nn.Module):
         enable_norm_bias_tuning=False,
         device="cpu",
         enable_round_tuning=True,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         disable_opt_rtn=True,
         **kwargs,
     ):
@@ -562,7 +562,7 @@ class WrapperLinear(torch.nn.Module):
 
 class WrapperWALayer(torch.nn.Module):
 
-    def __init__(self, orig_layer, enable_torch_compile=False, device="cpu"):
+    def __init__(self, orig_layer, enable_torch_compile=True, device="cpu"):
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
         self.enable_torch_compile = enable_torch_compile
@@ -770,7 +770,7 @@ def wrapper_block(
     block,
     enable_minmax_tuning,
     enable_norm_bias_tuning,
-    enable_torch_compile=False,
+    enable_torch_compile=True,
     device="cpu",
     wrapper_cls=WrapperLinear,
     **kwargs,

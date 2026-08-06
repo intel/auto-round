@@ -62,25 +62,16 @@ class QDQTool:
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
 
-    # ── runtime wiring ────────────────────────────────────────────────────────
-    def configure(self, compressor) -> None:
+    # # ── runtime wiring ────────────────────────────────────────────────────────
+    def configure(self, composer) -> None:
         """Derive QDQ behaviour from the run's block quantizer."""
-        block_config = getattr(compressor, "quantize_config", None)
-        self.disable_opt_rtn = bool(getattr(block_config, "disable_opt_rtn", False))
-        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(compressor)
+        self.disable_opt_rtn = bool(getattr(composer.block_quantizer, "disable_opt_rtn", False))
+        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer.block_quantizer)
 
     @staticmethod
-    def _block_quantizer_is_signroundv2(compressor) -> bool:
+    def _block_quantizer_is_signroundv2(quantizer) -> bool:
         """Return ``True`` if the terminal block quantizer is SignRoundV2."""
-        block_config = getattr(compressor, "quantize_config", None)
-        if block_config is None:
-            return False
-        from auto_round.algorithms.registry import resolve_pipeline_member
-
-        try:
-            return resolve_pipeline_member(block_config).__name__ == "SignRoundV2Quantizer"
-        except Exception:
-            return False
+        return quantizer.__class__.__name__ == "SignRoundV2Quantizer"
 
     # ── per-layer scheme resolution + dispatch ────────────────────────────────
     def _layer_config_for(self, layer: torch.nn.Module) -> dict:
@@ -173,6 +164,7 @@ class QDQTool:
             )
             if init_scale is not None:
                 quant_kwargs["init_scale"] = init_scale
+                quant_kwargs["imatrix"] = imatrix if isinstance(imatrix, torch.Tensor) else torch.ones_like(weight)
                 active_quant_func = opt_quant_func
 
         qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)

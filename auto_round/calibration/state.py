@@ -11,88 +11,83 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""``CalibrationState`` — single source of truth for calibration-time state.
+"""``CalibrationContext`` — single source of truth for calibration-time state.
 
 This dataclass owns every per-run calibration field shared between
 :class:`~auto_round.compressors.base.BaseCompressor` and
 :class:`~auto_round.algorithms.quantization.base.BaseQuantizer`:
 
-- Cache state ``(inputs, to_cached_layers, last_cache_name, blocks_requiring_input_ids)``
 - Per-batch shape state ``(attention_mask, batch_dim)``
 - Calibration parameters ``(batch_size, gradient_accumulate_steps, nsamples, seqlen, dataset, dataloader)``
 
 Both the compressor and the quantizer hold a reference to the same
-``CalibrationState`` instance (wired in ``BaseCompressor._resolve_scheme``).
-All legacy attribute reads/writes are routed here through ``@property``
-forwarders, so existing call sites need no changes.
+``CalibrationContext`` instance (wired in ``BaseCompressor._resolve_scheme``).
 
-The dataclass also provides two behavioural helpers that previously lived
-inline in :class:`~auto_round.compressors.data_driven.DataDrivenCompressor`:
+The dataclass also provides a behavioural helper:
 
 - :meth:`clamp_seqlen` — clamps ``self.seqlen`` to model / tokenizer limits.
-- :meth:`ensure_dataloader` — builds ``self.dataloader`` from
-  ``self.dataset`` (string name or pre-built loader).
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from auto_round.compressors.base import BaseOrchestrator
 
 from auto_round.logger import logger
 
-__all__ = ["CalibrationState"]
+__all__ = ["CalibrationContext"]
 
 
 @dataclass
-class CalibrationState:
+class CalibrationContext:
     """Authoritative runtime store for calibration state.
 
     See module docstring for field semantics and design rationale.
     """
 
-    # ── Capture buffers ────────────────────────────────────────────────────
-    inputs: dict = field(default_factory=dict)
-    to_cached_layers: list = field(default_factory=list)
-    last_cache_name: Optional[str] = None
-    blocks_requiring_input_ids: list = field(default_factory=list)
+    # # ── Capture buffers ────────────────────────────────────────────────────
+    # inputs: dict = field(default_factory=dict)
+    # to_cached_layers: list = field(default_factory=list)
+    # last_cache_name: Optional[str] = None
+    # blocks_requiring_input_ids: list = field(default_factory=list)
+    #
 
-    # ── Per-batch shape state ──────────────────────────────────────────────
-    attention_mask: list = field(default_factory=list)
     batch_dim: Optional[int] = None
 
     # ── Calibration parameters ─────────────────────────────────────────────
     batch_size: int = 8
-    gradient_accumulate_steps: int = 1
     nsamples: int = 128
     seqlen: int = 2048
     dataset: Any = None
-    dataloader: Any = None
+    is_only_supported_bs1: bool = False
+    orig_batch_size: int = 8  # some models only support batch_size 1,we need keep this info to set grad_accumulate_step
 
     # ── Compressor / quantizer round-tripping ──────────────────────────────
 
     @classmethod
-    def from_compressor(cls, compressor: Any) -> "CalibrationState":
-        """Return the live shared instance held by ``compressor``.
+    def from_orchestrator(cls, orchestrator: "BaseOrchestrator") -> "CalibrationContext":
+        """Return the live shared instance held by ``orchestrator``.
 
-        The compressor always owns a ``_calibration_state`` after
-        ``BaseCompressor.__init__``, so the legacy "snapshot" fallback is
+        The orchestrator always owns a ``_calibration_state`` after
+        ``BaseOrchestrator.__init__``, so the legacy "snapshot" fallback is
         no longer required.  We still allow it for safety in case a custom
         subclass forgets to call ``super().__init__``.
         """
-        live = getattr(compressor, "_calibration_state", None)
+        live = getattr(orchestrator, "calibration_context", None)
         if isinstance(live, cls):
             return live
         # Legacy fallback (no shared instance wired yet).
         return cls(
-            inputs=getattr(compressor, "inputs", {}) or {},
-            to_cached_layers=getattr(compressor, "to_cached_layers", []) or [],
-            last_cache_name=getattr(compressor, "last_cache_name", None),
-            blocks_requiring_input_ids=getattr(compressor, "blocks_requiring_input_ids", []) or [],
-            batch_size=getattr(compressor, "batch_size", 8) or 8,
-            gradient_accumulate_steps=getattr(compressor, "gradient_accumulate_steps", 1) or 1,
-            nsamples=getattr(compressor, "nsamples", 128) or 128,
-            seqlen=getattr(compressor, "seqlen", 2048) or 2048,
-            dataset=getattr(compressor, "dataset", None),
-            dataloader=getattr(compressor, "dataloader", None),
+            # inputs=getattr(orchestrator, "inputs", {}) or {},
+            # to_cached_layers=getattr(orchestrator, "to_cached_layers", []) or [],
+            # last_cache_name=getattr(orchestrator, "last_cache_name", None),
+            # blocks_requiring_input_ids=getattr(orchestrator, "blocks_requiring_input_ids", []) or [],
+            batch_size=getattr(orchestrator, "batch_size", 8) or 8,
+            nsamples=getattr(orchestrator, "nsamples", 128) or 128,
+            seqlen=getattr(orchestrator, "seqlen", 2048) or 2048,
+            dataset=getattr(orchestrator, "dataset", None),
+            orig_batch_size=getattr(orchestrator, "batch_size", 8) or 8,
         )
 
     # ── Behavioural helpers ────────────────────────────────────────────────
@@ -100,7 +95,7 @@ class CalibrationState:
     def clamp_seqlen(self, model_context: Any) -> None:
         """Clamp :attr:`seqlen` to model / tokenizer maximum lengths.
 
-        Migrated verbatim from ``DataDrivenCompressor._check_compatibility``.
+        Migrated verbatim from ``Compressor._check_compatibility``.
         Safe to call multiple times; warns on each clamp.
         """
         if self.seqlen is None:
@@ -119,32 +114,3 @@ class CalibrationState:
                 "You can also try to increase the model_max_length to avoid this issue."
             )
             self.seqlen = min(self.seqlen, tok_max)
-
-    def ensure_dataloader(self, model_context: Any, seed: int) -> Any:
-        """Resolve :attr:`dataset` into :attr:`dataloader` and return it.
-
-        - If ``self.dataset`` is a string, builds a tokenized dataloader via
-          :func:`auto_round.calib_dataset.get_dataloader`.
-        - Otherwise, treats ``self.dataset`` as an already-iterable loader.
-
-        Mirrors the inline logic that previously lived in
-        ``DataDrivenCompressor._compute_imatrix`` and the calibrator subclasses.
-        """
-        if isinstance(self.dataset, str):
-            tokenizer = getattr(model_context, "tokenizer", None)
-            if tokenizer is None:
-                raise ValueError("A tokenizer must be set for the model when using a dataset string.")
-            from auto_round.calib_dataset import get_dataloader
-
-            dataset_name = self.dataset.replace(" ", "")
-            self.dataloader = get_dataloader(
-                tokenizer,
-                self.seqlen,
-                dataset_name,
-                seed,
-                self.batch_size,
-                self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
-        return self.dataloader
