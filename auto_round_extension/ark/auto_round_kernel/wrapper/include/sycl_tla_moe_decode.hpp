@@ -1014,14 +1014,14 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
 // Env-flag helper -- `ARK_MOE_DECODE_DPAS_S4` (default ON). When ON, int4-sym
 // (S4_CLIP, !asym) decode is routed to the dedicated decode-phase S4 DPAS
 // grouped GEMM (`moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch`) instead
-// of the scalar FMA GEMV (`launch_int4`). Ported from vLLM-xpu-kernels'
-// dedicated `w4a16` decode dispatch, this path hard-pins the 8-row
-// `dpas_w4a16_policy_m_8` tile (the only tile the prefill `A_avg_M` ladder
-// would ever pick for decode-sized batches) and reuses the shared per-group
-// mainloop's 2D VNNI block load + register-resident per-N scale. It reads the
-// same `[E, N, K/2]` packed weights + `[E, N, K/group]` scales, so no repack is
-// needed. (`ARK_MOE_DECODE_S4_DPAS_M8=0` defers to the full prefill bucket
-// ladder for A/B comparison; the two are numerically identical.)
+// of the scalar FMA GEMV (`launch_int4`). Mirroring vLLM-xpu-kernels'
+// `w4a16` decode dispatch, this path selects the DPAS tile from the average
+// tokens-per-expert (`A_avg_M`) ladder (`_m_8` -> `_m_16` -> `_m_32` -> wide),
+// reusing the shared per-group mainloop's 2D VNNI block load + register-resident
+// per-N scale. It reads the same `[E, N, K/2]` packed weights + `[E, N, K/group]`
+// scales, so no repack is needed. (`ARK_MOE_DECODE_S4_DPAS_M8=1` forces the
+// legacy hard-pinned 8-row tile for A/B comparison; the two are numerically
+// identical.)
 //
 // Setting the var to "0" / "false" / "off" / "no" (case-insensitive) forces
 // the legacy scalar GEMV, for A/B comparison and regression escape. Asym

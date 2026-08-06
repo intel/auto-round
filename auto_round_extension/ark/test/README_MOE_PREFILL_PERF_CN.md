@@ -241,17 +241,21 @@ nibble 的 B 流字节量是 INT8 路径的一半,大 M tile 加宽到 `128×256
 tile),避免了常见 chunked-prefill batch 大小下的 padding 浪费。
 
 **S4 DPAS decode 路径** — decode(生成)阶段(`sycl_tla_moe_decode.hpp`,
-int4-sym / `S4_CLIP`,`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)现在拥有
-独立的 dispatch `moe_decode_s4_dpas_per_group_dispatch`,移植自
-vLLM-xpu-kernels 专用的 `w4a16` *decode* dispatch。由于生成阶段每个专家
-最多只见到少量 token,它直接钉死 8 行的 `dpas_w4a16_policy_m_8` tile
-(prefill 的 `A_avg_M` 阶梯对 decode 规模的 batch 也只会选这个 tile),
-而不再运行整个阶梯。它复用共享的 per-group mainloop 的 2D VNNI 块加载
-(`get_block_2d_copy_A/B` + `make_block_2d_prefetch`)与寄存器驻留的
-per-N scale(`sg_scale[]`,每个 K-group 折叠一次),读取相同的
+int4-sym / `S4_CLIP`,`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)拥有
+独立的 dispatch `moe_decode_s4_dpas_per_group_dispatch`,对齐
+vLLM-xpu-kernels 的 `w4a16` decode dispatch。它与 prefill 使用相同的
+`A_avg_M` 阶梯选择 DPAS tile(`_m_8` → `_m_16` → `_m_32` → 大 tile):
+仅在极小 batch 尾部(`A_avg_M ≤ 4`)使用 8 行 tile,一旦平均每个专家
+路由超过 4 个 token,M tile 就随之增大。早先的版本直接钉死 8 行的
+`dpas_w4a16_policy_m_8` tile,假设 decode 阶段每个专家只见到少量 token,
+但在较大的 decode batch(序列多、top-k 高或专家少)下,这会导致 M
+维度欠填充,并把(受带宽约束的)打包权重重复流式加载 2–4 次,使吞吐
+大约只有参考实现的一半。它复用共享的 per-group mainloop 的 2D VNNI 块
+加载(`get_block_2d_copy_A/B` + `make_block_2d_prefetch`)与寄存器驻留
+的 per-N scale(`sg_scale[]`,每个 K-group 折叠一次),读取相同的
 `[E, N, K/2]` 打包权重 + `[E, N, K/group]` scale,无需重新打包。
-`ARK_MOE_DECODE_S4_DPAS_M8=0` 会回退到完整的 prefill 阶梯以便 A/B 对比
-(数值完全相同,仅 tile 形状不同)。**状态:NEEDS-HARDWARE-VALIDATION**
+`ARK_MOE_DECODE_S4_DPAS_M8=1` 会强制使用旧的钉死 8 行 tile 以便 A/B
+对比(数值完全相同,仅 tile 形状不同)。**状态:NEEDS-HARDWARE-VALIDATION**
 (未经测试的移植)。
 
 精度对齐由
