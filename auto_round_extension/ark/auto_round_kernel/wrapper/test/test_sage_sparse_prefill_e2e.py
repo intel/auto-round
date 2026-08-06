@@ -16,17 +16,15 @@ from auto_round_kernel.xpu_loader import ensure_xpu_lib
 
 
 def ensure_sparse_binding(*, required_symbols: tuple[str, ...] = ("sage_sparse",)) -> None:
-    bf16_ext = (
-        REPO_PARENT / "auto_round_kernel" / "xbuild_bf16_v2" / "auto_round_kernel_xpu.cpython-313-x86_64-linux-gnu.so"
-    )
     search_roots = (
         REPO_PARENT / "auto_round_kernel",
-        REPO_PARENT / "auto_round_kernel" / "xbuild",
         REPO_PARENT / "auto_round_kernel" / "xbuild_diffuser",
+        REPO_PARENT / "auto_round_kernel" / "xbuild",
+        REPO_PARENT / "auto_round_kernel" / "xbuild_bf16_v2",
+        REPO_PARENT / "auto_round_kernel" / "ark-xbuild",
     )
     ensure_xpu_lib(
         required_symbols=required_symbols,
-        ext_path=bf16_ext if bf16_ext.is_file() else None,
         search_roots=search_roots,
     )
 
