@@ -331,6 +331,21 @@ per-N scale (`sg_scale[]`, folded once per K-group), reading the same
 A/B comparison (numerically identical; only the tile shape differs).
 **Status: NEEDS-HARDWARE-VALIDATION** (untested port).
 
+**Occupancy gate — decode-sized batches use the int4-asym kernel.** Even
+the smallest DPAS tile processes 8 token rows per expert, so a batch with
+fewer than 8 tokens per expert on average pays full weight-streaming cost
+for mostly-padding rows. That is precisely the decode regime: on
+MiniMax-M2 (192 experts) bs1 is 8 tokens and bs32 is 256 tokens, i.e.
+0.04–1.3 tokens per expert, and measurements showed int4-sym (DPAS) at
+0.31–0.34 ms/1.55 ms against int4-asym (scalar GEMV) at 0.12 ms/1.45 ms
+for the same shapes. int4-sym decode is therefore routed to the *same*
+scalar GEMV kernel that int4-asym uses (`launch_int4` / its coalesced
+variant, with `Asym=false` — sym is cheaper there because it skips the
+zero-point fold) unless the batch supplies at least 8 tokens per expert.
+`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` overrides the tokens-per-expert
+threshold; `0` disables the gate (always DPAS when the shape gate allows),
+which is what the accuracy and DPAS-vs-scalar perf tests set.
+
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`,
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +

@@ -258,6 +258,19 @@ vLLM-xpu-kernels 的 `w4a16` decode dispatch。它与 prefill 使用相同的
 对比(数值完全相同,仅 tile 形状不同)。**状态:NEEDS-HARDWARE-VALIDATION**
 (未经测试的移植)。
 
+**占用率门控 — decode 规模的 batch 直接复用 int4-asym 的实现。** 即使是
+最小的 DPAS tile 也要处理每个专家 8 行 token,因此平均每个专家不足 8 个
+token 的 batch 会为几乎全是 padding 的行付出完整的权重流式加载代价。
+decode 正好处于这一区间:MiniMax-M2(192 个专家)bs1 只有 8 个 token,
+bs32 只有 256 个 token,即平均每个专家 0.04–1.3 个 token;实测同样形状下
+int4-sym(DPAS)为 0.31–0.34 ms / 1.55 ms,而 int4-asym(标量 GEMV)为
+0.12 ms / 1.45 ms。因此除非 batch 平均每个专家至少有 8 个 token,int4-sym
+的 decode 会被路由到与 int4-asym *完全相同* 的标量 GEMV kernel
+(`launch_int4` 及其 coalesced 变体,`Asym=false` — sym 少了 zero-point
+折叠,反而更快)。`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 可覆盖该
+"每专家 token 数" 阈值;设为 `0` 则关闭门控(只要形状门控通过就走 DPAS),
+精度测试与 DPAS/标量 对比性能测试即使用该设置。
+
 精度对齐由
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +

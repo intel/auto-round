@@ -403,12 +403,17 @@ class TestMoEGemmDecodePerf:
         ``speedup`` here is ``scalar / dpas`` (the DPAS path is the "ark"
         column), isolating the DPAS routing win from the dequant reference.
         Only shapes that clear the DPAS shape gate are timed on both paths.
+        ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0`` disables the tokens-per-expert
+        occupancy gate so the DPAS column really runs DPAS (by default these
+        decode-sized batches are routed to the scalar GEMV).
 
-        Observed crossover: at bs1 (8 tokens, ~1 token/expert) the DPAS tile is
-        nearly empty and the scalar GEMV wins (~0.5x), but by bs32 (256 tokens)
-        the shared S4 DPAS grouped-GEMM already wins ~2x. The auto-dispatch
-        default threshold (`_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS`) is therefore kept
-        small so 256-token batches are routed to prefill/DPAS, not decode.
+        Observed on MiniMax-M2 decode shapes (192 experts): the DPAS tile is
+        starved at every decode batch measured -- 8 tokens (bs1, 0.04
+        tokens/expert) and 256 tokens (bs32, 1.3 tokens/expert) are both far
+        below the 8 rows of `dpas_w4a16_policy_m_8` -- and the scalar GEMV wins,
+        which is why the default occupancy gate keeps decode on the scalar path
+        (the same kernel int4-asym uses) until a batch supplies >= 8 tokens per
+        expert.
         """
         group_size = 128
         _print_header(
@@ -439,7 +444,9 @@ class TestMoEGemmDecodePerf:
             monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
             scalar_ms = _xpu_time_ms(_run)
             monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", "0")
             dpas_ms = _xpu_time_ms(_run)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", raising=False)
             _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -454,7 +461,10 @@ class TestMoEGemmDecodePerf:
         crosses 1.0x at the total-token count where the shared S4 DPAS
         grouped-GEMM starts beating the scalar GEMV, which is the value to feed
         into ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` / the ``moe(...)``
-        ``decode_threshold`` auto-dispatch cutoff.
+        ``decode_threshold`` auto-dispatch cutoff, and is also the sweep behind
+        the default ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE`` occupancy gate (set to
+        ``0`` here so the DPAS column is not itself re-routed to the scalar
+        GEMV).
         """
         group_size = 32
         E = 192
@@ -488,7 +498,9 @@ class TestMoEGemmDecodePerf:
                 monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
                 scalar_ms = _xpu_time_ms(_run)
                 monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+                monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", "0")
                 dpas_ms = _xpu_time_ms(_run)
+                monkeypatch.delenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", raising=False)
                 _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])

@@ -1025,8 +1025,10 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
 //
 // Setting the var to "0" / "false" / "off" / "no" (case-insensitive) forces
 // the legacy scalar GEMV, for A/B comparison and regression escape. Asym
-// weights and shapes that fail the DPAS shape gate always fall back to the
-// scalar path regardless of this flag. Re-read on every call so tests /
+// weights, shapes that fail the DPAS shape gate, and batches that fail the
+// tokens-per-expert occupancy gate (`moe_decode_dpas_s4_occupancy_ok`, see
+// below -- this is what keeps real decode batches on the fast scalar GEMV)
+// always fall back to the scalar path regardless of this flag. Re-read on every call so tests /
 // benchmarks can toggle the path in-process.
 // ----------------------------------------------------------------------------
 inline bool moe_decode_dpas_s4_enabled() {
@@ -1039,9 +1041,42 @@ inline bool moe_decode_dpas_s4_enabled() {
 }
 
 // ----------------------------------------------------------------------------
+// Occupancy gate for the int4-sym S4 DPAS decode path.
+//
+// The DPAS grouped GEMM pays off only when its M tile is actually filled: the
+// smallest tile (`dpas_w4a16_policy_m_8`) processes 8 token rows per expert, so
+// with fewer than 8 tokens routed to an expert on average the tile is mostly
+// padding and the (bandwidth-bound) packed weights are streamed for rows that
+// contribute nothing. Real decode batches are exactly that regime -- e.g.
+// MiniMax-M2 decode is 8 tokens (bs1) or 256 tokens (bs32) spread over 192
+// experts, i.e. 0.04-1.3 tokens per expert -- and there the shared scalar GEMV
+// (`launch_int4`, the very kernel the *asym* path uses, where sym is just
+// `Asym=false`) is up to ~3x faster because it reads each weight byte exactly
+// once per active token with no tile padding.
+//
+// So route int4-sym decode through the same scalar GEMV as int4-asym unless the
+// batch has at least one full 8-row tile of tokens per expert on average.
+// `ARK_MOE_DECODE_DPAS_S4_MIN_TPE` overrides the tokens-per-expert threshold;
+// "0" disables the gate (always take DPAS when the shape gate allows), which is
+// what the accuracy tests use to exercise the DPAS kernel on tiny shapes.
+// ----------------------------------------------------------------------------
+inline bool moe_decode_dpas_s4_occupancy_ok(int total_tokens, int num_experts) {
+  if (num_experts <= 0) return true;
+  long long min_tokens_per_expert = 8;  // rows in `dpas_w4a16_policy_m_8`
+  const char* env = std::getenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE");
+  if (env != nullptr) {
+    char* end = nullptr;
+    long long v = std::strtoll(env, &end, 10);
+    if (end != env && v >= 0) min_tokens_per_expert = v;
+  }
+  if (min_tokens_per_expert == 0) return true;
+  return static_cast<long long>(total_tokens) >= min_tokens_per_expert * static_cast<long long>(num_experts);
+}
+
+// ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_COALESCE_INT4` (default ON). When ON, the
 // int4 scalar-GEMV fallback (asym, or sym with the DPAS path disabled / shape
-// gate miss) uses `launch_int4_coalesced`, which repacks the weights on-device
+// or occupancy gate miss) uses `launch_int4_coalesced`, which repacks the weights on-device
 // into an N-tiled layout so sub-group weight loads are coalesced. Setting the
 // var to "0" / "false" / "off" / "no" (case-insensitive) forces the legacy
 // per-lane-strided `launch_int4`, for A/B comparison and regression escape.
@@ -1094,10 +1129,12 @@ inline bool moe_decode_coalesce_int4_amortized(int total_tokens, int num_experts
 //                                   scales [E, N, K/group_size] in act dtype,
 //                                   zeros optional (asym==true requires it).
 //                                   Sym weights are routed to the shared
-//                                   per-group S4 DPAS grouped GEMM by default
-//                                   (`ARK_MOE_DECODE_DPAS_S4`, default ON);
-//                                   asym, a disabled flag, or a shape-gate
-//                                   miss falls back to the scalar GEMV.
+//                                   per-group S4 DPAS grouped GEMM only when
+//                                   the batch fills its M tile (>= 8 tokens per
+//                                   expert on average, `ARK_MOE_DECODE_DPAS_S4`
+//                                   default ON); asym, a disabled flag, a
+//                                   shape-gate miss, or a decode-sized batch
+//                                   uses the shared scalar GEMV.
 //   BTLA_DTYPE::S2_CLIP           : packed int2 weights [E, N, K/4] (uint8),
 //                                   4 values per byte, sym/asym like int4
 //   BTLA_DTYPE::F8_E4M3 / F8_E5M2 : FP8 weights [E, N, K] (uint8 buffer),
@@ -1114,6 +1151,7 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
   // every other path (fp, int8, int2, fp8, and the scalar int4 fallback) still
   // needs the per-token expert mapping.
   const bool s4_dpas_fastpath = weight_dtype == BTLA_DTYPE::S4_CLIP && !asym && moe_decode_dpas_s4_enabled() &&
+                                moe_decode_dpas_s4_occupancy_ok(total_tokens, num_experts) &&
                                 moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size);
   if (!s4_dpas_fastpath) {
     moe_decode_detail::fill_expert_id_per_token(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts,
@@ -1144,8 +1182,11 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
     }
     // Fast path: sym int4 through the shared per-group S4 DPAS grouped GEMM.
     // Falls back to the scalar GEMV for asym weights (DPAS S4 is sym-only),
-    // when the env flag is off, or when the shape gate rejects the tile
-    // geometry (e.g. N%64!=0, K%32!=0, unsupported group_size). Reuses the
+    // when the env flag is off, when the batch is too small to fill the DPAS M
+    // tile (the usual decode case -- sym then runs the exact same
+    // `launch_int4*` kernel as asym, with `Asym=false`), or when the shape gate
+    // rejects the tile geometry (e.g. N%64!=0, K%32!=0, unsupported
+    // group_size). Reuses the
     // `s4_dpas_fastpath` predicate computed above (which also gated the
     // `fill_expert_id_per_token` skip) so the two decisions cannot diverge.
     if (s4_dpas_fastpath) {

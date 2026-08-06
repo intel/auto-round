@@ -489,7 +489,10 @@ class TestMoEGemmDecode:
         the dequant->bmm reference within quantization tolerance.
 
         Shapes satisfy the DPAS per-group shape gate (N%64==0, K%32==0,
-        group_size in {32,64,128,256}) so the fast path is actually taken.
+        group_size in {32,64,128,256}) and ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0``
+        disables the tokens-per-expert occupancy gate (these tiny token counts
+        would otherwise be routed to the scalar GEMV, which is faster there) so
+        the DPAS fast path is actually taken.
         """
         num_experts = 4
         total_tokens = sum(tokens_per_expert)
@@ -516,6 +519,7 @@ class TestMoEGemmDecode:
             )
 
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", "0")
         monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "1")
         out_dpas = _run()
 
