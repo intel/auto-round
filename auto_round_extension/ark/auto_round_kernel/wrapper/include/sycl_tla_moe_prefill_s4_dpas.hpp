@@ -91,9 +91,11 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -142,6 +144,38 @@ using ::ark::moe_dpas_fp8::ScaleMode;
 using ::ark::moe_dpas_fp8::cute_scalar;
 using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
+
+// ---------------------------------------------------------------------------
+// Persistent per-queue atomic work-group counter.
+//
+// The grouped-GEMM launcher below needs a single `int32_t` device slot as a
+// global work-group counter (`atomicAdd`). The kernel self-initialises it to 0
+// at launch (group 0 / lane 0 does `atm.store(0)`), so the host never has to
+// reset it between calls. Previously each dispatch call allocated this slot
+// with `sycl::malloc_device` and released it with `sycl::free`; both operations
+// force a queue synchronization, which is pure overhead on the decode hot path
+// where the GEMM itself is only tens of microseconds.
+//
+// Instead, hand out one persistent buffer per queue and reuse it across calls.
+// This is safe because every launcher call is synchronous (`event.wait()` in
+// `MoEGEMMLauncher_s4`), so two launches can never share the buffer
+// concurrently. Buffers live until process exit (one `int32_t` per queue),
+// matching the singleton lifetime already used by `EventManager`.
+// ---------------------------------------------------------------------------
+inline int32_t* get_persistent_atomic_buffer(sycl::queue* q) {
+  static std::mutex mtx;
+  static std::unordered_map<sycl::queue*, int32_t*> cache;
+  std::lock_guard<std::mutex> lock(mtx);
+  auto it = cache.find(q);
+  if (it != cache.end()) return it->second;
+  int32_t* buf = sycl::malloc_device<int32_t>(1, *q);
+  if (buf == nullptr) {
+    throw std::runtime_error(
+        "moe_dpas_s4: failed to allocate persistent atomic buffer");
+  }
+  cache.emplace(q, buf);
+  return buf;
+}
 
 // ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
@@ -646,11 +680,9 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_s4_dpas(per-group): failed to allocate atomic buffer");
-  }
+  // Reusable per-queue work-group counter (self-zeroed by the kernel); avoids
+  // a malloc_device/free (each a queue sync) on every dispatch call.
+  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
 
 #define ARK_DPAS_S4_PG_LAUNCH_SYM(policy)                                      \
   MoEGEMMLauncher_s4<'R', 'C', policy>(                                        \
@@ -674,8 +706,6 @@ void moe_prefill_s4_dpas_per_group_dispatch(
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy);
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
-
-  sycl::free(atomic_buffer, *q);
 }
 
 // ---------------------------------------------------------------------------
@@ -743,11 +773,7 @@ void moe_decode_s4_dpas_per_group_dispatch(
   const auto* weights_i4 =
       reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_decode_s4_dpas(per-group): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
 
   // Hard-pin the 8-row tile -- the only tile the prefill ladder would ever
   // select for decode-sized batches.
@@ -755,8 +781,6 @@ void moe_decode_s4_dpas_per_group_dispatch(
       *q, activations_ca, weights_i4, scales_ca,
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
       num_tokens_per_expert, E, group_size, atomic_buffer);
-
-  sycl::free(atomic_buffer, *q);
 }
 
 // ---------------------------------------------------------------------------
