@@ -17,6 +17,8 @@
 #   OUTPUT_DIR              where CSV + log are written (default: benchmarks/results)
 #   XPU_SO                  explicit path to the built auto_round_kernel_xpu*.so
 #                           (default: newest under auto_round_kernel/ark-xbuild)
+#   SPARGE_PREPROCESS_BACKEND  sparse preprocess backend (default: triton_xpu)
+#                              torch | triton_xpu | auto
 #
 # PREREQUISITES
 #   - oneAPI 2026.1 runtime (sourced from /opt/intel/oneapi/setvars.sh)
@@ -41,6 +43,7 @@ PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/benchmarks/results}"
 ZE_AFFINITY_MASK_VALUE="${ZE_AFFINITY_MASK_VALUE:-6}"
 XPU_SO="${XPU_SO:-}"
+SPARGE_PREPROCESS_BACKEND="${SPARGE_PREPROCESS_BACKEND:-triton_xpu}"
 
 cd "${REPO_ROOT}"
 
@@ -61,7 +64,7 @@ set -u
 
 export MKLROOT=/opt/intel/oneapi/mkl/2026.1
 export ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK_VALUE}"
-export SAGE_ATTN_SPARSE_PREPROCESS_BACKEND=torch
+export SAGE_ATTN_SPARSE_PREPROCESS_BACKEND="${SPARGE_PREPROCESS_BACKEND}"
 
 if [[ -z "${XPU_SO}" ]]; then
   XPU_SO="$(find "${REPO_ROOT}/auto_round_kernel/ark-xbuild" -maxdepth 1 -name 'auto_round_kernel_xpu*.so' | sort | tail -n 1)"
