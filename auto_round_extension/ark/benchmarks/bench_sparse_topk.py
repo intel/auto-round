@@ -23,13 +23,13 @@ import auto_round_kernel as ark
 from auto_round_kernel.xpu_loader import load_xpu_lib
 
 
-def _load_sparse_binding(ext_path: Path) -> None:
+def _load_sparse_binding(ext_path: Path, *, required_symbols: tuple[str, ...]) -> None:
     module_name = "auto_round_kernel._bench.auto_round_kernel_xpu"
     print(f"Loading XPU extension from {ext_path.resolve()} as {module_name}")
-    load_xpu_lib(ext_path, required_symbols=("sage_sparse",), module_name=module_name)
+    load_xpu_lib(ext_path, required_symbols=required_symbols, module_name=module_name)
 
 
-def _resolve_sparse_binding(args: argparse.Namespace) -> Path | None:
+def _resolve_sparse_binding(args: argparse.Namespace, *, required_symbols: tuple[str, ...]) -> Path | None:
     local_kernel_dir = REPO_ROOT / "auto_round_extension" / "ark" / "auto_round_kernel"
     current_file = getattr(getattr(ark, "xpu_lib", None), "__file__", None)
     if args.xpu_so is not None:
@@ -37,9 +37,11 @@ def _resolve_sparse_binding(args: argparse.Namespace) -> Path | None:
     if args.xbuild_dir is not None:
         candidates = sorted(args.xbuild_dir.resolve().glob("auto_round_kernel_xpu*.so"))
         if not candidates:
-            raise RuntimeError(f"Unable to locate built XPU extension with sage_sparse in {args.xbuild_dir}")
+            raise RuntimeError(
+                f"Unable to locate built XPU extension with required symbols {required_symbols} in {args.xbuild_dir}"
+            )
         return candidates[-1]
-    if current_file is not None and hasattr(ark.xpu_lib, "sage_sparse"):
+    if current_file is not None and all(hasattr(ark.xpu_lib, symbol) for symbol in required_symbols):
         try:
             current_path = Path(current_file).resolve()
             if current_path.is_relative_to(local_kernel_dir.resolve()):
@@ -47,20 +49,36 @@ def _resolve_sparse_binding(args: argparse.Namespace) -> Path | None:
                 return None
         except Exception:
             pass
-    candidates = sorted((local_kernel_dir / "xbuild").glob("auto_round_kernel_xpu*.so"))
+    build_roots = [root for root in local_kernel_dir.iterdir() if root.is_dir() and "build" in root.name]
+    candidates: list[Path] = []
+    for root in build_roots:
+        candidates.extend(sorted(root.glob("auto_round_kernel_xpu*.so")))
     if not candidates:
-        raise RuntimeError("Unable to locate built XPU extension with sage_sparse in auto_round_kernel/xbuild")
+        raise RuntimeError(
+            f"Unable to locate built XPU extension with required symbols {required_symbols} under {local_kernel_dir}"
+        )
+    candidates.sort(key=lambda path: path.stat().st_mtime)
     return candidates[-1]
 
 
 def ensure_sparse_binding(args: argparse.Namespace) -> None:
-    ext_path = _resolve_sparse_binding(args)
+    required_symbols = ("sage_sparse", "sage_sparse_bf16") if args.dtype == "bf16" else ("sage_sparse",)
+    ext_path = _resolve_sparse_binding(args, required_symbols=required_symbols)
     if ext_path is not None:
-        _load_sparse_binding(ext_path)
+        _load_sparse_binding(ext_path, required_symbols=required_symbols)
 
 
 def is_xpu_available() -> bool:
     return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
+def resolve_dtype(name: str) -> torch.dtype:
+    normalized = name.strip().lower()
+    if normalized == "fp16":
+        return torch.float16
+    if normalized == "bf16":
+        return torch.bfloat16
+    raise ValueError(f"Unsupported dtype={name!r}; supported values: fp16, bf16")
 
 
 def bench(fn, warmup: int, iters: int) -> float:
@@ -501,6 +519,8 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
             "dense_sagev1",
             "sparse_kernel_only",
             "sparse_e2e",
+            "sparse_bf16_kernel_only",
+            "sparse_bf16_e2e",
             "sparse_qtile256_row64k_kernel_only",
             "sparse_qtile256_row64k_e2e",
         }:
@@ -548,7 +568,7 @@ def write_csv(rows: list[dict[str, object]], output_csv: Path) -> None:
 
 def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layout: str) -> list[dict[str, object]]:
     device = torch.device("xpu")
-    dtype = torch.float16
+    dtype = resolve_dtype(args.dtype)
     scale = 1.0 / math.sqrt(args.head_dim)
     enable_gqa = args.num_heads_q // args.num_heads_kv > 1
     q_hnd_src, k_hnd_src, v_hnd_src = build_inputs(
@@ -710,6 +730,49 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                     note=f"preprocess failed before e2e benchmark: {preprocess_note}",
                 )
             )
+            if dtype == torch.bfloat16:
+                rows.append(
+                    make_row(
+                        mode="sparse_bf16_kernel_only",
+                        batch=args.batch,
+                        num_heads_q=args.num_heads_q,
+                        num_heads_kv=args.num_heads_kv,
+                        seq_len=seq_len,
+                        tensor_layout=tensor_layout,
+                        head_dim=args.head_dim,
+                        dtype=dtype,
+                        is_causal=args.causal,
+                        warmup=args.warmup,
+                        iters=args.iters,
+                        requested_topk=topk,
+                        selected_ratio=None,
+                        selected_blocks_per_row=None,
+                        latency_ms=None,
+                        status=status,
+                        note=f"preprocess failed before bf16 kernel benchmark: {preprocess_note}",
+                    )
+                )
+                rows.append(
+                    make_row(
+                        mode="sparse_bf16_e2e",
+                        batch=args.batch,
+                        num_heads_q=args.num_heads_q,
+                        num_heads_kv=args.num_heads_kv,
+                        seq_len=seq_len,
+                        tensor_layout=tensor_layout,
+                        head_dim=args.head_dim,
+                        dtype=dtype,
+                        is_causal=args.causal,
+                        warmup=args.warmup,
+                        iters=args.iters,
+                        requested_topk=topk,
+                        selected_ratio=None,
+                        selected_blocks_per_row=None,
+                        latency_ms=None,
+                        status=status,
+                        note=f"preprocess failed before bf16 e2e benchmark: {preprocess_note}",
+                    )
+                )
             continue
 
         # try:
@@ -891,6 +954,109 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                 selected_blocks_per_row=selected_blocks_per_row,
             )
         )
+        if dtype == torch.bfloat16:
+            rows.append(
+                try_benchmark(
+                    "sparse_bf16_kernel_only",
+                    lambda preprocess=preprocess: (
+                        hnd_to_nhd(
+                            ark.sage_sparse_bf16(
+                                nhd_to_hnd(q_nhd_src),
+                                nhd_to_hnd(k_nhd_src),
+                                nhd_to_hnd(v_nhd_src),
+                                preprocess["lut"],
+                                preprocess["valid_block_num"],
+                                is_causal=args.causal,
+                                scale=scale,
+                                q_tile_override=args.q_tile_override,
+                                sparse_q_block_tokens=preprocess["sparse_q_block_tokens"],
+                                sparse_k_block_tokens=preprocess["sparse_k_block_tokens"],
+                                tensor_layout="HND",
+                            )
+                        )
+                        if tensor_layout == "HND"
+                        else ark.sage_sparse_bf16(
+                            q,
+                            k,
+                            v,
+                            preprocess["lut"],
+                            preprocess["valid_block_num"],
+                            is_causal=args.causal,
+                            scale=scale,
+                            q_tile_override=args.q_tile_override,
+                            sparse_q_block_tokens=preprocess["sparse_q_block_tokens"],
+                            sparse_k_block_tokens=preprocess["sparse_k_block_tokens"],
+                            tensor_layout=tensor_layout,
+                        )
+                    ),
+                    batch=args.batch,
+                    num_heads_q=args.num_heads_q,
+                    num_heads_kv=args.num_heads_kv,
+                    seq_len=seq_len,
+                    tensor_layout=tensor_layout,
+                    head_dim=args.head_dim,
+                    dtype=dtype,
+                    is_causal=args.causal,
+                    warmup=args.warmup,
+                    iters=args.iters,
+                    requested_topk=topk,
+                    selected_ratio=selected_ratio,
+                    selected_blocks_per_row=selected_blocks_per_row,
+                )
+            )
+            rows.append(
+                try_benchmark(
+                    "sparse_bf16_e2e",
+                    lambda topk=topk: (
+                        hnd_to_nhd(
+                            ark.sparge_sage2_attn_meansim_topk_xpu_bf16(
+                                nhd_to_hnd(q_nhd_src),
+                                nhd_to_hnd(k_nhd_src),
+                                nhd_to_hnd(v_nhd_src),
+                                is_causal=args.causal,
+                                scale=scale,
+                                smooth_k=True,
+                                simthreshd1=-1.0,
+                                topk=topk,
+                                attention_sink=False,
+                                tensor_layout="HND",
+                                q_tile_override=args.q_tile_override,
+                                sparse_q_block_tokens=args.sparse_q_block_tokens,
+                                sparse_k_block_tokens=args.sparse_k_block_tokens,
+                            )
+                        )
+                        if tensor_layout == "HND"
+                        else ark.sparge_sage2_attn_meansim_topk_xpu_bf16(
+                            q,
+                            k,
+                            v,
+                            is_causal=args.causal,
+                            scale=scale,
+                            smooth_k=True,
+                            simthreshd1=-1.0,
+                            topk=topk,
+                            attention_sink=False,
+                            tensor_layout=tensor_layout,
+                            q_tile_override=args.q_tile_override,
+                            sparse_q_block_tokens=args.sparse_q_block_tokens,
+                            sparse_k_block_tokens=args.sparse_k_block_tokens,
+                        )
+                    ),
+                    batch=args.batch,
+                    num_heads_q=args.num_heads_q,
+                    num_heads_kv=args.num_heads_kv,
+                    seq_len=seq_len,
+                    tensor_layout=tensor_layout,
+                    head_dim=args.head_dim,
+                    dtype=dtype,
+                    is_causal=args.causal,
+                    warmup=args.warmup,
+                    iters=args.iters,
+                    requested_topk=topk,
+                    selected_ratio=selected_ratio,
+                    selected_blocks_per_row=selected_blocks_per_row,
+                )
+            )
         del preprocess
         empty_xpu_cache()
 
@@ -921,6 +1087,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads-kv", type=int, default=40)
     parser.add_argument("--seq-len", type=int, nargs="+", default=[32768, 75600])
     parser.add_argument("--head-dim", type=int, default=128)
+    parser.add_argument(
+        "--dtype",
+        choices=("fp16", "bf16"),
+        default="fp16",
+        help="Input/output dtype used for dense SDPA, dense SAGE, and sparse attention benchmarks.",
+    )
     parser.add_argument("--topk", type=float, nargs="+", default=[0.5, 0.25, 0.125])
     parser.add_argument("--quant-block-size", type=int, default=64)
     parser.add_argument(
