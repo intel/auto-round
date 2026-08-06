@@ -584,8 +584,10 @@ class TestMoEGemmDecode:
         dequant->bmm reference within quantization tolerance.
 
         The S4 DPAS fast path is disabled so both runs exercise the scalar
-        fallback (this is the only path the coalesce flag affects). Shapes use
-        N%16==0 so the N-tiled repack is exact.
+        fallback (this is the only path the coalesce flag affects), and the
+        coalesce amortization gate is disabled so the coalesced kernel really
+        runs at this (tiny) token count instead of silently falling back to the
+        per-lane-strided one. Shapes use N%16==0 so the N-tiled repack is exact.
         """
         num_experts = 4
         tokens_per_expert = [1, 0, 2, 1]
@@ -619,8 +621,11 @@ class TestMoEGemmDecode:
                 asym=asym,
             )
 
-        # Force the scalar-GEMV fallback so the coalesce flag actually applies.
+        # Force the scalar-GEMV fallback so the coalesce flag actually applies,
+        # and disable the tokens-per-expert amortization gate so the coalesced
+        # kernel is reached at this token count.
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
 
         monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
         out_coalesced = _run()
@@ -684,8 +689,11 @@ class TestMoEGemmDecode:
                 asym=asym,
             )
 
-        # Force the scalar-GEMV fallback so the coalesce/token-blocking path runs.
+        # Force the scalar-GEMV fallback so the coalesce/token-blocking path
+        # runs, and disable the amortization gate so the coalesced kernel is
+        # reached at this token count.
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
 
         monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
         out_blocked = _run()
@@ -698,6 +706,125 @@ class TestMoEGemmDecode:
         # Token blocking only changes weight reuse, not the dequant math, so the
         # blocked and legacy kernels must match tightly for every routing shape.
         torch.testing.assert_close(out_blocked, out_scalar, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    @pytest.mark.parametrize("group_size", [4, 12])
+    def test_decode_int4_coalesced_unaligned_group_size(self, monkeypatch, dtype, asym, group_size):
+        """The coalesced int4 kernel loads four packed bytes per lane out of a
+        ``[E, N/16, ceil(K/8), 16, 4]`` layout. Group sizes that are a multiple
+        of 8 start every K-group on a 4-byte chunk boundary, so the vectorized
+        stage covers the whole group; other even group sizes need the scalar
+        prologue/epilogue around it.
+
+        ``group_size=4`` leaves every odd group misaligned with no room for a
+        vector step at all, and ``group_size=12`` mixes a misaligned prologue
+        with a vector step, so between them both non-vector paths are covered.
+        """
+        num_experts = 3
+        tokens_per_expert = [2, 0, 3]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 32, 48
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        if asym:
+            zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+        else:
+            zeros = None
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        out_coalesced = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+        out_scalar = _run()
+
+        assert out_coalesced.shape == (total_tokens, N)
+        torch.testing.assert_close(out_coalesced, ref, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_decode_int4_repack_cache(self, monkeypatch, dtype):
+        """``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` lets the coalesced int4 kernel
+        reuse the N-tiled weight repack across calls instead of rebuilding it.
+
+        Reuse is keyed on the weight buffer address plus its shape, so it is
+        only valid while the caller keeps that buffer alive. Verify that (a)
+        repeated calls on a live weight tensor keep matching the reference, and
+        (b) ``moe_decode_release_scratch()`` drops the cache so a *different*
+        weight tensor -- which torch's caching allocator may well hand back at
+        the same address -- is repacked again rather than answered from the
+        stale entry.
+        """
+        num_experts = 3
+        tokens_per_expert = [4, 0, 5]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 64, 128
+        group_size = 32
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _build():
+            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+            return packed, scales, _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run(packed, scales):
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                weight_bits=4,
+                group_size=group_size,
+                asym=False,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_INT4_REPACK_CACHE", "1")
+
+        try:
+            packed_a, scales_a, ref_a = _build()
+            # First call builds the repack, second must hit the cache.
+            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
+            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
+
+            # Drop the cached repack before the buffer it was derived from goes
+            # away, then verify a freshly built weight tensor is honoured.
+            del packed_a, scales_a
+            ark.moe_decode_release_scratch()
+            packed_b, scales_b, ref_b = _build()
+            torch.testing.assert_close(_run(packed_b, scales_b), ref_b, rtol=5e-2, atol=5e-2)
+        finally:
+            ark.moe_decode_release_scratch()
 
     def test_decode_validation_errors(self):
         """Sanity-check that Python-side validation catches misuse."""

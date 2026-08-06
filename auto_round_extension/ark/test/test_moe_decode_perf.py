@@ -234,6 +234,15 @@ def _spread_tokens(total_tokens: int, num_experts: int = 192) -> list:
 # to locate the DPAS-vs-scalar crossover for the auto-dispatch threshold.
 _INT4_THRESHOLD_TOKEN_COUNTS = [16, 32, 64, 128]
 
+# Extra (much larger) token counts appended when --all-shapes is passed. The
+# default ARK_MOE_DECODE_DPAS_S4_MIN_TPE gate is 8 tokens per expert, i.e.
+# 8 * 192 == 1536 total tokens for the sweep's expert count, so the counts above
+# alone can never show where DPAS actually overtakes the scalar GEMV -- they all
+# sit far below the gate. These bracket the gate from both sides so the measured
+# crossing point can replace the tile-row-count heuristic the default was
+# derived from.
+_INT4_THRESHOLD_TOKEN_COUNTS_EXTENDED = [256, 512, 1024, 1536, 3072]
+
 # MiniMax-M2 up/down-proj (N, K) pairs reused by the threshold sweep.
 _INT4_THRESHOLD_NK = [
     (1536, 3072),  # gate/up-proj
@@ -396,6 +405,65 @@ class TestMoEGemmDecodePerf:
             _print_row(label, N, K, total_tokens, base_ms, ark_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    def test_perf_int4_coalesced_vs_strided(self, monkeypatch, dtype, asym):
+        """int4 scalar-GEMV fallback A/B: coalesced N-tiled weight loads
+        (``ARK_MOE_DECODE_COALESCE_INT4=1``) vs the legacy per-lane-strided
+        kernel (``=0``).
+
+        ``speedup`` is ``strided / coalesced`` (the coalesced kernel is the
+        "ark" column). The S4 DPAS fast path is disabled so both columns run the
+        scalar fallback -- the only path the coalesce flag affects -- and the
+        amortization gate is disabled so the coalesced kernel is actually
+        reached at decode-sized token counts (it repacks the whole weight
+        tensor, so at very low tokens-per-expert the repack dominates, which is
+        exactly what the default gate exists to avoid; this row shows how much).
+        """
+        group_size = 128
+        kind = "asym" if asym else "sym"
+        _print_header(
+            f"INT4 {kind} coalesced vs strided (group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- strided GEMV (baseline) vs coalesced GEMV (ark)"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+            if asym:
+                zeros = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+                packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            else:
+                zeros = None
+                packed = _pack_int4_sym(w_float, scales, group_size)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            def _run():
+                return ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=4,
+                    group_size=group_size,
+                    asym=asym,
+                )
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+            monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+            monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+            strided_ms = _xpu_time_ms(_run)
+            monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+            coalesced_ms = _xpu_time_ms(_run)
+            monkeypatch.delenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_COALESCE_INT4", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_S4", raising=False)
+            _print_row(label, N, K, total_tokens, strided_ms, coalesced_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_perf_int4_sym_dpas_vs_scalar(self, monkeypatch, dtype):
         """int4-sym decode: compare the S4 DPAS path (ARK_MOE_DECODE_DPAS_S4=1)
         against the scalar GEMV fallback (ARK_MOE_DECODE_DPAS_S4=0).
@@ -450,7 +518,7 @@ class TestMoEGemmDecodePerf:
             _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    def test_perf_int4_sym_dpas_vs_scalar_threshold(self, monkeypatch, dtype):
+    def test_perf_int4_sym_dpas_vs_scalar_threshold(self, request, monkeypatch, dtype):
         """int4-sym decode threshold sweep: DPAS vs scalar GEMV across a range
         of total-token counts (16/32/64/128) at ``group_size=32``.
 
@@ -465,9 +533,17 @@ class TestMoEGemmDecodePerf:
         the default ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE`` occupancy gate (set to
         ``0`` here so the DPAS column is not itself re-routed to the scalar
         GEMV).
+
+        By default only the small token counts are swept so a CI pass stays
+        short. Those all sit below the default occupancy gate (8 tokens per
+        expert == 1536 tokens for E=192), so pass ``--all-shapes`` to extend the
+        sweep across the gate and measure where the crossing actually is.
         """
         group_size = 32
         E = 192
+        token_counts = list(_INT4_THRESHOLD_TOKEN_COUNTS)
+        if request.config.getoption("--all-shapes", default=False):
+            token_counts += _INT4_THRESHOLD_TOKEN_COUNTS_EXTENDED
         _print_header(
             f"INT4 sym DPAS vs scalar threshold sweep (group_size={group_size}, "
             f"act={str(dtype).split('.')[-1]}) -- scalar GEMV (baseline) vs S4 DPAS (ark)"
@@ -475,7 +551,7 @@ class TestMoEGemmDecodePerf:
         for N, K in _INT4_THRESHOLD_NK:
             if K % group_size != 0 or N % 64 != 0 or K % 32 != 0:
                 continue
-            for total_tokens in _INT4_THRESHOLD_TOKEN_COUNTS:
+            for total_tokens in token_counts:
                 tpe = _spread_tokens(total_tokens, E)
                 label = f"int4 {N}x{K} t{total_tokens}"
                 activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")

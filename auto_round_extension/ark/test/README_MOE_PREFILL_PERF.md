@@ -363,6 +363,85 @@ sym now accumulates the biased sum and subtracts `8 * sum a` at the end,
 which is exactly the fp32 accumulation pattern asym has always used. It
 applies to both `launch_int4` and `launch_int4_coalesced`.
 
+**4-byte-blocked coalesced repack.** The coalesced fallback
+(`launch_int4_coalesced`, `ARK_MOE_DECODE_COALESCE_INT4` default ON)
+repacks the `[E, N, K/2]` weights on-device so sub-group loads are
+contiguous. The original repack layout `[E, N/16, K/2, 16]` put one byte
+per lane per step, so although the 16 lanes together covered one cache
+line, each lane still issued a *byte* load — and for sym, one scalar
+`^ 0x88` per byte. The layout is now `[E, N/16, ceil(K/8), 16, 4]`: a
+chunk holds four consecutive packed bytes for each of the 16 columns of a
+tile, lane-major, so lane `l` reads its four bytes at chunk offset `l*4`
+and the sub-group still spans 64 contiguous bytes. Each lane therefore
+issues one `vec<uint8_t,4>` load instead of four byte loads (4× fewer
+weight-load instructions), and the sym sign flip becomes one vector XOR
+per chunk instead of four scalar XORs — removing the last per-byte
+instruction sym paid over asym in this kernel. Group sizes that are a
+multiple of 8 (16/32/64/128/256 — every shipped quant config) start each
+K-group on a chunk boundary so the vector stage covers the whole group;
+other even group sizes fall back to a scalar prologue/epilogue over the
+same layout. The external `[E, N, K/2]` weight contract is unchanged.
+
+**Hoisted activation sums.** Both int4 GEMVs fold the per-group
+scale/zero as `scale * (Σ a·q − zero · Σ a)`. `Σ a` depends only on the
+activation row and the K-group, not on the output column, yet it used to
+be recomputed inside the inner loop — once per sub-group lane (16×
+redundant) and again for every N-tile work-group — costing one extra float
+add per K element. It is now precomputed once into a
+`[total_tokens, K/group_size]` fp32 table (`launch_act_group_sums`), so
+the GEMV inner loop only accumulates `Σ a·q` and reads one float per
+group. Sym benefits most: for sym `Σ a` exists purely to carry the
+constant zero-point of 8 that the `^ 0x88` decode introduces. The
+summation order changes by a few fp32 ULPs, far inside the kernel's
+quantization tolerance.
+
+**Pooled scratch instead of per-call `malloc_device`.** The repack buffer
+used to be a transient USM allocation that had to be freed behind a
+blocking `queue::wait()` on *every* decode call — and decode issues one
+call per generated token, so that allocation plus sync was on the order of
+the GEMV itself. Both the repack buffer and the activation-sum table now
+come from a persistent per-queue, grow-on-demand slab
+(`DeviceScratchPool`), so steady-state decode performs no allocation and
+introduces no host-side synchronization; ordering between the producer
+kernels and the GEMV is already guaranteed by the in-order queue.
+`ark.moe_decode_release_scratch()` (pybind `moe_decode_release_scratch`)
+hands the memory back.
+
+The repack *kernel* still runs on every call by default. Setting
+`ARK_MOE_DECODE_INT4_REPACK_CACHE=1` reuses the previous repack when the
+weight buffer address and shape are unchanged, which is valid for a real
+inference loop where the weights are fixed. It is **off by default**
+because the tag is a pointer identity: a freed-then-reallocated weight
+tensor can land on the same address (torch's caching allocator makes this
+common in test loops), and a stale repack would silently produce wrong
+results. Callers that enable it must call
+`ark.moe_decode_release_scratch()` before dropping the weight tensor.
+
+| Env var | Default | Effect |
+| ------- | ------- | ------ |
+| `ARK_MOE_DECODE_COALESCE_INT4` | ON | Use the coalesced, 4-byte-blocked repack GEMV for the int4 scalar fallback; `0` forces the legacy per-lane-strided `launch_int4`. |
+| `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` | `num_experts * TOKEN_BLOCK` | Minimum total tokens before the coalesced kernel is worth its repack pass; `0` disables the gate (what the parity/A-B tests set). |
+| `ARK_MOE_DECODE_INT4_REPACK_CACHE` | OFF | Reuse the repack across calls on the same weight buffer. Only safe when the caller owns the weight lifetime. |
+
+Perf A/B for the coalesced path is
+`test_moe_decode_perf.py::test_perf_int4_coalesced_vs_strided` (toggles
+`ARK_MOE_DECODE_COALESCE_INT4` 0/1 on the same shapes). Correctness is
+covered by `test_moe.py::test_decode_int4_coalesced_matches_scalar`,
+`::test_decode_int4_coalesced_token_blocking`,
+`::test_decode_int4_coalesced_unaligned_group_size` (group sizes that are
+not a multiple of 8, exercising the scalar prologue/epilogue) and
+`::test_decode_int4_repack_cache`.
+
+**Occupancy-gate threshold sweep.** The default
+`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` of 8 was derived from the row count of
+`dpas_w4a16_policy_m_8` rather than measured. The sweep that locates the
+real crossing point is
+`test_moe_decode_perf.py::test_perf_int4_sym_dpas_vs_scalar_threshold`;
+its default token counts (16–128) all sit far below the gate (8 × 192
+experts == 1536 tokens), so pass `--all-shapes` to extend the sweep to
+256/512/1024/1536/3072 tokens and bracket the gate from both sides. The
+default stays at 8 until hardware numbers say otherwise.
+
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`,
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +

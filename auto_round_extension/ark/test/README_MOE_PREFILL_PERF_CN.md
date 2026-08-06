@@ -284,6 +284,68 @@ sym 使用 `(int8_t)(byte << 4) >> 4` 逐 nibble 做符号扩展，这是一条
 这正是 asym 一直在用的 fp32 累加方式；`launch_int4` 与 `launch_int4_coalesced`
 两个 kernel 均已应用。
 
+**按 4 字节分块的 coalesced repack。** coalesced 回退路径
+(`launch_int4_coalesced`，`ARK_MOE_DECODE_COALESCE_INT4` 默认开启)会在设备端把
+`[E, N, K/2]` 权重重排，使 sub-group 的加载连续。原先的重排布局
+`[E, N/16, K/2, 16]` 每个 lane 每步只放一个字节，因此虽然 16 个 lane 合起来覆盖
+一条 cache line，每个 lane 仍然发出的是*字节*加载 —— 对 sym 而言还额外附带每字节
+一次标量 `^ 0x88`。现在布局改为 `[E, N/16, ceil(K/8), 16, 4]`：一个 chunk 为
+tile 内 16 列中的每一列存放 4 个连续的打包字节，按 lane 主序排列，因此 lane `l`
+在 chunk 偏移 `l*4` 处读取自己的 4 个字节，sub-group 整体仍然覆盖 64 个连续字节。
+于是每个 lane 只需一次 `vec<uint8_t,4>` 加载而不是四次字节加载(权重加载指令数
+降为 1/4)，sym 的符号翻转也变成每个 chunk 一次向量 XOR 而不是四次标量 XOR ——
+这消除了该 kernel 中 sym 相对 asym 仅存的逐字节额外指令。group_size 为 8 的倍数时
+(16/32/64/128/256，即全部已发布的量化配置)每个 K 组都从 chunk 边界开始，向量
+阶段覆盖整个组；其他偶数 group_size 则通过标量前导/收尾循环在同一布局上处理。
+对外的 `[E, N, K/2]` 权重约定保持不变。
+
+**提取激活求和。** 两个 int4 GEMV 都按
+`scale * (Σ a·q − zero · Σ a)` 折叠每组的 scale/zero。`Σ a` 只依赖激活行与 K 组，
+与输出列无关，但此前它是在内层循环里重复计算的 —— 每个 sub-group lane 算一遍
+(16 倍冗余)，每个 N-tile work-group 再算一遍 —— 每个 K 元素多付出一次浮点加法。
+现在它被预先计算成一张 `[total_tokens, K/group_size]` 的 fp32 表
+(`launch_act_group_sums`)，GEMV 内层循环只累加 `Σ a·q`，每组读取一个 float。
+sym 获益最大：对 sym 来说 `Σ a` 的存在纯粹是为了承载 `^ 0x88` 解码引入的常数
+zero-point 8。求和顺序的变化仅带来几个 fp32 ULP 的差异，远在 kernel 现有的
+量化容差之内。
+
+**用 scratch 池替代每次调用的 `malloc_device`。** repack 缓冲区原本是临时的 USM
+分配，每次 decode 调用都必须在一次阻塞的 `queue::wait()` 之后释放 —— 而 decode
+每生成一个 token 就调用一次，因此这次分配加同步的开销已经与 GEMV 本身同量级。
+现在 repack 缓冲区与激活求和表都取自按 queue 持有、按需增长的常驻 slab
+(`DeviceScratchPool`)，稳态 decode 不再有任何分配，也不引入主机侧同步；生产者
+kernel 与 GEMV 之间的顺序由 in-order queue 保证。
+`ark.moe_decode_release_scratch()`(pybind `moe_decode_release_scratch`)可将内存
+归还。
+
+repack *kernel* 默认仍每次调用都执行。设置
+`ARK_MOE_DECODE_INT4_REPACK_CACHE=1` 可在权重缓冲区地址与形状不变时复用上一次的
+repack 结果 —— 这对权重固定的真实推理循环是成立的。它**默认关闭**，因为其 tag
+是指针身份：被释放后重新分配的权重张量可能落在同一地址(torch 的缓存分配器在
+测试循环中很容易出现这种情况)，此时陈旧的 repack 会静默产生错误结果。启用它的
+调用方必须在丢弃权重张量之前调用 `ark.moe_decode_release_scratch()`。
+
+| 环境变量 | 默认值 | 作用 |
+| -------- | ------ | ---- |
+| `ARK_MOE_DECODE_COALESCE_INT4` | 开启 | int4 标量回退使用按 4 字节分块的 coalesced repack GEMV；设为 `0` 则强制使用按 lane 跨步的旧版 `launch_int4`。 |
+| `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` | `num_experts * TOKEN_BLOCK` | coalesced kernel 值回其 repack 开销所需的最小总 token 数；设为 `0` 关闭该门控(一致性/A-B 测试即如此设置)。 |
+| `ARK_MOE_DECODE_INT4_REPACK_CACHE` | 关闭 | 在同一权重缓冲区上跨调用复用 repack 结果。仅当调用方掌握权重生命周期时才安全。 |
+
+coalesced 路径的性能 A/B 见
+`test_moe_decode_perf.py::test_perf_int4_coalesced_vs_strided`(在相同形状上切换
+`ARK_MOE_DECODE_COALESCE_INT4` 0/1)。正确性由
+`test_moe.py::test_decode_int4_coalesced_matches_scalar`、
+`::test_decode_int4_coalesced_token_blocking`、
+`::test_decode_int4_coalesced_unaligned_group_size`(非 8 的倍数的 group_size，
+覆盖标量前导/收尾路径)以及 `::test_decode_int4_repack_cache` 覆盖。
+
+**占用率门控阈值扫描。** `ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 的默认值 8 来自
+`dpas_w4a16_policy_m_8` 的 tile 行数，而非实测结果。定位真实交叉点的扫描用例是
+`test_moe_decode_perf.py::test_perf_int4_sym_dpas_vs_scalar_threshold`；它默认的
+token 数(16–128)都远低于该门控(8 × 192 个专家 == 1536 个 token)，因此需要传入
+`--all-shapes` 把扫描扩展到 256/512/1024/1536/3072 个 token，从两侧夹住门控。
+在拿到硬件数据之前，默认值仍保持为 8。
+
 精度对齐由
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +
