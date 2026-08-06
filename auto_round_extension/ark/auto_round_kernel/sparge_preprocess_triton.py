@@ -12,6 +12,35 @@ import triton.language as tl
 
 logger = logging.getLogger(__name__)
 
+_APPLIED_TRITON_PREDICATED_CHECK = False
+
+
+def _apply_xpu_triton_workarounds() -> None:
+    """Patch triton's Intel compiler so JIT kernels avoid the rejected SPIR-V extension."""
+    global _APPLIED_TRITON_PREDICATED_CHECK
+    if _APPLIED_TRITON_PREDICATED_CHECK:
+        return
+    try:
+        import triton.backends.intel.compiler as _intel_compiler
+    except ImportError:
+        # No intel triton backend (e.g. stock triton); nothing to patch.
+        return
+
+    _orig_parse_target = _intel_compiler.XPUBackend.parse_target
+
+    def _patched_parse_target(self, tgt_prop):
+        dev_prop = _orig_parse_target(self, tgt_prop)
+        dev_prop["has_predicated_io"] = False
+        return dev_prop
+
+    _intel_compiler.XPUBackend.parse_target = _patched_parse_target
+    _APPLIED_TRITON_PREDICATED_CHECK = True
+    logger.info("Applied XPU triton workaround: has_predicated_io forced off (SPV_INTEL_predicated_io)")
+
+
+_apply_xpu_triton_workarounds()
+
+
 _TRITON_FALLBACK_WARNING_LOGGED = False
 
 
