@@ -267,94 +267,51 @@ def sage_sparse_bf16(
             f"q_tile_override must be one of {{0, 64, 128}} for sage_sparse_bf16 with head_dim=64, got {q_tile_override}"
         )
 
-    # Preferred path: the native XPU sparse kernel. The dense fallback below is
-    # numerically correct but materializes a full [B, Hq, Sq, Skv] mask, which OOMs
-    # at long sequence lengths. Unsupported configs fall through to the fallback.
-    if query.device.type == "xpu":
-        try:
-            lib = get_lib(query)
-            if hasattr(lib, "sage_sparse_bf16"):
-                effective_q_tile_override = _resolve_sparse_prefill_q_tile_override(
-                    head_dim=D,
-                    quant_block_size=64,
-                    q_tile_override=q_tile_override,
-                    sparse_q_block_tokens=effective_sparse_q_block_tokens,
-                    sparse_k_block_tokens=effective_sparse_k_block_tokens,
-                    tensor_layout=tensor_layout,
-                )
-                stream = get_stream(query)
-                O = _empty_attention_output(
-                    B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout
-                )
-                lib.sage_sparse_bf16(
-                    stream,
-                    query.data_ptr(),
-                    key.data_ptr(),
-                    value.data_ptr(),
-                    O.data_ptr(),
-                    attn_mask.data_ptr() if attn_mask is not None else 0,
-                    lut.data_ptr(),
-                    valid_block_num.data_ptr(),
-                    q_sparse_blocks,
-                    kv_sparse_blocks,
-                    effective_q_tile_override,
-                    *_attention_strides_qko(query, tensor_layout),
-                    *_attention_strides_qko(key, tensor_layout),
-                    *_attention_strides_v(value, tensor_layout),
-                    *_attention_strides_qko(O, tensor_layout),
-                    B,
-                    Hq,
-                    Hkv,
-                    Sq,
-                    Skv,
-                    D,
-                    float(scale) if scale is not None else 1.0 / (D**0.5),
-                    bool(is_causal),
-                )
-                return O
-        except (NotImplementedError, RuntimeError, ValueError):
-            # Unsupported native sparse config; fall through to the dense fallback.
-            pass
-
-    block_map = _lut_to_block_map(lut, valid_block_num)
-    sparse_mask = sparge_block_map_to_mask(
-        block_map,
+    # Native XPU sparse kernel only. The historical dense-mask fallback (rebuild the
+    # full block map, then run per-head dense sagev1) is removed: it materialized a
+    # [B, Hq, Sq, Skv] mask and OOM'd at long sequences, and the native kernel now
+    # covers every supported config.
+    lib = get_lib(query)
+    if not hasattr(lib, "sage_sparse_bf16"):
+        raise RuntimeError("Loaded XPU extension does not expose sage_sparse_bf16")
+    effective_q_tile_override = _resolve_sparse_prefill_q_tile_override(
+        head_dim=D,
         quant_block_size=64,
-        q_block_tokens=effective_sparse_q_block_tokens,
-        k_block_tokens=effective_sparse_k_block_tokens,
-        seq_len_q=Sq,
-        seq_len_kv=Skv,
-        is_causal=is_causal,
+        q_tile_override=q_tile_override,
+        sparse_q_block_tokens=effective_sparse_q_block_tokens,
+        sparse_k_block_tokens=effective_sparse_k_block_tokens,
+        tensor_layout=tensor_layout,
     )
-    normalized_mask = _normalize_sparse_mask(attn_mask, B, Sq, Skv, query.device)
-    if normalized_mask is not None:
-        sparse_mask = torch.minimum(sparse_mask, normalized_mask.expand(-1, Hq, -1, -1))
-
-    query_hnd = _to_hnd(query, tensor_layout)
-    key_hnd = _to_hnd(key, tensor_layout)
-    value_hnd = _to_hnd(value, tensor_layout)
-    kv_head_index = _kv_head_index_for_q_heads(Hq, Hkv, query.device)
-    outputs: list[torch.Tensor] = []
-    effective_scale = float(scale) if scale is not None else 1.0 / (D**0.5)
-    for q_head in range(Hq):
-        kv_head = int(kv_head_index[q_head].item())
-        query_head = torch.empty((B, 1, Sq, D), dtype=query_hnd.dtype, device=query.device)
-        key_head = torch.empty((B, 1, Skv, D), dtype=key_hnd.dtype, device=key.device)
-        value_head = torch.empty((B, 1, Skv, D), dtype=value_hnd.dtype, device=value.device)
-        query_head.copy_(query_hnd[:, q_head : q_head + 1])
-        key_head.copy_(key_hnd[:, kv_head : kv_head + 1])
-        value_head.copy_(value_hnd[:, kv_head : kv_head + 1])
-        head_out = _dense_sagev1(
-            query_head,
-            key_head,
-            value_head,
-            attn_mask=sparse_mask[:, q_head : q_head + 1].contiguous(),
-            is_causal=False,
-            scale=effective_scale,
-            tensor_layout="HND",
-        )
-        outputs.append(head_out)
-    return _from_hnd(torch.cat(outputs, dim=1), tensor_layout)
+    stream = get_stream(query)
+    O = _empty_attention_output(
+        B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout
+    )
+    lib.sage_sparse_bf16(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        lut.data_ptr(),
+        valid_block_num.data_ptr(),
+        q_sparse_blocks,
+        kv_sparse_blocks,
+        effective_q_tile_override,
+        *_attention_strides_qko(query, tensor_layout),
+        *_attention_strides_qko(key, tensor_layout),
+        *_attention_strides_v(value, tensor_layout),
+        *_attention_strides_qko(O, tensor_layout),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+    return O
 
 
 def sage_sparse_row_linear(
