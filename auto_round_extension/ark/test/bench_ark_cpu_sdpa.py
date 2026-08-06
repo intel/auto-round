@@ -148,6 +148,12 @@ def _time_call(fn, warmup, runs):
     return total / runs, best
 
 
+def _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, time_s):
+    """Compute TFLOPS for SDPA: Q@K^T + softmax + P@V = 4*B*Hq*Sq*Skv*D MACs."""
+    flops = 4.0 * batch * heads_q * seq_q * seq_kv * head_dim
+    return flops / time_s / 1e12 if time_s > 0 else float("nan")
+
+
 def _build_cases(shape):
     if shape in ("decode", "all"):
         for batch, hq, hkv, hd, seq in DEFAULT_DECODE_SHAPES:
@@ -195,6 +201,7 @@ def run_public_case(shape_kind, batch, heads_q, heads_kv, head_dim, seq, dtype, 
         "ark_best_ms": ark_best * 1e3,
         "ref_ms": ref_mean * 1e3,
         "ref_best_ms": ref_best * 1e3,
+        "ark_tflops": _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, ark_mean),
         "speedup": ref_mean / ark_mean if ark_mean > 0 else float("nan"),
         "max_abs_err": max_err,
         "passed": passed,
@@ -232,6 +239,7 @@ def run_mixed_raw_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, war
         "ark_best_ms": ark_best * 1e3,
         "ref_ms": ref_mean * 1e3,
         "ref_best_ms": ref_best * 1e3,
+        "ark_tflops": _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, ark_mean),
         "speedup": ref_mean / ark_mean if ark_mean > 0 else float("nan"),
         "max_abs_err": max_err,
         "passed": passed,
@@ -283,6 +291,7 @@ def run_packed_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, warmup
         "packed_best_ms": packed_best * 1e3,
         "ref_ms": ref_mean * 1e3,
         "ref_best_ms": ref_best * 1e3,
+        "ark_tflops": _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, packed_mean),
         "speedup": ref_mean / packed_mean if packed_mean > 0 else float("nan"),
         "max_abs_err": max_err,
         "passed": passed,
@@ -292,7 +301,7 @@ def run_packed_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, warmup
 def _print_public_rows(rows):
     header = (
         f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'dtype':>10}{'route':>22}{'ark(ms)':>11}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
+        f"{'dtype':>10}{'route':>22}{'ark(ms)':>11}{'tflops':>9}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
     )
     print("\n[public sdpa — homogeneous/input-matched dtypes]")
     print(header)
@@ -301,7 +310,7 @@ def _print_public_rows(rows):
         print(
             f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
             f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['route']:>22}"
-            f"{row['ark_ms']:>11.3f}{row['ref_ms']:>11.3f}"
+            f"{row['ark_ms']:>11.3f}{row['ark_tflops']:>9.3f}{row['ref_ms']:>11.3f}"
             f"{row['speedup']:>9.2f}{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
         )
     if rows:
@@ -315,7 +324,7 @@ def _print_public_rows(rows):
 def _print_mixed_rows(rows, title, latency_key, latency_label):
     header = (
         f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'q_dtype':>10}{'kv_dtype':>10}{'route':>22}{latency_label:>12}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
+        f"{'q_dtype':>10}{'kv_dtype':>10}{'route':>22}{latency_label:>12}{'tflops':>9}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
     )
     print(f"\n[{title}]")
     print(header)
@@ -324,7 +333,7 @@ def _print_mixed_rows(rows, title, latency_key, latency_label):
         print(
             f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
             f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['q_dtype']:>10}{row['kv_dtype']:>10}{row['route']:>22}"
-            f"{row[latency_key]:>12.3f}{row['ref_ms']:>11.3f}{row['speedup']:>9.2f}"
+            f"{row[latency_key]:>12.3f}{row['ark_tflops']:>9.3f}{row['ref_ms']:>11.3f}{row['speedup']:>9.2f}"
             f"{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
         )
     if rows:
@@ -382,6 +391,7 @@ def _write_csv(path, rows):
         "packed_best_ms",
         "ref_best_ms",
         "speedup",
+        "ark_tflops",
         "max_abs_err",
         "passed",
     ]

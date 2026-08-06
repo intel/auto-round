@@ -883,8 +883,9 @@ ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int
   s.num_heads = batch * num_heads_kv;
   s.elem_bytes = element_size(kv_dtype);
   // K is the QK weight: NTILE blocks over seq, head_size is ROWPACK-packed.
+  // NS aligns BF16 K's reduction dimension to 32 for AMX cache ABI parity.
   s.k_seq_pad = pad_up(seq_len_kv, s.ntile);
-  s.k_head_size_pad = pad_up(head_dim, s.rowpack);
+  s.k_head_size_pad = pad_up(head_dim, kv_dtype == BTLA_DTYPE::BF16 ? 32 : s.rowpack);
   s.k_head_elems = static_cast<size_t>(s.k_seq_pad) * static_cast<size_t>(s.k_head_size_pad);
   s.k_total_elems = s.k_head_elems * static_cast<size_t>(s.num_heads);
   s.k_bytes = s.k_total_elems * s.elem_bytes;
@@ -893,7 +894,8 @@ ReorderKVShape reorder_kv_shape(int batch, int num_heads_kv, int seq_len_kv, int
   s.step_k_sl = s.k_head_size_pad;
   s.step_k_head_size = 1;
   // V is the PV weight: NTILE blocks over head_size, seq is ROWPACK-packed.
-  s.v_seq_pad = pad_up(seq_len_kv, s.rowpack);
+  // NS aligns BF16 V's reduction dimension to 32 for AMX cache ABI parity.
+  s.v_seq_pad = pad_up(seq_len_kv, kv_dtype == BTLA_DTYPE::BF16 ? 32 : s.rowpack);
   s.v_head_size_pad = pad_up(head_dim, s.ntile);
   s.v_head_elems = static_cast<size_t>(s.v_seq_pad) * static_cast<size_t>(s.v_head_size_pad);
   s.v_total_elems = s.v_head_elems * static_cast<size_t>(s.num_heads);

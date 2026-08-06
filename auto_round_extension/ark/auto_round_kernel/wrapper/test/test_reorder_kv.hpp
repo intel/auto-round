@@ -50,22 +50,18 @@ struct TestReorderKV {
     run_all();
   }
 
-  static int pad_up(int v, int p) { return ((v + p - 1) / p) * p; }
-
   // Expected packed index of K element (s, d) per the QK prologue addressing:
-  //   tile=s/NTILE, sl_in=s%NTILE; kp=d/ROWPACK, rp_i=d%ROWPACK; hs_pad=pad(D,RP)
+  //   tile=s/NTILE, sl_in=s%NTILE; kp=d/ROWPACK, rp_i=d%ROWPACK
   //   idx = tile*hs_pad*NTILE + kp*NTILE*ROWPACK + sl_in*ROWPACK + rp_i
-  static size_t expect_k_idx(int s, int d, int ntile, int rp, int head_dim) {
-    const int hs_pad = pad_up(head_dim, rp);
+  static size_t expect_k_idx(int s, int d, int ntile, int rp, int hs_pad) {
     const int tile = s / ntile, sl_in = s % ntile;
     const int kp = d / rp, rp_i = d % rp;
     return size_t(tile) * hs_pad * ntile + size_t(kp) * ntile * rp + size_t(sl_in) * rp + rp_i;
   }
 
   // Expected packed index of V element (s, d) per the PV prologue addressing:
-  //   NTILE over head_size, ROWPACK over seq; sl_pad=pad(S,RP)
-  static size_t expect_v_idx(int s, int d, int ntile, int rp, int seq_len) {
-    const int sl_pad = pad_up(seq_len, rp);
+  //   NTILE over head_size, ROWPACK over seq.
+  static size_t expect_v_idx(int s, int d, int ntile, int rp, int sl_pad) {
     const int tile = d / ntile, hs_in = d % ntile;
     const int kp = s / rp, rp_i = s % rp;
     return size_t(tile) * sl_pad * ntile + size_t(kp) * ntile * rp + size_t(hs_in) * rp + rp_i;
@@ -89,7 +85,8 @@ struct TestReorderKV {
         for (int s = 0; s < sl; ++s)
           for (int d = 0; d < hd; ++d) {
             float want = load_scalar(raw.data(), qko_offset(st, b, h, s, d), dt);
-            float got = load_scalar(packed.data(), base + expect_k_idx(s, d, sh.ntile, sh.rowpack, hd), dt);
+            float got = load_scalar(packed.data(),
+                                    base + expect_k_idx(s, d, sh.ntile, sh.rowpack, sh.k_head_size_pad), dt);
             if (got != want) throw std::runtime_error("K reorder mismatch");
           }
       }
@@ -112,7 +109,7 @@ struct TestReorderKV {
         for (int s = 0; s < sl; ++s)
           for (int d = 0; d < hd; ++d) {
             float want = load_scalar(raw.data(), value_offset(st, b, h, s, d), dt);
-            float got = load_scalar(packed.data(), base + expect_v_idx(s, d, sh.ntile, sh.rowpack, sl), dt);
+            float got = load_scalar(packed.data(), base + expect_v_idx(s, d, sh.ntile, sh.rowpack, sh.v_seq_pad), dt);
             if (got != want) throw std::runtime_error("V reorder mismatch");
           }
       }

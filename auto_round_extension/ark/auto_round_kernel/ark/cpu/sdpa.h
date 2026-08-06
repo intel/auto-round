@@ -52,8 +52,8 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 //
 //   * fp16 K/V → NTILE24_ROWPACK1  (K: NTILE=24 over seq, ROWPACK=1 over head_size;
 //                                   V: NTILE=24 over head_size, ROWPACK=1 over seq)
-//   * bf16 K/V → NTILE48_ROWPACK2  (K: NTILE=48 over seq, ROWPACK=2 over head_size;
-//                                   V: NTILE=48 over head_size, ROWPACK=2 over seq)
+//   * bf16 K/V → NTILE48_ROWPACK2  (K: seq padded to 48, head_size padded to 32;
+//                                   V: seq padded to 32, head_size padded to 48)
 //
 // The persistent cache path (`packed_kv_cache_shape` / `update_packed_k/v_cache`
 // / `bestla_sdpa_forward_packed`) is the NS-parity runtime-ready path for
@@ -69,6 +69,10 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype);
 
 // Runtime-ready descriptor for the packed K/V cache layout selected for a single
 // [batch, heads_kv, capacity, head_size, dtype] contract.
+//
+// TODO: Keep FP16 source/cache storage on the FP16 route, including on AMX-BF16
+// systems. Supporting FP16 source K/V with BF16 packed storage needs an explicit
+// source-vs-storage dtype contract and its own accuracy policy.
 struct ReorderKVShape {
   BTLA_DTYPE dtype = BTLA_DTYPE::F16;
   ATTN_FWD_LAYOUT layout = ATTN_FWD_LAYOUT_PLAIN;   // legacy common-layout alias

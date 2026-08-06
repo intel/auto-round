@@ -408,10 +408,15 @@ def test_bestla_raw_vs_packed_output_consistency(kv_dtype):
 
 
 @pytest.mark.parametrize(
-    ("kv_dtype", "expected_layout", "expected_ntile", "expected_rowpack"),
-    [(torch.float16, 3, 24, 1), (torch.bfloat16, 2, 48, 2)],
+    ("kv_dtype", "expected_layout", "expected_ntile", "expected_rowpack", "expected_pads"),
+    [
+        (torch.float16, 3, 24, 1, (24, 33, 17, 48)),
+        (torch.bfloat16, 2, 48, 2, (48, 64, 32, 48)),
+    ],
 )
-def test_packed_kv_info_reports_runtime_descriptor(kv_dtype, expected_layout, expected_ntile, expected_rowpack):
+def test_packed_kv_info_reports_runtime_descriptor(
+    kv_dtype, expected_layout, expected_ntile, expected_rowpack, expected_pads
+):
     descriptor = INTERNAL_CPU.packed_kv_descriptor(2, 3, 17, 33, dtype=kv_dtype)
     info = INTERNAL_CPU.packed_kv_info(descriptor=descriptor)
     assert info["batch_size"] == 2
@@ -423,12 +428,32 @@ def test_packed_kv_info_reports_runtime_descriptor(kv_dtype, expected_layout, ex
     assert info["v_layout"] == expected_layout
     assert info["ntile"] == expected_ntile
     assert info["rowpack"] == expected_rowpack
+    assert (
+        info["k_seq_pad"],
+        info["k_head_size_pad"],
+        info["v_seq_pad"],
+        info["v_head_size_pad"],
+    ) == expected_pads
     assert info["k_bytes"] == info["k_total_elems"] * info["elem_bytes"]
     assert info["v_bytes"] == info["v_total_elems"] * info["elem_bytes"]
     assert info["step_k_bs"] == info["step_k_head_num"] * info["heads_kv"]
     assert info["step_v_bs"] == info["step_v_head_num"] * info["heads_kv"]
     legacy = INTERNAL_CPU.packed_kv_info(2, 3, 17, 33, dtype=kv_dtype)
     assert info == legacy
+
+
+@pytest.mark.parametrize(
+    ("head_dim", "expected_k_head_size_pad", "expected_v_head_size_pad"),
+    [(16, 32, 48), (17, 32, 48), (31, 32, 48), (32, 32, 48), (33, 64, 48)],
+)
+def test_bf16_packed_kv_descriptor_uses_neural_speed_geometry(
+    head_dim, expected_k_head_size_pad, expected_v_head_size_pad
+):
+    info = INTERNAL_CPU.packed_kv_info(1, 1, 17, head_dim, dtype=torch.bfloat16)
+    assert info["k_seq_pad"] == 48
+    assert info["k_head_size_pad"] == expected_k_head_size_pad
+    assert info["v_seq_pad"] == 32
+    assert info["v_head_size_pad"] == expected_v_head_size_pad
 
 
 @pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])

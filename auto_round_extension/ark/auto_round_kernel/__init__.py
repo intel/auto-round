@@ -313,6 +313,10 @@ def _cpu_public_mixed_sdpa_packed(
     *,
     is_causal: bool,
     scale: float | None,
+    use_alibi: bool,
+    use_tanh: bool,
+    prefer_fp32: bool,
+    n_padding,
     tensor_layout: str,
 ) -> torch.Tensor:
     entry, seq_len_kv = _cpu_public_get_packed_kv_entry(key, value, tensor_layout=tensor_layout)
@@ -324,6 +328,10 @@ def _cpu_public_mixed_sdpa_packed(
         seq_len_kv,
         is_causal=is_causal,
         scale=scale,
+        use_alibi=use_alibi,
+        use_tanh=use_tanh,
+        prefer_fp32=prefer_fp32,
+        n_padding=n_padding,
         tensor_layout=tensor_layout,
     )
 
@@ -883,6 +891,10 @@ def sdpa(
                 value,
                 is_causal=bool(is_causal),
                 scale=scale,
+                use_alibi=bool(use_alibi),
+                use_tanh=bool(use_tanh),
+                prefer_fp32=bool(prefer_fp32),
+                n_padding=n_padding,
                 tensor_layout=tensor_layout,
             )
         lib.sdpa(
