@@ -43,9 +43,10 @@ def ensure_ark_sparse_binding(
         required_symbols=required_symbols,
         search_roots=(
             KERNEL_DIR,
+            KERNEL_DIR / "xbuild_diffuser",
             KERNEL_DIR / "xbuild",
             KERNEL_DIR / "xbuild_bf16_v2",
-            KERNEL_DIR / "xbuild_diffuser",
+            KERNEL_DIR / "ark-xbuild",
         ),
     )
 
