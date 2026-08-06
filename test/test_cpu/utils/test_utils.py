@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,38 @@ from auto_round.utils.common import (
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
+from auto_round.utils.model import is_code_model
+
+
+@pytest.mark.parametrize(
+    "model,config",
+    [
+        ("Qwen/Qwen3-Coder-30B", None),
+        ("/models/CodeLlama-7b", None),
+        ("bigcode/starcoder2-15b", None),
+        ("generic/model", SimpleNamespace(architectures=["DeepseekCoderForCausalLM"])),
+        ("generic/model", SimpleNamespace(finetuning_task="code-generation")),
+        ("generic/model", SimpleNamespace(task_specific_params={"text-to-code": {}})),
+    ],
+)
+def test_is_code_model(model, config):
+    assert is_code_model(model, config)
+
+
+@pytest.mark.parametrize(
+    "model,config",
+    [
+        ("Qwen/Qwen3-4B", None),
+        ("org/encoder-decoder", None),
+        ("org/audio-codec", None),
+        ("/srv/code/checkpoints/Llama-3", None),
+        ("org/notstarcoder-model", None),
+        ("generic/model", SimpleNamespace(_name_or_path="/srv/code/checkpoints/Llama-3")),
+        ("generic/model", SimpleNamespace(architectures=["SomeEncoderDecoderModel"])),
+    ],
+)
+def test_is_not_code_model(model, config):
+    assert not is_code_model(model, config)
 
 
 class TestPackingWithNumba:
@@ -56,6 +89,14 @@ def test_revert_checkpoint_conversion_mapping_does_not_rewrite_quantized_tensor_
     )
 
 
+def test_revert_checkpoint_conversion_mapping_handles_backreference_patterns():
+    mapping = {r"^model\.language_model\.(.+)$": r"model.\1"}
+
+    converted = revert_checkpoint_conversion_mapping("model.language_model.layers.0.self_attn.q_proj.weight", mapping)
+
+    assert converted == "model.layers.0.self_attn.q_proj.weight"
+
+
 def test_preserve_original_visual_block_name():
     # Single visual block name
     assert preserve_original_visual_block_name("model.visual.blocks", "visual.blocks") == "model.visual.blocks"
@@ -91,7 +132,7 @@ class TestPredefinedIgnoreLayersBlockFilter:
     @staticmethod
     def _make_compressor_stub(predefined_ignore_layers, quant_block_list):
         """Create a minimal stub that allows calling configure_layer_config."""
-        from auto_round.compressors.base import BaseCompressor
+        from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
         stub = object.__new__(BaseCompressor)
         # Minimal attributes required by configure_layer_config
@@ -115,12 +156,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         return stub
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_kimi_k25_ignore_layers_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """KIMI K2.5: vision_tower and mm_projector must end up in ignore_layers."""
         mock_get_predefined.return_value = ["vision_tower", "mm_projector"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["vision_tower", "mm_projector"],
@@ -136,13 +177,13 @@ class TestPredefinedIgnoreLayersBlockFilter:
         ), f"mm_projector should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_step3p5_ignore_layers_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """step3p5: short pattern names must not be dropped by block filter."""
         predefined = ["g_proj", "moe.gate", "eh_proj", "shared_head", "layers.45"]
         mock_get_predefined.return_value = predefined
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=predefined,
@@ -154,12 +195,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
             assert name in stub.ignore_layers, f"'{name}' should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_longcat_classifier_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """Longcat: 'classifier' must not be dropped."""
         mock_get_predefined.return_value = ["classifier"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["classifier"],
@@ -170,12 +211,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         assert "classifier" in stub.ignore_layers, f"classifier should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_glm_flash_full_path_inside_block_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """GLM Flash: model.layers.0.mlp (full path inside block) must be kept."""
         mock_get_predefined.return_value = ["model.layers.0.mlp"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["model.layers.0.mlp"],
@@ -188,12 +229,12 @@ class TestPredefinedIgnoreLayersBlockFilter:
         ), f"model.layers.0.mlp should be in ignore_layers, got: '{stub.ignore_layers}'"
 
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
-    @patch("auto_round.compressors.base.set_layer_config")
+    @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_mllm_with_multiple_block_groups(self, mock_handle, mock_set_lc, mock_get_predefined):
         """MLLM with vision + language blocks: ignore layers outside both are preserved."""
         mock_get_predefined.return_value = ["vision_tower", "mm_projector"]
-        mock_set_lc.return_value = ({}, False, None)
+        mock_set_lc.return_value = {}
 
         stub = self._make_compressor_stub(
             predefined_ignore_layers=["vision_tower", "mm_projector"],

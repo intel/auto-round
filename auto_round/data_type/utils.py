@@ -248,8 +248,8 @@ def search_optimized_init_scale(
     search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
     if search_fn is None:
         return None
-    if imatrix is None:
-        imatrix = 1.0
+    if imatrix is None or not isinstance(imatrix, torch.Tensor):
+        imatrix = torch.ones_like(weight_reshape)
     return search_fn(weight_reshape, bits, imatrix)
 
 
@@ -270,10 +270,11 @@ def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size
 
     Encapsulates the imatrix grouping logic shared by the SignRound optimized
     wrapper and AWQ's internal QDQ so callers never handle the low-level reshape.
-    Returns the scalar ``1.0`` when no imatrix is available (uniform importance).
+    Returns a tensor of ones when no imatrix is available (uniform importance),
+    keeping every downstream optimized dtype implementation on its tensor path.
     """
-    if imatrix is None:
-        return 1.0
+    if imatrix is None or not isinstance(imatrix, torch.Tensor):
+        return torch.ones_like(weight_reshape)
     imatrix = imatrix.reshape(1, -1)
     imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
     imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)

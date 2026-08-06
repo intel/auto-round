@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_round.compressors.utils import _resolve_gguf_n_layers
+from auto_round.compressors.utils import _infer_gguf_n_layers_from_model, _resolve_gguf_n_layers
 from auto_round.export.export_to_gguf.gguf_dtype import (
     GGUFDTypeSelector,
     gguf_format_to_ftype,
@@ -160,3 +160,55 @@ def test_n_layer_resolution_prefers_text_config_for_multimodal():
 
     assert _resolve_gguf_n_layers(config, ModelType.MMPROJ) == (32, 24)
     assert _resolve_gguf_n_layers(config, ModelType.TEXT) == (48, None)
+
+
+def test_n_layer_resolution_uses_gemma4_multiencoder_fallback():
+    config = SimpleNamespace(
+        text_config=SimpleNamespace(num_hidden_layers=48),
+        vision_config=SimpleNamespace(hidden_size=2048),
+        audio_config=SimpleNamespace(hidden_size=1024),
+    )
+
+    assert _resolve_gguf_n_layers(config, ModelType.MMPROJ) == (48, 128)
+    assert _resolve_gguf_n_layers(config, ModelType.TEXT) == (48, None)
+
+
+class _NamedModulesOnly:
+    def __init__(self, module_names):
+        self.module_names = module_names
+
+    def named_modules(self):
+        for name in self.module_names:
+            yield name, object()
+
+
+def test_n_layer_resolution_falls_back_to_text_model_structure():
+    config = SimpleNamespace(language_config=SimpleNamespace(block_count=99))
+    model = _NamedModulesOnly(
+        [
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.1.mlp.down_proj",
+            "model.layers.2.input_layernorm",
+        ]
+    )
+
+    assert _infer_gguf_n_layers_from_model(model, ModelType.TEXT) == (3, None)
+    assert _resolve_gguf_n_layers(config, ModelType.TEXT, model=model) == (3, None)
+
+
+def test_n_layer_resolution_falls_back_to_multimodal_model_structure():
+    config = SimpleNamespace(
+        language_config=SimpleNamespace(block_count=99),
+        vision_config=SimpleNamespace(hidden_size=2048),
+    )
+    model = _NamedModulesOnly(
+        [
+            "language_model.model.layers.0.self_attn.q_proj",
+            "language_model.model.layers.1.mlp.down_proj",
+            "vision_tower.encoder.layers.0.self_attn.q_proj",
+            "vision_tower.encoder.layers.4.mlp.down_proj",
+        ]
+    )
+
+    assert _infer_gguf_n_layers_from_model(model, ModelType.MMPROJ) == (2, 5)
+    assert _resolve_gguf_n_layers(config, ModelType.MMPROJ, model=model) == (2, 5)

@@ -59,6 +59,7 @@ def test_linear_loop_registration():
 
 def test_unfuse_experts_weights():
     """Test unfusing fused expert weights to nn.Linear layers."""
+    from auto_round.modeling.fused_moe.fusion_spec import get_moe_fusion_spec
     from auto_round.modeling.fused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
 
     # Create a mock fused experts module (Mixtral style - not transposed)
@@ -88,6 +89,13 @@ def test_unfuse_experts_weights():
     success = _unfuse_experts_weights_inplace(module, check_decorator=False)
     assert success, "Failed to unfuse weights"
 
+    spec = get_moe_fusion_spec(module)
+    assert spec is not None
+    assert spec.num_experts == num_experts
+    assert [item.checkpoint_projection for item in spec.projections] == ["gate_up_proj", "down_proj"]
+    assert spec.projections[0].source_projections == ("gate_proj", "up_proj")
+    assert spec.projections[0].checkpoint_transposed is False
+
     # Verify structure - per-expert containers with individual Linear layers
     for i in range(num_experts):
         expert = getattr(module, str(i))
@@ -113,6 +121,7 @@ def test_unfuse_experts_weights():
 
 def test_unfuse_experts_weights_transposed():
     """Test unfusing transposed expert weights (Llama4/GptOss style)."""
+    from auto_round.modeling.fused_moe.fusion_spec import get_moe_fusion_spec
     from auto_round.modeling.fused_moe.moe_experts_interface import _unfuse_experts_weights_inplace
 
     num_experts = 4
@@ -140,6 +149,13 @@ def test_unfuse_experts_weights_transposed():
     # Unfuse (check_decorator=False since mock module doesn't have the decorator)
     success = _unfuse_experts_weights_inplace(module, check_decorator=False)
     assert success, "Failed to unfuse transposed weights"
+
+    spec = get_moe_fusion_spec(module)
+    assert spec is not None
+    assert spec.num_experts == num_experts
+    assert [item.checkpoint_projection for item in spec.projections] == ["gate_up_proj", "down_proj"]
+    assert spec.projections[0].source_projections == ("gate_proj", "up_proj")
+    assert spec.projections[0].checkpoint_transposed is True
 
     # Verify structure - per-expert containers with individual Linear layers
     for i in range(num_experts):

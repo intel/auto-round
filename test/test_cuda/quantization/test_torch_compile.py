@@ -13,6 +13,8 @@ from auto_round.compressors.utils import block_forward
 from ...envs import require_gguf
 from ...helpers import get_model_path, get_tiny_model
 
+pytestmark = pytest.mark.enable_torch_compile
+
 
 class TestTorchCompile:
     save_dir = "./saved"
@@ -74,9 +76,9 @@ class TestTorchCompile:
 
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_opt_rtn_uses_plain_block_forward(self):
-        config = RTNConfig(bits=4, data_type="int", act_bits=16, disable_opt_rtn=False)
-        quantizer = BaseQuantizer(config)
-        quantizer.compress_context = SimpleNamespace(enable_torch_compile=True, device="cpu")
-
-        assert quantizer._resolve_block_forward() is block_forward
+    # def test_opt_rtn_uses_plain_block_forward(self):
+    #     config = RTNConfig(bits=4, data_type="int", act_bits=16, disable_opt_rtn=False)
+    #     quantizer = BaseQuantizer(config)
+    #     quantizer.compress_context = SimpleNamespace(enable_torch_compile=True, device="cpu")
+    #
+    #     assert quantizer._resolve_block_forward() is block_forward

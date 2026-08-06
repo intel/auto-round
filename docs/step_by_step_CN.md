@@ -69,6 +69,7 @@ pip install auto-round
 - `HuggingFaceH4/ultrachat_200k`：用于对话数据
 - `madao33/new-title-chinese`：用于中文场景
 - `mbpp`：用于代码场景
+- `nvidia/OpenCodeInstruct`：用于代码指令数据
 - `openbmb/Ultra-FineWeb`
 
 ### 自定义数据集
@@ -229,7 +230,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-    # 可选开启torch编译加速：enable_torch_compile=True,
+    # 除 Windows 外默认启用 torch.compile；Windows 用户可设置 True 强制开启。
 )
 
 output_dir = "./tmp_autoround"
@@ -359,12 +360,12 @@ AWQ 专用选项：
 W8A8 搭配 AWQ 平滑化：
 
 ```python
-from auto_round import AutoRound
+from auto_round import AWQConfig, AutoRound
 
 ar = AutoRound(
     "Qwen/Qwen3-0.6B",
     scheme="INT8",
-    algorithm="awq",
+    alg_configs=AWQConfig(),
 )
 
 output_dir = "./tmp_awq"
@@ -486,7 +487,7 @@ AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量�
 
 ### AWQ 量化算法
 
-AWQ（`algorithm="awq"`）是一种预处理量化算法，通过分析激活分布并应用通道缩放（channel-wise scaling）来保护重要的权重。它在实际量化（默认为 RTN，或使用 auto_round/SignRound）之前运行。
+AWQ（`alg_configs="awq"` 或 `alg_configs=AWQConfig()`）是一种预处理量化算法，通过分析激活分布并应用通道缩放（channel-wise scaling）来保护重要的权重。它在实际量化（默认为 RTN，或使用 auto_round/SignRound）之前运行。
 
 #### 命令行用法
 ```bash
@@ -503,21 +504,22 @@ auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
 
 #### API 用法
 ```python
-from auto_round import AutoRound
-from auto_round.algorithms.quantization.awq.config import AWQConfig
-from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round import AWQConfig, AutoRound, SignRoundConfig
+
+# 字符串别名（使用 AWQ 默认参数，并自动追加 RTN）
+ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
 
 # AWQ + 默认 RTN (最简用法)
-ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
+ar = AutoRound(model, tokenizer, alg_configs=AWQConfig(), scheme="W4A16")
 
 # 通过 alg_configs 指定 AWQ + AutoRound (显式流水线)
 ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
 ar.quantize_and_save(output_dir="./qmodel")
 ```
 
-**重要提示**：`algorithm="awq"`（量化算法）与 `format="auto_awq"`（导出格式）是相互独立的。你可以使用：
-- `algorithm="awq"` + `format="auto_round"`：AWQ 平滑 + AutoRound 打包
-- `algorithm="auto_round"` + `format="auto_awq"`：不使用 AWQ 平滑 + AutoAWQ 打包
+**重要提示**：`alg_configs="awq"` 或 `alg_configs=AWQConfig()`（量化算法）与 `format="auto_awq"`（导出格式）是相互独立的。你可以使用：
+- `alg_configs="awq"` + `format="auto_round"`：AWQ 平滑 + AutoRound 打包
+- `alg_configs="signround"` + `format="auto_awq"`：不使用 AWQ 平滑 + AutoAWQ 打包
 
 ### OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
@@ -836,7 +838,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 ### 超参数调整
 #### 降低 GPU 显存占用
 以下方法可单独或组合使用，其中部分方式会增加训练耗时或带来轻微的精度损失：
-- 将 `enable_torch_compile` 设为 True（开启 PyTorch 编译加速，不损失精度）
+- 非 Windows 平台保持默认开启 `torch.compile`；Windows 上如需开启，请显式设置 `enable_torch_compile=True`（开启 PyTorch 编译加速，不损失精度）
 - 开启 `low_gpu_mem_usage`（低显存模式，**增加训练耗时**）
 - 设置 `--bs 1 --gradient_accumulate_steps 8`（批次1+梯度累积8步，**增加训练耗时**）
 - 将 `bs` 降至 4（**可能会有轻微的精度损失**）
@@ -848,10 +850,14 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 #### 提升训练速度
 以下方法可单独或组合使用，其中部分方式可能带来精度损失：
-- 将 `enable_torch_compile` 设为 True（无精度损失）
+- 非 Windows 平台保持默认开启 `torch.compile`；Windows 上如需开启，请显式设置 `enable_torch_compile=True`（无精度损失）
 - 使用 `auto-round-light` （小模型/ 2-bits 场景可能有明显精度损失）
 - 将 `seqlen` 降至 512（**部分场景可能出现大幅精度损失**）
 - 将 `bs` 降至 4（**仅有轻微精度损失**）
+
+Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。Windows 用户可在
+Python API 中传入 `enable_torch_compile=True`，或使用命令行参数 `--enable_torch_compile` 强制开启。其他
+平台如需关闭，可传入 `enable_torch_compile=False` 或使用 `--disable_torch_compile`。
 
 #### 开启 lm-head 层量化
 该配置目前**仅支持 AutoRound 原生格式的推理**，命令行启用方式如下：

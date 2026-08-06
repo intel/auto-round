@@ -95,6 +95,7 @@ import multiprocessing as mp
 import os
 import re
 import shutil
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, fields
@@ -103,11 +104,13 @@ from typing import Any, Callable, Optional, Union
 import torch
 
 from auto_round import envs
+from auto_round.compressors.config_resolution import thaw_mapping
 from auto_round.compressors.utils import is_mx_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
-from auto_round.utils.device import clear_memory, memory_monitor
+from auto_round.utils.device import clear_memory, compile_func, memory_monitor
+from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.missing_tensors import quantize_weight_rtn, split_fused_expert_tensors
 
 # ---------------------------------------------------------------------------
@@ -120,6 +123,8 @@ _BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", ".gate.", "embed", "conv"]
 # Preset schemes that model-free mode can produce.
 # INT presets use ``auto_round:auto_gptq`` packing; MXFP presets use
 # ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` (compressed-tensors) packing.
+# BF16 acts as a full-precision default — all layers stay in BF16 unless
+# overridden by layer_config.
 #
 # Note: ``W3A16`` (3-bit) is intentionally excluded.  3-bit packing requires
 # in_features to be padded to a multiple of pack_factor=10, which the current
@@ -133,6 +138,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "W8A16",
     "MXFP4",
     "MXFP8",
+    "BF16",
 )
 
 # Allowed ``bits`` values for integer WOQ.
@@ -564,6 +570,7 @@ def _quantize_single_tensor(
     tensor: torch.Tensor,
     matcher: "_PatternMatcher",
     device: str = "cpu",
+    quantize_func: Callable = quantize_weight_rtn,
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
@@ -573,9 +580,8 @@ def _quantize_single_tensor(
     layer_name = tensor_name.rsplit(".", 1)[0]
 
     if not _is_eligible_weight(tensor_name, tensor):
-        if tensor_name.endswith(".weight"):
-            return layer_name, {tensor_name: tensor}, None, layer_name
-        return layer_name, {tensor_name: tensor}, None, None
+        ignored_layer = layer_name if tensor_name.endswith(".weight") and tensor.dim() > 1 else None
+        return layer_name, {tensor_name: tensor}, None, ignored_layer
 
     if matcher.should_ignore(tensor_name):
         logger.debug(f"Ignoring (user-specified): {layer_name}")
@@ -617,7 +623,7 @@ def _quantize_single_tensor(
 
     # ---- Integer WOQ path ----
     try:
-        qweight, qzeros, scales = quantize_weight_rtn(
+        qweight, qzeros, scales = quantize_func(
             weight=tensor,
             bits=bits,
             group_size=group_size,
@@ -916,6 +922,7 @@ def _process_shard(
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
+    enable_torch_compile: bool = False,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -938,6 +945,7 @@ def _process_shard(
 
     output_tensors: dict[str, torch.Tensor] = {}
     quantized_layers: list[str] = []
+    quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
 
     if shard_path.endswith(".bin"):
         # PyTorch pickle checkpoint — load with weights_only where supported.
@@ -957,10 +965,15 @@ def _process_shard(
 
     raw_tensors = split_fused_expert_tensors(raw_tensors)
 
-    # Snapshot eligible weight layer names *before* any preprocessing so that
-    # the ignored-layer list can be derived by dict comparison at the end.
+    # Snapshot candidate weight layer names *before* any preprocessing. 1D
+    # weights (for example LayerNorm) are not quantization targets, while 3D
+    # weights remain tracked so unsupported layouts are visible as ignored.
     input_weight_layers: list[str] = list(
-        dict.fromkeys(k.rsplit(".", 1)[0] for k in raw_tensors if k.endswith(".weight"))
+        dict.fromkeys(
+            name.rsplit(".", 1)[0]
+            for name, tensor in raw_tensors.items()
+            if name.endswith(".weight") and tensor.dim() > 1
+        )
     )
 
     # Preserve original tensors for ignored/skipped layers so that already-
@@ -1011,6 +1024,7 @@ def _process_shard(
             tensor,
             matcher,
             device,
+            quantize_func,
         )
         output_tensors.update(out_dict)
         if q_layer:
@@ -1048,14 +1062,13 @@ def _build_mxfp_quantization_config(
     :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
     """
     from auto_round.export.export_to_llmcompressor.config import (
-        check_compressed_tensors_supported,
         initialize_quantization,
     )
 
-    check_compressed_tensors_supported(raise_error=True)
+    bits = default_scheme.get("bits", 4)
+    is_fp_default = (bits or 0) >= 16  # BF16/FP16 full-precision default
 
-    bits = default_scheme["bits"]
-    if bits not in _SUPPORTED_MXFP_BITS:
+    if not is_fp_default and bits not in _SUPPORTED_MXFP_BITS:
         raise ValueError(f"Unsupported MXFP bits={bits} for model-free output.")
 
     # Default ignore list: any layer present in ignored_layers (deduped) that
@@ -1077,13 +1090,22 @@ def _build_mxfp_quantization_config(
             layer_bits = scheme.get("bits", bits) if scheme is not None else bits
             scheme_groups.setdefault(layer_bits, []).append(layer)
     else:
-        scheme_groups[bits] = list(quantized_layers)
+        if not is_fp_default:
+            scheme_groups[bits] = list(quantized_layers)
+        # else: BF16 default with no layer_config → no MXFP layers; scheme_groups stays {}
 
     if len(scheme_groups) <= 1:
-        # Single scheme — existing behavior.
-        scheme_name = "MXFP4" if bits == 4 else "MXFP8"
-        fmt = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        # Single scheme — use the actual MXFP bits from the group, not the
+        # default bits (which may be 16 for a BF16 default scheme).
+        actual_bits = next(iter(scheme_groups.keys())) if scheme_groups else bits
+        if actual_bits not in _SUPPORTED_MXFP_BITS:
+            raise ValueError(f"Unsupported MXFP bits={actual_bits} for model-free output.")
+        scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if actual_bits == 4 else "mxfp8-quantized"
         qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        if is_fp_default and scheme_groups:
+            targets = list(quantized_layers)
+            qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
         qconfig["provider"] = "auto-round"
@@ -1109,10 +1131,6 @@ def _build_mxfp_quantization_config(
         fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
         is_default_group = group_bits == bits
         targets = ["Linear"] if is_default_group else layer_names
-        # vLLM MoE: prepend RoutedExperts so vLLM's routed-expert matcher
-        # takes priority when this explicit group contains expert layers.
-        if not is_default_group and any(".experts." in n for n in layer_names):
-            targets = ["RoutedExperts"] + targets
         tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
         group_scheme = tmp_qconfig.config_groups["group_0"]
         group_scheme.targets = targets
@@ -1128,23 +1146,265 @@ def _build_mxfp_quantization_config(
     return full_dict
 
 
+def _build_mxfp_autoround_quantization_config(
+    default_scheme: dict,
+    quantized_layers: list[str],
+    ignored_layers: list[str],
+    layer_config: dict | None = None,
+    block_name_to_quantize: Optional[str] = None,
+) -> dict:
+    """Build an auto-round style quantization_config for MXFP4 / MXFP8.
+
+    Unlike :func:`_build_mxfp_quantization_config` which produces a
+    compressed-tensors / llm-compressor style config, this function produces
+    an ``auto-round`` style config (``quant_method="auto-round"``,
+    ``packing_format="auto_round:llm_compressor"``).  The on-disk weight
+    tensors are identical; only the ``quantization_config`` metadata differs.
+
+    The generated config mirrors the layout of the regular AutoRound MXFP
+    export, including activation quantization fields (``act_bits`` /
+    ``act_data_type`` / …) from the scheme, ``enable_quanted_input``, and
+    ``lm_head`` in ``extra_config`` when it was quantized.
+    """
+    from collections import Counter
+
+    from auto_round.version import __version__
+
+    bits = default_scheme.get("bits", 4)
+    group_size = default_scheme.get("group_size", 32)
+    is_fp_default = (bits or 0) >= 16
+
+    # For BF16 default + MXFP layer_config overrides, derive the dominant
+    # MXFP bit-width from the layers that were actually quantized.
+    if is_fp_default and layer_config and quantized_layers:
+        temp_matcher = _PatternMatcher(
+            ignore_patterns=[],
+            layer_config=layer_config,
+            default_scheme=default_scheme,
+        )
+        mxfp_counter: Counter = Counter()
+        for layer in quantized_layers:
+            scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
+            if scheme is None:
+                continue
+            lb = scheme.get("bits")
+            ldt = (scheme.get("data_type") or "").lower()
+            if lb and lb < 16 and is_mx_fp(ldt):
+                mxfp_counter[lb] += 1
+        if mxfp_counter:
+            bits, _ = mxfp_counter.most_common(1)[0]
+            group_size = 32
+
+    if (bits or 0) < 1 or bits not in _SUPPORTED_MXFP_BITS:
+        bits = 4  # safe fallback
+
+    qconfig: dict = {
+        "quant_method": "auto-round",
+        "packing_format": "auto_round:llm_compressor",
+        "bits": bits,
+        "group_size": group_size or 32,
+        "sym": True,  # MXFP is always symmetric
+        "data_type": "mx_fp",
+        "iters": 0,
+        "model_free": True,
+        "autoround_version": __version__,
+        "enable_quanted_input": False,
+    }
+    if block_name_to_quantize:
+        qconfig["block_name_to_quantize"] = block_name_to_quantize
+
+    # Carry activation quantization fields from the scheme (e.g. MXFP4 has
+    # act_bits=4, act_data_type="mx_fp", act_dynamic=True, act_group_size=32,
+    # act_sym=True).  Including these keeps the config consistent with the
+    # output produced by the regular AutoRound MXFP export flow.
+    for act_key in ("act_bits", "act_data_type", "act_dynamic", "act_group_size", "act_sym"):
+        val = default_scheme.get(act_key)
+        if val is not None:
+            qconfig[act_key] = val
+
+    scheme_keys = [f.name for f in fields(QuantizationScheme)]
+    extra_config: dict = {}
+    non_linear_ops = ["embed", "conv"]
+    non_linear_re = re.compile("|".join(re.escape(op) for op in non_linear_ops))
+
+    if layer_config:
+        from auto_round.export.export_to_autoround.utils import check_neq_config
+
+        expected_scheme = {key: qconfig.get(key) for key in scheme_keys}
+        for layer_name, cfg in layer_config.items():
+            if not isinstance(cfg, dict):
+                continue
+            neq_keys = check_neq_config(cfg, **expected_scheme)
+            if neq_keys:
+                extra_config[layer_name] = {key: cfg[key] for key in neq_keys if cfg.get(key) is not None}
+
+    quantized_set = set(quantized_layers)
+    unique_ignored = list(dict.fromkeys(ignored_layers))
+    for layer_name in unique_ignored:
+        if layer_name in quantized_set or layer_name in extra_config:
+            continue
+        if non_linear_re.search(layer_name):
+            continue
+        extra_config[layer_name] = {
+            "bits": 16,
+            "data_type": "float",
+            "act_bits": 16,
+            "act_data_type": "float",
+        }
+
+    # lm_head: when explicitly quantized, record its full scheme in extra_config
+    # (mirrors the regular AutoRound MXFP export behavior).
+    if "lm_head" in quantized_set and "lm_head" not in extra_config:
+        lm_head_cfg = (layer_config or {}).get("lm_head", default_scheme)
+        extra_config["lm_head"] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
+
+    if extra_config:
+        qconfig["extra_config"] = extra_config
+
+    return qconfig
+
+
+def _layer_config_has_mxfp(layer_config: dict | None) -> bool:
+    """Return True if any layer_config entry requests MXFP quantization.
+
+    Handles values that are plain strings (preset names), dicts (possibly
+    with a ``"scheme"`` key or a ``"data_type"`` key), or
+    :class:`QuantizationScheme` instances.
+    """
+    if not layer_config:
+        return False
+    for val in layer_config.values():
+        if isinstance(val, str):
+            try:
+                s = _normalize_scheme(val.upper())
+                if is_mx_fp((s.data_type or "").lower()):
+                    return True
+            except Exception:
+                pass
+        elif isinstance(val, dict):
+            # Direct data_type field
+            if is_mx_fp((val.get("data_type") or "").lower()):
+                return True
+            # Nested 'scheme' key (e.g. {"scheme": "MXFP4"})
+            scheme_val = val.get("scheme")
+            if isinstance(scheme_val, str):
+                try:
+                    s = _normalize_scheme(scheme_val.upper())
+                    if is_mx_fp((s.data_type or "").lower()):
+                        return True
+                except Exception:
+                    pass
+        elif isinstance(val, QuantizationScheme):
+            if is_mx_fp((val.data_type or "").lower()):
+                return True
+    return False
+
+
+def _is_full_precision_default(scheme_input: Any) -> bool:
+    """Return True when *scheme_input* represents a full-precision default (bits >= 16).
+
+    Used to detect BF16/FP16 schemes where no weights are quantized by
+    default but layer_config overrides are still applied.
+    """
+    try:
+        s = _normalize_scheme(scheme_input)
+        return (s.bits or 0) >= 16 and (s.act_bits or 16) >= 16
+    except Exception:
+        return False
+
+
+def _derive_dominant_int_scheme(
+    quantized_layers: list[str],
+    layer_config: dict,
+    fallback: dict,
+) -> dict | None:
+    """Infer the dominant INT scheme from layers that were actually quantized.
+
+    Used when the default scheme is full-precision (BF16/FP16) to produce a
+    quantization_config where the most common INT scheme becomes the top-level
+    default and the BF16 layers appear as ``bits=16`` exceptions in
+    ``extra_config``.  This matches the layout expected by AutoRound loaders
+    (dominant quantized bits at the top, full-precision overrides below).
+
+    Returns ``None`` when no INT layers were found in *quantized_layers*.
+    """
+    from collections import Counter
+
+    temp_matcher = _PatternMatcher(
+        ignore_patterns=[],
+        layer_config=layer_config,
+        default_scheme=fallback,
+    )
+    counter: "Counter[tuple]" = Counter()
+    for layer in quantized_layers:
+        scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
+        if scheme is None:
+            continue
+        bits = scheme.get("bits")
+        if bits is None or bits >= 16:
+            continue
+        data_type = (scheme.get("data_type") or "int").lower()
+        if is_mx_fp(data_type):
+            continue  # MXFP is handled by the dedicated path
+        key = (bits, scheme.get("group_size") or fallback.get("group_size"), bool(scheme.get("sym", True)), data_type)
+        counter[key] += 1
+
+    if not counter:
+        return None
+
+    (bits, group_size, sym, data_type), _ = counter.most_common(1)[0]
+    return {
+        "bits": bits,
+        "group_size": group_size,
+        "sym": sym,
+        "data_type": data_type,
+    }
+
+
 def _build_quantization_config(
     default_scheme: dict,
     layer_config: dict,
     ignore_patterns: list[str],
     quantized_layers: list[str],
     ignored_layers: list[str],
-    block_name_to_quantize: Optional[list[str]] = None,
+    block_name_to_quantize: Optional[str] = None,
+    format: str = "auto_round",
 ) -> dict:
     """Build a quantization_config dict compatible with auto-round format."""
-    # MXFP (mx_fp) uses the llm-compressor / compressed-tensors style config.
-    if is_mx_fp((default_scheme.get("data_type") or "int").lower()):
+    # MXFP (mx_fp) supports two output styles depending on *format*:
+    #   - "llm_compressor" → compressed-tensors / llm-compressor style config
+    #     (produced by _build_mxfp_quantization_config).
+    #   - "auto_round" / "auto_round:auto_gptq" → auto-round style config
+    #     (produced by _build_mxfp_autoround_quantization_config).
+    # Also route to MXFP config when the default is full-precision (BF16/FP16)
+    # but layer_config contains MXFP overrides.
+    data_type = (default_scheme.get("data_type") or "int").lower()
+    default_bits = default_scheme.get("bits", 4)
+    is_fp_default = (default_bits or 0) >= 16 and not is_mx_fp(data_type)
+    if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
+        if format in ("auto_round", "auto_round:auto_gptq"):
+            return _build_mxfp_autoround_quantization_config(
+                default_scheme=default_scheme,
+                quantized_layers=quantized_layers,
+                ignored_layers=ignored_layers,
+                layer_config=layer_config,
+                block_name_to_quantize=block_name_to_quantize,
+            )
         return _build_mxfp_quantization_config(
             default_scheme=default_scheme,
             quantized_layers=quantized_layers,
             ignored_layers=ignored_layers,
             layer_config=layer_config,
         )
+
+    # When the default is full-precision (BF16/FP16) but INT layers were
+    # quantized via layer_config, derive the dominant INT scheme and use it as
+    # the top-level defaults so the output config reads as
+    # "INT-quantized with BF16 exceptions" rather than the inverse.
+    if is_fp_default and quantized_layers:
+        dominant = _derive_dominant_int_scheme(quantized_layers, layer_config, default_scheme)
+        if dominant is not None:
+            default_scheme = dominant
 
     from auto_round.version import __version__
 
@@ -1291,6 +1551,7 @@ def _process_single_shard_task(
     model_type: str | None,
     quant_output_dir: str,
     total_shards: int,
+    enable_torch_compile: bool = False,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Process one shard in an isolated subprocess task.
 
@@ -1316,6 +1577,7 @@ def _process_single_shard_task(
         device=device,
         fp8_block_size=fp8_block_size,
         model_type=model_type,
+        enable_torch_compile=enable_torch_compile,
     )
 
     out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
@@ -1421,15 +1683,24 @@ def _validate_supported_scheme(
     bits = scheme_obj.bits
     act_bits = scheme_obj.act_bits if scheme_obj.act_bits is not None else 16
 
+    # Full-precision (BF16/FP16) default: all layers stay in full precision
+    # unless layer_config provides lower-bit overrides.
+    if (bits or 0) >= 16 and act_bits >= 16:
+        return
+
     # MXFP weight-only path: accept mx_fp data type with bits in {4, 8}.
     # Activation quantization for MXFP is dynamic at inference time, so the
     # weight-only RTN path here is independent of act_bits.
     if is_mx_fp(data_type):
+        if scheme_obj.act_data_type not in (None, "mx_fp"):
+            raise ValueError(
+                "Model-free MXFP supports only act_data_type='mx_fp', " f"but got '{scheme_obj.act_data_type}'."
+            )
         # Restrict to the two explicitly supported MXFP presets when a string
         # name is provided.  Variants such as MXFP4_RCEIL / MXFP8_RCEIL use a
         # different activation format; silently mapping them to "MXFP4" /
         # "MXFP8" in the output config would misrepresent the requested scheme.
-        if isinstance(scheme_input, str) and scheme_input not in ("MXFP4", "MXFP8"):
+        if isinstance(scheme_input, str) and scheme_input.upper() not in ("MXFP4", "MXFP8"):
             raise ValueError(
                 f"Model-free mode only supports MXFP preset names 'MXFP4' and 'MXFP8', "
                 f"but got '{scheme_input}'. "
@@ -1504,12 +1775,16 @@ def _looks_like_auto_scheme(scheme: Any) -> bool:
 
 
 def _validate_auto_scheme_options(auto_scheme: Any) -> str:
-    """Validate that every AutoScheme option is model-free-packable.
+    """Validate AutoScheme options for model-free packing.
 
-    Returns the single data-type family shared by all options
-    (``"int"`` or ``"mx_fp"``).  Raises ``ValueError`` when any option is
-    unsupported or when INT and MXFP options are mixed (they use different
-    packing formats and cannot be produced in one model-free run).
+    Returns the single quantized data-type family shared by all options
+    (``"int"`` or ``"mx_fp"``). ``BF16`` (or any >=16-bit no-op scheme) is
+    allowed and treated as "keep layer in full precision" during conversion,
+    so it does not contribute to the returned family.
+
+    Raises ``ValueError`` when any non-BF16 option is unsupported or when INT
+    and MXFP options are mixed (they use different packing formats and cannot
+    be produced in one model-free run).
     """
     options = list(getattr(auto_scheme, "options", []) or [])
     if not options:
@@ -1529,6 +1804,14 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
             scheme_obj = opt
         else:
             scheme_obj = None
+
+        # AutoScheme may include BF16/no-op options. In model-free flow these
+        # layers become ignore_layers entries (full precision), so they are
+        # allowed and excluded from family checks.
+        if scheme_obj is not None:
+            act_bits = scheme_obj.act_bits if scheme_obj.act_bits is not None else 16
+            if (scheme_obj.bits or 0) >= 16 and act_bits >= 16:
+                continue
 
         # GGUF k-quants carry super_bits and are not packable by the model-free
         # RTN kernel even though their data_type is nominally "int".
@@ -1561,13 +1844,15 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
 
 def _convert_auto_scheme_layer_config(
     generated: dict[str, dict],
+    preferred_base_scheme: Union[str, QuantizationScheme, None] = None,
 ) -> tuple[QuantizationScheme, dict[str, dict], list[str]]:
     """Convert an AutoScheme-generated ``layer_config`` into model-free inputs.
 
     Returns ``(base_scheme, per_layer_overrides, fp16_layers)`` where:
 
-    * ``base_scheme`` is the most common quantized scheme across layers, used
-      as the model-free default (top-level config.json ``bits``/``group_size``).
+        * ``base_scheme`` is ``preferred_base_scheme`` when provided, matching the
+            primary scheme selected by the regular AutoRound path. Otherwise the
+            most common quantized scheme is used as a fallback.
     * ``per_layer_overrides`` maps every quantized layer name to its resolved
       :class:`QuantizationScheme` fields.
     * ``fp16_layers`` lists layers AutoScheme kept at >= 16 bits (added to the
@@ -1584,9 +1869,33 @@ def _convert_auto_scheme_layer_config(
         if not isinstance(cfg, dict):
             continue
         bits = cfg.get("bits")
+        data_type_raw = (cfg.get("data_type") or "").strip()
+
+        # Infer bits from compact dtype aliases that embed bit-width in the name,
+        # e.g. "mxfp8" → 8, "MXFP4" → 4, "mx_fp4" → 4.
+        if bits is None and data_type_raw:
+            dt_lower = data_type_raw.lower()
+            for prefix in ("mxfp", "mx_fp", "nvfp", "nv_fp"):
+                tail = dt_lower[len(prefix) :]
+                if dt_lower.startswith(prefix) and tail.isdigit():
+                    bits = int(tail)
+                    break
+
         if bits is None:
             continue
+
         clean = {k: cfg[k] for k in scheme_keys if cfg.get(k) is not None}
+        clean["bits"] = bits  # honour inferred value when not explicit
+
+        # Normalise compact dtype aliases to canonical forms understood by
+        # the quantization kernels ("mxfp8" / "MXFP4" → "mx_fp").
+        if data_type_raw:
+            dt_lower = data_type_raw.lower()
+            if dt_lower.startswith("mxfp") or dt_lower.startswith("mx_fp"):
+                clean["data_type"] = "mx_fp"
+            elif dt_lower.startswith("nvfp") or dt_lower.startswith("nv_fp"):
+                clean["data_type"] = "nv_fp"
+
         if bits >= 16:
             fp16_layers.append(name)
             continue
@@ -1597,13 +1906,16 @@ def _convert_auto_scheme_layer_config(
     if not counter:
         raise ValueError("AutoScheme did not assign any quantizable layers for model-free mode.")
 
-    (base_bits, base_group_size, base_sym, base_dtype), _ = counter.most_common(1)[0]
-    base_scheme = QuantizationScheme(
-        bits=base_bits,
-        group_size=base_group_size,
-        sym=base_sym,
-        data_type=base_dtype,
-    )
+    if preferred_base_scheme is not None:
+        base_scheme = copy.deepcopy(_normalize_scheme(preferred_base_scheme))
+    else:
+        (base_bits, base_group_size, base_sym, base_dtype), _ = counter.most_common(1)[0]
+        base_scheme = QuantizationScheme(
+            bits=base_bits,
+            group_size=base_group_size,
+            sym=base_sym,
+            data_type=base_dtype,
+        )
     return base_scheme, per_layer, fp16_layers
 
 
@@ -1667,6 +1979,7 @@ class _ModelFreeCompressorCore:
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
+        enable_torch_compile: Optional[bool] = None,
     ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
@@ -1678,6 +1991,11 @@ class _ModelFreeCompressorCore:
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
+        self.enable_torch_compile = (
+            default_enable_torch_compile(device, platform_name=sys.platform)
+            if enable_torch_compile is None
+            else enable_torch_compile
+        )
 
         # --- derived state populated during run() ---
         self.scheme_obj: QuantizationScheme | None = None
@@ -1712,6 +2030,9 @@ class _ModelFreeCompressorCore:
 
     def _parse_scheme(self) -> None:
         scheme_in = self.scheme_input
+        scheme_overrides = getattr(self, "user_scheme_overrides", None)
+        if scheme_overrides:
+            scheme_in = _apply_scheme_overrides(scheme_in, scheme_overrides)
         if isinstance(scheme_in, str) and scheme_in.upper() == "W4A16_MIXED":
             # Match regular-flow mixed recipe behavior in model-free mode:
             # default non-expert linear layers use 8-bit; expert overrides are
@@ -1963,6 +2284,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
+                        enable_torch_compile=self.enable_torch_compile,
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
                     )
@@ -2023,12 +2345,23 @@ class _ModelFreeCompressorCore:
         _write_index_file(self._quant_output_dir, self.output_weight_map)
 
     def _write_config_files(self) -> None:
+        block_prefixes = []
+        for layer_name in self.all_quantized_layers:
+            parts = layer_name.split(".")
+            for index, part in enumerate(parts):
+                if part.isdigit() and index > 0:
+                    block_prefixes.append(".".join(parts[:index]))
+                    break
+        block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
+
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
             ignore_patterns=self.ignore_patterns,
             quantized_layers=self.all_quantized_layers,
             ignored_layers=self.all_ignored_layers,
+            block_name_to_quantize=block_name_to_quantize,
+            format=self.format,
         )
 
         self.config["quantization_config"] = quantization_config
@@ -2158,6 +2491,7 @@ class _ModelFreeCompressorCore:
             f"  Diffusion model: {self.is_diffusion_model}\n"
             f"  Quant lm_head: {self.quant_lm_head}\n"
             f"  Quant nontext module: {self.quant_nontext_module}\n"
+            f"  Torch compile: {self.enable_torch_compile}\n"
             f"  Device: {self.device}"
         )
 
@@ -2228,6 +2562,8 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # --- AutoRound compressor-role aliases ---
         tokenizer: Any = None,
         device_map: Any = None,
+        low_cpu_mem_usage: bool = True,
+        enable_torch_compile: Optional[bool] = None,
         **kwargs,
     ) -> None:
         import copy
@@ -2261,6 +2597,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             device=device,
             quant_lm_head=quant_lm_head,
             quant_nontext_module=quant_nontext_module,
+            enable_torch_compile=enable_torch_compile,
         )
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
@@ -2293,7 +2630,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             ignore_layers=ignore_layers,
             device_map=device_map,
             quant_lm_head=quant_lm_head,
+            low_cpu_mem_usage=low_cpu_mem_usage,
         )
+        # Scheme fields are consumed above from ``kwargs``. Preserve them when
+        # a later format check falls back to the regular AutoRound flow.
+        fallback_init.update(self.user_scheme_overrides)
 
         self._fallback_init_kwargs = fallback_init
         if quant_nontext_module:
@@ -2309,7 +2650,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         logger.info(
             "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
-            format,
+            self.format,
         )
         logger.info(
             "fallbacked_init_kwargs: %s",
@@ -2393,7 +2734,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             if not callable(post_init):
                 raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
             post_init()  # pylint: disable=E1102
-            layer_config = copy.deepcopy(getattr(compressor, "layer_config", {}) or {})
+            layer_config = thaw_mapping(getattr(compressor, "layer_config", {}) or {})
         finally:
             # Release the model that was loaded only for scoring so the
             # packing phase keeps model-free's low memory footprint.
@@ -2429,7 +2770,17 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         )
 
         generated = self._run_auto_scheme_selection(auto_scheme)
-        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
+        preferred_base_scheme = None
+        for option in auto_scheme.options:
+            option_scheme = _normalize_scheme(option)
+            act_bits = option_scheme.act_bits if option_scheme.act_bits is not None else 16
+            if (option_scheme.bits or 0) < 16 or act_bits < 16:
+                preferred_base_scheme = option_scheme
+                break
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(
+            generated,
+            preferred_base_scheme=preferred_base_scheme,
+        )
 
         # Merge the generated per-layer overrides; any user-provided
         # layer_config entries take priority.
@@ -2455,6 +2806,31 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             len(fp16_layers),
         )
 
+    def _precheck_auto_scheme_fallback(self, format: str) -> bool:
+        """Early fallback check for model-free + AutoScheme.
+
+        This avoids spending time on delta-loss AutoScheme selection when the
+        requested export format is known to be incompatible with the resolved
+        AutoScheme option family.
+        """
+        if not _looks_like_auto_scheme(self.scheme_input):
+            return False
+
+        family = _validate_auto_scheme_options(self.scheme_input)
+        accepted_formats = {"auto_round", "auto_round:auto_gptq"}
+        if family == "mx_fp":
+            accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+
+        if format not in accepted_formats:
+            logger.warning(
+                "Format '%s' is incompatible with model-free + AutoScheme (family=%s); "
+                "fallback before running AutoScheme scoring.",
+                format,
+                family,
+            )
+            return True
+        return False
+
     # ------------------------------------------------------------------
     # AutoRound compressor interface
     # ------------------------------------------------------------------
@@ -2467,6 +2843,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
+        # Early fallback gate for model-free + AutoScheme: avoid running
+        # costly delta-loss selection when format is known incompatible.
+        if self._precheck_auto_scheme_fallback(format):
+            return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+
         # AutoScheme: run delta-loss selection first so the effective scheme /
         # data-type family (which drives the accepted export formats) is known.
         if _looks_like_auto_scheme(self.scheme_input):
@@ -2477,10 +2858,18 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             "auto_round",
             "auto_round:auto_gptq",
         }
-        # MXFP only supports the llm_compressor format (INT string preset,
-        # or an AutoScheme run whose options resolved to the MXFP family).
-        if self.scheme_input in ["MXFP4", "MXFP8"] or self._auto_scheme_family == "mx_fp":
-            _accepted_formats = ["llm_compressor"]
+        # MXFP supports both llm_compressor (compressed-tensors) and auto_round formats.
+        # The only difference is the quantization_config metadata; on-disk weights are identical.
+        normalized_scheme = (
+            _normalize_scheme(self.scheme_input) if not _looks_like_auto_scheme(self.scheme_input) else None
+        )
+        if (
+            normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
+        ) or self._auto_scheme_family == "mx_fp":
+            _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
+            # BF16 default with MXFP layer_config overrides.
+            _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
         if format not in _accepted_formats:
             logger.warning(
                 f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
@@ -2492,11 +2881,16 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         if self.user_scheme_overrides:
             self.scheme_input = _apply_scheme_overrides(self.scheme_input, self.user_scheme_overrides)
 
-        # Temporarily point output_dir at what the caller requested
-        orig = self.output_dir
+        # Temporarily point output_dir and format at what the caller requested
+        orig_dir = self.output_dir
+        orig_fmt = self.format
         self.output_dir = output_dir
-        out_path = self.run()
-        self.output_dir = orig
+        self.format = format
+        try:
+            out_path = self.run()
+        finally:
+            self.output_dir = orig_dir
+            self.format = orig_fmt
         self.quantized = True
         return None, out_path
 

@@ -21,6 +21,7 @@ import torch
 
 from auto_round.utils.missing_tensors import (
     _get_woq_config_from_dir,
+    _normalize_tensor_name_for_warning,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
     split_fused_expert_tensors,
@@ -77,6 +78,13 @@ def _make_auto_round_config(bits=4, group_size=128, sym=True, block_name_to_quan
 
 class TestSplitFusedExpertTensors:
 
+    def test_normalize_tensor_name_for_warning(self):
+        name = "model.layers.12.mlp.experts.3.down_proj.weight"
+        assert _normalize_tensor_name_for_warning(name) == "model.layers.0.mlp.experts.0.down_proj.weight"
+
+        bracket_name = "model.layers[12].mlp.experts[3].down_proj.weight"
+        assert _normalize_tensor_name_for_warning(bracket_name) == "model.layers[0].mlp.experts[0].down_proj.weight"
+
     def test_2d_and_non_expert_pass_through(self):
         """2-D tensors and 3-D non-expert tensors are returned unchanged."""
         tensors = {
@@ -98,7 +106,9 @@ class TestSplitFusedExpertTensors:
             result = split_fused_expert_tensors(tensors)
 
         assert set(result.keys()) == set(tensors.keys())
-        assert any("unsupported parent" in rec.message and "open an issue" in rec.message for rec in caplog.records)
+        assert any(
+            "while splitting expert tensors" in rec.message and "open an issue" in rec.message for rec in caplog.records
+        )
 
     def test_empty_dict_returns_empty(self):
         assert split_fused_expert_tensors({}) == {}

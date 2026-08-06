@@ -22,6 +22,7 @@ from auto_round.algorithms.registry import (
     iter_algorithm_entries,
     register_algorithm,
     resolve_algorithm_alias,
+    resolve_algorithm_names,
 )
 
 # ============================================================================
@@ -108,18 +109,20 @@ class AlgorithmHandler(ABC):
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
 
-        # Resolve aliases, drop unknowns, deduplicate preserving order
-        seen: set[str] = set()
-        canonical: list[str] = []
-        for n in names:
-            c = cls.resolve_alias(n)
-            if c and c not in seen:
-                canonical.append(c)
-                seen.add(c)
+        # Resolve aliases, drop unknowns, deduplicate preserving order.
+        # Python API strings use this same resolver so their composition
+        # semantics cannot drift apart again.
+        canonical = resolve_algorithm_names(names, ignore_unknown=True)
+        seen = set(canonical)
 
         # Default quantization algorithm if none was specified
         if not ({"awq", "rtn", "auto_round"} & seen):
             canonical.append("rtn" if getattr(args, "iters", 0) == 0 else "auto_round")
+
+        # Keep the legacy API rule even when the user explicitly spells out
+        # ``--algorithm auto_round``: zero iterations select RTN.
+        if getattr(args, "iters", None) == 0:
+            canonical = ["rtn" if name == "auto_round" else name for name in canonical]
 
         return [cls.get(name).build(args, common_kwargs) for name in canonical]
 
@@ -334,6 +337,12 @@ class AutoRound(AlgorithmHandler):
             action=argparse.BooleanOptionalAction,
             help="Use the Adam-based SignRound variant.",
         )
+        group.add_argument(
+            "--enable_lfq",
+            default=False,
+            action=argparse.BooleanOptionalAction,
+            help="Enable last-block LM cross-entropy (LFQ) loss for the final transformer block (experimental).",
+        )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
@@ -351,6 +360,7 @@ class AutoRound(AlgorithmHandler):
             not_use_best_mse=getattr(args, "not_use_best_mse", False),
             enable_quanted_input=getattr(args, "enable_quanted_input", True),
             enable_adam=getattr(args, "enable_adam", False),
+            enable_lfq=getattr(args, "enable_lfq", False),
             **common_kwargs,
         )
 

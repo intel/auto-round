@@ -6,7 +6,7 @@ import torch
 import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round import AutoRoundAdam
+from auto_round import AdamRoundConfig, AutoRound
 
 
 class TestAutoRound:
@@ -29,13 +29,15 @@ class TestAutoRound:
 
         llm_block_names = get_block_names(tiny_opt_model, quant_vision=True)
         bits, group_size, sym, batch_size = 4, 128, False, 20
-        adamround = AutoRoundAdam(
+        adamround = AutoRound(
             tiny_opt_model,
             opt_tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
+            alg_configs=AdamRoundConfig(
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                iters=2,
+            ),
             seqlen=2,
             batch_size=batch_size,
             dataset=dataloader,
