@@ -1293,10 +1293,12 @@ from .sparse_attention import (
     _to_hnd,
     sage_sparse,
     sage_sparse_bf16,
+    sage_sparse_sdpa,
     sparge_block_map_to_mask,
     sparge_preprocess_topk,
     sparge_sage2_attn_meansim_topk_xpu,
     sparge_sage2_attn_meansim_topk_xpu_bf16,
+    sparge_sage2_attn_meansim_topk_xpu_sdpa,
 )
 
 
