@@ -937,8 +937,18 @@ template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV,
           typename GmemTiledCopyK = void, typename GmemTiledCopyV = void, typename GmemTiledCopyO = void>
 struct SparseSageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
-  using MMAOperation =
-      cute::conditional_t<is_void_v<MMAOperation_>, XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
+  // The Q*K MMA must match ElementQ. The sparse mainloop dequantizes INT8 Q/K with
+  // qscale/kscale, so INT8 keeps an int32/int8 DPAS. Native BF16/FP16 Q/K must use a
+  // float/<ElementQ> DPAS; reusing the int8 DPAS on bf16 fragments hangs the device.
+  using MMAOperation = cute::conditional_t<
+      is_void_v<MMAOperation_>,
+      typename cute::conditional_t<
+          cute::is_same_v<ElementQ, cutlass::float_e5m2_t> || cute::is_same_v<ElementQ, cutlass::float_e4m3_t>,
+          XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, half_t>,
+          cute::conditional_t<cute::is_same_v<ElementQ, int8_t>,
+                              XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>,
+                              XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementQ>>>,
+      MMAOperation_>;
   using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
                                              XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>, MMAOperation_>;
   using SubgroupLayoutPV =

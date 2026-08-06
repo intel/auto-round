@@ -521,6 +521,13 @@ struct SPARSESAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, 
                 CUTLASS_PRAGMA_UNROLL
                 for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= _scale;
               }
+            } else {
+              // Native FP16/BF16 Q/K path (scale_block_size == 0): there is no
+              // qscale/kscale dequantization, so apply the raw softmax scale here.
+              // INT8 gets it via dq_scale above; without this branch the softmax
+              // runs on unscaled scores and the output is numerically wrong.
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tPrS.size(); i++) tPrS(i) *= params.scale;
             }
           } else {
             float _scale = dq_scale * scaleK[scalek_idx];
