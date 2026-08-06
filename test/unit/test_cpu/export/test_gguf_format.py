@@ -89,6 +89,7 @@ class TestGGUF:
         assert type(autoround).__name__ == "CompressionOrchestrator"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
+    @pytest.mark.timeout(60)
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -106,6 +107,7 @@ class TestGGUF:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
+    @pytest.mark.timeout(60)
     def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         layer_config = {

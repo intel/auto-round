@@ -111,7 +111,8 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
 
-        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append \
+            --durations=0 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.unit
 
@@ -145,7 +146,8 @@ function run_unit_test_vlm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append \
+            --durations=0 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vlm
 
@@ -174,7 +176,8 @@ function run_unit_test_llmc() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."
 
-        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append \
+            --durations=0 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.llmc
 
@@ -207,7 +210,8 @@ function run_unit_test_sglang() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         echo "Running ${test_file}..."
 
-        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append \
+            --durations=0 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.sglang
 
@@ -241,7 +245,8 @@ function run_unit_test_vllm() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         echo "Running ${test_file}..."
 
-        pytest --cov=auto_round --cov-report= --cov-append -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+        pytest --cov=auto_round --cov-report= --cov-append \
+            --durations=0 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vllm
 
