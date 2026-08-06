@@ -695,7 +695,113 @@ class TestMoEGemmDecodePerf:
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
-    def test_perf_fp8_per_tensor(self, dtype, fp8_dtype):
+    def test_perf_fp8_word_vs_lut(self, monkeypatch, dtype, fp8_dtype):
+        """FP8 scalar-GEMV A/B: word-native decode (``ARK_FP8_DECODE_MODE=word``,
+        the default) vs the 128-entry magnitude LUT (``=lut``, the old default).
+
+        ``speedup`` is ``lut / word`` (the word-native decoder is the "ark"
+        column). The decode GEMV does roughly one multiply-add per weight byte,
+        so the dequant *is* the kernel: the LUT path issues a memory load per
+        weight element and both legacy paths index an 8-bit-typed
+        ``sycl::vec<uint8_t, 16>``, which Xe's 32-bit ALU lanes cannot address
+        directly. The word-native path reads the same bytes as
+        ``sycl::vec<uint32_t, 4>`` and turns each 32-bit word into four fp16 bit
+        patterns with a couple of native DWORD ops, folding E4M3's residual
+        ``2**-8`` into the per-K-group scale. This is the same treatment that
+        made int4-sym decode fast (see ``decode_int4_octet``).
+
+        The FP8 DPAS fast path is disabled so both columns run the scalar GEMV
+        -- the only path the decode-mode flag affects.
+        """
+        group_size = 128
+        _print_header(
+            f"FP8 {str(fp8_dtype).split('.')[-1]} word vs lut decode (group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- LUT GEMV (baseline) vs word-native GEMV (ark)"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            def _run():
+                return ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    group_size=group_size,
+                    asym=False,
+                )
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+            monkeypatch.delenv("ARK_FP8_DECODE_USE_LUT", raising=False)
+            monkeypatch.setenv("ARK_FP8_DECODE_MODE", "lut")
+            lut_ms = _xpu_time_ms(_run)
+            monkeypatch.setenv("ARK_FP8_DECODE_MODE", "word")
+            word_ms = _xpu_time_ms(_run)
+            monkeypatch.delenv("ARK_FP8_DECODE_MODE", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8", raising=False)
+            _print_row(label, N, K, total_tokens, lut_ms, word_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    def test_perf_fp8_dpas_vs_scalar(self, monkeypatch, dtype, fp8_dtype):
+        """FP8 decode: the per-group DPAS grouped GEMM
+        (``ARK_MOE_DECODE_DPAS_FP8=1``) vs the scalar GEMV (``=0``).
+
+        ``speedup`` is ``scalar / dpas`` (the DPAS path is the "ark" column).
+        Only shapes that clear the DPAS shape gate are timed.
+        ``ARK_MOE_DECODE_DPAS_FP8_MIN_TPE=0`` disables the tokens-per-expert
+        occupancy gate so the DPAS column really runs DPAS (by default these
+        decode-sized batches are routed to the scalar GEMV).
+
+        This is the FP8 twin of ``test_perf_int4_sym_dpas_vs_scalar`` and
+        exists for the same reason: to locate the batch size where the DPAS
+        pipeline overtakes the scalar GEMV, which is what the default
+        occupancy threshold encodes. On MiniMax-M2 decode shapes (192 experts,
+        0.04-1.3 tokens/expert) the DPAS M tile is starved -- even the 8-row
+        ``dpas_w4a16_policy_m_8`` bucket this decode ladder adds on top of the
+        reference ``w8a16`` ladder -- so the scalar column is expected to win
+        there.
+        """
+        group_size = 128
+        _print_header(
+            f"FP8 {str(fp8_dtype).split('.')[-1]} DPAS vs scalar (group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- scalar GEMV (baseline) vs FP8 DPAS (ark)"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0 or N % 64 != 0 or K % 32 != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            def _run():
+                return ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    group_size=group_size,
+                    asym=False,
+                )
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+            scalar_ms = _xpu_time_ms(_run)
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "1")
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8_MIN_TPE", "0")
+            dpas_ms = _xpu_time_ms(_run)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8_MIN_TPE", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8", raising=False)
+            _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
         """Perf: FP8 per-expert (per-tensor) scale for the decode path.
 
         The C++ decode kernel does NOT expose a native ``[E]`` per-tensor

@@ -1025,6 +1025,118 @@ class TestMoEGemmDecode:
         atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
         torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
 
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_modes_match(self, monkeypatch, dtype, fp8_dtype, group_size):
+        """FP8 decode: the word-native decoder (``ARK_FP8_DECODE_MODE=word``,
+        the default) must be numerically identical to the LUT and inline-bits
+        decoders.
+
+        ``word`` converts each FP8 byte to an fp16 bit pattern with a pure
+        bit-field move and folds E4M3's residual ``2**-8`` into the per-K-group
+        scale (an exact power of two), so on the finite encodings a real
+        checkpoint contains all three modes decode to exactly the same value.
+        Only the fp32 accumulation order differs (``word`` uses two partial
+        accumulators), hence ``bitwise=False`` and a tight -- not exact --
+        tolerance.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        # Keep every mode on the scalar GEMV so this compares decoders only.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        monkeypatch.delenv("ARK_FP8_DECODE_USE_LUT", raising=False)
+
+        monkeypatch.setenv("ARK_FP8_DECODE_MODE", "word")
+        out_word = _run()
+        monkeypatch.setenv("ARK_FP8_DECODE_MODE", "lut")
+        out_lut = _run()
+        monkeypatch.setenv("ARK_FP8_DECODE_MODE", "bits")
+        out_bits = _run()
+
+        assert out_word.shape == (total_tokens, N)
+        torch.testing.assert_close(out_word, out_lut, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out_word, out_bits, rtol=1e-3, atol=1e-3)
+
+        # Every mode must still track the dequant reference.
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        torch.testing.assert_close(out_word, ref, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_dpas_matches_scalar(self, monkeypatch, dtype, fp8_dtype, group_size):
+        """FP8 decode: the per-group DPAS path (``ARK_MOE_DECODE_DPAS_FP8=1``,
+        the default) must match both the scalar GEMV fallback
+        (``ARK_MOE_DECODE_DPAS_FP8=0``) and the dequant->bmm reference.
+
+        Shapes satisfy the DPAS per-group shape gate (N%64==0, K%32==0,
+        group_size in {32,64,128,256}) and ``ARK_MOE_DECODE_DPAS_FP8_MIN_TPE=0``
+        disables the tokens-per-expert occupancy gate (these tiny token counts
+        would otherwise be routed to the scalar GEMV, which is faster there) so
+        the DPAS fast path is actually taken.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 320, 256  # N%64==0, K%32==0
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8_MIN_TPE", "0")
+        out_dpas = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        out_scalar = _run()
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+
+        assert out_dpas.shape == (total_tokens, N)
+        assert out_scalar.shape == (total_tokens, N)
+        torch.testing.assert_close(out_dpas, ref, rtol=rtol, atol=atol)
+        torch.testing.assert_close(out_scalar, ref, rtol=rtol, atol=atol)
+        torch.testing.assert_close(out_dpas, out_scalar, rtol=rtol, atol=atol)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

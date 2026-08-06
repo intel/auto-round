@@ -366,6 +366,104 @@ token 数(16–128)都远低于该门控(8 × 192 个专家 == 1536 个 token)�
 `ARK_MOE_PREFILL_DPAS_INT8=0`,专门验证单遍 mainloop 路径,形状矩阵与
 `test_accuracy_int4` 一致,容差 `rtol=atol=1e-1`。
 
+## FP8 Decode 路径 (`sycl_tla_moe_decode.hpp`)
+
+int4-sym decode 的性能已经达标,把它推到达标的两个手段同样适用于 FP8:
+让 dequant 离开按字节的数据通路,以及不要在每次 decode 调用里重复付出
+启动开销。在此之上,还把 vllm-xpu-kernels 的 FP8 MoE dispatch 镜像成一个
+decode 专用入口。
+
+**Word-native FP8 解码 (`ARK_FP8_DECODE_MODE`, 默认 `word`)。** decode
+GEMV 每读一个权重字节大约只做一次乘加,所以 dequant *就是* kernel 本身。
+两条旧解码路径每个字节都要付出真实开销:`lut` 每个权重元素都要向 128 项
+幅值表发一次访存再做一次符号选择,`bits` 则要跑一串带分支的 `ldexp`。
+两者还都索引了 8-bit 类型的 `sycl::vec<uint8_t, 16>`,而 Xe 的 ALU 通道是
+32-bit 的、无法直接寻址它,于是 IGC 只能展开成窄类型 regioning ——
+正是 `decode_int4_octet` 为 nibble 解决过的那个问题。
+
+这些工作其实都不必要:FP8 字节本身就是一个 IEEE 风格的浮点数,而 fp16 是
+两种 FP8 格式的*超集*,整个转换就是一次位域搬移。
+
+| 格式 | fp16 位模式 | 精确性 |
+| ---- | ----------- | ------ |
+| E5M2 | `byte << 8` | 对全部 256 种编码逐位精确 —— 符号位位置相同、5 位指数相同、bias 同为 15。次正规数仍是次正规数,`exp==31` 仍是 Inf/NaN。 |
+| E4M3 | `(byte + (byte & 0x80)) << 7` | 对全部 254 种有限编码(正规数、次正规数、两个零)逐位精确,得到真值 × `2^-8`。 |
+
+E4M3 的 4 位指数 bias 为 7,而 fp16 的 bias 是 15,所以位域搬移会留下一个
+常数因子 `2^-8`;`fp8_word_scale_bias<IsE4M3>()`(`256.0f`)被折叠进
+per-K-group 的 scale,是一个精确的 2 的幂、每组只乘一次,因此对单个元素而言
+零开销。把符号位加到它自身上,恰好会把它再进位一格,这就是符号搬移与幅值
+搬移能合并成一次加法加一次移位的原因。
+
+kernel 以 `sycl::vec<uint32_t, 4>` 读取权重 —— 与它替换掉的字节向量是同一次
+16 字节访存、同样的 16 字节对齐要求 —— 再由 `decode_fp8_quad_half_bits` 用
+少量原生 DWORD 运算把每个 32 位字变成四个 fp16 位模式(SWAR,不会跨 lane
+进位)。两个部分累加器打断 fp32 依赖链,与 `int4_decode_chunk` 的做法一致。
+两个原语都放在 `sycl_tla_moe_dequant.hpp`,并已对两种格式的全部 256 个字节
+值做过穷举验证。
+
+**E4M3 NaN 注意事项。** E4M3 的两个 NaN 编码(`0x7F` / `0xFF`;
+`torch.float8_e4m3fn` 没有 Inf)会解码成 ±480 而不是 NaN,因为纯位域搬移
+到不了 fp16 的任何 NaN 模式。auto-round 的 FP8 checkpoint 是按
+`finfo(float8_e4m3fn).max == 448` 缩放并 clamp 得到的,所以这两个编码不可能
+出现。需要 NaN 传播的调用方可以选择 `ARK_FP8_DECODE_MODE=lut` 或 `=bits`。
+
+**FP8 DPAS decode dispatch。** `moe_decode_fp8_dpas_per_group_dispatch`
+(`sycl_tla_moe_prefill_fp8_dpas.hpp`,`ARK_MOE_DECODE_DPAS_FP8` 默认 ON)
+是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的 `[E, N, K]`
+FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch 有
+两点 decode 专属的差异。
+
+*更细的 small-M 阶梯。* vllm-xpu-kernels 的参考 `w8a16` dispatch 最小只到
+16 行 tile,而它的 `w4a16` dispatch 多一个 8 行档位。decode 的 `A_avg_M`
+远低于 16,缺这一档意味着每个 M tile 有一半是 padding,而受带宽约束的 FP8
+权重要为这些毫无贡献的行反复搬运。`dpas_w4a16_policy_m_8` 不含任何 4-bit
+专用类型 —— 它纯粹是一个 `8×64×32` 的 `WGTile` / `SGLayout` 形状 ——
+所以 FP8 mainloop 可以原样复用它,补上这一档:
+
+| `A_avg_M` 档位 | WG tile (M×N×K) | Policy |
+| -------------- | --------------- | ------ |
+| `≤ 4`          | `8×64×32`       | `dpas_w4a16_policy_m_8` |
+| `≤ 8`          | `16×64×32`      | `dpas_w8a16_policy_m_16` |
+| `≤ 128`        | `32×64×32`      | `dpas_w8a16_policy_m_32` |
+| `> 128`        | `128×128×16`    | `dpas_w8a16_policy` |
+
+上面几档对齐的是 S4 的 *decode* 阶梯,而不是 FP8 prefill 的那条 ——
+后者的 `≤ 512 → m_32` 档是按 prefill 规模的 batch 调过的。
+
+*常驻 atomic 计数器。* prefill dispatch 每次调用都用 `sycl::malloc_device`
+分配 work-group 计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列
+同步。在 prefill 规模下这只是噪声,但在 decode 规模下 —— GEMM 本身只有几十
+微秒、且每生成一个 token 就要发一次调用 —— 它占总时间的比例相当可观。
+decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffer`,
+现已与 S4 头文件共享,两条路径共用一份 cache)。走上这条快路径时还会跳过
+`fill_expert_id_per_token` 前置 pass,因为 DPAS dispatch 直接消费
+`num_tokens_per_expert` —— decode 时间线上少一次 kernel 启动。
+**状态:NEEDS-HARDWARE-VALIDATION**(该头文件是未经硬件验证的移植)。
+
+**占用率门控 —— 真实 decode batch 仍走 scalar GEMV。** 理由与 int4-sym
+相同:decode 阶梯能选到的最小 tile 每个专家处理 8 行 token,所以平均每专家
+不足 8 个 token 时,tile 大部分是 padding。这正是 decode 的场景(MiniMax-M2,
+192 个专家:每专家 0.04–1.3 个 token),因此除非 batch 平均每专家至少提供
+8 个 token,FP8 decode 一律走 scalar GEMV。
+`ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` 可覆盖该阈值;`0` 关闭门控,这也是对齐
+用例与 A/B 性能用例所设置的值。未通过 per-group 形状门控
+(`N%64==0`、`K%32==0`、`K%group_size==0`、
+`group_size ∈ {32,64,128,256}`)的形状始终回退到 scalar GEMV。
+
+| Env 变量 | 默认值 | 作用 |
+| -------- | ------ | ---- |
+| `ARK_FP8_DECODE_MODE` | `word` | scalar GEMV 的 FP8 解码实现:`word`(位域搬移 + 折叠 scale bias)、`lut`(128 项幅值表)、`bits`(内联位运算)。 |
+| `ARK_FP8_DECODE_USE_LUT` | 未设置 | 旧的选择开关;当它被显式设置、且 `ARK_FP8_DECODE_MODE` 未设置或取值无法识别时仍然生效:truthy → `lut`,falsy → `bits`。它同时仍然驱动 mixed-input prefill 路径。 |
+| `ARK_MOE_DECODE_DPAS_FP8` | ON | 形状与占用率门控都通过时,把 FP8 decode 路由到 per-group DPAS grouped GEMM;`0` 强制走 scalar GEMV。 |
+| `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | 走 DPAS 路径所需的最小每专家 token 数;`0` 关闭门控(对齐/A-B 用例所设)。 |
+
+性能 A/B 行是 `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
+(`speedup` 为 `lut / word`)与 `::test_perf_fp8_dpas_vs_scalar`
+(`speedup` 为 `scalar / dpas`)。正确性由
+`test_moe.py::test_decode_fp8_modes_match`(三种解码器互相一致,且各自都
+对齐 dequant 参考)与 `::test_decode_fp8_dpas_matches_scalar` 覆盖。
+
 ## FP8 per-expert (per-tensor) 性能测试
 
 `test_perf_fp8_per_tensor` 提供 Variant A DPAS 路径的性能表格,对应

@@ -465,6 +465,116 @@ which forces `ARK_MOE_PREFILL_DPAS_S4=1` +
 exclusively exercised, at the same production shapes as
 `test_accuracy_int4`, with tolerance `rtol=atol=1e-1`.
 
+## FP8 Decode Paths (`sycl_tla_moe_decode.hpp`)
+
+int4-sym decode is now at target, and the same two levers that got it
+there apply to FP8: get the dequant off the byte-typed datapath, and stop
+paying setup cost per decode call. On top of that, the FP8 MoE dispatch
+from vllm-xpu-kernels is mirrored into a decode-specialised entry point.
+
+**Word-native FP8 decode (`ARK_FP8_DECODE_MODE`, default `word`).** The
+decode GEMV does roughly one multiply-add per weight byte, so the dequant
+*is* the kernel. Both legacy decoders paid real work per byte: `lut`
+issues a memory load per weight element into the 128-entry magnitude table
+plus a sign select, and `bits` runs a branchy `ldexp` chain. Both also
+indexed an 8-bit-typed `sycl::vec<uint8_t, 16>`, which Xe's 32-bit ALU
+lanes cannot address directly, so IGC expands it into narrow-type
+regioning — exactly the problem `decode_int4_octet` fixed for nibbles.
+
+None of that work is necessary, because an FP8 byte is already an
+IEEE-style float and fp16 is a *superset* of both FP8 formats: the whole
+conversion is a bit-field move.
+
+| Format | fp16 bit pattern | Exactness |
+| ------ | ---------------- | --------- |
+| E5M2   | `byte << 8` | Bit-exact for all 256 encodings — same sign position, same 5-bit exponent, same bias 15. Subnormals stay subnormal, `exp==31` stays Inf/NaN. |
+| E4M3   | `(byte + (byte & 0x80)) << 7` | Bit-exact for all 254 finite encodings (normals, subnormals, both zeros), yielding the true value × `2^-8`. |
+
+E4M3's 4-bit exponent has bias 7 against fp16's bias 15, so the field move
+leaves a constant `2^-8` factor; `fp8_word_scale_bias<IsE4M3>()` (`256.0f`)
+is folded into the per-K-group scale, an exact power of two applied once
+per group, so it costs nothing per element. Adding the sign bit to itself
+carries it exactly one position further, which is why the sign move and
+the magnitude move collapse into one add plus one shift.
+
+The kernel reads the weights as `sycl::vec<uint32_t, 4>` — the same
+16-byte transaction and the same 16-byte alignment requirement as the byte
+vector it replaces — and `decode_fp8_quad_half_bits` turns each 32-bit word
+into four fp16 bit patterns in a handful of native DWORD ops (SWAR, no
+cross-lane carry). Two partial accumulators break the fp32 dependency
+chain, as in `int4_decode_chunk`. Both primitives live in
+`sycl_tla_moe_dequant.hpp`, and both were verified exhaustively over all
+256 byte values in both formats.
+
+**E4M3 NaN caveat.** The two E4M3 NaN encodings (`0x7F` / `0xFF`;
+`torch.float8_e4m3fn` has no Inf) decode to ±480 instead of NaN, since fp16
+has no NaN pattern reachable by a pure field move. auto-round FP8
+checkpoints are produced by scaling to `finfo(float8_e4m3fn).max == 448`
+and clamping, so those two encodings cannot occur. Callers that need NaN
+propagation can select `ARK_FP8_DECODE_MODE=lut` or `=bits`.
+
+**FP8 DPAS decode dispatch.** `moe_decode_fp8_dpas_per_group_dispatch`
+(`sycl_tla_moe_prefill_fp8_dpas.hpp`, `ARK_MOE_DECODE_DPAS_FP8` default ON)
+is the FP8 twin of the S4 decode dispatch: same mainloop, same `[E, N, K]`
+FP8 bytes + `[E, N, K/group]` scales, no repack. It differs from the
+prefill dispatch in two decode-specific ways.
+
+*Finer small-M ladder.* The reference `w8a16` dispatch in vllm-xpu-kernels
+bottoms out at the 16-row tile, while its `w4a16` dispatch has an extra
+8-row bucket. Decode `A_avg_M` sits far below 16, so the missing rung means
+half of every M tile is padding and the bandwidth-bound FP8 weights get
+streamed for rows that contribute nothing. `dpas_w4a16_policy_m_8` carries
+no 4-bit-specific types — it is purely an `8×64×32` `WGTile` / `SGLayout`
+shape — so the FP8 mainloop reuses it verbatim, closing that gap:
+
+| `A_avg_M` bucket | WG tile (M×N×K) | Policy |
+| ---------------- | --------------- | ------ |
+| `≤ 4`            | `8×64×32`       | `dpas_w4a16_policy_m_8` |
+| `≤ 8`            | `16×64×32`      | `dpas_w8a16_policy_m_16` |
+| `≤ 128`          | `32×64×32`      | `dpas_w8a16_policy_m_32` |
+| `> 128`          | `128×128×16`    | `dpas_w8a16_policy` |
+
+The upper rungs match the S4 *decode* ladder rather than the FP8 prefill
+one, whose `≤ 512 → m_32` rung is tuned for prefill-sized batches.
+
+*Persistent atomic counter.* The prefill dispatch allocates the
+work-group counter with `sycl::malloc_device` and releases it with
+`sycl::free` on every call; each of those forces a queue synchronization.
+At prefill sizes that is noise, at decode sizes — where the GEMM itself is
+only tens of microseconds and one call is issued per generated token — it
+is a large fraction of the total. The decode dispatch uses a persistent
+per-queue slot instead (`get_persistent_atomic_buffer`, now shared with the
+S4 header so both paths use one cache). Taking the fast path also skips the
+`fill_expert_id_per_token` pre-pass, since the DPAS dispatch consumes
+`num_tokens_per_expert` directly — one fewer kernel launch on the decode
+timeline. **Status: NEEDS-HARDWARE-VALIDATION** (this header is an
+untested port).
+
+**Occupancy gate — real decode batches stay on the scalar GEMV.** Same
+reasoning as int4-sym: the smallest tile the decode ladder can pick
+processes 8 token rows per expert, so below 8 tokens per expert on average
+the tile is mostly padding. That is exactly the decode regime (MiniMax-M2,
+192 experts: 0.04–1.3 tokens per expert), so FP8 decode is routed to the
+scalar GEMV unless the batch supplies at least 8 tokens per expert.
+`ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` overrides the threshold; `0` disables the
+gate, which is what the parity and A/B perf tests set. Shapes that fail the
+per-group shape gate (`N%64==0`, `K%32==0`, `K%group_size==0`,
+`group_size ∈ {32,64,128,256}`) always fall back to the scalar GEMV.
+
+| Env var | Default | Effect |
+| ------- | ------- | ------ |
+| `ARK_FP8_DECODE_MODE` | `word` | FP8 decode implementation for the scalar GEMV: `word` (bit-field move + folded scale bias), `lut` (128-entry magnitude table), `bits` (inline bit manipulation). |
+| `ARK_FP8_DECODE_USE_LUT` | unset | Legacy selector, still honoured when set explicitly and when `ARK_FP8_DECODE_MODE` is unset/unrecognised: truthy → `lut`, falsy → `bits`. Also still drives the mixed-input prefill path. |
+| `ARK_MOE_DECODE_DPAS_FP8` | ON | Route FP8 decode to the per-group DPAS grouped GEMM when the shape and occupancy gates pass; `0` forces the scalar GEMV. |
+| `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | Minimum tokens per expert before the DPAS path is taken; `0` disables the gate (what the parity/A-B tests set). |
+
+Perf A/B rows are `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
+(`speedup` is `lut / word`) and `::test_perf_fp8_dpas_vs_scalar`
+(`speedup` is `scalar / dpas`). Correctness is covered by
+`test_moe.py::test_decode_fp8_modes_match` (all three decoders agree, and
+each tracks the dequant reference) and
+`::test_decode_fp8_dpas_matches_scalar`.
+
 ## FP8 per-expert (per-tensor) perf tests
 
 `test_perf_fp8_per_tensor` benchmarks the Variant A DPAS path against
