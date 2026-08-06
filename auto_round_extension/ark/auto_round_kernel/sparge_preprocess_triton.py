@@ -10,7 +10,6 @@ import torch
 import triton
 import triton.language as tl
 
-
 logger = logging.getLogger(__name__)
 
 _APPLIED_TRITON_PREDICATED_CHECK = False
@@ -37,6 +36,7 @@ def _apply_xpu_triton_workarounds() -> None:
     _intel_compiler.XPUBackend.parse_target = _patched_parse_target
     _APPLIED_TRITON_PREDICATED_CHECK = True
     logger.info("Applied XPU triton workaround: has_predicated_io forced off (SPV_INTEL_predicated_io)")
+
 
 _apply_xpu_triton_workarounds()
 
