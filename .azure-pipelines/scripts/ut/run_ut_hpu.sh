@@ -8,7 +8,7 @@ function setup_environment() {
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
-    pip install pytest-cov
+    pip install pytest-cov pytest-timeout
     pip list
     echo "##[endgroup]"
 
@@ -34,6 +34,7 @@ function run_unit_test() {
         echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
         PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
+            --timeout=30 --session-timeout=600 \
             --cov-report= --cov-append -vs --disable-warnings \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -41,6 +42,7 @@ function run_unit_test() {
         echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
         PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
+            --timeout=30 --session-timeout=600 \
             --cov-report= --cov-append -vs --disable-warnings \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
