@@ -148,34 +148,12 @@ using ::ark::moe_dpas_fp8::make_moe_tensor;
 // ---------------------------------------------------------------------------
 // Persistent per-queue atomic work-group counter.
 //
-// The grouped-GEMM launcher below needs a single `int32_t` device slot as a
-// global work-group counter (`atomicAdd`). The kernel self-initialises it to 0
-// at launch (group 0 / lane 0 does `atm.store(0)`), so the host never has to
-// reset it between calls. Previously each dispatch call allocated this slot
-// with `sycl::malloc_device` and released it with `sycl::free`; both operations
-// force a queue synchronization, which is pure overhead on the decode hot path
-// where the GEMM itself is only tens of microseconds.
-//
-// Instead, hand out one persistent buffer per queue and reuse it across calls.
-// This is safe because every launcher call is synchronous (`event.wait()` in
-// `MoEGEMMLauncher_s4`), so two launches can never share the buffer
-// concurrently. Buffers live until process exit (one `int32_t` per queue),
-// matching the singleton lifetime already used by `EventManager`.
+// Shared with the FP8 path -- see `moe_dpas_fp8::get_persistent_atomic_buffer`
+// for the rationale (one `int32_t` device slot per queue reused across calls,
+// instead of a `sycl::malloc_device` / `sycl::free` pair per dispatch, each of
+// which forces a queue synchronization on the decode hot path).
 // ---------------------------------------------------------------------------
-inline int32_t* get_persistent_atomic_buffer(sycl::queue* q) {
-  static std::mutex mtx;
-  static std::unordered_map<sycl::queue*, int32_t*> cache;
-  std::lock_guard<std::mutex> lock(mtx);
-  auto it = cache.find(q);
-  if (it != cache.end()) return it->second;
-  int32_t* buf = sycl::malloc_device<int32_t>(1, *q);
-  if (buf == nullptr) {
-    throw std::runtime_error(
-        "moe_dpas_s4: failed to allocate persistent atomic buffer");
-  }
-  cache.emplace(q, buf);
-  return buf;
-}
+using ::ark::moe_dpas_fp8::get_persistent_atomic_buffer;
 
 // ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.

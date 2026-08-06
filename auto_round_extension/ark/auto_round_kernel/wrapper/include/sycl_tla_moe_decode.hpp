@@ -63,20 +63,25 @@
 // ----------------------------------------------------------------------------
 // FP8 decode implementation switch (runtime)
 //
-// FP8 weight bytes can be dequantized either via inline bit manipulation or
-// via the 128-entry magnitude LUT in `bestla/sycl/fp8_lut.h` (sign applied
-// separately). Both paths are mathematically equivalent for finite values;
-// pick whichever is faster on the target hardware.
+// FP8 weight bytes can be dequantized three ways, all mathematically equivalent
+// for the values a real checkpoint contains:
+//   - word : convert four bytes of a 32-bit weight word straight into four fp16
+//            bit patterns with native DWORD field moves, folding E4M3's
+//            residual 2^-8 into the per-K-group scale. No memory traffic, no
+//            8-bit ALU ops.
+//   - lut  : the 128-entry magnitude LUT in `bestla/sycl/fp8_lut.h` (sign
+//            applied separately).
+//   - bits : self-contained inline bit manipulation.
 //
-// Selection is done at runtime through the environment variable
-// `ARK_FP8_DECODE_USE_LUT`:
-//   - unset / "1" / "true" / "on" / "yes" (case-insensitive) -> LUT path (default)
-//   - "0" / "false" / "off" / "no" (case-insensitive)        -> inline bit-manip
+// Selection is done at runtime through `ARK_FP8_DECODE_MODE` ("word" / "lut" /
+// "bits", case-insensitive), defaulting to "word". The legacy
+// `ARK_FP8_DECODE_USE_LUT` variable still works when set explicitly and keeps
+// its old meaning (truthy -> lut, falsy -> bits).
 //
-// The env var is read once on the host (cached) and passed as a template
-// parameter into the SYCL kernel, so there is no per-element runtime branch.
-// The actual primitives live in `sycl_tla_moe_dequant.hpp` (shared with the
-// mixed-input prefill path); this file just re-exports them via `using`.
+// The env var is read on the host and passed as a template parameter into the
+// SYCL kernel, so there is no per-element runtime branch. The actual primitives
+// live in `sycl_tla_moe_dequant.hpp` (shared with the mixed-input prefill
+// path); this file just re-exports them via `using`.
 // ----------------------------------------------------------------------------
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
@@ -146,7 +151,7 @@ class MoEDecodeKernelInt8;
 template <typename ScalarT, bool Asym>
 class MoEDecodeKernelInt2;
 
-template <typename ScalarT, bool IsE4M3, bool UseLut>
+template <typename ScalarT, bool IsE4M3, moe_dequant::Fp8DecodeMode Mode>
 class MoEDecodeKernelFP8;
 
 // ----------------------------------------------------------------------------
@@ -156,16 +161,21 @@ class MoEDecodeKernelFP8;
 // keep the in-kernel call sites (`decode_fp8<...>(byte)`) and the host-side
 // `fp8_decode_use_lut()` lookup inside `moe_decode_detail` working unchanged.
 // ----------------------------------------------------------------------------
+using moe_dequant::Fp8DecodeMode;
 using moe_dequant::decode_fp8;
 using moe_dequant::decode_fp8_e4m3_bits;
 using moe_dequant::decode_fp8_e4m3_lut;
 using moe_dequant::decode_fp8_e5m2_bits;
 using moe_dequant::decode_fp8_e5m2_lut;
+using moe_dequant::decode_fp8_half_bits;
+using moe_dequant::decode_fp8_quad_half_bits;
 using moe_dequant::decode_int2_quad;
 using moe_dequant::decode_int4_octet;
 using moe_dequant::decode_int4_pair;
 using moe_dequant::decode_int8;
+using moe_dequant::fp8_decode_mode;
 using moe_dequant::fp8_decode_use_lut;
+using moe_dequant::fp8_word_scale_bias;
 
 // ----------------------------------------------------------------------------
 // Build a [total_tokens] -> expert_id mapping from num_tokens_per_expert.
@@ -1213,10 +1223,24 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // ----------------------------------------------------------------------------
 // FP8 (E4M3 / E5M2) GEMV with group-wise scale (no zero-point).
 //
-// Weights are 1 FP8 byte per element [E, N, K]. The byte is decoded via the
-// `decode_fp8<IsE4M3, UseLut>` helper, which selects between the LUT and the
-// inline bit-manipulation path at compile time. The choice is driven at
-// launch time by the env var `ARK_FP8_DECODE_USE_LUT` (default: ON).
+// Weights are 1 FP8 byte per element [E, N, K]. How a byte becomes a float is
+// chosen at launch time by `fp8_decode_mode()` and passed in as the `Mode`
+// template parameter, so the hot path stays branch-free:
+//
+//   * `kWord` (default) -- the four bytes of a 32-bit weight word are turned
+//     into four fp16 bit patterns by `decode_fp8_quad_half_bits`, i.e. a couple
+//     of native DWORD ops and no memory traffic at all. This mirrors the
+//     word-native `decode_int4_octet` treatment that made int4 decode fast: Xe
+//     ALU lanes are 32-bit, so the previous `sycl::vec<uint8_t, 16>` weight
+//     vector plus per-byte decode paid narrow-type regioning on *every* weight
+//     element, and the LUT variant additionally issued one load per element in
+//     a loop that already does only ~1 MAC per byte.
+//     For E4M3 the field move leaves a constant 2^-8 factor, which is folded
+//     into the per-K-group scale below (`fp8_word_scale_bias`), so it costs
+//     nothing per element.
+//
+//   * `kLut` / `kBits` -- the original per-byte `decode_fp8<IsE4M3, UseLut>`
+//     decoders, kept for A/B measurement and regression escape.
 // ----------------------------------------------------------------------------
 
 // Vectorized inner accumulation over CHUNK consecutive K elements (CHUNK weight
@@ -1225,33 +1249,79 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // remainder, mirroring the int4/int8 paths. sycl::vec only supports widths of
 // 1, 2, 3, 4, 8 or 16, so CHUNK is processed in 16-wide sub-blocks.
 //
+// In `kWord` mode the 16 weight bytes of a sub-block are read as a
+// `sycl::vec<uint32_t, 4>` -- the same 16-byte transaction (and the same
+// 16-byte alignment requirement) as the byte vector it replaces, but 32-bit
+// typed, so the decode never leaves the native datapath.
+//
 // The per-group scale is constant across the whole group, so it is NOT applied
 // here: this accumulates the raw dot product (sum of act * decoded_fp8) and the
 // caller multiplies the group total by the scale once (Σ a·(w·s) == s·Σ a·w).
 // For the per-expert / per-tensor scale case (group_size == K, one scale per
 // output row) this collapses the whole K reduction to a single scale multiply,
 // removing one multiply per K element on the decode hot path.
-template <typename ScalarT, bool IsE4M3, bool UseLut, int CHUNK>
-static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float& acc) {
+//
+// Two independent partial accumulators break the single fp32 dependency chain
+// so the FMA pipeline is not latency-bound (same trick as `int4_decode_chunk`);
+// the caller reduces the pair.
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode, int CHUNK>
+static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float& acc0,
+                                    float& acc1) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
   static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
   constexpr int SUB = 16;
   using ActVec = sycl::vec<uint16_t, SUB>;
-  using ByteVec = sycl::vec<uint8_t, SUB>;
 #pragma unroll
   for (int s = 0; s < CHUNK / SUB; ++s) {
     const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
-    const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_ptr + s * SUB);
+    if constexpr (Mode == Fp8DecodeMode::kWord) {
+      constexpr int WORDS = SUB / 4;  // one 32-bit word per 4 FP8 bytes
+      using WordVec = sycl::vec<uint32_t, WORDS>;
+      const WordVec wv = *reinterpret_cast<const WordVec*>(w_ptr + s * SUB);
 #pragma unroll
-    for (int u = 0; u < SUB; ++u) {
-      const float w = decode_fp8<IsE4M3, UseLut>(wv[u]);
-      const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
-      acc += static_cast<float>(a) * w;
+      for (int w = 0; w < WORDS; ++w) {
+        uint32_t lo2, hi2;
+        decode_fp8_quad_half_bits<IsE4M3>(wv[w], lo2, hi2);
+        const uint16_t hb[4] = {static_cast<uint16_t>(lo2), static_cast<uint16_t>(lo2 >> 16),
+                                static_cast<uint16_t>(hi2), static_cast<uint16_t>(hi2 >> 16)};
+#pragma unroll
+        for (int u = 0; u < 4; u += 2) {
+          const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * w + u]));
+          const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * w + u + 1]));
+          acc0 += static_cast<float>(a0) * static_cast<float>(sycl::bit_cast<sycl::half>(hb[u]));
+          acc1 += static_cast<float>(a1) * static_cast<float>(sycl::bit_cast<sycl::half>(hb[u + 1]));
+        }
+      }
+    } else {
+      constexpr bool kUseLut = (Mode == Fp8DecodeMode::kLut);
+      using ByteVec = sycl::vec<uint8_t, SUB>;
+      const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_ptr + s * SUB);
+#pragma unroll
+      for (int u = 0; u < SUB; u += 2) {
+        const float w0 = decode_fp8<IsE4M3, kUseLut>(wv[u]);
+        const float w1 = decode_fp8<IsE4M3, kUseLut>(wv[u + 1]);
+        const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
+        const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u + 1]));
+        acc0 += static_cast<float>(a0) * w0;
+        acc1 += static_cast<float>(a1) * w1;
+      }
     }
   }
 }
 
-template <typename ScalarT, bool IsE4M3, bool UseLut>
+// Single-byte decode matching `fp8_decode_chunk`'s convention: in `kWord` mode
+// the returned value carries the same folded 2^-8 bias as the vector stage, so
+// the scalar tail can share the group accumulator.
+template <bool IsE4M3, Fp8DecodeMode Mode>
+static inline float fp8_decode_scalar(uint8_t raw) {
+  if constexpr (Mode == Fp8DecodeMode::kWord) {
+    return static_cast<float>(sycl::bit_cast<sycl::half>(decode_fp8_half_bits<IsE4M3>(raw)));
+  } else {
+    return decode_fp8<IsE4M3, Mode == Fp8DecodeMode::kLut>(raw);
+  }
+}
+
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode>
 void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
                 ScalarT* outputs, const int* expert_id_per_token, int total_tokens, int N, int K, int group_size) {
   if (N % N_TILE != 0) {
@@ -1264,11 +1334,15 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
 
   const int n_tiles = N / N_TILE;
   const int num_groups_k = K / group_size;
+  // Undoes the exponent re-bias the word-native decode leaves behind (1.0f for
+  // every other mode). Exact power of two, applied once per K-group.
+  constexpr float kScaleBias =
+      (Mode == Fp8DecodeMode::kWord) ? fp8_word_scale_bias<IsE4M3>() : 1.0f;
 
   sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(n_tiles * SG_SIZE)};
   sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
 
-  q->parallel_for<MoEDecodeKernelFP8<ScalarT, IsE4M3, UseLut>>(
+  q->parallel_for<MoEDecodeKernelFP8<ScalarT, IsE4M3, Mode>>(
        sycl::nd_range<2>(global, local),
        [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
          const int token = static_cast<int>(it.get_global_id(0));
@@ -1286,7 +1360,7 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
 
          float acc = 0.0f;
          for (int g = 0; g < num_groups_k; ++g) {
-           const float scale = static_cast<float>(s_row[g]);
+           const float scale = static_cast<float>(s_row[g]) * kScaleBias;
            const int k_base = g * group_size;
            // Vectorized ladder mirroring the int4/int8 paths: process 32
            // K-elements (32 weight bytes + vec<ScalarT,32> activations) at a
@@ -1297,30 +1371,55 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
            // load for the shipped group sizes (32/64/128/256); hoisting the
            // scale removes one multiply per K element, which is the dominant
            // cost for the per-expert / per-tensor scale case (group_size == K).
-           float group_acc = 0.0f;
+           // Two partial accumulators break the fp32 dependency chain.
+           float group_acc0 = 0.0f;
+           float group_acc1 = 0.0f;
            int kk = 0;
            constexpr int CHUNK32 = 32;
            const int end32 = (group_size / CHUNK32) * CHUNK32;
            for (; kk < end32; kk += CHUNK32) {
-             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK32>(act_row + k_base + kk, w_row + k_base + kk,
-                                                                group_acc);
+             fp8_decode_chunk<ScalarT, IsE4M3, Mode, CHUNK32>(act_row + k_base + kk, w_row + k_base + kk,
+                                                              group_acc0, group_acc1);
            }
            constexpr int CHUNK16 = 16;
            const int end16 = kk + ((group_size - kk) / CHUNK16) * CHUNK16;
            for (; kk < end16; kk += CHUNK16) {
-             fp8_decode_chunk<ScalarT, IsE4M3, UseLut, CHUNK16>(act_row + k_base + kk, w_row + k_base + kk,
-                                                                group_acc);
+             fp8_decode_chunk<ScalarT, IsE4M3, Mode, CHUNK16>(act_row + k_base + kk, w_row + k_base + kk,
+                                                              group_acc0, group_acc1);
            }
            for (; kk < group_size; ++kk) {
-             const uint8_t raw = w_row[k_base + kk];
-             const float w = decode_fp8<IsE4M3, UseLut>(raw);
-             group_acc += static_cast<float>(act_row[k_base + kk]) * w;
+             const float w = fp8_decode_scalar<IsE4M3, Mode>(w_row[k_base + kk]);
+             group_acc0 += static_cast<float>(act_row[k_base + kk]) * w;
            }
-           acc += group_acc * scale;
+           acc += (group_acc0 + group_acc1) * scale;
          }
 
          outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(acc);
        });
+}
+
+// Runtime -> compile-time bridge for the decode-mode selector. Keeps the
+// `moe_gemm_decode` dispatch to one branch per (act dtype, format) instead of
+// re-nesting the mode selection at every call site.
+template <typename ScalarT, bool IsE4M3>
+void launch_fp8_by_mode(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
+                        const ScalarT* scales, ScalarT* outputs, const int* expert_id_per_token,
+                        int total_tokens, int N, int K, int group_size) {
+  switch (fp8_decode_mode()) {
+    case Fp8DecodeMode::kLut:
+      launch_fp8<ScalarT, IsE4M3, Fp8DecodeMode::kLut>(q, activations, weights, scales, outputs,
+                                                       expert_id_per_token, total_tokens, N, K, group_size);
+      return;
+    case Fp8DecodeMode::kBits:
+      launch_fp8<ScalarT, IsE4M3, Fp8DecodeMode::kBits>(q, activations, weights, scales, outputs,
+                                                        expert_id_per_token, total_tokens, N, K, group_size);
+      return;
+    case Fp8DecodeMode::kWord:
+    default:
+      launch_fp8<ScalarT, IsE4M3, Fp8DecodeMode::kWord>(q, activations, weights, scales, outputs,
+                                                        expert_id_per_token, total_tokens, N, K, group_size);
+      return;
+  }
 }
 
 }  // namespace moe_decode_detail
@@ -1397,6 +1496,52 @@ inline bool moe_decode_dpas_s4_occupancy_ok(int total_tokens, int num_experts) {
 }
 
 // ----------------------------------------------------------------------------
+// Env-flag helper -- `ARK_MOE_DECODE_DPAS_FP8` (default ON). When ON, FP8
+// (E4M3 / E5M2, sym) decode is routed to the decode-phase FP8 DPAS grouped
+// GEMM (`moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch`) instead of the
+// scalar FMA GEMV (`launch_fp8`). This is the FP8 twin of
+// `ARK_MOE_DECODE_DPAS_S4`: same `[E, N, K]` FP8 bytes and `[E, N, K/group]`
+// scales, no repack, tile picked from the `A_avg_M` ladder.
+//
+// Setting the var to "0" / "false" / "off" / "no" (case-insensitive) forces the
+// scalar GEMV, for A/B comparison and regression escape. Shapes that fail the
+// DPAS shape gate and batches that fail the tokens-per-expert occupancy gate
+// (`moe_decode_dpas_fp8_occupancy_ok`, below -- this is what keeps real decode
+// batches on the fast scalar GEMV) always fall back to the scalar path
+// regardless of this flag. Re-read on every call so tests / benchmarks can
+// toggle the path in-process.
+// ----------------------------------------------------------------------------
+inline bool moe_decode_dpas_fp8_enabled() {
+  return moe_decode_detail::env_flag_enabled("ARK_MOE_DECODE_DPAS_FP8", true);  // default ON
+}
+
+// ----------------------------------------------------------------------------
+// Occupancy gate for the FP8 DPAS decode path. Identical reasoning to
+// `moe_decode_dpas_s4_occupancy_ok`: the smallest DPAS tile the decode
+// dispatch can pick (`dpas_w4a16_policy_m_8`) processes 8 token rows per
+// expert, so below 8 tokens per expert on average the tile is mostly padding
+// and the bandwidth-bound FP8 weights get streamed for rows that contribute
+// nothing -- exactly the regime real decode batches live in. Above that the
+// DPAS pipeline wins, so the threshold is where the two cross.
+//
+// `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` overrides the tokens-per-expert threshold;
+// "0" disables the gate (always take DPAS when the shape gate allows), which is
+// what the accuracy tests use to exercise the DPAS kernel on tiny shapes.
+// ----------------------------------------------------------------------------
+inline bool moe_decode_dpas_fp8_occupancy_ok(int total_tokens, int num_experts) {
+  if (num_experts <= 0) return true;
+  long long min_tokens_per_expert = 8;  // rows in `dpas_w4a16_policy_m_8`
+  const char* env = std::getenv("ARK_MOE_DECODE_DPAS_FP8_MIN_TPE");
+  if (env != nullptr) {
+    char* end = nullptr;
+    long long v = std::strtoll(env, &end, 10);
+    if (end != env && v >= 0) min_tokens_per_expert = v;
+  }
+  if (min_tokens_per_expert == 0) return true;
+  return static_cast<long long>(total_tokens) >= min_tokens_per_expert * static_cast<long long>(num_experts);
+}
+
+// ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_COALESCE_INT4` (default ON). When ON, the
 // int4 scalar-GEMV fallback (asym, or sym with the DPAS path disabled / shape
 // or occupancy gate miss) uses `launch_int4_coalesced`, which repacks the weights on-device
@@ -1456,22 +1601,32 @@ inline bool moe_decode_coalesce_int4_amortized(int total_tokens, int num_experts
 //   BTLA_DTYPE::S2_CLIP           : packed int2 weights [E, N, K/4] (uint8),
 //                                   4 values per byte, sym/asym like int4
 //   BTLA_DTYPE::F8_E4M3 / F8_E5M2 : FP8 weights [E, N, K] (uint8 buffer),
-//                                   group-wise scales, no zero-points
+//                                   group-wise scales, no zero-points. Routed
+//                                   to the per-group FP8 DPAS grouped GEMM only
+//                                   when the batch fills its M tile (>= 8
+//                                   tokens per expert on average,
+//                                   `ARK_MOE_DECODE_DPAS_FP8` default ON); a
+//                                   disabled flag, a shape-gate miss, or a
+//                                   decode-sized batch uses the scalar GEMV.
 // act_dtype: F16 or BF16 (must match scales/outputs dtype)
 // ----------------------------------------------------------------------------
 inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros,
                             void* outputs, int* expert_id_per_token_buf, BTLA_DTYPE act_dtype,
                             BTLA_DTYPE weight_dtype, int N, int K, int group_size, int* num_tokens_per_expert,
                             int num_experts, int total_tokens, bool asym) {
-  // The S4-sym DPAS fast path consumes `num_tokens_per_expert` directly and
-  // never reads `expert_id_per_token_buf`. Skipping the fill on that path
+  // The S4-sym and FP8 DPAS fast paths consume `num_tokens_per_expert` directly
+  // and never read `expert_id_per_token_buf`. Skipping the fill on those paths
   // removes an extra device-timeline kernel launch from the decode hot path;
-  // every other path (fp, int8, int2, fp8, and the scalar int4 fallback) still
-  // needs the per-token expert mapping.
+  // every other path (fp, int8, int2, and the scalar int4 / fp8 fallbacks)
+  // still needs the per-token expert mapping.
   const bool s4_dpas_fastpath = weight_dtype == BTLA_DTYPE::S4_CLIP && !asym && moe_decode_dpas_s4_enabled() &&
                                 moe_decode_dpas_s4_occupancy_ok(total_tokens, num_experts) &&
                                 moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size);
-  if (!s4_dpas_fastpath) {
+  const bool fp8_dpas_fastpath = (weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) &&
+                                 !asym && moe_decode_dpas_fp8_enabled() &&
+                                 moe_decode_dpas_fp8_occupancy_ok(total_tokens, num_experts) &&
+                                 moe_dpas_fp8::moe_prefill_dpas_fp8_pergroup_shape_ok(N, K, group_size);
+  if (!s4_dpas_fastpath && !fp8_dpas_fastpath) {
     moe_decode_detail::fill_expert_id_per_token(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts,
                                                 total_tokens);
   }
@@ -1655,63 +1810,71 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
     if (asym) {
       throw std::invalid_argument("moe_gemm_decode(fp8): asym mode is not supported");
     }
+    if (act_dtype != BTLA_DTYPE::F16 && act_dtype != BTLA_DTYPE::BF16) {
+      throw std::invalid_argument("moe_gemm_decode(fp8): act_dtype must be FP16 or BF16");
+    }
     const bool is_e4m3 = (weight_dtype == BTLA_DTYPE::F8_E4M3);
-    const bool use_lut = moe_decode_detail::fp8_decode_use_lut();
+    // Fast path: FP8 through the decode-phase per-group DPAS grouped GEMM.
+    // Falls back to the scalar GEMV when the env flag is off, when the batch is
+    // too small to fill the DPAS M tile (the usual decode case), or when the
+    // shape gate rejects the tile geometry (e.g. N%64!=0, K%32!=0, unsupported
+    // group_size). Reuses the `fp8_dpas_fastpath` predicate computed above
+    // (which also gated the `fill_expert_id_per_token` skip) so the two
+    // decisions cannot diverge.
+    if (fp8_dpas_fastpath) {
+      if (act_dtype == BTLA_DTYPE::F16) {
+        if (is_e4m3) {
+          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<sycl::half, true>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), num_tokens_per_expert,
+              num_experts, N, K, group_size, total_tokens);
+        } else {
+          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<sycl::half, false>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), num_tokens_per_expert,
+              num_experts, N, K, group_size, total_tokens);
+        }
+      } else {
+        using BF = sycl::ext::oneapi::bfloat16;
+        if (is_e4m3) {
+          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<BF, true>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<BF*>(outputs), num_tokens_per_expert, num_experts, N, K,
+              group_size, total_tokens);
+        } else {
+          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<BF, false>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<BF*>(outputs), num_tokens_per_expert, num_experts, N, K,
+              group_size, total_tokens);
+        }
+      }
+      return;
+    }
     if (act_dtype == BTLA_DTYPE::F16) {
       if (is_e4m3) {
-        if (use_lut) {
-          moe_decode_detail::launch_fp8<sycl::half, true, true>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-              total_tokens, N, K, group_size);
-        } else {
-          moe_decode_detail::launch_fp8<sycl::half, true, false>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-              total_tokens, N, K, group_size);
-        }
+        moe_decode_detail::launch_fp8_by_mode<sycl::half, true>(
+            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
+            total_tokens, N, K, group_size);
       } else {
-        if (use_lut) {
-          moe_decode_detail::launch_fp8<sycl::half, false, true>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-              total_tokens, N, K, group_size);
-        } else {
-          moe_decode_detail::launch_fp8<sycl::half, false, false>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-              total_tokens, N, K, group_size);
-        }
-      }
-    } else if (act_dtype == BTLA_DTYPE::BF16) {
-      using BF = sycl::ext::oneapi::bfloat16;
-      if (is_e4m3) {
-        if (use_lut) {
-          moe_decode_detail::launch_fp8<BF, true, true>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
-              group_size);
-        } else {
-          moe_decode_detail::launch_fp8<BF, true, false>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
-              group_size);
-        }
-      } else {
-        if (use_lut) {
-          moe_decode_detail::launch_fp8<BF, false, true>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
-              group_size);
-        } else {
-          moe_decode_detail::launch_fp8<BF, false, false>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
-              group_size);
-        }
+        moe_decode_detail::launch_fp8_by_mode<sycl::half, false>(
+            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
+            total_tokens, N, K, group_size);
       }
     } else {
-      throw std::invalid_argument("moe_gemm_decode(fp8): act_dtype must be FP16 or BF16");
+      using BF = sycl::ext::oneapi::bfloat16;
+      if (is_e4m3) {
+        moe_decode_detail::launch_fp8_by_mode<BF, true>(
+            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
+            group_size);
+      } else {
+        moe_decode_detail::launch_fp8_by_mode<BF, false>(
+            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+            static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
+            group_size);
+      }
     }
     return;
   }
