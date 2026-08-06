@@ -3233,6 +3233,9 @@ def _preprocess_model_type_source_tensors(
     source_state: dict[str, int] = {}
     n_fp8 = 0
     n_fp4 = 0
+    # Track whether we already logged the fp32→UE8M0 conversion notice for
+    # this shard (one notice per shard is enough; per-layer logging is too verbose).
+    _logged_fp32_ue8m0_conversion = False
     for weight_name, scale_name, is_fp8 in entries:
         layer_name = weight_name[: -len(".weight")]
         weight = raw_tensors.pop(weight_name)
@@ -3243,6 +3246,22 @@ def _preprocess_model_type_source_tensors(
             weight_key = f"{layer_name}.weight"
             source_state[layer_name] = 8
             n_fp8 += 1
+
+            # DeepSeek V32 UE8M0: the weight_scale_inv is stored in float32
+            # but only the 8-bit exponent field is meaningful (UE8M0 encoding).
+            # Extract the biased exponent from each fp32 element as a uint8 byte
+            # so that _expand_e8m0_block_scale receives the expected U8 E8M0 tensor.
+            # float32 layout: sign(1) | exponent(8) | mantissa(23)
+            # → uint8 E8M0 = (view_as_int32 >> 23) & 0xFF
+            if scale.dtype == torch.float32:
+                if not _logged_fp32_ue8m0_conversion:
+                    logger.info(
+                        f"[{model_type}] Scale tensor '{scale_name}' has dtype float32 with UE8M0 encoding "
+                        f"(only the 8-bit exponent is significant). "
+                        f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
+                    )
+                    _logged_fp32_ue8m0_conversion = True
+                scale = ((scale.view(torch.int32) >> 23) & 0xFF).to(torch.uint8)
         else:
             out_features = weight.shape[0]
             in_features = weight.shape[1] * 2
