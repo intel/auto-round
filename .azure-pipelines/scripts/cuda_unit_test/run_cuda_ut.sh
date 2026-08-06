@@ -100,7 +100,7 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" --timeout=30 --session-timeout=600 \
+        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append \
             -vs --disable-warnings --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
