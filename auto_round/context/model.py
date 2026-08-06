@@ -198,6 +198,14 @@ class ModelContext(BaseContext):
                     self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
                         self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
                     )
+<<<<<<< HEAD
+=======
+        elif is_diffusion_model(self.model):
+            self.is_diffusion = True
+            self.pipe, self.model = diffusion_load_model(
+                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+            )
+>>>>>>> 033eb0d89b2f3654b2e96fea0ecc715099bf2731
         elif isinstance(self.model, str):
             config = self.config
             try:
