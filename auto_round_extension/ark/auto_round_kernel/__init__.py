@@ -1670,6 +1670,22 @@ def moe_gemm_decode(
     return outputs
 
 
+def moe_decode_release_scratch() -> None:
+    """Release the device scratch buffers held by the int4 decode fallbacks.
+
+    :func:`moe_gemm_decode` serves its int4 weight-repack and activation-sum
+    buffers from grow-on-demand per-queue slabs that are kept for the lifetime
+    of the process so the decode hot path never allocates. Call this to hand
+    that memory back, or to drop a repack cached via
+    ``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` before the underlying weight tensor
+    is freed. A no-op when the XPU extension is not loaded.
+    """
+    lib = xpu_lib
+    if lib is None or not hasattr(lib, "moe_decode_release_scratch"):
+        return
+    lib.moe_decode_release_scratch()
+
+
 def _validate_moe_quant_args(
     activations: torch.Tensor,
     weights: torch.Tensor,
