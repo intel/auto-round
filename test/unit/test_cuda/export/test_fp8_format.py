@@ -22,6 +22,7 @@ class TestAutoRoundBlockFP:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(60)
     def test_fp8_block_fp8_format(self):
         model_name = self.model_name
 

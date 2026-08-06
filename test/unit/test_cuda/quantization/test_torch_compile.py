@@ -28,6 +28,7 @@ class TestTorchCompile:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gguf
+    @pytest.mark.timeout(180)
     def test_gguf_q2ks_torch_compile(self, dataloader):
         """Test GGUF Q2_K_S quantization with torch.compile enabled.
 
@@ -56,6 +57,7 @@ class TestTorchCompile:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gguf
+    @pytest.mark.timeout(60)
     def test_gguf_q2ks_torch_compile_iters0(self, tiny_qwen_model_path):
         """Test GGUF Q2_K_S with torch.compile and iters=0 (RTN mode).
 

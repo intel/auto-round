@@ -61,6 +61,7 @@ class TestAutoRoundFP:
         moe = compressed_model.model.layers[1].mlp
         assert hasattr(moe.experts[0].gate_proj.orig_layer, "act_max")
 
+    @pytest.mark.timeout(60)
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {

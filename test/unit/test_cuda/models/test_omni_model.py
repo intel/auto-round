@@ -96,6 +96,7 @@ class TestQwen3OmniMoeQuantization:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(60)
     def test_quantize_and_reload(self, tiny_qwen3_omni_moe_model_path):
         """Quantize, save, reload, verify weights, and run inference."""
         # Quantize

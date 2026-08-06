@@ -26,6 +26,7 @@ def setup_deepseekv2():
 
 @pytest.mark.skipif(not is_hpex_available(), reason="HPU is not supported")
 @pytest.mark.skipif(not is_pytest_mode_lazy(), reason="Only for lazy mode")
+@pytest.mark.timeout(60)
 def test_deepseek_v2_on_hpu(setup_deepseekv2):
     model, tokenizer, output_dir, config = setup_deepseekv2
     autoround = AutoRound(

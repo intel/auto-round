@@ -31,6 +31,7 @@ def run_opt_125m_on_hpu():
 
 @pytest.mark.skipif(not is_hpex_available(), reason="HPU is not supported")
 @pytest.mark.skipif(not is_pytest_mode_lazy(), reason="Only for lazy mode")
+@pytest.mark.timeout(90)
 def test_opt_125m_lazy_mode():
     run_opt_125m_on_hpu()
 
