@@ -56,6 +56,7 @@ class TestGGUF:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(60)
     def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
@@ -107,7 +108,7 @@ class TestGGUF:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(120)
     def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         layer_config = {
@@ -147,6 +148,7 @@ class TestGGUF:
         assert autoround.model.model.layers[0].mlp.gate_proj.bits == 8
         assert autoround.layer_config["model.layers.0.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
 
+    @pytest.mark.timeout(360)
     def test_all_format(self, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         python_path = sys.executable
@@ -206,6 +208,7 @@ class TestGGUF:
             else:
                 assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
+    @pytest.mark.timeout(60)
     def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 

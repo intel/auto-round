@@ -37,6 +37,7 @@ def setup_deepseekv3():
     return model, tokenizer, output_dir, config
 
 
+@pytest.mark.timeout(120)
 def test_deepseek_v2(setup_deepseekv2):
     model, tokenizer, output_dir, config = setup_deepseekv2
     autoround = AutoRound(
@@ -59,6 +60,7 @@ def test_deepseek_v2(setup_deepseekv2):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
+@pytest.mark.timeout(60)
 def test_deepseek_v3(setup_deepseekv3):
     model, tokenizer, output_dir, config = setup_deepseekv3
     autoround = AutoRound(

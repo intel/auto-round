@@ -44,6 +44,7 @@ class TestAutoRound:
         if module.bits != 8:
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
+    @pytest.mark.timeout(60)
     def test_layer_config(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}
@@ -106,6 +107,7 @@ class TestAutoRound:
         )
         autoround.quantize()
 
+    @pytest.mark.timeout(120)
     def test_mx_fp4(self, dataloader):
         model_name = opt_name_or_path
         bits, group_size, sym = 4, 32, False
@@ -366,6 +368,7 @@ class TestAutoRound:
         )
         autoround.quantize()
 
+    @pytest.mark.timeout(60)
     def test_rtn(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)

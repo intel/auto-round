@@ -30,6 +30,7 @@ class TestAutoRoundCmd:
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    @pytest.mark.timeout(60)
     def test_auto_round_cmd2(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
         python_path = sys.executable
         res = os.system(
@@ -38,6 +39,7 @@ class TestAutoRoundCmd:
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    @pytest.mark.timeout(60)
     def test_auto_round_cmd3(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
         python_path = sys.executable
         res = os.system(
@@ -46,6 +48,7 @@ class TestAutoRoundCmd:
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    @pytest.mark.timeout(60)
     def test_auto_round_cmd4(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
         python_path = sys.executable
         res = os.system(
@@ -66,6 +69,7 @@ class TestAutoRoundCmd:
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
+    @pytest.mark.timeout(60)
     def test_auto_round_cmd7(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
         python_path = sys.executable
         res = os.system(
