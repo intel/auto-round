@@ -591,8 +591,10 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                                       SGLayout>::TiledMMA;
   auto mma = MMA{};
 
-  int sm_count =
-      cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+  // Device SM count is a host-side driver query (Level Zero round-trip). The
+  // value is fixed for a given device, so cache it once instead of paying the
+  // round-trip on every launch -- the decode hot path calls this per step.
+  static const int sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
   auto MaxThreadsPerWorkgroup = size(mma);
 
   static constexpr int MaxThreadsPerSM = 512;

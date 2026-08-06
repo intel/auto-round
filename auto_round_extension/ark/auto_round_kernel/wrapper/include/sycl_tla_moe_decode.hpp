@@ -1108,8 +1108,17 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
                             void* outputs, int* expert_id_per_token_buf, BTLA_DTYPE act_dtype,
                             BTLA_DTYPE weight_dtype, int N, int K, int group_size, int* num_tokens_per_expert,
                             int num_experts, int total_tokens, bool asym) {
-  moe_decode_detail::fill_expert_id_per_token(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts,
-                                              total_tokens);
+  // The S4-sym DPAS fast path consumes `num_tokens_per_expert` directly and
+  // never reads `expert_id_per_token_buf`. Skipping the fill on that path
+  // removes an extra device-timeline kernel launch from the decode hot path;
+  // every other path (fp, int8, int2, fp8, and the scalar int4 fallback) still
+  // needs the per-token expert mapping.
+  const bool s4_dpas_fastpath = weight_dtype == BTLA_DTYPE::S4_CLIP && !asym && moe_decode_dpas_s4_enabled() &&
+                                moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size);
+  if (!s4_dpas_fastpath) {
+    moe_decode_detail::fill_expert_id_per_token(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts,
+                                                total_tokens);
+  }
 
   if (weight_dtype == BTLA_DTYPE::F16 || weight_dtype == BTLA_DTYPE::BF16) {
     if (weight_dtype != act_dtype) {
@@ -1136,9 +1145,10 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
     // Fast path: sym int4 through the shared per-group S4 DPAS grouped GEMM.
     // Falls back to the scalar GEMV for asym weights (DPAS S4 is sym-only),
     // when the env flag is off, or when the shape gate rejects the tile
-    // geometry (e.g. N%64!=0, K%32!=0, unsupported group_size).
-    if (!asym && moe_decode_dpas_s4_enabled() &&
-        moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size)) {
+    // geometry (e.g. N%64!=0, K%32!=0, unsupported group_size). Reuses the
+    // `s4_dpas_fastpath` predicate computed above (which also gated the
+    // `fill_expert_id_per_token` skip) so the two decisions cannot diverge.
+    if (s4_dpas_fastpath) {
       if (act_dtype == BTLA_DTYPE::F16) {
         moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch<sycl::half>(
             q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
