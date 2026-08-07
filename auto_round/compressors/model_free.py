@@ -939,7 +939,9 @@ def _hydrate_missing_fp8_scales_from_index(
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
+        # Only float8-like 1-byte floating tensors are treated as FP8 sources.
+        # Keep uint8/int8 packed tensors (e.g. NVFP4) out of FP8 hydration.
+        if not (tensor.is_floating_point() and tensor.element_size() == 1):
             continue
         scale_inv_name = name.replace(".weight", ".weight_scale_inv")
         if scale_inv_name not in raw_tensors:
@@ -1176,7 +1178,9 @@ def _dequant_fp8_tensors(
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
+        # Only float8-like 1-byte floating tensors are DeepSeek FP8 candidates.
+        # This excludes NVFP4/INT packed uint8 weights that also have 1-byte storage.
+        if not (tensor.is_floating_point() and tensor.element_size() == 1):
             continue
         # DeepSeek-V3 style: .weight_scale_inv (per-block float32 scales).
         scale_inv_name = name.replace(".weight", ".weight_scale_inv")
