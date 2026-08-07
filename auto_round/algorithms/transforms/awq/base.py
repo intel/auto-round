@@ -192,6 +192,14 @@ def _slice_batch_args_kwargs(args: tuple, kwargs: dict, actual_batch: int, start
     return new_args, new_kwargs
 
 
+def _iter_block_names_for_mapping(model: torch.nn.Module) -> list[str]:
+    """Return block names sorted from most-specific to least-specific for mapping lookup."""
+    from auto_round.utils.common import flatten_list
+    from auto_round.utils.model import get_block_names
+
+    return sorted((name for name in flatten_list(get_block_names(model)) if name), key=len, reverse=True)
+
+
 @register_pipeline_member(AWQConfig)
 class AWQTransform(BasePreprocessor):
     """AWQ transform: activation-aware weight smoothing pre-processor.
@@ -288,14 +296,7 @@ class AWQTransform(BasePreprocessor):
                 cls_name,
             )
 
-        from auto_round.utils.common import flatten_list
-        from auto_round.utils.model import get_block_names
-
-        try:
-            iter_block_names = [b for b in flatten_list(get_block_names(model)) if b]
-        except Exception:  # noqa: BLE001 - fall back to prefix heuristic if block discovery fails
-            iter_block_names = []
-        iter_block_names.sort(key=len, reverse=True)
+        iter_block_names = _iter_block_names_for_mapping(model)
 
         self._block_mappings = {}
         for m in self._resolved_mappings:
