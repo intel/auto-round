@@ -472,6 +472,7 @@ class TestGGUF:
         assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
         assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
+    @pytest.mark.timeout(60)
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
@@ -494,6 +495,7 @@ class TestGGUF:
         tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
+    @pytest.mark.timeout(60)
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(

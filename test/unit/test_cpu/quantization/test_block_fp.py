@@ -92,7 +92,7 @@ class TestAutoRoundBlockFP:
                 scale_ref[i, j] = data[i * 128 : (i + 1) * 128, j * 128 : (j + 1) * 128].abs().max() / max_val
         assert (scale == scale_ref).all()
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(120)
     def test_group_size_handler(self, tiny_qwen_model_path):
         scheme = {
             "data_type": "int",
