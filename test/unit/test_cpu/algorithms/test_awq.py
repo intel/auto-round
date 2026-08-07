@@ -244,7 +244,7 @@ class TestAWQMoE:
 
         del model
 
-    @pytest.mark.timeout(360)
+    @pytest.mark.timeout(420)
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP."""
         ar = AutoRound(

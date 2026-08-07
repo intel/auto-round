@@ -157,6 +157,7 @@ class TestAutoRound:
         )
         autoround.quantize()
 
+    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("bits", [2, 3, 4])
     def test_g128(self, bits, dataloader):
         model_name = opt_name_or_path
