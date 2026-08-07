@@ -198,19 +198,6 @@ class BaseQuantizer(BaseAlgorithm):
                              the valid-token loss mask. ``None`` for RTN fallback.
         """
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
-        """Quantize a single layer outside a transformer block using RTN fallback.
-        Args:
-            layer:            The layer module to quantize.  Must have a
-                              ``global_name`` attribute for model re-insertion.
-            fp_inputs:        Optional FP calibration inputs; unused in base RTN.
-            q_inputs:         Optional quantized activations; unused in base RTN.
-            disable_opt_rtn:  ``True`` skips optimized-RTN scale/zp search.
-                              ``None`` defers to ``self.config.disable_opt_rtn``.
-            valid_token_mask: Per-sample masks; unused in base RTN.
-            input_ids:        Original FP calibration inputs, same as ``fp_inputs``
-                              when ``q_inputs`` is ``None``; unused in base RTN.
-        """
-        self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
     @torch.no_grad()
     def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
