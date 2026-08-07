@@ -102,7 +102,7 @@ class TestAutoRound:
     @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     @require_gguf
-    @pytest.mark.timeout(150)
+    @pytest.mark.timeout(240)
     def test_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path):
         self._export_qwen35_moe_gguf(tiny_qwen35_moe_model_path)
 

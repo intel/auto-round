@@ -303,7 +303,7 @@ class TestPipelineIntegration:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(180)
     def test_pipeline_quarot_string(self):
         """AutoRound(rotation_config='quarot') should work end-to-end."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")

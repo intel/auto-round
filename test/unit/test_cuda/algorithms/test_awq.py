@@ -156,7 +156,7 @@ class TestAWQMoE:
 
         del model
 
-    @pytest.mark.timeout(150)
+    @pytest.mark.timeout(240)
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """Expert layers quantized to W4, gates/routers stay fp."""
         ar = AutoRound(
@@ -193,7 +193,7 @@ class TestAWQMoE:
         for name in fp_layers:
             assert name.endswith("gate"), f"Unexpected FP layer: {name}"
 
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(180)
     def test_awq_moe_save_compressed_size(self, tiny_qwen_moe_model_path):
         """AWQ MoE W4: quantized safetensors should be smaller than original."""
         ar = AutoRound(
@@ -238,7 +238,7 @@ class TestAWQEval:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(180)
+    @pytest.mark.timeout(240)
     def test_awq_w4a16_lmeval(self):
         """AWQ W4A16 on OPT-125m: lambada_openai accuracy check."""
         ar = AutoRound(

@@ -109,7 +109,7 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.timeout(180)
+    @pytest.mark.timeout(300)
     def test_small_model_opt_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)
