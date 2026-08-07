@@ -1246,6 +1246,36 @@ def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
     return qconfig
 
 
+def _get_mxfp_group_scheme_and_format(
+    group_bits: int,
+    group_data_type: str,
+    ignore: list[str],
+):
+    """Return ``(QuantizationScheme, format_str)`` for a single (bits, data_type) group.
+
+    Handles both MXFP (mx_fp) and NVFP4_E5M3 (fp4_v2) groups.
+    """
+    from auto_round.export.export_to_llmcompressor.config import (
+        initialize_nvfp4_e5m3_quantization,
+        initialize_quantization,
+    )
+
+    if group_data_type == _NVFP4_E5M3_DATA_TYPE:
+        # NVFP4_E5M3 is not a compressed-tensors preset; use its dedicated builder.
+        nvfp4_dict = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+        # Extract the QuantizationScheme object from the dict config.
+        from compressed_tensors.quantization import QuantizationScheme
+
+        raw_scheme = nvfp4_dict["config_groups"]["group_0"]
+        scheme_obj = QuantizationScheme.model_validate(raw_scheme)
+        return scheme_obj, "nvfp4-e5m3-pack-quantized"
+    else:
+        scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
+        tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        return tmp_qconfig.config_groups["group_0"], fmt
+
+
 def _build_mxfp_quantization_config(
     default_scheme: dict,
     quantized_layers: list[str],
@@ -1255,12 +1285,13 @@ def _build_mxfp_quantization_config(
     """Build a compressed-tensors / llm-compressor style quantization_config
     dict for MXFP4 / MXFP8 model-free output, including mixed-precision cases.
 
-    When *layer_config* contains layers that override the default bits (e.g.
-    some layers are MXFP8 while the default is MXFP4), the function creates
-    one ``config_group`` per distinct bit-width.  Override groups list their
-    layers explicitly; the default-bits group uses ``targets=["Linear"]`` as a
-    catch-all.  The top-level ``"format"`` is set to ``"mixed-precision"``
-    when more than one group is produced.
+    When *layer_config* contains layers that override the default bits or
+    data_type (e.g. some layers are MXFP8 while the default is MXFP4, or
+    some layers use NVFP4_E5M3 while the default is MXFP8), the function
+    creates one ``config_group`` per distinct ``(bits, data_type)`` pair.
+    Override groups list their layers explicitly; the default group uses
+    ``targets=["Linear"]`` as a catch-all.  The top-level ``"format"`` is
+    set to ``"mixed-precision"`` when more than one group is produced.
 
     Mirrors the per-group format produced by
     :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
@@ -1270,9 +1301,10 @@ def _build_mxfp_quantization_config(
     )
 
     bits = default_scheme.get("bits", 4)
+    default_data_type = (default_scheme.get("data_type") or "mx_fp").lower()
     is_fp_default = (bits or 0) >= 16  # BF16/FP16 full-precision default
 
-    if not is_fp_default and bits not in _SUPPORTED_MXFP_BITS:
+    if not is_fp_default and bits not in _SUPPORTED_MXFP_BITS and default_data_type != _NVFP4_E5M3_DATA_TYPE:
         raise ValueError(f"Unsupported MXFP bits={bits} for model-free output.")
 
     # Default ignore list: any layer present in ignored_layers (deduped) that
@@ -1281,8 +1313,9 @@ def _build_mxfp_quantization_config(
     quant_set = set(quantized_layers)
     ignore = [n for n in ignore if n not in quant_set]
 
-    # Resolve each quantized layer's effective bits using layer_config overrides.
-    scheme_groups: dict[int, list[str]] = {}  # bits -> [layer_names]
+    # Resolve each quantized layer's effective (bits, data_type) using layer_config overrides.
+    # Key: (bits, data_type) to distinguish e.g. MXFP4 from NVFP4_E5M3 (both 4-bit).
+    scheme_groups: dict[tuple[int, str], list[str]] = {}  # (bits, data_type) -> [layer_names]
     if layer_config:
         temp_matcher = _PatternMatcher(
             ignore_patterns=[],
@@ -1292,21 +1325,37 @@ def _build_mxfp_quantization_config(
         for layer in quantized_layers:
             scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
             layer_bits = scheme.get("bits", bits) if scheme is not None else bits
-            scheme_groups.setdefault(layer_bits, []).append(layer)
+            layer_dt = (
+                (scheme.get("data_type") or default_data_type).lower() if scheme is not None else default_data_type
+            )
+            scheme_groups.setdefault((layer_bits, layer_dt), []).append(layer)
     else:
         if not is_fp_default:
-            scheme_groups[bits] = list(quantized_layers)
+            scheme_groups[(bits, default_data_type)] = list(quantized_layers)
         # else: BF16 default with no layer_config → no MXFP layers; scheme_groups stays {}
 
     if len(scheme_groups) <= 1:
-        # Single scheme — use the actual MXFP bits from the group, not the
-        # default bits (which may be 16 for a BF16 default scheme).
-        actual_bits = next(iter(scheme_groups.keys())) if scheme_groups else bits
-        if actual_bits not in _SUPPORTED_MXFP_BITS:
+        # Single scheme — use the actual (bits, data_type) from the group.
+        if scheme_groups:
+            actual_bits, actual_dt = next(iter(scheme_groups.keys()))
+        else:
+            actual_bits, actual_dt = bits, default_data_type
+        if actual_dt != _NVFP4_E5M3_DATA_TYPE and actual_bits not in _SUPPORTED_MXFP_BITS:
             raise ValueError(f"Unsupported MXFP bits={actual_bits} for model-free output.")
+        group_scheme, fmt = _get_mxfp_group_scheme_and_format(actual_bits, actual_dt, ignore)
+        if actual_dt == _NVFP4_E5M3_DATA_TYPE:
+            from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+
+            qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+            if is_fp_default and scheme_groups:
+                qconfig["config_groups"]["group_0"]["targets"] = list(quantized_layers)
+            qconfig["format"] = fmt
+            qconfig.update(_get_llm_compressor_metadata())
+            return qconfig
+        from auto_round.export.export_to_llmcompressor.config import initialize_quantization as _init_q
+
         scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
-        fmt = "mxfp4-pack-quantized" if actual_bits == 4 else "mxfp8-quantized"
-        qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        qconfig = _init_q(scheme=scheme_name, ignore=ignore)
         if is_fp_default and scheme_groups:
             targets = list(quantized_layers)
             qconfig.config_groups["group_0"].targets = targets
@@ -1315,28 +1364,26 @@ def _build_mxfp_quantization_config(
         qconfig.update(_get_llm_compressor_metadata())
         return qconfig
 
-    # Mixed MXFP: build one config_group per distinct bit-width.
-    # Override groups (non-default bits) come first, default group last,
+    # Mixed precision: build one config_group per distinct (bits, data_type).
+    # Override groups (non-default key) come first, default group last,
     # ordered by descending bit-width within each partition so that the
     # higher-precision group gets the lower group index.
+    default_key = (bits, default_data_type)
     override_items = sorted(
-        [(b, layers) for b, layers in scheme_groups.items() if b != bits],
-        key=lambda x: x[0],
+        [(key, layers) for key, layers in scheme_groups.items() if key != default_key],
+        key=lambda x: x[0][0],
         reverse=True,
     )
-    default_item = (bits, scheme_groups[bits]) if bits in scheme_groups else None
+    default_item = (default_key, scheme_groups[default_key]) if default_key in scheme_groups else None
     ordered = override_items + ([default_item] if default_item else [])
 
     config_groups: dict = {}
     group_formats: dict[str, str] = {}
-    for idx, (group_bits, layer_names) in enumerate(ordered):
+    for idx, ((group_bits, group_dt), layer_names) in enumerate(ordered):
         group_name = f"group_{idx}"
-        scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
-        fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
-        is_default_group = group_bits == bits
+        is_default_group = (group_bits, group_dt) == default_key
         targets = ["Linear"] if is_default_group else layer_names
-        tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
-        group_scheme = tmp_qconfig.config_groups["group_0"]
+        group_scheme, fmt = _get_mxfp_group_scheme_and_format(group_bits, group_dt, ignore)
         group_scheme.targets = targets
         config_groups[group_name] = group_scheme
         group_formats[group_name] = fmt
