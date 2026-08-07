@@ -444,6 +444,9 @@ def run_eval(argv=None):
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
             add_bos_token=args.add_bos_token,
+            num_fewshot=args.num_fewshot,
+            gen_kwargs=args.eval_gen_kwargs,
+            fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
     else:
         eval(args)

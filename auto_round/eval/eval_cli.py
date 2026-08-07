@@ -101,6 +101,16 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "Integer: exact number of examples (e.g., 1000). "
             "Float between 0-1: fraction of total examples.",
         )
+        self.add_argument("--num_fewshot", "--num-fewshot", default=None, type=int, help="Number of few-shot examples.")
+        self.add_argument(
+            "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
+        )
+        self.add_argument(
+            "--fewshot_as_multiturn",
+            "--fewshot-as-multiturn",
+            action="store_true",
+            help="Use multi-turn format for few-shot examples in LM-Eval.",
+        )
         self.add_argument(
             "--eval_backend",
             default="hf",
@@ -225,6 +235,9 @@ def eval(args):
             batch_size=batch_size,
             device=device_str,
             limit=args.limit,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
             add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
@@ -242,6 +255,9 @@ def eval(args):
             device=device_str,
             batch_size=batch_size,
             limit=args.limit,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
@@ -323,6 +339,9 @@ def eval_with_vllm(args):
         model=vllm_lm,
         tasks=tasks,
         limit=args.limit,
+        num_fewshot=getattr(args, "num_fewshot", None),
+        gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+        fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
     )
 
     print(make_table(res))
@@ -342,6 +361,9 @@ def eval_task_by_task(
     retry_times=3,
     mllm=False,
     add_bos_token=False,
+    num_fewshot=None,
+    gen_kwargs=None,
+    fewshot_as_multiturn=False,
 ):
     require_version(
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
@@ -404,7 +426,17 @@ def eval_task_by_task(
             add_bos_token=add_bos_token,
         )
 
-    _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry_times)
+    _evaluate_tasks_with_retry(
+        tasks,
+        hflm,
+        device_str,
+        batch_size,
+        limit,
+        retry_times,
+        num_fewshot=num_fewshot,
+        gen_kwargs=gen_kwargs,
+        fewshot_as_multiturn=fewshot_as_multiturn,
+    )
 
 
 def _load_gguf_model_if_needed(model_path, eval_model_dtype=None):
@@ -459,7 +491,35 @@ def _load_gguf_model_if_needed(model_path, eval_model_dtype=None):
     return model, tokenizer, is_gguf_file, gguf_file
 
 
-def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry_times):
+def _get_lm_eval_task_manager(tasks):
+    """Use exact installed task dirs when possible to avoid scanning all lm-eval tasks."""
+    try:
+        import lm_eval  # pylint: disable=E0401
+        from lm_eval.tasks import TaskManager  # pylint: disable=E0401
+
+        tasks_root = os.path.join(os.path.dirname(lm_eval.__file__), "tasks")
+        task_paths = []
+        for task in tasks:
+            task_path = os.path.join(tasks_root, task)
+            if not os.path.isdir(task_path):
+                return None
+            task_paths.append(task_path)
+        return TaskManager(include_defaults=False, include_path=task_paths)
+    except Exception:
+        return None
+
+
+def _evaluate_tasks_with_retry(
+    tasks,
+    hflm,
+    device_str,
+    batch_size,
+    limit,
+    retry_times,
+    num_fewshot=None,
+    gen_kwargs=None,
+    fewshot_as_multiturn=False,
+):
     """Evaluate tasks with automatic retry on OOM errors.
 
     Args:
@@ -487,18 +547,33 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
     st = time.time()
+    task_manager = _get_lm_eval_task_manager(tasks)
 
     for task in tasks:
         current_retry_times = retry_times
         res = None
+        last_error = None
         while current_retry_times:
             try:
                 res = lm_eval.simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit
+                    model=hflm,
+                    model_args=None,
+                    device=device_str,
+                    tasks=task,
+                    batch_size=batch_size,
+                    limit=limit,
+                    num_fewshot=num_fewshot,
+                    gen_kwargs=gen_kwargs,
+                    task_manager=task_manager,
+                    fewshot_as_multiturn=fewshot_as_multiturn,
                 )
                 break
             except Exception as e:
+                last_error = e
                 cuda_error_msg = traceback.format_exc()
+                if "out of memory" not in cuda_error_msg.lower():
+                    logger.error(cuda_error_msg)
+                    raise
                 try:
                     ori_batch_sizes = hflm.batch_sizes or {"0": 64}
                     if not hflm.batch_sizes:
@@ -508,20 +583,31 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
                             hflm.batch_sizes[k] = max(v // 2, 1)
                         logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
                         res = lm_eval.simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1, limit=limit
+                            model=hflm,
+                            model_args=None,
+                            device=device_str,
+                            tasks=task,
+                            batch_size=1,
+                            limit=limit,
+                            num_fewshot=num_fewshot,
+                            gen_kwargs=gen_kwargs,
+                            task_manager=task_manager,
+                            fewshot_as_multiturn=fewshot_as_multiturn,
                         )
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:
+                        last_error = e
                         traceback.print_exc()
                         res = None
                 except Exception as e:
+                    last_error = e
                     logger.error(cuda_error_msg)
                     traceback.print_exc()
                     res = None
             current_retry_times -= 1
 
         if res is None:
-            raise RuntimeError(f"Failed to evaluate task '{task}' after {retry_times} attempts")
+            raise RuntimeError(f"Failed to evaluate task '{task}' after {retry_times} attempts") from last_error
         if not res_all:
             res_all = res
         else:
