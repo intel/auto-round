@@ -53,6 +53,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 
 #include "bestla/bestla.h"
 #include "sycl_tla_moe_dequant.hpp"
@@ -160,7 +161,7 @@ class MoEDecodeKernelInt2;
 template <typename ScalarT, bool IsE4M3, moe_dequant::Fp8DecodeMode Mode>
 class MoEDecodeKernelFP8;
 
-template <typename ScalarT, bool IsE4M3, moe_dequant::Fp8DecodeMode Mode>
+template <typename ScalarT, bool IsE4M3, moe_dequant::Fp8DecodeMode Mode, int NCOLS>
 class MoEDecodeKernelFP8KSplit;
 
 // ----------------------------------------------------------------------------
@@ -1256,16 +1257,76 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // block comment). `launch_fp8_by_mode` picks between them.
 // ----------------------------------------------------------------------------
 
+// Activation / weight vector types for one 16-element FP8 sub-block, plus the
+// MAC that consumes them. Splitting "load" from "multiply-accumulate" lets a
+// caller issue several independent loads before any of them is consumed --
+// which is what the N-blocked K-split kernel below needs to keep more than one
+// weight request per thread in flight. `fp8_decode_chunk` is a thin
+// load-then-MAC wrapper over these, so both callers run identical arithmetic.
+constexpr int FP8_SUB = 16;
+
+using Fp8ActVec16 = sycl::vec<uint16_t, FP8_SUB>;
+
+// `kWord` mode reads the 16 weight bytes as four 32-bit words so the decode
+// never leaves the native datapath; the other modes read them as bytes. Either
+// way it is the same single 16-byte transaction with the same 16-byte alignment
+// requirement.
+template <Fp8DecodeMode Mode>
+using Fp8WeightVec16 =
+    std::conditional_t<Mode == Fp8DecodeMode::kWord, sycl::vec<uint32_t, FP8_SUB / 4>, sycl::vec<uint8_t, FP8_SUB>>;
+
+template <typename ScalarT>
+static inline Fp8ActVec16 load_fp8_act_vec16(const ScalarT* act_ptr) {
+  static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+  return *reinterpret_cast<const Fp8ActVec16*>(act_ptr);
+}
+
+template <Fp8DecodeMode Mode>
+static inline Fp8WeightVec16<Mode> load_fp8_weight_vec16(const uint8_t* w_ptr) {
+  return *reinterpret_cast<const Fp8WeightVec16<Mode>*>(w_ptr);
+}
+
+// Accumulate `FP8_SUB` products of an already-loaded activation / weight pair.
+// Two independent partial accumulators break the single fp32 dependency chain
+// so the FMA pipeline is not latency-bound (same trick as `int4_decode_chunk`);
+// the caller reduces the pair.
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode>
+static inline void fp8_mac_vec16(const Fp8ActVec16& av, const Fp8WeightVec16<Mode>& wv, float& acc0, float& acc1) {
+  if constexpr (Mode == Fp8DecodeMode::kWord) {
+    constexpr int WORDS = FP8_SUB / 4;  // one 32-bit word per 4 FP8 bytes
+#pragma unroll
+    for (int w = 0; w < WORDS; ++w) {
+      uint32_t lo2, hi2;
+      decode_fp8_quad_half_bits<IsE4M3>(wv[w], lo2, hi2);
+      const uint16_t hb[4] = {static_cast<uint16_t>(lo2), static_cast<uint16_t>(lo2 >> 16),
+                              static_cast<uint16_t>(hi2), static_cast<uint16_t>(hi2 >> 16)};
+#pragma unroll
+      for (int u = 0; u < 4; u += 2) {
+        const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * w + u]));
+        const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * w + u + 1]));
+        acc0 += static_cast<float>(a0) * static_cast<float>(sycl::bit_cast<sycl::half>(hb[u]));
+        acc1 += static_cast<float>(a1) * static_cast<float>(sycl::bit_cast<sycl::half>(hb[u + 1]));
+      }
+    }
+  } else {
+    constexpr bool kUseLut = (Mode == Fp8DecodeMode::kLut);
+#pragma unroll
+    for (int u = 0; u < FP8_SUB; u += 2) {
+      const float w0 = decode_fp8<IsE4M3, kUseLut>(wv[u]);
+      const float w1 = decode_fp8<IsE4M3, kUseLut>(wv[u + 1]);
+      const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
+      const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u + 1]));
+      acc0 += static_cast<float>(a0) * w0;
+      acc1 += static_cast<float>(a1) * w1;
+    }
+  }
+}
+
 // Vectorized inner accumulation over CHUNK consecutive K elements (CHUNK weight
 // bytes + a vec<ScalarT,CHUNK> activation block). Templated on CHUNK so the
 // caller can run a wide (32) stage first and a narrower (16) stage for the
 // remainder, mirroring the int4/int8 paths. sycl::vec only supports widths of
 // 1, 2, 3, 4, 8 or 16, so CHUNK is processed in 16-wide sub-blocks.
-//
-// In `kWord` mode the 16 weight bytes of a sub-block are read as a
-// `sycl::vec<uint32_t, 4>` -- the same 16-byte transaction (and the same
-// 16-byte alignment requirement) as the byte vector it replaces, but 32-bit
-// typed, so the decode never leaves the native datapath.
 //
 // The per-group scale is constant across the whole group, so it is NOT applied
 // here: this accumulates the raw dot product (sum of act * decoded_fp8) and the
@@ -1273,52 +1334,15 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 // For the per-expert / per-tensor scale case (group_size == K, one scale per
 // output row) this collapses the whole K reduction to a single scale multiply,
 // removing one multiply per K element on the decode hot path.
-//
-// Two independent partial accumulators break the single fp32 dependency chain
-// so the FMA pipeline is not latency-bound (same trick as `int4_decode_chunk`);
-// the caller reduces the pair.
 template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode, int CHUNK>
 static inline void fp8_decode_chunk(const ScalarT* act_ptr, const uint8_t* w_ptr, float& acc0,
                                     float& acc1) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
-  static_assert(CHUNK % 16 == 0, "CHUNK must be a multiple of 16");
-  constexpr int SUB = 16;
-  using ActVec = sycl::vec<uint16_t, SUB>;
+  static_assert(CHUNK % FP8_SUB == 0, "CHUNK must be a multiple of 16");
 #pragma unroll
-  for (int s = 0; s < CHUNK / SUB; ++s) {
-    const ActVec av = *reinterpret_cast<const ActVec*>(act_ptr + s * SUB);
-    if constexpr (Mode == Fp8DecodeMode::kWord) {
-      constexpr int WORDS = SUB / 4;  // one 32-bit word per 4 FP8 bytes
-      using WordVec = sycl::vec<uint32_t, WORDS>;
-      const WordVec wv = *reinterpret_cast<const WordVec*>(w_ptr + s * SUB);
-#pragma unroll
-      for (int w = 0; w < WORDS; ++w) {
-        uint32_t lo2, hi2;
-        decode_fp8_quad_half_bits<IsE4M3>(wv[w], lo2, hi2);
-        const uint16_t hb[4] = {static_cast<uint16_t>(lo2), static_cast<uint16_t>(lo2 >> 16),
-                                static_cast<uint16_t>(hi2), static_cast<uint16_t>(hi2 >> 16)};
-#pragma unroll
-        for (int u = 0; u < 4; u += 2) {
-          const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * w + u]));
-          const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[4 * w + u + 1]));
-          acc0 += static_cast<float>(a0) * static_cast<float>(sycl::bit_cast<sycl::half>(hb[u]));
-          acc1 += static_cast<float>(a1) * static_cast<float>(sycl::bit_cast<sycl::half>(hb[u + 1]));
-        }
-      }
-    } else {
-      constexpr bool kUseLut = (Mode == Fp8DecodeMode::kLut);
-      using ByteVec = sycl::vec<uint8_t, SUB>;
-      const ByteVec wv = *reinterpret_cast<const ByteVec*>(w_ptr + s * SUB);
-#pragma unroll
-      for (int u = 0; u < SUB; u += 2) {
-        const float w0 = decode_fp8<IsE4M3, kUseLut>(wv[u]);
-        const float w1 = decode_fp8<IsE4M3, kUseLut>(wv[u + 1]);
-        const ScalarT a0 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u]));
-        const ScalarT a1 = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av[u + 1]));
-        acc0 += static_cast<float>(a0) * w0;
-        acc1 += static_cast<float>(a1) * w1;
-      }
-    }
+  for (int s = 0; s < CHUNK / FP8_SUB; ++s) {
+    fp8_mac_vec16<ScalarT, IsE4M3, Mode>(load_fp8_act_vec16<ScalarT>(act_ptr + s * FP8_SUB),
+                                         load_fp8_weight_vec16<Mode>(w_ptr + s * FP8_SUB), acc0, acc1);
   }
 }
 
@@ -1457,6 +1481,10 @@ void launch_fp8(sycl::queue* q, const ScalarT* activations, const uint8_t* weigh
 // of once per group; that is one extra multiply per `KSPLIT_CH` elements and
 // keeps the `Sigma a * (w * s) == s * Sigma a * w` fold exact-per-group,
 // including the folded `2^-8` E4M3 word-decode bias.
+//
+// On top of that mapping the sub-group also blocks N: it owns `NCOLS`
+// consecutive output columns and reuses one activation load across all of them
+// (see `moe_decode_fp8_ksplit_ncols`).
 // ----------------------------------------------------------------------------
 
 // K elements a lane owns per step. 16 FP8 bytes = one 16-byte weight load and
@@ -1467,9 +1495,8 @@ constexpr int KSPLIT_CH = 16;
 // K elements a sub-group covers per step: the contiguous span its 16 lanes
 // read in one instruction.
 constexpr int KSPLIT_STEP = SG_SIZE * KSPLIT_CH;
-// Sub-groups per work-group. Each owns one output column, so a work-group
-// covers `N_TILE` consecutive columns and `N % N_TILE == 0` (already required
-// by every decode path) is enough to tile N exactly.
+// Sub-groups per work-group. Each owns `NCOLS` output columns, so a work-group
+// covers `N_TILE * NCOLS` consecutive columns.
 constexpr int KSPLIT_WG_SGS = N_TILE;
 
 // ----------------------------------------------------------------------------
@@ -1500,11 +1527,55 @@ inline bool moe_decode_fp8_ksplit_shape_ok(int N, int K, int group_size) {
   return true;
 }
 
-template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode>
+// ----------------------------------------------------------------------------
+// N-blocking factor: output columns a sub-group owns.
+//
+// With one column per sub-group the hot loop issues, per 16-byte weight chunk,
+// one weight message *and* one 32-byte activation message -- half the traffic a
+// thread requests is the activation row, which every column of that token
+// re-reads. Giving a sub-group NCOLS consecutive columns loads the activation
+// chunk once and reuses it for all NCOLS weight chunks, so
+//
+//   activation messages per weight chunk: 1        ->  1 / NCOLS
+//   independent weight loads in flight:   2        ->  2 * NCOLS
+//
+// The first effect cuts request-queue pressure; the second raises memory-level
+// parallelism, which is what a pure-streaming GEMV is actually limited by (the
+// measured kernel sits well below peak DRAM bandwidth, so it is latency- and
+// message-bound, not bandwidth-bound). The cost is NCOLS times the live weight
+// vectors and accumulators, so the factor is kept small.
+//
+// A work-group still holds `KSPLIT_WG_SGS` sub-groups, so it now covers
+// `KSPLIT_WG_SGS * NCOLS` columns and N must divide by that. NCOLS == 1
+// reproduces the previous kernel instruction-for-instruction.
+// `ARK_MOE_DECODE_FP8_KSPLIT_NCOLS` overrides the default (accepted values 1, 2
+// and 4); anything else, or a factor the shape cannot tile, falls back to the
+// largest valid smaller power of two.
+// ----------------------------------------------------------------------------
+constexpr int KSPLIT_NCOLS_DEFAULT = 2;
+constexpr int KSPLIT_NCOLS_MAX = 4;
+
+inline int moe_decode_fp8_ksplit_ncols(int N) {
+  int ncols = KSPLIT_NCOLS_DEFAULT;
+  const char* env = std::getenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS");
+  if (env != nullptr) {
+    char* end = nullptr;
+    const long long v = std::strtoll(env, &end, 10);
+    if (end != env && v >= 1 && v <= KSPLIT_NCOLS_MAX && (v & (v - 1)) == 0) {
+      ncols = static_cast<int>(v);
+    }
+  }
+  // A work-group covers `KSPLIT_WG_SGS * ncols` columns; shrink until it tiles.
+  while (ncols > 1 && (N % (KSPLIT_WG_SGS * ncols)) != 0) ncols /= 2;
+  return ncols;
+}
+
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode, int NCOLS>
 void launch_fp8_ksplit(sycl::queue* q, const ScalarT* activations, const uint8_t* weights, const ScalarT* scales,
                        ScalarT* outputs, const int* expert_id_per_token, int total_tokens, int N, int K,
                        int group_size) {
-  if (!moe_decode_fp8_ksplit_shape_ok(N, K, group_size)) {
+  static_assert(NCOLS >= 1 && (NCOLS & (NCOLS - 1)) == 0, "NCOLS must be a power of two");
+  if (!moe_decode_fp8_ksplit_shape_ok(N, K, group_size) || (N % (KSPLIT_WG_SGS * NCOLS)) != 0) {
     throw std::invalid_argument("moe_gemm_decode(fp8): K-split GEMV called on an unsupported shape");
   }
   if (total_tokens == 0) return;
@@ -1516,13 +1587,13 @@ void launch_fp8_ksplit(sycl::queue* q, const ScalarT* activations, const uint8_t
   // every other mode). Exact power of two, applied once per lane chunk.
   constexpr float kScaleBias = (Mode == Fp8DecodeMode::kWord) ? fp8_word_scale_bias<IsE4M3>() : 1.0f;
 
-  // One sub-group per (token, output column); `KSPLIT_WG_SGS` of them per
-  // work-group so the dispatcher sees `N / N_TILE` work-groups per token
-  // instead of `N` single-sub-group ones.
-  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(N) * SG_SIZE};
+  // One sub-group per (token, NCOLS output columns); `KSPLIT_WG_SGS` of them
+  // per work-group so the dispatcher sees `N / (N_TILE * NCOLS)` work-groups
+  // per token instead of `N` single-sub-group ones.
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(N / NCOLS) * SG_SIZE};
   sycl::range<2> local{1, static_cast<size_t>(KSPLIT_WG_SGS * SG_SIZE)};
 
-  q->parallel_for<MoEDecodeKernelFP8KSplit<ScalarT, IsE4M3, Mode>>(
+  q->parallel_for<MoEDecodeKernelFP8KSplit<ScalarT, IsE4M3, Mode, NCOLS>>(
        sycl::nd_range<2>(global, local),
        [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
          const auto sg = it.get_sub_group();
@@ -1531,44 +1602,96 @@ void launch_fp8_ksplit(sycl::queue* q, const ScalarT* activations, const uint8_t
          // The work-group is one row of `KSPLIT_WG_SGS * SG_SIZE` work-items, so
          // sub-group index and lane index are just the halves of the local id.
          const int lane = local_id % SG_SIZE;
-         const int n_global = static_cast<int>(it.get_group(1)) * KSPLIT_WG_SGS + local_id / SG_SIZE;
+         const int n_base =
+             (static_cast<int>(it.get_group(1)) * KSPLIT_WG_SGS + local_id / SG_SIZE) * NCOLS;
 
          const int expert = expert_id_per_token[token];
          const ScalarT* act_row = activations + static_cast<size_t>(token) * K;
-         const uint8_t* w_row =
-             weights + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * K;
-         const ScalarT* s_row =
-             scales + (static_cast<size_t>(expert) * N + static_cast<size_t>(n_global)) * num_groups_k;
+         const size_t row0 = (static_cast<size_t>(expert) * N + static_cast<size_t>(n_base));
+         const uint8_t* w_rows[NCOLS];
+         const ScalarT* s_rows[NCOLS];
+#pragma unroll
+         for (int c = 0; c < NCOLS; ++c) {
+           w_rows[c] = weights + (row0 + static_cast<size_t>(c)) * K;
+           s_rows[c] = scales + (row0 + static_cast<size_t>(c)) * num_groups_k;
+         }
 
          // Each lane accumulates the scaled partial dot product of the chunks
-         // it owns; `fp8_decode_chunk` keeps two partial accumulators per chunk
-         // so the fp32 dependency chain stays broken.
-         float acc = 0.0f;
+         // it owns, for each of its NCOLS columns; `fp8_mac_vec16` keeps two
+         // partial accumulators per chunk so the fp32 dependency chain stays
+         // broken. NCOLS is a compile-time constant, so `acc` and the staged
+         // weight vectors below stay in registers.
+         float acc[NCOLS];
+#pragma unroll
+         for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+
          int k0 = lane * KSPLIT_CH;
          // Two chunks per iteration: their loads are independent, so the pair
-         // doubles the number of weight requests a thread keeps in flight.
+         // doubles the number of weight requests a thread keeps in flight. All
+         // 2 * NCOLS weight loads are issued before the first is consumed.
          for (; k0 + KSPLIT_STEP + KSPLIT_CH <= K; k0 += 2 * KSPLIT_STEP) {
-           float a0 = 0.0f, a1 = 0.0f, b0 = 0.0f, b1 = 0.0f;
-           fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0, w_row + k0, a0, a1);
-           fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0 + KSPLIT_STEP,
-                                                              w_row + k0 + KSPLIT_STEP, b0, b1);
-           const float s0 = static_cast<float>(s_row[k0 >> log2_group]) * kScaleBias;
-           const float s1 = static_cast<float>(s_row[(k0 + KSPLIT_STEP) >> log2_group]) * kScaleBias;
-           acc += (a0 + a1) * s0 + (b0 + b1) * s1;
+           const Fp8ActVec16 av0 = load_fp8_act_vec16<ScalarT>(act_row + k0);
+           const Fp8ActVec16 av1 = load_fp8_act_vec16<ScalarT>(act_row + k0 + KSPLIT_STEP);
+           Fp8WeightVec16<Mode> wv0[NCOLS], wv1[NCOLS];
+#pragma unroll
+           for (int c = 0; c < NCOLS; ++c) {
+             wv0[c] = load_fp8_weight_vec16<Mode>(w_rows[c] + k0);
+             wv1[c] = load_fp8_weight_vec16<Mode>(w_rows[c] + k0 + KSPLIT_STEP);
+           }
+           const int g0 = k0 >> log2_group;
+           const int g1 = (k0 + KSPLIT_STEP) >> log2_group;
+#pragma unroll
+           for (int c = 0; c < NCOLS; ++c) {
+             float a0 = 0.0f, a1 = 0.0f, b0 = 0.0f, b1 = 0.0f;
+             fp8_mac_vec16<ScalarT, IsE4M3, Mode>(av0, wv0[c], a0, a1);
+             fp8_mac_vec16<ScalarT, IsE4M3, Mode>(av1, wv1[c], b0, b1);
+             const float s0 = static_cast<float>(s_rows[c][g0]) * kScaleBias;
+             const float s1 = static_cast<float>(s_rows[c][g1]) * kScaleBias;
+             acc[c] += (a0 + a1) * s0 + (b0 + b1) * s1;
+           }
          }
          // Remainder: the lanes whose last chunk does not have a partner a
          // full step away. At most one chunk per lane given the shape gate.
          for (; k0 < K; k0 += KSPLIT_STEP) {
-           float p0 = 0.0f, p1 = 0.0f;
-           fp8_decode_chunk<ScalarT, IsE4M3, Mode, KSPLIT_CH>(act_row + k0, w_row + k0, p0, p1);
-           acc += (p0 + p1) * (static_cast<float>(s_row[k0 >> log2_group]) * kScaleBias);
+           const Fp8ActVec16 av = load_fp8_act_vec16<ScalarT>(act_row + k0);
+           const int g = k0 >> log2_group;
+#pragma unroll
+           for (int c = 0; c < NCOLS; ++c) {
+             float p0 = 0.0f, p1 = 0.0f;
+             fp8_mac_vec16<ScalarT, IsE4M3, Mode>(av, load_fp8_weight_vec16<Mode>(w_rows[c] + k0), p0, p1);
+             acc[c] += (p0 + p1) * (static_cast<float>(s_rows[c][g]) * kScaleBias);
+           }
          }
 
-         const float total = sycl::reduce_over_group(sg, acc, sycl::plus<float>{});
-         if (lane == 0) {
-           outputs[static_cast<size_t>(token) * N + n_global] = static_cast<ScalarT>(total);
+#pragma unroll
+         for (int c = 0; c < NCOLS; ++c) {
+           const float total = sycl::reduce_over_group(sg, acc[c], sycl::plus<float>{});
+           if (lane == 0) {
+             outputs[static_cast<size_t>(token) * N + n_base + c] = static_cast<ScalarT>(total);
+           }
          }
        });
+}
+
+// Runtime NCOLS -> compile-time NCOLS bridge.
+template <typename ScalarT, bool IsE4M3, Fp8DecodeMode Mode>
+void launch_fp8_ksplit_by_ncols(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
+                                const ScalarT* scales, ScalarT* outputs, const int* expert_id_per_token,
+                                int total_tokens, int N, int K, int group_size) {
+  switch (moe_decode_fp8_ksplit_ncols(N)) {
+    case 4:
+      launch_fp8_ksplit<ScalarT, IsE4M3, Mode, 4>(q, activations, weights, scales, outputs, expert_id_per_token,
+                                                  total_tokens, N, K, group_size);
+      return;
+    case 2:
+      launch_fp8_ksplit<ScalarT, IsE4M3, Mode, 2>(q, activations, weights, scales, outputs, expert_id_per_token,
+                                                  total_tokens, N, K, group_size);
+      return;
+    default:
+      launch_fp8_ksplit<ScalarT, IsE4M3, Mode, 1>(q, activations, weights, scales, outputs, expert_id_per_token,
+                                                  total_tokens, N, K, group_size);
+      return;
+  }
 }
 
 // Runtime -> compile-time bridge for the decode-mode selector. Keeps the
@@ -1581,8 +1704,8 @@ void launch_fp8_dispatch(sycl::queue* q, const ScalarT* activations, const uint8
                          const ScalarT* scales, ScalarT* outputs, const int* expert_id_per_token,
                          int total_tokens, int N, int K, int group_size, bool ksplit) {
   if (ksplit) {
-    launch_fp8_ksplit<ScalarT, IsE4M3, Mode>(q, activations, weights, scales, outputs, expert_id_per_token,
-                                             total_tokens, N, K, group_size);
+    launch_fp8_ksplit_by_ncols<ScalarT, IsE4M3, Mode>(q, activations, weights, scales, outputs,
+                                                      expert_id_per_token, total_tokens, N, K, group_size);
   } else {
     launch_fp8<ScalarT, IsE4M3, Mode>(q, activations, weights, scales, outputs, expert_id_per_token,
                                       total_tokens, N, K, group_size);

@@ -805,6 +805,69 @@ class TestMoEGemmDecodePerf:
             _print_row(label, N, K, total_tokens, strided_ms, ksplit_ms)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_perf_fp8_ksplit_ncols_sweep(self, monkeypatch, dtype):
+        """FP8 K-split GEMV: sweep the N-blocking factor.
+
+        ``ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`` sets how many consecutive output
+        columns one sub-group owns. With one column per sub-group, half of what
+        a thread requests is the activation row -- which every column of that
+        token re-reads -- and only two weight loads are ever in flight. Owning
+        ``NCOLS`` columns loads the activation chunk once for all of them and
+        puts ``2 * NCOLS`` independent weight loads in flight, which is what a
+        latency-bound streaming GEMV needs; the cost is ``NCOLS`` times the live
+        weight registers, so past some point the kernel spills.
+
+        The ``ark`` column is the best factor found and ``baseline`` is
+        ``NCOLS=1`` (the pre-blocking kernel), so ``speedup`` is the win from
+        blocking alone. The per-factor timings are printed underneath so the
+        default (``KSPLIT_NCOLS_DEFAULT`` in ``sycl_tla_moe_decode.hpp``) can be
+        set from measured data rather than from the register-pressure estimate
+        it currently reflects.
+        """
+        group_size = 128
+        fp8_dtype = torch.float8_e4m3fn
+        factors = (1, 2, 4)
+        _print_header(
+            f"FP8 {str(fp8_dtype).split('.')[-1]} K-split N-blocking sweep "
+            f"(group_size={group_size}, act={str(dtype).split('.')[-1]}) "
+            f"-- NCOLS=1 (baseline) vs best NCOLS (ark)"
+        )
+        for label, E, tpe, N, K in DECODE_SHAPES:
+            if K % group_size != 0:
+                continue
+            total_tokens = sum(tpe)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+            ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+            def _run():
+                return ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    ntpe,
+                    scales=scales,
+                    group_size=group_size,
+                    asym=False,
+                )
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+            per_factor = {}
+            for ncols in factors:
+                monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS", str(ncols))
+                per_factor[ncols] = _xpu_time_ms(_run)
+            monkeypatch.delenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_FP8_KSPLIT", raising=False)
+            monkeypatch.delenv("ARK_MOE_DECODE_DPAS_FP8", raising=False)
+
+            best = min(per_factor, key=per_factor.get)
+            _print_row(label, N, K, total_tokens, per_factor[1], per_factor[best])
+            detail = "  ".join(f"NCOLS={n}: {per_factor[n]:.4f}ms" for n in factors)
+            print(f"{'':<18}{'':>7}{'':>7}{'':>8}  {detail}  best=NCOLS={best}")
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
     def test_perf_fp8_dpas_vs_scalar(self, monkeypatch, dtype, fp8_dtype):
         """FP8 decode: the per-group DPAS grouped GEMM

@@ -1610,7 +1610,10 @@ def moe_gemm_decode(
               ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
               be ``False`` (no zero-points for FP8).
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
-            ``activations.shape[0]``.
+            ``activations.shape[0]``; this is a caller contract. It is checked
+            eagerly only when the tensor lives on the host, or when
+            ``ARK_MOE_VALIDATE_ROUTING`` is set -- summing a device tensor
+            costs a blocking device-to-host sync on the decode hot path.
         scales: ``[E, N, K // group_size]`` in activations dtype. Required
             for all quantized paths (int8/int4/int2/fp8); must be ``None``
             for unquantized weights.
@@ -1686,6 +1689,43 @@ def moe_decode_release_scratch() -> None:
     lib.moe_decode_release_scratch()
 
 
+def moe_routing_validation_enabled() -> bool:
+    """Whether ``num_tokens_per_expert`` is checked against ``total_tokens``.
+
+    The check needs the *sum* of the routing table, which for a table that
+    already lives on the device costs a reduction kernel plus a blocking
+    device-to-host copy -- a full pipeline flush on every call. Decode issues
+    one call per generated token, so that sync lands directly in the
+    token-latency path (and inside the timed region of the decode benchmarks),
+    where it is worth tens of microseconds against kernels that take ~150us.
+
+    So the check runs unconditionally for host-side (CPU) routing tables, where
+    it is free, and is skipped for device tables unless
+    ``ARK_MOE_VALIDATE_ROUTING`` is set to a truthy value. The C++ side does not
+    need the host value: it consumes the device pointer directly and derives
+    ``expert_id_per_token`` on-device, clamped to ``num_experts - 1``.
+
+    Truthy values (case-insensitive): anything other than "0", "false", "off",
+    "no". Unset means disabled (no sync).
+    """
+    env = os.environ.get("ARK_MOE_VALIDATE_ROUTING")
+    if env is None:
+        return False
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _check_routing_total(num_tokens_per_expert: torch.Tensor, total_tokens: int) -> None:
+    """Check ``sum(num_tokens_per_expert) == total_tokens`` without a device sync.
+
+    See :func:`moe_routing_validation_enabled` for when the check is skipped.
+    """
+    if num_tokens_per_expert.device.type != "cpu" and not moe_routing_validation_enabled():
+        return
+    expected_total = int(num_tokens_per_expert.sum().item())
+    if expected_total != total_tokens:
+        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+
+
 def _validate_moe_quant_args(
     activations: torch.Tensor,
     weights: torch.Tensor,
@@ -1704,6 +1744,10 @@ def _validate_moe_quant_args(
     kernel-call site:
         ``(activations, weights, scales, zeros, num_tokens_per_expert,
            weight_dtype, total_tokens, N, K, num_experts)``.
+
+    The caller owns the contract that ``num_tokens_per_expert`` sums to
+    ``activations.shape[0]``; see :func:`moe_routing_validation_enabled` for how
+    that is (or is not) enforced.
     """
     if activations.device.type != "xpu":
         raise NotImplementedError(f"{api_name} is only supported on XPU")
@@ -1817,9 +1861,7 @@ def _validate_moe_quant_args(
     if N % 16 != 0:
         raise ValueError(f"N must be a multiple of 16 (got {N})")
 
-    expected_total = int(num_tokens_per_expert.sum().item())
-    if expected_total != total_tokens:
-        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
 
     return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
 
@@ -1875,9 +1917,7 @@ def moe_gemm(
         raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
 
     # Validate total tokens
-    expected_total = int(num_tokens_per_expert.sum().item())
-    if expected_total != total_tokens:
-        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
 
     lib = get_lib(activations)
     stream = get_stream(activations)
@@ -2110,7 +2150,7 @@ def moe_gemm_prefill(
             ``[E, N, K]`` -- callers providing already-``[E, K, N]`` weights
             (as ``moe_gemm`` requires) should call ``moe_gemm`` directly.
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
-            ``activations.shape[0]``.
+            ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
         scales: ``[E, N, K // group_size]`` in activations dtype. Required for
             quantized paths; ignored (must be ``None``) for unquantized.
         zeros: ``[E, N, K // group_size]`` in activations dtype, required when
@@ -2427,7 +2467,7 @@ def moe(
         weights: ``[E, N, K_packed]`` -- see :func:`moe_gemm_decode` for the
             quant-specific layout/dtype contract.
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
-            ``activations.shape[0]``.
+            ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
         scales, zeros, weight_bits, group_size, asym: forwarded to the
             underlying kernel; see :func:`moe_gemm_decode`.
         phase: dispatch mode.

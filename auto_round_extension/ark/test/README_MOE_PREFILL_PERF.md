@@ -555,6 +555,48 @@ legacy GEMV, which handles arbitrary group sizes. All three
 `ARK_FP8_DECODE_MODE` decoders run under both mappings, so the mode A/B
 stays apples-to-apples. **Status: NEEDS-HARDWARE-VALIDATION.**
 
+**N-blocking inside the K-split kernel (`ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`,
+default 2).** With one output column per sub-group the hot loop issues, per
+16-byte weight chunk, one weight message *and* one 32-byte activation
+message — half of what a thread requests is the activation row, which every
+column of that token re-reads — and only two weight loads are ever in
+flight. Giving a sub-group `NCOLS` consecutive columns loads the activation
+chunk once and reuses it for all of them:
+
+| | `NCOLS=1` | `NCOLS=n` |
+| --- | --- | --- |
+| activation messages per weight chunk | 1 | 1/n |
+| independent weight loads in flight | 2 | 2n |
+
+The first effect cuts request-queue pressure; the second raises
+memory-level parallelism, which is what a streaming GEMV sitting well below
+peak DRAM bandwidth is actually limited by. The cost is `n` times the live
+weight vectors and accumulators, so past some point the kernel spills — hence
+the small ladder (1, 2, 4) and the conservative default.
+
+A work-group still holds 16 sub-groups, so it now covers `16 * NCOLS`
+columns; an `N` that cannot be tiled at the requested factor falls back to
+the largest valid smaller power of two on the host side (`N=1536` and
+`N=3072` tile at every factor). The lane → K-chunk mapping, the per-chunk
+scale fold and the final `reduce_over_group` are untouched, so the
+arithmetic per output element is unchanged and `NCOLS=1` reproduces the
+previous kernel exactly. `test_perf_fp8_ksplit_ncols_sweep` prints all three
+factors per shape so the default can be set from measured data.
+**Status: NEEDS-HARDWARE-VALIDATION.**
+
+**Routing-table validation (`ARK_MOE_VALIDATE_ROUTING`, default OFF).** The
+Python entry point used to check `sum(num_tokens_per_expert) == total_tokens`
+on every call. For a routing table that already lives on the device that
+sum means a reduction kernel plus a *blocking* device-to-host copy, i.e. a
+full pipeline flush — on a decode step whose kernel takes ~150 µs, and once
+per generated token. It also lands inside the timed region of every decode
+benchmark, because the queue is idle when the timing event is recorded.
+The sum is now a caller contract (the C++ side never needed the host value:
+it consumes the device pointer and derives `expert_id_per_token` on-device,
+clamped to `num_experts - 1`); set `ARK_MOE_VALIDATE_ROUTING=1` to restore
+the eager check when debugging a router. Host-side (CPU) routing tables are
+still checked unconditionally, since summing those is free.
+
 **FP8 DPAS decode dispatch.** `moe_decode_fp8_dpas_per_group_dispatch`
 (`sycl_tla_moe_prefill_fp8_dpas.hpp`, `ARK_MOE_DECODE_DPAS_FP8` default ON)
 is the FP8 twin of the S4 decode dispatch: same mainloop, same `[E, N, K]`
@@ -610,15 +652,21 @@ per-group shape gate (`N%64==0`, `K%32==0`, `K%group_size==0`,
 | `ARK_MOE_DECODE_DPAS_FP8` | ON | Route FP8 decode to the per-group DPAS grouped GEMM when the shape and occupancy gates pass; `0` forces the scalar GEMV. |
 | `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | Minimum tokens per expert before the DPAS path is taken; `0` disables the gate (what the parity/A-B tests set). |
 | `ARK_MOE_DECODE_FP8_KSPLIT` | ON | Scalar-GEMV lane mapping: one sub-group per output element with the lanes splitting K (coalesced weight loads, 16× the threads); `0` forces the legacy one-work-item-per-output-element GEMV. Shapes outside the gate (power-of-two `group_size ≥ 16`, `N%16==0`, `K%group_size==0`, `K ≥ 256`) always use the legacy mapping. |
+| `ARK_MOE_DECODE_FP8_KSPLIT_NCOLS` | `2` | Output columns one sub-group owns in the K-split GEMV (1, 2 or 4). Higher values reuse one activation load across more columns and keep more weight loads in flight, at the cost of more live registers. An `N` that `16 * NCOLS` cannot tile falls back to the largest valid smaller power of two. |
+| `ARK_MOE_VALIDATE_ROUTING` | OFF | Eagerly check `sum(num_tokens_per_expert) == activations.shape[0]` for device-resident routing tables. The check costs a blocking device-to-host sync per call, so it is opt-in; CPU-resident tables are always checked. |
 
 Perf A/B rows are `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
 (`speedup` is `lut / word`), `::test_perf_fp8_ksplit_vs_strided`
-(`speedup` is `strided / ksplit`) and `::test_perf_fp8_dpas_vs_scalar`
-(`speedup` is `scalar / dpas`). Correctness is covered by
+(`speedup` is `strided / ksplit`), `::test_perf_fp8_ksplit_ncols_sweep`
+(`speedup` is `NCOLS=1 / best NCOLS`, with all factors printed) and
+`::test_perf_fp8_dpas_vs_scalar` (`speedup` is `scalar / dpas`).
+Correctness is covered by
 `test_moe.py::test_decode_fp8_modes_match` (all three decoders agree, and
 each tracks the dequant reference),
 `::test_decode_fp8_ksplit_matches_strided` (both lane mappings agree, plus
-a non-power-of-two `group_size` fallback case) and
+a non-power-of-two `group_size` fallback case),
+`::test_decode_fp8_ksplit_ncols_match` (every blocking factor agrees, plus
+an untileable-`N` fallback case) and
 `::test_decode_fp8_dpas_matches_scalar`.
 
 ## FP8 per-expert (per-tensor) perf tests

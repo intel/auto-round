@@ -872,6 +872,30 @@ class TestMoEGemmDecode:
                 asym=True,
             )
 
+    def test_routing_sum_validation_is_opt_in(self, monkeypatch):
+        """A mismatched routing table is only rejected when asked for.
+
+        Summing ``num_tokens_per_expert`` means pulling a device tensor back to
+        the host, which stalls the whole queue -- far too expensive to pay once
+        per generated token. The check is therefore opt-in via
+        ``ARK_MOE_VALIDATE_ROUTING``; otherwise the sum being
+        ``activations.shape[0]`` is a caller contract.
+        """
+        activations = torch.randn(2, 128, dtype=torch.float16, device="xpu")
+        weights = torch.randn(2, 32, 128, dtype=torch.float16, device="xpu")
+        # Sums to 3, not to activations.shape[0] == 2.
+        bad_ntpe = torch.tensor([2, 1], dtype=torch.int32, device="xpu")
+
+        monkeypatch.setenv("ARK_MOE_VALIDATE_ROUTING", "1")
+        assert ark.moe_routing_validation_enabled() is True
+        with pytest.raises(ValueError, match="num_tokens_per_expert"):
+            ark.moe_gemm_decode(activations, weights, bad_ntpe, weight_bits=16)
+
+        monkeypatch.delenv("ARK_MOE_VALIDATE_ROUTING", raising=False)
+        assert ark.moe_routing_validation_enabled() is False
+        monkeypatch.setenv("ARK_MOE_VALIDATE_ROUTING", "0")
+        assert ark.moe_routing_validation_enabled() is False
+
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("group_size", [32, 128])
     def test_decode_int8_sym(self, dtype, group_size):
@@ -1236,6 +1260,98 @@ class TestMoEGemmDecode:
         ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
         assert out.shape == (total_tokens, N)
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_ksplit_ncols_match(self, monkeypatch, dtype, group_size):
+        """FP8 decode: every N-blocking factor must produce the same result.
+
+        ``ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`` sets how many consecutive output
+        columns one sub-group owns. The factor only changes which columns share
+        an activation load -- the per-output arithmetic (lane -> K chunk
+        mapping, per-chunk scale fold, final ``reduce_over_group``) is
+        unchanged -- so all factors must agree with each other to within
+        fp-contraction noise, and with the dequant reference.
+
+        The N chosen here (256) is divisible by ``16 * 4``, so no factor is
+        silently reduced by the host-side tiling fallback, and K is not a
+        multiple of the 256-element sub-group step so the remainder loop is
+        exercised for every factor.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 640  # 256 % (16*4) == 0; K = 2*256 + 128
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, torch.float8_e4m3fn)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+
+        outs = {}
+        for ncols in (1, 2, 4):
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS", str(ncols))
+            outs[ncols] = ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        # One ulp of the output dtype at these magnitudes; any indexing bug
+        # (wrong column, dropped or double-counted K chunk) is orders of
+        # magnitude larger than this.
+        tight = 1e-3 if dtype == torch.float16 else 8e-3
+        for ncols, out in outs.items():
+            assert out.shape == (total_tokens, N), f"ncols={ncols}"
+            torch.testing.assert_close(out, outs[1], rtol=tight, atol=tight, msg=f"ncols={ncols} != ncols=1")
+            torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16])
+    def test_decode_fp8_ksplit_ncols_falls_back_on_untileable_n(self, monkeypatch, dtype):
+        """FP8 decode: an N that a blocking factor cannot tile must still work.
+
+        A work-group covers ``16 * NCOLS`` columns, so ``N = 48`` only tiles
+        with ``NCOLS == 1`` and ``N = 160`` only with ``NCOLS <= 2``. The host
+        selector must shrink the requested factor instead of launching a grid
+        that walks past the last column.
+        """
+        num_experts = 3
+        tokens_per_expert = [2, 0, 1]
+        total_tokens = sum(tokens_per_expert)
+        group_size = 32
+        for N in (48, 160):
+            K = 512
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_fp8(w_float, scales, group_size, torch.float8_e4m3fn)
+            num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS", "4")
+            out = ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+            dequant = _dequant_fp8(packed, scales, group_size, dtype)
+            ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+            assert out.shape == (total_tokens, N), f"N={N}"
+            torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
 
 if __name__ == "__main__":

@@ -444,6 +444,43 @@ scratch 显存。FP8 权重每元素一个字节、本来就是 K 连续的,所�
 decode mode 的 A/B 依然是同口径对比。
 **状态:NEEDS-HARDWARE-VALIDATION。**
 
+**K-split kernel 内的 N 分块(`ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`,默认 2)。**
+当一个 sub-group 只负责一个输出列时,热循环中每读一个 16 字节权重 chunk,
+既要发一条权重访存,又要发一条 32 字节的激活访存 —— 线程请求的数据里有一半
+是激活行,而该 token 的每一列都会重复读它 —— 并且飞行中的权重 load 始终只
+有两条。让一个 sub-group 负责 `NCOLS` 个连续列,激活 chunk 只需读一次就能
+被所有列复用:
+
+| | `NCOLS=1` | `NCOLS=n` |
+| --- | --- | --- |
+| 每个权重 chunk 的激活访存条数 | 1 | 1/n |
+| 飞行中的独立权重 load | 2 | 2n |
+
+前者降低请求队列压力,后者提升 memory-level parallelism —— 对于一个远低于
+DRAM 峰值带宽的流式 GEMV,后者才是真正的瓶颈。代价是活跃的权重向量与
+累加器变成 `n` 倍,超过某个点 kernel 就会 spill,所以只提供 1、2、4 这个
+很短的阶梯,并且默认值取得保守。
+
+一个 work-group 仍然是 16 个 sub-group,因此它现在覆盖 `16 * NCOLS` 列;
+若 `N` 无法按所请求的因子切分,host 侧会回退到最大的、合法的更小 2 的幂
+(`N=1536` 与 `N=3072` 在所有因子下都能整除)。lane → K chunk 的映射、
+每个 chunk 的 scale 折叠以及最后的 `reduce_over_group` 都没有改动,因此
+单个输出元素的算术完全不变,`NCOLS=1` 与改动前的 kernel 完全一致。
+`test_perf_fp8_ksplit_ncols_sweep` 会逐形状打印全部三个因子的耗时,便于用
+实测数据确定默认值。
+**状态:NEEDS-HARDWARE-VALIDATION。**
+
+**路由表校验(`ARK_MOE_VALIDATE_ROUTING`,默认 OFF)。** Python 入口原先
+在每次调用时都会检查 `sum(num_tokens_per_expert) == total_tokens`。当路由表
+本身就在设备上时,这个求和意味着一次 reduction kernel 外加一次**阻塞式**的
+device-to-host 拷贝,也就是一次完整的流水线 flush —— 而 decode 一步的 kernel
+本身只有约 150 µs,并且每生成一个 token 就要付一次。它同样落在 decode
+benchmark 的计时区间内,因为记录计时 event 时队列正好是空的。
+现在这个求和关系是调用方契约(C++ 侧本来就不需要 host 上的值:它直接使用
+设备指针,并在设备上推导 `expert_id_per_token`,且会 clamp 到
+`num_experts - 1`);调试 router 时可设置 `ARK_MOE_VALIDATE_ROUTING=1` 恢复
+即时校验。位于 host(CPU)上的路由表仍然始终校验,因为对它们求和是免费的。
+
 **FP8 DPAS decode dispatch。** `moe_decode_fp8_dpas_per_group_dispatch`
 (`sycl_tla_moe_prefill_fp8_dpas.hpp`,`ARK_MOE_DECODE_DPAS_FP8` 默认 ON)
 是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的 `[E, N, K]`
@@ -494,14 +531,19 @@ decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffe
 | `ARK_MOE_DECODE_DPAS_FP8` | ON | 形状与占用率门控都通过时,把 FP8 decode 路由到 per-group DPAS grouped GEMM;`0` 强制走 scalar GEMV。 |
 | `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | 走 DPAS 路径所需的最小每专家 token 数;`0` 关闭门控(对齐/A-B 用例所设)。 |
 | `ARK_MOE_DECODE_FP8_KSPLIT` | ON | scalar GEMV 的 lane 映射:一个 sub-group 负责一个输出元素、由 lane 切分 K(访存合并,线程数 ×16);`0` 强制走老的「一个 work-item 一个输出元素」GEMV。未通过门控(`group_size` 为 ≥ 16 的 2 的幂、`N%16==0`、`K%group_size==0`、`K ≥ 256`)的形状始终使用老映射。 |
+| `ARK_MOE_DECODE_FP8_KSPLIT_NCOLS` | `2` | K-split GEMV 中一个 sub-group 负责的输出列数(1、2 或 4)。取值越大,一次激活 load 被复用的列越多、飞行中的权重 load 越多,代价是活跃寄存器更多。若 `16 * NCOLS` 无法整除 `N`,会回退到最大的、合法的更小 2 的幂。 |
+| `ARK_MOE_VALIDATE_ROUTING` | OFF | 即时校验 `sum(num_tokens_per_expert) == activations.shape[0]`(针对位于设备上的路由表)。该校验每次调用都要付一次阻塞式 device-to-host 同步,因此改为按需开启;位于 CPU 上的路由表始终校验。 |
 
 性能 A/B 行是 `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
 (`speedup` 为 `lut / word`)、`::test_perf_fp8_ksplit_vs_strided`
-(`speedup` 为 `strided / ksplit`)与 `::test_perf_fp8_dpas_vs_scalar`
-(`speedup` 为 `scalar / dpas`)。正确性由
+(`speedup` 为 `strided / ksplit`)、`::test_perf_fp8_ksplit_ncols_sweep`
+(`speedup` 为 `NCOLS=1 / 最优 NCOLS`,并打印全部因子)与
+`::test_perf_fp8_dpas_vs_scalar`(`speedup` 为 `scalar / dpas`)。正确性由
 `test_moe.py::test_decode_fp8_modes_match`(三种解码器互相一致,且各自都
 对齐 dequant 参考)、`::test_decode_fp8_ksplit_matches_strided`(两种 lane
-映射一致,并覆盖非 2 的幂 `group_size` 的回退)与
+映射一致,并覆盖非 2 的幂 `group_size` 的回退)、
+`::test_decode_fp8_ksplit_ncols_match`(各分块因子结果一致,并覆盖 `N`
+无法整除时的回退)与
 `::test_decode_fp8_dpas_matches_scalar` 覆盖。
 
 ## FP8 per-expert (per-tensor) 性能测试
