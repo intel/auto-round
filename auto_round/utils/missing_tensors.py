@@ -39,6 +39,7 @@
 
 import json
 import os
+import re
 from typing import Optional, Tuple
 
 import torch
@@ -60,6 +61,23 @@ _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
 }
 
 _AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
+
+
+def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "0") -> str:
+    """Normalize tensor names for warning_once deduplication.
+
+    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
+    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder so
+    warning keys are stable across different layer/expert ids.
+    """
+    parts = name.split(".")
+    normalized_parts = []
+    for part in parts:
+        if part.isdigit():
+            normalized_parts.append(numeric_replacement)
+            continue
+        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
+    return ".".join(normalized_parts)
 
 
 def split_fused_expert_tensors(
@@ -104,6 +122,8 @@ def split_fused_expert_tensors(
             result[tensor_name] = tensor
             continue
 
+        warning_tensor_name = _normalize_tensor_name_for_warning(tensor_name)
+
         # Strip optional .weight suffix for pattern matching
         stripped = tensor_name
         stripped = stripped.removesuffix(".weight")  # len(".weight") == 7
@@ -123,12 +143,11 @@ def split_fused_expert_tensors(
 
         # The immediate parent must be "experts" or "moe"
         if not is_experts_parent and not is_moe_parent:
-            logger.warning(
-                "Found 3-D tensor '%s' with unsupported parent '%s' while splitting expert tensors; "
+            logger.warning_once(
+                "Found 3-D tensor '%s' while splitting expert tensors; "
                 "it will be kept unchanged. If this is an MoE/expert weight that should be split/quantized, "
                 "please open an issue at %s.",
-                tensor_name,
-                parent,
+                warning_tensor_name,
                 _AUTOROUND_ISSUE_URL,
             )
             result[tensor_name] = tensor
@@ -140,8 +159,8 @@ def split_fused_expert_tensors(
 
         if proj_name in _FUSED_EXPERT_PROJ_PATTERNS:
             split_names = _FUSED_EXPERT_PROJ_PATTERNS[proj_name]
-            logger.info(
-                f"Splitting fused expert tensor '{tensor_name}' "
+            logger.warning_once(
+                f"Splitting fused expert tensor '{warning_tensor_name}' "
                 f"(shape={list(tensor.shape)}, num_experts={num_experts}) "
                 f"into {split_names}"
             )
@@ -152,8 +171,8 @@ def split_fused_expert_tensors(
                     out_key = f"{target_prefix}.{i}.{split_name}.weight"
                     result[out_key] = chunk.contiguous()
         else:
-            logger.info(
-                f"Splitting stacked expert tensor '{tensor_name}' "
+            logger.warning_once(
+                f"Splitting stacked expert tensor '{warning_tensor_name}' "
                 f"(shape={list(tensor.shape)}, num_experts={num_experts})"
             )
             for i in range(num_experts):
@@ -162,12 +181,6 @@ def split_fused_expert_tensors(
                 result[out_key] = expert_2d.contiguous()
 
         split_count += 1
-
-    if split_count:
-        logger.info(
-            f"Split {split_count} fused expert tensor(s) into "
-            f"{len(result) - (len(tensors_dict) - split_count)} per-expert tensors."
-        )
 
     return result
 

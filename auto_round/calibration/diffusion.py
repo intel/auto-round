@@ -51,6 +51,10 @@ class DiffusionCalibrator(LLMCalibrator):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
         return wrap_block_forward_positional_to_kwargs(forward_fn)
 
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Diffusion calibration never early-stops: all denoising steps execute."""
+        return False
+
     def _get_calibration_image(self, batch_size: int):
         """Return a synthetic PIL Image for I2V pipeline calibration."""
         params = inspect.signature(self.pipe.__call__).parameters
