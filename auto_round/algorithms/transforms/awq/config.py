@@ -47,6 +47,9 @@ class AWQConfig(QuantizationConfig):
         clip_n_grid: int = 20,
         clip_max_shrink: float = 0.5,
         clip_n_sample_token: int = 512,
+        smooth_seqlen: int = 512,
+        smooth_batch_size: int | None = None,
+        skip_moe: bool = True,
         mappings: list[dict] | None = None,
         **kwargs,
     ):
@@ -104,6 +107,22 @@ class AWQConfig(QuantizationConfig):
             clip_n_sample_token: Maximum number of calibration tokens used per
                 balance layer when searching the clip threshold (subsampled to
                 bound memory).
+            smooth_seqlen: Maximum sequence length (number of tokens) used per
+                calibration sample during the AWQ scale grid search. Defaults to
+                ``512``. Set a larger positive integer to use longer sequences,
+                or a value ``<= 0`` to disable truncation entirely.
+            smooth_batch_size: Optional microbatch size used when replaying AWQ
+                parent modules during scale grid search. Smaller values reduce
+                peak VRAM while preserving the AWQ parent-output loss, at the
+                cost of more parent forward calls. ``None`` or ``<= 0`` replays
+                the cached calibration batch as-is.
+            skip_moe: Whether to exclude routed MoE experts from AWQ smoothing.
+                When True, balance layers belonging to routed experts (module
+                names matching ``.experts.<N>.``) are dropped from the resolved
+                mappings, so AWQ only smooths attention and dense/shared paths
+                and leaves routed experts to the downstream block quantizer. This
+                has no effect on dense models and is ignored when explicit
+                ``mappings`` are provided.
             mappings: Optional explicit AWQ smooth/balance mappings. Each
                 item should contain ``smooth_layer`` and
                 ``balance_layers`` entries. If None, mappings are inferred
@@ -135,9 +154,14 @@ class AWQConfig(QuantizationConfig):
             raise ValueError(f"`clip_max_shrink` must be in (0, 1), got {clip_max_shrink!r}")
         if clip_n_sample_token is None or clip_n_sample_token < 1:
             raise ValueError(f"`clip_n_sample_token` must be a positive integer, got {clip_n_sample_token!r}")
+        if smooth_batch_size is not None and smooth_batch_size < 0:
+            raise ValueError(f"`smooth_batch_size` must be a non-negative integer or None, got {smooth_batch_size!r}")
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
         self.clip_n_sample_token = clip_n_sample_token
+        self.smooth_seqlen = smooth_seqlen
+        self.smooth_batch_size = smooth_batch_size
+        self.skip_moe = skip_moe
         self.mappings = mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
@@ -159,6 +183,8 @@ class AWQConfig(QuantizationConfig):
             f"AWQConfig(duo_scaling={self.duo_scaling!r}, n_grid={self.n_grid}, "
             f"smooth_iters={self.smooth_iters}, "
             f"apply_clip={self.apply_clip}, clip_as_init={self.clip_as_init}, "
+            f"smooth_seqlen={self.smooth_seqlen}, smooth_batch_size={self.smooth_batch_size}, "
+            f"skip_moe={self.skip_moe}, "
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"
         )

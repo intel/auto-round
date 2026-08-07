@@ -339,11 +339,11 @@ W2G64 在 13 个任务上的平均精度与耗时
 
 ### AWQ 算法
 
-实验性功能：原始实现中未使用 weight clipping（权重裁剪）逻辑，因此相比原版 AWQ 算法，可能会存在一定精度下降
+实验性功能：AWQ weight clipping（权重裁剪）为可选功能。如需更接近原始 AWQ 流程，可使用 `--awq-apply-clip` 开启。
 
 AWQ（Activation-Aware Weight Quantization，激活感知权重量化）是一种可选的量化算法。AWQ 通过分析激活模式来保护关键权重通道，在标准量化前对权重施加通道级缩放，从而降低量化误差。
 
-AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**W8A8** 搭配 AWQ 平滑化也可通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
+AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**INT8** 是 AutoRound 的 W8A8 scheme，可在 RTN 量化前使用 AWQ 平滑化，并通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
 
 #### 命令行用法
 
@@ -351,21 +351,43 @@ AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核�
 auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
 ```
 
+INT8/W8A8 搭配 AWQ 平滑化和 RTN：
+
+```bash
+auto-round \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --scheme INT8 \
+  --algorithm awq,rtn \
+  --nsamples 256 \
+  --seqlen 512 \
+  --awq-apply-clip \
+  --format auto_round:llm_compressor
+```
+
+对于 `INT8`，`disable_opt_rtn` 默认就是 `True`，因此上面的命令无需额外传入 `--disable_opt_rtn` 即可使用原始 RTN。
+
 AWQ 专用选项：
-- `--duo_scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
-- `--n_grid`：缩放比率搜索的网格点数（默认：20）。
+- `--awq-duo-scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
+- `--awq-n-grid`：缩放比率搜索的网格点数（默认：20）。
+- `--awq-apply-clip`：在 AWQ 平滑后搜索并应用权重裁剪。
+
+仅 API 支持的 AWQ 选项：
+- `AWQConfig(smooth_seqlen=512)`：限制 AWQ scale search 中 parent-forward replay 使用的序列长度。设为 `<= 0` 时使用完整标定序列。
+- `AWQConfig(skip_moe=True)`：AWQ 平滑时跳过 routed MoE experts，仅保留 attention 和 dense/shared 路径。显式传入的 `mappings` 会按原样使用。
 
 #### API 用法
 
-W8A8 搭配 AWQ 平滑化：
+INT8/W8A8 搭配 AWQ 平滑化：
 
 ```python
-from auto_round import AWQConfig, AutoRound
+from auto_round import AWQConfig, AutoRound, RTNConfig
 
 ar = AutoRound(
-    "Qwen/Qwen3-0.6B",
+    "meta-llama/Llama-3.1-8B-Instruct",
     scheme="INT8",
-    alg_configs=AWQConfig(),
+    alg_configs=[AWQConfig(apply_clip=True), RTNConfig(disable_opt_rtn=True)],
+    nsamples=256,
+    seqlen=512,
 )
 
 output_dir = "./tmp_awq"
@@ -497,20 +519,42 @@ auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
 # AWQ + AutoRound 优化
 auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
 
+# INT8/W8A8 + AWQ + RTN。INT8 默认 disable_opt_rtn=True。
+auto-round \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --scheme INT8 \
+  --algorithm awq,rtn \
+  --nsamples 256 \
+  --seqlen 512 \
+  --awq-apply-clip \
+  --format auto_round:llm_compressor
+
 # AWQ 相关参数
---duo-scaling true|false|both  (默认: true)
---n-grid 20                    (默认: 20)
+--awq-duo-scaling true|false|both  (默认: true)
+--awq-n-grid 20                    (默认: 20)
+--awq-apply-clip
 ```
+
+`AWQConfig` 还支持 `smooth_seqlen=512` 用于限制 AWQ scale search 的 replay 序列长度，并支持 `skip_moe=True` 将 routed MoE experts 交给后续 block quantizer 处理。
 
 #### API 用法
 ```python
-from auto_round import AWQConfig, AutoRound, SignRoundConfig
+from auto_round import AWQConfig, AutoRound, RTNConfig, SignRoundConfig
 
 # 字符串别名（使用 AWQ 默认参数，并自动追加 RTN）
 ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
 
 # AWQ + 默认 RTN (最简用法)
 ar = AutoRound(model, tokenizer, alg_configs=AWQConfig(), scheme="W4A16")
+
+# INT8/W8A8 + AWQ + RTN
+ar = AutoRound(
+    "meta-llama/Llama-3.1-8B-Instruct",
+    alg_configs=[AWQConfig(apply_clip=True), RTNConfig(disable_opt_rtn=True)],
+    scheme="INT8",
+    nsamples=256,
+    seqlen=512,
+)
 
 # 通过 alg_configs 指定 AWQ + AutoRound (显式流水线)
 ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")

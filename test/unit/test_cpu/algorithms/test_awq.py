@@ -241,6 +241,443 @@ class TestAWQMoE:
 
         del model
 
+    def test_awq_moe_skip_moe(self, tiny_qwen_moe_model_path):
+        """skip_moe should drop routed-expert balance layers/mappings but keep dense paths."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping, _drop_routed_experts
+
+        model = nn.Module()
+        ln = nn.LayerNorm(8)
+        q = nn.Linear(8, 8, bias=False)
+        shared_gate = nn.Linear(8, 16, bias=False)
+        e0_gate = nn.Linear(8, 16, bias=False)
+        e1_gate = nn.Linear(8, 16, bias=False)
+        e0_up = nn.Linear(8, 16, bias=False)
+        e0_down = nn.Linear(16, 8, bias=False)
+
+        resolved = [
+            ResolvedMapping(
+                smooth_name="model.layers.0.input_layernorm",
+                smooth_layer=ln,
+                balance_names=["model.layers.0.self_attn.q_proj"],
+                balance_layers=[q],
+                parent_name="model.layers.0.self_attn",
+                parent=nn.Module(),
+            ),
+            ResolvedMapping(
+                smooth_name="model.layers.0.post_attention_layernorm",
+                smooth_layer=ln,
+                balance_names=[
+                    "model.layers.0.mlp.shared_expert.gate_proj",
+                    "model.layers.0.mlp.experts.0.gate_proj",
+                    "model.layers.0.mlp.experts.1.gate_proj",
+                ],
+                balance_layers=[shared_gate, e0_gate, e1_gate],
+                parent_name="model.layers.0.mlp",
+                parent=nn.Module(),
+            ),
+            ResolvedMapping(
+                smooth_name="model.layers.0.mlp.experts.0.up_proj",
+                smooth_layer=e0_up,
+                balance_names=["model.layers.0.mlp.experts.0.down_proj"],
+                balance_layers=[e0_down],
+                parent_name="model.layers.0.mlp.experts.0",
+                parent=nn.Module(),
+            ),
+        ]
+
+        kept = _drop_routed_experts(model, resolved)
+        smooth_names = [m.smooth_name for m in kept]
+
+        assert "model.layers.0.mlp.experts.0.up_proj" not in smooth_names
+        assert "model.layers.0.input_layernorm" in smooth_names
+        mixed = next(m for m in kept if m.smooth_name.endswith("post_attention_layernorm"))
+        assert mixed.balance_names == ["model.layers.0.mlp.shared_expert.gate_proj"]
+
+        del model
+
+    def test_explicit_awq_mapping_preserves_activation_hook_target(self):
+        """Custom AWQ mappings should keep activation_hook_target for non-standard balance inputs."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
+
+        class TinyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.smooth = nn.Linear(4, 4, bias=False)
+                self.hook = nn.Linear(4, 4, bias=False)
+                self.balance = nn.Linear(4, 4, bias=False)
+
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([TinyBlock()])
+
+        resolved = resolve_mappings(
+            TinyModel(),
+            user_mappings=[
+                {
+                    "smooth_layer": "smooth$",
+                    "balance_layers": ["balance$"],
+                    "activation_hook_target": "hook",
+                }
+            ],
+        )
+
+        assert len(resolved) == 1
+        assert resolved[0].activation_hook_target == "hook"
+
+    def test_hybrid_attention_mapping_short_layer_types_falls_back(self):
+        """Malformed hybrid configs should fall back instead of raising IndexError."""
+        from types import SimpleNamespace
+
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.mappings import _build_hybrid_attention_mappings
+
+        class BadHybridModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(
+                    layer_types=["full_attention", "linear_attention"],
+                    num_hidden_layers=3,
+                )
+
+        assert _build_hybrid_attention_mappings(BadHybridModel()) is None
+
+    def test_awq_ignored_layer_skips_mapping(self):
+        """A mapping containing an ignore_layers / bits>=16 layer is skipped as one smooth-scale group."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+
+        ln = nn.LayerNorm(8)
+        q = nn.Linear(8, 8, bias=False)
+        q.global_name = "model.layers.0.self_attn.q_proj"
+        k = nn.Linear(8, 8, bias=False)
+        k.global_name = "model.layers.0.self_attn.k_proj"
+
+        mapping = ResolvedMapping(
+            smooth_name="model.layers.0.input_layernorm",
+            smooth_layer=ln,
+            balance_names=[q.global_name, k.global_name],
+            balance_layers=[q, k],
+            parent_name="model.layers.0.self_attn",
+            parent=nn.Module(),
+        )
+
+        transform._qdq_tool.layer_config = {}
+        assert transform._mapping_has_ignored_layer(mapping) is False
+
+        transform._qdq_tool.layer_config = {q.global_name: {"bits": 4}, k.global_name: {"bits": 4}}
+        assert transform._mapping_has_ignored_layer(mapping) is False
+
+        transform._qdq_tool.layer_config = {q.global_name: {"bits": 4}, k.global_name: {"bits": 16}}
+        assert transform._mapping_has_ignored_layer(mapping) is True
+        assert transform._mapping_is_smoothable(mapping) is False
+
+    def test_awq_mixed_balance_quant_params_skip_mapping(self, monkeypatch):
+        """Balance layers sharing one AWQ scale must share the same resolved quantization params."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq import base as awq_base
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        transform = AWQTransform(AWQConfig(bits=4, group_size=128, sym=True, data_type="int"))
+
+        ln = nn.LayerNorm(8)
+        q = nn.Linear(8, 8, bias=False)
+        q.global_name = "model.layers.0.self_attn.q_proj"
+        k = nn.Linear(8, 8, bias=False)
+        k.global_name = "model.layers.0.self_attn.k_proj"
+
+        mapping = ResolvedMapping(
+            smooth_name="model.layers.0.input_layernorm",
+            smooth_layer=ln,
+            balance_names=[q.global_name, k.global_name],
+            balance_layers=[q, k],
+            parent_name="model.layers.0.self_attn",
+            parent=nn.Module(),
+        )
+
+        warnings = []
+
+        def fake_warning(message, *args, **kwargs):
+            warnings.append(message % args if args else message)
+
+        monkeypatch.setattr(awq_base.logger, "warning", fake_warning)
+
+        transform._qdq_tool.layer_config = {
+            q.global_name: {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
+            k.global_name: {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
+        }
+        assert transform._mapping_has_mixed_quant_params(mapping) is False
+        assert transform._mapping_is_smoothable(mapping) is True
+
+        transform._qdq_tool.layer_config = {
+            q.global_name: {
+                "bits": 4,
+                "group_size": 128,
+                "sym": True,
+                "data_type": "int",
+                "disable_opt_rtn": False,
+            },
+            k.global_name: {
+                "bits": 4,
+                "group_size": 128,
+                "sym": True,
+                "data_type": "int",
+                "disable_opt_rtn": True,
+            },
+        }
+        assert transform._mapping_has_mixed_quant_params(mapping) is False
+        assert transform._mapping_is_smoothable(mapping) is True
+
+        transform._qdq_tool.layer_config = {
+            q.global_name: {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
+            k.global_name: {"bits": 4, "group_size": 128, "sym": True, "data_type": "mx_fp"},
+        }
+        assert transform._mapping_has_mixed_quant_params(mapping) is True
+        assert transform._mapping_is_smoothable(mapping) is False
+        assert any("different quantization parameters" in warning for warning in warnings)
+
+    def test_awq_grid_search_uses_per_balance_layer_quant_func(self):
+        """Direct grid search should pass each balance layer's own resolved quant function."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        transform = AWQTransform(AWQConfig(bits=4, group_size=8, sym=True, data_type="int", duo_scaling=False))
+
+        ln = nn.LayerNorm(8)
+        q = nn.Linear(8, 8, bias=False)
+        q.global_name = "model.layers.0.self_attn.q_proj"
+        k = nn.Linear(8, 8, bias=False)
+        k.global_name = "model.layers.0.self_attn.k_proj"
+        mapping = ResolvedMapping(
+            smooth_name="model.layers.0.input_layernorm",
+            smooth_layer=ln,
+            balance_names=[q.global_name, k.global_name],
+            balance_layers=[q, k],
+            parent_name="model.layers.0.self_attn",
+            parent=nn.Module(),
+        )
+
+        transform._qdq_tool.layer_config = {
+            q.global_name: {"bits": 4, "group_size": 8, "sym": True, "data_type": "int"},
+            k.global_name: {"bits": 8, "group_size": 8, "sym": True, "data_type": "mx_fp"},
+        }
+        records = []
+
+        def fake_resolve_quant_funcs(params):
+            return f"{params['data_type']}_{params['bits']}", None
+
+        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None):
+            records.append((params["data_type"], params["bits"], quant_func))
+            return weight
+
+        transform._qdq_tool.resolve_quant_funcs = fake_resolve_quant_funcs
+        transform._qdq_tool.qdq = fake_qdq
+
+        transform._grid_search_scales(mapping, torch.ones(8))
+
+        assert ("int", 4, "int_4") in records
+        assert ("mx_fp", 8, "mx_fp_8") in records
+
+    def test_awq_activation_stats_use_balance_layer_input_for_gated_mlp(self):
+        """up_proj -> down_proj stats must use down_proj input, not raw up_proj output."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        class TinyGatedBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.up_proj = nn.Linear(4, 6, bias=False)
+                self.gate_proj = nn.Linear(4, 6, bias=False)
+                self.down_proj = nn.Linear(6, 4, bias=False)
+
+            def forward(self, x):
+                return self.down_proj(torch.nn.functional.silu(self.gate_proj(x)) * self.up_proj(x))
+
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = TinyGatedBlock()
+
+            def forward(self, x):
+                return self.block(x)
+
+        torch.manual_seed(0)
+        model = TinyModel()
+        transform = AWQTransform(
+            AWQConfig(bits=4, group_size=2, sym=True, data_type="int", apply_clip=True, clip_n_sample_token=32)
+        )
+        mapping = ResolvedMapping(
+            smooth_name="block.up_proj",
+            smooth_layer=model.block.up_proj,
+            balance_names=["block.down_proj"],
+            balance_layers=[model.block.down_proj],
+            parent_name="block",
+            parent=model.block,
+        )
+        transform._block_mappings = {"block": [mapping]}
+
+        x = torch.randn(2, 3, 4)
+        handles = transform._register_awq_hooks(model, model.block, "block")
+        try:
+            model(x)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        expected = torch.nn.functional.silu(model.block.gate_proj(x)) * model.block.up_proj(x)
+        expected_feat = expected.detach().flatten(0, -2)
+        raw_up_feat = model.block.up_proj(x).detach().flatten(0, -2)
+
+        act_sum, act_count = transform._activation_stats["block.up_proj"]
+        assert torch.allclose(act_sum, expected_feat.abs().sum(dim=0))
+        assert act_count == expected_feat.shape[0]
+        assert torch.allclose(transform._clip_input_feat["block.up_proj"], expected_feat.float().cpu())
+        assert not torch.allclose(act_sum, raw_up_feat.abs().sum(dim=0))
+
+    def test_awq_parent_cache_recursively_detaches_tensor_containers(self):
+        """Parent replay cache should not retain tensors inside list/dict containers."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        class ContainerParent(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.smooth = nn.Linear(4, 4, bias=False)
+                self.balance = nn.Linear(4, 4, bias=False)
+
+            def forward(self, items=None, payload=None):
+                return self.balance(items[0]) + self.balance(payload["x"])
+
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = ContainerParent()
+
+            def forward(self, items=None, payload=None):
+                return self.block(items=items, payload=payload)
+
+        model = TinyModel()
+        transform = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
+        mapping = ResolvedMapping(
+            smooth_name="block.smooth",
+            smooth_layer=model.block.smooth,
+            balance_names=["block.balance"],
+            balance_layers=[model.block.balance],
+            parent_name="block",
+            parent=model.block,
+        )
+        transform._block_mappings = {"block": [mapping]}
+
+        items = [torch.randn(1, 4, requires_grad=True)]
+        payload = {"x": torch.randn(1, 4, requires_grad=True)}
+        handles = transform._register_awq_hooks(model, model.block, "block")
+        try:
+            model(items=items, payload=payload)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        _, cached_kwargs = transform._parent_args_cache[model.block][0]
+        assert cached_kwargs["items"] is not items
+        assert cached_kwargs["payload"] is not payload
+        assert cached_kwargs["items"][0].device.type == "cpu"
+        assert cached_kwargs["payload"]["x"].device.type == "cpu"
+        assert cached_kwargs["items"][0].requires_grad is False
+        assert cached_kwargs["payload"]["x"].requires_grad is False
+
+    def test_awq_parent_replay_microbatch_matches_full_batch(self):
+        """AWQ parent replay microbatching should preserve exact parent-output loss."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        class RecordingParent(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = nn.Linear(4, 4, bias=False)
+                self.batch_sizes = []
+
+            def forward(self, hidden_states, *, position_ids=None, cache_position=None, payload=None):
+                self.batch_sizes.append(hidden_states.shape[0])
+                assert position_ids is not None and position_ids.shape[0] == hidden_states.shape[0]
+                assert cache_position is not None and cache_position.shape == (3,)
+                add = payload["add"] if payload is not None else 0
+                return self.proj(hidden_states + add)
+
+        torch.manual_seed(0)
+        parent = RecordingParent()
+        hidden_states = torch.randn(5, 3, 4)
+        position_ids = torch.arange(15).reshape(5, 3)
+        cache_position = torch.arange(3)
+        payload = {"add": torch.randn(5, 3, 4)}
+        kwargs_list = [
+            ((hidden_states,), {"position_ids": position_ids, "cache_position": cache_position, "payload": payload})
+        ]
+
+        full = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
+        micro = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int", smooth_batch_size=2))
+
+        full_outputs = full._run_parent_samples(parent, kwargs_list)
+        parent.batch_sizes.clear()
+        micro_outputs = micro._run_parent_samples(parent, kwargs_list)
+
+        assert parent.batch_sizes == [2, 2, 1]
+        assert len(full_outputs) == 1
+        assert len(micro_outputs) == 3
+        assert torch.allclose(torch.cat(micro_outputs, dim=0), full_outputs[0])
+
+        ref_outputs = [out + 0.125 for out in micro_outputs]
+        parent.batch_sizes.clear()
+        streamed_loss = micro._compute_parent_loss(parent, kwargs_list, ref_outputs)
+        expected_loss = micro._compute_loss(ref_outputs, micro_outputs)
+
+        assert parent.batch_sizes == [2, 2, 1]
+        assert streamed_loss == expected_loss
+
+    def test_awq_smooth_seqlen_truncates_parent_forward_inputs(self):
+        """smooth_seqlen replay cache should truncate matching sequence dimensions consistently."""
+        from auto_round.algorithms.transforms.awq.base import _truncate_args_kwargs
+
+        hidden_states = torch.zeros(1, 16, 8)
+        position_ids = torch.arange(16).reshape(1, 16)
+        attention_mask = torch.zeros(1, 1, 16, 16)
+        rotary = (torch.zeros(1, 16, 8), torch.ones(1, 16, 8))
+
+        args, kwargs = _truncate_args_kwargs(
+            (hidden_states,),
+            {"position_ids": position_ids, "attention_mask": attention_mask, "position_embeddings": rotary},
+            seqlen=4,
+        )
+
+        assert args[0].shape == (1, 4, 8)
+        assert kwargs["position_ids"].shape == (1, 4)
+        assert kwargs["attention_mask"].shape == (1, 1, 4, 4)
+        assert kwargs["position_embeddings"][0].shape == (1, 4, 8)
+        assert kwargs["position_embeddings"][1].shape == (1, 4, 8)
+
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP."""
         ar = AutoRound(

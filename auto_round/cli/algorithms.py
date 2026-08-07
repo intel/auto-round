@@ -206,6 +206,20 @@ class AWQ(AlgorithmHandler):
             help="Number of grid-search points for AWQ scaling ratio.",
         )
         group.add_argument(
+            "--awq-smooth-seqlen",
+            dest="awq_smooth_seqlen",
+            default=None,
+            type=int,
+            help="Maximum sequence length used by AWQ scale-search parent replay.",
+        )
+        group.add_argument(
+            "--awq-smooth-batch-size",
+            dest="awq_smooth_batch_size",
+            default=None,
+            type=int,
+            help="Microbatch size for AWQ parent replay during scale search; <=0 disables microbatching.",
+        )
+        group.add_argument(
             "--awq-apply-clip",
             dest="awq_apply_clip",
             action="store_true",
@@ -229,6 +243,8 @@ class AWQ(AlgorithmHandler):
             n_grid=getattr(args, "n_grid", 20),
             apply_clip=getattr(args, "awq_apply_clip", False),
             clip_as_init=getattr(args, "awq_clip_as_init", False),
+            smooth_seqlen=getattr(args, "awq_smooth_seqlen", None) or 512,
+            smooth_batch_size=getattr(args, "awq_smooth_batch_size", None),
             **common_kwargs,
         )
 
