@@ -54,8 +54,7 @@ def per_head_fp8_qdq(tensor: torch.Tensor, tensor_max: None | torch.Tensor = Non
         raise ValueError(f"Per-head FP8 calibration expects [batch, heads, seq, head_dim], got {tuple(tensor.shape)}")
     if tensor_max is not None and tensor_max.shape != (tensor.shape[1],):
         raise ValueError(
-            f"Per-head FP8 calibration expects tensor_max shape ({tensor.shape[1]},), "
-            f"got {tuple(tensor_max.shape)}"
+            f"Per-head FP8 calibration expects tensor_max shape ({tensor.shape[1]},), " f"got {tuple(tensor_max.shape)}"
         )
 
     info = torch.finfo(torch.float8_e4m3fn)
