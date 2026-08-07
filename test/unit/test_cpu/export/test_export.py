@@ -348,18 +348,21 @@ class TestAutoRound:
         )
         quantized_model_path = self.save_dir
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
-        f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
-        assert "model.decoder.layers.0.self_attn.k_proj.input_scale" in f.keys()
-        assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
-        assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.input_scale").shape == torch.Size([1])
-        assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
-        check_attrs = ["k_scale", "v_scale", "q_scale"]
-        for attr in check_attrs:
-            weight_name = f"model.decoder.layers.0.self_attn.{attr}"
-            assert weight_name in f.keys()
-            assert f.get_tensor(weight_name).shape == torch.Size([1])
-            assert f.get_tensor(weight_name).dtype == torch.float32 or f.get_tensor(weight_name).dtype == torch.bfloat16
-        assert not any(key.endswith(".q_max") for key in f.keys())
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            assert "model.decoder.layers.0.self_attn.k_proj.input_scale" in f.keys()
+            assert "model.decoder.layers.0.self_attn.k_proj.weight_scale" in f.keys()
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.input_scale").shape == torch.Size([1])
+            assert f.get_tensor("model.decoder.layers.0.self_attn.v_proj.weight").dtype == torch.float8_e4m3fn
+            check_attrs = ["k_scale", "v_scale", "q_scale"]
+            for attr in check_attrs:
+                weight_name = f"model.decoder.layers.0.self_attn.{attr}"
+                assert weight_name in f.keys()
+                assert f.get_tensor(weight_name).shape == torch.Size([1])
+                assert (
+                    f.get_tensor(weight_name).dtype == torch.float32
+                    or f.get_tensor(weight_name).dtype == torch.bfloat16
+                )
+            assert not any(key.endswith(".q_max") for key in f.keys())
 
     def test_static_fp8_per_head_attn(self):
         import os

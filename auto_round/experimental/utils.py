@@ -52,6 +52,11 @@ def per_head_fp8_qdq(tensor: torch.Tensor, tensor_max: None | torch.Tensor = Non
     """Quantize/dequantize an attention tensor with one FP8 scale per attention head."""
     if tensor.dim() < 4:
         raise ValueError(f"Per-head FP8 calibration expects [batch, heads, seq, head_dim], got {tuple(tensor.shape)}")
+    if tensor_max is not None and tensor_max.shape != (tensor.shape[1],):
+        raise ValueError(
+            f"Per-head FP8 calibration expects tensor_max shape ({tensor.shape[1]},), "
+            f"got {tuple(tensor_max.shape)}"
+        )
 
     info = torch.finfo(torch.float8_e4m3fn)
     orig_dtype = tensor.dtype
@@ -91,6 +96,13 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
             if param.shape == new_val.shape:
                 param.data.copy_(new_val)
             else:
+                logger.warning(
+                    "Replacing parameter %s in module %s with a new shape: %s -> %s",
+                    name,
+                    module.__class__.__name__,
+                    tuple(param.shape),
+                    tuple(new_val.shape),
+                )
                 setattr(module, name, torch.nn.Parameter(new_val))
         else:
             module.register_parameter(name, torch.nn.Parameter(new_val))
