@@ -617,6 +617,10 @@ def _pack_weight_nvfp4_e5m3(
         )
     weight_dev = weight.to(device)
     _, scale, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
+    # fp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
+    # normalize to [out_features, in_features // group_size] before packing
+    # so serialized .weight_scale keeps the expected 2D shape.
+    scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
     linear = torch.nn.Linear(in_features, out_features, bias=False, device=device, dtype=weight.dtype)
     linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
     qlayer = QuantLinear(
