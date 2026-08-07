@@ -21,10 +21,13 @@ pr:
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/template/docker-template.yml
     exclude:
-      - test/test_hpu
-      - test/test_ark
-      - test/test_xpu
-      - test/test_cuda
+      - test/unit/test_hpu
+      - test/unit/test_ark
+      - test/unit/test_xpu
+      - test/unit/test_cuda
+      - test/unit/test_mlx
+      - test/integration
+      - test/e2e
       - "*.md"
       - "**/*.md"
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh
@@ -54,7 +57,7 @@ stages:
       BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
-        timeoutInMinutes: 45
+        timeoutInMinutes: 60
         strategy:
           matrix:
             part1:
