@@ -11,6 +11,7 @@ from auto_round import AutoRound
 
 
 @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
+@pytest.mark.timeout(300)
 def test_qwen3_5_moe(tiny_qwen35_moe_model_path):
     from transformers import Qwen3_5MoeForConditionalGeneration
 

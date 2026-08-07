@@ -22,6 +22,7 @@ class TestAutoRoundAsym:
         shutil.rmtree("runs", ignore_errors=True)
 
     # use parameters later
+    @pytest.mark.timeout(60)
     def test_asym_format(self, tiny_opt_model_path):
         for format in ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]:
             bits, group_size, sym = 4, 128, False
