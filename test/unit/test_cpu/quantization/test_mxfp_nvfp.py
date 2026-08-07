@@ -56,7 +56,6 @@ class TestAutoRoundFP:
             layer_config=layer_config,
             disable_opt_rtn=True,
             trust_remote_code=False,
-            disable_opt_rtn=True,
         )
         compressed_model, _ = autoround.quantize()
         moe = compressed_model.model.layers[1].mlp
