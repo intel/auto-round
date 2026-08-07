@@ -314,7 +314,7 @@ class TestAutoScheme:
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(quantized_model_path, threshold=0.10)
 
-    @pytest.mark.timeout(210)
+    @pytest.mark.skip_ci(reason="Time-consuming: two quantizations plus two lm_eval runs; covered by nightly")
     def test_mixed_bits_get_scoring(self):
         """Verify that AutoScheme scoring produces accuracy above a known reference threshold for mixed-bit
         quantization.

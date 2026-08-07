@@ -27,8 +27,8 @@ class TestTorchCompile:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="torch.compile warmup with iters=2 is slow")
     @require_gguf
-    @pytest.mark.timeout(210)
     def test_gguf_q2ks_torch_compile(self, dataloader):
         """Test GGUF Q2_K_S quantization with torch.compile enabled.
 

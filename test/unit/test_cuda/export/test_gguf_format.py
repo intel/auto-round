@@ -138,8 +138,8 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
 
+    @pytest.mark.skip_ci(reason="Time-consuming accuracy evaluation; covered by nightly")
     @require_gguf
-    @pytest.mark.timeout(180)
     def test_q4_0_accuracy(self):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         bits, group_size, sym = 4, 32, True
