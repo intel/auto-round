@@ -291,12 +291,405 @@ these fail:
 - `group_size ∈ {32, 64, 128, 256}`
 - `asym == false` (asym S4 is out of scope for both DPAS paths)
 
+**S4 DPAS tile policies** — the single-pass mainloop (precedence 1)
+now selects a dedicated 4-bit tile policy by the average tokens-per-
+expert (`A_avg_M = total_tokens / E`), mirroring the reference
+`w4a16` dispatch in `vllm-project/vllm-xpu-kernels`
+(`grouped_gemm_xe2_interface.hpp`). Because the packed-nibble B stream
+is half the byte volume of the INT8 path, the large-M tile is widened
+to `128×256×32` (vs. the INT8 `128×128×16`) so the DPAS accumulators
+and the halved B-side bandwidth are better utilised:
+
+| `A_avg_M` bucket | WG tile (M×N×K) | Policy (`sycl_tla_moe_prefill_fp8_dpas.hpp`) |
+| ---------------- | --------------- | -------------------------------------------- |
+| `≤ 4`            | `8×64×32`       | `dpas_w4a16_policy_m_8`                       |
+| `≤ 8`            | `16×64×32`      | `dpas_w4a16_policy_m_16` (= `w8a16_m_16`)     |
+| `≤ 128`          | `32×64×32`      | `dpas_w4a16_policy_m_32` (= `w8a16_m_32`)     |
+| `> 128`          | `128×256×32`    | `dpas_w4a16_policy`                           |
+
+The mid-size `32×64` tile now covers `A_avg_M` up to 128 (previously it
+jumped to the wide tile at 33), which avoids padding waste on the
+common chunked-prefill batch sizes.
+
+**S4 DPAS decode path** — the *decode* phase (`sycl_tla_moe_decode.hpp`,
+int4-sym / `S4_CLIP`, `!asym`, `ARK_MOE_DECODE_DPAS_S4` default ON) has
+its own dedicated dispatch, `moe_decode_s4_dpas_per_group_dispatch`,
+mirroring vLLM-xpu-kernels' `w4a16` decode dispatch. It selects the DPAS
+tile from the same `A_avg_M` ladder as prefill (`_m_8` → `_m_16` → `_m_32`
+→ wide): the 8-row tile is used only for the tiny-batch tail (`A_avg_M ≤
+4`), and the M tile grows once more than four tokens route to an expert
+on average. An earlier revision hard-pinned the 8-row tile on the
+assumption that decode only ever sees a handful of tokens per expert, but
+that under-fills the M dimension and re-streams the (bandwidth-bound)
+packed weights 2–4× on larger decode batches (many sequences, high top-k,
+or few experts), roughly halving throughput versus the reference. It
+reuses the shared per-group mainloop's 2D VNNI block load
+(`get_block_2d_copy_A/B` + `make_block_2d_prefetch`) and register-resident
+per-N scale (`sg_scale[]`, folded once per K-group), reading the same
+`[E, N, K/2]` packed weights + `[E, N, K/group]` scales with no repack.
+`ARK_MOE_DECODE_S4_DPAS_M8=1` forces the legacy hard-pinned 8-row tile for
+A/B comparison (numerically identical; only the tile shape differs).
+**Status: NEEDS-HARDWARE-VALIDATION** (untested port).
+
+**Occupancy gate — decode-sized batches use the int4-asym kernel.** Even
+the smallest DPAS tile processes 8 token rows per expert, so a batch with
+fewer than 8 tokens per expert on average pays full weight-streaming cost
+for mostly-padding rows. That is precisely the decode regime: on
+MiniMax-M2 (192 experts) bs1 is 8 tokens and bs32 is 256 tokens, i.e.
+0.04–1.3 tokens per expert, and measurements showed int4-sym (DPAS) at
+0.31–0.34 ms/1.55 ms against int4-asym (scalar GEMV) at 0.12 ms/1.45 ms
+for the same shapes. int4-sym decode is therefore routed to the *same*
+scalar GEMV kernel that int4-asym uses (`launch_int4` / its coalesced
+variant, with `Asym=false`) unless the batch supplies at least 8 tokens per
+expert.
+`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` overrides the tokens-per-expert
+threshold; `0` disables the gate (always DPAS when the shape gate allows),
+which is what the accuracy and DPAS-vs-scalar perf tests set.
+
+**Word-native nibble decode; sym keeps its signed nibbles.** Once both
+modes shared the scalar GEMV, int4-sym was still slower than int4-asym in
+the *same* kernel despite doing strictly fewer floating point operations.
+The asymmetry was the nibble decode, and the first attempt at fixing it
+(the `^ 0x88` sign-flip identity `signed == (unsigned ^ 8) - 8`) did not
+close the gap: it kept sym on 8-bit-typed operations — a `sycl::vec<uint8_t,N>`
+XOR plus per-byte mask/shift — which Xe expands into narrow-type ALU work
+rather than executing on the native 32-bit datapath, and it forced sym to
+carry a constant zero-point of 8 (see *activation sums* below).
+
+Both modes now decode through the shared `decode_int4_octet` primitive,
+which takes the 8 nibbles of a packed *32-bit word* and extracts each one
+with a single DWORD shift/mask pair (asym) or a DWORD shift-left +
+arithmetic shift-right pair (sym). No 8-bit-typed vector, no XOR, no
+narrowing casts, and one 32-bit load per 8 K elements instead of a byte
+vector. The per-nibble results are bit-identical to `decode_int4_pair` for
+every one of the 2^32 input words in both modes (verified exhaustively), so
+this is a pure instruction-selection change. It applies to `launch_int4`,
+`launch_int4_coalesced`, and — since the primitive is shared — the prefill
+mixed-dtype path.
+
+Because sym once again recovers *true signed* nibbles, its per-group fold
+collapses to `acc += scale * Σ a·q` with no zero-point term at all, whereas
+asym keeps `acc += scale * (Σ a·q − zero · Σ a)`.
+
+**4-byte-blocked coalesced repack.** The coalesced fallback
+(`launch_int4_coalesced`, `ARK_MOE_DECODE_COALESCE_INT4` default ON)
+repacks the `[E, N, K/2]` weights on-device so sub-group loads are
+contiguous. The original repack layout `[E, N/16, K/2, 16]` put one byte
+per lane per step, so although the 16 lanes together covered one cache
+line, each lane still issued a *byte* load. The layout is now
+`[E, N/16, ceil(K/8), 16, 4]`: a chunk holds four consecutive packed bytes
+for each of the 16 columns of a tile, lane-major, so lane `l` reads its
+four bytes at chunk offset `l*4` and the sub-group still spans 64
+contiguous bytes. A lane's four bytes are contiguous, hence exactly one
+little-endian 32-bit word: the lane issues a single DWORD load (4× fewer
+weight-load instructions) and feeds it straight to `decode_int4_octet`, so
+all eight nibbles come out with native 32-bit ops in both modes. Group
+sizes that are a multiple of 8 (16/32/64/128/256 — every shipped quant
+config) start each K-group on a chunk boundary so the vector stage covers
+the whole group; other even group sizes fall back to a scalar
+prologue/epilogue over the same layout. The external `[E, N, K/2]` weight
+contract is unchanged.
+
+**Hoisted activation sums (asym only).** The asym int4 GEMVs fold the
+per-group scale/zero as `scale * (Σ a·q − zero · Σ a)`. `Σ a` depends only
+on the activation row and the K-group, not on the output column, yet it
+used to be recomputed inside the inner loop — once per sub-group lane (16×
+redundant) and again for every N-tile work-group — costing one extra float
+add per K element. It is now precomputed once into a
+`[total_tokens, K/group_size]` fp32 table (`launch_act_group_sums`), so
+the GEMV inner loop only accumulates `Σ a·q` and reads one float per
+group. The summation order changes by a few fp32 ULPs, far inside the
+kernel's quantization tolerance.
+
+**Sym skips the pre-pass entirely.** `launch_act_group_sums` is a separate
+`parallel_for`, and on an in-order queue it fully serializes ahead of the
+GEMV. That is a poor trade at decode sizes: it saves one float add per K
+element in a loop that is already memory-bound, but adds a whole kernel
+dispatch to a call whose GEMV is only tens of microseconds at bs1 — which
+is why routing sym through the biased-unsigned decode made sym *slower*,
+not faster. Now that sym decodes true signed nibbles it has no zero-point
+term, so the table is computed (and the kernel launched) only when
+`Asym` is true.
+
+**Pooled scratch instead of per-call `malloc_device`.** The repack buffer
+used to be a transient USM allocation that had to be freed behind a
+blocking `queue::wait()` on *every* decode call — and decode issues one
+call per generated token, so that allocation plus sync was on the order of
+the GEMV itself. Both the repack buffer and the activation-sum table now
+come from a persistent per-queue, grow-on-demand slab
+(`DeviceScratchPool`), so steady-state decode performs no allocation and
+introduces no host-side synchronization; ordering between the producer
+kernels and the GEMV is already guaranteed by the in-order queue.
+`ark.moe_decode_release_scratch()` (pybind `moe_decode_release_scratch`)
+hands the memory back.
+
+The repack *kernel* still runs on every call by default. Setting
+`ARK_MOE_DECODE_INT4_REPACK_CACHE=1` reuses the previous repack when the
+weight buffer address and shape are unchanged, which is valid for a real
+inference loop where the weights are fixed. It is **off by default**
+because the tag is a pointer identity: a freed-then-reallocated weight
+tensor can land on the same address (torch's caching allocator makes this
+common in test loops), and a stale repack would silently produce wrong
+results. Callers that enable it must call
+`ark.moe_decode_release_scratch()` before dropping the weight tensor.
+
+| Env var | Default | Effect |
+| ------- | ------- | ------ |
+| `ARK_MOE_DECODE_COALESCE_INT4` | ON | Use the coalesced, 4-byte-blocked repack GEMV for the int4 scalar fallback; `0` forces the legacy per-lane-strided `launch_int4`. |
+| `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` | `num_experts * TOKEN_BLOCK` | Minimum total tokens before the coalesced kernel is worth its repack pass; `0` disables the gate (what the parity/A-B tests set). |
+| `ARK_MOE_DECODE_INT4_REPACK_CACHE` | OFF | Reuse the repack across calls on the same weight buffer. Only safe when the caller owns the weight lifetime. |
+
+Perf A/B for the coalesced path is
+`test_moe_decode_perf.py::test_perf_int4_coalesced_vs_strided` (toggles
+`ARK_MOE_DECODE_COALESCE_INT4` 0/1 on the same shapes). Correctness is
+covered by `test_moe.py::test_decode_int4_coalesced_matches_scalar`,
+`::test_decode_int4_coalesced_token_blocking`,
+`::test_decode_int4_coalesced_unaligned_group_size` (group sizes that are
+not a multiple of 8, exercising the scalar prologue/epilogue) and
+`::test_decode_int4_repack_cache`.
+
+**Occupancy-gate threshold sweep.** The default
+`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` of 8 was derived from the row count of
+`dpas_w4a16_policy_m_8` rather than measured. The sweep that locates the
+real crossing point is
+`test_moe_decode_perf.py::test_perf_int4_sym_dpas_vs_scalar_threshold`;
+its default token counts (16–128) all sit far below the gate (8 × 192
+experts == 1536 tokens), so pass `--all-shapes` to extend the sweep to
+256/512/1024/1536/3072 tokens and bracket the gate from both sides. The
+default stays at 8 until hardware numbers say otherwise.
+
 Accuracy parity is covered by
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`,
 which forces `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0` so the single-pass mainloop is
 exclusively exercised, at the same production shapes as
 `test_accuracy_int4`, with tolerance `rtol=atol=1e-1`.
+
+## FP8 Decode Paths (`sycl_tla_moe_decode.hpp`)
+
+int4-sym decode is now at target, and the same two levers that got it
+there apply to FP8: get the dequant off the byte-typed datapath, and stop
+paying setup cost per decode call. On top of that, the FP8 MoE dispatch
+from vllm-xpu-kernels is mirrored into a decode-specialised entry point.
+Both levers have since landed and **FP8 decode is at target too** — the
+word-native dequant, the K-split lane mapping with its N-blocking, and the
+removal of the per-call routing sync. That is what moved the unified
+`ark.moe(phase="auto")` cutoff from 32 to 128 total tokens (see
+*Auto-dispatch cutoff* below).
+
+**Word-native FP8 decode (`ARK_FP8_DECODE_MODE`, default `word`).** The
+decode GEMV does roughly one multiply-add per weight byte, so the dequant
+*is* the kernel. Both legacy decoders paid real work per byte: `lut`
+issues a memory load per weight element into the 128-entry magnitude table
+plus a sign select, and `bits` runs a branchy `ldexp` chain. Both also
+indexed an 8-bit-typed `sycl::vec<uint8_t, 16>`, which Xe's 32-bit ALU
+lanes cannot address directly, so IGC expands it into narrow-type
+regioning — exactly the problem `decode_int4_octet` fixed for nibbles.
+
+None of that work is necessary, because an FP8 byte is already an
+IEEE-style float and fp16 is a *superset* of both FP8 formats: the whole
+conversion is a bit-field move.
+
+| Format | fp16 bit pattern | Exactness |
+| ------ | ---------------- | --------- |
+| E5M2   | `byte << 8` | Bit-exact for all 256 encodings — same sign position, same 5-bit exponent, same bias 15. Subnormals stay subnormal, `exp==31` stays Inf/NaN. |
+| E4M3   | `(byte + (byte & 0x80)) << 7` | Bit-exact for all 254 finite encodings (normals, subnormals, both zeros), yielding the true value × `2^-8`. |
+
+E4M3's 4-bit exponent has bias 7 against fp16's bias 15, so the field move
+leaves a constant `2^-8` factor; `fp8_word_scale_bias<IsE4M3>()` (`256.0f`)
+is folded into the per-K-group scale, an exact power of two applied once
+per group, so it costs nothing per element. Adding the sign bit to itself
+carries it exactly one position further, which is why the sign move and
+the magnitude move collapse into one add plus one shift.
+
+The kernel reads the weights as `sycl::vec<uint32_t, 4>` — the same
+16-byte transaction and the same 16-byte alignment requirement as the byte
+vector it replaces — and `decode_fp8_quad_half_bits` turns each 32-bit word
+into four fp16 bit patterns in a handful of native DWORD ops (SWAR, no
+cross-lane carry). Two partial accumulators break the fp32 dependency
+chain, as in `int4_decode_chunk`. Both primitives live in
+`sycl_tla_moe_dequant.hpp`, and both were verified exhaustively over all
+256 byte values in both formats.
+
+**E4M3 NaN caveat.** The two E4M3 NaN encodings (`0x7F` / `0xFF`;
+`torch.float8_e4m3fn` has no Inf) decode to ±480 instead of NaN, since fp16
+has no NaN pattern reachable by a pure field move. auto-round FP8
+checkpoints are produced by scaling to `finfo(float8_e4m3fn).max == 448`
+and clamping, so those two encodings cannot occur. Callers that need NaN
+propagation can select `ARK_FP8_DECODE_MODE=lut` or `=bits`.
+
+**K-split lane mapping (`ARK_MOE_DECODE_FP8_KSPLIT`, default ON).** Once
+the dequant is a couple of DWORD ops, the scalar GEMV is purely a
+bandwidth problem: at ~1 multiply-add per weight byte it can only run as
+fast as the expert tile streams in. The original mapping gave one output
+element to one *work-item*, so a lane walked a whole `[n, K]` weight row on
+its own. Two costs follow:
+
+* **Uncoalesced weight loads.** Lanes `l` and `l+1` of a sub-group read
+  bytes `K` apart, so each 16-byte load instruction is split into 16
+  cache-line requests. No DRAM byte is wasted (each lane consumes its lines
+  as it walks the row) but the memory controller sees 16 independent
+  streams per sub-group, the pattern DRAM row buffers handle worst.
+* **Too few threads.** The grid is `total_tokens × N / 16` sub-groups —
+  768 SIMD16 threads for a MiniMax-M2 batch-1 step (8 tokens, N=1536),
+  below the thread slots of a BMG-class GPU, so there are never enough
+  loads in flight to hide DRAM latency.
+
+`launch_fp8_ksplit` transposes the mapping: one *sub-group* per output
+element, with the 16 lanes splitting K. Lane `l` owns the 16 consecutive K
+elements at `l*16` inside each 256-element step, so one instruction covers
+256 **contiguous** weight bytes (four full cache lines) and 512 contiguous
+activation bytes, each thread walks a single sequential stream, and the
+thread count grows 16× (12288 sub-groups for that batch-1 step). The price
+is one `reduce_over_group` per output element — a handful of shuffles
+against `K` multiply-adds — and 16× more activation traffic out of L1,
+which has ample headroom at this arithmetic intensity.
+
+This is the same problem the int4 fallback solves by repacking weights
+into an N-tiled layout (`ARK_MOE_DECODE_COALESCE_INT4`), which costs a
+full extra pass over the weight tensor and a scratch buffer. FP8 weights
+are one byte per element and already K-contiguous, so K-splitting the lane
+mapping gets the same coalescing with no repack, no scratch and no extra
+kernel launch.
+
+The kernel indexes the scale array with a shift, so the shape gate
+requires a power-of-two `group_size ≥ 16` (every shipped FP8 config — 32 /
+64 / 128 / 256 — passes) plus `N%16==0`, `K%group_size==0` and `K ≥ 256` (so
+every lane of the sub-group owns at least one chunk); anything else keeps the
+legacy GEMV, which handles arbitrary group sizes. All three
+`ARK_FP8_DECODE_MODE` decoders run under both mappings, so the mode A/B
+stays apples-to-apples. **Status: hardware-validated** — this mapping is
+what put FP8 decode at target.
+
+**N-blocking inside the K-split kernel (`ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`,
+default 2).** With one output column per sub-group the hot loop issues, per
+16-byte weight chunk, one weight message *and* one 32-byte activation
+message — half of what a thread requests is the activation row, which every
+column of that token re-reads — and only two weight loads are ever in
+flight. Giving a sub-group `NCOLS` consecutive columns loads the activation
+chunk once and reuses it for all of them:
+
+| | `NCOLS=1` | `NCOLS=n` |
+| --- | --- | --- |
+| activation messages per weight chunk | 1 | 1/n |
+| independent weight loads in flight | 2 | 2n |
+
+The first effect cuts request-queue pressure; the second raises
+memory-level parallelism, which is what a streaming GEMV sitting well below
+peak DRAM bandwidth is actually limited by. The cost is `n` times the live
+weight vectors and accumulators, so past some point the kernel spills — hence
+the small ladder (1, 2, 4) and the conservative default.
+
+A work-group still holds 16 sub-groups, so it now covers `16 * NCOLS`
+columns; an `N` that cannot be tiled at the requested factor falls back to
+the largest valid smaller power of two on the host side (`N=1536` and
+`N=3072` tile at every factor). The lane → K-chunk mapping, the per-chunk
+scale fold and the final `reduce_over_group` are untouched, so the
+arithmetic per output element is unchanged and `NCOLS=1` reproduces the
+previous kernel exactly. `test_perf_fp8_ksplit_ncols_sweep` prints all three
+factors per shape so the default can be set from measured data.
+**Status: hardware-validated at the shipped default (`NCOLS=2`).**
+
+**Routing-table validation (`ARK_MOE_VALIDATE_ROUTING`, default OFF).** The
+Python entry point used to check `sum(num_tokens_per_expert) == total_tokens`
+on every call. For a routing table that already lives on the device that
+sum means a reduction kernel plus a *blocking* device-to-host copy, i.e. a
+full pipeline flush — on a decode step whose kernel takes ~150 µs, and once
+per generated token. It also lands inside the timed region of every decode
+benchmark, because the queue is idle when the timing event is recorded.
+The sum is now a caller contract (the C++ side never needed the host value:
+it consumes the device pointer and derives `expert_id_per_token` on-device,
+clamped to `num_experts - 1`); set `ARK_MOE_VALIDATE_ROUTING=1` to restore
+the eager check when debugging a router. Host-side (CPU) routing tables are
+still checked unconditionally, since summing those is free.
+
+**FP8 DPAS decode dispatch.** `moe_decode_fp8_dpas_per_group_dispatch`
+(`sycl_tla_moe_prefill_fp8_dpas.hpp`, `ARK_MOE_DECODE_DPAS_FP8` default ON)
+is the FP8 twin of the S4 decode dispatch: same mainloop, same `[E, N, K]`
+FP8 bytes + `[E, N, K/group]` scales, no repack. It differs from the
+prefill dispatch in two decode-specific ways.
+
+*Finer small-M ladder.* The reference `w8a16` dispatch in vllm-xpu-kernels
+bottoms out at the 16-row tile, while its `w4a16` dispatch has an extra
+8-row bucket. Decode `A_avg_M` sits far below 16, so the missing rung means
+half of every M tile is padding and the bandwidth-bound FP8 weights get
+streamed for rows that contribute nothing. `dpas_w4a16_policy_m_8` carries
+no 4-bit-specific types — it is purely an `8×64×32` `WGTile` / `SGLayout`
+shape — so the FP8 mainloop reuses it verbatim, closing that gap:
+
+| `A_avg_M` bucket | WG tile (M×N×K) | Policy |
+| ---------------- | --------------- | ------ |
+| `≤ 4`            | `8×64×32`       | `dpas_w4a16_policy_m_8` |
+| `≤ 8`            | `16×64×32`      | `dpas_w8a16_policy_m_16` |
+| `≤ 128`          | `32×64×32`      | `dpas_w8a16_policy_m_32` |
+| `> 128`          | `128×128×16`    | `dpas_w8a16_policy` |
+
+The upper rungs match the S4 *decode* ladder rather than the FP8 prefill
+one, whose `≤ 512 → m_32` rung is tuned for prefill-sized batches.
+
+*Persistent atomic counter.* The prefill dispatch allocates the
+work-group counter with `sycl::malloc_device` and releases it with
+`sycl::free` on every call; each of those forces a queue synchronization.
+At prefill sizes that is noise, at decode sizes — where the GEMM itself is
+only tens of microseconds and one call is issued per generated token — it
+is a large fraction of the total. The decode dispatch uses a persistent
+per-queue slot instead (`get_persistent_atomic_buffer`, now shared with the
+S4 header so both paths use one cache). Taking the fast path also skips the
+`fill_expert_id_per_token` pre-pass, since the DPAS dispatch consumes
+`num_tokens_per_expert` directly — one fewer kernel launch on the decode
+timeline. **Status: NEEDS-HARDWARE-VALIDATION** (this header is an
+untested port).
+
+**Occupancy gate — real decode batches stay on the scalar GEMV.** Same
+reasoning as int4-sym: the smallest tile the decode ladder can pick
+processes 8 token rows per expert, so below 8 tokens per expert on average
+the tile is mostly padding. That is exactly the decode regime (MiniMax-M2,
+192 experts: 0.04–1.3 tokens per expert), so FP8 decode is routed to the
+scalar GEMV unless the batch supplies at least 8 tokens per expert.
+`ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` overrides the threshold; `0` disables the
+gate, which is what the parity and A/B perf tests set. Shapes that fail the
+per-group shape gate (`N%64==0`, `K%32==0`, `K%group_size==0`,
+`group_size ∈ {32,64,128,256}`) always fall back to the scalar GEMV.
+
+**Auto-dispatch cutoff (`ARK_MOE_AUTO_DECODE_MAX_TOKENS`, default 128).**
+`ark.moe(phase="auto")` routes to `moe_gemm_decode` when
+`activations.shape[0] <= cutoff` and to `moe_gemm_prefill` otherwise. The
+cutoff was 32 while the decode GEMV was still the bottleneck: only the tiny
+single-/few-stream case was worth keeping off the prefill grouped GEMM. Now
+that the FP8 decode GEMV is at target (as int4-sym already was) the GEMV
+stays ahead across the whole small-batch range rather than just at the bs1
+extreme, so the cutoff is 128 total tokens; above that each expert receives
+enough rows to fill the DPAS M tile, which is where the grouped GEMM wins.
+The `decode_threshold=` keyword overrides it per call and takes precedence
+over the env var, and `phase="decode"` / `phase="prefill"` bypass the
+heuristic entirely. Dispatch parity is covered by
+`test_moe_unified.py::TestMoeUnifiedDispatch`, which pins both the cutoff
+boundary (128 tokens still decode) and the overrides.
+
+| Env var | Default | Effect |
+| ------- | ------- | ------ |
+| `ARK_FP8_DECODE_MODE` | `word` | FP8 decode implementation for the scalar GEMV: `word` (bit-field move + folded scale bias), `lut` (128-entry magnitude table), `bits` (inline bit manipulation). |
+| `ARK_FP8_DECODE_USE_LUT` | unset | Legacy selector, still honoured when set explicitly and when `ARK_FP8_DECODE_MODE` is unset/unrecognised: truthy → `lut`, falsy → `bits`. Also still drives the mixed-input prefill path. |
+| `ARK_MOE_AUTO_DECODE_MAX_TOKENS` | `128` | Total-token cutoff used by `ark.moe(phase="auto")`: at or below it the call goes to `moe_gemm_decode`, above it to `moe_gemm_prefill`. Non-positive/unparsable values fall back to the default; the `decode_threshold=` keyword wins over both. |
+| `ARK_MOE_DECODE_DPAS_FP8` | ON | Route FP8 decode to the per-group DPAS grouped GEMM when the shape and occupancy gates pass; `0` forces the scalar GEMV. |
+| `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | Minimum tokens per expert before the DPAS path is taken; `0` disables the gate (what the parity/A-B tests set). |
+| `ARK_MOE_DECODE_FP8_KSPLIT` | ON | Scalar-GEMV lane mapping: one sub-group per output element with the lanes splitting K (coalesced weight loads, 16× the threads); `0` forces the legacy one-work-item-per-output-element GEMV. Shapes outside the gate (power-of-two `group_size ≥ 16`, `N%16==0`, `K%group_size==0`, `K ≥ 256`) always use the legacy mapping. |
+| `ARK_MOE_DECODE_FP8_KSPLIT_NCOLS` | `2` | Output columns one sub-group owns in the K-split GEMV (1, 2 or 4). Higher values reuse one activation load across more columns and keep more weight loads in flight, at the cost of more live registers. An `N` that `16 * NCOLS` cannot tile falls back to the largest valid smaller power of two. |
+| `ARK_MOE_VALIDATE_ROUTING` | OFF | Eagerly check `sum(num_tokens_per_expert) == activations.shape[0]` for device-resident routing tables. The check costs a blocking device-to-host sync per call, so it is opt-in; CPU-resident tables are always checked. |
+
+Perf A/B rows are `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
+(`speedup` is `lut / word`), `::test_perf_fp8_ksplit_vs_strided`
+(`speedup` is `strided / ksplit`), `::test_perf_fp8_ksplit_ncols_sweep`
+(`speedup` is `NCOLS=1 / best NCOLS`, with all factors printed) and
+`::test_perf_fp8_dpas_vs_scalar` (`speedup` is `scalar / dpas`).
+Correctness is covered by
+`test_moe.py::test_decode_fp8_modes_match` (all three decoders agree, and
+each tracks the dequant reference),
+`::test_decode_fp8_ksplit_matches_strided` (both lane mappings agree, plus
+a non-power-of-two `group_size` fallback case),
+`::test_decode_fp8_ksplit_ncols_match` (every blocking factor agrees, plus
+an untileable-`N` fallback case) and
+`::test_decode_fp8_dpas_matches_scalar`.
 
 ## FP8 per-expert (per-tensor) perf tests
 
