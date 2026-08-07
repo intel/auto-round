@@ -633,7 +633,9 @@ class TestAWQMoE:
         position_ids = torch.arange(15).reshape(5, 3)
         cache_position = torch.arange(3)
         payload = {"add": torch.randn(5, 3, 4)}
-        kwargs_list = [((hidden_states,), {"position_ids": position_ids, "cache_position": cache_position, "payload": payload})]
+        kwargs_list = [
+            ((hidden_states,), {"position_ids": position_ids, "cache_position": cache_position, "payload": payload})
+        ]
 
         full = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int"))
         micro = AWQTransform(AWQConfig(bits=4, group_size=4, sym=True, data_type="int", smooth_batch_size=2))

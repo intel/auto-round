@@ -576,10 +576,7 @@ class AWQTransform(BasePreprocessor):
         if all(signature == first for signature in signatures[1:]):
             return False
 
-        details = {
-            name: dict(signature)
-            for name, signature in zip(mapping.balance_names, signatures)
-        }
+        details = {name: dict(signature) for name, signature in zip(mapping.balance_names, signatures)}
         logger.warning(
             "AWQ: skipping smoothing for '%s' because balance layers in the same mapping "
             "have different quantization parameters: %s.",

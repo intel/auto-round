@@ -483,8 +483,7 @@ def resolve_mappings(
     """
     if user_mappings is not None:
         mapping_defs = [
-            AWQMapping(m["smooth_layer"], m["balance_layers"], m.get("activation_hook_target"))
-            for m in user_mappings
+            AWQMapping(m["smooth_layer"], m["balance_layers"], m.get("activation_hook_target")) for m in user_mappings
         ]
     else:
         mapping_defs = _get_mappings_for_model(model)
