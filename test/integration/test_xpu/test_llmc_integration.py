@@ -74,8 +74,6 @@ w8a8_static_recipe_modifier = AutoRoundModifier(
 )
 
 
-# TODO: remove xfail once the issue is resolved.
-@pytest.mark.xfail(reason="skip this case temporarily due to issue https://github.com/intel/auto-round/issues/2112")
 @pytest.mark.skipif(torch.xpu.device_count() < 1, reason="test requires at least 1 XPU")
 @pytest.mark.parametrize(
     "recipe",
