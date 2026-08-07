@@ -388,6 +388,46 @@ def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
     assert group["weights"]["group_size"] == 16
     assert group["input_activations"]["dynamic"] == "local"
 
+
+def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = {
+        f"{prefix}.weight": torch.randint(0, 256, (32, 64), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.randint(0, 256, (32, 4), dtype=torch.uint8),
+        f"{prefix}.weight_scale_2": torch.tensor([2.0], dtype=torch.float32),
+        f"{prefix}.input_scale": torch.tensor([4.0], dtype=torch.float32),
+        "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
+    }
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {
+        prefix: {
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nv_fp",
+        }
+    }
+    output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    # Legacy naming should be normalized to llm-compressor-style global-scale keys.
+    assert f"{prefix}.weight_packed" in output
+    assert f"{prefix}.weight_scale" in output
+    assert f"{prefix}.weight_global_scale" in output
+    assert f"{prefix}.input_global_scale" in output
+    assert f"{prefix}.weight" not in output
+    assert f"{prefix}.weight_scale_2" not in output
+    assert f"{prefix}.input_scale" not in output
+    assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([0.5], dtype=torch.float32))
+    assert torch.allclose(output[f"{prefix}.input_global_scale"], torch.tensor([0.25], dtype=torch.float32))
+
+    # The NVFP4 layer is treated as already quantized (passthrough) while
+    # other Linear layers in the shard are still quantized by model-free RTN.
+    assert prefix in quantized
+    assert "model.layers.0.self_attn.q_proj" in quantized
+    assert prefix not in ignored
+
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
         save_file(

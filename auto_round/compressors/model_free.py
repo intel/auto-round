@@ -114,7 +114,7 @@ import torch
 
 from auto_round import envs
 from auto_round.compressors.config_resolution import thaw_mapping
-from auto_round.compressors.utils import is_mx_fp
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
@@ -746,10 +746,132 @@ def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[t
                 entries.append((layer_name, name, scale_key, 8))
         elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
             layer_name = name[: -len(".weight_packed")]
+            # NVFP4 packed sources also use `.weight_packed` + `.weight_scale`, but
+            # are accompanied by global-scale tensors. Skip those here so they can
+            # be handled by the NVFP4 passthrough path instead of MXFP dequant.
+            if (
+                f"{layer_name}.weight_global_scale" in raw_tensors
+                or f"{layer_name}.input_global_scale" in raw_tensors
+                or f"{layer_name}.weight_scale_2" in raw_tensors
+                or f"{layer_name}.input_scale" in raw_tensors
+            ):
+                continue
             scale_key = f"{layer_name}.weight_scale"
             if scale_key in raw_tensors:
                 entries.append((layer_name, name, scale_key, 4))
     return entries
+
+
+def _normalize_nvfp4_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    shard_name: str | None = None,
+) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """Normalize legacy NVFP4 source naming to llm-compressor naming.
+
+    Legacy checkpoints may store NVFP4 tensors as:
+    - ``<layer>.weight`` (packed U8)
+    - ``<layer>.weight_scale``
+    - ``<layer>.weight_scale_2`` (reciprocal global scale)
+    - ``<layer>.input_scale`` (reciprocal global scale)
+
+    For model-free passthrough and llm-compressor compatibility, convert to:
+    - ``<layer>.weight_packed``
+    - ``<layer>.weight_scale``
+    - ``<layer>.weight_global_scale``
+    - ``<layer>.input_global_scale``
+    """
+    converted_layers: list[str] = []
+    candidates: list[str] = []
+    for name, tensor in list(raw_tensors.items()):
+        if not name.endswith(".weight"):
+            continue
+        layer_name = name[: -len(".weight")]
+        if tensor.dtype not in (torch.uint8, torch.int8):
+            continue
+        if f"{layer_name}.weight_scale" not in raw_tensors:
+            continue
+        has_legacy_global = f"{layer_name}.weight_scale_2" in raw_tensors or f"{layer_name}.input_scale" in raw_tensors
+        has_new_packed = f"{layer_name}.weight_packed" in raw_tensors
+        if has_legacy_global or has_new_packed:
+            candidates.append(layer_name)
+
+    if not candidates:
+        return raw_tensors, converted_layers
+
+    for layer_name in candidates:
+        weight_key = f"{layer_name}.weight"
+        weight_packed_key = f"{layer_name}.weight_packed"
+        weight_scale_2_key = f"{layer_name}.weight_scale_2"
+        input_scale_key = f"{layer_name}.input_scale"
+        weight_global_scale_key = f"{layer_name}.weight_global_scale"
+        input_global_scale_key = f"{layer_name}.input_global_scale"
+
+        if weight_packed_key not in raw_tensors and weight_key in raw_tensors:
+            raw_tensors[weight_packed_key] = raw_tensors.pop(weight_key).view(torch.uint8).contiguous()
+
+        if weight_scale_2_key in raw_tensors and weight_global_scale_key not in raw_tensors:
+            raw_tensors[weight_global_scale_key] = (1.0 / raw_tensors.pop(weight_scale_2_key).float()).to(torch.float32)
+        elif weight_scale_2_key in raw_tensors:
+            raw_tensors.pop(weight_scale_2_key)
+
+        if input_scale_key in raw_tensors and input_global_scale_key not in raw_tensors:
+            raw_tensors[input_global_scale_key] = (1.0 / raw_tensors.pop(input_scale_key).float()).to(torch.float32)
+        elif input_scale_key in raw_tensors:
+            raw_tensors.pop(input_scale_key)
+
+        converted_layers.append(layer_name)
+
+    if converted_layers:
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        logger.info(f"{shard_prefix}Normalized {len(converted_layers)} legacy NVFP4 layer(s) to llm-compressor naming.")
+    return raw_tensors, converted_layers
+
+
+def _handle_nvfp4_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    matcher: "_PatternMatcher",
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
+    """Passthrough NVFP4 source tensors when target scheme for the layer is NVFP4.
+
+    This keeps already-quantized NVFP4 layers intact in model-free mode while
+    allowing other layers to be quantized normally.
+    """
+    passthrough_tensors: dict[str, torch.Tensor] = {}
+    passthrough_layers: list[str] = []
+
+    for name, tensor in list(raw_tensors.items()):
+        if not name.endswith(".weight_packed") or tensor.dtype not in (torch.uint8, torch.int8):
+            continue
+
+        layer_name = name[: -len(".weight_packed")]
+        scale_key = f"{layer_name}.weight_scale"
+        if scale_key not in raw_tensors:
+            continue
+
+        scheme = matcher.resolve_scheme(f"{layer_name}.weight")
+        if scheme is None:
+            continue
+        scheme_bits = scheme.get("bits")
+        scheme_data_type = (scheme.get("data_type") or "").lower()
+        if not (scheme_bits == 4 and (is_nv_fp(scheme_data_type) or scheme_data_type == _NVFP4_E5M3_DATA_TYPE)):
+            continue
+
+        keys_to_move = [name, scale_key]
+        weight_global_scale_key = f"{layer_name}.weight_global_scale"
+        input_global_scale_key = f"{layer_name}.input_global_scale"
+        if weight_global_scale_key in raw_tensors:
+            keys_to_move.append(weight_global_scale_key)
+        if input_global_scale_key in raw_tensors:
+            keys_to_move.append(input_global_scale_key)
+
+        for key in keys_to_move:
+            passthrough_tensors[key] = raw_tensors.pop(key).to("cpu")
+        passthrough_layers.append(layer_name)
+
+    if passthrough_layers:
+        logger.info(f"Handling NVFP4 source tensor(s): {len(passthrough_layers)} passthrough layer(s).")
+
+    return raw_tensors, passthrough_tensors, passthrough_layers
 
 
 def _is_out_of_memory_error(exc: Exception) -> bool:
@@ -1186,6 +1308,9 @@ def _process_shard(
         quantization_config=source_quantization_config,
     )
 
+    # 1.5) normalize legacy NVFP4 names to llm-compressor naming.
+    raw_tensors, _converted_nvfp4_layers = _normalize_nvfp4_source_tensors(raw_tensors, shard_name=shard_name)
+
     # 2) generic MXFP handling for both preprocessed and normal source models
     raw_tensors, passthrough_tensors, passthrough_layers = _handle_mxfp_source_tensors(
         raw_tensors,
@@ -1196,6 +1321,14 @@ def _process_shard(
     )
     output_tensors.update(passthrough_tensors)
     quantized_layers.extend(passthrough_layers)
+
+    # 3) NVFP4 passthrough for layers already stored in packed format.
+    raw_tensors, nvfp_passthrough_tensors, nvfp_passthrough_layers = _handle_nvfp4_source_tensors(
+        raw_tensors,
+        matcher,
+    )
+    output_tensors.update(nvfp_passthrough_tensors)
+    quantized_layers.extend(nvfp_passthrough_layers)
 
     raw_tensors = _dequant_fp8_tensors(
         raw_tensors,
@@ -3485,8 +3618,9 @@ def _preprocess_model_type_source_tensors(
             # float32 layout: sign(1) | exponent(8) | mantissa(23)
             # → uint8 E8M0 = (view_as_int32 >> 23) & 0xFF
             if scale.dtype == torch.float32:
+                sanitized_scale_name = ".".join("<idx>" if part.isdigit() else part for part in scale_name.split("."))
                 logger.warning_once(
-                    f"[{model_type}] Scale tensor '<idx>' has dtype float32 with UE8M0 encoding "
+                    f"[{model_type}] Scale tensor '{sanitized_scale_name}' has dtype float32 with UE8M0 encoding "
                     f"(only the 8-bit exponent is significant). "
                     f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
                 )
