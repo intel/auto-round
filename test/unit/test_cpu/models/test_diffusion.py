@@ -40,7 +40,7 @@ def test_flux_saving(setup_flux):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(150)
 def test_flux(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(

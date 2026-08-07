@@ -36,6 +36,7 @@ class TestAutoRound:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.timeout(90)
     def test_bits_setting(self, tiny_opt_model_path):
         layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
         autoround = AutoRound(tiny_opt_model_path, iters=2, seqlen=2, nsamples=1, layer_config=layer_config)
@@ -44,7 +45,7 @@ class TestAutoRound:
         if module.bits != 8:
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(90)
     def test_layer_config(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}

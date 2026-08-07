@@ -192,6 +192,7 @@ class TestGGUF:
         )
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
+    @pytest.mark.timeout(90)
     def test_vlm_gguf(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 

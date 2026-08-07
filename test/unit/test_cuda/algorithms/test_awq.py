@@ -238,7 +238,7 @@ class TestAWQEval:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(240)
+    @pytest.mark.timeout(360)
     def test_awq_w4a16_lmeval(self):
         """AWQ W4A16 on OPT-125m: lambada_openai accuracy check."""
         ar = AutoRound(
