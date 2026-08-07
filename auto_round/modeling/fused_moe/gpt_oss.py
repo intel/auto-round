@@ -26,6 +26,7 @@ else:
 from transformers.models.gpt_oss.configuration_gpt_oss import GptOssConfig
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssMLP
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.modeling.fused_moe.utils import _update_parameter
 from auto_round.utils import clear_memory, unsupported_meta_device
@@ -59,6 +60,8 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
     Copies weights from fused tensors and reuses the original router and optional shared_expert.
     """
 
+    supports_gguf_fused_moe = True
+
     def __init__(self, original: GptOssMLP, config: GptOssConfig):
         super().__init__(original)
         hidden_size = config.hidden_size
@@ -82,6 +85,18 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         with no_init_weights(), torch.device("meta"):
             for _ in range(E):
                 self.experts.append(GPTOssSingleExpert(hidden_size, intermediate_size, dtype=dtype))
+        register_moe_fusion_spec(
+            self.experts,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_up_proj": {"split_into": ["gate_proj", "up_proj"], "concat_dim": 0},
+                    "down_proj": {},
+                },
+                num_experts=E,
+                checkpoint_transposed=True,
+                module=original.experts,
+            ),
+        )
 
     def _materialize_weights(self) -> None:
         original = self._get_original_module()

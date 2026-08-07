@@ -95,8 +95,8 @@ function run_unit_test() {
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test_cuda/requirements.txt
-    uv pip install -r test_cuda/requirements_diffusion.txt
+    uv pip install -r test/unit/test_cuda/requirements.txt
+    uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
@@ -106,7 +106,7 @@ function run_unit_test() {
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
+    for test_file in $(find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."
@@ -140,7 +140,7 @@ function run_unit_test_vlm() {
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
 
     # run VLM unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test*vlms.py"); do
+    for test_file in $(find ./unit/test_cuda -name "test*vlms.py"); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vlm_${test_basename}.log
         echo "Running ${test_file}..."
@@ -169,7 +169,7 @@ function run_unit_test_llmc() {
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         echo "Running ${test_file}..."
@@ -202,7 +202,7 @@ function run_unit_test_sglang() {
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         echo "Running ${test_file}..."
@@ -236,7 +236,7 @@ function run_unit_test_vllm() {
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coverage
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         echo "Running ${test_file}..."
