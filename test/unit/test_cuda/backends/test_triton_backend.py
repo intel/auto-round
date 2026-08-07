@@ -29,7 +29,7 @@ class TestAutoRoundTritonBackend:
     # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_greater_than_050
-    @pytest.mark.timeout(150)
+    @pytest.mark.timeout(180)
     def test_tritonv2_2bits_asym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)

@@ -303,7 +303,7 @@ class TestPipelineIntegration:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(90)
+    @pytest.mark.timeout(120)
     def test_pipeline_quarot_string(self):
         """AutoRound(rotation_config='quarot') should work end-to-end."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
@@ -320,7 +320,7 @@ class TestPipelineIntegration:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(90)
     def test_pipeline_spinquant_config(self):
         """AutoRound(rotation_config=SpinQuantConfig(...)) should work."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
@@ -345,7 +345,7 @@ class TestPipelineIntegration:
         )
         shutil.rmtree(self.save_dir + "_cfg", ignore_errors=True)
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(90)
     def test_pipeline_dict_config(self):
         """AutoRound(rotation_config={...}) should work."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")

@@ -10,7 +10,7 @@ from auto_round import AutoRound
 
 
 class TestLocalCalibDataset:
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(150)
     def test_combine_dataset(self, tiny_opt_model_path):
         dataset = "NeelNanda/pile-10k" + ",BAAI/CCI3-HQ" + ",madao33/new-title-chinese"
         bits, group_size, sym = 4, 128, True

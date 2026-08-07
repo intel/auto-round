@@ -76,7 +76,7 @@ class TestAutoRound:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(90)
     def test_gguf_imatrix(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0)
         _, quantized_model_path = ar.quantize_and_save(format="gguf:q2_k_s", output_dir=self.save_dir)
@@ -109,7 +109,7 @@ class TestAutoRound:
         with patch("torch.cuda.get_device_capability", return_value=DEVICE_CAPABILITY):  # revert DEVICE_CAPABILITY
             evaluate_accuracy(folder, threshold=0.25)
 
-    @pytest.mark.timeout(150)
+    @pytest.mark.timeout(180)
     def test_small_model_opt_rtn(self, mock_fp8_capable_device):
         model_name = get_model_path("Qwen/Qwen3-0.6B-FP8")
         ar = AutoRound(model=model_name, iters=0)

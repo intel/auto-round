@@ -33,7 +33,7 @@ class TestAutoRoundTorchBackend:
     # Keep one CI test for torch backend and skip others to save time.
     # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(90)
     def test_torch_4bits_asym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)

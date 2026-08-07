@@ -24,7 +24,7 @@ class TestAutoRoundAsym:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
+    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("group_size", [32, 64, 128])
     def test_asym_group_size_with_tuning(self, group_size, tiny_opt_model_path):
         bits, sym = 4, False

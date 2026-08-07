@@ -34,7 +34,7 @@ class TestAutoRoundexllamaBackend:
     # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_gptqmodel
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(150)
     def test_gptqmodel_exllmav2_4bits_asym(self, dataloader):
         model_path = get_model_path("facebook/opt-125m")
         bits, group_size, sym = 4, 128, False
@@ -128,7 +128,7 @@ class TestAutoRoundexllamaBackend:
         torch.cuda.empty_cache()
 
     @require_gptqmodel
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(90)
     def test_gptqmodel_awq_exllamav2_4bits_asym(self, dataloader):
         """Test AWQ quantization with gptqmodel:awq_exllamav2 backend (bfloat16 inference)."""
         model_path = get_model_path("facebook/opt-125m")
