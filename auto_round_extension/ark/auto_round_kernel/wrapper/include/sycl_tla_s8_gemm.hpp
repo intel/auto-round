@@ -42,6 +42,7 @@ class S8AccumKernelName;
 
 template <bool HasBias, bool FullTile, class ElementOut, int TileM, int TileN, class SGLayout>
 class S8KBlockDequantKernelName;
+
 template <bool HasBias, bool FullTile, class TiledMMA, class ElementOut>
 void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t* b, ElementOut* c,
                               const ElementOut* scale_a, const ElementOut* scale_b, const ElementOut* bias, int m,
@@ -71,12 +72,11 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
   constexpr SPIRVScope barrier_scope = ScopeWorkgroup;
   constexpr int prefetch_dist = 3;
 
-  for (int ib = 0; ib < blks; ++ib) {
-    const int8_t* a_blk = a + size_t(ib) * size_t(blocksize);
-    const int8_t* b_blk = b + size_t(ib) * size_t(blocksize);
+  int k_tile_size = int(get<2>(wg_tile));
 
-    auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a_blk)), make_shape(m, blocksize), make_stride(k, _1{}));
-    auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b_blk)), make_shape(n, blocksize), make_stride(k, _1{}));
+  if (blocksize % k_tile_size == 0) {
+    auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
+    auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
 
     Tensor cA = make_identity_tensor(A.shape());
     Tensor cB = make_identity_tensor(B.shape());
@@ -108,10 +108,9 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
     auto pAgA = thr_prefetch_A.partition_S(gA);
     auto pBgB = thr_prefetch_B.partition_S(gB);
 
-    int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
+    int k_tiles_per_block = blocksize / k_tile_size;
+    int k_tile_count = blks * k_tiles_per_block;
     int k_tile_prefetch = 0;
-
-    clear(tCrC);
 
     CUTE_UNROLL
     for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; ++k_tile_prefetch) {
@@ -119,36 +118,102 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
       prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
     }
 
-    for (int k_tile = 0; k_tile < k_tile_count; ++k_tile, ++k_tile_prefetch) {
-      barrier_arrive(barrier_scope);
+    for (int ib = 0; ib < blks; ++ib) {
+      clear(tCrC);
 
-      copy(copy_a, tAgA(_, _, _, k_tile), tArA);
-      copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+      for (int bk = 0; bk < k_tiles_per_block; ++bk) {
+        int k_tile = ib * k_tiles_per_block + bk;
 
-      if (k_tile_prefetch < k_tile_count) {
-        prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
-        prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+        barrier_arrive(barrier_scope);
+
+        copy(copy_a, tAgA(_, _, _, k_tile), tArA);
+        copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+
+        if (k_tile_prefetch < k_tile_count) {
+          prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+          prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+        }
+        ++k_tile_prefetch;
+
+        reorder(tArA, tCrA);
+        reorder(tBrB, tCrB);
+        gemm(mma, tCrA, tCrB, tCrC);
+
+        barrier_wait(barrier_scope);
       }
 
-      reorder(tArA, tCrA);
-      reorder(tBrB, tCrB);
-      gemm(mma, tCrA, tCrB, tCrC);
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        auto coord = tCgC(i);
+        int row = int(get<0>(coord));
+        int col = int(get<1>(coord));
 
-      barrier_wait(barrier_scope);
+        if constexpr (!FullTile) {
+          if (row >= m || col >= n) continue;
+        }
+
+        float sb = static_cast<float>(scale_b[col * blks + ib]);
+        tFrC(i) += static_cast<float>(tCrC(i)) * sb;
+      }
     }
+  } else {
+    for (int ib = 0; ib < blks; ++ib) {
+      const int8_t* a_blk = a + size_t(ib) * size_t(blocksize);
+      const int8_t* b_blk = b + size_t(ib) * size_t(blocksize);
 
-    CUTE_UNROLL
-    for (int i = 0; i < size(tCrC); ++i) {
-      auto coord = tCgC(i);
-      int row = int(get<0>(coord));
-      int col = int(get<1>(coord));
+      auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a_blk)), make_shape(m, blocksize), make_stride(k, _1{}));
+      auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b_blk)), make_shape(n, blocksize), make_stride(k, _1{}));
 
-      if constexpr (!FullTile) {
-        if (row >= m || col >= n) continue;
+      Tensor cA = make_identity_tensor(A.shape());
+      Tensor cB = make_identity_tensor(B.shape());
+
+      Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
+      Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
+
+      auto copy_a = make_block_2d_copy_A(mma, A);
+      auto copy_b = make_block_2d_copy_B(mma, B);
+
+      auto thr_copy_a = copy_a.get_slice(local_id);
+      auto thr_copy_b = copy_b.get_slice(local_id);
+
+      auto tCrA = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
+      auto tCrB = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
+
+      auto tArA = thr_copy_a.partition_sg_fragment_D(gA(_, _, 0));
+      auto tBrB = thr_copy_b.partition_sg_fragment_D(gB(_, _, 0));
+
+      Tensor tAgA = thr_copy_a.partition_S(gA);
+      Tensor tBgB = thr_copy_b.partition_S(gB);
+
+      clear(tCrC);
+
+      int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
+      for (int k_tile = 0; k_tile < k_tile_count; ++k_tile) {
+        barrier_arrive(barrier_scope);
+
+        copy(copy_a, tAgA(_, _, _, k_tile), tArA);
+        copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+
+        reorder(tArA, tCrA);
+        reorder(tBrB, tCrB);
+        gemm(mma, tCrA, tCrB, tCrC);
+
+        barrier_wait(barrier_scope);
       }
 
-      float sb = static_cast<float>(scale_b[col * blks + ib]);
-      tFrC(i) += static_cast<float>(tCrC(i)) * sb;
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        auto coord = tCgC(i);
+        int row = int(get<0>(coord));
+        int col = int(get<1>(coord));
+
+        if constexpr (!FullTile) {
+          if (row >= m || col >= n) continue;
+        }
+
+        float sb = static_cast<float>(scale_b[col * blks + ib]);
+        tFrC(i) += static_cast<float>(tCrC(i)) * sb;
+      }
     }
   }
 
