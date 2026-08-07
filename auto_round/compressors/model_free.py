@@ -105,7 +105,7 @@ import re
 import shutil
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
 from functools import lru_cache
 from typing import Any, Callable, Optional, Union
@@ -1833,6 +1833,48 @@ def _process_single_shard_task(
     if shard_path is None or not os.path.exists(shard_path):
         return shard_idx, shard_name, None, None, None, None, None
 
+    return _quantize_local_shard_task(
+        shard_idx,
+        shard_name,
+        shard_path=shard_path,
+        device=device,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        fp8_block_size=fp8_block_size,
+        model_type=model_type,
+        source_quantization_config=source_quantization_config,
+        quant_output_dir=quant_output_dir,
+        total_shards=total_shards,
+        enable_torch_compile=enable_torch_compile,
+        cleanup_source_shard=is_streaming,
+    )
+
+
+def _quantize_local_shard_task(
+    shard_idx: int,
+    shard_name: str,
+    *,
+    shard_path: str,
+    device: str,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    fp8_block_size: list | None,
+    model_type: str | None,
+    source_quantization_config: dict | None,
+    quant_output_dir: str,
+    total_shards: int,
+    enable_torch_compile: bool = False,
+    cleanup_source_shard: bool = False,
+) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
+    """Quantize one already-downloaded shard and write the output shard.
+
+    Returns lightweight metadata only so IPC does not transfer tensor storages.
+    """
+    if shard_path is None or not os.path.exists(shard_path):
+        return shard_idx, shard_name, None, None, None, None, None
+
     output_tensors, quantized, ignored = _process_shard(
         shard_path=shard_path,
         shard_name=shard_name,
@@ -1857,13 +1899,12 @@ def _process_single_shard_task(
     tensor_names = list(local_weight_map.keys())
     clear_memory()
 
-    if is_streaming:
+    if cleanup_source_shard:
         try:
             os.remove(shard_path)
         except OSError:
             pass
 
-    # Return only lightweight metadata to avoid IPC transfer of tensor storages.
     return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
 
 
@@ -2536,6 +2577,10 @@ class _ModelFreeCompressorCore:
     # -------------------------------------------------------------------
 
     def _process_all_shards(self) -> None:
+        if self.is_streaming:
+            self._process_all_shards_streaming_pipeline()
+            return
+
         try:
             from tqdm import tqdm as _tqdm
         except ImportError:
@@ -2581,36 +2626,8 @@ class _ModelFreeCompressorCore:
             )
 
             for future in shard_iter:
-                shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = future.result()
-
-                if (
-                    shard_path is None
-                    or out_shard_name is None
-                    or tensor_names is None
-                    or quantized is None
-                    or ignored is None
-                ):
-                    logger.warning(f"Shard not found: {shard_name}, skipping")
-                    continue
-
-                memory_monitor.update()
-                clear_memory()
-                if len(self.shard_names) > 1:
-                    logger.info(f"Memory usage: {memory_monitor.get_summary()}")
-
-                compressed_quantized = compress_layer_names(quantized)
-                compressed_ignored = compress_layer_names(ignored)
-                logger.info(
-                    f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
-                    f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
-                    f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
-                )
-
-                self.all_quantized_layers.extend(quantized)
-                self.all_ignored_layers.extend(ignored)
-
-                for tensor_name in tensor_names:
-                    self.output_weight_map[tensor_name] = out_shard_name
+                result = future.result()
+                self._merge_shard_task_result(result)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard worker processes.")
             _force_cleanup_process_pool(pool)
@@ -2620,6 +2637,152 @@ class _ModelFreeCompressorCore:
             raise
         finally:
             _force_cleanup_process_pool(pool)
+
+    def _merge_shard_task_result(
+        self,
+        result: tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None],
+    ) -> None:
+        """Merge one shard-task result into global stats and weight map."""
+        shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = result
+        if shard_path is None or out_shard_name is None or tensor_names is None or quantized is None or ignored is None:
+            logger.warning(f"Shard not found: {shard_name}, skipping")
+            return
+
+        memory_monitor.update()
+        clear_memory()
+        if len(self.shard_names) > 1:
+            logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+
+        compressed_quantized = compress_layer_names(quantized)
+        compressed_ignored = compress_layer_names(ignored)
+        logger.info(
+            f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
+            f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
+            f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+        )
+
+        self.all_quantized_layers.extend(quantized)
+        self.all_ignored_layers.extend(ignored)
+        for tensor_name in tensor_names:
+            self.output_weight_map[tensor_name] = out_shard_name
+
+    def _process_all_shards_streaming_pipeline(self) -> None:
+        """Streaming-mode shard pipeline with dedicated downloader and quant workers.
+
+        Design:
+        - one downloader worker serializes network bandwidth usage;
+        - N quant workers consume ready shards independently;
+        - shards are assigned for quantization as soon as download completes.
+        """
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+
+        if not self.shard_names:
+            return
+
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+
+        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
+        prefetch_depth = max(2, worker_count)
+        total_shards = len(self.shard_names)
+
+        download_pool: ThreadPoolExecutor | None = None
+        quant_pool: ProcessPoolExecutor | None = None
+        download_futures: dict = {}
+        quant_futures = set()
+        next_download_idx = 0
+        completed_quant = 0
+
+        def _submit_next_download() -> bool:
+            nonlocal next_download_idx
+            if next_download_idx >= total_shards:
+                return False
+            shard_idx = next_download_idx
+            shard_name = self.shard_names[shard_idx]
+            future = download_pool.submit(
+                _prefetch_shard,
+                self.model_name_or_path,
+                shard_name,
+                self.work_dir,
+                self.source_dir,
+                self.is_streaming,
+            )
+            download_futures[future] = (shard_idx, shard_name)
+            next_download_idx += 1
+            return True
+
+        try:
+            download_pool = ThreadPoolExecutor(max_workers=1)
+            quant_pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
+
+            for _ in range(min(prefetch_depth, total_shards)):
+                _submit_next_download()
+
+            progress = _tqdm(total=total_shards, desc="Processing shards", unit="shard") if _tqdm else None
+
+            while completed_quant < total_shards:
+                wait_set = set(download_futures.keys()) | set(quant_futures)
+                if not wait_set:
+                    break
+
+                done, _ = wait(wait_set, return_when=FIRST_COMPLETED)
+                for future in done:
+                    if future in download_futures:
+                        shard_idx, shard_name = download_futures.pop(future)
+                        shard_path = future.result()
+                        if shard_path is None or not os.path.exists(shard_path):
+                            logger.warning(f"Prefetch failed for shard {shard_name}, skipping")
+                            completed_quant += 1
+                            if progress is not None:
+                                progress.update(1)
+                        else:
+                            qf = quant_pool.submit(
+                                _quantize_local_shard_task,
+                                shard_idx,
+                                shard_name,
+                                shard_path=shard_path,
+                                device=self.device,
+                                default_scheme=self.default_scheme,
+                                layer_config=self.layer_config,
+                                ignore_patterns=self.ignore_patterns,
+                                fp8_block_size=self.fp8_block_size,
+                                model_type=self.model_type,
+                                source_quantization_config=self.config.get("quantization_config", {}),
+                                quant_output_dir=self._quant_output_dir,
+                                total_shards=total_shards,
+                                enable_torch_compile=self.enable_torch_compile,
+                                cleanup_source_shard=True,
+                            )
+                            quant_futures.add(qf)
+
+                        while len(download_futures) < prefetch_depth and _submit_next_download():
+                            pass
+                    elif future in quant_futures:
+                        quant_futures.remove(future)
+                        result = future.result()
+                        self._merge_shard_task_result(result)
+                        completed_quant += 1
+                        if progress is not None:
+                            progress.update(1)
+
+            if progress is not None:
+                progress.close()
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user; terminating model-free shard workers.")
+            _force_cleanup_process_pool(quant_pool)
+            raise
+        except Exception:
+            _force_cleanup_process_pool(quant_pool)
+            raise
+        finally:
+            _force_cleanup_process_pool(quant_pool)
+            if download_pool is not None:
+                try:
+                    download_pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------
     # Output
