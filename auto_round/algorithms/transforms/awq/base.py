@@ -14,7 +14,7 @@
 """AWQ (Activation-Aware Weight Quantization) quantizer.
 
 Algorithm:
-1. Collect per-channel activation magnitudes during calibration.
+1. Collect per-channel balance-layer input magnitudes during calibration.
 2. For each smooth-balance mapping, perform a grid search over scaling ratios
    to find the one that minimises quantization error (output-based loss).
 3. Apply the best channel-wise scaling:
@@ -117,6 +117,8 @@ def _slice_seq_tensor(v: Any, actual_seq: int, seqlen: int) -> Any:
         return v
     if isinstance(v, (tuple, list)):
         return type(v)(_slice_seq_tensor(t, actual_seq, seqlen) for t in v)
+    if isinstance(v, dict):
+        return {k: _slice_seq_tensor(t, actual_seq, seqlen) for k, t in v.items()}
     return v
 
 
@@ -129,6 +131,10 @@ def _detect_actual_seq(values) -> int | None:
             nested = _detect_actual_seq(v)
             if nested is not None:
                 return nested
+        if isinstance(v, dict):
+            nested = _detect_actual_seq(v.values())
+            if nested is not None:
+                return nested
     return None
 
 
@@ -139,6 +145,50 @@ def _truncate_args_kwargs(args: tuple, kwargs: dict, seqlen: int) -> tuple[tuple
         return args, kwargs
     new_args = tuple(_slice_seq_tensor(v, actual_seq, seqlen) for v in args)
     new_kwargs = {k: _slice_seq_tensor(v, actual_seq, seqlen) for k, v in kwargs.items()}
+    return new_args, new_kwargs
+
+
+def _detect_actual_batch(values) -> int | None:
+    """Infer batch size from the first tensor with an explicit batch axis."""
+    for v in values:
+        if isinstance(v, torch.Tensor) and v.ndim >= 2:
+            return v.shape[0]
+        if isinstance(v, (tuple, list)):
+            nested = _detect_actual_batch(v)
+            if nested is not None:
+                return nested
+        if isinstance(v, dict):
+            nested = _detect_actual_batch(v.values())
+            if nested is not None:
+                return nested
+    return None
+
+
+def _detect_parent_batch(args: tuple, kwargs: dict) -> int | None:
+    """Infer parent replay batch size, preferring positional model inputs."""
+    actual_batch = _detect_actual_batch(args)
+    if actual_batch is not None:
+        return actual_batch
+    return _detect_actual_batch(kwargs.values())
+
+
+def _slice_batch_value(v: Any, actual_batch: int, start: int, end: int) -> Any:
+    """Slice a value's leading batch dimension, recursing into containers."""
+    if isinstance(v, torch.Tensor):
+        if v.ndim >= 2 and v.shape[0] == actual_batch:
+            return v[start:end]
+        return v
+    if isinstance(v, (tuple, list)):
+        return type(v)(_slice_batch_value(t, actual_batch, start, end) for t in v)
+    if isinstance(v, dict):
+        return {k: _slice_batch_value(t, actual_batch, start, end) for k, t in v.items()}
+    return v
+
+
+def _slice_batch_args_kwargs(args: tuple, kwargs: dict, actual_batch: int, start: int, end: int) -> tuple[tuple, dict]:
+    """Slice parent-forward positional args and kwargs to a batch microchunk."""
+    new_args = tuple(_slice_batch_value(v, actual_batch, start, end) for v in args)
+    new_kwargs = {k: _slice_batch_value(v, actual_batch, start, end) for k, v in kwargs.items()}
     return new_args, new_kwargs
 
 
@@ -168,6 +218,8 @@ class AWQTransform(BasePreprocessor):
         # A value <= 0 disables truncation and uses the full calibration sequence.
         smooth_seqlen = getattr(config, "smooth_seqlen", 512)
         self._smooth_seqlen: int | None = smooth_seqlen if smooth_seqlen > 0 else None
+        smooth_batch_size = getattr(config, "smooth_batch_size", None)
+        self._smooth_batch_size: int | None = smooth_batch_size if smooth_batch_size and smooth_batch_size > 0 else None
 
         # Single source of truth for "QDQ a candidate weight under the target
         # block-quantizer scheme", used as AWQ's grid-search / clip loss. AWQ
@@ -295,12 +347,12 @@ class AWQTransform(BasePreprocessor):
         # The compressor sets ``layer_config`` after ``prepare_run``; keep the
         # QDQ service in sync before it is used for the grid-search / clip loss.
         self._qdq_tool.layer_config = self.layer_config
-        active_mappings = [m for m in block_mappings if not self._mapping_has_ignored_layer(m)]
+        active_mappings = [m for m in block_mappings if self._mapping_is_smoothable(m)]
         skipped = len(block_mappings) - len(active_mappings)
         if skipped:
             logger.warning_once(
                 "AWQ: skipped %d smoothing mapping(s) in block '%s' that include "
-                "ignore_layers / full-precision layers (kept pure).",
+                "ignore_layers / full-precision layers or incompatible per-layer quantization parameters.",
                 skipped,
                 block_name,
             )
@@ -355,85 +407,88 @@ class AWQTransform(BasePreprocessor):
         """Register activation-stats and parent-kwargs hooks for one block."""
         handles = []
         mappings = self._block_mappings.get(block_name, [])
-        smooth_names = {m.smooth_name for m in mappings}
+        module_lookup = dict(model.named_modules())
 
-        # ── Smooth-layer activation-stats hooks ───────────────────────────────
-        # Priority: smooth source forward_hook (output stats).
-        # Each smooth source is hooked exactly once (set de-duplication via name).
-        for name, module in block.named_modules():
-            full_name = f"{block_name}.{name}" if name else block_name
-            if full_name not in smooth_names:
+        def _resolve_activation_hook_layer(mapping: ResolvedMapping) -> torch.nn.Module | None:
+            if not mapping.balance_layers:
+                return None
+
+            hook_target = mapping.activation_hook_target
+            if not hook_target:
+                return mapping.balance_layers[0]
+
+            target_layer = module_lookup.get(hook_target)
+            if target_layer is None and mapping.parent_name:
+                target_layer = module_lookup.get(f"{mapping.parent_name}.{hook_target}")
+            if target_layer is None:
+                try:
+                    target_layer = mapping.parent.get_submodule(hook_target)
+                except AttributeError:
+                    target_layer = None
+            if target_layer is None:
+                logger.warning(
+                    "AWQ: activation_hook_target '%s' for '%s' was not found; using first balance layer '%s'.",
+                    hook_target,
+                    mapping.smooth_name,
+                    mapping.balance_names[0] if mapping.balance_names else "<unknown>",
+                )
+                return mapping.balance_layers[0]
+            return target_layer
+
+        # ── Balance-layer input activation hooks ─────────────────────────────
+        # AWQ scales are derived from the tensor entering the balance layer.  For
+        # gated MLPs, smooth-layer output (for example up_proj(x)) is not the same
+        # tensor consumed by down_proj (act(gate_proj(x)) * up_proj(x)).
+        for mapping in mappings:
+            target_layer = _resolve_activation_hook_layer(mapping)
+            if target_layer is None:
                 continue
 
-            def _make_stats_hook(layer_name: str):
+            def _make_activation_hook(smooth_name: str):
 
-                def hook_fn(mod, args, output):
-                    x = output[0] if isinstance(output, tuple) else output
-                    if x is None or x.numel() == 0:
+                def hook_fn(mod, args):
+                    x = args[0] if isinstance(args, tuple) else args
+                    if x is None or not isinstance(x, torch.Tensor) or x.numel() == 0:
                         return
-                    channel_sum = x.detach().float().flatten(0, -2).abs().sum(dim=0).cpu()
-                    count = x[..., 0].numel()
-                    if layer_name not in self._activation_stats:
-                        self._activation_stats[layer_name] = [
+
+                    feat = x.detach()
+                    if feat.ndim == 1:
+                        feat = feat.view(1, -1)
+                    else:
+                        feat = feat.flatten(0, -2)
+
+                    channel_sum = feat.float().abs().sum(dim=0).cpu()
+                    count = feat.shape[0]
+                    if smooth_name not in self._activation_stats:
+                        self._activation_stats[smooth_name] = [
                             torch.zeros_like(channel_sum),
                             0,
                         ]
-                    self._activation_stats[layer_name][0] += channel_sum
-                    self._activation_stats[layer_name][1] += count
+                    self._activation_stats[smooth_name][0] += channel_sum
+                    self._activation_stats[smooth_name][1] += count
+
+                    if self.apply_clip:
+                        clip_feat = feat
+                        # Subsample tokens to bound memory.
+                        if clip_feat.shape[0] > self.clip_n_sample_token:
+                            step = max(1, clip_feat.shape[0] // self.clip_n_sample_token)
+                            clip_feat = clip_feat[::step]
+                        clip_feat = clip_feat.float().cpu()
+                        prev = self._clip_input_feat.get(smooth_name)
+                        if prev is None:
+                            self._clip_input_feat[smooth_name] = clip_feat
+                        else:
+                            self._clip_input_feat[smooth_name] = torch.cat([prev, clip_feat], dim=0)
 
                 return hook_fn
 
-            h = module.register_forward_hook(_make_stats_hook(full_name))
+            h = target_layer.register_forward_pre_hook(_make_activation_hook(mapping.smooth_name))
             handles.append(h)
-
-        # ── Clip input-feature hooks (only when apply_clip is enabled) ────────
-        # The balance layers of a mapping share the same input; capture it once
-        # per mapping (keyed by smooth_name) for the post-smooth clip search.
-        if self.apply_clip:
-            for mapping in mappings:
-                if not mapping.balance_layers:
-                    continue
-                target_layer = mapping.balance_layers[0]
-
-                def _make_clip_hook(smooth_name: str):
-
-                    def hook_fn(mod, args):
-                        x = args[0] if isinstance(args, tuple) else args
-                        if x is None or not isinstance(x, torch.Tensor) or x.numel() == 0:
-                            return
-                        feat = x.detach().reshape(-1, x.shape[-1])
-                        # Subsample tokens to bound memory.
-                        if feat.shape[0] > self.clip_n_sample_token:
-                            step = max(1, feat.shape[0] // self.clip_n_sample_token)
-                            feat = feat[::step]
-                        feat = feat.float().cpu()
-                        prev = self._clip_input_feat.get(smooth_name)
-                        if prev is None:
-                            self._clip_input_feat[smooth_name] = feat
-                        else:
-                            self._clip_input_feat[smooth_name] = torch.cat([prev, feat], dim=0)
-
-                    return hook_fn
-
-                h = target_layer.register_forward_pre_hook(_make_clip_hook(mapping.smooth_name))
-                handles.append(h)
 
         # One forward_pre_hook per unique parent module in the current block.
         parent_modules_hooked: set[int] = set()
         for mapping in mappings:
             parent = mapping.parent
-            hook_target = mapping.activation_hook_target
-            if hook_target:
-                target_parent = dict(model.named_modules()).get(hook_target)
-                if target_parent is None:
-                    logger.warning(
-                        "AWQ: activation_hook_target '%s' for '%s' was not found; using resolved parent '%s'.",
-                        hook_target,
-                        mapping.smooth_name,
-                        mapping.parent_name,
-                    )
-                else:
-                    parent = target_parent
             if id(parent) in parent_modules_hooked:
                 continue
             parent_modules_hooked.add(id(parent))
@@ -448,22 +503,19 @@ class AWQTransform(BasePreprocessor):
                     w_dtype = param.dtype if param is not None else None
 
                     def _proc(v):
+                        if hasattr(v, "key_cache"):
+                            return None
                         if isinstance(v, torch.Tensor):
                             v = v.detach()
                             if w_dtype and v.is_floating_point() and v.dtype != w_dtype:
                                 v = v.to(w_dtype)
                             return v.to("cpu", non_blocking=False)
-                        if isinstance(v, tuple) and any(isinstance(t, torch.Tensor) for t in v):
-                            return tuple(
-                                (
-                                    t.detach().to(w_dtype).to("cpu")
-                                    if (w_dtype and isinstance(t, torch.Tensor) and t.is_floating_point())
-                                    else (t.detach().to("cpu") if isinstance(t, torch.Tensor) else t)
-                                )
-                                for t in v
-                            )
-                        if hasattr(v, "key_cache"):
-                            return None
+                        if isinstance(v, tuple):
+                            return tuple(_proc(t) for t in v)
+                        if isinstance(v, list):
+                            return [_proc(t) for t in v]
+                        if isinstance(v, dict):
+                            return {k: _proc(t) for k, t in v.items()}
                         return v
 
                     proc_args = tuple(_proc(a) for a in args)
@@ -498,6 +550,50 @@ class AWQTransform(BasePreprocessor):
         if _is_fp(mapping.smooth_layer):
             return True
         return any(_is_fp(bl) for bl in mapping.balance_layers)
+
+    @staticmethod
+    def _freeze_quant_param(value):
+        if isinstance(value, list):
+            return tuple(AWQTransform._freeze_quant_param(item) for item in value)
+        if isinstance(value, tuple):
+            return tuple(AWQTransform._freeze_quant_param(item) for item in value)
+        return value
+
+    def _balance_quant_signature(self, layer: torch.nn.Module) -> tuple:
+        """Return the resolved quantization signature that must match within one AWQ mapping."""
+        params = self._qdq_tool.resolve_params(layer)
+        keys = ("bits", "group_size", "sym", "data_type", "super_bits", "super_group_size")
+        return tuple((key, self._freeze_quant_param(params.get(key))) for key in keys)
+
+    def _mapping_has_mixed_quant_params(self, mapping: ResolvedMapping) -> bool:
+        """Return True when balance layers in one AWQ smoothing group do not share quant params."""
+        if len(mapping.balance_layers) <= 1:
+            return False
+
+        signatures = [self._balance_quant_signature(layer) for layer in mapping.balance_layers]
+        first = signatures[0]
+        if all(signature == first for signature in signatures[1:]):
+            return False
+
+        details = {
+            name: dict(signature)
+            for name, signature in zip(mapping.balance_names, signatures)
+        }
+        logger.warning(
+            "AWQ: skipping smoothing for '%s' because balance layers in the same mapping "
+            "have different quantization parameters: %s.",
+            mapping.smooth_name,
+            details,
+        )
+        return True
+
+    def _mapping_is_smoothable(self, mapping: ResolvedMapping) -> bool:
+        """AWQ smoothing is all-or-nothing for layers sharing one smooth scale."""
+        if self._mapping_has_ignored_layer(mapping):
+            return False
+        if self._mapping_has_mixed_quant_params(mapping):
+            return False
+        return True
 
     def _smooth_block(self, block_prefix: str, block_mappings: list) -> None:
         """Run grid search and apply AWQ scales for one block.
@@ -592,7 +688,8 @@ class AWQTransform(BasePreprocessor):
         device = mapping.balance_layers[0].weight.device
         x_mean = x_mean.to(device)
 
-        group_size = self._normalize_group_size(self._qdq_tool.group_size, -1)
+        bl_params = {bl: self._qdq_tool.resolve_params(bl) for bl in mapping.balance_layers}
+        group_size = self._normalize_group_size(bl_params[mapping.balance_layers[0]]["group_size"], -1)
         if self.duo_scaling is not False:
             w_mean = self._compute_layer_means(mapping.balance_layers, group_size).to(device)
 
@@ -600,7 +697,11 @@ class AWQTransform(BasePreprocessor):
         use_parent_forward = len(parent_kwargs_list) > 0
 
         if use_parent_forward:
-            fp16_outputs = self._run_parent_samples(mapping.parent, parent_kwargs_list)
+            fp16_outputs = self._run_parent_samples(
+                mapping.parent,
+                parent_kwargs_list,
+                offload_to_cpu=self._smooth_batch_size is not None,
+            )
             if not fp16_outputs or all(f.numel() == 0 for f in fp16_outputs):
                 use_parent_forward = False
 
@@ -608,11 +709,11 @@ class AWQTransform(BasePreprocessor):
         if not use_parent_forward:
             orig_weights = orig_state  # same reference is fine
 
-        # Resolve each balance layer's scheme once, then pre-resolve the quant
-        # functions for the grid-search loop. ``opt_quant_func`` is non-None only
-        # when the SignRoundV2 optimized init-scale path applies for this mapping.
-        bl_params = {bl: self._qdq_tool.resolve_params(bl) for bl in mapping.balance_layers}
-        cached_quant_func, opt_quant_func = self._qdq_tool.resolve_quant_funcs(bl_params[mapping.balance_layers[0]])
+        # Resolve each balance layer's quant functions once, then reuse them in
+        # the grid-search loop. Normal AWQ flow requires one mapping to have
+        # compatible quant params, but keeping this per-layer avoids hidden
+        # coupling to the first layer and makes direct calls robust.
+        bl_quant_funcs = {bl: self._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
 
         best_error = float("inf")
         best_scales = None
@@ -633,28 +734,28 @@ class AWQTransform(BasePreprocessor):
                 # de-smoothed result back, so the parent forward below sees the
                 # weights the layer would actually compute with.
                 for bl in mapping.balance_layers:
+                    quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_qdq = self._qdq_tool.qdq(
                         orig_state[bl] * scales_view,
                         bl_params[bl],
-                        quant_func=cached_quant_func,
+                        quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
                     )
                     bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
-                int_w_outputs = self._run_parent_samples(mapping.parent, parent_kwargs_list)
-                total_loss = self._compute_loss(fp16_outputs, int_w_outputs)
-                del int_w_outputs
+                total_loss = self._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
                 for bl in mapping.balance_layers:
                     bl.weight.data.copy_(orig_state[bl])
             else:
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
+                    quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_orig = orig_weights[bl].to(device)
                     w_qdq = self._qdq_tool.qdq(
                         w_orig * scales_view,
                         bl_params[bl],
-                        quant_func=cached_quant_func,
+                        quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
                     )
@@ -672,31 +773,90 @@ class AWQTransform(BasePreprocessor):
         logger.debug("AWQ '%s': best_ratio=%.2f, best_error=%.3e", mapping.smooth_name, best_ratio, best_error)
         return best_scales
 
+    def _iter_parent_calls(self, stored_args: tuple, stored_kwargs: dict):
+        """Yield full or microbatched parent-call args from one cached calibration batch."""
+        actual_batch = _detect_parent_batch(stored_args, stored_kwargs)
+        if self._smooth_batch_size is None or actual_batch is None or actual_batch <= self._smooth_batch_size:
+            yield stored_args, stored_kwargs
+            return
+
+        for start in range(0, actual_batch, self._smooth_batch_size):
+            end = min(actual_batch, start + self._smooth_batch_size)
+            yield _slice_batch_args_kwargs(stored_args, stored_kwargs, actual_batch, start, end)
+
+    @staticmethod
+    def _move_parent_value_to_device(v: Any, device: torch.device | str) -> Any:
+        """Move a nested parent-call value to the parent execution device."""
+        if isinstance(v, torch.Tensor):
+            return v.to(device)
+        if isinstance(v, (tuple, list)):
+            return type(v)(AWQTransform._move_parent_value_to_device(t, device) for t in v)
+        if isinstance(v, dict):
+            return {k: AWQTransform._move_parent_value_to_device(t, device) for k, t in v.items()}
+        return v
+
+    @staticmethod
+    def _normalize_parent_output(out: Any) -> torch.Tensor:
+        """Extract the tensor output used by AWQ parent-output loss."""
+        if isinstance(out, tuple):
+            return out[0]
+        return out
+
     @torch.no_grad()
     def _run_parent_samples(
         self,
         parent: torch.nn.Module,
         kwargs_list: list[tuple[tuple, dict]],
+        offload_to_cpu: bool = False,
     ) -> list[torch.Tensor]:
         param = next(parent.parameters(), None)
         device = param.device if param is not None else torch.device("cpu")
 
-        def _to_device(v):
-            if isinstance(v, torch.Tensor):
-                return v.to(device)
-            if isinstance(v, (tuple, list)):
-                return type(v)(_to_device(t) for t in v)
-            return v
-
         outputs = []
         for stored_args, stored_kwargs in kwargs_list:
-            call_args = tuple(_to_device(a) for a in stored_args)
-            call_kwargs = {k: _to_device(v) for k, v in stored_kwargs.items()}
-            out = parent(*call_args, **call_kwargs)
-            if isinstance(out, tuple):
-                out = out[0]
-            outputs.append(out)
+            for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
+                call_args = tuple(self._move_parent_value_to_device(a, device) for a in micro_args)
+                call_kwargs = {k: self._move_parent_value_to_device(v, device) for k, v in micro_kwargs.items()}
+                out = self._normalize_parent_output(parent(*call_args, **call_kwargs)).detach()
+                if offload_to_cpu:
+                    out = out.to("cpu", non_blocking=False)
+                outputs.append(out)
         return outputs
+
+    @torch.no_grad()
+    def _compute_parent_loss(
+        self,
+        parent: torch.nn.Module,
+        kwargs_list: list[tuple[tuple, dict]],
+        fp16_outputs: list[torch.Tensor],
+    ) -> float:
+        """Replay parent samples and stream MSE loss without storing candidate outputs."""
+        param = next(parent.parameters(), None)
+        device = param.device if param is not None else torch.device("cpu")
+
+        loss = torch.tensor(0.0, device=device)
+        num_elements = torch.tensor(0, device=device, dtype=torch.long)
+        output_idx = 0
+        for stored_args, stored_kwargs in kwargs_list:
+            for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
+                if output_idx >= len(fp16_outputs):
+                    return float("inf")
+                call_args = tuple(self._move_parent_value_to_device(a, device) for a in micro_args)
+                call_kwargs = {k: self._move_parent_value_to_device(v, device) for k, v in micro_kwargs.items()}
+                out = self._normalize_parent_output(parent(*call_args, **call_kwargs))
+                fp16_out = fp16_outputs[output_idx].to(device, non_blocking=False)
+                loss += torch.nn.functional.mse_loss(
+                    fp16_out.float(),
+                    out.float(),
+                    reduction="sum",
+                )
+                num_elements += fp16_out.numel()
+                output_idx += 1
+                del out, fp16_out
+
+        if output_idx != len(fp16_outputs) or num_elements == 0:
+            return float("inf")
+        return (loss / num_elements).item()
 
     @staticmethod
     @torch.no_grad()

@@ -565,6 +565,10 @@ class AutoRoundCompatible:
             seqlen=seqlen,
             nsamples=nsamples,
             batch_size=batch_size,
+            apply_clip=kwargs.pop("apply_clip", False),
+            clip_as_init=kwargs.pop("clip_as_init", False),
+            smooth_seqlen=kwargs.pop("smooth_seqlen", 512),
+            smooth_batch_size=kwargs.pop("smooth_batch_size", None),
             mappings=kwargs.pop("mappings", None),
             **common_config_kwargs,
         )

@@ -177,6 +177,15 @@ _afmoe_mappings = [
     AWQMapping(r"up_proj$", [r"down_proj$"]),
 ]
 
+_bagel_mappings = [
+    AWQMapping(
+        r"input_layernorm$",
+        [r"\.self_attn\.q_proj$", r"\.self_attn\.k_proj$", r"\.self_attn\.v_proj$"],
+    ),
+    AWQMapping(r"post_attention_layernorm$", [r"\.mlp\.gate_proj$", r"\.mlp\.up_proj$"]),
+    AWQMapping(r"\.mlp\.up_proj$", [r"\.mlp\.down_proj$"]),
+]
+
 # ── Model class name → mappings registry ──────────────────────────────────────
 # Aligned with llm-compressor AWQ_MAPPING_REGISTRY (llmcompressor v0.10.0).
 # Models not in this registry fall back to default_mappings.
@@ -224,6 +233,10 @@ AWQ_MAPPING_REGISTRY: dict[str, list[AWQMapping]] = {
     # Other models using default mappings
     "SeedOssForCausalLM": default_mappings,
     "Ernie4_5_MoeForCausalLM": default_mappings,
+    # BAGEL wraps a Qwen2 language model and carries parallel *_moe_gen modules
+    # for image generation. Keep AWQ smoothing on the normal text path only.
+    "BagelForQuantization": _bagel_mappings,
+    "BagelForConditionalGeneration": _bagel_mappings,
 }
 
 
@@ -334,6 +347,14 @@ def _build_hybrid_attention_mappings(model: torch.nn.Module) -> list[AWQMapping]
         return None
 
     layer_types, num_layers = result
+
+    if len(layer_types) < num_layers:
+        logger.warning(
+            "Hybrid attention model config has num_hidden_layers=%d but only %d layer_types entries. Falling back.",
+            num_layers,
+            len(layer_types),
+        )
+        return None
 
     full_indices = [i for i in range(num_layers) if layer_types[i] == "full_attention"]
     linear_indices = [i for i in range(num_layers) if layer_types[i] == "linear_attention"]
@@ -461,7 +482,10 @@ def resolve_mappings(
         List of ``ResolvedMapping`` objects ready for AWQ grid search.
     """
     if user_mappings is not None:
-        mapping_defs = [AWQMapping(m["smooth_layer"], m["balance_layers"]) for m in user_mappings]
+        mapping_defs = [
+            AWQMapping(m["smooth_layer"], m["balance_layers"], m.get("activation_hook_target"))
+            for m in user_mappings
+        ]
     else:
         mapping_defs = _get_mappings_for_model(model)
 

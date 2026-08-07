@@ -385,7 +385,7 @@ from auto_round import AWQConfig, AutoRound, RTNConfig
 ar = AutoRound(
     "meta-llama/Llama-3.1-8B-Instruct",
     scheme="INT8",
-    alg_configs=[AWQConfig(apply_clip=True), RTNConfig()],
+    alg_configs=[AWQConfig(apply_clip=True), RTNConfig(disable_opt_rtn=True)],
     nsamples=256,
     seqlen=512,
 )
@@ -547,7 +547,7 @@ ar = AutoRound(model, tokenizer, algorithm="awq", scheme="W4A16")
 # INT8/W8A8 + AWQ + RTN
 ar = AutoRound(
     "meta-llama/Llama-3.1-8B-Instruct",
-    alg_configs=[AWQConfig(apply_clip=True), RTNConfig()],
+    alg_configs=[AWQConfig(apply_clip=True), RTNConfig(disable_opt_rtn=True)],
     scheme="INT8",
     nsamples=256,
     seqlen=512,
