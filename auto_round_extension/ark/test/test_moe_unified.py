@@ -93,6 +93,9 @@ _UNIFIED_SKIP = _unified_skip_reason()
 # ---------------------------------------------------------------------------
 
 _AUTO_DECODE_SHAPE = dict(num_experts=4, tokens_per_expert=[4, 4, 4, 4], N=128, K=256)  # total_tokens=16
+# Sits exactly on the default cutoff (128 total tokens), so it pins the
+# boundary of `_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS` (dispatch is `<=`).
+_AUTO_DECODE_BOUNDARY_SHAPE = dict(num_experts=4, tokens_per_expert=[32, 32, 32, 32], N=128, K=256)  # total=128
 _AUTO_PREFILL_SHAPE = dict(num_experts=4, tokens_per_expert=[80, 80, 80, 80], N=128, K=256)  # total_tokens=320
 
 
@@ -193,8 +196,41 @@ class TestMoeUnifiedDispatch:
             group_size=group_size,
             asym=False,
         )
-        # total tokens = 16 (<= default threshold 32) -> dispatched to decode
+        # total tokens = 16 (<= default threshold 128) -> dispatched to decode
         # -> output must be bit-identical to moe_gemm_decode.
+        torch.testing.assert_close(out_auto, out_decode, rtol=0, atol=0)
+
+    def test_auto_picks_decode_at_default_threshold(self):
+        shape = _AUTO_DECODE_BOUNDARY_SHAPE
+        total_tokens = sum(shape["tokens_per_expert"])
+        E, N, K = shape["num_experts"], shape["N"], shape["K"]
+        group_size = 128
+        dtype = torch.float16
+
+        activations, packed, scales, _ = _make_int4_sym(E, N, K, group_size, dtype, total_tokens)
+        ntpe = torch.tensor(shape["tokens_per_expert"], dtype=torch.int32, device="xpu")
+
+        out_auto = ark.moe(
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
+            phase="auto",
+        )
+        out_decode = ark.moe_gemm_decode(
+            activations,
+            packed,
+            ntpe,
+            scales=scales,
+            weight_bits=4,
+            group_size=group_size,
+            asym=False,
+        )
+        # total tokens = 128 == default threshold, and the dispatch is `<=`,
+        # so this still routes to decode.
         torch.testing.assert_close(out_auto, out_decode, rtol=0, atol=0)
 
     def test_auto_picks_prefill_for_large_total_tokens(self):

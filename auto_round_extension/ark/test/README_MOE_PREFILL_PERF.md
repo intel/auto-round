@@ -471,6 +471,11 @@ int4-sym decode is now at target, and the same two levers that got it
 there apply to FP8: get the dequant off the byte-typed datapath, and stop
 paying setup cost per decode call. On top of that, the FP8 MoE dispatch
 from vllm-xpu-kernels is mirrored into a decode-specialised entry point.
+Both levers have since landed and **FP8 decode is at target too** — the
+word-native dequant, the K-split lane mapping with its N-blocking, and the
+removal of the per-call routing sync. That is what moved the unified
+`ark.moe(phase="auto")` cutoff from 32 to 128 total tokens (see
+*Auto-dispatch cutoff* below).
 
 **Word-native FP8 decode (`ARK_FP8_DECODE_MODE`, default `word`).** The
 decode GEMV does roughly one multiply-add per weight byte, so the dequant
@@ -553,7 +558,8 @@ requires a power-of-two `group_size ≥ 16` (every shipped FP8 config — 32 /
 every lane of the sub-group owns at least one chunk); anything else keeps the
 legacy GEMV, which handles arbitrary group sizes. All three
 `ARK_FP8_DECODE_MODE` decoders run under both mappings, so the mode A/B
-stays apples-to-apples. **Status: NEEDS-HARDWARE-VALIDATION.**
+stays apples-to-apples. **Status: hardware-validated** — this mapping is
+what put FP8 decode at target.
 
 **N-blocking inside the K-split kernel (`ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`,
 default 2).** With one output column per sub-group the hot loop issues, per
@@ -582,7 +588,7 @@ scale fold and the final `reduce_over_group` are untouched, so the
 arithmetic per output element is unchanged and `NCOLS=1` reproduces the
 previous kernel exactly. `test_perf_fp8_ksplit_ncols_sweep` prints all three
 factors per shape so the default can be set from measured data.
-**Status: NEEDS-HARDWARE-VALIDATION.**
+**Status: hardware-validated at the shipped default (`NCOLS=2`).**
 
 **Routing-table validation (`ARK_MOE_VALIDATE_ROUTING`, default OFF).** The
 Python entry point used to check `sum(num_tokens_per_expert) == total_tokens`
@@ -645,10 +651,26 @@ gate, which is what the parity and A/B perf tests set. Shapes that fail the
 per-group shape gate (`N%64==0`, `K%32==0`, `K%group_size==0`,
 `group_size ∈ {32,64,128,256}`) always fall back to the scalar GEMV.
 
+**Auto-dispatch cutoff (`ARK_MOE_AUTO_DECODE_MAX_TOKENS`, default 128).**
+`ark.moe(phase="auto")` routes to `moe_gemm_decode` when
+`activations.shape[0] <= cutoff` and to `moe_gemm_prefill` otherwise. The
+cutoff was 32 while the decode GEMV was still the bottleneck: only the tiny
+single-/few-stream case was worth keeping off the prefill grouped GEMM. Now
+that the FP8 decode GEMV is at target (as int4-sym already was) the GEMV
+stays ahead across the whole small-batch range rather than just at the bs1
+extreme, so the cutoff is 128 total tokens; above that each expert receives
+enough rows to fill the DPAS M tile, which is where the grouped GEMM wins.
+The `decode_threshold=` keyword overrides it per call and takes precedence
+over the env var, and `phase="decode"` / `phase="prefill"` bypass the
+heuristic entirely. Dispatch parity is covered by
+`test_moe_unified.py::TestMoeUnifiedDispatch`, which pins both the cutoff
+boundary (128 tokens still decode) and the overrides.
+
 | Env var | Default | Effect |
 | ------- | ------- | ------ |
 | `ARK_FP8_DECODE_MODE` | `word` | FP8 decode implementation for the scalar GEMV: `word` (bit-field move + folded scale bias), `lut` (128-entry magnitude table), `bits` (inline bit manipulation). |
 | `ARK_FP8_DECODE_USE_LUT` | unset | Legacy selector, still honoured when set explicitly and when `ARK_FP8_DECODE_MODE` is unset/unrecognised: truthy → `lut`, falsy → `bits`. Also still drives the mixed-input prefill path. |
+| `ARK_MOE_AUTO_DECODE_MAX_TOKENS` | `128` | Total-token cutoff used by `ark.moe(phase="auto")`: at or below it the call goes to `moe_gemm_decode`, above it to `moe_gemm_prefill`. Non-positive/unparsable values fall back to the default; the `decode_threshold=` keyword wins over both. |
 | `ARK_MOE_DECODE_DPAS_FP8` | ON | Route FP8 decode to the per-group DPAS grouped GEMM when the shape and occupancy gates pass; `0` forces the scalar GEMV. |
 | `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | Minimum tokens per expert before the DPAS path is taken; `0` disables the gate (what the parity/A-B tests set). |
 | `ARK_MOE_DECODE_FP8_KSPLIT` | ON | Scalar-GEMV lane mapping: one sub-group per output element with the lanes splitting K (coalesced weight loads, 16× the threads); `0` forces the legacy one-work-item-per-output-element GEMV. Shapes outside the gate (power-of-two `group_size ≥ 16`, `N%16==0`, `K%group_size==0`, `K ≥ 256`) always use the legacy mapping. |

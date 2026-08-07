@@ -2405,15 +2405,18 @@ def _native_fp8_prefill_enabled() -> bool:
 # is hardware-dependent and can be overridden via
 # `ARK_MOE_AUTO_DECODE_MAX_TOKENS`.
 #
-# Empirically (see `test_perf_int4_sym_dpas_vs_scalar`) the shared S4 DPAS
-# grouped-GEMM that the prefill path uses already beats the scalar-GEMV decode
-# kernel by ~2x once total tokens reach 256 (bs32), while it loses (~0.5x) only
-# at the single-stream bs1 extreme (8 tokens). The crossover therefore sits far
-# below 256, so the default is kept small: the scalar decode kernel is only
-# preferred for the tiny single-/few-stream case where every expert sees well
-# under one DPAS tile row. Mirrors vLLM-xpu-kernels' `w4a16` dispatch, which
-# buckets on average tokens-per-expert rather than a large total-token cutoff.
-_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 32
+# The cutoff used to be 32, a deliberately conservative value picked while the
+# decode GEMV was still the bottleneck: back then only the tiny single-/few-
+# stream case (every expert well under one DPAS tile row) was worth keeping off
+# the prefill grouped-GEMM. The decode GEMV has since reached its bandwidth
+# target for FP8 as well as int4-sym (K-split lane mapping + N-blocking inside
+# the K-split kernel, and no per-call routing sync), so it now stays ahead of
+# the grouped-GEMM over the whole small-batch range rather than only at the
+# bs1 extreme, and the cutoff moves up to 128 total tokens accordingly.
+# Batches above that still hand enough rows to each expert to fill the DPAS M
+# tile, which is where the prefill path wins. Mirrors vLLM-xpu-kernels' `w4a16`
+# dispatch, which likewise keeps the GEMV for the low tokens-per-expert regime.
+_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 128
 
 _MOE_VALID_PHASES = ("auto", "decode", "prefill")
 
@@ -2482,7 +2485,7 @@ def moe(
               Use when the model knows it is in the prefill phase.
         decode_threshold: Total-token threshold for ``"auto"`` mode. If not
             provided, uses ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` when set to a
-            valid positive integer, otherwise defaults to 32. Explicit
+            valid positive integer, otherwise defaults to 128. Explicit
             argument values take precedence over the environment variable.
 
     Returns:

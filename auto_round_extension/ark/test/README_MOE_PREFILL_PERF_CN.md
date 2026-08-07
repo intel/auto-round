@@ -371,7 +371,10 @@ token 数(16–128)都远低于该门控(8 × 192 个专家 == 1536 个 token)�
 int4-sym decode 的性能已经达标,把它推到达标的两个手段同样适用于 FP8:
 让 dequant 离开按字节的数据通路,以及不要在每次 decode 调用里重复付出
 启动开销。在此之上,还把 vllm-xpu-kernels 的 FP8 MoE dispatch 镜像成一个
-decode 专用入口。
+decode 专用入口。这两个手段现已全部落地,**FP8 decode 的性能同样达标** ——
+word-native dequant、带 N 分块的 K-split lane 映射,以及去掉每次调用的路由表
+同步。正因如此,统一入口 `ark.moe(phase="auto")` 的分发阈值才从 32 提高到
+128 个 token(见下文*自动分发阈值*)。
 
 **Word-native FP8 解码 (`ARK_FP8_DECODE_MODE`, 默认 `word`)。** decode
 GEMV 每读一个权重字节大约只做一次乘加,所以 dequant *就是* kernel 本身。
@@ -442,7 +445,7 @@ scratch 显存。FP8 权重每元素一个字节、本来就是 K 连续的,所�
 `N%16==0`、`K%group_size==0` 以及 `K ≥ 256`(保证 sub-group 的每个 lane 至少
 分到一个 chunk);其余情况继续走老的 GEMV,它支持任意 group size。三种 `ARK_FP8_DECODE_MODE` 解码器在两种映射下都能运行,所以
 decode mode 的 A/B 依然是同口径对比。
-**状态:NEEDS-HARDWARE-VALIDATION。**
+**状态:已通过硬件验证** —— 正是这个映射把 FP8 decode 推到达标。
 
 **K-split kernel 内的 N 分块(`ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`,默认 2)。**
 当一个 sub-group 只负责一个输出列时,热循环中每读一个 16 字节权重 chunk,
@@ -468,7 +471,7 @@ DRAM 峰值带宽的流式 GEMV,后者才是真正的瓶颈。代价是活跃的
 单个输出元素的算术完全不变,`NCOLS=1` 与改动前的 kernel 完全一致。
 `test_perf_fp8_ksplit_ncols_sweep` 会逐形状打印全部三个因子的耗时,便于用
 实测数据确定默认值。
-**状态:NEEDS-HARDWARE-VALIDATION。**
+**状态:已在发布默认值(`NCOLS=2`)下通过硬件验证。**
 
 **路由表校验(`ARK_MOE_VALIDATE_ROUTING`,默认 OFF)。** Python 入口原先
 在每次调用时都会检查 `sum(num_tokens_per_expert) == total_tokens`。当路由表
@@ -524,10 +527,23 @@ decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffe
 (`N%64==0`、`K%32==0`、`K%group_size==0`、
 `group_size ∈ {32,64,128,256}`)的形状始终回退到 scalar GEMV。
 
+**自动分发阈值(`ARK_MOE_AUTO_DECODE_MAX_TOKENS`,默认 128)。**
+`ark.moe(phase="auto")` 在 `activations.shape[0] <= 阈值` 时分发到
+`moe_gemm_decode`,否则分发到 `moe_gemm_prefill`。该阈值原先是 32 —— 那时
+decode GEMV 仍是瓶颈,只有极小的单流/少流场景才值得不走 prefill grouped
+GEMM。如今 FP8 decode GEMV 也已达标(int4-sym 此前就已达标),GEMV 在整个
+小 batch 区间都保持领先,而不再只是在 bs1 这一极端上占优,因此阈值提高到
+128 个 token;超过之后每个专家分到的行数足以填满 DPAS 的 M tile,那正是
+grouped GEMM 占优的区间。`decode_threshold=` 关键字可按调用覆盖该阈值,
+优先级高于环境变量;`phase="decode"` / `phase="prefill"` 则完全跳过该启发式。
+分发行为由 `test_moe_unified.py::TestMoeUnifiedDispatch` 覆盖,其中同时锁定了
+阈值边界(128 个 token 仍走 decode)与两种覆盖方式。
+
 | Env 变量 | 默认值 | 作用 |
 | -------- | ------ | ---- |
 | `ARK_FP8_DECODE_MODE` | `word` | scalar GEMV 的 FP8 解码实现:`word`(位域搬移 + 折叠 scale bias)、`lut`(128 项幅值表)、`bits`(内联位运算)。 |
 | `ARK_FP8_DECODE_USE_LUT` | 未设置 | 旧的选择开关;当它被显式设置、且 `ARK_FP8_DECODE_MODE` 未设置或取值无法识别时仍然生效:truthy → `lut`,falsy → `bits`。它同时仍然驱动 mixed-input prefill 路径。 |
+| `ARK_MOE_AUTO_DECODE_MAX_TOKENS` | `128` | `ark.moe(phase="auto")` 使用的总 token 阈值:小于等于它走 `moe_gemm_decode`,大于它走 `moe_gemm_prefill`。非正数或无法解析的取值会回退到默认值;`decode_threshold=` 关键字优先级高于两者。 |
 | `ARK_MOE_DECODE_DPAS_FP8` | ON | 形状与占用率门控都通过时,把 FP8 decode 路由到 per-group DPAS grouped GEMM;`0` 强制走 scalar GEMV。 |
 | `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | 走 DPAS 路径所需的最小每专家 token 数;`0` 关闭门控(对齐/A-B 用例所设)。 |
 | `ARK_MOE_DECODE_FP8_KSPLIT` | ON | scalar GEMV 的 lane 映射:一个 sub-group 负责一个输出元素、由 lane 切分 K(访存合并,线程数 ×16);`0` 强制走老的「一个 work-item 一个输出元素」GEMV。未通过门控(`group_size` 为 ≥ 16 的 2 的幂、`N%16==0`、`K%group_size==0`、`K ≥ 256`)的形状始终使用老映射。 |
