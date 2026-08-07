@@ -171,14 +171,15 @@ struct bestla_tmp_layout_t {
 // The layout is intentionally route-agnostic and over-allocates to the largest
 // migrated tile family:
 //   * M_TILE <= 16
-//   * NTILE <= 64   (homogeneous fp16/bf16 paths)
-//   * KTILE <= 64   (covers the route-4 exp-sum path's 64-wide K tile)
+//   * QK/PV tiles (64,64), (48,32), and (24,4).  The stable interface rounds
+//     in that exact order, so 64 alone is insufficient for a 48-wide QK tile:
+//     e.g. 128 first rounds to 144, not 128.
 inline bestla_tmp_layout_t bestla_tmp_layout(int sl_q, int sl_kv) {
   constexpr int kMaxMTile = 16;
-  constexpr int kMaxNTile = 64;
-  constexpr int kMaxKTile = 64;
-  const int padded_n = utils::padto(std::max(1, sl_kv), kMaxNTile);
-  const int padded_k = utils::padto(padded_n, kMaxKTile);
+  const int logical_kv = std::max(1, sl_kv);
+  const int padded_k = std::max(
+      {utils::padto(utils::padto(logical_kv, 64), 64), utils::padto(utils::padto(logical_kv, 48), 32),
+       utils::padto(utils::padto(logical_kv, 24), 4)});
   const size_t prefix_bytes =
       static_cast<size_t>(std::max(1, sl_q)) * static_cast<size_t>(padded_k) * sizeof(float);
   const size_t thread_bytes = static_cast<size_t>(kMaxMTile) * static_cast<size_t>(padded_k) * sizeof(float);

@@ -124,3 +124,31 @@ def test_bestla_mixed_sdpa_non_square_causal_matches_torch(kv_dtype):
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    "batch,heads_q,heads_kv,seq",
+    [
+        (4, 32, 32, 64),
+        (1, 32, 8, 128),
+    ],
+)
+def test_mixed_bf16_prefill_tile_rounding_uses_bestla_safely(batch, heads_q, heads_kv, seq):
+    """Exercise prefill geometries whose two-stage tile padding exceeds seq."""
+    torch.manual_seed(5010)
+    head_dim = 128
+    scale = 1 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, seq, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads_kv, seq, head_dim, dtype=torch.bfloat16)
+    v = torch.randn(batch, heads_kv, seq, head_dim, dtype=torch.bfloat16)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=True
+    )
+    route = auto_round_kernel.debug_cpu_sdpa_route(q, k, v, scale=scale, is_causal=True, tensor_layout="HND")
+    assert route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW
+    actual = _mixed_sdpa(q, k, v, scale, True, "HND")
+
+    atol, rtol = _TOL[torch.bfloat16]
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)

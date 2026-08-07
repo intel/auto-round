@@ -8,8 +8,10 @@ scale, dtype, GQA, prefill/decode behavior, and homogeneous route
 hit/fallback without touching internal mixed-route-only features.
 """
 
+import gc
 import inspect
 import math
+from collections import OrderedDict
 
 import pytest
 import torch
@@ -417,6 +419,42 @@ def test_public_mixed_sdpa_refreshes_hidden_packed_kv_cache_after_mutation(monke
 
     assert call_count == 2
     assert not torch.equal(out1, out2)
+
+
+def test_public_mixed_sdpa_cache_rejects_same_key_for_different_tensors(monkeypatch):
+    torch.manual_seed(4112)
+    stale_k = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+    stale_v = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+
+    cache = OrderedDict()
+    monkeypatch.setattr(auto_round_kernel, "_CPU_PUBLIC_PACKED_KV_CACHE", cache)
+    stale_entry, _ = auto_round_kernel._cpu_public_get_packed_kv_entry(stale_k, stale_v, tensor_layout="HND")
+    del stale_k, stale_v
+    gc.collect()
+
+    k = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+    v = torch.randn(1, 2, 64, 16, dtype=torch.float16)
+    cache[auto_round_kernel._cpu_public_packed_kv_cache_key(k, v, "HND")] = stale_entry
+
+    call_count = 0
+    original = auto_round_kernel.ark_cpu_update_packed_kv_from_descriptor
+
+    def counted_update(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(auto_round_kernel, "ark_cpu_update_packed_kv_from_descriptor", counted_update)
+
+    entry, _ = auto_round_kernel._cpu_public_get_packed_kv_entry(k, v, tensor_layout="HND")
+    auto_round_kernel._cpu_public_get_packed_kv_entry(k, v, tensor_layout="HND")
+
+    assert entry is not stale_entry
+    assert stale_entry.key_ref() is None
+    assert stale_entry.value_ref() is None
+    assert entry.key_ref() is k
+    assert entry.value_ref() is v
+    assert call_count == 1
 
 
 def test_public_mixed_sdpa_packed_path_forwards_extended_features(monkeypatch):

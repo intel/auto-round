@@ -84,18 +84,36 @@ def _route_name(route: int) -> str:
 
 
 def _configure_runtime() -> int:
-    pinned = TARGET_PROCESSORS
+    """Pin to 32 CPUs; fall back gracefully if affinity is restricted."""
+    n_online = os.cpu_count() or TARGET_PROCESSORS
+    desired = min(TARGET_PROCESSORS, n_online)
+
+    # Try to expand to the first 32 online CPUs — succeeds when the calling
+    # process's cgroup / parent affinity allows it.
+    try:
+        os.sched_setaffinity(0, set(range(desired)))
+    except (OSError, PermissionError):
+        pass
+
     if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
         affinity = sorted(os.sched_getaffinity(0))
-        pinned = min(TARGET_PROCESSORS, len(affinity))
+        pinned = min(desired, len(affinity))
         os.sched_setaffinity(0, set(affinity[:pinned]))
     else:
-        pinned = min(TARGET_PROCESSORS, os.cpu_count() or TARGET_PROCESSORS)
+        pinned = min(desired, os.cpu_count() or TARGET_PROCESSORS)
+
     torch.set_num_threads(pinned)
     try:
         torch.set_num_interop_threads(1)
     except RuntimeError:
         pass
+
+    if pinned < TARGET_PROCESSORS:
+        print(
+            f"WARNING: Only {pinned} CPU(s) available (system has {n_online}). "
+            f"Run with:  taskset -c 0-{TARGET_PROCESSORS - 1} python test/bench_ark_cpu_sdpa_old.py",
+            file=sys.stderr,
+        )
     return pinned
 
 

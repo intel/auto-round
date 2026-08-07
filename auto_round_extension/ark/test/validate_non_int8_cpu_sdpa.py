@@ -171,19 +171,18 @@ CI workflow definition: .github/workflows/non_int8_cpu_sdpa.yml
   -- These jobs must pass before routes 1/2 can be promoted to default.
 
 Benchmark commands (identify for regression tracking):
-  # Tier 0 vs Tier 1 raw-path throughput comparison (all ISAs):
+  # Representative public, mixed, and packed-KV accuracy/latency matrix:
   python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
-      --dtype float32 --shape all
+      --preset default --shape all --csv ark_sdpa_default.csv
 
-  # Tier 1 raw vs packed path comparison (routes 1/2, ISA-specific):
+  # Lightweight correctness and measurement smoke test:
   python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
-      --dtype float16 --shape decode --mode both      # R1 raw vs packed
-  python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
-      --dtype bfloat16 --shape decode --mode both     # R2 raw vs packed
+      --preset smoke --warmup 2 --runs 5
 
   Regression-sensitive behavior:
     - Tier 0 scalar: latency must not exceed the 1.3× tolerance vs PyTorch math SDPA.
-    - Tier 1 mixed raw path: must show ≥1.0× speedup on decode shapes vs Tier 0.
+    - Tier 1 mixed raw path: report speedup against the conversion-inclusive
+      PyTorch fp32 math-SDPA fallback, not as an equal-precision comparison.
     - Tier 1 packed vs raw: packed must match or beat raw (no per-forward reorder).
     - Numerical parity: max absolute error must remain within documented tolerances
       (fp16: 3e-2, bf16: 8e-2) against PyTorch SDPA on the same dtype-round-tripped inputs.

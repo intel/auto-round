@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -208,6 +209,8 @@ class _CpuPackedKVCacheEntry:
     descriptor: object
     cache_k: torch.Tensor
     cache_v: torch.Tensor
+    key_ref: weakref.ReferenceType[torch.Tensor]
+    value_ref: weakref.ReferenceType[torch.Tensor]
     seq_len: int
     key_version: int
     value_version: int
@@ -264,10 +267,22 @@ def _cpu_public_get_packed_kv_entry(
     value_version = int(value._version)
     entry = _CPU_PUBLIC_PACKED_KV_CACHE.get(cache_key)
 
+    if entry is not None and (entry.key_ref() is not key or entry.value_ref() is not value):
+        entry = None
+
     if entry is None or seq_len_kv > int(entry.descriptor.logical_capacity):
         descriptor = ark_cpu_packed_kv_descriptor(batch, num_heads_kv, seq_len_kv, head_dim, dtype=key.dtype)
         cache_k, cache_v = ark_cpu_packed_kv_alloc_from_descriptor(descriptor, dtype=key.dtype, device=key.device)
-        entry = _CpuPackedKVCacheEntry(descriptor, cache_k, cache_v, 0, -1, -1)
+        entry = _CpuPackedKVCacheEntry(
+            descriptor,
+            cache_k,
+            cache_v,
+            weakref.ref(key),
+            weakref.ref(value),
+            0,
+            -1,
+            -1,
+        )
         _CPU_PUBLIC_PACKED_KV_CACHE[cache_key] = entry
     else:
         _CPU_PUBLIC_PACKED_KV_CACHE.move_to_end(cache_key)
