@@ -161,6 +161,16 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
 ```
 
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **描述**：控制 `NVFP4E5M3QuantLinear` 是否在首次前向后缓存解量化得到的高精度权重，而不是每次调用都从打包的 FP4 权重重新解量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`、`"on"`（不区分大小写）表示启用缓存；其他值表示禁用缓存
+- **用途**：当重复推理吞吐比内存占用更重要时可启用。当前实现会在缓存高精度权重后释放 `weight_packed` 和 `weight_scale`，因此稳态内存占用会增大，且之后无法再切回打包存储。
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
+```
+
 ### AR_DISK_STREAM_MODEL
 - **描述**：启用后，`AutoRound(model=<path>, ...)` 会将模型构建为 meta 设备骨架，而不是先把整个 checkpoint 完全加载到 CPU 内存；随后按需从 checkpoint 的 safetensors 分片中流式加载每个解码器块的真实权重——在该块被使用前（校准、调优或 `AutoScheme` 敏感度评分）才实体化，用完后立即释放回 meta。这样峰值 CPU 内存基本保持平稳，而不会随 checkpoint 大小成比例增长。非块参数（embedding、`lm_head`、最终归一化层）体积通常较小，仍会一次性加载。文本模型的 AutoScheme 评分也支持与默认启用的并行评分组合使用；每个 worker 会流式加载自己的 block 副本。
 - **默认值**：`False`
