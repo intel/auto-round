@@ -211,6 +211,12 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     ev.add_argument(
         "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
     )
+    ev.add_argument(
+        "--fewshot_as_multiturn",
+        "--fewshot-as-multiturn",
+        action="store_true",
+        help="Use multi-turn format for few-shot examples in LM-Eval.",
+    )
     ev.add_argument("--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching.")
     ev.add_argument(
         "--eval_backend", default="hf", type=str, choices=["hf", "vllm"], help="Backend to use for evaluation."

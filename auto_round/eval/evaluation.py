@@ -310,8 +310,9 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             batch_size=args.eval_bs,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
-            num_fewshot=args.num_fewshot,
-            gen_kwargs=args.eval_gen_kwargs,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
     else:
         # Batch evaluation
@@ -330,8 +331,9 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             device=device_str,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
-            num_fewshot=args.num_fewshot,
-            gen_kwargs=args.eval_gen_kwargs,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -370,8 +372,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             mllm=getattr(autoround, "mllm", False),
             add_bos_token=args.add_bos_token,
-            num_fewshot=args.num_fewshot,
-            gen_kwargs=args.eval_gen_kwargs,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
     else:
         # Batch evaluation
@@ -404,8 +407,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             device=device_str,
             batch_size=eval_bs,
             limit=args.limit,
-            num_fewshot=args.num_fewshot,
-            gen_kwargs=args.eval_gen_kwargs,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -478,6 +482,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         vllm_args.seed = getattr(args, "seed", 42)
         vllm_args.num_fewshot = getattr(args, "num_fewshot", None)
         vllm_args.eval_gen_kwargs = getattr(args, "eval_gen_kwargs", None)
+        vllm_args.fewshot_as_multiturn = getattr(args, "fewshot_as_multiturn", False)
         # VLLM-specific parameters
         vllm_args.vllm_args = getattr(args, "vllm_args", None)
         eval_with_vllm(vllm_args)

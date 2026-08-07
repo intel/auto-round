@@ -446,6 +446,7 @@ def run_eval(argv=None):
             add_bos_token=args.add_bos_token,
             num_fewshot=args.num_fewshot,
             gen_kwargs=args.eval_gen_kwargs,
+            fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
     else:
         eval(args)

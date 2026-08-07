@@ -106,6 +106,12 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
         )
         self.add_argument(
+            "--fewshot_as_multiturn",
+            "--fewshot-as-multiturn",
+            action="store_true",
+            help="Use multi-turn format for few-shot examples in LM-Eval.",
+        )
+        self.add_argument(
             "--eval_backend",
             default="hf",
             type=str,
@@ -229,8 +235,9 @@ def eval(args):
             batch_size=batch_size,
             device=device_str,
             limit=args.limit,
-            num_fewshot=args.num_fewshot,
-            gen_kwargs=args.eval_gen_kwargs,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
             add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
@@ -248,9 +255,9 @@ def eval(args):
             device=device_str,
             batch_size=batch_size,
             limit=args.limit,
-            num_fewshot=args.num_fewshot,
-            gen_kwargs=args.eval_gen_kwargs,
-            fewshot_as_multiturn=False,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
@@ -332,9 +339,9 @@ def eval_with_vllm(args):
         model=vllm_lm,
         tasks=tasks,
         limit=args.limit,
-        num_fewshot=args.num_fewshot,
-        gen_kwargs=args.eval_gen_kwargs,
-        fewshot_as_multiturn=False,
+        num_fewshot=getattr(args, "num_fewshot", None),
+        gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+        fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
     )
 
     print(make_table(res))
@@ -356,6 +363,7 @@ def eval_task_by_task(
     add_bos_token=False,
     num_fewshot=None,
     gen_kwargs=None,
+    fewshot_as_multiturn=False,
 ):
     require_version(
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
@@ -419,7 +427,15 @@ def eval_task_by_task(
         )
 
     _evaluate_tasks_with_retry(
-        tasks, hflm, device_str, batch_size, limit, retry_times, num_fewshot=num_fewshot, gen_kwargs=gen_kwargs
+        tasks,
+        hflm,
+        device_str,
+        batch_size,
+        limit,
+        retry_times,
+        num_fewshot=num_fewshot,
+        gen_kwargs=gen_kwargs,
+        fewshot_as_multiturn=fewshot_as_multiturn,
     )
 
 
@@ -494,7 +510,15 @@ def _get_lm_eval_task_manager(tasks):
 
 
 def _evaluate_tasks_with_retry(
-    tasks, hflm, device_str, batch_size, limit, retry_times, num_fewshot=None, gen_kwargs=None
+    tasks,
+    hflm,
+    device_str,
+    batch_size,
+    limit,
+    retry_times,
+    num_fewshot=None,
+    gen_kwargs=None,
+    fewshot_as_multiturn=False,
 ):
     """Evaluate tasks with automatic retry on OOM errors.
 
@@ -541,7 +565,7 @@ def _evaluate_tasks_with_retry(
                     num_fewshot=num_fewshot,
                     gen_kwargs=gen_kwargs,
                     task_manager=task_manager,
-                    fewshot_as_multiturn=False,
+                    fewshot_as_multiturn=fewshot_as_multiturn,
                 )
                 break
             except Exception as e:
@@ -568,7 +592,7 @@ def _evaluate_tasks_with_retry(
                             num_fewshot=num_fewshot,
                             gen_kwargs=gen_kwargs,
                             task_manager=task_manager,
-                            fewshot_as_multiturn=False,
+                            fewshot_as_multiturn=fewshot_as_multiturn,
                         )
                         hflm.batch_sizes = ori_batch_sizes
                     except Exception as e:

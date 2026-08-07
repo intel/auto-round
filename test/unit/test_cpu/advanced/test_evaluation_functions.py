@@ -16,7 +16,7 @@
 CPU tests for evaluation utility functions.
 Lightweight tests focusing on key utility functions without heavy model loading.
 
-Run with: pytest test/test_cpu/advanced/test_evaluation_functions.py
+Run with: pytest test/unit/test_cpu/advanced/test_evaluation_functions.py
 """
 
 import argparse
@@ -165,6 +165,7 @@ def _make_eval_args(**overrides):
         limit=5,
         num_fewshot=3,
         eval_gen_kwargs="temperature=0.1,top_p=0.9",
+        fewshot_as_multiturn=True,
         eval_backend="hf",
         add_bos_token=False,
         vllm_args=None,
@@ -220,6 +221,7 @@ class TestEvalArgumentForwarding:
         _, kwargs = mock_eval_task_by_task.call_args
         assert kwargs["num_fewshot"] == args.num_fewshot
         assert kwargs["gen_kwargs"] == args.eval_gen_kwargs
+        assert kwargs["fewshot_as_multiturn"] == args.fewshot_as_multiturn
 
     def test_eval_hf_batch_forwards_eval_generation_arguments(self):
         from auto_round.eval.eval_cli import eval
@@ -245,7 +247,7 @@ class TestEvalArgumentForwarding:
         _, kwargs = mock_simple_evaluate.call_args
         assert kwargs["num_fewshot"] == args.num_fewshot
         assert kwargs["gen_kwargs"] == args.eval_gen_kwargs
-        assert kwargs["fewshot_as_multiturn"] is False
+        assert kwargs["fewshot_as_multiturn"] == args.fewshot_as_multiturn
 
     def test_eval_gguf_batch_forwards_eval_generation_arguments(self):
         from auto_round.eval.eval_cli import eval
@@ -272,6 +274,7 @@ class TestEvalArgumentForwarding:
         _, kwargs = mock_simple_evaluate_user_model.call_args
         assert kwargs["num_fewshot"] == args.num_fewshot
         assert kwargs["gen_kwargs"] == args.eval_gen_kwargs
+        assert kwargs["fewshot_as_multiturn"] == args.fewshot_as_multiturn
 
     def test_eval_with_vllm_forwards_eval_generation_arguments(self):
         from auto_round.eval.eval_cli import eval_with_vllm
@@ -293,7 +296,7 @@ class TestEvalArgumentForwarding:
         _, kwargs = evaluator_simple_evaluate.call_args
         assert kwargs["num_fewshot"] == args.num_fewshot
         assert kwargs["gen_kwargs"] == args.eval_gen_kwargs
-        assert kwargs["fewshot_as_multiturn"] is False
+        assert kwargs["fewshot_as_multiturn"] == args.fewshot_as_multiturn
 
     def test_run_model_evaluation_vllm_forwards_eval_generation_arguments(self, tmp_path):
         from auto_round.eval.evaluation import run_model_evaluation
@@ -309,3 +312,4 @@ class TestEvalArgumentForwarding:
         forwarded_args = mock_eval_with_vllm.call_args.args[0]
         assert forwarded_args.num_fewshot == args.num_fewshot
         assert forwarded_args.eval_gen_kwargs == args.eval_gen_kwargs
+        assert forwarded_args.fewshot_as_multiturn == args.fewshot_as_multiturn
