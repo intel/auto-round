@@ -54,6 +54,7 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            disable_opt_rtn=True,
             trust_remote_code=False,
             disable_opt_rtn=True,
         )
@@ -175,6 +176,7 @@ class TestAutoRoundFP:
             iters=0,
             seqlen=2,
             layer_config=layer_config,
+            disable_opt_rtn=True,
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
@@ -380,6 +382,7 @@ class TestAutoRoundFP:
             scheme=scheme,
             iters=0,
             seqlen=2,
+            disable_opt_rtn=True,
             dataset=dataloader,
             static_kv_dtype=static_kv_dtype,
             static_attention_dtype=static_attention_dtype,
