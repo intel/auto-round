@@ -1129,6 +1129,36 @@ class TestLLMCompressorMXFPSource:
         raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
         assert raw_out is raw and passthrough == {} and layers == []
 
+    def test_deepseek_v32_non_fp8_shard_falls_back_to_generic_dynamic(self):
+        """deepseek_v32 with fp8 metadata but non-fp8 shard should skip model-type preprocessing."""
+        raw = {
+            "layer.weight": torch.randint(0, 256, (64, 128), dtype=torch.uint8),
+            "layer.weight_scale": torch.randint(0, 256, (64, 4), dtype=torch.uint8),
+        }
+        qc = {"quant_method": "fp8", "fmt": "e4m3", "scale_fmt": "ue8m0"}
+        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v32", quantization_config=qc)
+
+        assert state == {}
+        assert raw_out is raw
+        assert "layer.weight" in raw_out
+        assert "layer.weight_packed" not in raw_out
+
+    def test_deepseek_v32_fp8_shard_keeps_model_type_preprocessing(self):
+        """deepseek_v32 shard with true fp8 layout should still use model-type preprocessing."""
+        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        raw = {
+            "layer.weight": weight_fp8,
+            "layer.weight_scale_inv": torch.ones(64, 4, dtype=torch.float32),
+        }
+        qc = {"quant_method": "fp8", "fmt": "e4m3", "scale_fmt": "ue8m0"}
+        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v32", quantization_config=qc)
+
+        assert state == {"layer": 8}
+        assert "layer.weight" in raw_out
+        assert "layer.weight_scale" in raw_out
+        assert raw_out["layer.weight"].dtype == torch.float8_e4m3fn
+        assert raw_out["layer.weight_scale"].dtype == torch.uint8
+
     def test_dequant_mxfp_tensors_mxfp8(self):
         """Generic MXFP dequant: float8 .weight + .weight_scale → bf16."""
         weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)

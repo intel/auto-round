@@ -3579,6 +3579,30 @@ def _preprocess_model_type_source_tensors(
         and str(quantization_config.get("fmt", "")).lower() == "e4m3"
         and str(quantization_config.get("scale_fmt", "")).lower() == "ue8m0"
     )
+
+    # DeepSeek-V32 may carry non-FP8 shards even when model-level metadata says
+    # fp8/ue8m0. Apply the model-type conversion only when this shard actually
+    # contains FP8-like weights with expected per-layer scale companions.
+    if is_deepseek_v32_ue8m0:
+        has_expected_fp8_layout = False
+        for name, tensor in raw_tensors.items():
+            if not name.endswith(".weight") or tensor.dtype != torch.float8_e4m3fn:
+                continue
+            layer_name = name[: -len(".weight")]
+            if (
+                f"{layer_name}.scale" in raw_tensors
+                or f"{layer_name}.weight_scale" in raw_tensors
+                or f"{layer_name}.weight_scale_inv" in raw_tensors
+            ):
+                has_expected_fp8_layout = True
+                break
+        if not has_expected_fp8_layout:
+            logger.info(
+                "Skipping deepseek_v32 fp8 preprocessing for this shard: "
+                "expected FP8 tensor structure not found; falling back to generic dynamic matching."
+            )
+            return raw_tensors, {}
+
     if not is_deepseek_v4 and not is_deepseek_v32_ue8m0:
         return raw_tensors, {}
 
@@ -3595,7 +3619,7 @@ def _preprocess_model_type_source_tensors(
             continue
         if tensor.dtype == torch.float8_e4m3fn:
             entries.append((name, scale_name, True))
-        elif tensor.dtype in (torch.int8, torch.uint8):
+        elif is_deepseek_v4 and tensor.dtype in (torch.int8, torch.uint8):
             entries.append((name, scale_name, False))
 
     if not entries:
