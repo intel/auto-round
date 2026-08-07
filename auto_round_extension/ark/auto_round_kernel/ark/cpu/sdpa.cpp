@@ -14,8 +14,10 @@
 
 #include "ark/cpu/sdpa.h"
 #include "ark/cpu/mha_dense_wrapper.h"
+#include "bestla/kernel_avx2.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -63,6 +65,84 @@ char* aligned_bestla_tmp(bestla::utils::aligned_vector<float>& workspace, const 
   workspace.resize(total_floats);
   return workspace.size() == 0 ? nullptr : reinterpret_cast<char*>(workspace.data());
 }
+
+#if CompileAVX2()
+bool can_use_16bit_reorder_avx2(const ReorderKVShape& shape, int head_dim_stride) {
+  return head_dim_stride == 1 && (shape.dtype == BTLA_DTYPE::F16 || shape.dtype == BTLA_DTYPE::BF16) &&
+         bestla::device::CpuDevice::getInstance()->AVX2();
+}
+
+void reorder_k_16bit_avx2(uint16_t* dst, const uint16_t* src, const ReorderKVShape& shape,
+                          const AttentionStrides& strides, int batch_idx, int head_idx) {
+  const size_t head_base = (static_cast<size_t>(batch_idx) * shape.heads_kv + head_idx) * shape.k_head_elems;
+  const int seq_full = shape.logical_capacity / 8 * 8;
+  const int head_dim_full = shape.head_dim / 8 * 8;
+
+  for (int s = 0; s < seq_full; s += 8) {
+    const int tile = s / shape.ntile;
+    const int sl_in = s % shape.ntile;
+    for (int d = 0; d < head_dim_full; d += 8) {
+      std::array<__m128i, 8> rows;
+      for (int row = 0; row < 8; ++row) {
+        rows[row] = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + qko_offset(strides, batch_idx, head_idx,
+                                                                                         s + row, d)));
+      }
+      const auto cols = bestla::kernel::avx2::tr_x8_word(rows);
+      if (shape.dtype == BTLA_DTYPE::F16) {
+        for (int col = 0; col < 8; ++col) {
+          const size_t dst_offset = head_base + static_cast<size_t>(tile) * shape.k_head_size_pad * shape.ntile +
+                                    static_cast<size_t>(d + col) * shape.ntile + sl_in;
+          _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + dst_offset), cols[col]);
+        }
+      } else {
+        for (int pair = 0; pair < 4; ++pair) {
+          const size_t dst_offset =
+              head_base + static_cast<size_t>(tile) * shape.k_head_size_pad * shape.ntile +
+              static_cast<size_t>((d / 2) + pair) * shape.ntile * shape.rowpack + sl_in * shape.rowpack;
+          _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + dst_offset),
+                           _mm_unpacklo_epi16(cols[pair * 2], cols[pair * 2 + 1]));
+          _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + dst_offset + 8),
+                           _mm_unpackhi_epi16(cols[pair * 2], cols[pair * 2 + 1]));
+        }
+      }
+    }
+  }
+}
+
+void reorder_v_16bit_avx2(uint16_t* dst, const uint16_t* src, const ReorderKVShape& shape,
+                          const ValueStrides& strides, int batch_idx, int head_idx) {
+  const size_t head_base = (static_cast<size_t>(batch_idx) * shape.heads_kv + head_idx) * shape.v_head_elems;
+  const int head_dim_full = shape.head_dim / 8 * 8;
+
+  if (shape.dtype == BTLA_DTYPE::F16) {
+    for (int s = 0; s < shape.logical_capacity; ++s) {
+      for (int d = 0; d < head_dim_full; d += 8) {
+        const auto values =
+            _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + value_offset(strides, batch_idx, head_idx, s, d)));
+        const size_t dst_offset = head_base + static_cast<size_t>(d / shape.ntile) * shape.v_seq_pad * shape.ntile +
+                                  static_cast<size_t>(s) * shape.ntile + d % shape.ntile;
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + dst_offset), values);
+      }
+    }
+    return;
+  }
+
+  const int seq_full = shape.logical_capacity / 2 * 2;
+  for (int s = 0; s < seq_full; s += 2) {
+    for (int d = 0; d < head_dim_full; d += 8) {
+      const auto first =
+          _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + value_offset(strides, batch_idx, head_idx, s, d)));
+      const auto second =
+          _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + value_offset(strides, batch_idx, head_idx, s + 1, d)));
+      const size_t dst_offset = head_base + static_cast<size_t>(d / shape.ntile) * shape.v_seq_pad * shape.ntile +
+                                static_cast<size_t>(s / shape.rowpack) * shape.ntile * shape.rowpack +
+                                static_cast<size_t>(d % shape.ntile) * shape.rowpack;
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + dst_offset), _mm_unpacklo_epi16(first, second));
+      _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + dst_offset + 8), _mm_unpackhi_epi16(first, second));
+    }
+  }
+}
+#endif
 
 // Copy the layout/stride/scale metadata from the type-erased `attn_fwd_args_t`
 // into the dtype-typed wrapper struct, reinterpreting the Q/K/V/dst pointers as
@@ -922,6 +1002,10 @@ void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape
   const int seq_len_kv = shape.logical_capacity;
   const int head_dim = shape.head_dim;
   const int hs_pad = shape.k_head_size_pad;
+  bool use_avx2 = false;
+#if CompileAVX2()
+  use_avx2 = can_use_16bit_reorder_avx2(shape, k_strides.dim);
+#endif
   // K element (sl, hs) -> tile of NTILE over sl, ROWPACK over head_size.
   //   tile = sl/NTILE, sl_in = sl%NTILE, kp = hs/rp, rp_i = hs%rp
   //   idx = tile*(hs_pad*NTILE) + kp*(NTILE*rp) + sl_in*rp + rp_i
@@ -930,9 +1014,17 @@ void reorder_k_to_packed(void* dst, const void* src, const ReorderKVShape& shape
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < num_heads_kv; ++h) {
       const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.k_head_elems;
+#if CompileAVX2()
+      if (use_avx2) {
+        reorder_k_16bit_avx2(static_cast<uint16_t*>(dst), static_cast<const uint16_t*>(src), shape, k_strides, b, h);
+      }
+#endif
       for (int s = 0; s < seq_len_kv; ++s) {
         const int tile = s / ntile, sl_in = s % ntile;
         for (int d = 0; d < head_dim; ++d) {
+          if (use_avx2 && s < seq_len_kv / 8 * 8 && d < head_dim / 8 * 8) {
+            continue;
+          }
           const float val = load_scalar(src, qko_offset(k_strides, b, h, s, d), shape.dtype);
           const int kp = d / rp, rp_i = d % rp;
           const size_t idx = static_cast<size_t>(tile) * hs_pad * ntile + static_cast<size_t>(kp) * ntile * rp +
@@ -955,6 +1047,10 @@ void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape
   const int seq_len_kv = shape.logical_capacity;
   const int head_dim = shape.head_dim;
   const int sl_pad = shape.v_seq_pad;  // V: ROWPACK over seq
+  bool use_avx2 = false;
+#if CompileAVX2()
+  use_avx2 = can_use_16bit_reorder_avx2(shape, v_strides.dim);
+#endif
   // V element (sl, hs) -> tile of NTILE over head_size, ROWPACK over seq.
   //   tile = hs/NTILE, hs_in = hs%NTILE, kp = sl/rp, rp_i = sl%rp
   //   idx = tile*(sl_pad*NTILE) + kp*(NTILE*rp) + hs_in*rp + rp_i
@@ -963,9 +1059,19 @@ void reorder_v_to_packed(void* dst, const void* src, const ReorderKVShape& shape
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < num_heads_kv; ++h) {
       const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.v_head_elems;
+#if CompileAVX2()
+      if (use_avx2) {
+        reorder_v_16bit_avx2(static_cast<uint16_t*>(dst), static_cast<const uint16_t*>(src), shape, v_strides, b, h);
+      }
+#endif
       for (int s = 0; s < seq_len_kv; ++s) {
         const int kp = s / rp, rp_i = s % rp;
         for (int d = 0; d < head_dim; ++d) {
+          const bool simd_covered =
+              use_avx2 && d < head_dim / 8 * 8 && (shape.dtype == BTLA_DTYPE::F16 || s < seq_len_kv / 2 * 2);
+          if (simd_covered) {
+            continue;
+          }
           const float val = load_scalar(src, value_offset(v_strides, b, h, s, d), shape.dtype);
           const int tile = d / ntile, hs_in = d % ntile;
           const size_t idx = static_cast<size_t>(tile) * sl_pad * ntile + static_cast<size_t>(kp) * ntile * rp +

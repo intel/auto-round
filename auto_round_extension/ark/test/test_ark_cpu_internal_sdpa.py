@@ -152,12 +152,21 @@ def _scalar_attn_ref(q_f32, k_rt_f32, v_rt_f32, scale, *, use_tanh=False, slopes
     return out
 
 
-def _packed_sdpa(q_f32, k, v, scale, *, is_causal=False, n_padding=None):
-    batch, heads_kv, seq_kv, head_dim = k.shape
+def _packed_sdpa(q_f32, k, v, scale, *, is_causal=False, n_padding=None, layout="HND"):
+    batch, heads_kv, seq_kv, head_dim = auto_round_kernel._attention_shape(k, layout)
     handle = INTERNAL_CPU.PackedKVHandle.create(batch, heads_kv, seq_kv, head_dim, dtype=k.dtype)
     cache_k, cache_v = handle.alloc()
-    handle.update(cache_k, cache_v, k, v, 0)
-    return handle.forward(q_f32, cache_k, cache_v, seq_kv, is_causal=is_causal, scale=scale, n_padding=n_padding)
+    handle.update(cache_k, cache_v, k, v, 0, tensor_layout=layout)
+    return handle.forward(
+        q_f32,
+        cache_k,
+        cache_v,
+        seq_kv,
+        is_causal=is_causal,
+        scale=scale,
+        n_padding=n_padding,
+        tensor_layout=layout,
+    )
 
 
 @pytest.mark.parametrize(
@@ -403,6 +412,39 @@ def test_bestla_raw_vs_packed_output_consistency(kv_dtype):
 
     assert out_raw.dtype == torch.float32
     assert out_packed.dtype == torch.float32
+    atol, rtol = _TOL[kv_dtype]
+    torch.testing.assert_close(out_raw, out_packed, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize(
+    ("kv_dtype", "seq_kv", "head_dim", "layout"),
+    [
+        (torch.float16, 24, 16, "HND"),
+        (torch.float16, 25, 17, "NHD"),
+        (torch.bfloat16, 48, 32, "HND"),
+        (torch.bfloat16, 49, 33, "NHD"),
+    ],
+)
+def test_bestla_raw_reorder_matches_packed_across_simd_boundaries(kv_dtype, seq_kv, head_dim, layout):
+    torch.manual_seed(8003)
+    batch, heads_q, heads_kv, seq_q = 1, 4, 2, 1
+    scale = 1.0 / math.sqrt(head_dim)
+    hnd_q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
+    hnd_k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+    hnd_v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+    if layout == "HND":
+        q, k, v = hnd_q, hnd_k, hnd_v
+    else:
+        q = hnd_q.transpose(1, 2).contiguous()
+        k = hnd_k.transpose(1, 2).contiguous()
+        v = hnd_v.transpose(1, 2).contiguous()
+
+    try:
+        out_raw = _mixed_sdpa_ex(q, k, v, scale, layout=layout)
+        out_packed = _packed_sdpa(q, k, v, scale, layout=layout)
+    except (RuntimeError, ValueError, NotImplementedError) as exc:
+        pytest.skip(f"BestLA packed path unavailable on this ISA/runtime: {exc}")
+
     atol, rtol = _TOL[kv_dtype]
     torch.testing.assert_close(out_raw, out_packed, atol=atol, rtol=rtol)
 
