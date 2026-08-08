@@ -66,6 +66,54 @@ char* aligned_bestla_tmp(bestla::utils::aligned_vector<float>& workspace, const 
   return workspace.size() == 0 ? nullptr : reinterpret_cast<char*>(workspace.data());
 }
 
+// ---------------------------------------------------------------------------
+// Workspace cache (defect-1 mitigation)
+//
+// The BestLA attention kernels need an aligned per-thread scratch buffer whose
+// size depends only on (sl_q, sl_kv, num_threads).  Without a cache every
+// forward call allocates + zero-fills this buffer via aligned_vector::resize().
+//
+// A small static pool (4 entries, round-robin replacement) reuses the buffer
+// across calls whose shape/thread-count matches.  On the first hit for a new
+// shape the resize still zero-fills once; subsequent calls with the same shape
+// skip both the allocation and the zero-fill entirely.
+// ---------------------------------------------------------------------------
+static constexpr int kWorkspaceCacheSlots = 4;
+static struct {
+  bestla::utils::aligned_vector<float> buf;
+  int sl_q = 0;
+  int sl_kv = 0;
+  int num_threads = 0;
+  size_t capacity_bytes = 0;
+} g_workspace_cache[kWorkspaceCacheSlots];
+
+static char* find_or_alloc_workspace(size_t bytes, int sl_q, int sl_kv, int num_threads) {
+  // Linear scan for an existing entry with matching shape and enough capacity.
+  for (int i = 0; i < kWorkspaceCacheSlots; ++i) {
+    auto& e = g_workspace_cache[i];
+    if (e.sl_q == sl_q && e.sl_kv == sl_kv && e.num_threads == num_threads) {
+      if (e.capacity_bytes >= bytes) return reinterpret_cast<char*>(e.buf.data());
+      // Existing entry too small — resize to fit (one-time cost).
+      size_t count = (bytes + sizeof(float) - 1) / sizeof(float);
+      e.buf.resize(count);
+      e.capacity_bytes = e.buf.size() * sizeof(float);
+      return reinterpret_cast<char*>(e.buf.data());
+    }
+  }
+  // No matching entry — allocate in the next round-robin slot.
+  static int next_slot = 0;
+  int slot = next_slot;
+  next_slot = (next_slot + 1) % kWorkspaceCacheSlots;
+  auto& e = g_workspace_cache[slot];
+  size_t count = (bytes + sizeof(float) - 1) / sizeof(float);
+  e.buf.resize(count);
+  e.sl_q = sl_q;
+  e.sl_kv = sl_kv;
+  e.num_threads = num_threads;
+  e.capacity_bytes = e.buf.size() * sizeof(float);
+  return reinterpret_cast<char*>(e.buf.data());
+}
+
 #if CompileAVX2()
 bool can_use_16bit_reorder_avx2(const ReorderKVShape& shape, int head_dim_stride) {
   return head_dim_stride == 1 && (shape.dtype == BTLA_DTYPE::F16 || shape.dtype == BTLA_DTYPE::BF16) &&
@@ -644,17 +692,15 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
   }
   auto* th = static_cast<bestla::parallel::IThreading*>(args.threading);
 
-  // Allocate the BestLA wrapper scratch when the caller did not provide one and
-  // keep it alive for the duration of the forward call (Phase 1 attn_fwd_args_t
-  // is passed by const ref, so the buffer must outlive the dispatch below).
-  // The softmax epilogues issue aligned AVX stores into this buffer
-  // (_mm256_store_ps / _mm512_store_ps), so the base must stay 64B-aligned like
-  // Neural Speed's host memory pool rather than merely alignof(float)-aligned.
-  bestla::utils::aligned_vector<float> workspace;
+  // Allocate (or reuse) the BestLA wrapper scratch.  The softmax epilogues
+  // issue aligned AVX stores (_mm256_store_ps / _mm512_store_ps), so the base
+  // must be 64B-aligned.  The workspace cache (find_or_alloc_workspace) avoids
+  // a per-call allocation + zero-fill when the shape/thread-count is stable
+  // across calls — common in decode loops.
   if (local.tmp == nullptr) {
     attn_shape_t shape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
     const size_t bytes = bestla_attn_workspace_size(shape, th->num_threads());
-    local.tmp = aligned_bestla_tmp(workspace, shape, bytes);
+    local.tmp = find_or_alloc_workspace(bytes, local.sl_q, local.sl_kv, th->num_threads());
   }
 
   if (kv_dtype == BTLA_DTYPE::F16 && (fp16_plain_avx512 || fp16_plain_amx)) {
@@ -787,10 +833,9 @@ void bestla_sdpa_forward_homogeneous(const attn_fwd_args_t& args, BTLA_DTYPE dty
       dtype == BTLA_DTYPE::BF16 ? bestla_route4_workspace_size(shape, th->num_threads())
                                 : bestla_attn_workspace_size(shape, th->num_threads());
 
-  // Allocate the wrapper scratch when the caller did not provide one.
-  bestla::utils::aligned_vector<float> workspace;
+  // Allocate (or reuse) the wrapper scratch.
   if (local.tmp == nullptr) {
-    local.tmp = aligned_bestla_tmp(workspace, shape, workspace_bytes);
+    local.tmp = find_or_alloc_workspace(workspace_bytes, local.sl_q, local.sl_kv, th->num_threads());
   }
 
   // No raw->packed reorder bridge here (unlike the mixed route): the homogeneous
@@ -909,11 +954,11 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
   local.step_v_sl = shape.step_v_sl;
   local.step_v_head_size = shape.step_v_head_size;
 
-  bestla::utils::aligned_vector<float> workspace;
+  // Allocate (or reuse) the wrapper scratch.
   if (local.tmp == nullptr) {
     attn_shape_t ashape{local.batch_size, local.head_num, local.heads_kv, local.head_size, local.sl_q, local.sl_kv};
     const size_t bytes = bestla_attn_workspace_size(ashape, th->num_threads());
-    local.tmp = aligned_bestla_tmp(workspace, ashape, bytes);
+    local.tmp = find_or_alloc_workspace(bytes, local.sl_q, local.sl_kv, th->num_threads());
   }
 
   switch (shape.dtype) {
