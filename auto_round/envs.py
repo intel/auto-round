@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
     AR_AUTO_SCHEME_CACHE: Optional[str] = None
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
+    AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
     AR_DISK_STREAM_MODEL: bool = False
     AR_RESUME_DIR: Optional[str] = None
 
@@ -101,6 +102,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # set it to 0 when workers could exhaust host RAM or device memory.
     "AR_ENABLE_AUTO_SCHEME_PARALLEL": lambda: os.getenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "1").lower()
     in ("1", "true", "yes"),
+    # Controls whether NVFP4 E5M3 quant linear caches a dequantized high-
+    # precision weight after the first forward instead of dequantizing on
+    # every call. When enabled, the packed weight buffers are released after
+    # the cache is materialized, trading lower runtime overhead for higher
+    # steady-state memory usage.
+    "AR_NVFP4_E5M3_CACHE_HP_WEIGHT": lambda: os.getenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", "0").lower()
+    in ("1", "true", "yes", "on"),
     # When set, the model is built as a meta-device skeleton and streamed
     # block-by-block from disk during quantization instead of being fully
     # materialized on CPU RAM up front.

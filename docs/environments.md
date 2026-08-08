@@ -161,6 +161,16 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
 ```
 
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **Description**: Controls whether `NVFP4E5M3QuantLinear` caches a dequantized high-precision weight after the first forward pass, instead of dequantizing the packed FP4 weight on every call.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) enable caching; any other value disables caching
+- **Usage**: Enable this when repeated inference throughput matters more than memory footprint. The current implementation releases `weight_packed` and `weight_scale` after materializing the cached high-precision weight, so steady-state memory usage increases and the cache cannot be cleared back to packed storage.
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
+```
+
 ### AR_DISK_STREAM_MODEL
 - **Description**: When enabled, `AutoRound(model=<path>, ...)` builds the model as a meta-device skeleton instead of fully materializing the checkpoint on CPU RAM up front, and streams each decoder block's real weights from the checkpoint's safetensors shards on demand -- materializing right before a block is used (calibration, tuning, or `AutoScheme` sensitivity scoring) and freeing it back to meta right after. This keeps peak CPU RAM roughly flat regardless of checkpoint size, instead of proportional to it. Non-block parameters (embeddings, `lm_head`, final norm) are still loaded up front, since they are typically small. Text-model AutoScheme scoring also supports combining this with parallel scoring, which is enabled by default; each worker streams its own block copy.
 - **Default**: `False`

@@ -40,7 +40,12 @@ Model-free mode supports the following quantization families:
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
 
-Schemes that require special packing (FP8, NVFP4, GGUF, INT8_W8A8,
+**NVFP4 E5M3** (saved in fake format):
+
+* Preset name: ``NVFP4_E5M3``.
+* ``data_type="fp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
+
+Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
 ``ValueError``.  Use the standard AutoRound flow for those.
 
@@ -49,6 +54,9 @@ Output formats
 * **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``.
 * **MXFP schemes** → ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` format,
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
+* **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
+    ``.weight_scale`` tensors; use ``format="fake"`` explicitly for high-precision
+    QDQ ``.weight`` tensors.
 
 Usage (CLI)
 -----------
@@ -97,15 +105,16 @@ import re
 import shutil
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
+from functools import lru_cache
 from typing import Any, Callable, Optional, Union
 
 import torch
 
 from auto_round import envs
 from auto_round.compressors.config_resolution import thaw_mapping
-from auto_round.compressors.utils import is_mx_fp
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names, to_standard_regex
@@ -138,6 +147,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "W8A16",
     "MXFP4",
     "MXFP8",
+    "NVFP4_E5M3",
     "BF16",
 )
 
@@ -147,6 +157,8 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 
 # Allowed ``bits`` values for MXFP weight quantization.
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
+
+_NVFP4_E5M3_DATA_TYPE = "fp4_v2"
 
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
@@ -565,6 +577,62 @@ def _quantize_weight_mxfp(
     }
 
 
+def _quantize_weight_nvfp4_e5m3(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+) -> dict[str, torch.Tensor]:
+    """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
+    from auto_round.data_type.nvfp import fp4_v2
+
+    out_features, in_features = weight.shape
+    if group_size != 16:
+        raise ValueError(f"NVFP4_E5M3 requires group_size=16, got {group_size} for layer '{layer_name}'.")
+    if in_features % group_size != 0:
+        raise ValueError(
+            f"in_features={in_features} for layer '{layer_name}' is not divisible "
+            f"by NVFP4_E5M3 group_size={group_size}; cannot quantize."
+        )
+
+    weight_dev = weight.to(device)
+    qdq_weight, _, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
+    return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
+
+
+def _pack_weight_nvfp4_e5m3(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+) -> dict[str, torch.Tensor]:
+    """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
+    from auto_round.data_type.nvfp import fp4_v2
+    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+
+    out_features, in_features = weight.shape
+    if group_size != 16 or in_features % group_size != 0:
+        raise ValueError(
+            f"NVFP4_E5M3 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
+        )
+    weight_dev = weight.to(device)
+    _, scale, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
+    # fp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
+    # normalize to [out_features, in_features // group_size] before packing
+    # so serialized .weight_scale keeps the expected 2D shape.
+    scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
+    linear = torch.nn.Linear(in_features, out_features, bias=False, device=device, dtype=weight.dtype)
+    linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
+    qlayer = QuantLinear(
+        4, group_size, in_features, out_features, False, data_type="fp4_v2", act_bits=4, act_data_type="fp4_v2"
+    )
+    qlayer.pack(linear, scale, device=device)
+    return {
+        f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
+        f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
+    }
+
+
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
@@ -621,6 +689,24 @@ def _quantize_single_tensor(
             logger.warning(f"Failed to MXFP-quantize {layer_name}: {e}. Keeping original weight.")
             return layer_name, {tensor_name: tensor}, None, layer_name
 
+    # ---- NVFP4 E5M3 fake-quantization path ----
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        try:
+            quantize_e5m3 = (
+                _quantize_weight_nvfp4_e5m3 if scheme.get("_output_format") == "fake" else _pack_weight_nvfp4_e5m3
+            )
+            out = quantize_e5m3(
+                weight=tensor,
+                layer_name=layer_name,
+                group_size=group_size,
+                device=device,
+            )
+            logger.debug(f"Quantized (NVFP4_E5M3): {layer_name} (bits=4, group_size={group_size})")
+            return layer_name, out, layer_name, None
+        except Exception as e:
+            logger.warning(f"Failed to NVFP4_E5M3-quantize {layer_name}: {e}. Keeping original weight.")
+            return layer_name, {tensor_name: tensor}, None, layer_name
+
     # ---- Integer WOQ path ----
     try:
         qweight, qzeros, scales = quantize_func(
@@ -660,10 +746,132 @@ def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[t
                 entries.append((layer_name, name, scale_key, 8))
         elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
             layer_name = name[: -len(".weight_packed")]
+            # NVFP4 packed sources also use `.weight_packed` + `.weight_scale`, but
+            # are accompanied by global-scale tensors. Skip those here so they can
+            # be handled by the NVFP4 passthrough path instead of MXFP dequant.
+            if (
+                f"{layer_name}.weight_global_scale" in raw_tensors
+                or f"{layer_name}.input_global_scale" in raw_tensors
+                or f"{layer_name}.weight_scale_2" in raw_tensors
+                or f"{layer_name}.input_scale" in raw_tensors
+            ):
+                continue
             scale_key = f"{layer_name}.weight_scale"
             if scale_key in raw_tensors:
                 entries.append((layer_name, name, scale_key, 4))
     return entries
+
+
+def _normalize_nvfp4_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    shard_name: str | None = None,
+) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """Normalize legacy NVFP4 source naming to llm-compressor naming.
+
+    Legacy checkpoints may store NVFP4 tensors as:
+    - ``<layer>.weight`` (packed U8)
+    - ``<layer>.weight_scale``
+    - ``<layer>.weight_scale_2`` (reciprocal global scale)
+    - ``<layer>.input_scale`` (reciprocal global scale)
+
+    For model-free passthrough and llm-compressor compatibility, convert to:
+    - ``<layer>.weight_packed``
+    - ``<layer>.weight_scale``
+    - ``<layer>.weight_global_scale``
+    - ``<layer>.input_global_scale``
+    """
+    converted_layers: list[str] = []
+    candidates: list[str] = []
+    for name, tensor in list(raw_tensors.items()):
+        if not name.endswith(".weight"):
+            continue
+        layer_name = name[: -len(".weight")]
+        if tensor.dtype not in (torch.uint8, torch.int8):
+            continue
+        if f"{layer_name}.weight_scale" not in raw_tensors:
+            continue
+        has_legacy_global = f"{layer_name}.weight_scale_2" in raw_tensors or f"{layer_name}.input_scale" in raw_tensors
+        has_new_packed = f"{layer_name}.weight_packed" in raw_tensors
+        if has_legacy_global or has_new_packed:
+            candidates.append(layer_name)
+
+    if not candidates:
+        return raw_tensors, converted_layers
+
+    for layer_name in candidates:
+        weight_key = f"{layer_name}.weight"
+        weight_packed_key = f"{layer_name}.weight_packed"
+        weight_scale_2_key = f"{layer_name}.weight_scale_2"
+        input_scale_key = f"{layer_name}.input_scale"
+        weight_global_scale_key = f"{layer_name}.weight_global_scale"
+        input_global_scale_key = f"{layer_name}.input_global_scale"
+
+        if weight_packed_key not in raw_tensors and weight_key in raw_tensors:
+            raw_tensors[weight_packed_key] = raw_tensors.pop(weight_key).view(torch.uint8).contiguous()
+
+        if weight_scale_2_key in raw_tensors and weight_global_scale_key not in raw_tensors:
+            raw_tensors[weight_global_scale_key] = (1.0 / raw_tensors.pop(weight_scale_2_key).float()).to(torch.float32)
+        elif weight_scale_2_key in raw_tensors:
+            raw_tensors.pop(weight_scale_2_key)
+
+        if input_scale_key in raw_tensors and input_global_scale_key not in raw_tensors:
+            raw_tensors[input_global_scale_key] = (1.0 / raw_tensors.pop(input_scale_key).float()).to(torch.float32)
+        elif input_scale_key in raw_tensors:
+            raw_tensors.pop(input_scale_key)
+
+        converted_layers.append(layer_name)
+
+    if converted_layers:
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        logger.info(f"{shard_prefix}Normalized {len(converted_layers)} legacy NVFP4 layer(s) to llm-compressor naming.")
+    return raw_tensors, converted_layers
+
+
+def _handle_nvfp4_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    matcher: "_PatternMatcher",
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], list[str]]:
+    """Passthrough NVFP4 source tensors when target scheme for the layer is NVFP4.
+
+    This keeps already-quantized NVFP4 layers intact in model-free mode while
+    allowing other layers to be quantized normally.
+    """
+    passthrough_tensors: dict[str, torch.Tensor] = {}
+    passthrough_layers: list[str] = []
+
+    for name, tensor in list(raw_tensors.items()):
+        if not name.endswith(".weight_packed") or tensor.dtype not in (torch.uint8, torch.int8):
+            continue
+
+        layer_name = name[: -len(".weight_packed")]
+        scale_key = f"{layer_name}.weight_scale"
+        if scale_key not in raw_tensors:
+            continue
+
+        scheme = matcher.resolve_scheme(f"{layer_name}.weight")
+        if scheme is None:
+            continue
+        scheme_bits = scheme.get("bits")
+        scheme_data_type = (scheme.get("data_type") or "").lower()
+        if not (scheme_bits == 4 and (is_nv_fp(scheme_data_type) or scheme_data_type == _NVFP4_E5M3_DATA_TYPE)):
+            continue
+
+        keys_to_move = [name, scale_key]
+        weight_global_scale_key = f"{layer_name}.weight_global_scale"
+        input_global_scale_key = f"{layer_name}.input_global_scale"
+        if weight_global_scale_key in raw_tensors:
+            keys_to_move.append(weight_global_scale_key)
+        if input_global_scale_key in raw_tensors:
+            keys_to_move.append(input_global_scale_key)
+
+        for key in keys_to_move:
+            passthrough_tensors[key] = raw_tensors.pop(key).to("cpu")
+        passthrough_layers.append(layer_name)
+
+    if passthrough_layers:
+        logger.info(f"Handling NVFP4 source tensor(s): {len(passthrough_layers)} passthrough layer(s).")
+
+    return raw_tensors, passthrough_tensors, passthrough_layers
 
 
 def _is_out_of_memory_error(exc: Exception) -> bool:
@@ -699,6 +907,99 @@ def _dequantize_with_device_fallback(
                     "Falling back to CPU for this tensor."
                 )
     return on_cpu()
+
+
+@lru_cache(maxsize=32)
+def _load_weight_map_from_index(index_path: str) -> dict[str, str]:
+    """Load weight_map from an index file with a small process-local cache."""
+    with open(index_path) as f:
+        index = json.load(f)
+    weight_map = index.get("weight_map", {})
+    return weight_map if isinstance(weight_map, dict) else {}
+
+
+def _hydrate_missing_fp8_scales_from_index(
+    raw_tensors: dict[str, torch.Tensor],
+    shard_path: str,
+    *,
+    shard_name: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Populate missing ``.weight_scale_inv`` tensors from sibling shards.
+
+    Some checkpoints shard FP8 weight and its corresponding scale tensor into
+    different ``.safetensors`` files. Model-free processing is shard-local, so
+    this helper hydrates missing ``<layer>.weight_scale_inv`` tensors by looking
+    up ``weight_map`` in ``*.safetensors.index.json`` and loading only the
+    needed tensors from referenced shards.
+    """
+    if not shard_path.endswith(".safetensors"):
+        return raw_tensors
+
+    weight_to_scale: dict[str, str] = {}
+    for name, tensor in raw_tensors.items():
+        if not name.endswith(".weight"):
+            continue
+        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
+            continue
+        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        if scale_inv_name not in raw_tensors:
+            weight_to_scale[name] = scale_inv_name
+
+    if not weight_to_scale:
+        return raw_tensors
+
+    shard_dir = os.path.dirname(shard_path)
+    index_path = os.path.join(shard_dir, "model.safetensors.index.json")
+    if not os.path.exists(index_path):
+        candidates = sorted(
+            os.path.join(shard_dir, f) for f in os.listdir(shard_dir) if f.endswith(".safetensors.index.json")
+        )
+        if not candidates:
+            return raw_tensors
+        index_path = candidates[0]
+
+    try:
+        weight_map = _load_weight_map_from_index(index_path)
+    except Exception:
+        return raw_tensors
+
+    current_shard = os.path.basename(shard_path)
+    scales_by_shard: dict[str, list[str]] = {}
+    for scale_name in weight_to_scale.values():
+        target_shard = weight_map.get(scale_name)
+        if not target_shard or target_shard == current_shard:
+            continue
+        scales_by_shard.setdefault(target_shard, []).append(scale_name)
+
+    if not scales_by_shard:
+        return raw_tensors
+
+    from safetensors import safe_open
+
+    hydrated = 0
+    for target_shard, scale_names in scales_by_shard.items():
+        target_path = os.path.join(shard_dir, target_shard)
+        if not os.path.exists(target_path):
+            continue
+        try:
+            with safe_open(target_path, framework="pt", device="cpu") as sf:
+                for scale_name in scale_names:
+                    if scale_name in raw_tensors:
+                        continue
+                    try:
+                        raw_tensors[scale_name] = sf.get_tensor(scale_name)
+                        hydrated += 1
+                    except Exception:
+                        # Tensor may be absent in this shard; skip lazily.
+                        continue
+        except Exception:
+            continue
+
+    if hydrated:
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        logger.info(f"{shard_prefix}Hydrated {hydrated} FP8 scale tensor(s) from sibling shard(s) using index mapping.")
+
+    return raw_tensors
 
 
 def _dequant_mxfp_tensors(
@@ -854,6 +1155,7 @@ def _dequant_fp8_tensors(
     block_size: list | None = None,
     device: str = "cpu",
     shard_name: str | None = None,
+    shard_path: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Dequantize DeepSeek-V3-style FP8 weight tensors to bfloat16.
 
@@ -866,6 +1168,9 @@ def _dequant_fp8_tensors(
     :func:`_preprocess_model_type_source_tensors` / :func:`_handle_mxfp_source_tensors`.
     """
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+    if shard_path:
+        raw_tensors = _hydrate_missing_fp8_scales_from_index(raw_tensors, shard_path, shard_name=shard_name)
 
     quant_entries: list[tuple[str, str]] = []
     for name, tensor in raw_tensors.items():
@@ -922,6 +1227,7 @@ def _process_shard(
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
+    source_quantization_config: dict | None = None,
     enable_torch_compile: bool = False,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
@@ -996,7 +1302,14 @@ def _process_shard(
                 preserved_tensors[key] = raw_tensors.pop(key)
 
     # 1) model-type-specific preprocessing (format conversion only)
-    raw_tensors, source_state = _preprocess_model_type_source_tensors(raw_tensors, model_type=model_type)
+    raw_tensors, source_state = _preprocess_model_type_source_tensors(
+        raw_tensors,
+        model_type=model_type,
+        quantization_config=source_quantization_config,
+    )
+
+    # 1.5) normalize legacy NVFP4 names to llm-compressor naming.
+    raw_tensors, _converted_nvfp4_layers = _normalize_nvfp4_source_tensors(raw_tensors, shard_name=shard_name)
 
     # 2) generic MXFP handling for both preprocessed and normal source models
     raw_tensors, passthrough_tensors, passthrough_layers = _handle_mxfp_source_tensors(
@@ -1009,11 +1322,20 @@ def _process_shard(
     output_tensors.update(passthrough_tensors)
     quantized_layers.extend(passthrough_layers)
 
+    # 3) NVFP4 passthrough for layers already stored in packed format.
+    raw_tensors, nvfp_passthrough_tensors, nvfp_passthrough_layers = _handle_nvfp4_source_tensors(
+        raw_tensors,
+        matcher,
+    )
+    output_tensors.update(nvfp_passthrough_tensors)
+    quantized_layers.extend(nvfp_passthrough_layers)
+
     raw_tensors = _dequant_fp8_tensors(
         raw_tensors,
         block_size=fp8_block_size,
         device=device,
         shard_name=shard_name,
+        shard_path=shard_path,
     )
     raw_tensors.update(preserved_tensors)
 
@@ -1042,6 +1364,51 @@ def _process_shard(
 # ---------------------------------------------------------------------------
 
 
+def _get_llm_compressor_metadata() -> dict[str, str]:
+    """Return AutoRound provenance for model-free llm-compressor output."""
+    # Keep metadata deterministic and installation-source agnostic.
+    return {"provider": "auto-round"}
+
+
+def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
+    """Build compressed-tensors metadata for NVFP4 E5M3 without global scales."""
+    from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+
+    qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignored_layers)
+    qconfig.update(_get_llm_compressor_metadata())
+    return qconfig
+
+
+def _get_mxfp_group_scheme_and_format(
+    group_bits: int,
+    group_data_type: str,
+    ignore: list[str],
+):
+    """Return ``(QuantizationScheme, format_str)`` for a single (bits, data_type) group.
+
+    Handles both MXFP (mx_fp) and NVFP4_E5M3 (fp4_v2) groups.
+    """
+    from auto_round.export.export_to_llmcompressor.config import (
+        initialize_nvfp4_e5m3_quantization,
+        initialize_quantization,
+    )
+
+    if group_data_type == _NVFP4_E5M3_DATA_TYPE:
+        # NVFP4_E5M3 is not a compressed-tensors preset; use its dedicated builder.
+        nvfp4_dict = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+        # Extract the QuantizationScheme object from the dict config.
+        from compressed_tensors.quantization import QuantizationScheme
+
+        raw_scheme = nvfp4_dict["config_groups"]["group_0"]
+        scheme_obj = QuantizationScheme.model_validate(raw_scheme)
+        return scheme_obj, "nvfp4-e5m3-pack-quantized"
+    else:
+        scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
+        fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
+        tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        return tmp_qconfig.config_groups["group_0"], fmt
+
+
 def _build_mxfp_quantization_config(
     default_scheme: dict,
     quantized_layers: list[str],
@@ -1051,12 +1418,13 @@ def _build_mxfp_quantization_config(
     """Build a compressed-tensors / llm-compressor style quantization_config
     dict for MXFP4 / MXFP8 model-free output, including mixed-precision cases.
 
-    When *layer_config* contains layers that override the default bits (e.g.
-    some layers are MXFP8 while the default is MXFP4), the function creates
-    one ``config_group`` per distinct bit-width.  Override groups list their
-    layers explicitly; the default-bits group uses ``targets=["Linear"]`` as a
-    catch-all.  The top-level ``"format"`` is set to ``"mixed-precision"``
-    when more than one group is produced.
+    When *layer_config* contains layers that override the default bits or
+    data_type (e.g. some layers are MXFP8 while the default is MXFP4, or
+    some layers use NVFP4_E5M3 while the default is MXFP8), the function
+    creates one ``config_group`` per distinct ``(bits, data_type)`` pair.
+    Override groups list their layers explicitly; the default group uses
+    ``targets=["Linear"]`` as a catch-all.  The top-level ``"format"`` is
+    set to ``"mixed-precision"`` when more than one group is produced.
 
     Mirrors the per-group format produced by
     :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
@@ -1066,9 +1434,10 @@ def _build_mxfp_quantization_config(
     )
 
     bits = default_scheme.get("bits", 4)
+    default_data_type = (default_scheme.get("data_type") or "mx_fp").lower()
     is_fp_default = (bits or 0) >= 16  # BF16/FP16 full-precision default
 
-    if not is_fp_default and bits not in _SUPPORTED_MXFP_BITS:
+    if not is_fp_default and bits not in _SUPPORTED_MXFP_BITS and default_data_type != _NVFP4_E5M3_DATA_TYPE:
         raise ValueError(f"Unsupported MXFP bits={bits} for model-free output.")
 
     # Default ignore list: any layer present in ignored_layers (deduped) that
@@ -1077,8 +1446,9 @@ def _build_mxfp_quantization_config(
     quant_set = set(quantized_layers)
     ignore = [n for n in ignore if n not in quant_set]
 
-    # Resolve each quantized layer's effective bits using layer_config overrides.
-    scheme_groups: dict[int, list[str]] = {}  # bits -> [layer_names]
+    # Resolve each quantized layer's effective (bits, data_type) using layer_config overrides.
+    # Key: (bits, data_type) to distinguish e.g. MXFP4 from NVFP4_E5M3 (both 4-bit).
+    scheme_groups: dict[tuple[int, str], list[str]] = {}  # (bits, data_type) -> [layer_names]
     if layer_config:
         temp_matcher = _PatternMatcher(
             ignore_patterns=[],
@@ -1088,51 +1458,65 @@ def _build_mxfp_quantization_config(
         for layer in quantized_layers:
             scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
             layer_bits = scheme.get("bits", bits) if scheme is not None else bits
-            scheme_groups.setdefault(layer_bits, []).append(layer)
+            layer_dt = (
+                (scheme.get("data_type") or default_data_type).lower() if scheme is not None else default_data_type
+            )
+            scheme_groups.setdefault((layer_bits, layer_dt), []).append(layer)
     else:
         if not is_fp_default:
-            scheme_groups[bits] = list(quantized_layers)
+            scheme_groups[(bits, default_data_type)] = list(quantized_layers)
         # else: BF16 default with no layer_config → no MXFP layers; scheme_groups stays {}
 
     if len(scheme_groups) <= 1:
-        # Single scheme — use the actual MXFP bits from the group, not the
-        # default bits (which may be 16 for a BF16 default scheme).
-        actual_bits = next(iter(scheme_groups.keys())) if scheme_groups else bits
-        if actual_bits not in _SUPPORTED_MXFP_BITS:
+        # Single scheme — use the actual (bits, data_type) from the group.
+        if scheme_groups:
+            actual_bits, actual_dt = next(iter(scheme_groups.keys()))
+        else:
+            actual_bits, actual_dt = bits, default_data_type
+        if actual_dt != _NVFP4_E5M3_DATA_TYPE and actual_bits not in _SUPPORTED_MXFP_BITS:
             raise ValueError(f"Unsupported MXFP bits={actual_bits} for model-free output.")
+        group_scheme, fmt = _get_mxfp_group_scheme_and_format(actual_bits, actual_dt, ignore)
+        if actual_dt == _NVFP4_E5M3_DATA_TYPE:
+            from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+
+            qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+            if is_fp_default and scheme_groups:
+                qconfig["config_groups"]["group_0"]["targets"] = list(quantized_layers)
+            qconfig["format"] = fmt
+            qconfig.update(_get_llm_compressor_metadata())
+            return qconfig
+        from auto_round.export.export_to_llmcompressor.config import initialize_quantization as _init_q
+
         scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
-        fmt = "mxfp4-pack-quantized" if actual_bits == 4 else "mxfp8-quantized"
-        qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
+        qconfig = _init_q(scheme=scheme_name, ignore=ignore)
         if is_fp_default and scheme_groups:
             targets = list(quantized_layers)
             qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
-        qconfig["provider"] = "auto-round"
+        qconfig.update(_get_llm_compressor_metadata())
         return qconfig
 
-    # Mixed MXFP: build one config_group per distinct bit-width.
-    # Override groups (non-default bits) come first, default group last,
+    # Mixed precision: build one config_group per distinct (bits, data_type).
+    # Override groups (non-default key) come first, default group last,
     # ordered by descending bit-width within each partition so that the
     # higher-precision group gets the lower group index.
+    default_key = (bits, default_data_type)
     override_items = sorted(
-        [(b, layers) for b, layers in scheme_groups.items() if b != bits],
-        key=lambda x: x[0],
+        [(key, layers) for key, layers in scheme_groups.items() if key != default_key],
+        key=lambda x: x[0][0],
         reverse=True,
     )
-    default_item = (bits, scheme_groups[bits]) if bits in scheme_groups else None
+    default_item = (default_key, scheme_groups[default_key]) if default_key in scheme_groups else None
     ordered = override_items + ([default_item] if default_item else [])
 
     config_groups: dict = {}
     group_formats: dict[str, str] = {}
-    for idx, (group_bits, layer_names) in enumerate(ordered):
+    for idx, ((group_bits, group_dt), layer_names) in enumerate(ordered):
         group_name = f"group_{idx}"
-        scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
-        fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
-        is_default_group = group_bits == bits
+        is_default_group = (group_bits, group_dt) == default_key
         targets = ["Linear"] if is_default_group else layer_names
-        tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
-        group_scheme = tmp_qconfig.config_groups["group_0"]
+        group_scheme, fmt = _get_mxfp_group_scheme_and_format(group_bits, group_dt, ignore)
         group_scheme.targets = targets
         config_groups[group_name] = group_scheme
         group_formats[group_name] = fmt
@@ -1142,7 +1526,7 @@ def _build_mxfp_quantization_config(
     full_dict["format"] = "mixed-precision"
     for group_name, fmt in group_formats.items():
         full_dict["config_groups"][group_name]["format"] = fmt
-    full_dict["provider"] = "auto-round"
+    full_dict.update(_get_llm_compressor_metadata())
     return full_dict
 
 
@@ -1381,6 +1765,8 @@ def _build_quantization_config(
     data_type = (default_scheme.get("data_type") or "int").lower()
     default_bits = default_scheme.get("bits", 4)
     is_fp_default = (default_bits or 0) >= 16 and not is_mx_fp(data_type)
+    if data_type == _NVFP4_E5M3_DATA_TYPE and format == "llm_compressor":
+        return _build_nvfp4_e5m3_quantization_config(ignored_layers)
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
@@ -1411,7 +1797,10 @@ def _build_quantization_config(
     scheme_keys = [f.name for f in fields(QuantizationScheme)]
     # vllm only support auto_round:auto_gptq, but transformers cannot load it correctly when sym=False.
     # So we keep auto_round for asymmetric quantization to maintain compatibility with both.
-    packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        packing_format = "auto_round:fake" if format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
+    else:
+        packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
 
     qconfig = {
         "quant_method": "auto-round",
@@ -1424,6 +1813,12 @@ def _build_quantization_config(
         "model_free": True,
         "autoround_version": __version__,
     }
+
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        for act_key in ("act_bits", "act_data_type", "act_group_size", "act_sym", "act_dynamic"):
+            value = default_scheme.get(act_key)
+            if value is not None:
+                qconfig[act_key] = value
 
     if block_name_to_quantize:
         qconfig["block_name_to_quantize"] = block_name_to_quantize
@@ -1453,6 +1848,8 @@ def _build_quantization_config(
             if non_linear_re.search(layer_name):
                 continue
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
+            if data_type == _NVFP4_E5M3_DATA_TYPE:
+                extra_config[layer_name].update({"act_bits": 16, "act_data_type": "float"})
 
     quantized_layer_set = set(quantized_layers)
     if "lm_head" in quantized_layer_set and "lm_head" not in extra_config:
@@ -1549,6 +1946,7 @@ def _process_single_shard_task(
     ignore_patterns: list[str],
     fp8_block_size: list | None,
     model_type: str | None,
+    source_quantization_config: dict | None = None,
     quant_output_dir: str,
     total_shards: int,
     enable_torch_compile: bool = False,
@@ -1568,6 +1966,48 @@ def _process_single_shard_task(
     if shard_path is None or not os.path.exists(shard_path):
         return shard_idx, shard_name, None, None, None, None, None
 
+    return _quantize_local_shard_task(
+        shard_idx,
+        shard_name,
+        shard_path=shard_path,
+        device=device,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        fp8_block_size=fp8_block_size,
+        model_type=model_type,
+        source_quantization_config=source_quantization_config,
+        quant_output_dir=quant_output_dir,
+        total_shards=total_shards,
+        enable_torch_compile=enable_torch_compile,
+        cleanup_source_shard=is_streaming,
+    )
+
+
+def _quantize_local_shard_task(
+    shard_idx: int,
+    shard_name: str,
+    *,
+    shard_path: str,
+    device: str,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    fp8_block_size: list | None,
+    model_type: str | None,
+    source_quantization_config: dict | None,
+    quant_output_dir: str,
+    total_shards: int,
+    enable_torch_compile: bool = False,
+    cleanup_source_shard: bool = False,
+) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
+    """Quantize one already-downloaded shard and write the output shard.
+
+    Returns lightweight metadata only so IPC does not transfer tensor storages.
+    """
+    if shard_path is None or not os.path.exists(shard_path):
+        return shard_idx, shard_name, None, None, None, None, None
+
     output_tensors, quantized, ignored = _process_shard(
         shard_path=shard_path,
         shard_name=shard_name,
@@ -1577,6 +2017,7 @@ def _process_single_shard_task(
         device=device,
         fp8_block_size=fp8_block_size,
         model_type=model_type,
+        source_quantization_config=source_quantization_config,
         enable_torch_compile=enable_torch_compile,
     )
 
@@ -1591,13 +2032,12 @@ def _process_single_shard_task(
     tensor_names = list(local_weight_map.keys())
     clear_memory()
 
-    if is_streaming:
+    if cleanup_source_shard:
         try:
             os.remove(shard_path)
         except OSError:
             pass
 
-    # Return only lightweight metadata to avoid IPC transfer of tensor storages.
     return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
 
 
@@ -1717,6 +2157,21 @@ def _validate_supported_scheme(
             raise ValueError(
                 f"Model-free mode supports MXFP only with group_size=32, "
                 f"but '{scheme_input}' requests group_size={group_size}."
+            )
+        return
+
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        if bits != 4 or scheme_obj.group_size != 16 or act_bits != 4:
+            raise ValueError(
+                f"Model-free NVFP4_E5M3 requires bits=4, group_size=16, and act_bits=4, "
+                f"but '{scheme_input}' requests bits={bits}, group_size={scheme_obj.group_size}, "
+                f"act_bits={act_bits}."
+            )
+        if (scheme_obj.act_data_type or "").lower() != _NVFP4_E5M3_DATA_TYPE or scheme_obj.act_group_size != 16:
+            raise ValueError(
+                f"Model-free NVFP4_E5M3 requires act_data_type='fp4_v2' and act_group_size=16, "
+                f"but '{scheme_input}' requests act_data_type='{scheme_obj.act_data_type}', "
+                f"act_group_size={scheme_obj.act_group_size}."
             )
         return
 
@@ -1962,6 +2417,7 @@ class _ModelFreeCompressorCore:
     """
 
     SUPPORTED_FORMATS: tuple[str, ...] = (
+        "fake",
         "auto_round",
         "auto_round:auto_gptq",
         "llm_compressor",
@@ -1987,7 +2443,7 @@ class _ModelFreeCompressorCore:
         self.scheme_input = scheme
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
-        self.format = format
+        self.format = format or "auto_round"
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
@@ -2043,6 +2499,7 @@ class _ModelFreeCompressorCore:
         _validate_supported_scheme(self.scheme_obj, self.scheme_input)
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
+        self.default_scheme["_output_format"] = self.format
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -2253,6 +2710,10 @@ class _ModelFreeCompressorCore:
     # -------------------------------------------------------------------
 
     def _process_all_shards(self) -> None:
+        if self.is_streaming:
+            self._process_all_shards_streaming_pipeline()
+            return
+
         try:
             from tqdm import tqdm as _tqdm
         except ImportError:
@@ -2284,6 +2745,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
+                        source_quantization_config=self.config.get("quantization_config", {}),
                         enable_torch_compile=self.enable_torch_compile,
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
@@ -2297,36 +2759,8 @@ class _ModelFreeCompressorCore:
             )
 
             for future in shard_iter:
-                shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = future.result()
-
-                if (
-                    shard_path is None
-                    or out_shard_name is None
-                    or tensor_names is None
-                    or quantized is None
-                    or ignored is None
-                ):
-                    logger.warning(f"Shard not found: {shard_name}, skipping")
-                    continue
-
-                memory_monitor.update()
-                clear_memory()
-                if len(self.shard_names) > 1:
-                    logger.info(f"Memory usage: {memory_monitor.get_summary()}")
-
-                compressed_quantized = compress_layer_names(quantized)
-                compressed_ignored = compress_layer_names(ignored)
-                logger.info(
-                    f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
-                    f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
-                    f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
-                )
-
-                self.all_quantized_layers.extend(quantized)
-                self.all_ignored_layers.extend(ignored)
-
-                for tensor_name in tensor_names:
-                    self.output_weight_map[tensor_name] = out_shard_name
+                result = future.result()
+                self._merge_shard_task_result(result)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard worker processes.")
             _force_cleanup_process_pool(pool)
@@ -2336,6 +2770,152 @@ class _ModelFreeCompressorCore:
             raise
         finally:
             _force_cleanup_process_pool(pool)
+
+    def _merge_shard_task_result(
+        self,
+        result: tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None],
+    ) -> None:
+        """Merge one shard-task result into global stats and weight map."""
+        shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = result
+        if shard_path is None or out_shard_name is None or tensor_names is None or quantized is None or ignored is None:
+            logger.warning(f"Shard not found: {shard_name}, skipping")
+            return
+
+        memory_monitor.update()
+        clear_memory()
+        if len(self.shard_names) > 1:
+            logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+
+        compressed_quantized = compress_layer_names(quantized)
+        compressed_ignored = compress_layer_names(ignored)
+        logger.info(
+            f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
+            f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
+            f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+        )
+
+        self.all_quantized_layers.extend(quantized)
+        self.all_ignored_layers.extend(ignored)
+        for tensor_name in tensor_names:
+            self.output_weight_map[tensor_name] = out_shard_name
+
+    def _process_all_shards_streaming_pipeline(self) -> None:
+        """Streaming-mode shard pipeline with dedicated downloader and quant workers.
+
+        Design:
+        - one downloader worker serializes network bandwidth usage;
+        - N quant workers consume ready shards independently;
+        - shards are assigned for quantization as soon as download completes.
+        """
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+
+        if not self.shard_names:
+            return
+
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+
+        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
+        prefetch_depth = max(2, worker_count)
+        total_shards = len(self.shard_names)
+
+        download_pool: ThreadPoolExecutor | None = None
+        quant_pool: ProcessPoolExecutor | None = None
+        download_futures: dict = {}
+        quant_futures = set()
+        next_download_idx = 0
+        completed_quant = 0
+
+        def _submit_next_download() -> bool:
+            nonlocal next_download_idx
+            if next_download_idx >= total_shards:
+                return False
+            shard_idx = next_download_idx
+            shard_name = self.shard_names[shard_idx]
+            future = download_pool.submit(
+                _prefetch_shard,
+                self.model_name_or_path,
+                shard_name,
+                self.work_dir,
+                self.source_dir,
+                self.is_streaming,
+            )
+            download_futures[future] = (shard_idx, shard_name)
+            next_download_idx += 1
+            return True
+
+        try:
+            download_pool = ThreadPoolExecutor(max_workers=1)
+            quant_pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
+
+            for _ in range(min(prefetch_depth, total_shards)):
+                _submit_next_download()
+
+            progress = _tqdm(total=total_shards, desc="Processing shards", unit="shard") if _tqdm else None
+
+            while completed_quant < total_shards:
+                wait_set = set(download_futures.keys()) | set(quant_futures)
+                if not wait_set:
+                    break
+
+                done, _ = wait(wait_set, return_when=FIRST_COMPLETED)
+                for future in done:
+                    if future in download_futures:
+                        shard_idx, shard_name = download_futures.pop(future)
+                        shard_path = future.result()
+                        if shard_path is None or not os.path.exists(shard_path):
+                            logger.warning(f"Prefetch failed for shard {shard_name}, skipping")
+                            completed_quant += 1
+                            if progress is not None:
+                                progress.update(1)
+                        else:
+                            qf = quant_pool.submit(
+                                _quantize_local_shard_task,
+                                shard_idx,
+                                shard_name,
+                                shard_path=shard_path,
+                                device=self.device,
+                                default_scheme=self.default_scheme,
+                                layer_config=self.layer_config,
+                                ignore_patterns=self.ignore_patterns,
+                                fp8_block_size=self.fp8_block_size,
+                                model_type=self.model_type,
+                                source_quantization_config=self.config.get("quantization_config", {}),
+                                quant_output_dir=self._quant_output_dir,
+                                total_shards=total_shards,
+                                enable_torch_compile=self.enable_torch_compile,
+                                cleanup_source_shard=True,
+                            )
+                            quant_futures.add(qf)
+
+                        while len(download_futures) < prefetch_depth and _submit_next_download():
+                            pass
+                    elif future in quant_futures:
+                        quant_futures.remove(future)
+                        result = future.result()
+                        self._merge_shard_task_result(result)
+                        completed_quant += 1
+                        if progress is not None:
+                            progress.update(1)
+
+            if progress is not None:
+                progress.close()
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user; terminating model-free shard workers.")
+            _force_cleanup_process_pool(quant_pool)
+            raise
+        except Exception:
+            _force_cleanup_process_pool(quant_pool)
+            raise
+        finally:
+            _force_cleanup_process_pool(quant_pool)
+            if download_pool is not None:
+                try:
+                    download_pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------
     # Output
@@ -2354,6 +2934,7 @@ class _ModelFreeCompressorCore:
                     break
         block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
 
+        os.makedirs(self._quant_output_dir, exist_ok=True)
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
@@ -2365,7 +2946,6 @@ class _ModelFreeCompressorCore:
         )
 
         self.config["quantization_config"] = quantization_config
-        os.makedirs(self._quant_output_dir, exist_ok=True)
         with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
 
@@ -2476,6 +3056,8 @@ class _ModelFreeCompressorCore:
         if is_mx_fp(data_type):
             bits = self.default_scheme.get("bits", 4)
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        elif data_type == _NVFP4_E5M3_DATA_TYPE:
+            packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
             packing_format = "auto_round:auto_gptq"
 
@@ -2867,6 +3449,8 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
@@ -2921,8 +3505,11 @@ def _expand_e8m0_block_scale(
 
     Because every fine MXFP group lies entirely inside a single coarse block,
     the expansion is a pure ``repeat_interleave`` along both axes (no
-    interpolation).  The returned tensor is ``uint8`` (raw E8M0 bytes), matching
-    the ``U8`` dtype used by llm-compressor ``weight_scale`` tensors.
+    interpolation). For DeepSeek variants that store *tail* blocks using
+    ceil-based 128x128 tiling (for example rows ``5 -> 576``), we expand with
+    128 repeats and then slice the tail. The returned tensor is ``uint8`` (raw
+    E8M0 bytes), matching the ``U8`` dtype used by llm-compressor
+    ``weight_scale`` tensors.
     """
     scale = scale.view(torch.uint8)
     if scale.dim() != 2:
@@ -2932,23 +3519,41 @@ def _expand_e8m0_block_scale(
     target_cols = in_features // group_size
     rows, cols = scale.shape
 
-    if target_rows % rows != 0 or target_cols % cols != 0:
-        raise ValueError(
-            f"Cannot expand E8M0 block scale {tuple(scale.shape)} to "
-            f"({target_rows}, {target_cols}); shapes are not divisible."
-        )
+    # Standard path: exact divisibility between coarse and target shapes.
+    if target_rows % rows == 0 and target_cols % cols == 0:
+        if target_rows != rows:
+            scale = scale.repeat_interleave(target_rows // rows, dim=0)
+        if target_cols != cols:
+            scale = scale.repeat_interleave(target_cols // cols, dim=1)
+        return scale.contiguous()
 
-    if target_rows != rows:
-        scale = scale.repeat_interleave(target_rows // rows, dim=0)
-    if target_cols != cols:
-        scale = scale.repeat_interleave(target_cols // cols, dim=1)
-    return scale.contiguous()
+    # DeepSeek FP8/UE8M0 path: coarse scales are laid out in ceil(./128) blocks.
+    # This handles tail blocks like rows=5 for out_features=576.
+    coarse_block = 128
+    expected_rows = (out_features + coarse_block - 1) // coarse_block
+    expected_cols = (in_features + coarse_block - 1) // coarse_block
+    if rows == expected_rows and cols == expected_cols:
+        if coarse_block % group_size != 0:
+            raise ValueError(
+                f"Cannot expand DeepSeek E8M0 block scale with group_size={group_size}; "
+                f"{coarse_block} is not divisible by group_size."
+            )
+        groups_per_block_col = coarse_block // group_size
+        scale = scale.repeat_interleave(coarse_block, dim=0)[:target_rows]
+        scale = scale.repeat_interleave(groups_per_block_col, dim=1)[:, :target_cols]
+        return scale.contiguous()
+
+    raise ValueError(
+        f"Cannot expand E8M0 block scale {tuple(scale.shape)} to "
+        f"({target_rows}, {target_cols}); unsupported coarse/block layout."
+    )
 
 
 def _preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
     group_size: int = 32,
+    quantization_config: dict | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
     """Apply model-type-specific source tensor normalization.
 
@@ -2961,15 +3566,28 @@ def _preprocess_model_type_source_tensors(
         ``(raw_tensors, source_state)`` where ``source_state[layer]`` is the
         source MXFP bits (4 or 8) for model-type preprocessed layers.
     """
-    if (model_type or "").lower() != "deepseek_v4":
+    model_type = (model_type or "").lower()
+    quantization_config = quantization_config or {}
+    is_deepseek_v4 = model_type == "deepseek_v4"
+    is_deepseek_v32_ue8m0 = (
+        model_type == "deepseek_v32"
+        and quantization_config.get("quant_method") == "fp8"
+        and str(quantization_config.get("fmt", "")).lower() == "e4m3"
+        and str(quantization_config.get("scale_fmt", "")).lower() == "ue8m0"
+    )
+    if not is_deepseek_v4 and not is_deepseek_v32_ue8m0:
         return raw_tensors, {}
 
     entries: list[tuple[str, str, bool]] = []  # (weight_name, scale_name, is_fp8)
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        scale_name = name[: -len(".weight")] + ".scale"
-        if scale_name not in raw_tensors:
+        layer_name = name[: -len(".weight")]
+        scale_candidates = [f"{layer_name}.scale"]
+        if is_deepseek_v32_ue8m0:
+            scale_candidates.extend((f"{layer_name}.weight_scale", f"{layer_name}.weight_scale_inv"))
+        scale_name = next((candidate for candidate in scale_candidates if candidate in raw_tensors), None)
+        if scale_name is None:
             continue
         if tensor.dtype == torch.float8_e4m3fn:
             entries.append((name, scale_name, True))
@@ -2992,6 +3610,21 @@ def _preprocess_model_type_source_tensors(
             weight_key = f"{layer_name}.weight"
             source_state[layer_name] = 8
             n_fp8 += 1
+
+            # DeepSeek V32 UE8M0: the weight_scale_inv is stored in float32
+            # but only the 8-bit exponent field is meaningful (UE8M0 encoding).
+            # Extract the biased exponent from each fp32 element as a uint8 byte
+            # so that _expand_e8m0_block_scale receives the expected U8 E8M0 tensor.
+            # float32 layout: sign(1) | exponent(8) | mantissa(23)
+            # → uint8 E8M0 = (view_as_int32 >> 23) & 0xFF
+            if scale.dtype == torch.float32:
+                sanitized_scale_name = ".".join("<idx>" if part.isdigit() else part for part in scale_name.split("."))
+                logger.warning_once(
+                    f"[{model_type}] Scale tensor '{sanitized_scale_name}' has dtype float32 with UE8M0 encoding "
+                    f"(only the 8-bit exponent is significant). "
+                    f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
+                )
+                scale = ((scale.view(torch.int32) >> 23) & 0xFF).to(torch.uint8)
         else:
             out_features = weight.shape[0]
             in_features = weight.shape[1] * 2
@@ -3005,7 +3638,7 @@ def _preprocess_model_type_source_tensors(
         raw_tensors[f"{layer_name}.weight_scale"] = weight_scale
 
     logger.info(
-        "Applied model_type preprocessing for deepseek_v4: "
+        f"Applied model_type preprocessing for {model_type}: "
         f"{n_fp8} MXFP8 layer(s), {n_fp4} MXFP4 layer(s) converted to llm-compressor naming."
     )
     return raw_tensors, source_state
