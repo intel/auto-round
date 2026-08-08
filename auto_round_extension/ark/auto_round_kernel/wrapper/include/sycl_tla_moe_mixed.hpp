@@ -129,6 +129,7 @@ class MoEUpcastInt2SymToInt8KernelFast;
 // coalesced burst per row for FP16/BF16 writes, which matches the L1
 // cache-line size on the target XPUs.
 constexpr int WG_N = 32;
+constexpr int WG_K_INT4_FAST = 8;
 constexpr int PACK_K_FP = 4;
 constexpr int PACK_K_INT8 = 4;
 constexpr int PACK_K_INT4 = 2;
@@ -277,15 +278,17 @@ void launch_dequant_int4(sycl::queue* q, const uint8_t* weights_NKp, const Scala
   // relative to the byte-per-work-item path.
   if ((K % PACK_K_INT4_FAST) == 0 && (group_size % PACK_K_INT4_FAST) == 0) {
     const int k_words = K / PACK_K_INT4_FAST;  // == k_packed / 4
-    sycl::range<3> global_fast{static_cast<size_t>(E), static_cast<size_t>(k_words),
+    const int k_words_padded = ((k_words + WG_K_INT4_FAST - 1) / WG_K_INT4_FAST) * WG_K_INT4_FAST;
+    sycl::range<3> global_fast{static_cast<size_t>(E), static_cast<size_t>(k_words_padded),
                                static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
-    sycl::range<3> local_fast{1, 1, static_cast<size_t>(WG_N)};
+    sycl::range<3> local_fast{1, static_cast<size_t>(WG_K_INT4_FAST), static_cast<size_t>(WG_N)};
 
     q->parallel_for<MoEDequantKernelInt4Fast<ScalarT, Asym>>(
         sycl::nd_range<3>(global_fast, local_fast), [=](sycl::nd_item<3> it) {
           const int e = static_cast<int>(it.get_global_id(0));
           if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
           const int kw = static_cast<int>(it.get_global_id(1));
+          if (kw >= k_words) return;
           const int n = static_cast<int>(it.get_global_id(2));
           if (n >= N) return;
           const int k_base = kw * PACK_K_INT4_FAST;
