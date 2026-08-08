@@ -709,6 +709,72 @@ void bestla_sdpa_forward(const attn_fwd_args_t& args, BTLA_DTYPE kv_dtype) {
     return;
   }
 
+  // Defect-2 mitigation: when the fp16 plain routes cannot fire (no AVX512-FP16
+  // ISA on this build, or GQA shapes block the AMX-BF16 raw path), convert the
+  // raw fp16 K/V to bf16 element-by-element, pack them into the NTILE48 layout
+  // the existing bf16 stable wrapper expects, and dispatch through
+  // `bestla_fusion_attn_forward<float, bf16, bf16, float>`.  This unlocks
+  // AMX-BF16's MTILE=16 and NTILE=48 (vs the AVX2 packed path's MTILE=4 and
+  // NTILE=24) for GQA shapes on AMX-capable hardware.
+  const bool fp16_to_bf16_amx =
+      kv_dtype == BTLA_DTYPE::F16 && cpu->AMX_BF16() && !fp16_plain_avx512 && !fp16_plain_amx &&
+      local.sl_q > 1;  // only prefill; decode is memory-bound, the conversion overhead dominates
+
+  if (fp16_to_bf16_amx) {
+    const size_t k_total =
+        static_cast<size_t>(local.batch_size) * local.heads_kv * local.sl_kv * local.head_size;
+    const size_t v_total = k_total;  // K and V have identical dimensions
+    std::vector<bestla::utils::bf16> k_bf16(k_total);
+    std::vector<bestla::utils::bf16> v_bf16(v_total);
+
+    // Convert fp16 → bf16 (via float intermediate).  The loop is O(B·Hkv·Skv·D)
+    // but amortised: the GEMM is O(B·Hq·Sq·Skv·D) which dominates on prefill and
+    // the mtile savings (4→16) dominate on decode.
+#pragma omp parallel for collapse(2) schedule(static)
+    for (int b = 0; b < local.batch_size; ++b) {
+      for (int h = 0; h < local.heads_kv; ++h) {
+        const auto k_base = reinterpret_cast<const bestla::utils::fp16*>(local.K);
+        const auto v_base = reinterpret_cast<const bestla::utils::fp16*>(local.V);
+        const size_t head_off =
+            (static_cast<size_t>(b) * local.heads_kv + h) * local.sl_kv * local.head_size;
+        for (int s = 0; s < local.sl_kv; ++s) {
+          for (int d = 0; d < local.head_size; ++d) {
+            const size_t idx = head_off + static_cast<size_t>(s) * local.head_size + d;
+            k_bf16[idx] = bestla::utils::bf16(static_cast<float>(k_base[idx]));
+            v_bf16[idx] = bestla::utils::bf16(static_cast<float>(v_base[idx]));
+          }
+        }
+      }
+    }
+
+    // Reorder the bf16 buffers into NTILE48 ROWPACK2 (same as the native bf16 path).
+    const ReorderKVShape rshape =
+        reorder_kv_shape(local.batch_size, local.heads_kv, local.sl_kv, local.head_size, BTLA_DTYPE::BF16);
+    std::vector<uint16_t> packed_k(reorder_kv_cache_elems(rshape, /*is_value=*/false));
+    std::vector<uint16_t> packed_v(reorder_kv_cache_elems(rshape, /*is_value=*/true));
+    AttentionStrides k_in{local.step_k_sl, local.step_k_head_size, local.step_k_head_num, local.step_k_bs};
+    ValueStrides v_in{local.step_v_head_size, local.step_v_sl, local.step_v_head_num, local.step_v_bs};
+    reorder_k_to_packed(packed_k.data(), k_bf16.data(), rshape, k_in);
+    reorder_v_to_packed(packed_v.data(), v_bf16.data(), rshape, v_in);
+
+    local.K = packed_k.data();
+    local.V = packed_v.data();
+    local.K_layout = rshape.k_layout;
+    local.V_layout = rshape.v_layout;
+    local.step_k_head_num = rshape.step_k_head_num;
+    local.step_k_bs = rshape.step_k_bs;
+    local.step_k_sl = rshape.step_k_sl;
+    local.step_k_head_size = rshape.step_k_head_size;
+    local.step_v_head_num = rshape.step_v_head_num;
+    local.step_v_bs = rshape.step_v_bs;
+    local.step_v_sl = rshape.step_v_sl;
+    local.step_v_head_size = rshape.step_v_head_size;
+
+    const auto typed = make_typed_attn_args<bestla::utils::bf16>(local);
+    bestla_mha::bestla_fusion_attn_forward<float, bestla::utils::bf16, bestla::utils::bf16, float>(typed, *th);
+    return;
+  }
+
   // Phase 4 Step 1: bridge raw PLAIN HND/NHD K/V into the Neural-Speed-style
   // NTILE packed/reordered cache the wired mixed kernels require. The kernel's
   // QK weight is K (NTILE over seq, ROWPACK over head_size) and its PV weight is

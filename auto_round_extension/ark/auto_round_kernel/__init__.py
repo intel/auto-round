@@ -334,6 +334,15 @@ def _cpu_public_mixed_sdpa_packed(
     n_padding,
     tensor_layout: str,
 ) -> torch.Tensor:
+    # Defect-2 mitigation: for fp16 K/V on prefill (sl_q > 1, where the GEMM
+    # dominates), convert to bf16 so the packed-KV cache stores NTILE48 ROWPACK2
+    # data.  The AMX-BF16 stable wrapper then runs with MTILE=16 / NTILE=48 vs
+    # the AVX2 path's MTILE=4 / NTILE=24.  PyTorch's dtype conversion is SIMD.
+    # For decode (sl_q == 1) the conversion overhead dominates; keep fp16 packed.
+    if key.dtype == torch.float16 and query.shape[-2] > 1:
+        key = key.to(dtype=torch.bfloat16)
+        value = value.to(dtype=torch.bfloat16)
+
     entry, seq_len_kv = _cpu_public_get_packed_kv_entry(key, value, tensor_layout=tensor_layout)
     return ark_cpu_bestla_sdpa_packed_from_descriptor(
         entry.descriptor,

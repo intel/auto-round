@@ -240,10 +240,3 @@ Build with MoE / SageAttention support requires `ARK_SYCL_TLA=ON`.
 | [test_bench_bmg.py](test/test_bench_bmg.py) | BMG SDPA / SageAttention benchmarking |
 | [test_matmul.py](test/test_matmul.py) | Low-level matmul |
 | [test_packq.py](test/test_packq.py) | Weight packing utilities |
-  Notes:
-  * The patch only routes calls to ARK on XPU when the inputs match ARK kernel constraints; otherwise it falls back to the original torch SDPA.
-  * Supported Q/K/V dtypes are FP16 and BF16.
-  * Supported head dimensions are 64, 96, 128, and 192.
-  * `dropout_p` must be 0.0 for the ARK path.
-  * Additive masks are supported when they can be normalized to `[B, 1, Sq, Skv]`; boolean masks fall back to torch.
-  * Backend-specific extensions and lifecycle helpers are internal/experimental and are not part of the public `sdpa()` contract.

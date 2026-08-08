@@ -84,18 +84,6 @@ TEST_COVERAGE = """
 Test coverage map
 -----------------
 
-C++ unit tests (build the CPU extension and run test_reorder_kv_main):
-  TestReorderKV               — K/V reorder layout correctness (all dtypes/layouts)
-  TestPersistentPackedKV      — incremental packed cache update vs one-shot reorder
-  TestPackedForwardSetup      — logical capacity, zero-fill, forward arg validation
-  TestHomogeneousForwardSetup — routes 3/4 pre-GEMM arg validation (any CPU)
-  TestMixedPaddingRight       — routes 1/2 padding-right flag plumbing
-  TestMixedAlibiTanh          — routes 1/2 alibi/tanh acceptance; routes 3/4 rejection
-  TestMixedNumericalFeatures  — routes 1/2 numerical alibi/tanh/padding-right vs ref
-    ISA skip conditions:
-      Route 1 (f16 K/V): skip if cpu->AVX2() == false
-      Route 2 (bf16 K/V): skip if cpu->AVX512F() == false
-
 Python tests:
   test_ark_cpu_sdpa.py              — standard public sdpa() semantics
     (mask, causal, scale, dtype, GQA, prefill/decode, homogeneous route hit/fallback)
@@ -200,10 +188,6 @@ Routes 1/2 (Tier 1): PROMOTED TO DEFAULT (gate removed).
 
 Decision rationale:
   - Implementation is structurally complete and NS-parity validated in Python.
-  - C++ unit tests cover layout correctness (TestReorderKV), packed cache
-    updates (TestPersistentPackedKV), setup/dispatch (TestPackedForwardSetup,
-    TestHomogeneousForwardSetup), and feature plumbing (TestMixedPaddingRight,
-    TestMixedAlibiTanh, TestMixedNumericalFeatures).
   - Internal mixed-route parity confirmed for: causal, GQA, padding-right,
     alibi, tanh, prefer_fp32, and packed KV cache.
   - NO per-ISA CI coverage on physical SPR/EMR/GNR hardware yet.
@@ -257,14 +241,13 @@ Final delivery summary — non-int8 CPU BestLA SDPA
 ==================================================
 
 DONE (this delivery pass):
-  * Route 1 (f32/f16/f16/f32): NS-parity-derived backend, fully tested in Python + C++ UT.
-  * Route 2 (f32/bf16/bf16/f32): NS-parity-derived backend, fully tested in Python + C++ UT.
+  * Route 1 (f32/f16/f16/f32): NS-parity-derived backend, fully tested in Python.
+  * Route 2 (f32/bf16/bf16/f32): NS-parity-derived backend, fully tested in Python.
   * Routes 3/4: finalized as standard-SDPA internal optimization backends; runtime
     resolution falls back to scalar when their contracts are not met.
   * Packed/persistent KV cache path: available through internal.cpu helpers under env
-    gate; C++ UT validates layout correctness (TestReorderKV, TestPersistentPackedKV,
-    TestPackedForwardSetup).
-  * Feature coverage validated end-to-end (Python + C++): causal, GQA, padding-right,
+    gate.
+  * Feature coverage validated end-to-end (Python): causal, GQA, padding-right,
     alibi (ALIBI8), tanh (TANH30), prefer_fp32.
   * Final dispatch rule enforced: first layer by Q/K/V/dst dtype tuple; second layer by
     ISA + layout + stride/shape within each dtype-specific route.
@@ -277,9 +260,6 @@ VALIDATED (this pass):
     test_ark_cpu_mixed_bestla_sdpa.py (standard mixed runtime), and
     test_ark_cpu_internal_sdpa.py (internal/experimental helpers) — all
     structured to ISA-skip cleanly without BestLA extension present.
-  * C++ UTs: TestReorderKV, TestPersistentPackedKV, TestPackedForwardSetup,
-    TestHomogeneousForwardSetup, TestMixedPaddingRight, TestMixedAlibiTanh,
-    TestMixedNumericalFeatures — all runnable when extension is built.
   * Runbook (this file): authoritative reference for route status, ISA requirements,
     CI matrix, promotion decisions, and follow-up items.
 
