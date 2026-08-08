@@ -15,6 +15,7 @@
 #include "ark/cpu/sdpa.h"
 #include "ark/cpu/mha_dense_wrapper.h"
 #include "bestla/kernel_avx2.h"
+#include "bestla/kernel_jit.h"
 
 #include <algorithm>
 #include <array>
@@ -1268,6 +1269,38 @@ void update_packed_k_cache(void* cache_k, const void* key, const ReorderKVShape&
       start_pos + append_len > cap) {
     throw std::invalid_argument("ark::cpu::update_packed_k_cache: invalid dimensions or append range");
   }
+  // JIT-accelerated path for BF16 K on first write (start_pos == 0, zero-padding).
+  // The JIT kernel (PaddingTransInterleaveCvt) requires FP32 source; we convert
+  // the BF16 model activations to a contiguous FP32 buffer first. The blocked
+  // SIMD transpose + conversion still beats the scalar scatter loop for prefill.
+  const bool use_jit_k = shape.dtype == BTLA_DTYPE::BF16 && start_pos == 0 && !no_zeroing &&
+                         bestla::device::CpuDevice::getInstance()->AVX512_BF16();
+  if (use_jit_k) {
+    const int row_pad = pad_up(append_len, 48);
+    const int col_pad = hs_pad;  // already padded to 32 by reorder_kv_shape
+    const size_t head_fp32_elems = static_cast<size_t>(append_len) * head_dim;
+    std::vector<float> fp32_buf(static_cast<size_t>(batch) * num_heads_kv * head_fp32_elems);
+#pragma omp parallel for collapse(2) schedule(static)
+    for (int b = 0; b < batch; ++b) {
+      for (int h = 0; h < num_heads_kv; ++h) {
+        const size_t buf_off = (static_cast<size_t>(b) * num_heads_kv + h) * head_fp32_elems;
+        float* tmp = fp32_buf.data() + buf_off;
+        const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.k_head_elems;
+        // Convert BF16 source → contiguous FP32.
+        for (int s = 0; s < append_len; ++s) {
+          for (int d = 0; d < head_dim; ++d) {
+            tmp[s * head_dim + d] = load_scalar(key, qko_offset(k_strides, b, h, s, d), shape.dtype);
+          }
+        }
+        // JIT: FP32 → BF16 NTILE48 with transpose (row=seq, col=head_dim).
+        auto* dst_head = static_cast<bestla::utils::bf16*>(cache_k) + head_base;
+        bestla::kernel::jit::PaddingTransInterleaveCvt::forward<48, float, bestla::utils::bf16>(
+            tmp, dst_head, append_len, head_dim, row_pad, col_pad, head_dim, hs_pad);
+      }
+    }
+    return;
+  }
+
   // K (QK weight): NTILE over seq, ROWPACK over head_size. Source read via
   // strides only (HND/NHD agnostic). Padded head_size columns are zero-filled.
 #pragma omp parallel for collapse(2) schedule(static)
@@ -1310,6 +1343,36 @@ void update_packed_v_cache(void* cache_v, const void* value, const ReorderKVShap
       start_pos + append_len > cap) {
     throw std::invalid_argument("ark::cpu::update_packed_v_cache: invalid dimensions or append range");
   }
+  // JIT-accelerated path for BF16 V on first write (start_pos == 0, zero-padding).
+  // Mirrors the K JIT path: convert BF16 source → contiguous FP32, then JIT.
+  const bool use_jit_v = shape.dtype == BTLA_DTYPE::BF16 && start_pos == 0 && !no_zeroing &&
+                         bestla::device::CpuDevice::getInstance()->AVX512_BF16();
+  if (use_jit_v) {
+    const int row_pad = pad_up(append_len, 32);
+    const int col_pad = hs_pad;  // already padded to 48 by reorder_kv_shape
+    const size_t head_fp32_elems = static_cast<size_t>(append_len) * head_dim;
+    std::vector<float> fp32_buf(static_cast<size_t>(batch) * num_heads_kv * head_fp32_elems);
+#pragma omp parallel for collapse(2) schedule(static)
+    for (int b = 0; b < batch; ++b) {
+      for (int h = 0; h < num_heads_kv; ++h) {
+        const size_t buf_off = (static_cast<size_t>(b) * num_heads_kv + h) * head_fp32_elems;
+        float* tmp = fp32_buf.data() + buf_off;
+        const size_t head_base = (static_cast<size_t>(b) * num_heads_kv + h) * shape.v_head_elems;
+        // Convert BF16 source → contiguous FP32.
+        for (int s = 0; s < append_len; ++s) {
+          for (int d = 0; d < head_dim; ++d) {
+            tmp[s * head_dim + d] = load_scalar(value, value_offset(v_strides, b, h, s, d), shape.dtype);
+          }
+        }
+        // JIT: FP32 → BF16 NTILE48 interleave (row=seq, col=head_dim).
+        auto* dst_head = static_cast<bestla::utils::bf16*>(cache_v) + head_base;
+        bestla::kernel::jit::PaddingInterleaveCvt::forward<48, float, bestla::utils::bf16>(
+            tmp, dst_head, append_len, head_dim, row_pad, col_pad, head_dim, sl_pad);
+      }
+    }
+    return;
+  }
+
   // V (PV weight): NTILE over head_size, ROWPACK over seq. Padded head_size rows
   // zero-filled. Source read via strides only (HND/NHD agnostic).
 #pragma omp parallel for collapse(2) schedule(static)
