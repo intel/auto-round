@@ -79,7 +79,6 @@ def test_svdquant_config_defaults_to_data_free_single_iteration():
         ({"smooth_max_calibration_calls": 0}, "smooth_max_calibration_calls"),
         ({"low_rank_dtype": "bf116"}, "low_rank_dtype"),
         ({"residual_iters": 0}, "residual_iters"),
-        ({"residual_quant_method": "signround"}, "residual_quant_method"),
     ],
 )
 def test_svdquant_config_rejects_invalid_structural_options(kwargs, field):

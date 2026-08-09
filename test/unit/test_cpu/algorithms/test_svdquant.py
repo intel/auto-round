@@ -62,6 +62,17 @@ def test_svdquant_composes_before_rtn():
     assert isinstance(composer.preprocessors[0], SVDQuantTransform)
 
 
+def test_explicit_flux_adapter_resolves_targets_before_prepare_run():
+    transform = SVDQuantTransform(SVDQuantConfig(rank=2, model_adapter="flux"))
+    projection = torch.nn.Linear(8, 8)
+    projection.global_name = "transformer_blocks.0.attn.to_q"
+    adanorm = torch.nn.Linear(8, 8)
+    adanorm.global_name = "transformer_blocks.0.norm1.linear"
+
+    assert transform._is_target("attn.to_q", projection)
+    assert not transform._is_target("norm1.linear", adanorm)
+
+
 def test_no_smooth_flux_qkv_share_one_down_factor():
     model = TinyFlux()
     _mark_modules(model)

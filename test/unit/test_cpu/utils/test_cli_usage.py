@@ -361,8 +361,6 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
             "--svdquant-residual-iters",
             "20",
             "--enable-svdquant-residual-early-stop",
-            "--svdquant-residual-quant-method",
-            "rtn",
             "--svdquant-low-rank-dtype",
             "fp32",
             "--svdquant-target-modules",

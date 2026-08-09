@@ -22,7 +22,8 @@ from safetensors.torch import save_file
 
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.compressors.base import BaseCompressor
-from auto_round.formats import SVDQuantNunchakuFormat, get_formats
+from auto_round.export.formats.backends.svdquant_nunchaku import SVDQuantNunchakuFormat
+from auto_round.formats import get_formats
 from auto_round.schemes import PRESET_SCHEMES
 
 
