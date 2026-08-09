@@ -11,8 +11,21 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
 
-AUTO_ROUND_PATH = __file__.split("/")
-AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
+def _run_auto_round_cli(monkeypatch, cmd):
+    """Run the auto_round CLI in-process by patching ``sys.argv``.
+
+    ``cmd`` contains only the CLI arguments (everything after ``-m auto_round``).
+    This replaces the previous ``os.system('python -m auto_round ...')`` calls so
+    the code runs in the test process and is measured by coverage.
+    """
+    from auto_round.cli.main import run
+
+    monkeypatch.setattr(sys, "argv", ["auto_round", *cmd.split()])
+    try:
+        run()
+    except SystemExit as exc:  # argparse help/errors exit; only 0/None is success
+        assert exc.code in (0, None), f"cmd line test fail, exit code {exc.code}"
 
 
 def test_update_module_applies_replacements_for_gguf(monkeypatch):
@@ -56,6 +69,7 @@ class TestGGUF:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(60)
     def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
@@ -89,6 +103,7 @@ class TestGGUF:
         assert type(autoround).__name__ == "CompressionOrchestrator"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
+    @pytest.mark.timeout(60)
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -106,6 +121,7 @@ class TestGGUF:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
+    @pytest.mark.timeout(120)
     def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         layer_config = {
@@ -145,45 +161,38 @@ class TestGGUF:
         assert autoround.model.model.layers[0].mlp.gate_proj.bits == 8
         assert autoround.layer_config["model.layers.0.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
 
-    def test_all_format(self, tiny_qwen_model_path):
+    @pytest.mark.timeout(360)
+    def test_all_format(self, monkeypatch, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
-        python_path = sys.executable
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
         for gguf_format in ["gguf:q4_k_m"]:
-            res = os.system(
-                f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name} "
-                f" --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format {gguf_format}"
+            _run_auto_round_cli(
+                monkeypatch,
+                f"--model {model_name} --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format {gguf_format}",
             )
-            if res > 0 or res == -1:
-                assert False, "cmd line test fail, please have a check"
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-            res = os.system(
-                f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
-                f" --bs 16 --iters 0 --nsamples 1 --seqlen 16 --format fake,{gguf_format}"
+            _run_auto_round_cli(
+                monkeypatch,
+                f"--model {model_name} --bs 16 --iters 0 --nsamples 1 --seqlen 16 --format fake,{gguf_format}",
             )
-            if res > 0 or res == -1:
-                assert False, "cmd line test fail, please have a check"
             shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
         # test q2_k_mixed with iters=0 (RTN) on non-MoE model — should still work
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
-            f" --bs 16 --iters 0 --disable_opt_rtn --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED"
+        _run_auto_round_cli(
+            monkeypatch,
+            f"--model {model_name} --bs 16 --iters 0 --disable_opt_rtn --nsamples 1 --seqlen 16 --scheme GGUF:Q2_K_MIXED",
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
         # test q2_k_mixed with iters=1 on non-MoE model — should fallback to q4_k_m
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {model_name}"
-            f" --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format gguf:q2_k_mixed"
+        _run_auto_round_cli(
+            monkeypatch,
+            f"--model {model_name} --bs 16 --iters 1 --nsamples 1 --seqlen 16 --format gguf:q2_k_mixed",
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
+    @pytest.mark.timeout(90)
     def test_vlm_gguf(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -204,6 +213,7 @@ class TestGGUF:
             else:
                 assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
+    @pytest.mark.timeout(60)
     def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -462,6 +472,7 @@ class TestGGUF:
         assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
         assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
+    @pytest.mark.timeout(60)
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
@@ -484,6 +495,7 @@ class TestGGUF:
         tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
+    @pytest.mark.timeout(60)
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(

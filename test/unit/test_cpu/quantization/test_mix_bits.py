@@ -175,6 +175,7 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
+    @pytest.mark.timeout(60)
     def test_mixed_MXFP_autoround_format_loading(self, dataloader):
         layer_config = {
             "k_proj": {"bits": 8, "act_bits": 8},
