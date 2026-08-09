@@ -810,12 +810,16 @@ def _normalize_nvfp4_source_tensors(
             raw_tensors[weight_packed_key] = raw_tensors.pop(weight_key).view(torch.uint8).contiguous()
 
         if weight_scale_2_key in raw_tensors and weight_global_scale_key not in raw_tensors:
-            raw_tensors[weight_global_scale_key] = (1.0 / raw_tensors.pop(weight_scale_2_key).float()).to(torch.float32)
+            raw_tensors[weight_global_scale_key] = (
+                (1.0 / raw_tensors.pop(weight_scale_2_key).float()).to(torch.float32).reshape([1])
+            )
         elif weight_scale_2_key in raw_tensors:
             raw_tensors.pop(weight_scale_2_key)
 
         if input_scale_key in raw_tensors and input_global_scale_key not in raw_tensors:
-            raw_tensors[input_global_scale_key] = (1.0 / raw_tensors.pop(input_scale_key).float()).to(torch.float32)
+            raw_tensors[input_global_scale_key] = (
+                (1.0 / raw_tensors.pop(input_scale_key).float()).to(torch.float32).reshape([1])
+            )
         elif input_scale_key in raw_tensors:
             raw_tensors.pop(input_scale_key)
 
@@ -865,7 +869,10 @@ def _handle_nvfp4_source_tensors(
             keys_to_move.append(input_global_scale_key)
 
         for key in keys_to_move:
-            passthrough_tensors[key] = raw_tensors.pop(key).to("cpu")
+            tensor = raw_tensors.pop(key).to("cpu")
+            if key.endswith("_global_scale"):
+                tensor = tensor.reshape([1])
+            passthrough_tensors[key] = tensor
         passthrough_layers.append(layer_name)
 
     if passthrough_layers:
