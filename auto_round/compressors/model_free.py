@@ -1393,18 +1393,25 @@ def _get_mxfp_group_scheme_and_format(
 ):
     """Return ``(QuantizationScheme, format_str)`` for a single (bits, data_type) group.
 
-    Handles both MXFP (mx_fp) and NVFP4_E5M3 (fp4_v2) groups.
+    Handles MXFP (mx_fp), NVFP4 (nv_fp), and NVFP4_E5M3 (fp4_v2) groups.
     """
     from auto_round.export.export_to_llmcompressor.config import (
         initialize_nvfp4_e5m3_quantization,
         initialize_quantization,
     )
 
+    if is_nv_fp(group_data_type):
+        # Standard NVFP4 uses global scales and has a dedicated preset in
+        # compressed-tensors. Reuse that preset so metadata matches tensor
+        # layout when model-free does NVFP4 passthrough.
+        tmp_qconfig = initialize_quantization(scheme="NVFP4", ignore=ignore)
+        return tmp_qconfig.config_groups["group_0"], "nvfp4-pack-quantized"
+
     if group_data_type == _NVFP4_E5M3_DATA_TYPE:
         # NVFP4_E5M3 is not a compressed-tensors preset; use its dedicated builder.
         nvfp4_dict = initialize_nvfp4_e5m3_quantization(ignore=ignore)
         # Extract the QuantizationScheme object from the dict config.
-        from compressed_tensors.quantization import QuantizationScheme
+        from compressed_tensors.quantization import QuantizationScheme  # pylint: disable=E0401
 
         raw_scheme = nvfp4_dict["config_groups"]["group_0"]
         scheme_obj = QuantizationScheme.model_validate(raw_scheme)
