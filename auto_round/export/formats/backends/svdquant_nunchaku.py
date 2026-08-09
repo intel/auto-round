@@ -23,6 +23,10 @@ from auto_round.export.formats.base import OutputFormat
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme
 
 
+def _invoke_save_hook(hook: Callable[[str], Any], output_dir: str) -> None:
+    hook(output_dir)
+
+
 @OutputFormat.register("svdquant_nunchaku")
 class SVDQuantNunchakuFormat(OutputFormat):
     support_schemes = ["MXFP4"]
@@ -138,12 +142,12 @@ class SVDQuantNunchakuFormat(OutputFormat):
         self._validate_svd_layer_overrides(model, layer_config)
         save_config = getattr(model, "save_config", None)
         if callable(save_config):
-            save_config(output_dir)
+            _invoke_save_hook(save_config, output_dir)
         else:
             model_config = getattr(model, "config", None)
             save_pretrained = getattr(model_config, "save_pretrained", None)
             if callable(save_pretrained):
-                save_pretrained(output_dir)
+                _invoke_save_hook(save_pretrained, output_dir)
         model_adapter = model_adapter or getattr(model, "_autoround_svdquant_model_adapter", "auto")
         if isinstance(model_adapter, str):
             from auto_round.export.svdquant_adapters import resolve_svdquant_model_adapter
