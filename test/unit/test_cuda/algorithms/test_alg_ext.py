@@ -57,6 +57,7 @@ class TestAlgExt:
     #         "overrides were applied (data_type was not yet 'int_asym_dq')."
     #     )
 
+    @pytest.mark.timeout(90)
     def test_int2_g64_asym_enable_alg_ext_keeps_config(self, tiny_qwen_model_path):
         """Regression test: asym int2/g64 keeps the requested tuning config."""
 
@@ -90,6 +91,7 @@ class TestAlgExt:
         assert quantizer.enable_norm_bias_tuning is True
         assert quantizer.enable_quanted_input is False
 
+    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
     def test_all_support_dtype(self, scheme, tiny_qwen_model_path):
         from auto_round.auto_scheme import AutoScheme

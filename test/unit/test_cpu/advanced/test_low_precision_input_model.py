@@ -86,6 +86,7 @@ class TestCompressedTensor:
             model.model.layers[0].mlp.up_proj.weight.dtype == torch.bfloat16
         ), "CompressedLinear layer was not converted to Linear"
 
+    @pytest.mark.timeout(60)
     def test_w4a16_to_mxfp4(self, tmp_path):
         model = get_tiny_model(get_model_path(self.w4a16_model_path))
         model.config.name_or_path = None  # Clear the name_or_path to avoid MTP copying issues
