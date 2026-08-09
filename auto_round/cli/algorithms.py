@@ -274,12 +274,6 @@ class SVDQuant(AlgorithmHandler):
             help="Stop residual iteration when reconstruction error no longer improves.",
         )
         group.add_argument(
-            "--svdquant-residual-quant-method",
-            default="rtn",
-            choices=["rtn"],
-            help="Residual outer iteration quantizer; fixed to RTN independently of the terminal quantizer.",
-        )
-        group.add_argument(
             "--svdquant-low-rank-dtype",
             default="bf16",
             choices=["bf16", "bfloat16", "fp16", "float16", "fp32", "float32"],
@@ -314,7 +308,6 @@ class SVDQuant(AlgorithmHandler):
             smooth_max_calibration_calls=getattr(args, "svdquant_smooth_max_calibration_calls", 128),
             residual_iters=getattr(args, "svdquant_residual_iters", 1),
             residual_early_stop=getattr(args, "svdquant_residual_early_stop", False),
-            residual_quant_method=getattr(args, "svdquant_residual_quant_method", "rtn"),
             low_rank_dtype=getattr(args, "svdquant_low_rank_dtype", "bf16"),
             target_modules=getattr(args, "svdquant_target_modules", None),
             exclude_modules=getattr(args, "svdquant_exclude_modules", None),

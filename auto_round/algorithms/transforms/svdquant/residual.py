@@ -50,8 +50,7 @@ def _validate_scheme_values(scheme):
     )
     if not scalar_group_size and not block_group_size:
         raise ValueError(
-            "Residual quantization scheme group_size must be -1, 0, a positive integer, "
-            "or a pair of positive integers."
+            "Residual quantization scheme group_size must be -1, 0, a positive integer, or a pair of positive integers."
         )
     if not isinstance(values["sym"], bool):
         raise ValueError("Residual quantization scheme sym must be a boolean.")

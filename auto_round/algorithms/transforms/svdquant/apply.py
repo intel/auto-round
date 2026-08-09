@@ -144,6 +144,10 @@ class SVDQuantTransform(BasePreprocessor):
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
         self._target_modules = config.target_modules
+        if self._target_modules is None and config.model_adapter == "flux":
+            from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+            self._target_modules = FLUX_SVDQUANT_TARGET_MODULES
 
     def bind(self, orchestrator) -> None:
         super().bind(orchestrator)

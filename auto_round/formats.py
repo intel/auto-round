@@ -28,7 +28,6 @@ from auto_round.export.formats import (
     LLMCompressorFormat,
     MLXFormat,
     OutputFormat,
-    SVDQuantNunchakuFormat,
     resolve_formats,
 )
 
@@ -83,7 +82,6 @@ __all__ = [
     "LLMCompressorFormat",
     "MLXFormat",
     "OutputFormat",
-    "SVDQuantNunchakuFormat",
     "resolve_formats",
     "get_formats",
 ]

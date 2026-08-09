@@ -21,7 +21,6 @@ from auto_round.export.formats.backends import (
     GGUFFormat,
     LLMCompressorFormat,
     MLXFormat,
-    SVDQuantNunchakuFormat,
 )
 from auto_round.export.formats.base import (
     BackendDataType,
@@ -39,7 +38,6 @@ __all__ = [
     "GGUFFormat",
     "LLMCompressorFormat",
     "MLXFormat",
-    "SVDQuantNunchakuFormat",
     "OutputFormat",
     "resolve_formats",
 ]

@@ -33,12 +33,10 @@ class SVDQuantConfig(QuantizationConfig):
         smooth_eps: float = 1e-6,
         residual_iters: int = 1,
         residual_early_stop: bool = False,
-        residual_quant_method: str = "rtn",
         model_adapter: str | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        residual_quant_method = residual_quant_method.lower()
         if type(smooth_enabled) is not bool:
             raise ValueError(f"`smooth_enabled` must be a bool, got {smooth_enabled!r}")
         if not isinstance(rank, int) or isinstance(rank, bool) or rank < 0:
@@ -49,7 +47,7 @@ class SVDQuantConfig(QuantizationConfig):
             )
         if type(smooth_max_calibration_calls) is not int or smooth_max_calibration_calls < 1:
             raise ValueError(
-                "`smooth_max_calibration_calls` must be a positive integer, " f"got {smooth_max_calibration_calls!r}"
+                f"`smooth_max_calibration_calls` must be a positive integer, got {smooth_max_calibration_calls!r}"
             )
         if smooth_eps <= 0:
             raise ValueError(f"`smooth_eps` must be positive, got {smooth_eps!r}")
@@ -69,12 +67,6 @@ class SVDQuantConfig(QuantizationConfig):
             raise ValueError(f"`residual_iters` must be a positive integer, got {residual_iters!r}")
         if type(residual_early_stop) is not bool:
             raise ValueError(f"`residual_early_stop` must be a bool, got {residual_early_stop!r}")
-        if residual_quant_method != "rtn":
-            raise ValueError(
-                "`residual_quant_method` is fixed to 'rtn' by design for SVDQuant residual outer iteration, "
-                f"got {residual_quant_method!r}"
-            )
-
         self.rank = rank
         self.smooth_enabled = smooth_enabled
         self.smooth_num_grids = smooth_num_grids
@@ -85,7 +77,6 @@ class SVDQuantConfig(QuantizationConfig):
         self.smooth_eps = smooth_eps
         self.residual_iters = residual_iters
         self.residual_early_stop = residual_early_stop
-        self.residual_quant_method = residual_quant_method
         self.model_adapter = model_adapter
         self.need_calib = smooth_enabled
 
@@ -97,7 +88,7 @@ class SVDQuantConfig(QuantizationConfig):
             f"low_rank_dtype={self.low_rank_dtype!r}, "
             f"target_modules={self.target_modules}, exclude_modules={self.exclude_modules}, "
             f"residual_iters={self.residual_iters}, residual_early_stop={self.residual_early_stop!r}, "
-            f"residual_quant_method={self.residual_quant_method!r}, model_adapter={self.model_adapter!r})"
+            f"model_adapter={self.model_adapter!r})"
         )
 
 
