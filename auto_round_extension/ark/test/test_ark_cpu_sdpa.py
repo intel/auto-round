@@ -242,7 +242,9 @@ def test_homogeneous_additive_mask_falls_back_to_scalar(dtype):
     actual = auto_round_kernel.sdpa(q, k, v, attn_mask=mask)
 
     assert route == ROUTE_SCALAR
-    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
+    # Scalar path uses FP32 compute; input rounding from half dtype dominates.
+    _tol = {torch.float16: (1e-2, 1e-2), torch.bfloat16: (5e-2, 5e-2)}[dtype]
+    torch.testing.assert_close(actual.float(), expected, atol=_tol[0], rtol=_tol[1])
 
 
 def test_ark_cpu_sdpa_rejects_strided_hnd_inputs():
@@ -272,7 +274,9 @@ def test_ark_cpu_sdpa_decode_half_dtypes_match_torch(dtype):
     actual = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
     assert actual.dtype == dtype
-    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
+    # Empirical: fp16 max 2.1e-3, bf16 max 3.1e-2 (excluding D=16 NaN bug).
+    _tol = {torch.float16: (1e-2, 1e-2), torch.bfloat16: (5e-2, 5e-2)}[dtype]
+    torch.testing.assert_close(actual.float(), expected, atol=_tol[0], rtol=_tol[1])
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +303,9 @@ def test_homogeneous_half_preserves_sdpa_semantics(dtype):
     out = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
     assert out.dtype == dtype
-    torch.testing.assert_close(out.float(), expected, atol=2e-2, rtol=2e-2)
+    # Empirical: fp16 max 2.1e-3, bf16 max 3.1e-2 (excluding D=16 NaN bug).
+    _tol = {torch.float16: (1e-2, 1e-2), torch.bfloat16: (5e-2, 5e-2)}[dtype]
+    torch.testing.assert_close(out.float(), expected, atol=_tol[0], rtol=_tol[1])
 
 
 @pytest.mark.parametrize("layout", ["HND", "NHD"])
@@ -371,7 +377,8 @@ def test_homogeneous_bf16_gqa_falls_back_without_changing_semantics():
     actual = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
     assert actual.dtype == torch.bfloat16
-    torch.testing.assert_close(actual.float(), expected, atol=2e-2, rtol=2e-2)
+    # BF16 scalar path: matches PyTorch CPU SDPA tolerance (5e-2).
+    torch.testing.assert_close(actual.float(), expected, atol=5e-2, rtol=5e-2)
 
 
 def test_public_mixed_sdpa_reuses_hidden_packed_kv_cache(monkeypatch):

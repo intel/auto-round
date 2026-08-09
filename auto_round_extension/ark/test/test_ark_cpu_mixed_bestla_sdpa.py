@@ -17,8 +17,7 @@ import torch
 auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"
 )
-
-_TOL = {torch.float16: (3e-2, 3e-2), torch.bfloat16: (8e-2, 8e-2)}
+_TOL = {torch.float16: (2e-2, 2e-2), torch.bfloat16: (3e-2, 3e-2)}
 
 
 def _to_layout(tensor_hnd, layout):
@@ -171,6 +170,56 @@ def test_mixed_batched_gqa_prefill_runs_repeatedly(kv_dtype):
     )
     for _ in range(20):
         actual = _mixed_sdpa(q, k, v, scale, True, "HND")
+
+    atol, rtol = _TOL[kv_dtype]
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+# ---------------------------------------------------------------------------
+# Real LLM shapes — medium and large models from the SDPA benchmark.
+# These validate accuracy and exercise the packing / tile-rescaling paths
+# at production scales.  Shapes sourced from benchmark_sdpa.py:
+#   qwen2.5-7b:  Hq/Hkv/D = 28/4/128  (GQA, medium)
+#   llama3.1-70b: Hq/Hkv/D = 64/8/128  (GQA, large)
+#   llama3.1-8b:  Hq/Hkv/D = 32/8/128  (GQA, decode 8k)
+# ---------------------------------------------------------------------------
+
+LLM_SHAPES = [
+    # (label, B, Hq, Hkv, D, Sq, Skv, is_causal)
+    ("qwen2.5-7b-decode-b4-8k", 4, 28, 4, 128, 1, 8192, False),
+    ("qwen2.5-7b-prefill-b4-512", 4, 28, 4, 128, 512, 512, True),
+    ("llama3.1-8b-decode-b1-8k", 1, 32, 8, 128, 1, 8192, False),
+    ("llama3.1-8b-prefill-b1-1k", 1, 32, 8, 128, 1024, 1024, True),
+    ("llama3.1-70b-decode-b1-8k", 1, 64, 8, 128, 1, 8192, False),
+    ("llama3.1-70b-prefill-b1-512", 1, 64, 8, 128, 512, 512, True),
+]
+
+
+@pytest.mark.parametrize("label,batch,heads_q,heads_kv,head_dim,seq_q,seq_kv,is_causal", LLM_SHAPES)
+@pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
+def test_mixed_llm_shape_accuracy(label, batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, is_causal, kv_dtype):
+    """Validate mixed-precision SDPA accuracy on real LLM attention shapes."""
+    torch.manual_seed(5020 + hash(label) % 1000)
+    scale = 1 / math.sqrt(head_dim)
+    q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
+    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
+
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=is_causal
+    )
+    try:
+        actual = _mixed_sdpa(q, k, v, scale, is_causal, "HND")
+    except (RuntimeError, ValueError) as exc:
+        pytest.skip(f"BestLA mixed path unavailable: {exc}")
+
+    route = auto_round_kernel.debug_cpu_sdpa_route(
+        q, k, v, scale=scale, is_causal=is_causal, tensor_layout="HND"
+    )
+    assert route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW, (
+        f"{label}: expected mixed route, got {route}"
+    )
 
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32

@@ -1,504 +1,262 @@
+#!/usr/bin/env python3
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""CPU-only ARK SDPA benchmark with fixed 32-processor runtime.
+"""Show the speed of every non-scalar ARK CPU SDPA route against Torch FP32 SDPA.
 
-This script benchmarks the CPU paths that are actually part of the current
-product surface:
+The Torch baseline always receives the original FP32 Q/K/V tensors. ARK receives
+the route's production input dtype, so the reported speedup answers the practical
+question: how much faster is this route than Torch FP32 SDPA?
 
-1. **Public standard SDPA** (same input dtype on Q/K/V):
-   - float32
-   - float16
-   - bfloat16
+The packed rows time only a prepared packed-KV cache forward. They model
+steady-state decode and intentionally exclude one-time K/V packing.
 
-2. **Mixed decode path** (`Q=float32`, `KV=float16|bfloat16`):
-   - public raw mixed SDPA (BestLA route, env-enabled inside the script)
-   - internal packed-KV decode path
+Run from ``auto_round_extension/ark``:
 
-The packed path is benchmarked only for decode because it is a persistent KV
-cache optimization, not a generic prefill/public-SDPA mode.
-
-The script intentionally does not expose arbitrary dtype/mode combinations that
-are not part of the supported benchmark matrix.
+    python test/benchmark_sdpa.py
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import os
+import statistics
 import sys
 import time
-from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
-TARGET_PROCESSORS = 32
-
-# Fix CPU thread env before importing torch / native extensions.
-os.environ["OMP_NUM_THREADS"] = str(TARGET_PROCESSORS)
-os.environ["MKL_NUM_THREADS"] = str(TARGET_PROCESSORS)
-os.environ["OPENBLAS_NUM_THREADS"] = str(TARGET_PROCESSORS)
-os.environ["NUMEXPR_NUM_THREADS"] = str(TARGET_PROCESSORS)
+THREADS = 32
+for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ[_name] = str(THREADS)
 
 import torch
 
-# Allow running the file directly from a source checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import auto_round_kernel  # noqa: E402
-
-DEFAULT_DECODE_SHAPES = [
-    # (batch, heads_q, heads_kv, head_dim, seq_kv)
-    (1, 32, 8, 128, 1024),
-    (1, 32, 8, 128, 4096),
-    (1, 32, 8, 128, 8192),
-    (1, 32, 32, 64, 4096),
-]
-
-DEFAULT_PREFILL_SHAPES = [
-    # (batch, heads_q, heads_kv, head_dim, seq)
-    (1, 32, 8, 128, 512),
-    (1, 32, 8, 128, 1024),
-    (1, 16, 16, 64, 1024),
-]
-
-PUBLIC_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
-MIXED_KV_DTYPES = (torch.float16, torch.bfloat16)
-ROUTE_NAMES = {}
-if getattr(auto_round_kernel, "cpu_lib", None) is not None:
-    ROUTE_NAMES = {
-        auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_SCALAR: "scalar",
-        auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW: "mixed-raw",
-        auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_FP16: "hom-f16",
-        auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16: "hom-bf16",
-    }
+import auto_round_kernel as ark  # noqa: E402
 
 
-def _dtype_name(dtype: torch.dtype) -> str:
-    return str(dtype).replace("torch.", "")
+@dataclass(frozen=True)
+class Shape:
+    name: str
+    batch: int
+    heads_q: int
+    heads_kv: int
+    head_dim: int
+    seq_q: int
+    seq_kv: int
+    is_causal: bool
+
+    @property
+    def is_gqa(self) -> bool:
+        return self.heads_q != self.heads_kv
+
+    @property
+    def label(self) -> str:
+        heads = str(self.heads_q) if not self.is_gqa else f"{self.heads_q}/{self.heads_kv}"
+        return f"B{self.batch} H{heads} D{self.head_dim} S{self.seq_q}/{self.seq_kv}"
 
 
-def _route_name(route: int) -> str:
-    return ROUTE_NAMES.get(route, str(route))
+@dataclass(frozen=True)
+class Route:
+    name: str
+    expected: str
+    q_dtype: torch.dtype
+    kv_dtype: torch.dtype
+    supports_gqa: bool = True
+    decode_only: bool = False
+    packed_kv: bool = False
+
+
+# Shapes are taken from real transformer attention layers.
+# B=4–8 represents continuous batching; it is a serving workload dimension,
+# not a model setting.  Decode shapes are memory-bandwidth-bound (ARK excels
+# with half-precision K/V); prefill shapes are compute-bound (representative
+# minimum).  GQA ratios span 2:1 through 16:1.
+#
+# Model attention configs:
+#   Llama 3.1 8B:   Hq/Hkv/D = 32/8/128   (GQA 4:1)
+#   Qwen 2.5 7B:    Hq/Hkv/D = 28/4/128   (GQA 7:1)
+#   Gemma 2 27B:    Hq/Hkv/D = 32/16/128  (GQA 2:1)
+#   Llama 3.1 70B:  Hq/Hkv/D = 64/8/128   (GQA 8:1)
+#   DeepSeek-V3:    Hq/Hkv/D = 128/8/128  (GQA 16:1, MLA-style)
+SHAPES = (
+    # Decode — memory-bandwidth-bound, ARK's strength with half-precision KV.
+    Shape("llama3.1-8b-decode-b1-8k", 1, 32, 8, 128, 1, 8192, False),
+    Shape("qwen2.5-7b-decode-b4-8k", 4, 28, 4, 128, 1, 8192, False),
+    Shape("gemma2-27b-decode-b4-8k", 4, 32, 16, 128, 1, 8192, False),
+    Shape("llama3.1-70b-decode-b4-8k", 4, 64, 8, 128, 1, 8192, False),
+    Shape("deepseek-decode-b4-8k", 4, 128, 8, 128, 1, 8192, False),
+    # Prefill — compute-bound, representative minimum.
+    Shape("llama3.1-8b-prefill-b1-1k", 1, 32, 8, 128, 1024, 1024, True),
+    Shape("llama3.1-70b-prefill-b1-512", 1, 64, 8, 128, 512, 512, True),
+)
+ROUTES = (
+    Route("mixed-raw-fp16", "mixed-raw", torch.float32, torch.float16),
+    Route("mixed-raw-bf16", "mixed-raw", torch.float32, torch.bfloat16),
+    Route("hom-fp16", "hom-f16", torch.float16, torch.float16),
+    Route("hom-bf16", "hom-bf16", torch.bfloat16, torch.bfloat16, supports_gqa=False),
+    Route("packed-fp16", "packed", torch.float32, torch.float16, decode_only=True, packed_kv=True),
+    Route("packed-bf16", "packed", torch.float32, torch.bfloat16, decode_only=True, packed_kv=True),
+)
 
 
 def _configure_runtime() -> int:
-    """Pin to 32 CPUs; fall back gracefully if affinity is restricted."""
-    n_online = os.cpu_count() or TARGET_PROCESSORS
-    desired = min(TARGET_PROCESSORS, n_online)
-
-    # Try to expand to the first 32 online CPUs — succeeds when the calling
-    # process's cgroup / parent affinity allows it.
-    try:
-        os.sched_setaffinity(0, set(range(desired)))
-    except (OSError, PermissionError):
-        pass
-
     if hasattr(os, "sched_getaffinity") and hasattr(os, "sched_setaffinity"):
-        affinity = sorted(os.sched_getaffinity(0))
-        pinned = min(desired, len(affinity))
-        os.sched_setaffinity(0, set(affinity[:pinned]))
+        # A process may inherit a narrow affinity mask. Try the first 32 online
+        # CPUs before deciding the surrounding allocation cannot provide 32 CPUs.
+        try:
+            os.sched_setaffinity(0, set(range(THREADS)))
+        except OSError:
+            pass
+        available = sorted(os.sched_getaffinity(0))
+        if len(available) < THREADS:
+            raise RuntimeError(
+                f"requires {THREADS} CPUs, but the process affinity permits only {len(available)} CPU(s): {available}"
+            )
+        os.sched_setaffinity(0, set(available[:THREADS]))
     else:
-        pinned = min(desired, os.cpu_count() or TARGET_PROCESSORS)
-
-    torch.set_num_threads(pinned)
+        if (os.cpu_count() or 0) < THREADS:
+            raise RuntimeError(f"requires {THREADS} CPUs, but only {os.cpu_count()} online CPU(s) are available")
+    torch.set_num_threads(THREADS)
     try:
         torch.set_num_interop_threads(1)
     except RuntimeError:
         pass
-
-    if pinned < TARGET_PROCESSORS:
-        print(
-            f"WARNING: Only {pinned} CPU(s) available (system has {n_online}). "
-            f"Run with:  taskset -c 0-{TARGET_PROCESSORS - 1} python test/bench_ark_cpu_sdpa_old.py",
-            file=sys.stderr,
-        )
-    return pinned
+    return THREADS
 
 
-@contextmanager
-def _force_math_sdpa():
-    if hasattr(torch.nn, "attention") and hasattr(torch.nn.attention, "sdpa_kernel"):
-        from torch.nn.attention import SDPBackend, sdpa_kernel
-
-        with sdpa_kernel([SDPBackend.MATH]):
-            yield
-        return
-    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
-        yield
+def _route_names() -> dict[int, str]:
+    return {
+        getattr(ark.cpu_lib, "ARK_CPU_SDPA_ROUTE_SCALAR", -1): "scalar",
+        getattr(ark.cpu_lib, "ARK_CPU_SDPA_ROUTE_MIXED_RAW", -2): "mixed-raw",
+        getattr(ark.cpu_lib, "ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_FP16", -3): "hom-f16",
+        getattr(ark.cpu_lib, "ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16", -4): "hom-bf16",
+    }
 
 
-def _make_homogeneous_qkv(batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, dtype, seed=0):
-    gen = torch.Generator().manual_seed(seed)
-    q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32, generator=gen).to(dtype)
-    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32, generator=gen).to(dtype)
-    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32, generator=gen).to(dtype)
-    return q, k, v
+def _make_qkv(shape: Shape, route: Route, seed: int) -> tuple[torch.Tensor, ...]:
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    q_fp32 = torch.randn(shape.batch, shape.heads_q, shape.seq_q, shape.head_dim, generator=generator)
+    k_fp32 = torch.randn(shape.batch, shape.heads_kv, shape.seq_kv, shape.head_dim, generator=generator)
+    v_fp32 = torch.randn(shape.batch, shape.heads_kv, shape.seq_kv, shape.head_dim, generator=generator)
+    return q_fp32, k_fp32, v_fp32, q_fp32.to(route.q_dtype), k_fp32.to(route.kv_dtype), v_fp32.to(route.kv_dtype)
 
 
-def _make_mixed_qkv(batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, kv_dtype, seed=0):
-    gen = torch.Generator().manual_seed(seed)
-    q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32, generator=gen)
-    k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32, generator=gen).to(kv_dtype)
-    v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=torch.float32, generator=gen).to(kv_dtype)
-    return q, k, v
-
-
-def _reference_sdpa(q, k, v, scale, is_causal):
-    with _force_math_sdpa():
-        return torch.nn.functional.scaled_dot_product_attention(
-            q.float(), k.float(), v.float(), scale=scale, is_causal=is_causal, enable_gqa=True
-        )
-
-
-def _time_call(fn, warmup, runs):
+def _measure_pair(ark_call, torch_call, warmup: int, runs: int) -> tuple[float, float]:
     for _ in range(warmup):
-        fn()
-    best = math.inf
-    total = 0.0
-    for _ in range(runs):
+        ark_call()
+        torch_call()
+
+    ark_samples = []
+    torch_samples = []
+    for index in range(runs):
+        first, second = (ark_call, torch_call) if index % 2 == 0 else (torch_call, ark_call)
         start = time.perf_counter()
-        fn()
-        elapsed = time.perf_counter() - start
-        total += elapsed
-        best = min(best, elapsed)
-    return total / runs, best
+        first()
+        middle = time.perf_counter()
+        second()
+        end = time.perf_counter()
+        if index % 2 == 0:
+            ark_samples.append(middle - start)
+            torch_samples.append(end - middle)
+        else:
+            torch_samples.append(middle - start)
+            ark_samples.append(end - middle)
+    return statistics.median(ark_samples) * 1e3, statistics.median(torch_samples) * 1e3
 
 
-def _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, time_s):
-    """Compute TFLOPS for SDPA: Q@K^T + softmax + P@V = 4*B*Hq*Sq*Skv*D MACs."""
-    flops = 4.0 * batch * heads_q * seq_q * seq_kv * head_dim
-    return flops / time_s / 1e12 if time_s > 0 else float("nan")
+def _run_case(shape: Shape, route: Route, route_names: dict[int, str], warmup: int, runs: int, seed: int):
+    q_fp32, k_fp32, v_fp32, q, k, v = _make_qkv(shape, route, seed)
+    scale = shape.head_dim**-0.5
+    if route.packed_kv:
+        try:
+            handle = ark.internal.cpu.PackedKVHandle.create(
+                shape.batch, shape.heads_kv, shape.seq_kv, shape.head_dim, dtype=route.kv_dtype
+            )
+            cache_k, cache_v = handle.alloc()
+            handle.update(cache_k, cache_v, k, v, 0, tensor_layout="HND")
+        except (AttributeError, NotImplementedError, RuntimeError, ValueError) as error:
+            return None, f"{shape.name:<22}{route.name:<18}{shape.label:<24}{'unavailable':<12} {error}"
 
+        def ark_call():
+            return handle.forward(q, cache_k, cache_v, shape.seq_kv, scale=scale, tensor_layout="HND")
 
-def _build_cases(shape):
-    if shape in ("decode", "all"):
-        for batch, hq, hkv, hd, seq in DEFAULT_DECODE_SHAPES:
-            yield ("decode", batch, hq, hkv, hd, seq)
-    if shape in ("prefill", "all"):
-        for batch, hq, hkv, hd, seq in DEFAULT_PREFILL_SHAPES:
-            yield ("prefill", batch, hq, hkv, hd, seq)
+        resolved_name = route.expected
+    else:
+        resolved = ark.debug_cpu_sdpa_route(q, k, v, scale=scale, is_causal=shape.is_causal, tensor_layout="HND")
+        resolved_name = route_names.get(resolved, str(resolved))
+        if resolved_name != route.expected:
+            return None, f"{shape.name:<22}{route.name:<18}{shape.label:<24}{resolved_name:<12} skipped"
 
+        def ark_call():
+            return ark.sdpa(q, k, v, scale=scale, is_causal=shape.is_causal, tensor_layout="HND")
 
-def _decode_cases(shape):
-    for shape_kind, batch, hq, hkv, hd, seq in _build_cases(shape):
-        if shape_kind == "decode":
-            yield (shape_kind, batch, hq, hkv, hd, seq)
-
-
-def run_public_case(shape_kind, batch, heads_q, heads_kv, head_dim, seq, dtype, warmup, runs, atol, rtol):
-    is_causal = shape_kind == "prefill"
-    seq_q = 1 if shape_kind == "decode" else seq
-    seq_kv = seq
-    scale = 1.0 / math.sqrt(head_dim)
-    q, k, v = _make_homogeneous_qkv(batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, dtype)
-    route = auto_round_kernel.debug_cpu_sdpa_route(q, k, v, scale=scale, is_causal=is_causal, tensor_layout="HND")
-
-    def ark_call():
-        return auto_round_kernel.sdpa(q, k, v, scale=scale, is_causal=is_causal, tensor_layout="HND")
-
-    actual = ark_call()
-    expected = _reference_sdpa(q, k, v, scale, is_causal)
-    max_err = (actual.float() - expected).abs().max().item()
-    passed = torch.allclose(actual.float(), expected, atol=atol, rtol=rtol)
-    ark_mean, ark_best = _time_call(ark_call, warmup, runs)
-    ref_mean, ref_best = _time_call(lambda: _reference_sdpa(q, k, v, scale, is_causal), warmup, runs)
-    return {
-        "section": "public",
-        "shape": shape_kind,
-        "batch": batch,
-        "heads_q": heads_q,
-        "heads_kv": heads_kv,
-        "head_dim": head_dim,
-        "seq_q": seq_q,
-        "seq_kv": seq_kv,
-        "dtype": _dtype_name(dtype),
-        "route": _route_name(route),
-        "ark_ms": ark_mean * 1e3,
-        "ark_best_ms": ark_best * 1e3,
-        "ref_ms": ref_mean * 1e3,
-        "ref_best_ms": ref_best * 1e3,
-        "ark_tflops": _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, ark_mean),
-        "speedup": ref_mean / ark_mean if ark_mean > 0 else float("nan"),
-        "max_abs_err": max_err,
-        "passed": passed,
-    }
-
-
-def run_mixed_raw_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, warmup, runs, atol, rtol):
-    seq_q = 1
-    scale = 1.0 / math.sqrt(head_dim)
-    q, k, v = _make_mixed_qkv(batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, kv_dtype)
-    route = auto_round_kernel.debug_cpu_sdpa_route(q, k, v, scale=scale, tensor_layout="HND")
-
-    def ark_call():
-        return auto_round_kernel.sdpa(q, k, v, scale=scale, tensor_layout="HND")
-
-    actual = ark_call()
-    expected = _reference_sdpa(q, k, v, scale, is_causal=False)
-    max_err = (actual.float() - expected).abs().max().item()
-    passed = torch.allclose(actual.float(), expected, atol=atol, rtol=rtol)
-    ark_mean, ark_best = _time_call(ark_call, warmup, runs)
-    ref_mean, ref_best = _time_call(lambda: _reference_sdpa(q, k, v, scale, is_causal=False), warmup, runs)
-    return {
-        "section": "mixed_raw",
-        "shape": "decode",
-        "batch": batch,
-        "heads_q": heads_q,
-        "heads_kv": heads_kv,
-        "head_dim": head_dim,
-        "seq_q": seq_q,
-        "seq_kv": seq_kv,
-        "q_dtype": "float32",
-        "kv_dtype": _dtype_name(kv_dtype),
-        "route": _route_name(route),
-        "ark_ms": ark_mean * 1e3,
-        "ark_best_ms": ark_best * 1e3,
-        "ref_ms": ref_mean * 1e3,
-        "ref_best_ms": ref_best * 1e3,
-        "ark_tflops": _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, ark_mean),
-        "speedup": ref_mean / ark_mean if ark_mean > 0 else float("nan"),
-        "max_abs_err": max_err,
-        "passed": passed,
-    }
-
-
-def run_packed_case(batch, heads_q, heads_kv, head_dim, seq_kv, kv_dtype, warmup, runs, atol, rtol):
-    seq_q = 1
-    scale = 1.0 / math.sqrt(head_dim)
-    q, k, v = _make_mixed_qkv(batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, kv_dtype)
-
-    if not hasattr(auto_round_kernel, "internal") or not hasattr(auto_round_kernel.internal, "cpu"):
-        raise NotImplementedError("internal.cpu namespace is unavailable")
-    cache_k, cache_v = auto_round_kernel.internal.cpu.packed_kv_alloc(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
-    auto_round_kernel.internal.cpu.update_packed_kv(cache_k, cache_v, k, v, 0, seq_kv)
-
-    def packed_call():
-        return auto_round_kernel.internal.cpu.bestla_sdpa_packed(
-            q,
-            cache_k,
-            cache_v,
-            seq_kv,
-            seq_kv,
-            heads_kv,
-            is_causal=False,
-            scale=scale,
-            tensor_layout="HND",
+    def torch_call():
+        return torch.nn.functional.scaled_dot_product_attention(
+            q_fp32, k_fp32, v_fp32, scale=scale, is_causal=shape.is_causal, enable_gqa=shape.is_gqa
         )
 
-    actual = packed_call()
-    expected = _reference_sdpa(q, k, v, scale, is_causal=False)
-    max_err = (actual.float() - expected).abs().max().item()
-    passed = torch.allclose(actual.float(), expected, atol=atol, rtol=rtol)
-    packed_mean, packed_best = _time_call(packed_call, warmup, runs)
-    ref_mean, ref_best = _time_call(lambda: _reference_sdpa(q, k, v, scale, is_causal=False), warmup, runs)
-    return {
-        "section": "packed",
-        "shape": "decode",
-        "batch": batch,
-        "heads_q": heads_q,
-        "heads_kv": heads_kv,
-        "head_dim": head_dim,
-        "seq_q": seq_q,
-        "seq_kv": seq_kv,
-        "q_dtype": "float32",
-        "kv_dtype": _dtype_name(kv_dtype),
-        "route": "packed",
-        "packed_ms": packed_mean * 1e3,
-        "packed_best_ms": packed_best * 1e3,
-        "ref_ms": ref_mean * 1e3,
-        "ref_best_ms": ref_best * 1e3,
-        "ark_tflops": _compute_tflops(batch, heads_q, seq_q, seq_kv, head_dim, packed_mean),
-        "speedup": ref_mean / packed_mean if packed_mean > 0 else float("nan"),
-        "max_abs_err": max_err,
-        "passed": passed,
-    }
-
-
-def _print_public_rows(rows):
-    header = (
-        f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'dtype':>10}{'route':>22}{'ark(ms)':>11}{'tflops':>9}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
+    ark_ms, torch_ms = _measure_pair(ark_call, torch_call, warmup, runs)
+    return (
+        torch_ms / ark_ms,
+        f"{shape.name:<22}{route.name:<18}{shape.label:<24}{resolved_name:<12}"
+        f"{ark_ms:>10.3f}{torch_ms:>14.3f}{torch_ms / ark_ms:>10.2f}x",
     )
-    print("\n[public sdpa — homogeneous/input-matched dtypes]")
-    print(header)
-    print("-" * len(header))
-    for row in rows:
-        print(
-            f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
-            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['dtype']:>10}{row['route']:>22}"
-            f"{row['ark_ms']:>11.3f}{row['ark_tflops']:>9.3f}{row['ref_ms']:>11.3f}"
-            f"{row['speedup']:>9.2f}{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
-        )
-    if rows:
-        geomean = math.exp(sum(math.log(r["speedup"]) for r in rows) / len(rows))
-        passed = all(r["passed"] for r in rows)
-        print("-" * len(header))
-        print(f"geomean speedup vs torch math SDPA: {geomean:.2f}x | parity: {'PASS' if passed else 'FAIL'}")
-    return all(r["passed"] for r in rows) if rows else True
 
 
-def _print_mixed_rows(rows, title, latency_key, latency_label):
-    header = (
-        f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'q_dtype':>10}{'kv_dtype':>10}{'route':>22}{latency_label:>12}{'tflops':>9}{'ref(ms)':>11}{'speedup':>9}{'max_err':>11}{'ok':>4}"
-    )
-    print(f"\n[{title}]")
-    print(header)
-    print("-" * len(header))
-    for row in rows:
-        print(
-            f"{row['shape']:<8}{row['batch']:>3}{row['heads_q']:>4}{row['heads_kv']:>4}{row['head_dim']:>5}"
-            f"{row['seq_q']:>6}{row['seq_kv']:>7}{row['q_dtype']:>10}{row['kv_dtype']:>10}{row['route']:>22}"
-            f"{row[latency_key]:>12.3f}{row['ark_tflops']:>9.3f}{row['ref_ms']:>11.3f}{row['speedup']:>9.2f}"
-            f"{row['max_abs_err']:>11.2e}{('yes' if row['passed'] else 'NO'):>4}"
-        )
-    if rows:
-        geomean = math.exp(sum(math.log(r["speedup"]) for r in rows) / len(rows))
-        passed = all(r["passed"] for r in rows)
-        print("-" * len(header))
-        print(f"geomean speedup vs torch math SDPA: {geomean:.2f}x | parity: {'PASS' if passed else 'FAIL'}")
-    return all(r["passed"] for r in rows) if rows else True
-
-
-def _print_raw_vs_packed(raw_rows, packed_rows):
-    header = (
-        f"{'shape':<8}{'B':>3}{'Hq':>4}{'Hkv':>4}{'D':>5}{'q':>6}{'kv':>7}"
-        f"{'kv_dtype':>10}{'raw(ms)':>10}{'packed(ms)':>12}{'ratio':>8}"
-    )
-    print("\n[mixed raw vs packed decode]")
-    print(header)
-    print("-" * len(header))
-    packed_index = {
-        (r["batch"], r["heads_q"], r["heads_kv"], r["head_dim"], r["seq_kv"], r["kv_dtype"]): r for r in packed_rows
-    }
-    for raw in raw_rows:
-        key = (raw["batch"], raw["heads_q"], raw["heads_kv"], raw["head_dim"], raw["seq_kv"], raw["kv_dtype"])
-        packed = packed_index.get(key)
-        if packed is None:
-            continue
-        ratio = raw["ark_ms"] / packed["packed_ms"] if packed["packed_ms"] > 0 else float("nan")
-        print(
-            f"{raw['shape']:<8}{raw['batch']:>3}{raw['heads_q']:>4}{raw['heads_kv']:>4}{raw['head_dim']:>5}"
-            f"{raw['seq_q']:>6}{raw['seq_kv']:>7}{raw['kv_dtype']:>10}{raw['ark_ms']:>10.3f}"
-            f"{packed['packed_ms']:>12.3f}{ratio:>8.2f}x"
-        )
-
-
-def _write_csv(path, rows):
-    if not path or not rows:
-        return
-    fieldnames = [
-        "section",
-        "shape",
-        "batch",
-        "heads_q",
-        "heads_kv",
-        "head_dim",
-        "seq_q",
-        "seq_kv",
-        "dtype",
-        "q_dtype",
-        "kv_dtype",
-        "route",
-        "ark_ms",
-        "packed_ms",
-        "ref_ms",
-        "ark_best_ms",
-        "packed_best_ms",
-        "ref_best_ms",
-        "speedup",
-        "ark_tflops",
-        "max_abs_err",
-        "passed",
-    ]
-    with open(path, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    print(f"wrote {len(rows)} rows to {path}")
-
-
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--shape", choices=["decode", "prefill", "all"], default="all")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--runs", type=int, default=20)
-    parser.add_argument("--atol", type=float, default=2e-2)
-    parser.add_argument("--rtol", type=float, default=2e-2)
-    parser.add_argument("--csv", type=str, default="", help="Optional path to write combined results as CSV")
     args = parser.parse_args(argv)
-
-    pinned = _configure_runtime()
-    print(
-        "CPU-only ARK SDPA benchmark | "
-        f"target_processors={TARGET_PROCESSORS} pinned_processors={pinned} "
-        f"torch_threads={torch.get_num_threads()} OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}"
-    )
-    print(f"shape={args.shape}")
-
-    public_rows = []
-    for dtype in PUBLIC_DTYPES:
-        for shape_kind, batch, hq, hkv, hd, seq in _build_cases(args.shape):
-            public_rows.append(
-                run_public_case(
-                    shape_kind, batch, hq, hkv, hd, seq, dtype, args.warmup, args.runs, args.atol, args.rtol
-                )
-            )
-    all_passed = _print_public_rows(public_rows)
-
-    mixed_raw_rows = []
-    packed_rows = []
-    packed_error = None
-    decode_cases = list(_decode_cases(args.shape))
-    if decode_cases:
-        for kv_dtype in MIXED_KV_DTYPES:
-            for _, batch, hq, hkv, hd, seq in decode_cases:
-                mixed_raw_rows.append(
-                    run_mixed_raw_case(batch, hq, hkv, hd, seq, kv_dtype, args.warmup, args.runs, args.atol, args.rtol)
-                )
-        all_passed = (
-            _print_mixed_rows(
-                mixed_raw_rows,
-                "mixed raw decode — q=float32, kv=fp16/bf16",
-                "ark_ms",
-                "raw(ms)",
-            )
-            and all_passed
+    if args.warmup < 0 or args.runs <= 0:
+        parser.error("--warmup must be non-negative and --runs must be positive")
+    if ark.cpu_lib is None:
+        print(
+            "ARK CPU extension is unavailable; build auto_round_kernel_cpu before running this benchmark.",
+            file=sys.stderr,
         )
+        return 2
 
-        for kv_dtype in MIXED_KV_DTYPES:
-            for _, batch, hq, hkv, hd, seq in decode_cases:
-                try:
-                    packed_rows.append(
-                        run_packed_case(batch, hq, hkv, hd, seq, kv_dtype, args.warmup, args.runs, args.atol, args.rtol)
-                    )
-                except (RuntimeError, ValueError, NotImplementedError) as exc:
-                    packed_error = str(exc)
-                    packed_rows = []
-                    break
-            if packed_error is not None:
-                break
-        if packed_rows:
-            all_passed = (
-                _print_mixed_rows(
-                    packed_rows,
-                    "packed kv decode — q=float32, kv=fp16/bf16",
-                    "packed_ms",
-                    "packed(ms)",
-                )
-                and all_passed
+    try:
+        _configure_runtime()
+    except RuntimeError as error:
+        print(f"benchmark configuration error: {error}", file=sys.stderr)
+        return 2
+    print(
+        f"ARK non-scalar SDPA vs Torch FP32 SDPA | threads={THREADS} | "
+        f"torch_threads={torch.get_num_threads()} | affinity={len(os.sched_getaffinity(0))} | "
+        f"warmup={args.warmup} | runs={args.runs}"
+    )
+    print("Torch always uses the original FP32 Q/K/V; scalar fallbacks are excluded; packed K/V is prebuilt.")
+    header = (
+        f"{'shape':<22}{'requested route':<18}{'B/H/D/Sq/Skv':<24}{'route':<12}"
+        f"{'ARK ms':>10}{'Torch FP32 ms':>14}{'speedup':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    speedups = []
+    route_names = _route_names()
+    for shape_index, shape in enumerate(SHAPES):
+        for route_index, route in enumerate(ROUTES):
+            if shape.is_gqa and not route.supports_gqa:
+                continue
+            if shape.is_causal and route.decode_only:
+                continue
+            speedup, row = _run_case(
+                shape, route, route_names, args.warmup, args.runs, seed=1000 + shape_index * len(ROUTES) + route_index
             )
-            _print_raw_vs_packed(mixed_raw_rows, packed_rows)
-        else:
-            print("\n[packed kv decode — q=float32, kv=fp16/bf16]")
-            print(f"unavailable: {packed_error or 'packed path is not available on this ISA/build'}")
+            print(row)
+            if speedup is not None:
+                speedups.append(speedup)
 
-    combined_rows = public_rows + mixed_raw_rows + packed_rows
-    _write_csv(args.csv, combined_rows)
-    return 0 if all_passed else 1
+    if speedups:
+        print("-" * len(header))
+        print(f"geomean speedup: {math.exp(statistics.fmean(math.log(value) for value in speedups)):.2f}x")
+    return 0
 
 
 if __name__ == "__main__":
