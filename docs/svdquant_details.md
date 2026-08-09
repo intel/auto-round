@@ -33,7 +33,7 @@ the target GPU. When working from the AutoRound source tree, install AutoRound
 and the diffusion dependencies before quantization:
 
 ```bash
-pip install -e .
+pip install --no-build-isolation -e .
 pip install -r test/test_cuda/requirements_diffusion.txt
 ```
 
@@ -188,7 +188,6 @@ selected factor.
 | `smooth_eps` | Python API only | `1e-6` | Positive floor used while constructing factors. |
 | `residual_iters` | `--svdquant-residual-iters` | `1` | Alternating low-rank/residual iterations. |
 | `residual_early_stop` | `--enable-svdquant-residual-early-stop` | `False` | Stop when the selected error no longer improves. |
-| `residual_quant_method` | `--svdquant-residual-quant-method` | `"rtn"` | Residual outer-loop QDQ method; currently fixed to RTN. |
 | `low_rank_dtype` | `--svdquant-low-rank-dtype` | `"bf16"` | Low-rank factor dtype: BF16, FP16, or FP32 aliases. |
 | `target_modules` | `--svdquant-target-modules` | `None` | Comma-separated module-name substrings to transform. |
 | `exclude_modules` | `--svdquant-exclude-modules` | `None` | Comma-separated module-name substrings to keep untransformed. |
@@ -217,7 +216,6 @@ CUDA_VISIBLE_DEVICES=0 auto-round \
   --svdquant-rank 32 \
   --svdquant-residual-iters 20 \
   --enable-svdquant-residual-early-stop \
-  --svdquant-residual-quant-method rtn \
   --svdquant-low-rank-dtype bf16 \
   --svdquant-model-adapter flux \
   --format svdquant_nunchaku \
@@ -250,7 +248,6 @@ CUDA_VISIBLE_DEVICES=0 auto-round \
   --svdquant-smooth-max-calibration-calls 128 \
   --svdquant-residual-iters 20 \
   --enable-svdquant-residual-early-stop \
-  --svdquant-residual-quant-method rtn \
   --svdquant-low-rank-dtype bf16 \
   --svdquant-model-adapter flux \
   --format svdquant_nunchaku \
