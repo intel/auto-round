@@ -214,12 +214,10 @@ def test_mixed_llm_shape_accuracy(label, batch, heads_q, heads_kv, head_dim, seq
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable: {exc}")
 
-    route = auto_round_kernel.debug_cpu_sdpa_route(
-        q, k, v, scale=scale, is_causal=is_causal, tensor_layout="HND"
-    )
-    assert route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW, (
-        f"{label}: expected mixed route, got {route}"
-    )
+    route = auto_round_kernel.debug_cpu_sdpa_route(q, k, v, scale=scale, is_causal=is_causal, tensor_layout="HND")
+    assert (
+        route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW
+    ), f"{label}: expected mixed route, got {route}"
 
     atol, rtol = _TOL[kv_dtype]
     assert actual.dtype == torch.float32
