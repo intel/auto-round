@@ -45,6 +45,7 @@ class TestAutoRound:
         ar.post_init()
         assert ar.bits == 2
 
+    @pytest.mark.timeout(120)
     def test_w4a16_mixed(self, tiny_qwen_moe_model_path, dataloader):
 
         layer_config = {
@@ -178,6 +179,7 @@ class TestAutoRound:
         device_list = parse_available_devices("0,1")
         assert len(device_list) == 1 and "cpu" in device_list
 
+    @pytest.mark.timeout(60)
     def test_set_scheme(self, tiny_qwen_model_path):
         ar = AutoRound(
             tiny_qwen_model_path,

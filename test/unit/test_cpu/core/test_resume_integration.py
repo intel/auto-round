@@ -41,6 +41,7 @@ def _clean_resume_env():
 
 
 class TestResumeIntegration:
+    @pytest.mark.timeout(60)
     def test_resume_skips_already_completed_blocks(self, tiny_opt_model_path, tmp_path):
         resume_dir = str(tmp_path / "resume")
         # AR_DISK_STREAM_MODEL keeps low_cpu_mem_usage active for this plain

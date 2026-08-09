@@ -253,6 +253,7 @@ def test_disable_model_free_opt_out(tiny_opt_model_path):
     assert ar.model is not None
 
 
+@pytest.mark.timeout(60)
 def test_mxfp_auto_scheme_quantization_config_parity(tmp_path, tiny_opt_model_path):
     """Mixed MXFP AutoScheme must serialize the same scheme metadata in both paths."""
     pytest.importorskip("compressed_tensors")

@@ -5,7 +5,7 @@ source /auto-round/.azure-pipelines/scripts/change_color.sh
 
 function setup_environment() {
     echo "##[group]set up UT env..."
-    uv pip install pytest-cov
+    uv pip install pytest-cov pytest-timeout
     uv pip list
     echo "##[endgroup]"
 
@@ -38,9 +38,10 @@ function run_unit_test() {
 
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
+                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 
@@ -49,9 +50,10 @@ function run_unit_test() {
 
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
+                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
@@ -69,9 +71,10 @@ function run_unit_test_llmc() {
 
         echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
+                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }

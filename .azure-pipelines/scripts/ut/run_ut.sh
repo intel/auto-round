@@ -22,7 +22,7 @@ function setup_environment() {
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
     # install unit report dependencies
-    uv pip install pytest-cov
+    uv pip install pytest-cov pytest-timeout
     uv pip install -U chardet
     uv pip list
 
@@ -90,8 +90,9 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest -m "not skip_ci" --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -102,15 +103,16 @@ function run_inc_unit_test() {
     INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     echo "##[endgroup]"
 
-    cd /auto-round/test || exit 1
+    cd /auto-round/test/integration || exit 1
 
     for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -123,15 +125,16 @@ function run_llmc_unit_test() {
     cd /auto-round && uv pip install .
     echo "##[endgroup]"
 
-    cd /auto-round/test || exit 1
+    cd /auto-round/test/integration || exit 1
 
     for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -147,6 +150,10 @@ function collect_log() {
 function main() {
     setup_environment
     run_unit_test
+    if [ "$test_part" -eq 5 ] && [ "$NIGHTLY_TEST" = 1 ]; then
+        run_inc_unit_test
+        run_llmc_unit_test
+    fi
     collect_log
     check_storage_usage
     print_summary

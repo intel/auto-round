@@ -147,6 +147,7 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(opt_name_or_path, trust_remote_code=True)
         assert is_pure_text_model(model)
 
+    @pytest.mark.timeout(120)
     def test_str_input(self):
         tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         processor = AutoProcessor.from_pretrained(self.model_name, trust_remote_code=True)

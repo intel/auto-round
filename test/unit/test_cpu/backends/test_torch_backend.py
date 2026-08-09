@@ -26,6 +26,7 @@ class TestAutoRoundTorchBackend:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.timeout(60)
     def test_torch_4bits_asym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -64,6 +65,7 @@ class TestAutoRoundTorchBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16, limit=10)
         torch.cuda.empty_cache()
 
+    @pytest.mark.timeout(60)
     def test_torch_4bits_sym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
