@@ -780,19 +780,32 @@ def _normalize_nvfp4_source_tensors(
     - ``<layer>.weight_global_scale``
     - ``<layer>.input_global_scale``
     """
+
+    def _reciprocal_global_scale(scale: torch.Tensor) -> torch.Tensor:
+        """Convert global scale tensor to its reciprocal (1/x) as float32 scalar."""
+        return (1.0 / scale.float()).to(torch.float32).reshape([1])
+
     converted_layers: list[str] = []
     candidates: list[str] = []
     for name, tensor in list(raw_tensors.items()):
-        if not name.endswith(".weight"):
+        if name.endswith(".weight"):
+            layer_name = name[: -len(".weight")]
+        elif name.endswith(".weight_packed"):
+            layer_name = name[: -len(".weight_packed")]
+        else:
             continue
-        layer_name = name[: -len(".weight")]
+
         if tensor.dtype not in (torch.uint8, torch.int8):
             continue
         if f"{layer_name}.weight_scale" not in raw_tensors:
             continue
+
         has_legacy_global = f"{layer_name}.weight_scale_2" in raw_tensors or f"{layer_name}.input_scale" in raw_tensors
+        has_new_global = (
+            f"{layer_name}.weight_global_scale" in raw_tensors or f"{layer_name}.input_global_scale" in raw_tensors
+        )
         has_new_packed = f"{layer_name}.weight_packed" in raw_tensors
-        if has_legacy_global or has_new_packed:
+        if has_legacy_global or has_new_global or has_new_packed:
             candidates.append(layer_name)
 
     if not candidates:
@@ -810,18 +823,20 @@ def _normalize_nvfp4_source_tensors(
             raw_tensors[weight_packed_key] = raw_tensors.pop(weight_key).view(torch.uint8).contiguous()
 
         if weight_scale_2_key in raw_tensors and weight_global_scale_key not in raw_tensors:
-            raw_tensors[weight_global_scale_key] = (
-                (1.0 / raw_tensors.pop(weight_scale_2_key).float()).to(torch.float32).reshape([1])
-            )
+            raw_tensors[weight_global_scale_key] = raw_tensors.pop(weight_scale_2_key)
         elif weight_scale_2_key in raw_tensors:
             raw_tensors.pop(weight_scale_2_key)
 
         if input_scale_key in raw_tensors and input_global_scale_key not in raw_tensors:
-            raw_tensors[input_global_scale_key] = (
-                (1.0 / raw_tensors.pop(input_scale_key).float()).to(torch.float32).reshape([1])
-            )
+            raw_tensors[input_global_scale_key] = raw_tensors.pop(input_scale_key)
         elif input_scale_key in raw_tensors:
             raw_tensors.pop(input_scale_key)
+
+        # Normalize NVFP4 global scales to reciprocal form before downstream passthrough/packing.
+        if weight_global_scale_key in raw_tensors:
+            raw_tensors[weight_global_scale_key] = _reciprocal_global_scale(raw_tensors[weight_global_scale_key])
+        if input_global_scale_key in raw_tensors:
+            raw_tensors[input_global_scale_key] = _reciprocal_global_scale(raw_tensors[input_global_scale_key])
 
         converted_layers.append(layer_name)
 
