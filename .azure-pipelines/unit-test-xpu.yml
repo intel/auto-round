@@ -10,8 +10,8 @@ pr:
     include:
       - auto_round
       - auto_round_extension
-      - test/test_ark
-      - test/test_xpu
+      - test/unit/test_ark
+      - test/unit/test_xpu
       - setup.py
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/unit-test-xpu.yml
