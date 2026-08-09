@@ -1713,6 +1713,92 @@ def _layer_config_has_mxfp(layer_config: dict | None) -> bool:
     return False
 
 
+def _layer_config_has_nvfp4(layer_config: dict | None) -> bool:
+    """Return True if any layer_config entry requests NVFP4 quantization.
+
+    Detects both the standard NVFP4 (``data_type='nv_fp'``) and the
+    global-scale-free variant NVFP4_E5M3 (``data_type='fp4_v2'``).
+
+    Handles values that are plain strings (preset names), dicts (possibly
+    with a ``"scheme"`` key or a ``"data_type"`` key), or
+    :class:`QuantizationScheme` instances.
+    """
+    if not layer_config:
+        return False
+    for val in layer_config.values():
+        if isinstance(val, str):
+            try:
+                s = _normalize_scheme(val.upper())
+                dt = (s.data_type or "").lower()
+                if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
+                    return True
+            except Exception:
+                pass
+        elif isinstance(val, dict):
+            dt = (val.get("data_type") or "").lower()
+            if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
+                return True
+            scheme_val = val.get("scheme")
+            if isinstance(scheme_val, str):
+                try:
+                    s = _normalize_scheme(scheme_val.upper())
+                    dt = (s.data_type or "").lower()
+                    if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
+                        return True
+                except Exception:
+                    pass
+        elif isinstance(val, QuantizationScheme):
+            dt = (val.data_type or "").lower()
+            if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
+                return True
+    return False
+
+
+def _get_layer_config_nvfp4_dt(layer_config: dict | None) -> str | None:
+    """Return the first NVFP4 data_type found in *layer_config*.
+
+    Returns ``"nv_fp"`` for standard NVFP4, ``"fp4_v2"`` for NVFP4_E5M3,
+    or ``None`` when no NVFP4 entry is present.
+    """
+    if not layer_config:
+        return None
+    for val in layer_config.values():
+        if isinstance(val, str):
+            try:
+                s = _normalize_scheme(val.upper())
+                dt = (s.data_type or "").lower()
+                if dt == _NVFP4_E5M3_DATA_TYPE:
+                    return _NVFP4_E5M3_DATA_TYPE
+                if is_nv_fp(dt):
+                    return "nv_fp"
+            except Exception:
+                pass
+        elif isinstance(val, dict):
+            dt = (val.get("data_type") or "").lower()
+            if dt == _NVFP4_E5M3_DATA_TYPE:
+                return _NVFP4_E5M3_DATA_TYPE
+            if is_nv_fp(dt):
+                return "nv_fp"
+            scheme_val = val.get("scheme")
+            if isinstance(scheme_val, str):
+                try:
+                    s = _normalize_scheme(scheme_val.upper())
+                    dt = (s.data_type or "").lower()
+                    if dt == _NVFP4_E5M3_DATA_TYPE:
+                        return _NVFP4_E5M3_DATA_TYPE
+                    if is_nv_fp(dt):
+                        return "nv_fp"
+                except Exception:
+                    pass
+        elif isinstance(val, QuantizationScheme):
+            dt = (val.data_type or "").lower()
+            if dt == _NVFP4_E5M3_DATA_TYPE:
+                return _NVFP4_E5M3_DATA_TYPE
+            if is_nv_fp(dt):
+                return "nv_fp"
+    return None
+
+
 def _is_full_precision_default(scheme_input: Any) -> bool:
     """Return True when *scheme_input* represents a full-precision default (bits >= 16).
 
@@ -1796,6 +1882,28 @@ def _build_quantization_config(
     is_fp_default = (default_bits or 0) >= 16 and not is_mx_fp(data_type)
     if data_type == _NVFP4_E5M3_DATA_TYPE and format == "llm_compressor":
         return _build_nvfp4_e5m3_quantization_config(ignored_layers)
+    # BF16/FP16 default with NVFP4 layer_config overrides and llm_compressor format:
+    # build an NVFP4 config that targets only the explicitly quantized layers.
+    if is_fp_default and _layer_config_has_nvfp4(layer_config) and format == "llm_compressor":
+        nvfp4_dt = _get_layer_config_nvfp4_dt(layer_config)
+        targets = list(dict.fromkeys(quantized_layers)) if quantized_layers else ["Linear"]
+        if nvfp4_dt == _NVFP4_E5M3_DATA_TYPE:
+            # Global-scale-free variant (NVFP4_E5M3)
+            from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+
+            qconfig = initialize_nvfp4_e5m3_quantization(ignore=[])
+            qconfig["config_groups"]["group_0"]["targets"] = targets
+            qconfig["format"] = "nvfp4-e5m3-pack-quantized"
+        else:
+            # Standard NVFP4 (nv_fp, scale_dtype=float8_e4m3fn)
+            from auto_round.export.export_to_llmcompressor.config import initialize_quantization
+
+            qconfig_obj = initialize_quantization(scheme="NVFP4", ignore=[])
+            qconfig = qconfig_obj.to_dict()
+            qconfig["config_groups"]["group_0"]["targets"] = targets
+            qconfig["format"] = "nvfp4-pack-quantized"
+        qconfig.update(_get_llm_compressor_metadata())
+        return qconfig
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
@@ -3483,6 +3591,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif _is_full_precision_default(self.scheme_input) and _layer_config_has_nvfp4(self.layer_config_input):
+            # BF16 default with NVFP4_E5M3 layer_config overrides.
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         if format not in _accepted_formats:
             logger.warning(
                 f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
