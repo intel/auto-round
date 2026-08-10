@@ -919,7 +919,7 @@ def sdpa(
     # is_causal (use_alibi, use_tanh, prefer_fp32, n_padding). The XPU C++
     # function has a different signature without these; reject them explicitly
     # rather than silently ignoring.
-    if query.device.type != "cpu" and (use_alibi or use_tanh or prefer_fp32 or n_padding is not None):
+    if query.device.type != "cpu" and (use_alibi or use_tanh or prefer_fp32 or n_padding):
         raise NotImplementedError("use_alibi, use_tanh, prefer_fp32, and n_padding are only supported on CPU")
     if query.device.type == "cpu":
         if mixed_kv and attn_mask is None and _cpu_public_packed_kv_available():
