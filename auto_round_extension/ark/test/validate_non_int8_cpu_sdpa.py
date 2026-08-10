@@ -160,12 +160,12 @@ CI workflow definition: .github/workflows/non_int8_cpu_sdpa.yml
 
 Benchmark commands (identify for regression tracking):
   # Representative public, mixed, and packed-KV accuracy/latency matrix:
-  python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
-      --preset default --shape all --csv ark_sdpa_default.csv
+  python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \
+      --warmup 5 --runs 20
 
   # Lightweight correctness and measurement smoke test:
-  python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \\
-      --preset smoke --warmup 2 --runs 5
+  python auto_round_extension/ark/test/bench_ark_cpu_sdpa.py \
+      --warmup 2 --runs 5
 
   Regression-sensitive behavior:
     - Tier 0 scalar: latency must not exceed the 1.3× tolerance vs PyTorch math SDPA.

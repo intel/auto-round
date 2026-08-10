@@ -263,8 +263,15 @@ def _cpu_public_get_packed_kv_entry(
     layout = _normalize_tensor_layout(tensor_layout)
     batch, num_heads_kv, seq_len_kv, head_dim = _attention_shape(key, layout)
     cache_key = _cpu_public_packed_kv_cache_key(key, value, layout)
-    key_version = int(key._version)
-    value_version = int(value._version)
+    try:
+        key_version = int(key._version)
+        value_version = int(value._version)
+        use_version = True
+    except RuntimeError:
+        # Inference tensors do not track version counter; always repack.
+        key_version = -1
+        value_version = -1
+        use_version = False
     entry = _CPU_PUBLIC_PACKED_KV_CACHE.get(cache_key)
 
     if entry is not None and (entry.key_ref() is not key or entry.value_ref() is not value):
@@ -284,13 +291,14 @@ def _cpu_public_get_packed_kv_entry(
             -1,
         )
         _CPU_PUBLIC_PACKED_KV_CACHE[cache_key] = entry
+        weakref.finalize(key, lambda ck=cache_key: _CPU_PUBLIC_PACKED_KV_CACHE.pop(ck, None))
     else:
         _CPU_PUBLIC_PACKED_KV_CACHE.move_to_end(cache_key)
 
     if len(_CPU_PUBLIC_PACKED_KV_CACHE) > _CPU_PUBLIC_PACKED_KV_CACHE_MAX:
         _CPU_PUBLIC_PACKED_KV_CACHE.popitem(last=False)
 
-    if entry.key_version == key_version and entry.value_version == value_version:
+    if use_version and entry.key_version == key_version and entry.value_version == value_version:
         if seq_len_kv > entry.seq_len:
             ark_cpu_update_packed_kv_from_descriptor(
                 entry.descriptor,
@@ -339,9 +347,11 @@ def _cpu_public_mixed_sdpa_packed(
     # data.  The AMX-BF16 stable wrapper then runs with MTILE=16 / NTILE=48 vs
     # the AVX2 path's MTILE=4 / NTILE=24.  PyTorch's dtype conversion is SIMD.
     # For decode (sl_q == 1) the conversion overhead dominates; keep fp16 packed.
-    if key.dtype == torch.float16 and query.shape[-2] > 1:
-        key = key.to(dtype=torch.bfloat16)
-        value = value.to(dtype=torch.bfloat16)
+    # Only active when the BF16 route is compiled in (requires AVX512F).
+    if key.dtype == torch.float16 and _attention_shape(query, tensor_layout)[2] > 1:
+        if getattr(cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE", False):
+            key = key.to(dtype=torch.bfloat16)
+            value = value.to(dtype=torch.bfloat16)
 
     entry, seq_len_kv = _cpu_public_get_packed_kv_entry(key, value, tensor_layout=tensor_layout)
     return ark_cpu_bestla_sdpa_packed_from_descriptor(
@@ -404,6 +414,10 @@ def _validate_attention_geometry(
     key_dtype: torch.dtype | None = None,
     value_dtype: torch.dtype | None = None,
 ) -> tuple[int, int, int, int, int, int]:
+    if key.device != query.device or value.device != query.device:
+        raise ValueError(
+            f"Q/K/V must be on the same device, got Q={query.device}, K={key.device}, V={value.device}"
+        )
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
     Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key_dtype)
     Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value_dtype)
@@ -821,11 +835,11 @@ def sdpa(
     - tensor_layout: Layout of Q/K/V/O tensors.
     - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
     - use_alibi: Enable ALiBi position bias (head-num-derived slopes; only
-      supported on the BestLA mixed-precision CPU path, i.e. Q=float32 with
-      K/V=float16|bfloat16 and ARK_UNSAFE_BESTLA_MIXED_SDPA=1). [CPU-only]
+      supported on the BestLA mixed-precision CPU path when built with
+      ARK_ENABLE_INTERNAL_SDPA_FEATURES=ON). [CPU-only]
     - use_tanh: Apply tanh activation to the scaled QK scores before softmax
       (effective score = 30 * tanh(raw_score / 30)). Same path restrictions as
-      use_alibi. Only supported on AVX512F+ hardware. [CPU-only]
+      use_alibi. [CPU-only]
     - prefer_fp32: Prefer fp32 compute for the BestLA mixed path (selects the
       AVX512F fp32-score path over AMX-BF16 for bf16 K/V; no-op for fp16 K/V
       which is already fp32-score; no-op on the scalar Tier-0 path). [CPU-only]
@@ -905,22 +919,29 @@ def sdpa(
 
     # The CPU C++ ABI accepts four extra BestLA-specific parameters after
     # is_causal (use_alibi, use_tanh, prefer_fp32, n_padding). The XPU C++
-    # function has a different signature without these; they are not passed for
-    # that path (rejected by the device check above when non-default).
+    # function has a different signature without these; reject them explicitly
+    # rather than silently ignoring.
+    if query.device.type != "cpu" and (use_alibi or use_tanh or prefer_fp32 or n_padding is not None):
+        raise NotImplementedError(
+            "use_alibi, use_tanh, prefer_fp32, and n_padding are only supported on CPU"
+        )
     if query.device.type == "cpu":
         if mixed_kv and attn_mask is None and _cpu_public_packed_kv_available():
-            return _cpu_public_mixed_sdpa_packed(
-                query,
-                key,
-                value,
-                is_causal=bool(is_causal),
-                scale=scale,
-                use_alibi=bool(use_alibi),
-                use_tanh=bool(use_tanh),
-                prefer_fp32=bool(prefer_fp32),
-                n_padding=n_padding,
-                tensor_layout=tensor_layout,
-            )
+            try:
+                return _cpu_public_mixed_sdpa_packed(
+                    query,
+                    key,
+                    value,
+                    is_causal=bool(is_causal),
+                    scale=scale,
+                    use_alibi=bool(use_alibi),
+                    use_tanh=bool(use_tanh),
+                    prefer_fp32=bool(prefer_fp32),
+                    n_padding=n_padding,
+                    tensor_layout=tensor_layout,
+                )
+            except RuntimeError:
+                pass  # packed path unavailable at runtime; fall through to lib.sdpa()
         lib.sdpa(
             stream,
             query.data_ptr(),
@@ -1430,8 +1451,8 @@ def sagev1(
         )
     if query.device.type != "xpu":
         raise NotImplementedError("sagev1 is only supported on XPU")
-    if query.dtype != torch.float16:
-        raise ValueError(f"sage_dynquant currently supports only float16 Q/K/V tensors, got {query.dtype}")
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
@@ -2414,8 +2435,8 @@ def sage_dynquant(
     if query.device.type != "xpu":
         raise NotImplementedError("sage_dynquant is only supported on XPU")
 
-    if query.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if query.dtype != torch.float16:
+        raise ValueError(f"sage_dynquant currently supports only float16 Q/K/V tensors, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
         raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
 
