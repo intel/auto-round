@@ -1,14 +1,26 @@
-import os
 import shutil
 import sys
 from test.helpers import get_model_path
 
 import pytest
 
+from auto_round.cli.main import run, run_light
 from auto_round.utils import parse_layer_config_arg
 
-AUTO_ROUND_PATH = __file__.split("/")
-AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
+def _assert_cli_ok(monkeypatch, argv, entry=run):
+    """Run an in-process CLI entry point and assert it succeeds.
+
+    ``argv`` is the full argv (including argv[0]); it replaces ``sys.argv`` so
+    the entry point parses it exactly like a real command line invocation.
+    Help/eval paths exit via argparse with code 0, while quantization paths
+    return normally. Any non-zero ``SystemExit`` indicates a CLI failure.
+    """
+    monkeypatch.setattr(sys, "argv", list(argv))
+    try:
+        entry()
+    except SystemExit as exc:  # argparse help/version exits with code 0
+        assert exc.code in (0, None), f"cmd line test fail, exit code {exc.code}"
 
 
 class TestAutoRoundCmd:
@@ -24,76 +36,152 @@ class TestAutoRoundCmd:
         shutil.rmtree("runs", ignore_errors=True)
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    def test_auto_round_cmd(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round -h")
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
+    def test_auto_round_cmd(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(monkeypatch, ["auto_round", "-h"])
 
-    def test_auto_round_cmd2(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_opt_model_path} --seqlen 32 --iter 2 --nsamples 1 --format auto_gptq,auto_round --output_dir {self.save_dir} --tasks piqa --limit 2"
+    @pytest.mark.timeout(90)
+    def test_auto_round_cmd2(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(
+            monkeypatch,
+            [
+                "auto_round",
+                "--model",
+                tiny_opt_model_path,
+                "--seqlen",
+                "32",
+                "--iter",
+                "2",
+                "--nsamples",
+                "1",
+                "--format",
+                "auto_gptq,auto_round",
+                "--output_dir",
+                self.save_dir,
+                "--tasks",
+                "piqa",
+                "--limit",
+                "2",
+            ],
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
 
-    def test_auto_round_cmd3(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --model {tiny_opt_model_path} --seqlen 8 --iter 1 --nsamples 1 --eval_task_by_task --tasks openbookqa --bs 32 --limit 2"
+    @pytest.mark.timeout(90)
+    def test_auto_round_cmd3(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(
+            monkeypatch,
+            [
+                "auto_round",
+                "--model",
+                tiny_opt_model_path,
+                "--seqlen",
+                "8",
+                "--iter",
+                "1",
+                "--nsamples",
+                "1",
+                "--eval_task_by_task",
+                "--tasks",
+                "openbookqa",
+                "--bs",
+                "32",
+                "--limit",
+                "2",
+            ],
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
 
-    def test_auto_round_cmd4(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -c 'from auto_round.__main__ import run_light; run_light()' --seqlen 8 --iter 2 --nsamples 8 --output_dir {self.save_dir} --tasks lambada_openai --limit 2"
+    @pytest.mark.timeout(90)
+    def test_auto_round_cmd4(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(
+            monkeypatch,
+            [
+                "auto_round",
+                "--seqlen",
+                "8",
+                "--iter",
+                "2",
+                "--nsamples",
+                "8",
+                "--output_dir",
+                self.save_dir,
+                "--tasks",
+                "lambada_openai",
+                "--limit",
+                "2",
+            ],
+            entry=run_light,
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
 
-    def test_auto_round_cmd5(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --eval -h")
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
+    def test_auto_round_cmd5(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(monkeypatch, ["auto_round", "--eval", "-h"])
 
-    def test_auto_round_cmd6(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --eval --lmms -h")
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
+    def test_auto_round_cmd6(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(monkeypatch, ["auto_round", "--eval", "--lmms", "-h"])
 
-    def test_auto_round_cmd7(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --mllm --model {tiny_qwen_vl_model_path} --iter 2 --nsamples 2 --seqlen 32 --format auto_round --output_dir {self.save_dir}"
+    @pytest.mark.timeout(90)
+    def test_auto_round_cmd7(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(
+            monkeypatch,
+            [
+                "auto_round",
+                "--mllm",
+                "--model",
+                tiny_qwen_vl_model_path,
+                "--iter",
+                "2",
+                "--nsamples",
+                "2",
+                "--seqlen",
+                "32",
+                "--format",
+                "auto_round",
+                "--output_dir",
+                self.save_dir,
+            ],
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
 
-    def test_auto_round_cmd8(self, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        python_path = sys.executable
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round --mllm --iter 2 --nsamples 2 --model {tiny_qwen_vl_model_path} --seqlen 32 --format auto_round"
-            f" --quant_nontext_module --output_dir {self.save_dir}"
+    def test_auto_round_cmd8(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+        _assert_cli_ok(
+            monkeypatch,
+            [
+                "auto_round",
+                "--mllm",
+                "--iter",
+                "2",
+                "--nsamples",
+                "2",
+                "--model",
+                tiny_qwen_vl_model_path,
+                "--seqlen",
+                "32",
+                "--format",
+                "auto_round",
+                "--quant_nontext_module",
+                "--output_dir",
+                self.save_dir,
+            ],
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test fail, please have a check"
 
-    def test_layer_config(self, tiny_opt_model_path):
+    def test_layer_config(self, monkeypatch, tiny_opt_model_path):
         """Test --layer_config with unquoted JSON-like syntax."""
-        python_path = sys.executable
         layer_cfg = r"{fc1:{bits:8,data_type:int},fc2:{bits:16,data_type:int}}"
-        res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' {python_path} -m auto_round"
-            f" --model {tiny_opt_model_path} --seqlen 8 --iter 0 --disable_opt_rtn"
-            f" --layer_config '{layer_cfg}' --format auto_round --output_dir {self.save_dir}"
+        _assert_cli_ok(
+            monkeypatch,
+            [
+                "auto_round",
+                "--model",
+                tiny_opt_model_path,
+                "--seqlen",
+                "8",
+                "--iter",
+                "0",
+                "--disable_opt_rtn",
+                "--layer_config",
+                layer_cfg,
+                "--format",
+                "auto_round",
+                "--output_dir",
+                self.save_dir,
+            ],
         )
-        if res > 0 or res == -1:
-            assert False, "cmd line test with --layer_config fail, please have a check"
 
 
 def test_parse_layer_config():

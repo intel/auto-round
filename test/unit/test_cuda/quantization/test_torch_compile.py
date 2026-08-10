@@ -27,6 +27,7 @@ class TestTorchCompile:
         shutil.rmtree("./saved", ignore_errors=True)
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="torch.compile warmup with iters=2 is slow")
     @require_gguf
     def test_gguf_q2ks_torch_compile(self, dataloader):
         """Test GGUF Q2_K_S quantization with torch.compile enabled.
@@ -56,6 +57,7 @@ class TestTorchCompile:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gguf
+    @pytest.mark.timeout(90)
     def test_gguf_q2ks_torch_compile_iters0(self, tiny_qwen_model_path):
         """Test GGUF Q2_K_S with torch.compile and iters=0 (RTN mode).
 

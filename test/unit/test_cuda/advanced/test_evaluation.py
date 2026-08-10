@@ -19,40 +19,48 @@ from test.helpers import opt_name_or_path
 import pytest
 
 
+def _run_auto_round_cli(monkeypatch, cmd):
+    """Run the auto_round CLI in-process by patching ``sys.argv``.
+
+    ``cmd`` contains only the CLI arguments (everything after ``-m auto_round``).
+    This replaces the previous ``os.system('python -m auto_round ...')`` calls so
+    the code runs in the test process and is measured by coverage.
+    """
+    from auto_round.cli.main import run
+
+    monkeypatch.setattr(sys, "argv", ["auto_round", *cmd.split()])
+    try:
+        run()
+    except SystemExit as exc:  # argparse help/errors exit; only 0/None is success
+        assert exc.code in (0, None), f"cmd line test fail, exit code {exc.code}"
+
+
 @pytest.mark.skipif(
     not os.path.exists("/usr/bin/nvidia-smi") and not os.path.exists("/usr/local/cuda"), reason="CUDA not available"
 )
 class TestHFEvaluation:
     """Test different evaluation modes: --eval and --eval_backend."""
 
-    def test_eval_mode_hf_backend(self, tiny_opt_model_path):
+    def test_eval_mode_hf_backend(self, monkeypatch, tiny_opt_model_path):
         """Test --eval flag: evaluate model without quantization (HF backend default)."""
-        python_path = sys.executable
-
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --eval --tasks lambada_openai --limit 10"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"HF backend evaluation failed (rc={ret})"
+        _run_auto_round_cli(
+            monkeypatch,
+            f"--model {tiny_opt_model_path} --eval --tasks lambada_openai --limit 10",
+        )
 
     @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
-    def test_iters_0_hf_backend(self, tiny_opt_model_path):
+    def test_iters_0_hf_backend(self, monkeypatch, tiny_opt_model_path):
         """Test quantization with iters=0 and HF backend evaluation."""
-        python_path = sys.executable
-
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --limit 10"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"HF backend with iters=0 failed (rc={ret})"
+        _run_auto_round_cli(
+            monkeypatch,
+            f"--model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --limit 10",
+        )
 
     @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
-    def test_iters_0_task_by_task(self, tiny_opt_model_path):
+    def test_iters_0_task_by_task(self, monkeypatch, tiny_opt_model_path):
         """Test quantization with iters=0 and task-by-task evaluation."""
-        python_path = sys.executable
-
-        cmd = f"{python_path} -m auto_round --model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --eval_task_by_task --tasks lambada_openai,piqa --limit 10"
-
-        ret = os.system(cmd)
-
-        assert ret == 0, f"Task-by-task with iters=0 failed (rc={ret})"
+        _run_auto_round_cli(
+            monkeypatch,
+            f"--model {tiny_opt_model_path} --iters 0 --disable_opt_rtn "
+            f"--eval_task_by_task --tasks lambada_openai,piqa --limit 10",
+        )
