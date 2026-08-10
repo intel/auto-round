@@ -25,9 +25,10 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from auto_round.experimental.utils import (
+    fp8_qdq,
     is_attention_module,
+    normalize_fp8_granularity,
     normalize_static_kv_dtype,
-    per_tensor_fp8_qdq,
     update_parameter_data,
 )
 from auto_round.utils import logger
@@ -106,9 +107,10 @@ class QuantizedKVParameterCache(DynamicCache):
             cls._instance = super(QuantizedKVParameterCache, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, dtype: torch.dtype = torch.float8_e4m3fn):
+    def __init__(self, dtype: torch.dtype = torch.float8_e4m3fn, granularity: str = "tensor"):
 
         assert dtype == torch.float8_e4m3fn, "Only fp8_e4m3fn is supported for now."
+        self.granularity = normalize_fp8_granularity(granularity)
         if not self._initialized:
             super().__init__()
 
@@ -172,13 +174,13 @@ class QuantizedKVParameterCache(DynamicCache):
             assert kv_type == KVCacheScaleType.VALUE
             scales = self.v_scales
 
-        qdq_tensor, scale = per_tensor_fp8_qdq(tensor)
+        qdq_tensor, scale = fp8_qdq(tensor, granularity=self.granularity)
         # Detach scale to prevent holding computation graph references
-        _pad_and_append_at_idx_(scales, layer_idx, scale.squeeze(0).detach())
+        _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
         return qdq_tensor
 
 
-def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn):
+def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn, granularity: str = "tensor"):
     """
     Initialize a quantized kv_cache on a module (analogous to initializing an observer)
     """
@@ -189,7 +191,7 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
     if isinstance(existing_kv_cache, QuantizedKVParameterCache):
         return
 
-    quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype)
+    quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype, granularity=granularity)
     setattr(module, "kv_cache", quantized_kv_cache)
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     init_scale = torch.tensor([0.0], device=next(module.parameters()).device)
@@ -234,15 +236,20 @@ def prep_attention_module_for_calibration(module: torch.nn.Module):
 
 
 @contextlib.contextmanager
-def kvcache_quant_context(model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn):
+def kvcache_quant_context(
+    model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn, static_kv_granularity: str = "tensor"
+):
     """Context manager for FP8 KV cache quantization operations."""
     try:
         # Setup phase: Initialize KV cache for quantization
         static_kv_dtype = normalize_static_kv_dtype(static_kv_dtype)
+        static_kv_granularity = normalize_fp8_granularity(static_kv_granularity)
         if static_kv_dtype != torch.float8_e4m3fn:
             logger.warning(f"Ignoring static kv dtype {static_kv_dtype}, only fp8_e4m3fn is supported.")
         else:
-            initialize_fn = partial(initialize_quantized_kv_cache, dtype=static_kv_dtype)
+            initialize_fn = partial(
+                initialize_quantized_kv_cache, dtype=static_kv_dtype, granularity=static_kv_granularity
+            )
             model.apply(initialize_fn)
             model.apply(prep_attention_module_for_calibration)
 
