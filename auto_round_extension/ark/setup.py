@@ -106,6 +106,73 @@ enable_dnnl = env_flag("ARK_DNNL", default=not enable_sycl_tla)
 enable_joint_matrix = env_flag("ARK_JOINT_MATRIX", default=False)
 
 
+def detect_sycl_target():
+    def _read_command_output(cmd):
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+            return result.stdout or "", None
+        except (FileNotFoundError, subprocess.CalledProcessError) as error:
+            return "", str(error)
+
+    def _map_detected_device_to_sycl_target(device_text):
+        text = device_text.lower()
+
+        if "b70" in text or "0xe223" in text or "g31" in text:
+            return "intel_gpu_bmg_g31"
+
+        if "b60" in text or "b580" in text or "g21" in text:
+            return "intel_gpu_bmg_g21"
+
+        if "pvc" in text or "max 1550" in text or "max 1100" in text:
+            return "intel_gpu_pvc"
+
+        return None
+
+    override = os.environ.get("ARK_SYCL_TARGET")
+    if override:
+        print(f"Using ARK_SYCL_TARGET override: {override}")
+        return override
+
+    detection_failures = []
+
+    try:
+        import torch
+
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            props = torch.xpu.get_device_properties(0)
+            detected = _map_detected_device_to_sycl_target(f"{props.name} {hex(props.device_id)}")
+            if detected:
+                print(f"Detected SYCL target from torch.xpu: {detected}")
+                return detected
+            detection_failures.append("torch.xpu returned an unrecognized XPU device")
+        else:
+            detection_failures.append("torch.xpu is unavailable")
+    except Exception as error:
+        detection_failures.append(f"torch.xpu detection failed: {error}")
+
+    for cmd in (["xpu-smi", "discovery", "-d", "0"], ["sycl-ls"]):
+        output, error = _read_command_output(cmd)
+        detected = _map_detected_device_to_sycl_target(output)
+        if detected:
+            print(f"Detected SYCL target from {' '.join(cmd)}: {detected}")
+            return detected
+
+        if error:
+            detection_failures.append(f"{' '.join(cmd)} failed: {error}")
+        elif output:
+            detection_failures.append(f"{' '.join(cmd)} returned an unrecognized device")
+
+    print("Warning: unable to determine exact SYCL target.")
+    for failure in detection_failures:
+        print(f"Warning: {failure}")
+    print("Warning: falling back to bmg")
+
+    return "intel_gpu_bmg_g21"
+
+
+sycl_target = detect_sycl_target() if enable_sycl_tla else None
+
+
 def get_system_memory_gb():
     if hasattr(os, "sysconf"):
         page_size_names = ("SC_PAGE_SIZE", "SC_PAGESIZE")
@@ -194,10 +261,13 @@ class CMakeBuild(build_ext):
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_CXX_COMPILER=icx",
             "-DARK_XPU=ON",
+            "-DARK_RESCALE=ON",
             f"-DARK_DNNL={'ON' if enable_dnnl else 'OFF'}",
             f"-DARK_JOINT_MATRIX={'ON' if enable_joint_matrix else 'OFF'}",
             f"-DARK_SYCL_TLA={'ON' if enable_sycl_tla else 'OFF'}",
         ]
+        if sycl_target:
+            cmake_cmd.append(f"-DDPCPP_SYCL_TARGET={sycl_target}")
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")
         xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
