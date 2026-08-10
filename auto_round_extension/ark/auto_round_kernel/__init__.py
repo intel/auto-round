@@ -415,9 +415,7 @@ def _validate_attention_geometry(
     value_dtype: torch.dtype | None = None,
 ) -> tuple[int, int, int, int, int, int]:
     if key.device != query.device or value.device != query.device:
-        raise ValueError(
-            f"Q/K/V must be on the same device, got Q={query.device}, K={key.device}, V={value.device}"
-        )
+        raise ValueError(f"Q/K/V must be on the same device, got Q={query.device}, K={key.device}, V={value.device}")
     B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
     Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key_dtype)
     Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value_dtype)
@@ -922,9 +920,7 @@ def sdpa(
     # function has a different signature without these; reject them explicitly
     # rather than silently ignoring.
     if query.device.type != "cpu" and (use_alibi or use_tanh or prefer_fp32 or n_padding is not None):
-        raise NotImplementedError(
-            "use_alibi, use_tanh, prefer_fp32, and n_padding are only supported on CPU"
-        )
+        raise NotImplementedError("use_alibi, use_tanh, prefer_fp32, and n_padding are only supported on CPU")
     if query.device.type == "cpu":
         if mixed_kv and attn_mask is None and _cpu_public_packed_kv_available():
             try:
