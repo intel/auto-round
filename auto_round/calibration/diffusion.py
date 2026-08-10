@@ -37,14 +37,14 @@ from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
 def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage: bool) -> str | None:
     """Place a diffusion pipeline for calibration without exceeding one GPU."""
-    target_device = torch.device(target_device)
+    resolved_device = torch.device(target_device)
     if low_gpu_mem_usage:
         enable_model_cpu_offload = getattr(pipe, "enable_model_cpu_offload", None)
         if not callable(enable_model_cpu_offload):
             raise ValueError("The diffusion pipeline does not support component-level model CPU offload.")
-        enable_model_cpu_offload(device=target_device)
+        enable_model_cpu_offload(device=resolved_device)
         return "model"
-    if pipe.device != target_device:
+    if pipe.device != resolved_device:
         pipe.to(target_device)
     return None
 
