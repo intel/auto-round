@@ -99,6 +99,22 @@ def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
 
     assert type(compressor).__name__ == "ModelFreeCompressor"
     assert compressor.scheme_input.sym is False
+    assert compressor.disable_opt_rtn is True
+
+
+def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
+    compressor = AutoRound(
+        tiny_opt_model_path,
+        scheme="MXFP4",
+        iters=0,
+        disable_opt_rtn=False,
+        model_free=True,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.disable_opt_rtn is False
 
 
 from ...envs import require_compressed_tensors
@@ -557,6 +573,42 @@ class TestModelFreeQuantize:
 
 class TestModelFreeMXFP:
     """End-to-end tests for MXFP4/MXFP8 model-free quantization."""
+
+    def test_opt_rtn_selects_best_e8m0_scale_per_group(self, monkeypatch):
+        from auto_round.data_type import mxfp
+
+        torch.manual_seed(0)
+        weight = torch.randn(8, 32)
+        debug_mock = Mock()
+        monkeypatch.setattr(mxfp.logger, "debug", debug_mock)
+
+        baseline, baseline_exp, _ = mxfp.quant_mx(weight, bits=4, group_size=32, data_type="mx_fp")
+        optimized, optimized_exp, _ = mxfp.quant_mx_opt_rtn(weight, bits=4, group_size=32, data_type="mx_fp")
+
+        baseline_mse = ((baseline - weight).reshape(-1, 32) ** 2).mean(dim=-1)
+        optimized_mse = ((optimized - weight).reshape(-1, 32) ** 2).mean(dim=-1)
+        assert torch.all(optimized_mse <= baseline_mse)
+        assert torch.count_nonzero(optimized_exp != baseline_exp).item() == 2
+        assert "2/8 groups" in debug_mock.call_args.args[0]
+
+    def test_disable_opt_rtn_skips_mxfp_scale_search(self, monkeypatch):
+        from auto_round.data_type import mxfp
+
+        search_mock = Mock(side_effect=AssertionError("optimized RTN must be disabled"))
+        monkeypatch.setattr(mxfp, "quant_mx_opt_rtn", search_mock)
+
+        weight = torch.randn(8, 32, dtype=torch.bfloat16)
+        out = _quantize_weight_mxfp(
+            weight,
+            "layer",
+            bits=4,
+            group_size=32,
+            data_type="mx_fp",
+            disable_opt_rtn=True,
+        )
+
+        assert "layer.weight_packed" in out
+        search_mock.assert_not_called()
 
     def test_quantize_weight_mxfp4_shapes(self):
         w = torch.randn(64, 128, dtype=torch.bfloat16)

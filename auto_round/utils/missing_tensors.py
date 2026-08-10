@@ -61,14 +61,16 @@ _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
 }
 
 _AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
+_WARNING_INDEX_PLACEHOLDER = "<idx>"
 
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "0") -> str:
+def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
     """Normalize tensor names for warning_once deduplication.
 
     Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder so
-    warning keys are stable across different layer/expert ids.
+    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
+    (``<idx>`` by default) so warning keys are stable across different
+    layer/expert ids.
     """
     parts = name.split(".")
     normalized_parts = []

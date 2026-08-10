@@ -22,6 +22,7 @@ from auto_round.data_type.utils import (
     revert_tensor_by_pad,
     round_ste,
 )
+from auto_round.logger import logger
 
 MXFP_FORMAT_CACHE = {
     # data type: ebits, mbits, emax, max_norm, min_norm
@@ -199,6 +200,12 @@ def quant_mx_opt_rtn(
         qw = imatrix
 
     max_scales = search_mx_scale(tensor, bits, qw=qw, data_type=data_type)
+    updated_groups = torch.count_nonzero(max_scales != 1.0).item()
+    total_groups = max_scales.numel()
+    logger.debug(
+        f"MXFP optimized RTN scale search updated {updated_groups}/{total_groups} groups "
+        f"({updated_groups / total_groups:.2%})."
+    )
 
     max_val = torch.amax(torch.abs(tensor), dim=-1, keepdim=True)
     max_val.mul_(max_scales)

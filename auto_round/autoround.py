@@ -660,6 +660,7 @@ class _CompressorBuilder(object):
                 device_map,
                 announced_via_flag=bool(route_kwargs.get("model_free", False)),
                 enable_torch_compile=enable_torch_compile,
+                disable_opt_rtn=model_free_disable_opt_rtn,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,
