@@ -44,6 +44,7 @@ class TestAWQNormalLLM:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(60)
     def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
         """W4A16 AWQ quantization produces valid layer_config and model can generate."""
         ar = AutoRound(
@@ -68,6 +69,7 @@ class TestAWQNormalLLM:
         output = generate_prompt(model, tokenizer, device="cpu")
         assert len(output) > 0, "Model should produce non-empty output"
 
+    @pytest.mark.timeout(60)
     def test_awq_w4a16_export_auto_round_format(self, tiny_opt_model_path):
         """AWQ W4A16 export to auto_round format: verify quantization_config in saved config."""
         ar = AutoRound(
@@ -120,6 +122,7 @@ class TestAWQNonIntegerSchemes:
     under an MXFP/NVFP scheme.
     """
 
+    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
     def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme):
         ar = AutoRound(
@@ -241,6 +244,7 @@ class TestAWQMoE:
 
         del model
 
+    @pytest.mark.timeout(420)
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP."""
         ar = AutoRound(
@@ -275,6 +279,7 @@ class TestAWQMoE:
         for name in fp_layers:
             assert name.endswith("gate"), f"Unexpected FP layer: {name}"
 
+    @pytest.mark.timeout(300)
     def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
         """AWQ MoE: saved quantization_config should be consistent and loadable."""
         ar = AutoRound(

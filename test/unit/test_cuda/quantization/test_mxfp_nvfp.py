@@ -28,6 +28,7 @@ QMODULE_MAPPING = {
 }
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("scheme", testing_schemes)
 @torch.inference_mode()
 def test_e2e_quant_and_infer(scheme, tiny_qwen_model_path):

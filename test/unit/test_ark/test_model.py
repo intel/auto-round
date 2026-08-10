@@ -58,6 +58,7 @@ class TestAutoRoundARKBackend:
         evaluate_accuracy(model, tokenizer, threshold=tar_acc, batch_size=32, limit=limit)
         torch.xpu.empty_cache()
 
+    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("format", ["auto_round", "auto_round:gptqmodel"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 128, True), (8, 128, True)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])
@@ -65,6 +66,7 @@ class TestAutoRoundARKBackend:
     def test_formats(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
 
+    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("format", ["auto_round:auto_awq"])
     @pytest.mark.parametrize("bits, group_size, sym", [(4, 32, True)])
     @pytest.mark.parametrize("dtype", [torch.float16])
@@ -72,6 +74,7 @@ class TestAutoRoundARKBackend:
     def test_awq_fp16(self, format, bits, group_size, sym, dtype, device):
         self.main_op(format, bits, group_size, sym, dtype, device)
 
+    @pytest.mark.timeout(300)
     @pytest.mark.parametrize("format", ["auto_round"])
     @pytest.mark.parametrize("bits, group_size, sym", [(2, 32, False)])
     @pytest.mark.parametrize("dtype", [torch.bfloat16])

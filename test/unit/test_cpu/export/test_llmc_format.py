@@ -47,6 +47,7 @@ class TestLLMC:
     #     autoround.quantize()
     #     autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
 
+    @pytest.mark.timeout(120)
     def test_llmcompressor_fp8(self, tmp_path):
         ## quantize the model
         model_name = opt_name_or_path
@@ -129,6 +130,7 @@ class TestLLMC:
             and quantization_config["ignore"] == ["lm_head"]
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
 
+    @pytest.mark.timeout(60)
     def test_mxfp8_llmcompressor_kv_config(self, tiny_opt_model_path, tmp_path):
         ar = AutoRound(
             model=tiny_opt_model_path,
@@ -192,6 +194,7 @@ class TestLLMC:
         assert any(key.endswith(".self_attn.q_scale") for key in keys), "q_scale not found in checkpoint"
         assert not any(key.endswith(".q_max") for key in keys), "q_max should not be exported"
 
+    @pytest.mark.timeout(60)
     def test_mixed_precision_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = AutoScheme(
             avg_bits=7,
