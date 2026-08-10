@@ -109,3 +109,37 @@ def test_indexed_diffusion_outputs_preserve_batch_dimension():
     assert output.shape == sample.shape
     assert runner.last_output_dict["encoder_hidden_states"].shape == sample.shape
     assert runner.last_output_dict["hidden_states"].shape == sample.shape
+
+
+def test_outputs_are_moved_to_cache_device_before_next_batch(monkeypatch):
+    events = []
+
+    class TrackingTensor(torch.Tensor):
+        @staticmethod
+        def __new__(cls, value, batch_index):
+            result = torch.Tensor._make_subclass(cls, value, require_grad=False)
+            result.batch_index = batch_index
+            return result
+
+        def to(self, *args, **kwargs):
+            events.append(("move", self.batch_index))
+            return super().to(*args, **kwargs)
+
+    runner = BlockForwardRunner(batch_size=1, device="cpu", cache_device="cpu", amp=False)
+    call_count = 0
+
+    def fake_forward_one_batch(_block, batch_inputs, _batch_others):
+        nonlocal call_count
+        if call_count:
+            assert ("move", call_count - 1) in events
+        output = TrackingTensor(batch_inputs, call_count)
+        call_count += 1
+        return output
+
+    monkeypatch.setattr(runner, "_forward_one_batch", fake_forward_one_batch)
+    inputs = [torch.full((1, 2), value, dtype=torch.float32) for value in range(3)]
+
+    outputs = runner(torch.nn.Identity(), inputs, {})
+
+    assert len(outputs) == len(inputs)
+    assert call_count == len(inputs)
