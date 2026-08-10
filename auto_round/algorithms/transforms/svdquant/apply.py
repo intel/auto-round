@@ -317,7 +317,7 @@ class SVDQuantTransform(BasePreprocessor):
                 logger.debug("Skipping SVDQuant smooth candidate (%s, %s) for %s: %s", alpha, beta, group.key, exc)
                 error = float("inf")
             candidate = SmoothCandidate(alpha, beta, scale)
-            scored.append(((candidate, error), error))
+            scored.append((candidate, error))
         selected, error = select_best_layer_candidate(scored, module_name=group.key)
         self._log_selected_smooth_candidate(group.key, selected, error)
         return selected.scale
