@@ -48,7 +48,7 @@ def test_regular_diffusion_calibration_moves_pipeline_to_device():
     mode = _prepare_pipeline_for_calibration(pipe, "cuda:0", low_gpu_mem_usage=False)
 
     assert mode is None
-    assert pipe.target_device == torch.device("cuda:0")
+    assert pipe.target_device == "cuda:0"
 
 
 @pytest.fixture
