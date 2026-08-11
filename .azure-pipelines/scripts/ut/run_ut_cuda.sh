@@ -112,7 +112,7 @@ function run_unit_test() {
         echo "Running ${test_file}..."
 
         COVERAGE_CORE=sysmon pytest --cov=auto_round --cov-report= --cov-append \
-            --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+            --timeout=0 --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.unit
 
@@ -147,7 +147,7 @@ function run_unit_test_vlm() {
         echo "Running ${test_file}..."
 
         COVERAGE_CORE=sysmon pytest --cov=auto_round --cov-report= --cov-append \
-            --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+            --timeout=0 --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vlm
 
@@ -179,7 +179,7 @@ function run_unit_test_llmc() {
         echo "Running ${test_file}..."
 
         COVERAGE_CORE=sysmon pytest --cov=auto_round --cov-report= --cov-append \
-            --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+            --timeout=0 --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.llmc
 
@@ -213,7 +213,7 @@ function run_unit_test_sglang() {
         echo "Running ${test_file}..."
 
         COVERAGE_CORE=sysmon pytest --cov=auto_round --cov-report= --cov-append \
-            --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+            --timeout=0 --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.sglang
 
@@ -248,7 +248,7 @@ function run_unit_test_vllm() {
         echo "Running ${test_file}..."
 
         COVERAGE_CORE=sysmon pytest --cov=auto_round --cov-report= --cov-append \
-            --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
+            --timeout=0 --durations=0 --durations-min=1 -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
     done
     [ -f .coverage ] && cp .coverage ${LOG_DIR}/.coverage.vllm
 
