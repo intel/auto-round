@@ -559,16 +559,17 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### 免模型架构量化模式
 
-免模型架构量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行 RTN WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
+免模型架构量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行无标定数据的 WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
 
-> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ 或 MXFP scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
+> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ 或 MXFP scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。  
+> 显式传入 `--model_free`（不加 `--disable_opt_rtn`）时，INT 对称量化和 MXFP scheme 默认启用**优化版 RTN（opt_rtn）**；如需原始 RTN，加上 `--disable_opt_rtn` 即可。
 
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件
 - **低磁盘内存** (如果无本地模型) — 逐个下载并量化分片，处理完成后立即删除源分片
 - **逐层配置** — 支持 `--layer_config` 设置逐层位宽，以及 `--ignore_layers` 保持特定层全精度
 - **预定义忽略层** — 根据模型配置自动跳过特定层（如 MoE 门控层、MTP 层等）
-- 与标准 `--iters 0 --disable_opt_rtn` 流程对所有受支持的 scheme **位级等价**
+- **默认启用优化版 RTN（opt_rtn）**（INT 对称量化与 MXFP）— 传入 `--disable_opt_rtn` 可切换为原始 RTN（与 `--iters 0 --disable_opt_rtn` 自动路由路径位级等价）
 - **AutoScheme 集成** — 将 `AutoScheme` 对象传入 `scheme` 参数，即可在免模型模式下完成自动混合精度选择与逐分片打包（两阶段：短暂加载模型评分 → 释放模型 → 逐分片打包）
 
 <details>
@@ -639,16 +640,23 @@ ar.quantize_and_save(output_dir, format="auto_round")
 #### 命令行用法
 
 ```bash
-# 最简单：--iters 0 --disable_opt_rtn 自动路由到免模型
+# 最简单：--iters 0 --disable_opt_rtn 自动路由到免模型（原始 RTN）
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --scheme W4A16 \
   --iters 0 --disable_opt_rtn \
   --output_dir ./int4-llama
 
-# 等价的显式调用
+# 显式免模型 + 优化版 RTN（默认，精度更优）
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# 显式免模型 + 原始 RTN（等价于上方 --iters 0 --disable_opt_rtn 自动路由）
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --disable_opt_rtn \
   --output_dir ./int4-llama
 
 # 关闭自动路由，强制使用原始流程
@@ -697,7 +705,7 @@ AutoRound(
 ).quantize_and_save("./int4-llama")
 ```
 
-> **注意：** 免模型量化模式使用 RTN（无标定数据、无迭代调优）。INT scheme 输出为 `auto_round:auto_gptq` 格式；MXFP scheme 输出为 compressed-tensors 格式（`mxfp4-pack-quantized` / `mxfp8-quantized`）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
+> **注意：** 免模型量化模式对 INT 对称量化和 MXFP scheme 默认使用**优化版 RTN（opt_rtn）**（无标定数据、无迭代调优）；传入 `disable_opt_rtn=True` 可切换为原始 RTN。INT scheme 输出为 `auto_round:auto_gptq` 格式；MXFP scheme 输出为 compressed-tensors 格式（`mxfp4-pack-quantized` / `mxfp8-quantized`）。如需更高质量的量化结果或使用受支持列表外的 scheme，请使用标准 AutoRound 流程。
 
 </details>
 

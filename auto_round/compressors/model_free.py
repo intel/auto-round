@@ -509,11 +509,11 @@ def _quantize_weight_mxfp(
     """
     import torch.nn as nn
 
-    from auto_round.data_type.mxfp import quant_mx, quant_mx_opt_rtn
+    from auto_round.data_type.utils import get_quant_func
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     if not is_mx_fp(data_type):
-        data_type = "mx_fp"
+        data_type = "mx_fp4" if bits == 4 else "mx_fp8"
 
     out_features, in_features = weight.shape
     if in_features % group_size != 0:
@@ -523,10 +523,10 @@ def _quantize_weight_mxfp(
         )
 
     weight_dev = weight.to(device)
-    # quant_mx returns (qdq_tensor, shared_exp, None).  We only need shared_exp
-    # (the per-block log2 scale).  The element-wise rounding to the FP4/FP8 grid
-    # is performed inside QuantLinear.pack via dtype casts / pack_fp4_to_uint8.
-    quant_func = quant_mx if disable_opt_rtn else quant_mx_opt_rtn
+    # Use get_quant_func (same as WrapperLinear) so that all registered MXFP
+    # variants automatically get opt_rtn support via the QUANT_FUNC_WITH_DTYPE
+    # registry (e.g. "opt_rtn_mx_fp4" -> quant_mx_opt_rtn, "mx_fp4" -> quant_mx).
+    quant_func, _ = get_quant_func(data_type, bits, sym=True, disable_opt_rtn=disable_opt_rtn, iters=0)
     weight_dev, shared_exp, _ = quant_func(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
@@ -633,6 +633,7 @@ def _quantize_single_tensor(
             group_size=group_size,
             sym=sym,
             device=device,
+            disable_opt_rtn=disable_opt_rtn,
         )
 
         out: dict[str, torch.Tensor] = {
@@ -2489,11 +2490,19 @@ class _ModelFreeCompressorCore:
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         else:
             packing_format = "auto_round:auto_gptq"
-        if (is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config)) and not self.disable_opt_rtn:
-            logger.info(
-                "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
-                "2x scale, and 0.5x scale independently for each group."
-            )
+        if not self.disable_opt_rtn:
+            if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
+                logger.info(
+                    "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
+                    "2x scale, and 0.5x scale independently for each group."
+                    "Pass --disable_opt_rtn to use plain RTN."
+                )
+            else:
+                logger.info(
+                    "Integer WOQ optimized RTN is enabled: using scale search "
+                    "(quant_tensor_opt_rtn_sym) for symmetric quantization. "
+                    "Pass --disable_opt_rtn to use plain RTN."
+                )
 
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
