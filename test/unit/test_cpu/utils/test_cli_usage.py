@@ -418,6 +418,13 @@ def test_svdquant_cli_defaults_compose_before_signround():
     assert isinstance(configs[1], SignRoundConfig)
 
 
+def test_svdquant_cli_selects_nunchaku_format_by_default():
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    assert AlgorithmHandler.get_default_format("svdquant,auto_round") == "svdquant_nunchaku"
+    assert AlgorithmHandler.get_default_format("auto_round") is None
+
+
 def _normalize_options(raw):
     if raw is None:
         return None

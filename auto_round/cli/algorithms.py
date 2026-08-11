@@ -41,6 +41,7 @@ class AlgorithmHandler(ABC):
     aliases: tuple[str, ...] = ()  # all accepted names, including canonical
     summary: str = ""  # one-liner shown by `auto_round list alg`
     config_factory: ClassVar[type | None] = None
+    default_format: ClassVar[str | None] = None
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -125,6 +126,19 @@ class AlgorithmHandler(ABC):
             canonical = ["rtn" if name == "auto_round" else name for name in canonical]
 
         return [cls.get(name).build(args, common_kwargs) for name in canonical]
+
+    @classmethod
+    def get_default_format(cls, raw_algorithms: str | None) -> str | None:
+        """Return the output format requested by a selected algorithm, if any."""
+        names = [name.strip().lower() for name in (raw_algorithms or "").split(",") if name.strip()]
+        defaults = set()
+        for name in resolve_algorithm_names(names, ignore_unknown=True):
+            default_format = cls.get(name).default_format
+            if default_format is not None:
+                defaults.add(default_format)
+        if len(defaults) > 1:
+            raise ValueError(f"Selected algorithms require conflicting output formats: {sorted(defaults)}")
+        return next(iter(defaults), None)
 
     @classmethod
     def format_listing(cls) -> str:
@@ -258,6 +272,7 @@ class SVDQuant(AlgorithmHandler):
     aliases = ("svdquant",)
     summary = "SVD low-rank decomposition before residual quantization."
     config_factory = None
+    default_format = "svdquant_nunchaku"
 
     def register(self, group) -> None:
         group.add_argument("--svdquant-rank", default=32, type=int, help="SVDQuant low-rank size.")

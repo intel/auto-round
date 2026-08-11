@@ -44,50 +44,24 @@ from auto_round.algorithms.transforms.svdquant.smooth import (
 from auto_round.algorithms.transforms.svdquant.smooth_adapters import SmoothSearchGroup, discover_svdquant_groups
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
+from auto_round.utils.model import map_nested_tensors
 
-_SCHEME_ATTRS = (
-    "bits",
-    "group_size",
-    "sym",
-    "data_type",
-    "act_bits",
-    "act_group_size",
-    "act_sym",
-    "act_data_type",
-    "act_dynamic",
-    "super_bits",
-    "super_group_size",
-    "super_sym",
-    "scale_dtype",
-    "weight_global_scale",
-    "tuning_device",
-)
+_SCHEME_ATTRS = set(QuantizationScheme.get_attributes())
+_RUNTIME_QUANT_ATTRS = {"scale_dtype", "weight_global_scale", "tuning_device"}
 _MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
 
 
 def _detach_to_cpu(value: Any) -> Any:
-    if torch.is_tensor(value):
-        return value.detach().to("cpu", copy=True)
-    if isinstance(value, tuple):
-        return tuple(_detach_to_cpu(item) for item in value)
-    if isinstance(value, list):
-        return [_detach_to_cpu(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _detach_to_cpu(item) for key, item in value.items()}
-    return value
+    return map_nested_tensors(value, lambda tensor: tensor.detach().to("cpu", copy=True))
 
 
 def _move_to_device(value: Any, device: torch.device, dtype: torch.dtype | None = None) -> Any:
-    if torch.is_tensor(value):
-        target_dtype = dtype if dtype is not None and value.is_floating_point() else value.dtype
-        return value.to(device=device, dtype=target_dtype)
-    if isinstance(value, tuple):
-        return tuple(_move_to_device(item, device, dtype) for item in value)
-    if isinstance(value, list):
-        return [_move_to_device(item, device, dtype) for item in value]
-    if isinstance(value, dict):
-        return {key: _move_to_device(item, device, dtype) for key, item in value.items()}
-    return value
+    def move(tensor: torch.Tensor) -> torch.Tensor:
+        target_dtype = dtype if dtype is not None and tensor.is_floating_point() else tensor.dtype
+        return tensor.to(device=device, dtype=target_dtype)
+
+    return map_nested_tensors(value, move)
 
 
 @dataclass
@@ -174,6 +148,10 @@ class SVDQuantTransform(BasePreprocessor):
             if "fluxtransformer" in str(class_name).lower():
                 model_adapter = "flux"
         self.model._autoround_svdquant_model_adapter = model_adapter
+        if model_adapter == "flux":
+            from auto_round.algorithms.transforms.svdquant.smooth_adapters.flux import warn_if_unverified_flux_model
+
+            warn_if_unverified_flux_model(self.model)
         self._target_modules = self.config.target_modules
         if self._target_modules is None and model_adapter == "flux":
             from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
@@ -318,7 +296,8 @@ class SVDQuantTransform(BasePreprocessor):
                 error = float("inf")
             candidate = SmoothCandidate(alpha, beta, scale)
             scored.append((candidate, error))
-        selected, error = select_best_layer_candidate(scored, module_name=group.key)
+        selected = select_best_layer_candidate(scored, module_name=group.key)
+        error = next(error for candidate, error in reversed(scored) if candidate is selected)
         self._log_selected_smooth_candidate(group.key, selected, error)
         return selected.scale
 
@@ -682,7 +661,7 @@ class SVDQuantTransform(BasePreprocessor):
 
     @staticmethod
     def _copy_quant_attrs(src: torch.nn.Module, dst: torch.nn.Module, suffix: str) -> None:
-        for attr in _SCHEME_ATTRS:
+        for attr in _SCHEME_ATTRS | _RUNTIME_QUANT_ATTRS:
             if hasattr(src, attr):
                 setattr(dst, attr, getattr(src, attr))
         if getattr(dst, "bits", None) == 4 and getattr(dst, "data_type", None) in _MXFP4_ALIASES:

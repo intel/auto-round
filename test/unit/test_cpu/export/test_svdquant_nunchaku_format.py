@@ -58,7 +58,8 @@ def test_get_formats_resolves_full_model_svdquant_nunchaku_format():
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
 
     assert output_format.format_name == "svdquant_nunchaku"
-    assert output_format.requires_full_model_export is True
+    assert output_format.is_supported_immediate_packing() is False
+    assert output_format.is_supported_immediate_saving() is False
 
 
 def test_svdquant_nunchaku_rejects_incompatible_scheme():

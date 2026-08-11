@@ -1542,8 +1542,9 @@ class BaseOrchestrator(object):
             return
 
         formats = getattr(self, "formats", [])
-        if any(format.requires_full_model_export for format in formats):
+        if any(not format.is_supported_immediate_packing() for format in formats):
             self.compress_context.is_immediate_packing = False
+        if any(not format.is_supported_immediate_saving() for format in formats):
             self.compress_context.is_immediate_saving = False
 
         has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
@@ -1552,7 +1553,7 @@ class BaseOrchestrator(object):
         if (
             len(formats) == 1
             and not formats[0].is_fake()
-            and not formats[0].requires_full_model_export
+            and formats[0].is_supported_immediate_packing()
             and (self.inplace or has_single_gguf_format)
         ):
             self.compress_context.is_immediate_packing = True

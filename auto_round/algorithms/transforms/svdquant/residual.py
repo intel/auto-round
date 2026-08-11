@@ -12,6 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Residual low-rank decomposition inspired by SVDQuant.
+
+Reference: Li et al., "SVDQuant: Absorbing Outliers by Low-Rank Components for
+4-Bit Diffusion Models", ICLR 2025, https://arxiv.org/abs/2411.05007.
+
+This module is an AutoRound implementation and does not copy source code from
+the reference implementation.
+"""
+
 import math
 from dataclasses import dataclass
 

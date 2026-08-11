@@ -102,7 +102,6 @@ class OutputFormat(ABC):
     support_schemes: list = []
     _format_list: dict[str, OutputFormat] = {}
     format_name = "base"
-    requires_full_model_export = False
 
     def __init__(self, format: str, scheme: QuantizationScheme, ctx: Any):
         """Initialize the OutputFormat class."""
@@ -152,6 +151,14 @@ class OutputFormat(ABC):
         # auto_round:fp8_static, llm_compressor:fp8_static, auto_round:auto_awq
         else:
             return self.backend.get_backend_name()
+
+    def is_supported_immediate_packing(self) -> bool:
+        """Whether this format can pack each block before full-model export."""
+        return self.backend.is_supported_immediate_packing() if self.backend is not None else True
+
+    def is_supported_immediate_saving(self) -> bool:
+        """Whether this format can serialize each block during quantization."""
+        return self.backend.is_supported_immediate_saving() if self.backend is not None else True
 
     @classmethod
     def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:

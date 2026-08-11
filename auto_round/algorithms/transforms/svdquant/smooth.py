@@ -38,6 +38,7 @@ class SmoothScaleStats:
 
 
 def build_alpha_beta_candidates(num_grids: int) -> list[tuple[float, float]]:
+    """Build identity, activation-only, and activation/weight balanced candidates."""
     if type(num_grids) is not int or num_grids < 2:
         raise ValueError(f"`num_grids` must be an integer greater than or equal to 2, got {num_grids!r}")
     choices = [index / num_grids for index in range(1, num_grids)]
@@ -45,6 +46,7 @@ def build_alpha_beta_candidates(num_grids: int) -> list[tuple[float, float]]:
 
 
 def absmax_channel_span(tensor: torch.Tensor, channels_dim: int) -> torch.Tensor:
+    """Return per-channel absolute maxima over every non-channel dimension."""
     if tensor.ndim == 0:
         raise ValueError("Cannot calculate a channel span for a scalar tensor.")
     channels_dim %= tensor.ndim
@@ -59,6 +61,7 @@ def build_smooth_scale(
     beta: float,
     eps: float | None = None,
 ) -> torch.Tensor:
+    """Construct the factor ``x_span**alpha / w_span**beta`` with safe fallbacks."""
     if not 0.0 <= alpha <= 1.0 or not 0.0 <= beta <= 1.0:
         raise ValueError(f"Smooth alpha and beta must be in [0, 1], got alpha={alpha!r}, beta={beta!r}")
     if x_span.shape != w_span.shape:
@@ -119,6 +122,7 @@ def summarize_smooth_scale(
     low_threshold: float = 1e-3,
     high_threshold: float = 20.0,
 ) -> SmoothScaleStats:
+    """Summarize factor range and deployment-risk threshold counts."""
     values = scale.detach().to(device="cpu", dtype=torch.float32)
     minimum = values.amin().item()
     maximum = values.amax().item()
@@ -139,6 +143,7 @@ def select_best_layer_candidate(
     *,
     module_name: str,
 ) -> _CandidateT:
+    """Select the lowest finite-error candidate, preferring the later exact tie."""
     best_candidate = None
     best_error = float("inf")
     for candidate, error in candidates:

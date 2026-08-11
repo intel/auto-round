@@ -31,7 +31,6 @@ def _invoke_save_hook(hook: Callable[[str], Any], output_dir: str) -> None:
 class SVDQuantNunchakuFormat(OutputFormat):
     support_schemes = ["MXFP4"]
     format_name = "svdquant_nunchaku"
-    requires_full_model_export = True
     _e2m1_aliases = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
 
     def __init__(self, format: str, scheme: QuantizationScheme, ctx: Any):
@@ -40,6 +39,12 @@ class SVDQuantNunchakuFormat(OutputFormat):
         self.mllm = ctx.mllm
         self.check_scheme_args(scheme)
         self._resolved_scheme = scheme.copy()
+
+    def is_supported_immediate_packing(self) -> bool:
+        return False
+
+    def is_supported_immediate_saving(self) -> bool:
+        return False
 
     @classmethod
     def check_scheme_args(cls, scheme: QuantizationScheme) -> bool:

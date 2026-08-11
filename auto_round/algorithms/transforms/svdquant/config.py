@@ -18,7 +18,22 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 
 
 class SVDQuantConfig(QuantizationConfig):
-    """Configuration for the SVDQuant structural preprocessor."""
+    """Configuration for the SVDQuant structural preprocessor.
+
+    Args:
+        rank: Rank of the floating-point low-rank branch.
+        smooth_enabled: Whether to search activation-aware input smoothing factors.
+        smooth_num_grids: Grid resolution for Alpha/Beta smooth candidates.
+        smooth_max_calibration_calls: Maximum retained calls per smooth group.
+        target_modules: Module-name substrings eligible for decomposition.
+        exclude_modules: Module-name substrings excluded from decomposition.
+        low_rank_dtype: Deployment dtype for the low-rank factors.
+        smooth_eps: Positive floor used to construct finite smooth factors.
+        residual_iters: Number of alternating low-rank/residual fitting iterations.
+        residual_early_stop: Stop when the reconstruction objective stops improving.
+        model_adapter: Architecture adapter used for grouping and export.
+        **kwargs: Shared :class:`QuantizationConfig` options.
+    """
 
     def __init__(
         self,

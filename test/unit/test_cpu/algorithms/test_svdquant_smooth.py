@@ -19,7 +19,8 @@ import torch
 
 import auto_round.algorithms.transforms.svdquant.residual as residual_module
 from auto_round.algorithms.composer import BlockContext
-from auto_round.algorithms.transforms.svdquant import SVDQuantConfig, SVDQuantLinear, SVDQuantTransform
+from auto_round.algorithms.transforms.svdquant import SVDQuantConfig, SVDQuantLinear
+from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
 from auto_round.algorithms.transforms.svdquant.smooth import (
     absmax_channel_span,
     build_alpha_beta_candidates,

@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
 from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 
-__all__ = ["SVDQuantConfig", "SVDQuantLinear", "SVDQuantTransform"]
+__all__ = ["SVDQuantConfig", "SVDQuantLinear"]
