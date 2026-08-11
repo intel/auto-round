@@ -137,7 +137,7 @@ class AutoRoundFormat(OutputFormat):
         if self.output_format == f"auto_round:{BackendDataType.NVFP4_E5M3.value}":
             from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
-            pack_func = pack_layer
+            return pack_layer(layer_name, model, device=device)
         elif self.output_format in [
             f"auto_round:{BackendDataType.NV_FP.value}",
             f"auto_round:{BackendDataType.MX_FP.value}",

@@ -40,7 +40,7 @@ Model-free mode supports the following quantization families:
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
 
-**NVFP4 E5M3** (saved in fake format):
+**NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
 * Preset name: ``NVFP4_E5M3``.
 * ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
@@ -961,7 +961,7 @@ def _hydrate_missing_fp8_scales_from_index(
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
+        if tensor.dtype != torch.float8_e4m3fn:
             continue
         scale_inv_name = name.replace(".weight", ".weight_scale_inv")
         if scale_inv_name not in raw_tensors:
@@ -1198,7 +1198,7 @@ def _dequant_fp8_tensors(
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
-        if tensor.dtype != torch.float8_e4m3fn and tensor.element_size() != 1:
+        if tensor.dtype != torch.float8_e4m3fn:
             continue
         # DeepSeek-V3 style: .weight_scale_inv (per-block float32 scales).
         scale_inv_name = name.replace(".weight", ".weight_scale_inv")
@@ -3760,7 +3760,7 @@ def _preprocess_model_type_source_tensors(
             if scale.dtype == torch.float32:
                 sanitized_scale_name = ".".join("<idx>" if part.isdigit() else part for part in scale_name.split("."))
                 logger.warning_once(
-                    f"[{model_type}] Scale tensor '{sanitized_scale_name}' has dtype float32 with UE8M0 encoding "
+                    f"[{model_type}] Scale tensor pattern '{sanitized_scale_name}' has dtype float32 with UE8M0 encoding "
                     f"(only the 8-bit exponent is significant). "
                     f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
                 )
