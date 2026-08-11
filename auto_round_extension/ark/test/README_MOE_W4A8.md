@@ -136,12 +136,12 @@ weights_s8, wscales, block = ark.moe_w4a8_prepack(weights, scales, group_size=32
 
 # 2) Per forward pass (prefill or decode).
 out = ark.moe_gemm_w4a8(
-    activations,             # [total_tokens, K] fp16/bf16, rows sorted by expert
-    weights_s8,              # [E, N, K] int8
-    wscales,                 # [E, N, K // block] fp32
-    num_tokens_per_expert,   # [E] int32
+    activations,  # [total_tokens, K] fp16/bf16, rows sorted by expert
+    weights_s8,  # [E, N, K] int8
+    wscales,  # [E, N, K // block] fp32
+    num_tokens_per_expert,  # [E] int32
     rescale_block_size=block,
-    phase="auto",            # "auto" | "decode" | "prefill"
+    phase="auto",  # "auto" | "decode" | "prefill"
 )
 ```
 
@@ -150,12 +150,16 @@ tensor identity:
 
 ```python
 out = ark.moe_w4a8(
-    activations, weights, num_tokens_per_expert,
-    scales=scales, group_size=32, phase="auto",
+    activations,
+    weights,
+    num_tokens_per_expert,
+    scales=scales,
+    group_size=32,
+    phase="auto",
 )
 
 ark.clear_moe_w4a8_prepack_cache()  # drop the cached int8 weights
-ark.moe_w4a8_release_scratch()      # hand back the device scratch slabs
+ark.moe_w4a8_release_scratch()  # hand back the device scratch slabs
 ```
 
 Helper: `ark.moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)`
