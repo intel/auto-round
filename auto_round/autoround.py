@@ -431,12 +431,6 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.transforms.base import BaseRotationConfig
 
     direct_kwargs = dict(direct_kwargs or {})
-    legacy_algorithm = direct_kwargs.pop("algorithm", None)
-    if legacy_algorithm is not None:
-        if alg_configs is not None:
-            raise ValueError("`algorithm` and `alg_configs` cannot be used together.")
-        alg_configs = legacy_algorithm
-        logger.warning_once("`algorithm` is deprecated; use `alg_configs` instead.")
     if "backend" in direct_kwargs:
         raise ValueError(
             "Rotation backend selection must be nested in `rotation_config`; "
@@ -481,9 +475,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
         configs.append(normalize_algorithm_config(config))
 
     # ``iters=0`` has always selected RTN in the public entry and CLI. Apply
-    # that rule after every input form has become a config so aliases, config
-    # objects, and the deprecated ``algorithm`` argument cannot choose
-    # different quantizer implementations.
+    # that rule after every input form has become a config so aliases and
+    # config objects cannot choose different quantizer implementations.
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
     direct_iters = config_kwargs.get("iters")
@@ -731,7 +724,6 @@ class AutoRound:
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
-        algorithm: str | None = None,
         **kwargs,
     ) -> "BaseCompressor":
         direct_kwargs = dict(kwargs)
@@ -744,8 +736,11 @@ class AutoRound:
             direct_kwargs["iters"] = iters
         if gradient_accumulate_steps is not None:
             direct_kwargs["gradient_accumulate_steps"] = gradient_accumulate_steps
-        if algorithm is not None:
-            direct_kwargs["algorithm"] = algorithm
+        if "algorithm" in direct_kwargs:
+            raise TypeError(
+                "`algorithm` is no longer supported; use `alg_configs` instead "
+                "(e.g. alg_configs='awq' or alg_configs=AWQConfig())."
+            )
 
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs)
         runtime_kwargs["batch_size"] = batch_size
