@@ -5,7 +5,7 @@ import pytest
 import torch
 from transformers.quantizers.auto import AutoHfQuantizer
 
-from auto_round.data_type.nvfp import calculate_gparam, fp4_v2
+from auto_round.data_type.nvfp import calculate_gparam, nvfp4_v2
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
@@ -62,7 +62,7 @@ def test_nvfp4_e5m3_qdq_input_uses_reference_fallback_on_cpu():
     layer = ar_qmodules.NVFP4E5M3QuantLinear(16, 8, config, dtype=torch.float32)
     activation = torch.randn(2, 3, 16)
 
-    expected, _, _ = fp4_v2(activation, bits=config.act_bits, group_size=config.act_group_size)
+    expected, _, _ = nvfp4_v2(activation, bits=config.act_bits, group_size=config.act_group_size)
 
     assert torch.equal(layer.qdq_input(activation), expected)
 

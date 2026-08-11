@@ -235,8 +235,8 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None
     return qdq_res.to(orig_dtype), scale, None
 
 
-@register_dtype("fp4_v2")
-def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
+@register_dtype("nvfp4_v2")
+def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)

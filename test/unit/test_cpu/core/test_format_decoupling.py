@@ -52,7 +52,7 @@ EXPECTED_FORMAT_SELECTION_BASELINE = {
     ("FP8_STATIC", "llm_compressor"): ["llm_compressor:fp8_static"],
     ("MXFP4", "auto_round"): ["auto_round:mx_fp"],
     ("NVFP4", "auto_round"): ["auto_round:nv_fp"],
-    ("NVFP4_E5M3", "auto_round"): ["auto_round:fp4_v2"],
+    ("NVFP4_E5M3", "auto_round"): ["auto_round:nvfp4_v2"],
 }
 
 
@@ -76,7 +76,7 @@ def test_nvfp4_e5m3_autoround_uses_llm_compressor_packing_and_torch_fallback():
         ResolvedScheme.from_scheme(scheme), format="auto_round", model=nn.Sequential(nn.Linear(16, 16))
     )
 
-    assert resolution.formats[0].get_backend_name() == "auto_round:fp4_v2"
+    assert resolution.formats[0].get_backend_name() == "auto_round:nvfp4_v2"
     assert BackendInfos["auto_round:torch_nvfp4_e5m3"].packing_format == ["auto_round:llm_compressor_nvfp4_e5m3"]
     assert BackendInfos["auto_round:cute_nvfp4_e5m3"].priority > BackendInfos["auto_round:torch_nvfp4_e5m3"].priority
     assert dynamic_import_inference_linear("auto_round:torch_nvfp4_e5m3", scheme) is ar_qmodules.NVFP4E5M3QuantLinear

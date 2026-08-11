@@ -140,7 +140,7 @@ def _get_scheme(bits, data_type):
         return "MXFP4" if bits == 4 else "MXFP8"
     if is_nv_fp(data_type):
         return "NVFP4"
-    if data_type == "fp4_v2":
+    if data_type == "nvfp4_v2":
         return "NVFP4_E5M3"
     return None
 
@@ -151,7 +151,7 @@ def _get_group_format(bits, data_type):
         return "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
     if is_nv_fp(data_type):
         return "nvfp4-pack-quantized"
-    if data_type == "fp4_v2":
+    if data_type == "nvfp4_v2":
         return "nvfp4-e5m3-pack-quantized"
     return "float-quantized"
 
@@ -343,7 +343,7 @@ def save_quantized_as_fp(
             static_kv_dtype=serialization_dict.get("static_kv_dtype", None),
             static_attention_dtype=serialization_dict.get("static_attention_dtype", None),
         )
-    elif data_type == "fp4_v2":
+    elif data_type == "nvfp4_v2":
         from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
         quantization_config = initialize_nvfp4_e5m3_quantization(ignore=ignore)

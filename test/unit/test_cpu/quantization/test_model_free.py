@@ -343,9 +343,9 @@ def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     assert compressor.format == "auto_round"
     quantization_config = _read_qconfig(output_dir)
     assert quantization_config["packing_format"] == "auto_round:llm_compressor_nvfp4_e5m3"
-    assert quantization_config["data_type"] == "fp4_v2"
+    assert quantization_config["data_type"] == "nvfp4_v2"
     assert quantization_config["act_bits"] == 4
-    assert quantization_config["act_data_type"] == "fp4_v2"
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
     assert quantization_config["act_group_size"] == 16
     assert quantization_config["act_sym"] is True
     assert quantization_config["extra_config"]["lm_head"] == {

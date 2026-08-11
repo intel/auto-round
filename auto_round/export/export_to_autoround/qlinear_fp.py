@@ -73,7 +73,7 @@ class QuantLinear(nn.Module):
             raise NotImplementedError("Only 4,8 bits are supported.")
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
-        self.is_nvfp4_e5m3 = data_type == "fp4_v2"
+        self.is_nvfp4_e5m3 = data_type == "nvfp4_v2"
         if self.is_mx:
             if group_size != 32:
                 raise NotImplementedError(f"Only group_size 32 are supported for {BackendDataType.MX_FP} data type.")

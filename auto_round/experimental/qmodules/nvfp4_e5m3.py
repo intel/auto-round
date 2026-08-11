@@ -17,15 +17,15 @@ from typing import Optional, Union
 
 import torch
 
-from auto_round.data_type.nvfp import e5m3_to_float_tensor, fp4_v2
+from auto_round.data_type.nvfp import e5m3_to_float_tensor, nvfp4_v2
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round_extension.cuda.cute_nvfp4_e5m3 import (
-    try_cute_fp4_v2_qdq,
     try_cute_nvfp4_e5m3_linear,
     try_cute_nvfp4_e5m3_weight_dq,
+    try_cute_nvfp4_v2_qdq,
 )
 
 __all__ = ["CuteNVFP4E5M3QuantLinear", "NVFP4E5M3QuantLinear"]
@@ -114,7 +114,7 @@ class NVFP4E5M3QuantLinear(QModuleBase):
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
         original_dtype = activation.dtype
-        qdq_activation, _, _ = fp4_v2(
+        qdq_activation, _, _ = nvfp4_v2(
             activation.to(torch.float32), bits=self.config.act_bits, group_size=self.config.act_group_size
         )
         return qdq_activation.to(original_dtype)
@@ -146,7 +146,7 @@ class CuteNVFP4E5M3QuantLinear(NVFP4E5M3QuantLinear):
         return super().dequant_weight_online()
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
-        cute_qdq_activation = try_cute_fp4_v2_qdq(activation, self.config.act_group_size)
+        cute_qdq_activation = try_cute_nvfp4_v2_qdq(activation, self.config.act_group_size)
         if cute_qdq_activation is not None:
             return cute_qdq_activation
         return super().qdq_input(activation)

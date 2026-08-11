@@ -710,9 +710,9 @@ NVFP4_E5M3 = QuantizationScheme.from_dict(
     {
         "bits": 4,
         "group_size": 16,
-        "data_type": "fp4_v2",
+        "data_type": "nvfp4_v2",
         "act_bits": 4,
-        "act_data_type": "fp4_v2",
+        "act_data_type": "nvfp4_v2",
         "act_group_size": 16,
         "act_sym": True,
     }

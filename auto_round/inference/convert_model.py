@@ -851,11 +851,11 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
             bits=4,
             group_size=16,
             sym=True,
-            data_type="fp4_v2",
+            data_type="nvfp4_v2",
             act_bits=4,
             act_group_size=16,
             act_sym=True,
-            act_data_type="fp4_v2",
+            act_data_type="nvfp4_v2",
             act_dynamic=True,
             extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
         )

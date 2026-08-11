@@ -35,7 +35,7 @@ def is_cute_dsl_available() -> bool:
     return find_spec("cutlass") is not None
 
 
-def can_use_cute_fp4_v2_qdq(activation: torch.Tensor, group_size: int) -> bool:
+def can_use_cute_nvfp4_v2_qdq(activation: torch.Tensor, group_size: int) -> bool:
     """Check whether an activation can use the CuTe QDQ kernel."""
     if not is_cute_dsl_available() or not activation.is_cuda:
         return False
@@ -63,7 +63,7 @@ def _make_qdq_kernel():
                 value = cutlass.Float32(input_tensor[group_idx, column_idx])
                 amax = cute.arch.fmax(amax, math.abs(value))
 
-            # This reproduces the E5M3 scale domain used by fp4_v2 without
+            # This reproduces the E5M3 scale domain used by nvfp4_v2 without
             # materializing scale or intermediate FP32 tensors in global memory.
             scale = amax / cutlass.Float32(6.0)
             if scale > cutlass.Float32(0.0):
@@ -194,9 +194,9 @@ def _get_compiled_weight_dq_kernel(device_index: int, dtype: torch.dtype):
     )
 
 
-def try_cute_fp4_v2_qdq(activation: torch.Tensor, group_size: int) -> Optional[torch.Tensor]:
+def try_cute_nvfp4_v2_qdq(activation: torch.Tensor, group_size: int) -> Optional[torch.Tensor]:
     """Run a CuTe DSL group-size-16 FP4 QDQ kernel when eligible."""
-    if not can_use_cute_fp4_v2_qdq(activation, group_size):
+    if not can_use_cute_nvfp4_v2_qdq(activation, group_size):
         return None
     if torch.cuda.is_current_stream_capturing():
         return None

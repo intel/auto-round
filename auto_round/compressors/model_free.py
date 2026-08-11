@@ -43,7 +43,7 @@ Model-free mode supports the following quantization families:
 **NVFP4 E5M3** (saved in fake format):
 
 * Preset name: ``NVFP4_E5M3``.
-* ``data_type="fp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
+* ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
 
 Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
@@ -158,7 +158,7 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 # Allowed ``bits`` values for MXFP weight quantization.
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 
-_NVFP4_E5M3_DATA_TYPE = "fp4_v2"
+_NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
 
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
@@ -584,7 +584,7 @@ def _quantize_weight_nvfp4_e5m3(
     device: str = "cpu",
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
-    from auto_round.data_type.nvfp import fp4_v2
+    from auto_round.data_type.nvfp import nvfp4_v2
 
     out_features, in_features = weight.shape
     if group_size != 16:
@@ -596,7 +596,7 @@ def _quantize_weight_nvfp4_e5m3(
         )
 
     weight_dev = weight.to(device)
-    qdq_weight, _, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
+    qdq_weight, _, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
@@ -607,7 +607,7 @@ def _pack_weight_nvfp4_e5m3(
     device: str = "cpu",
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
-    from auto_round.data_type.nvfp import fp4_v2
+    from auto_round.data_type.nvfp import nvfp4_v2
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
@@ -616,15 +616,15 @@ def _pack_weight_nvfp4_e5m3(
             f"NVFP4_E5M3 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
         )
     weight_dev = weight.to(device)
-    _, scale, _ = fp4_v2(weight_dev, bits=4, group_size=group_size)
-    # fp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
+    _, scale, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size)
+    # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
     linear = torch.nn.Linear(in_features, out_features, bias=False, device=device, dtype=weight.dtype)
     linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
     qlayer = QuantLinear(
-        4, group_size, in_features, out_features, False, data_type="fp4_v2", act_bits=4, act_data_type="fp4_v2"
+        4, group_size, in_features, out_features, False, data_type="nvfp4_v2", act_bits=4, act_data_type="nvfp4_v2"
     )
     qlayer.pack(linear, scale, device=device)
     return {
@@ -1408,7 +1408,7 @@ def _get_mxfp_group_scheme_and_format(
 ):
     """Return ``(QuantizationScheme, format_str)`` for a single (bits, data_type) group.
 
-    Handles MXFP (mx_fp), NVFP4 (nv_fp), and NVFP4_E5M3 (fp4_v2) groups.
+    Handles MXFP (mx_fp), NVFP4 (nv_fp), and NVFP4_E5M3 (nvfp4_v2) groups.
     """
     from auto_round.export.export_to_llmcompressor.config import (
         initialize_nvfp4_e5m3_quantization,
@@ -1717,7 +1717,7 @@ def _layer_config_has_nvfp4(layer_config: dict | None) -> bool:
     """Return True if any layer_config entry requests NVFP4 quantization.
 
     Detects both the standard NVFP4 (``data_type='nv_fp'``) and the
-    global-scale-free variant NVFP4_E5M3 (``data_type='fp4_v2'``).
+    global-scale-free variant NVFP4_E5M3 (``data_type='nvfp4_v2'``).
 
     Handles values that are plain strings (preset names), dicts (possibly
     with a ``"scheme"`` key or a ``"data_type"`` key), or
@@ -1757,7 +1757,7 @@ def _layer_config_has_nvfp4(layer_config: dict | None) -> bool:
 def _get_layer_config_nvfp4_dt(layer_config: dict | None) -> str | None:
     """Return the first NVFP4 data_type found in *layer_config*.
 
-    Returns ``"nv_fp"`` for standard NVFP4, ``"fp4_v2"`` for NVFP4_E5M3,
+    Returns ``"nv_fp"`` for standard NVFP4, ``"nvfp4_v2"`` for NVFP4_E5M3,
     or ``None`` when no NVFP4 entry is present.
     """
     if not layer_config:
@@ -2306,7 +2306,7 @@ def _validate_supported_scheme(
             )
         if (scheme_obj.act_data_type or "").lower() != _NVFP4_E5M3_DATA_TYPE or scheme_obj.act_group_size != 16:
             raise ValueError(
-                f"Model-free NVFP4_E5M3 requires act_data_type='fp4_v2' and act_group_size=16, "
+                f"Model-free NVFP4_E5M3 requires act_data_type='nvfp4_v2' and act_group_size=16, "
                 f"but '{scheme_input}' requests act_data_type='{scheme_obj.act_data_type}', "
                 f"act_group_size={scheme_obj.act_group_size}."
             )
