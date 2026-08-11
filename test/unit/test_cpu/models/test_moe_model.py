@@ -41,6 +41,7 @@ def count_modules_by_type(model, target_module_name_or_class):
     return cnt
 
 
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize("scheme", ["MXFP4", "MXFP8"])
 def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
     config = AutoConfig.from_pretrained(tiny_gpt_oss_model_path, trust_remote_code=True)
@@ -74,6 +75,7 @@ def test_gptoss(scheme, tiny_gpt_oss_model_path, tmp_path):
         loaded_out = loaded_model(inp)
 
 
+@pytest.mark.timeout(120)
 def test_llama4(tiny_llama4_model_path):
     output_dir = "./tmp/test_quantized_llama4"
     quantized_model, save_folder = quantize_model(

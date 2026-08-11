@@ -125,6 +125,7 @@ class TestAutoRoundXPU:
 
         shutil.rmtree(quantized_model_path, ignore_errors=True)
 
+    @pytest.mark.timeout(120)
     def test_vlm_model(self, dataloader):
         scheme = "W4A16"
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
@@ -192,6 +193,7 @@ class TestAutoRoundXPU:
         )
         print(output_text[0])
 
+    @pytest.mark.timeout(90)
     def test_quant_lm_head(self, dataloader):
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.

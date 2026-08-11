@@ -1526,6 +1526,7 @@ class TestModelFreeAutoScheme:
         assert base_scheme.data_type == "mx_fp"
         assert base_scheme.bits in (4, 8)
 
+    @pytest.mark.timeout(120)
     def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
         from auto_round import AutoScheme
 

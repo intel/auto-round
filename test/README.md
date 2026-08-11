@@ -140,6 +140,25 @@ def test_model_inference(tiny_opt_model_path):
 - **CPU-specific** → `*/test_cpu/`, **CUDA-specific** → `*/test_cuda/`
 - Import from parent: `from test.helpers import ...`
 
+### CI Markers and Timeouts
+
+- For long-running or non-critical tests under `test_cuda/`, use
+  `@pytest.mark.skip_ci(reason="...")` and provide a clear reason why the test should not run in CI.
+- In CI, each test function has a default timeout of **30 seconds**, while each test file has a timeout of
+  **10 minutes**.
+- Prefer simplifying a test so that it completes within the default timeout. If the test cannot be reduced further,
+  extend its timeout with `@pytest.mark.timeout(seconds)`. If a test file exceeds the 10-minute limit, split its tests
+  into smaller files whenever possible.
+
+```python
+@pytest.mark.timeout(120)
+def test_long_running_case(): ...
+
+
+@pytest.mark.skip_ci(reason="Time-consuming accuracy evaluation; covered by nightly tests")
+def test_optional_accuracy_evaluation(): ...
+```
+
 ## 5. Running Tests
 
 ```sh

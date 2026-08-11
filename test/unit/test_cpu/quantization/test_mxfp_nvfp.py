@@ -54,12 +54,14 @@ class TestAutoRoundFP:
             nsamples=2,
             dataset=dataloader,
             layer_config=layer_config,
+            disable_opt_rtn=True,
             trust_remote_code=False,
         )
         compressed_model, _ = autoround.quantize()
         moe = compressed_model.model.layers[1].mlp
         assert hasattr(moe.experts[0].gate_proj.orig_layer, "act_max")
 
+    @pytest.mark.timeout(60)
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {
@@ -92,6 +94,7 @@ class TestAutoRoundFP:
             and lm_head.weight_scale.dtype is torch.float8_e4m3fn
         ), "Illegal NVFP4 packing for lm_head layer"
 
+    @pytest.mark.timeout(60)
     def test_mxfp4_moe_ar(self, tiny_deepseek_v2_model_path, dataloader):
         model_name = tiny_deepseek_v2_model_path
         layer_config = {
@@ -172,6 +175,7 @@ class TestAutoRoundFP:
             iters=0,
             seqlen=2,
             layer_config=layer_config,
+            disable_opt_rtn=True,
             dataset=dataloader,
         )
         quantized_model_path = self.save_dir
@@ -377,6 +381,7 @@ class TestAutoRoundFP:
             scheme=scheme,
             iters=0,
             seqlen=2,
+            disable_opt_rtn=True,
             dataset=dataloader,
             static_kv_dtype=static_kv_dtype,
             static_attention_dtype=static_attention_dtype,
