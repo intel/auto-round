@@ -36,6 +36,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
     from auto_round.algorithms.transforms.awq.config import AWQConfig
     from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+    from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 
     register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, summary="Round-To-Nearest quantization.")
     register_algorithm(
@@ -60,6 +61,19 @@ def _ensure_builtin_algorithms_registered() -> None:
             "quarot_hadamard": lambda: RotationConfig(hadamard_type="quarot_hadamard"),
         },
     )
+    register_algorithm(
+        "quarot",
+        aliases=("quarot",),
+        config_factory=lambda: SpinQuantConfig(trainable_rotation=False, trainable_smooth=False),
+        summary="QuaRot fixed-Hadamard rotation (no training, no calibration data).",
+    )
+    register_algorithm(
+        "spinquant",
+        aliases=("spinquant",),
+        config_factory=lambda: SpinQuantConfig(trainable_rotation=True, trainable_smooth=True),
+        summary="SpinQuant trainable rotation (experimental).",
+    )
+
     _builtin_algorithms_registered = True
 
 

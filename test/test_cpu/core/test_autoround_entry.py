@@ -148,10 +148,9 @@ def test_direct_enable_opt_rtn_forces_optimized_rtn():
     assert configs[0].orig_disable_opt_rtn is False
 
 
-def test_rtn_switches_only_when_iters_is_zero():
-    configs = _normalize_alg_configs(None, direct_kwargs={"disable_opt_rtn": True})
-
-    assert isinstance(configs[0], SignRoundConfig)
+def test_rtn_only_kwarg_without_rtn_selected_raises():
+    with pytest.raises(TypeError, match="disable_opt_rtn"):
+        _normalize_alg_configs(None, direct_kwargs={"disable_opt_rtn": True})
 
 
 def test_direct_enable_alg_ext_normalizes_signround_variant():
@@ -161,8 +160,8 @@ def test_direct_enable_alg_ext_normalizes_signround_variant():
     assert isinstance(configs[0], SignRoundV2Config)
 
 
-def test_direct_rotation_config_is_added_to_pipeline():
-    configs = _normalize_alg_configs(None, direct_kwargs={"rotation_config": "default"})
+def test_alg_configs_can_include_rotation_config():
+    configs = _normalize_alg_configs(["signround", "hadamard"])
 
     assert any(isinstance(config, RotationConfig) for config in configs)
 
@@ -174,23 +173,27 @@ def test_direct_enable_lfq_is_forwarded():
     assert configs[0].enable_lfq is True
 
 
-def test_rotation_config_accepts_spinquant_shorthand():
-    configs = _normalize_alg_configs(None, direct_kwargs={"rotation_config": "quarot"})
+def test_alg_configs_accepts_spinquant_shorthand():
+    configs = _normalize_alg_configs(["rtn", "quarot"])
 
     assert any(type(config).__name__ == "SpinQuantConfig" for config in configs)
 
 
-def test_rotation_backend_must_be_nested_in_rotation_config():
-    with pytest.raises(ValueError, match="rotation_config"):
+def test_rotation_config_kwarg_is_rejected():
+    with pytest.raises(TypeError, match="alg_configs"):
+        _normalize_alg_configs(None, direct_kwargs={"rotation_config": "default"})
+
+
+def test_rotation_backend_must_be_set_on_config_object():
+    with pytest.raises(ValueError, match="alg_configs"):
         _normalize_alg_configs(None, direct_kwargs={"backend": "transform"})
 
 
-def test_awq_kwargs_without_awq_error_and_are_ignored(monkeypatch):
-    errors = []
-    monkeypatch.setattr("auto_round.autoround.logger.error", lambda message, *args: errors.append(message % args))
+def test_awq_kwargs_without_awq_raise():
+    with pytest.raises(TypeError, match="belongs to.*AWQConfig"):
+        _normalize_alg_configs(None, direct_kwargs={"n_grid": 7})
 
-    configs = _normalize_alg_configs(None, direct_kwargs={"n_grid": 7, "apply_clip": True})
 
-    assert isinstance(configs[0], SignRoundConfig)
-    assert not hasattr(configs[0], "n_grid")
-    assert any("AWQ" in message for message in errors)
+def test_unknown_kwarg_raises():
+    with pytest.raises(TypeError, match="Unknown parameter"):
+        _normalize_alg_configs(None, direct_kwargs={"totally_made_up_option": 1})

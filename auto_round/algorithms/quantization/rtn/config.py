@@ -45,6 +45,7 @@ class RTNConfig(QuantizationConfig):
         self,
         *,
         disable_opt_rtn: bool = None,
+        enable_opt_rtn: bool = None,
         **kwargs,
     ) -> None:
         """Initialize an RTN configuration.
@@ -53,12 +54,11 @@ class RTNConfig(QuantizationConfig):
             disable_opt_rtn: Whether to disable the optimized RTN path.
                 ``None`` keeps the default heuristic, True forces plain
                 RTN, and False forces the optimized implementation.
+            enable_opt_rtn: Convenience alias for ``disable_opt_rtn=False``.
             **kwargs: Common quantization arguments forwarded to
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
-        # pop before super().__init__ so it doesn't leak into QuantizationConfig as an unknown kwarg
-        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         super().__init__(**kwargs)
 
         if enable_opt_rtn:

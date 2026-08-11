@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
@@ -347,46 +349,71 @@ _ENTRY_KWARG_OWNERS = {
 }
 
 _SCHEME_FIELDS = set(QuantizationScheme.get_attributes())
-_SIGNROUND_FIELDS = {
-    "iters",
-    "lr",
-    "minmax_lr",
-    "lr_scheduler",
-    "momentum",
-    "nblocks",
-    "enable_minmax_tuning",
-    "enable_norm_bias_tuning",
-    "gradient_accumulate_steps",
-    "enable_alg_ext",
-    "not_use_best_mse",
-    "dynamic_max_gap",
-    "enable_quanted_input",
-    "optimizer",
-    "enable_adam",
-    "enable_lfq",
-}
-_RTN_FIELDS = {"disable_opt_rtn", "enable_opt_rtn"}
-_AWQ_FIELDS = {
-    "duo_scaling",
-    "n_grid",
-    "seqlen",
-    "nsamples",
-    "batch_size",
-    "apply_smooth",
-    "smooth_iters",
-    "apply_clip",
-    "clip_as_init",
-    "clip_n_grid",
-    "clip_max_shrink",
-    "clip_n_sample_token",
-    "mappings",
-}
-_ROTATION_FIELDS = {
-    "hadamard_type",
-    "block_size",
-    "fuse_online_to_weight",
-    "allow_online_rotation",
-}
+
+
+def _iter_registered_alg_configs() -> list[tuple[str, type]]:
+    """Return ``(canonical_name, config_class)`` for every registered algorithm.
+
+    Backs the auto-discovery of algorithm-specific kwargs below: any config
+    registered via ``auto_round.algorithms.registry.register_algorithm`` is
+    picked up automatically, so no manually maintained per-algorithm field
+    list needs to be kept in sync here.
+    """
+    from auto_round.algorithms.registry import iter_algorithm_entries
+
+    result = []
+    seen = set()
+    for entry in iter_algorithm_entries():
+        factory = entry.config_factory
+        if factory is None:
+            continue
+        cls = factory if isinstance(factory, type) else type(factory())
+        if cls not in seen:
+            seen.add(cls)
+            result.append((entry.name, cls))
+    return result
+
+
+@functools.lru_cache(maxsize=None)
+def _discover_alg_config_fields(config_cls: type) -> frozenset:
+    """Auto-discover the keyword field names ``config_cls`` accepts.
+
+    Introspects the class's own ``__init__`` (walking its MRO, stopping at
+    the shared ``QuantizationConfig``/``AlgorithmConfig`` base whose kwargs
+    already map onto ``QuantizationScheme`` fields handled separately), or
+    the pydantic model fields for ``BaseModel``-based configs such as
+    ``RotationConfig``. This means a newly registered algorithm config is
+    understood immediately, without editing a hand-maintained field set.
+    """
+    from pydantic import BaseModel
+
+    if issubclass(config_cls, BaseModel):
+        return frozenset(config_cls.model_fields.keys())
+
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.quantization.config import QuantizationConfig
+
+    stop_classes = (QuantizationConfig, AlgorithmConfig, object)
+    fields = set()
+    for klass in config_cls.__mro__:
+        if klass in stop_classes:
+            break
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        for name, param in inspect.signature(init).parameters.items():
+            if name == "self" or param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+            fields.add(name)
+    return frozenset(fields)
+
+
+def _owning_algorithm_names(field_name: str) -> list[str]:
+    """Return the config class names of every registered algorithm accepting ``field_name``."""
+    return [cls.__name__ for _, cls in _iter_registered_alg_configs() if field_name in _discover_alg_config_fields(cls)]
 
 
 def _filter_supported_entry_kwargs(kwargs, *, context="AutoRound"):
@@ -408,35 +435,25 @@ def _split_entry_kwargs(kwargs, *, context="AutoRound"):
     return buckets
 
 
-def _config_fields(config):
-    fields = set(_SCHEME_FIELDS)
-    name = type(config).__name__.lower()
-    if "awq" in name:
-        fields.update(_AWQ_FIELDS)
-    elif "rtn" in name:
-        fields.update(_RTN_FIELDS)
-    elif "signround" in name or "adamround" in name:
-        fields.update(_SIGNROUND_FIELDS)
-    elif "rotation" in name:
-        fields.update(_ROTATION_FIELDS)
-    return fields
-
-
 def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
-    from auto_round.algorithms.transforms import normalize_rotation_config
     from auto_round.algorithms.transforms.base import BaseRotationConfig
 
     direct_kwargs = dict(direct_kwargs or {})
+    if "rotation_config" in direct_kwargs:
+        raise TypeError(
+            "`rotation_config` is no longer accepted as a separate parameter; pass a rotation "
+            "config through `alg_configs` instead, e.g. alg_configs=['auto_round', 'quarot'] or "
+            "alg_configs=[SignRoundConfig(...), RotationConfig(...)]."
+        )
     if "backend" in direct_kwargs:
         raise ValueError(
-            "Rotation backend selection must be nested in `rotation_config`; "
-            "do not pass it as AutoRound(..., backend=...)."
+            "Rotation backend selection must be set on the rotation config instance passed via "
+            "`alg_configs` (e.g. RotationConfig(backend=...)); do not pass it as AutoRound(..., backend=...)."
         )
-    rotation_config = direct_kwargs.pop("rotation_config", None)
     config_kwargs = {key: value for key, value in direct_kwargs.items() if key not in _ENTRY_KWARG_OWNERS}
     if alg_configs is None:
         # Preserve the legacy entry semantics: zero iterations are RTN, while
@@ -487,11 +504,6 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             rtn_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
             configs[index] = normalize_algorithm_config(rtn_config)
 
-    if rotation_config is not None:
-        normalized_rotation = normalize_rotation_config(rotation_config)
-        if normalized_rotation is not None:
-            configs.append(normalized_rotation)
-
     if not any(isinstance(config, QuantizationConfig) for config in configs):
         raise TypeError(
             "alg_configs entries must be algorithm aliases or QuantizationConfig instances, "
@@ -509,29 +521,27 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
         if key in _SCHEME_FIELDS:
             targets = block_configs
         else:
-            targets = [config for config in configs if key in _config_fields(config)]
+            targets = [config for config in configs if key in _discover_alg_config_fields(type(config))]
         if not targets:
             # ``iters`` is a legacy route selector.  RTN intentionally has no
             # iterative parameter, so ``iters=0`` must not be reported as an
-            # ignored algorithm-specific error after selecting RTN.
+            # error after selecting RTN.
             if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
                 continue
-            owner = "AWQ" if key in _AWQ_FIELDS else "the selected algorithm"
-            logger.error(
-                "%s-specific parameter '%s' was provided, but %s is not enabled by alg_configs. "
-                "The parameter is ignored.",
-                owner,
-                key,
-                owner,
-            )
-            continue
+            owners = _owning_algorithm_names(key)
+            if owners:
+                raise TypeError(
+                    f"Parameter '{key}' belongs to {owners}, but the selected alg_configs "
+                    f"does not include {'it' if len(owners) == 1 else 'any of them'}. Pass it through the "
+                    f"matching config object instead, e.g. alg_configs={owners[0]}({key}=...)."
+                )
+            raise TypeError(f"Unknown parameter '{key}' passed to AutoRound.")
         if len(targets) > 1:
-            logger.error(
-                "Parameter '%s' matches multiple algorithm configs. Pass it through the matching "
-                "config object in 'alg_configs'; the direct value is ignored.",
-                key,
+            raise TypeError(
+                f"Parameter '{key}' matches multiple algorithm configs "
+                f"({[type(config).__name__ for config in targets]}). Pass it through the matching "
+                "config object in 'alg_configs' instead of as a direct keyword argument."
             )
-            continue
         target = targets[0]
         if key in ("disable_opt_rtn", "enable_opt_rtn"):
             if key == "disable_opt_rtn" or value:
