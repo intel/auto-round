@@ -25,6 +25,7 @@ class TestQuantizationConv1d:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_gptqmodel
+    @pytest.mark.timeout(300)
     def test_quant(self, dataloader):
         model_name = get_model_path("MBZUAI/LaMini-GPT-124M")
         model = get_tiny_model(model_name)

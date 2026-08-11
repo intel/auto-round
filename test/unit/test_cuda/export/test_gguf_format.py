@@ -102,6 +102,7 @@ class TestAutoRound:
     @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     @require_gguf
+    @pytest.mark.timeout(240)
     def test_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path):
         self._export_qwen35_moe_gguf(tiny_qwen35_moe_model_path)
 
@@ -137,6 +138,7 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
 
+    @pytest.mark.skip_ci(reason="Time-consuming accuracy evaluation; covered by nightly")
     @require_gguf
     def test_q4_0_accuracy(self):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
@@ -222,6 +224,7 @@ class TestAutoRound:
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
     @require_gguf
+    @pytest.mark.timeout(120)
     def test_vlm_gguf(self):
         from test.helpers import save_tiny_model
 
@@ -296,6 +299,7 @@ class TestAutoRound:
         shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
 
     @require_gguf
+    @pytest.mark.timeout(90)
     def test_q2_k_s_ffn_down_q4k(self):
         """Verify blk.0.ffn_down.weight is Q4_K in gguf:q2_k_s format.
         Blocks where i_layer < n_layer/8 should use Q4_K instead of Q2_K for ffn_down."""

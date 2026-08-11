@@ -1,9 +1,12 @@
 from test.helpers import qwen_name_or_path
 
+import pytest
+
 from auto_round import AutoRound
 
 
 class TestAlgExt:
+    @pytest.mark.timeout(60)
     def test_alg_ext(self, tiny_opt_model_path, tiny_qwen_model_path):
         model_name = tiny_opt_model_path
         ar = AutoRound(model_name, scheme="W2A16", iters=1, nsamples=1, enable_alg_ext=True)

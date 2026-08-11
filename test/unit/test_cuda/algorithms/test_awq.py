@@ -46,6 +46,7 @@ class TestAWQLLM:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(90)
     def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
         """W4A16 AWQ quantization and CUDA inference smoke test."""
         ar = AutoRound(
@@ -92,6 +93,7 @@ class TestAWQLLM:
         assert qconfig["sym"] == sym
         assert "auto-round" in qconfig["quant_method"]
 
+    @pytest.mark.timeout(120)
     def test_awq_w4a16_load_and_generate(self):
         """Quantize, save, reload, and generate on CUDA to verify round-trip."""
         model_name = get_model_path("facebook/opt-125m")
@@ -121,6 +123,7 @@ class TestAWQMoE:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    @pytest.mark.timeout(120)
     def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
         """AWQ mapping resolution works on MoE model."""
         from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
@@ -153,6 +156,7 @@ class TestAWQMoE:
 
         del model
 
+    @pytest.mark.timeout(240)
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """Expert layers quantized to W4, gates/routers stay fp."""
         ar = AutoRound(
@@ -189,6 +193,7 @@ class TestAWQMoE:
         for name in fp_layers:
             assert name.endswith("gate"), f"Unexpected FP layer: {name}"
 
+    @pytest.mark.skip_ci(reason="Redundant MoE quantize only to check file-size ratio; layer check already covers it")
     def test_awq_moe_save_compressed_size(self, tiny_qwen_moe_model_path):
         """AWQ MoE W4: quantized safetensors should be smaller than original."""
         ar = AutoRound(
@@ -233,6 +238,7 @@ class TestAWQEval:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
+    @pytest.mark.skip_ci(reason="Time-consuming lm_eval accuracy check; covered by nightly")
     def test_awq_w4a16_lmeval(self):
         """AWQ W4A16 on OPT-125m: lambada_openai accuracy check."""
         ar = AutoRound(

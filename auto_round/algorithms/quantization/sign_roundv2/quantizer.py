@@ -43,7 +43,7 @@ from auto_round.data_type.utils import (
     search_optimized_init_scale,
 )
 from auto_round.logger import logger
-from auto_round.utils import check_to_quantized, compile_func, get_reciprocal
+from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, get_reciprocal
 from auto_round.wrapper import WrapperLinear, wrapper_block
 
 
@@ -416,6 +416,6 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
 
         handles = []
         for _, module in model.named_modules():
-            if check_to_quantized(module):
+            if isinstance(module, SUPPORTED_LAYER_TYPES) and check_to_quantized(module):
                 handles.append(module.register_forward_hook(collect_imatrix))
         return handles

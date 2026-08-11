@@ -305,6 +305,7 @@ class TestAutoScheme:
         assert mxfp_config["data_type"] == "mx_fp"
         assert os.path.exists(os.path.join(int_model_path, "config.json"))
 
+    @pytest.mark.timeout(120)
     def test_gguf_user_fixed_embedding_budget(self, tiny_qwen_model_path):
         """Regression test: a user-fixed embedding must be budget-priced at its fixed bits.
 
