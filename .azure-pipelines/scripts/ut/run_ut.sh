@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-test_part=$1
+test_part=${UT_MODE}
 
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 

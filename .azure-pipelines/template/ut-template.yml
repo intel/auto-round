@@ -100,9 +100,9 @@ steps:
   - script: |
       set -eo pipefail
 
-      docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \
+      docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} -e UT_MODE=${UT_MODE} ${{ parameters.utContainerName }} \
       bash -c "cd /auto-round/.azure-pipelines/scripts \
-        && bash ut/${{ parameters.utScriptFileName }}.sh
+        && bash ut/${{ parameters.utScriptFileName }}.sh"
     displayName: "Run UT"
     env:
       PYTHONUNBUFFERED: '1'
