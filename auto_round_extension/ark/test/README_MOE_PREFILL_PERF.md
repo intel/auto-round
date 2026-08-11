@@ -62,6 +62,9 @@ pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int4
 
 # INT8 symmetric quantization with bfloat16 activations
 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_int8 -k "bfloat16 and not asym"
+
+# INT4-sym on the Qwen3-MoE shapes (hidden=2048, inter=768, E=128, top_k=8)
+pytest -v -s test_moe_prefill_perf.py -k test_perf_int4_sym_qwen3_moe --run-moe-prefill-perf
 ```
 
 **Note**: The `-s` flag is required to see the printed timing tables and TFLOPS output.
@@ -106,9 +109,12 @@ test_moe_prefill_perf.py
 │   └── Single `torch.bmm` over [E, M_max, K] padded activations
 ├── Test shapes (PREFILL_SHAPES)
 │   └── Various realistic MoE configurations
+├── Qwen3-MoE shapes (_QWEN3_NK / _QWEN3_BATCHES)
+│   └── hidden=2048, inter=768, E=128, top_k=8, group_size=32 (issue repro)
 └── Test cases (TestMoEGemmPrefillPerf)
     ├── test_perf_fp (FP16/BF16)
     ├── test_perf_int4 (INT4 sym/asym)
+    ├── test_perf_int4_sym_qwen3_moe (INT4 sym, Qwen3-MoE shapes)
     ├── test_perf_int8 (INT8 sym/asym)
     ├── test_perf_int2 (INT2 sym/asym)
     └── test_perf_fp8 (FP8 e4m3fn/e5m2)
@@ -270,6 +276,48 @@ carries a mixed-input **DPAS S4** column (`dpas(ms)` / `dpas TFLOPS`).
 `ARK_MOE_PREFILL_DPAS_INT8=0` for the `ark(ms)` column (legacy dequant
 + GEMM path) and re-enables `ARK_MOE_PREFILL_DPAS_S4=1` for the
 `dpas(ms)` column (single-pass packed-nibble mainloop).
+
+**Qwen3-MoE shape rows (issue repro).** `test_perf_int4_sym_qwen3_moe`
+benchmarks a second, independent shape group, captured from a fused-MoE
+layer where ARK lost to the native backend (`native_over_ark=0.604x`) at
+small batch: `hidden_size=2048`, `intermediate_size=768`,
+`num_local_experts=128`, `num_experts_per_tok=8`, `group_size=32` — i.e.
+`w13 [128, 1536, 1024]` (gemm1 `N=1536`, `K=2048`) and
+`w2 [128, 2048, 384]` (gemm2 `N=2048`, `K=768`), where the trailing dim
+is the packed nibble count `K/2` and the scale tensors
+`[128, 1536, 64]` / `[128, 2048, 24]` pin `group_size` to 32. Unlike
+`test_perf_int4` (MiniMax-M2 shapes at `group_size=128`) it fills **all
+three** ARK columns from the same packed weights, so the dispatcher's
+default choice can be checked against the measurement:
+
+| Column       | Path                                                            | Env                                    |
+| ------------ | --------------------------------------------------------------- | -------------------------------------- |
+| `ark(ms)`    | legacy dequant into `[E, K, N]` + stock grouped GEMM            | `DPAS_S4=0`, `DPAS_INT8=0`             |
+| `native(ms)` | two-pass S4→S8 upcast + shared INT8 DPAS mainloop               | `DPAS_S4=0`, `DPAS_INT8=1`             |
+| `dpas(ms)`   | single-pass S4 DPAS (packed-nibble read) — the shipped default  | `DPAS_S4=1`                            |
+
+Routed rows are `batch * top_k` spread round-robin over the 128 experts,
+so the reported batch of 2 model tokens reproduces the issue's
+`rows_per_expert_sum=16`. Only that batch runs by default; `--all-shapes`
+extends the sweep to 32/128/512/2048 model tokens, bracketing the
+8-rows-per-expert DPAS tile occupancy point (`batch >= 128`).
+
+```bash
+pytest -v -s test_moe_prefill_perf.py -k test_perf_int4_sym_qwen3_moe \
+    --run-moe-prefill-perf
+```
+
+The matching decode benchmarks live in `test_moe_decode_perf.py`:
+`test_perf_int4_sym_qwen3_moe` (default dispatch vs. the dequant +
+per-expert `A @ W.T` baseline) and
+`test_perf_int4_sym_qwen3_moe_dpas_vs_scalar` (scalar GEMV vs. S4 DPAS
+with `ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0`, isolating the occupancy gate's
+routing decision — at batch 2 this shape sits at 0.125 tokens per
+expert, far below the 8-tokens-per-expert gate).
+
+```bash
+pytest -v -s test_moe_decode_perf.py -k qwen3_moe
+```
 
 Two independent DPAS paths are available for S4-sym; asym S4 always
 falls through to the dequant path.

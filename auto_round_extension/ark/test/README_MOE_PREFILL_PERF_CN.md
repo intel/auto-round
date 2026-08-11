@@ -56,6 +56,9 @@ pytest -v -s test_moe_prefill_perf.py
 ```bash
 # 仅 FP16 测试
 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp
+
+# 仅 INT4-sym 的 Qwen3-MoE 形状 (hidden=2048、inter=768、E=128、top_k=8)
+pytest -v -s test_moe_prefill_perf.py -k test_perf_int4_sym_qwen3_moe --run-moe-prefill-perf
 ```
 
 ## 代码结构
@@ -70,9 +73,12 @@ test_moe_prefill_perf.py
 │   └── 单个 `torch.bmm`,输入 [E, M_max, K] padding 后的激活
 ├── 测试形状 (PREFILL_SHAPES)
 │   └── 多种真实 MoE 配置
+├── Qwen3-MoE 形状 (_QWEN3_NK / _QWEN3_BATCHES)
+│   └── hidden=2048、inter=768、E=128、top_k=8、group_size=32 (issue 复现)
 └── 测试用例 (TestMoEGemmPrefillPerf)
     ├── test_perf_fp (FP16/BF16)
     ├── test_perf_int4 (INT4 sym/asym)
+    ├── test_perf_int4_sym_qwen3_moe (INT4 sym, Qwen3-MoE 形状)
     ├── test_perf_int8 (INT8 sym/asym)
     ├── test_perf_int2 (INT2 sym/asym)
     └── test_perf_fp8 (FP8 e4m3fn/e5m2)
@@ -203,6 +209,46 @@ INT4 sym prefill 性能测试(`test_perf_int4`,`asym=False`)带一个
 `ARK_MOE_PREFILL_DPAS_INT8=0`(传统 dequant + GEMM 路径),在
 `dpas(ms)` 列启用 `ARK_MOE_PREFILL_DPAS_S4=1`(单遍 packed-nibble
 mainloop)。
+
+**Qwen3-MoE 形状(issue 复现)。** `test_perf_int4_sym_qwen3_moe`
+测试另一组独立的形状,来自一个 fused-MoE 层的实测:小 batch 下 ARK
+慢于 native 后端(`native_over_ark=0.604x`)。配置为
+`hidden_size=2048`、`intermediate_size=768`、`num_local_experts=128`、
+`num_experts_per_tok=8`、`group_size=32`,即
+`w13 [128, 1536, 1024]`(gemm1 `N=1536`、`K=2048`)与
+`w2 [128, 2048, 384]`(gemm2 `N=2048`、`K=768`);最后一维是 packed
+nibble 数 `K/2`,scale 张量 `[128, 1536, 64]` / `[128, 2048, 24]` 确定
+`group_size` 为 32。与 `test_perf_int4`(MiniMax-M2 形状,
+`group_size=128`)不同,它在同一份 packed 权重上填满**全部三列**
+ARK 结果,便于把分发器的默认选择与实测对照:
+
+| 列           | 路径                                                    | Env                        |
+| ------------ | ------------------------------------------------------- | -------------------------- |
+| `ark(ms)`    | 传统 dequant 到 `[E, K, N]` + 标准 grouped GEMM         | `DPAS_S4=0`、`DPAS_INT8=0` |
+| `native(ms)` | 两遍 S4→S8 上转 + 共享 INT8 DPAS mainloop               | `DPAS_S4=0`、`DPAS_INT8=1` |
+| `dpas(ms)`   | 单遍 S4 DPAS(直接读 packed nibble)—— 出厂默认路径      | `DPAS_S4=1`                |
+
+路由行数为 `batch * top_k`,按 round-robin 分布到 128 个专家上,因此
+报告中的 2 个 token 的 batch 正好复现 issue 里的
+`rows_per_expert_sum=16`。默认只跑该 batch;`--all-shapes` 会把扫描
+扩展到 32/128/512/2048 个 token,从两侧覆盖「每专家 8 行」的 DPAS
+tile 占用临界点(`batch >= 128`)。
+
+```bash
+pytest -v -s test_moe_prefill_perf.py -k test_perf_int4_sym_qwen3_moe \
+    --run-moe-prefill-perf
+```
+
+对应的 decode 性能测试位于 `test_moe_decode_perf.py`:
+`test_perf_int4_sym_qwen3_moe`(默认分发 vs. dequant + 逐专家
+`A @ W.T` 基线)与 `test_perf_int4_sym_qwen3_moe_dpas_vs_scalar`
+(标量 GEMV vs. S4 DPAS,设置 `ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0`,
+用于单独观察占用率门控的路由决策 —— batch=2 时该形状仅有每专家
+0.125 个 token,远低于「每专家 8 个 token」的门控阈值)。
+
+```bash
+pytest -v -s test_moe_decode_perf.py -k qwen3_moe
+```
 
 S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 
