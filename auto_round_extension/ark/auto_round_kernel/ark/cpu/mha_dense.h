@@ -46,18 +46,11 @@ enum ATTN_FWD_LAYOUT {
   ATTN_FWD_LAYOUT_NTILE24_ROWPACK1,
 };
 
-// Bit flags controlling the attention forward behaviour. Mirrors Neural Speed's
-// `ne_attn_flags_t` bit assignments for the shared flags so reordered KV caches
-// stay binary-compatible; `PADDING_RIGHT` is an ARK addition reserved for the
-// right-padded batch path.
+// Bit flags controlling the attention forward behaviour.
 using attn_flags_t = uint32_t;
 enum ATTN_FLAG : attn_flags_t {
   ATTN_FLAG_NONE = 0,
   ATTN_FLAG_IS_CAUSAL = 1u << 0,
-  ATTN_FLAG_IS_ALIBI8 = 1u << 1,     // only support alibi with 8 now
-  ATTN_FLAG_PREFER_FP32 = 1u << 2,   // prefer FP32 as the compute type in attn
-  ATTN_FLAG_IS_TANH30 = 1u << 3,     // only support tanh with 30 now
-  ATTN_FLAG_PADDING_RIGHT = 1u << 4, // right-padded variable-length batch
 };
 
 // Problem shape shared by the workspace-size query and the forward call.
@@ -123,15 +116,6 @@ struct attn_fwd_args_t {
   int step_dst_bs = 0;
   int step_dst_head_num = 0;
   int step_dst_sl = 0;
-
-  // Scalar compatibility path for right-padding callers that have not migrated to
-  // per-batch padding metadata yet. When `n_padding` is null and
-  // ATTN_FLAG_PADDING_RIGHT is set, the runtime can materialize a batch-sized
-  // temporary array filled with this scalar.
-  int n_padding_scalar = 0;
-  // Number of valid (non-padding) K/V positions for each batch entry when
-  // PADDING_RIGHT is set. Length must be batch_size; ignored otherwise.
-  const int* n_padding = nullptr;
 
   // Optional BestLA threading context. Type-erased until Phase 2 wires the
   // BestLA parallel runtime in.

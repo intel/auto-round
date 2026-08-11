@@ -30,10 +30,7 @@ void sdpa_forward(const MhaDenseArgs& args);
 // Exposure: TIER 1 (enabled by default). The scalar Tier-0 fallback handles
 // homogeneous dtypes; this entry handles the BestLA mixed-precision route.
 //
-// Feature support (both routes, all S): causal, GQA (head_num % heads_kv == 0),
-// padding-right (n_padding, mutually exclusive with causal), alibi (ALIBI8 flag),
-// tanh (TANH30 flag), prefer_fp32 (route-2 selects AVX512F path; no-op for route 1).
-// All features are validated before any kernel work; see the matrix in sdpa.cpp.
+// Both routes support causal attention and GQA (head_num % heads_kv == 0).
 //
 // K/V are received as raw PLAIN-strided operands and reordered internally into
 // the NTILE24 (fp16) or NTILE48 (bf16) packed layout the BestLA kernels require.
@@ -183,9 +180,7 @@ void shift_packed_k_cache_rope(void* cache_k, const void* cossin, const ReorderK
 // (<= shape.logical_capacity), and no reorder happens inside.  Q and dst stay
 // PLAIN.
 //
-// Feature support: same as bestla_sdpa_forward (routes 1/2) — causal, GQA,
-// padding-right, alibi (ALIBI8), tanh (TANH30), and prefer_fp32 are all
-// validated and forwarded to the fp32-score epilogue.
+// Feature support matches bestla_sdpa_forward: causal attention and GQA.
 //
 // Exposure: internal/experimental, enabled by default alongside the PLAIN entry.
 // This is the intended NS-parity persistent-cache forward.
@@ -206,9 +201,7 @@ void bestla_sdpa_forward_packed(const attn_fwd_args_t& args, const ReorderKVShap
 //             over HCoreRowNAmxbf16 (ISA: AMX-BF16).  Supports causal only
 //             (no GQA); all operands must be PLAIN.
 //
-// padding-right, alibi, tanh, and prefer_fp32 are U for both routes (fp16-score
-// and non-stable exp-sum epilogues do not implement them; they are rejected with
-// per-route messages before any kernel work).
+
 //
 // Exposure: route 3 is now callable from ark.cpp's runtime selector for eligible
 // fp16 PLAIN K/V inputs (with silent fallback to Tier-0 scalar when the

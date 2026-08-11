@@ -58,16 +58,9 @@ Exposure tiers:
            route-specific ISA/shape/stride contracts hold; otherwise requests
            resolve back to Tier 0 scalar.
 
-Feature support matrix (S=supported, U=unsupported):
-
-  Feature       | Route 1 | Route 2 | Route 3 | Route 4
-  --------------+---------+---------+---------+--------
-  causal        |    S    |    S    |    S    |    S
-  GQA (MQA)     |    S    |    S    |    S    |    U
-  padding-right |    S    |    S    |    U    |    U
-  alibi (ALIBI8)|    S    |    S    |    U    |    U
-  tanh (TANH30) |    S    |    S    |    U    |    U
-  prefer_fp32   |    S    |    S    |    U    |    U
+Feature support:
+  - Causal attention is supported by all routes.
+  - GQA is supported by routes 1-3; route 4 requires equal Q and K/V head counts.
 
 Packed/persistent KV cache path (NS-parity decode, Tier 1):
   bestla_sdpa_forward_packed + packed_kv_cache_shape + update_packed_k/v_cache
@@ -188,8 +181,7 @@ Routes 1/2 (Tier 1): PROMOTED TO DEFAULT (gate removed).
 
 Decision rationale:
   - Implementation is structurally complete and NS-parity validated in Python.
-  - Internal mixed-route parity confirmed for: causal, GQA, padding-right,
-    alibi, tanh, prefer_fp32, and packed KV cache.
+  - Internal mixed-route parity confirmed for causal, GQA, and packed KV cache.
   - NO per-ISA CI coverage on physical SPR/EMR/GNR hardware yet.
   - NO benchmark baselines recorded against Neural Speed reference paths.
 
@@ -247,8 +239,7 @@ DONE (this delivery pass):
     resolution falls back to scalar when their contracts are not met.
   * Packed/persistent KV cache path: available through internal.cpu helpers under env
     gate.
-  * Feature coverage validated end-to-end (Python): causal, GQA, padding-right,
-    alibi (ALIBI8), tanh (TANH30), prefer_fp32.
+  * Feature coverage validated end-to-end (Python): causal and GQA.
   * Final dispatch rule enforced: first layer by Q/K/V/dst dtype tuple; second layer by
     ISA + layout + stride/shape within each dtype-specific route.
   * Public surface complete for this delivery split: sdpa() remains the standard-only

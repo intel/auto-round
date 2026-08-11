@@ -51,40 +51,6 @@ namespace py = pybind11;
 constexpr int TENSOR_LAYOUT_HND = 0;  // [B, H, S, D]
 constexpr int TENSOR_LAYOUT_NHD = 1;  // [B, S, H, D]
 
-static std::vector<int> parse_batch_n_padding(py::handle n_padding_obj, int batch, const char* func_name) {
-  if (n_padding_obj.is_none()) {
-    return {};
-  }
-  if (py::isinstance<py::int_>(n_padding_obj)) {
-    const int n_padding = py::cast<int>(n_padding_obj);
-    return n_padding > 0 ? std::vector<int>(batch, n_padding) : std::vector<int>{};
-  }
-  if (py::isinstance<py::sequence>(n_padding_obj)) {
-    auto seq = py::reinterpret_borrow<py::sequence>(n_padding_obj);
-    if (seq.size() == 0) {
-      return {};
-    }
-    if (seq.size() != batch) {
-      throw std::invalid_argument(std::string(func_name) + ": n_padding batch vector must have length batch");
-    }
-    std::vector<int> out;
-    out.reserve(batch);
-    for (auto item : seq) {
-      out.push_back(py::cast<int>(item));
-    }
-    return out;
-  }
-  throw std::invalid_argument(std::string(func_name) + ": n_padding must be None, int, or a length-batch sequence");
-}
-
-static int scalar_padding_hint(const std::vector<int>& n_padding) {
-  if (n_padding.empty()) {
-    return 0;
-  }
-  const int first = n_padding.front();
-  return std::all_of(n_padding.begin() + 1, n_padding.end(), [first](int v) { return v == first; }) ? first : 0;
-}
-
 static std::vector<uint16_t> transpose_plain_half_k_for_homogeneous_fp16(torch_ptr K, int k_stride_s, int k_stride_d,
                                                                           int k_stride_h, int k_stride_b, int batch,
                                                                           int num_heads_kv, int seq_len_kv,
@@ -830,12 +796,6 @@ struct CpuSdpaRequest {
   int head_dim;
   float softmax_scale;
   bool is_causal;
-  bool use_alibi;
-  bool use_tanh;
-  bool prefer_fp32_flag;
-  const std::vector<int>& n_padding_storage;
-
-  bool has_n_padding() const { return !n_padding_storage.empty(); }
 
   bool mixed_dtype() const {
     return q_dtype == BTLA_DTYPE::F32 && o_dtype == BTLA_DTYPE::F32 &&
@@ -860,14 +820,6 @@ static ark::cpu::attn_fwd_args_t make_bestla_attn_args(const CpuSdpaRequest& req
   args.QK_scale = req.softmax_scale;
   args.attn_flags = ark::cpu::ATTN_FLAG_NONE;
   if (req.is_causal) args.attn_flags |= ark::cpu::ATTN_FLAG_IS_CAUSAL;
-  if (req.use_alibi) args.attn_flags |= ark::cpu::ATTN_FLAG_IS_ALIBI8;
-  if (req.use_tanh) args.attn_flags |= ark::cpu::ATTN_FLAG_IS_TANH30;
-  if (req.prefer_fp32_flag) args.attn_flags |= ark::cpu::ATTN_FLAG_PREFER_FP32;
-  if (req.has_n_padding()) {
-    args.attn_flags |= ark::cpu::ATTN_FLAG_PADDING_RIGHT;
-    args.n_padding = req.n_padding_storage.data();
-  }
-  args.n_padding_scalar = scalar_padding_hint(req.n_padding_storage);
   args.batch_size = req.batch;
   args.head_num = req.num_heads_q;
   args.heads_kv = req.num_heads_kv;
@@ -985,20 +937,11 @@ static CpuSdpaRoute resolve_cpu_sdpa_route(const CpuSdpaRequest& req) {
 }
 
 static void dispatch_mixed_raw(const CpuSdpaRequest& req) {
-  if (req.has_n_padding() && req.is_causal) {
-    throw std::invalid_argument(
-        "ark::sdpa: n_padding and is_causal are mutually exclusive on the BestLA mixed-precision path");
-  }
   auto bargs = make_bestla_attn_args(req);
   ark::cpu::bestla_sdpa_forward(bargs, req.k_dtype);
 }
 
 static void dispatch_scalar(const CpuSdpaRequest& req) {
-  if (req.use_alibi || req.use_tanh || req.has_n_padding()) {
-    throw std::invalid_argument(
-        "ark::sdpa: use_alibi, use_tanh, and n_padding are only supported on the BestLA mixed-precision path "
-        "(Q=float32, K/V=float16|bfloat16).");
-  }
   if (req.mixed_dtype()) {
     ark::cpu::MhaReferenceArgs args;
     args.query = reinterpret_cast<const void*>(req.Q);
@@ -1062,13 +1005,11 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
                  int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,
                  int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype, int k_dtype, int o_dtype,
                  int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
-                 float softmax_scale, bool is_causal,
-                 bool use_alibi, bool use_tanh, bool prefer_fp32_flag, py::object n_padding_arg) {
+                 float softmax_scale, bool is_causal) {
   (void)stream;
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sdpa: mask and is_causal cannot both be set");
   }
-  std::vector<int> n_padding_storage = parse_batch_n_padding(n_padding_arg, batch, "ark::sdpa");
   const CpuSdpaRequest req{
       Q,
       K,
@@ -1102,10 +1043,6 @@ static void sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
       head_dim,
       softmax_scale,
       is_causal,
-      use_alibi,
-      use_tanh,
-      prefer_fp32_flag,
-      n_padding_storage,
   };
 
   switch (resolve_cpu_sdpa_route(req)) {
@@ -1131,9 +1068,7 @@ static int ark_cpu_debug_resolve_sdpa_route(torch_ptr Q, torch_ptr K, torch_ptr 
                                             int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype,
                                             int k_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv,
                                             int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-                                            bool is_causal, bool use_alibi, bool use_tanh, bool prefer_fp32_flag,
-                                            py::object n_padding_arg) {
-  std::vector<int> n_padding_storage = parse_batch_n_padding(n_padding_arg, batch, "ark_cpu_debug_resolve_sdpa_route");
+                                            bool is_causal) {
   const CpuSdpaRequest req{
       Q,
       K,
@@ -1167,10 +1102,6 @@ static int ark_cpu_debug_resolve_sdpa_route(torch_ptr Q, torch_ptr K, torch_ptr 
       head_dim,
       softmax_scale,
       is_causal,
-      use_alibi,
-      use_tanh,
-      prefer_fp32_flag,
-      n_padding_storage,
   };
   return static_cast<int>(resolve_cpu_sdpa_route(req));
 }
@@ -1331,13 +1262,10 @@ static void ark_cpu_bestla_sdpa_packed_desc(torch_ptr Q, torch_ptr K_packed, tor
                                             int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
                                             int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype,
                                             const ark::cpu::ReorderKVShape& shape, int num_heads_q, int seq_len_q,
-                                            int seq_len_kv, float softmax_scale, bool is_causal, bool use_alibi,
-                                            bool use_tanh, bool prefer_fp32, py::object n_padding_obj) {
+                                            int seq_len_kv, float softmax_scale, bool is_causal) {
   if (static_cast<BTLA_DTYPE>(q_dtype) != BTLA_DTYPE::F32) {
     throw std::invalid_argument("ark_cpu_bestla_sdpa_packed: q_dtype must be F32 (10)");
   }
-  std::vector<int> n_padding_storage =
-      parse_batch_n_padding(n_padding_obj, shape.batch_size, "ark_cpu_bestla_sdpa_packed");
   ark::cpu::attn_fwd_args_t bargs;
   bargs.Q = (void*)Q;
   bargs.K = (void*)K_packed;
@@ -1346,14 +1274,6 @@ static void ark_cpu_bestla_sdpa_packed_desc(torch_ptr Q, torch_ptr K_packed, tor
   bargs.QK_scale = softmax_scale;
   bargs.attn_flags = ark::cpu::ATTN_FLAG_NONE;
   if (is_causal) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_CAUSAL;
-  if (use_alibi) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_ALIBI8;
-  if (use_tanh) bargs.attn_flags |= ark::cpu::ATTN_FLAG_IS_TANH30;
-  if (prefer_fp32) bargs.attn_flags |= ark::cpu::ATTN_FLAG_PREFER_FP32;
-  if (!n_padding_storage.empty()) {
-    bargs.attn_flags |= ark::cpu::ATTN_FLAG_PADDING_RIGHT;
-    bargs.n_padding = n_padding_storage.data();
-  }
-  bargs.n_padding_scalar = scalar_padding_hint(n_padding_storage);
   bargs.batch_size = shape.batch_size;
   bargs.head_num = num_heads_q;
   bargs.heads_kv = shape.heads_kv;
@@ -1390,12 +1310,11 @@ static void ark_cpu_bestla_sdpa_packed(torch_ptr Q, torch_ptr K_packed, torch_pt
                                        int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
                                        int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int q_dtype,
                                        int kv_dtype_int, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
-                                       int seq_len_kv, int capacity, int head_dim, float softmax_scale, bool is_causal,
-                                       bool use_alibi, bool use_tanh, bool prefer_fp32, py::object n_padding_obj) {
+                                       int seq_len_kv, int capacity, int head_dim, float softmax_scale, bool is_causal) {
   ark_cpu_bestla_sdpa_packed_desc(
       Q, K_packed, V_packed, O, q_stride_s, q_stride_d, q_stride_h, q_stride_b, o_stride_s, o_stride_d, o_stride_h,
       o_stride_b, q_dtype, ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, kv_dtype_int),
-      num_heads_q, seq_len_q, seq_len_kv, softmax_scale, is_causal, use_alibi, use_tanh, prefer_fp32, n_padding_obj);
+      num_heads_q, seq_len_q, seq_len_kv, softmax_scale, is_causal);
 }
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
@@ -1520,7 +1439,6 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.attr("ARK_CPU_SDPA_ROUTE_HOMOGENEOUS_BF16") = pybind11::int_(static_cast<int>(ark::CpuSdpaRoute::HomogeneousBf16));
   m.attr("ARK_CPU_SDPA_BUILD_HAS_FP16_ROUTE") = pybind11::bool_(CompileFP16());
   m.attr("ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE") = pybind11::bool_(CompileBF16());
-  m.attr("ARK_CPU_SDPA_INTERNAL_FEATURES_ENABLED") = pybind11::bool_(ARK_ENABLE_INTERNAL_SDPA_FEATURES);
   m.def("ark_cpu_debug_resolve_sdpa_route", &ark::ark_cpu_debug_resolve_sdpa_route);
   m.def("ark_cpu_kv_update", &ark::ark_cpu_kv_update);
   m.def("ark_cpu_packed_kv_descriptor", &ark::ark_cpu_packed_kv_descriptor);

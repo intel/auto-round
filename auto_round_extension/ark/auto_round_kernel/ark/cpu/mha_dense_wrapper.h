@@ -26,28 +26,25 @@
 //   Route 1 — f32,f16,f16,f32  (Tier 1, env-gated):
 //     bestla_fusion_attn_forward<float, fp16, fp16, float>
 //     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx2 (AVX2 score).
-//     Features: causal, GQA, padding-right, alibi (ALIBI8), tanh (TANH30),
-//               prefer_fp32 (fp32-score epilogue, always active).
+//     Features: causal and GQA.
 //
 //   Route 2 — f32,bf16,bf16,f32  (Tier 1, env-gated):
 //     bestla_fusion_attn_forward<float, bf16, bf16, float>
 //     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx512f (AVX512F score)
-//               or gemm::HCoreRowNAmxbf16 (AMX-BF16 score, ATTN_FLAG_PREFER_FP32
-//               off = bf16 matmul, on = fp32 matmul exactly as Neural Speed).
+//               or gemm::HCoreRowNAmxbf16 (AMX-BF16 score).
 //     Features: same as Route 1.
 //
 //   Route 3 — f16,f16,f16,f16  (Tier 2, standard-SDPA internal optimization):
 //     bestla_fusion_attn_forward<fp16, fp16, fp16, fp16>
 //     Launcher: mha_stable_interface_t / gemm::HCoreRowNAvx512fp16 (AVX512-FP16).
-//     Features: causal, GQA. alibi/tanh/padding-right/prefer_fp32 are U (fp16
-//               score epilogue has no fp32-path term; rejected before kernel work).
+//     Features: causal and GQA.
 //     Exposure: wired from ark.cpp as an internal optimization backend for the
 //               standard public sdpa() path; unresolved cases fall back to scalar.
 //
 //   Route 4 — bf16,bf16,bf16,bf16  (Tier 2, standard-SDPA internal optimization):
 //     bestla_fusion_attn_forward<bf16, bf16, bf16, bf16>
 //     Launcher: mha_interface_t (non-stable exp-sum) / gemm::HCoreRowNAmxbf16.
-//     Features: causal only (no GQA, no alibi/tanh/padding-right/prefer_fp32).
+//     Features: causal only (no GQA).
 //     Exposure: wired from ark.cpp only for its narrow homogeneous bf16 contract;
 //               unresolved cases fall back to scalar.
 //
@@ -129,7 +126,6 @@ inline float mha_exp_ref(float x) {
  *
  * ARK drift vs Neural Speed (see file header):
  *   * `ne_attn_flags_t` -> ARK `attn_flags_t`; `ATTN_FWD_LAYOUT` is shared.
- *   * Adds `n_padding` to drive the `ATTN_FLAG_PADDING_RIGHT` route.
  */
 template <typename Q_T, typename K_T, typename V_T, typename DST_T>
 struct attn_fwd_args_t {
@@ -147,9 +143,6 @@ struct attn_fwd_args_t {
   int step_k_bs, step_k_head_num, step_k_sl, step_k_head_size;
   int step_v_bs, step_v_head_num, step_v_sl, step_v_head_size;
   int step_dst_bs, step_dst_head_num, step_dst_sl;
-  // Number of valid (non-padding) K/V positions for each batch entry when
-  // ATTN_FLAG_PADDING_RIGHT is set (ARK addition; ignored otherwise).
-  const int* n_padding = nullptr;
 };
 
 struct bestla_tmp_layout_t {
@@ -950,31 +943,10 @@ class mha_stable_interface_t {
     const auto num_heads = p.batch_size * p.head_num;  // Total number of heads
     GetCPUDevice();
     const bool is_causal = (p.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0;
-    const bool is_alibi = (p.attn_flags & ATTN_FLAG_IS_ALIBI8) != 0;  // only support alibi with 8 now
-    const bool is_tanh = (p.attn_flags & ATTN_FLAG_IS_TANH30) != 0;   // only support tanh with 30 now
-    const bool prefer_fp32 = (p.attn_flags & ATTN_FLAG_PREFER_FP32) != 0;
-    // ARK addition: right-padded variable-length batch (see file header).
-    const bool is_padding = (p.attn_flags & ATTN_FLAG_PADDING_RIGHT) != 0;
-
-    // prefer_fp32 requires both GEMMs to be fp32 compute cores.
-    assert(("prefer_fp32 not followed!",  //
-            !prefer_fp32 || (GemmQK::COMP == bestla::gemm::CompType::COMP_FP32 &&
-                             GemmPV::COMP == bestla::gemm::CompType::COMP_FP32)));
-    (void)prefer_fp32;
     assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
     assert(!is_causal || p.sl_q <= p.sl_kv);
     assert(("head_num must be a multiple of heads_kv!", p.head_num % p.heads_kv == 0));
     const auto group_heads = p.head_num / p.heads_kv;  // GQA: ihkv = ihn / group_heads
-    // ARK drift: Neural Speed adjusts these under NS_TP_MODEL; ARK has no TP.
-    const int32_t k_offset = 0;
-    const int32_t log_head_num = p.head_num;
-
-    // alibi slope
-    const int n_heads_log2_floor = 1 << static_cast<int>(floor(log2(log_head_num)));
-    const float m0 = powf(2.0f, -(8.f) / n_heads_log2_floor);         // 8.f is a param of alibi but hardcode now
-    const float m1 = powf(2.0f, -(8.f / 2.0f) / n_heads_log2_floor);  // 8.f is a param of alibi but hardcode now
-    const float tanh_scale = is_tanh ? 30.f : 0.f;                    // 30.f is a param of tanh but hardcode now
-
     const auto m_tiles = utils::updiv(p.sl_q, M_TILE);
     const auto num_tasks = num_heads * m_tiles;
 
@@ -1007,13 +979,6 @@ class mha_stable_interface_t {
           const int ihn = ibat % p.head_num;
           const int ihkv = ihn / group_heads;  // GQA mapping
           const int m_size = std::min(M_TILE, p.sl_q - i_m);
-          const int padded_kv = is_padding ? std::min(p.sl_kv, p.n_padding[ibs]) : p.sl_kv;
-
-          const auto alibi_ihn_m = !is_alibi ? 0.f
-                                   : (ihn + k_offset < n_heads_log2_floor)
-                                       ? powf(m0, ihn + k_offset + 1)
-                                       : powf(m1, 2 * (ihn + k_offset - n_heads_log2_floor) + 1);
-
           float s_max[M_TILE]{};  // maximum for each row of the S matrix
           std::fill_n(s_max, M_TILE, -INFINITY);
 
@@ -1022,9 +987,7 @@ class mha_stable_interface_t {
           const auto head_k = p.K + ibs * p.step_k_bs + ihkv * p.step_k_head_num;
           const auto head_v = p.V + ibs * p.step_v_bs + ihkv * p.step_v_head_num;
           const auto head_dst = p.dst + ibs * p.step_dst_bs + ihn * p.step_dst_head_num;
-          const auto unmasked_size = is_causal ? std::min(p.sl_kv, i_m + M_TILE)
-                                     : is_padding ? padded_kv
-                                                  : p.sl_kv;
+          const auto unmasked_size = is_causal ? std::min(p.sl_kv, i_m + M_TILE) : p.sl_kv;
 
           const auto unmasked_size_pad_qk = std::min(p.sl_kv, utils::padto(unmasked_size, GemmQK::NTILE));
           const auto unmasked_size_pad_pv = std::min(p.sl_kv, utils::padto(unmasked_size, GemmPV::KTILE));
@@ -1067,22 +1030,20 @@ class mha_stable_interface_t {
                       /* .dst = */ tmp_s - i_m * ld_tmp_s,  // pretend that there is a whole S mat
                       /* .dst_max = */ s_max - i_m,         // pretend that there is a whole S mat
                       /* .ld_dst = */ ld_tmp_s,
-                      /* .scale = */ p.QK_scale * p.Q_sc * p.K_sc / (tanh_scale == 0 ? 1.0f : tanh_scale),
+                      /* .scale = */ p.QK_scale * p.Q_sc * p.K_sc,
                       // Public sdpa aligns non-square causal to PyTorch: query
                       // row i only sees keys [0, i], i.e. left-aligned rather
                       // than Neural Speed's decode-style right alignment.
-                      /* .causal_offset = */ is_causal ? 0 : (is_padding ? padded_kv : -1),
-                      /* .alibi_slope = */ alibi_ihn_m,
-                      /* .tanh_scale = */ tanh_scale,
-                      /* .padding_type = */ is_causal ? 1 : (is_padding ? 2 : 0),
+                      /* .causal_offset = */ is_causal ? 0 : -1,
+                      /* .alibi_slope = */ 0.0f,
+                      /* .tanh_scale = */ 0.0f,
+                      /* .padding_type = */ is_causal ? 1 : 0,
                   },
               },
               tpQK);
 
           // softmax (with pre-computed row_max)
-          const auto unmasked_size_start = is_causal ? std::min(i_m + 1, p.sl_kv)
-                                           : is_padding ? padded_kv
-                                                        : p.sl_kv;
+          const auto unmasked_size_start = is_causal ? std::min(i_m + 1, p.sl_kv) : p.sl_kv;
           float expsum[M_TILE]{};  // sum of exp for each row of the S matrix
           const auto softmax_npad_size = utils::padto(unmasked_size_pad_pv, GemmPV::KTILE);
           inplace_precompute_max_softmax_t<float, PType>::template forward<RT_ISA>(  //
@@ -1162,8 +1123,7 @@ class mha_stable_interface_t {
  *   * The `NS_TP_MODEL` tensor-parallel block and the unused `mha_problem_t`
  *     bookkeeping struct are dropped (ARK has no TP), matching how the stable
  *     interface drops them.
- *   * This path only supports raw PLAIN K/V (no GQA, no alibi, no prefer_fp32),
- *     exactly as Neural Speed asserts.
+ *   * This path only supports raw PLAIN K/V without GQA.
  */
 template <class L_ExpSum, class L_Scale>
 class mha_interface_t {
@@ -1202,16 +1162,9 @@ class mha_interface_t {
     GetCPUDevice();
 
     const bool is_causal = (p.attn_flags & ATTN_FLAG_IS_CAUSAL) != 0;
-    const bool is_alibi = (p.attn_flags & ATTN_FLAG_IS_ALIBI8) != 0;
-    const bool prefer_fp32 = (p.attn_flags & ATTN_FLAG_PREFER_FP32) != 0;
-
     assert(!is_causal || p.sl_q <= p.sl_kv);
     assert(("qlen should be no greater then klen/vlen!", !is_causal || p.sl_q <= p.sl_kv));
-    assert(("prefer_fp32 not implemented!", !prefer_fp32));
-    assert(("alibi not supported!", !is_alibi));
     assert(("GQA not supported!", p.head_num == p.heads_kv));
-    (void)prefer_fp32;
-    (void)is_alibi;
     const auto sl_diff = p.sl_kv - p.sl_q;
 
     // Release any stale AMX tile state left by a previous call (or another AMX
@@ -1461,10 +1414,7 @@ template <>
 inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
     const attn_fwd_args_t<float, utils::fp16, utils::fp16, float>& params, parallel::IThreading& th) {
   GetCPUDevice();
-  const bool has_extended_features =
-      (params.attn_flags & (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8 |
-                            ATTN_FLAG_PREFER_FP32)) != 0;
-  if (!has_extended_features && MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() &&
+  if (MHA_PREFER_AVX512FP16 && _cd->AVX512_FP16() &&
       params.K_layout == ATTN_FWD_LAYOUT_PLAIN &&
       params.V_layout == ATTN_FWD_LAYOUT_PLAIN && params.step_k_sl == 1) {
 #if CompileFP16()
@@ -1556,18 +1506,13 @@ inline void bestla_fusion_attn_forward<float, utils::fp16, utils::fp16, float>(
 
 // fp32 Q, bf16 K/V, fp32 dst. Both the AVX512F (bf16->fp32 N-tile-48 convert)
 // and AMX-BF16 (already-laid-out N-tile-48 forward) stable-interface branches
-// are wired; selection mirrors Neural Speed's PREFER_FP32 gating.
+// are wired; small shapes use the AVX512F implementation.
 template <>
 inline void bestla_fusion_attn_forward<float, utils::bf16, utils::bf16, float>(
     const attn_fwd_args_t<float, utils::bf16, utils::bf16, float>& params, parallel::IThreading& th) {
   GetCPUDevice();
-  const bool force_fp32_features =
-      (params.attn_flags & (ATTN_FLAG_PADDING_RIGHT | ATTN_FLAG_IS_TANH30 | ATTN_FLAG_IS_ALIBI8)) != 0;
   const bool force_fp32_small_shape = params.sl_kv < 48 || params.head_size < 48;
-  if (_cd->AVX512F() &&
-      ((_cd->AMX_BF16() &&
-        ((params.attn_flags & ATTN_FLAG_PREFER_FP32) != 0 || force_fp32_features || force_fp32_small_shape)) ||
-       !_cd->AMX_BF16())) {
+  if (_cd->AVX512F() && ((_cd->AMX_BF16() && force_fp32_small_shape) || !_cd->AMX_BF16())) {
 #if CompileAVX512F()
     using GemmKernelBF16TrackMax = launcher_base_weight_t<  //
         gemm::SCoreRowNAvx512f<48, 8>,                      //

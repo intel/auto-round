@@ -16,7 +16,6 @@ import os
 import weakref
 from collections import OrderedDict
 from dataclasses import dataclass
-from collections.abc import Sequence
 from typing import Optional
 import torch
 
@@ -336,10 +335,6 @@ def _cpu_public_mixed_sdpa_packed(
     *,
     is_causal: bool,
     scale: float | None,
-    use_alibi: bool,
-    use_tanh: bool,
-    prefer_fp32: bool,
-    n_padding,
     tensor_layout: str,
 ) -> torch.Tensor:
     # Defect-2 mitigation: for fp16 K/V on prefill (sl_q > 1, where the GEMM
@@ -362,10 +357,6 @@ def _cpu_public_mixed_sdpa_packed(
         seq_len_kv,
         is_causal=is_causal,
         scale=scale,
-        use_alibi=use_alibi,
-        use_tanh=use_tanh,
-        prefer_fp32=prefer_fp32,
-        n_padding=n_padding,
         tensor_layout=tensor_layout,
     )
 
@@ -446,25 +437,6 @@ def _torch_dtype_from_ark_dtype(dtype: int) -> torch.dtype:
     if dtype == ARK_DT.float32:
         return torch.float32
     raise ValueError(f"Unsupported ARK dtype code: {dtype}")
-
-
-def _normalize_batch_padding(n_padding, batch: int):
-    if n_padding is None:
-        return None
-    if isinstance(n_padding, int):
-        return int(n_padding) if n_padding > 0 else None
-    if isinstance(n_padding, torch.Tensor):
-        if n_padding.ndim != 1 or n_padding.numel() != batch:
-            raise ValueError(f"n_padding tensor must be 1D with {batch} elements, got shape {tuple(n_padding.shape)}")
-        return [int(v) for v in n_padding.to(device="cpu", dtype=torch.int64).tolist()]
-    if isinstance(n_padding, Sequence) and not isinstance(n_padding, (str, bytes)):
-        values = [int(v) for v in n_padding]
-        if len(values) == 0:
-            return None
-        if len(values) != batch:
-            raise ValueError(f"n_padding sequence must have length {batch}, got {len(values)}")
-        return values
-    raise TypeError("n_padding must be None, an int, a 1D tensor, or a length-batch sequence of ints")
 
 
 cpu_lib = None
@@ -814,10 +786,6 @@ def sdpa(
     scale: float | None = None,
     tensor_layout: str = "HND",
     return_lse: bool = False,
-    use_alibi: bool = False,
-    use_tanh: bool = False,
-    prefer_fp32: bool = False,
-    n_padding: int = 0,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Scaled dot-product attention (SDPA) prefill+decode.
 
@@ -832,19 +800,6 @@ def sdpa(
     - scale: Softmax scale. Uses 1 / sqrt(D) when None.
     - tensor_layout: Layout of Q/K/V/O tensors.
     - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
-    - use_alibi: Enable ALiBi position bias (head-num-derived slopes; only
-      supported on the BestLA mixed-precision CPU path when built with
-      ARK_ENABLE_INTERNAL_SDPA_FEATURES=ON). [CPU-only]
-    - use_tanh: Apply tanh activation to the scaled QK scores before softmax
-      (effective score = 30 * tanh(raw_score / 30)). Same path restrictions as
-      use_alibi. [CPU-only]
-    - prefer_fp32: Prefer fp32 compute for the BestLA mixed path (selects the
-      AVX512F fp32-score path over AMX-BF16 for bf16 K/V; no-op for fp16 K/V
-      which is already fp32-score; no-op on the scalar Tier-0 path). [CPU-only]
-    - n_padding: Number of valid (non-padding) K/V positions when the K/V
-      sequence is right-padded. Must be in (0, seq_kv] and mutually exclusive
-      with is_causal. Only supported on the BestLA mixed-precision CPU path
-      with ARK_UNSAFE_BESTLA_MIXED_SDPA=1. [CPU-only]
 
     Returns:
     - O: same layout as the input tensors.
@@ -852,9 +807,6 @@ def sdpa(
     """
     if query.device.type not in ("cpu", "xpu"):
         raise NotImplementedError(f"sdpa is not supported on {query.device.type}")
-    if query.device.type == "cpu" and return_lse:
-        raise NotImplementedError("return_lse is not supported on CPU")
-
     supported_dtypes = (
         (torch.float32, torch.float16, torch.bfloat16)
         if query.device.type == "cpu"
@@ -909,18 +861,16 @@ def sdpa(
         device=query.device,
         tensor_layout=tensor_layout,
     )
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
+    if query.device.type == "cpu" and return_lse:
+        raise NotImplementedError("return_lse is not supported on CPU")
 
     q_strides = _attention_strides_qko(query, tensor_layout)
     k_strides = _attention_strides_qko(key, tensor_layout)
     v_strides = _attention_strides_v(value, tensor_layout)
     o_strides = _attention_strides_qko(O, tensor_layout)
 
-    # The CPU C++ ABI accepts four extra BestLA-specific parameters after
-    # is_causal (use_alibi, use_tanh, prefer_fp32, n_padding). The XPU C++
-    # function has a different signature without these; reject them explicitly
-    # rather than silently ignoring.
-    if query.device.type != "cpu" and (use_alibi or use_tanh or prefer_fp32 or n_padding):
-        raise NotImplementedError("use_alibi, use_tanh, prefer_fp32, and n_padding are only supported on CPU")
     if query.device.type == "cpu":
         if mixed_kv and attn_mask is None and _cpu_public_packed_kv_available():
             try:
@@ -930,10 +880,6 @@ def sdpa(
                     value,
                     is_causal=bool(is_causal),
                     scale=scale,
-                    use_alibi=bool(use_alibi),
-                    use_tanh=bool(use_tanh),
-                    prefer_fp32=bool(prefer_fp32),
-                    n_padding=n_padding,
                     tensor_layout=tensor_layout,
                 )
             except RuntimeError:
@@ -960,14 +906,9 @@ def sdpa(
             D,
             float(scale) if scale is not None else 1.0 / (D**0.5),
             bool(is_causal),
-            bool(use_alibi),
-            bool(use_tanh),
-            bool(prefer_fp32),
-            int(n_padding),
         )
         return O
 
-    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
     layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
     lib.sdpa(
         stream,
@@ -1152,10 +1093,6 @@ def debug_cpu_sdpa_route(
     is_causal: bool = False,
     scale: float | None = None,
     tensor_layout: str = "HND",
-    use_alibi: bool = False,
-    use_tanh: bool = False,
-    prefer_fp32: bool = False,
-    n_padding=None,
 ) -> int:
     """Return the resolved internal CPU SDPA route for tests/debugging."""
     if query.device.type != "cpu":
@@ -1171,7 +1108,6 @@ def debug_cpu_sdpa_route(
     B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
         query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
     )
-    normalized_n_padding = _normalize_batch_padding(n_padding, B)
     _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
 
     out_dtype = torch.float32 if mixed_kv else value.dtype
@@ -1201,10 +1137,6 @@ def debug_cpu_sdpa_route(
         D,
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
-        bool(use_alibi),
-        bool(use_tanh),
-        bool(prefer_fp32),
-        normalized_n_padding,
     )
 
 
@@ -1763,10 +1695,6 @@ class ArkCpuPackedKVHandle:
         *,
         is_causal: bool = False,
         scale: Optional[float] = None,
-        use_alibi: bool = False,
-        use_tanh: bool = False,
-        prefer_fp32: bool = False,
-        n_padding=None,
         tensor_layout: str = "HND",
     ) -> torch.Tensor:
         del num_heads_kv
@@ -1778,10 +1706,6 @@ class ArkCpuPackedKVHandle:
             seq_len_kv,
             is_causal=is_causal,
             scale=scale,
-            use_alibi=use_alibi,
-            use_tanh=use_tanh,
-            prefer_fp32=prefer_fp32,
-            n_padding=n_padding,
             tensor_layout=tensor_layout,
         )
 
@@ -2074,10 +1998,6 @@ def ark_cpu_bestla_sdpa_packed(
     *,
     is_causal: bool = False,
     scale: Optional[float] = None,
-    use_alibi: bool = False,
-    use_tanh: bool = False,
-    prefer_fp32: bool = False,
-    n_padding=None,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
     """Internal/experimental BestLA mixed-precision SDPA over a packed K/V cache.
@@ -2088,15 +2008,13 @@ def ark_cpu_bestla_sdpa_packed(
     num_heads_kv must match the values used at allocation time.
 
     This helper is outside the standard public sdpa() contract and exists for the
-    internal mixed-route / packed-cache feature surface. n_padding accepts either
-    one scalar applied to every batch entry or a length-B vector.
+    internal mixed-route / packed-cache feature surface.
     """
     if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed"):
         raise NotImplementedError("ARK CPU packed BestLA SDPA is not available (requires BestLA CPU extension build)")
 
     kv_dtype = cvt_dtype(cache_k.dtype)
     batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
-    normalized_n_padding = _normalize_batch_padding(n_padding, batch)
     sm_scale = scale if scale is not None else (head_dim**-0.5)
     output = _empty_attention_output(
         batch, num_heads_q, seq_len_q, head_dim, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout
@@ -2121,10 +2039,6 @@ def ark_cpu_bestla_sdpa_packed(
         head_dim,
         float(sm_scale),
         is_causal,
-        use_alibi,
-        use_tanh,
-        prefer_fp32,
-        normalized_n_padding,
     )
     return output
 
@@ -2138,10 +2052,6 @@ def ark_cpu_bestla_sdpa_packed_from_descriptor(
     *,
     is_causal: bool = False,
     scale: Optional[float] = None,
-    use_alibi: bool = False,
-    use_tanh: bool = False,
-    prefer_fp32: bool = False,
-    n_padding=None,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
     """Descriptor-based internal/experimental packed BestLA SDPA forward."""
@@ -2152,7 +2062,6 @@ def ark_cpu_bestla_sdpa_packed_from_descriptor(
     batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
     if batch != int(descriptor.batch_size) or head_dim != int(descriptor.head_dim):
         raise ValueError("Query shape does not match the packed KV descriptor")
-    normalized_n_padding = _normalize_batch_padding(n_padding, batch)
     sm_scale = scale if scale is not None else (head_dim**-0.5)
     output = _empty_attention_output(
         batch, num_heads_q, seq_len_q, head_dim, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout
@@ -2173,10 +2082,6 @@ def ark_cpu_bestla_sdpa_packed_from_descriptor(
         seq_len_kv,
         float(sm_scale),
         bool(is_causal),
-        bool(use_alibi),
-        bool(use_tanh),
-        bool(prefer_fp32),
-        normalized_n_padding,
     )
     return output
 

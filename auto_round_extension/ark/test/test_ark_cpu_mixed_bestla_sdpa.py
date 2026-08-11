@@ -4,9 +4,8 @@
 """Standard-SDPA tests for the CPU mixed runtime.
 
 This module intentionally exercises only the public ``auto_round_kernel.sdpa()``
-contract under mixed dtypes (Q=float32, K/V=fp16|bf16). BestLA-only extensions
-such as alibi/tanh/padding-right/prefer_fp32 and packed-cache helpers live in
-the separate internal-route test module.
+contract under mixed dtypes (Q=float32, K/V=fp16|bf16). Packed-cache helpers
+live in the separate internal-route test module.
 """
 
 import math
