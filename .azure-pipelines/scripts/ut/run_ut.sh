@@ -9,6 +9,9 @@ LOG_DIR=/auto-round/log_dir
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 
+TIMEOUT=30
+SESSION_TIMEOUT=600
+
 function setup_environment() {
     echo "##[group]set up UT env..."
     echo "NUMA_NODE=${NUMA_NODE}"
@@ -91,7 +94,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} --durations=0 --durations-min=1 \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -111,7 +114,7 @@ function run_inc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+            pytest --durations=0 --durations-min=1 \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -133,7 +136,7 @@ function run_llmc_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+            pytest --durations=0 --durations-min=1 \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"

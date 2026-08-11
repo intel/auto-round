@@ -30,14 +30,12 @@ class TestModelScope:
         if os.path.exists(self.cache_path):
             shutil.rmtree(self.cache_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="https://github.com/intel/auto-round/issues/2127")
     @pytest.mark.timeout(120)
     def test_llm(self, dataloader):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         autoround = AutoRound(model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=dataloader)
         autoround.quantize_and_save()
 
-    @pytest.mark.skip_ci(reason="https://github.com/intel/auto-round/issues/2127")
     @pytest.mark.timeout(360)
     def test_mllm(self, dataloader):
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
