@@ -554,142 +554,6 @@ def _prepare_entry_kwargs(alg_configs, direct_kwargs):
     return configs, runtime_kwargs
 
 
-def _resolve_alg_config_alias(config: Union[str, object, list]) -> Union[object, list[object]]:
-    """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
-    from auto_round.algorithms.registry import resolve_alg_config
-
-    if isinstance(config, str):
-        return resolve_alg_config(config)
-    if isinstance(config, list):
-        return [_resolve_alg_config_alias(c) for c in config]
-    return config
-
-
-def _build_compressor(
-    model: Union[torch.nn.Module, str],
-    scheme="W4A16",
-    alg_configs: Union[str, object, list[Union[str, object]]] = None,
-    tokenizer=None,
-    platform="hf",
-    format=None,
-    dataset="NeelNanda/pile-10k",
-    low_gpu_mem_usage: bool = False,
-    device_map: Union[str, torch.device, int, dict] = 0,
-    iters: int = None,
-    enable_torch_compile: bool = False,
-    seed: int = 42,
-    low_cpu_mem_usage: bool = True,
-    layer_config=None,
-    nsamples: int = None,
-    seqlen: int = None,
-    **kwargs,
-) -> "BaseCompressor":
-    """Algorithm-config-driven internal entry (``scheme`` + ``alg_configs``).
-
-    Resolves the algorithm config(s) and routes to the concrete
-    :class:`BaseCompressor` subclass (ZeroShot / DataDriven / ModelFree / …)
-    wired with the right model-type Mixin. Called exclusively from
-    :class:`auto_round.AutoRound` (the public dispatcher) after it has
-    normalized legacy kwargs into ``alg_configs``.
-    """
-    from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-    from auto_round.algorithms.registry import normalize_algorithm_config
-    from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
-    from auto_round.compressors.utils import check_need_act_calibration
-    from auto_round.utils.model import is_model_free_route
-
-    if alg_configs is None:
-        alg_configs = "signround"
-    # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override,
-    #  e.g. gradient_accumulate_step
-    device_map = normalize_default_device_map(device_map)
-    split_kwargs = _split_entry_kwargs(kwargs)
-    route_kwargs = dict(split_kwargs["route"])
-    compressor_kwargs = dict(split_kwargs["compressor"])
-    base_kwargs = dict(split_kwargs["base"])
-    mllm_kwargs = dict(split_kwargs["mllm"])
-    diffusion_kwargs = dict(split_kwargs["diffusion"])
-
-    # Resolve string alias(es) to config instance(s) before routing.
-    alg_configs = _resolve_alg_config_alias(alg_configs)
-    if isinstance(alg_configs, list):
-        alg_configs = [normalize_algorithm_config(cfg) for cfg in alg_configs]
-    else:
-        alg_configs = normalize_algorithm_config(alg_configs)
-    configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
-    preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
-
-    # Model-free routing is now supported directly by the new entry path.
-    model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
-    model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
-    # Model-free eligibility also depends on base-level options such as
-    # static KV/attention quantization. Keep those options visible to the
-    # route predicate; otherwise the fast path silently drops them and
-    # cannot emit the required export metadata.
-    route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
-    route_scheme = (
-        scheme
-        if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
-        else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
-    )
-    if is_model_free_route(model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs):
-        # Direct scheme fields are consumed into ``quant_config`` during
-        # entry normalization. Pass the fully resolved scheme onward so
-        # model-free export does not silently fall back to preset defaults.
-        model_free_scheme = scheme if hasattr(scheme, "options") and hasattr(scheme, "avg_bits") else route_scheme
-        return _build_model_free_compressor(
-            model,
-            model_free_scheme,
-            layer_config,
-            tokenizer,
-            device_map,
-            announced_via_flag=bool(route_kwargs.get("model_free", False)),
-            enable_torch_compile=enable_torch_compile,
-            **compressor_kwargs,
-            **base_kwargs,
-            **mllm_kwargs,
-            **diffusion_kwargs,
-            **route_kwargs,
-        )
-
-    # Eagerly validate scheme constraints that do not require model info.
-    # This mirrors old-arch _check_configs() called at __init__ time so that
-    # callers get ValueError/NotImplementedError on construction, not deferred.
-    _eager_validate_scheme(quant_config, scheme)
-
-    local_args = dict(
-        model=model,
-        tokenizer=tokenizer,
-        platform=platform,
-        format=format,
-        scheme=scheme,
-        dataset=dataset,
-        low_gpu_mem_usage=low_gpu_mem_usage,
-        device_map=device_map,
-        iters=iters,
-        enable_torch_compile=enable_torch_compile,
-        seed=seed,
-        low_cpu_mem_usage=low_cpu_mem_usage,
-        layer_config=layer_config,
-        nsamples=nsamples,
-        seqlen=seqlen,
-        **compressor_kwargs,
-    )
-    model_type, ctor_kwargs = _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs)
-
-    # Preprocessor algorithms (AWQ, …) require a data-driven host so that
-    # the per-block preprocessor lifecycle (prepare_block_group ->
-    # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
-    # actually runs; the pipeline auto-appends RTN when no block_quantizer
-    # is supplied. SignRound is itself data-driven and shares the same host.
-    if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
-        return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
-    elif isinstance(quant_config, RTNConfig):
-        base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
-        return _get_compressor_class(model_type, base_cls)(alg_configs, **local_args, **ctor_kwargs)
-
-
 class AutoRound:
     """Unified AutoRound entry point.
 
@@ -708,11 +572,9 @@ class AutoRound:
         scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
-        iters: int | None = None,
         seqlen: int = 2048,
         nsamples: int = 128,
         batch_size: int = 8,
-        gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: Optional[bool] = None,
@@ -721,16 +583,17 @@ class AutoRound:
         alg_configs=None,
         **kwargs,
     ) -> "BaseCompressor":
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+        from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
+        from auto_round.utils.model import is_model_free_route
+
         direct_kwargs = dict(kwargs)
         legacy_device = direct_kwargs.pop("device", None)
         if legacy_device is not None:
             logger.warning_once("`device` is deprecated, please use `device_map` instead")
             if device_map in (None, 0):
                 device_map = legacy_device
-        if iters is not None:
-            direct_kwargs["iters"] = iters
-        if gradient_accumulate_steps is not None:
-            direct_kwargs["gradient_accumulate_steps"] = gradient_accumulate_steps
         if "algorithm" in direct_kwargs:
             raise TypeError(
                 "`algorithm` is no longer supported; use `alg_configs` instead "
@@ -738,18 +601,68 @@ class AutoRound:
             )
 
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs)
-        runtime_kwargs["batch_size"] = batch_size
+        format = runtime_kwargs.pop("format", None)
+        device_map = normalize_default_device_map(device_map)
 
-        return _build_compressor(
-            model,
-            scheme,
-            configs,
+        split_kwargs = _split_entry_kwargs(runtime_kwargs)
+        route_kwargs = dict(split_kwargs["route"])
+        compressor_kwargs = dict(split_kwargs["compressor"])
+        base_kwargs = dict(split_kwargs["base"])
+        base_kwargs["batch_size"] = batch_size
+        mllm_kwargs = dict(split_kwargs["mllm"])
+        diffusion_kwargs = dict(split_kwargs["diffusion"])
+
+        preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs)
+
+        # Model-free routing is supported directly by the entry path.
+        model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
+        model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
+        # Model-free eligibility also depends on base-level options such as
+        # static KV/attention quantization. Keep those options visible to the
+        # route predicate; otherwise the fast path silently drops them and
+        # cannot emit the required export metadata.
+        route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
+        route_scheme = (
+            scheme
+            if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
+            else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
+        )
+        if is_model_free_route(
+            model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs
+        ):
+            # Direct scheme fields are consumed into ``quant_config`` during
+            # entry normalization. Pass the fully resolved scheme onward so
+            # model-free export does not silently fall back to preset defaults.
+            model_free_scheme = scheme if hasattr(scheme, "options") and hasattr(scheme, "avg_bits") else route_scheme
+            return _build_model_free_compressor(
+                model,
+                model_free_scheme,
+                layer_config,
+                tokenizer,
+                device_map,
+                announced_via_flag=bool(route_kwargs.get("model_free", False)),
+                enable_torch_compile=enable_torch_compile,
+                **compressor_kwargs,
+                **base_kwargs,
+                **mllm_kwargs,
+                **diffusion_kwargs,
+                **route_kwargs,
+            )
+
+        # Eagerly validate scheme constraints that do not require model info.
+        # This mirrors old-arch _check_configs() called at __init__ time so that
+        # callers get ValueError/NotImplementedError on construction, not deferred.
+        _eager_validate_scheme(quant_config, scheme)
+
+        local_args = dict(
+            model=model,
             tokenizer=tokenizer,
             platform=platform,
-            format=runtime_kwargs.pop("format", None),
+            format=format,
+            scheme=scheme,
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=normalize_default_device_map(device_map),
+            device_map=device_map,
             iters=None,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
@@ -757,8 +670,20 @@ class AutoRound:
             layer_config=layer_config,
             nsamples=nsamples,
             seqlen=seqlen,
-            **runtime_kwargs,
+            **compressor_kwargs,
         )
+        model_type, ctor_kwargs = _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs)
+
+        # Preprocessor algorithms (AWQ, …) require a data-driven host so that
+        # the per-block preprocessor lifecycle (prepare_block_group ->
+        # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
+        # actually runs; the pipeline auto-appends RTN when no block_quantizer
+        # is supplied. SignRound is itself data-driven and shares the same host.
+        if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
+            return _get_compressor_class(model_type, Compressor)(configs, **local_args, **ctor_kwargs)
+        elif isinstance(quant_config, RTNConfig):
+            base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
+            return _get_compressor_class(model_type, base_cls)(configs, **local_args, **ctor_kwargs)
 
 
 # Keep legacy entry points available for downstream integrations such as
