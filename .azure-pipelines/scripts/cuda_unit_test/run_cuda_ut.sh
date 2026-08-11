@@ -32,20 +32,8 @@ function setup_environment() {
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function check_storage_usage() {
