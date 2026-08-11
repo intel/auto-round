@@ -173,9 +173,11 @@ int4 weights**:
 | qwen3 down (E=128, N=2048, K=768) | 100 MB | 201 MB |
 
 Because they are kept for the process lifetime, W4A8 trades memory for compute
-throughput. Use `cache_prepack=False` on `ark.moe_w4a8` (or
-`clear_moe_w4a8_prepack_cache()`) if that trade isn't worth it for a given
-deployment.
+throughput. The cache entry also pins the source int4 `weights` / `scales`
+tensors (its key is pointer identity, so a freed-and-reallocated buffer could
+otherwise collide with another layer's weights). Use `cache_prepack=False` on
+`ark.moe_w4a8` (or `clear_moe_w4a8_prepack_cache()`) if that trade isn't worth
+it for a given deployment.
 
 ## Environment variables
 

@@ -2374,9 +2374,15 @@ def clear_moe_prefill_workspace_cache() -> None:
 # weight/scale tensor identity so repeated forward passes over the same expert
 # weights pay for it only once. Callers that manage their own storage should
 # use `moe_w4a8_prepack` + `moe_gemm_w4a8` directly.
+#
+# Cache entries are `(weights_s8, wscales, block, weights, scales)`: the source
+# tensors are pinned in the entry because the address half of the key is
+# pointer identity, and a freed-then-reallocated buffer can otherwise land on
+# the same address. Every MoE layer's expert weights share shape / dtype /
+# group_size, so no other key component would catch such a collision.
 # ---------------------------------------------------------------------------
 
-_MOE_W4A8_PREPACK_CACHE: "dict[tuple, tuple[torch.Tensor, torch.Tensor, int]]" = {}
+_MOE_W4A8_PREPACK_CACHE: "dict[tuple, tuple]" = {}
 
 
 def moe_w4a8_rescale_block_size(K: int, group_size: int, rescale_group_size: int = -1) -> int:
@@ -2643,8 +2649,11 @@ def moe_w4a8(
         rescale_group_size: AUTO_S8 block size, ``-1`` = per output channel.
         phase: ``"auto"``, ``"decode"`` or ``"prefill"``.
         cache_prepack: keep the converted int8 weights in a module-level cache
-            keyed on ``(weights, scales)`` identity. Set to ``False`` for
-            one-shot use so the (large) int8 copy is released immediately.
+            keyed on ``(weights, scales)`` identity. The cache entry holds
+            strong references to ``weights`` / ``scales`` so their addresses
+            cannot be recycled by another tensor while the entry lives (see
+            :data:`_MOE_W4A8_PREPACK_CACHE`). Set to ``False`` for one-shot use
+            so the (large) int8 copy is released immediately.
 
     Returns:
         ``[total_tokens, N]`` in the activations dtype.
@@ -2657,7 +2666,10 @@ def moe_w4a8(
     key = None
     entry = None
     if cache_prepack:
+        device = weights.device
         key = (
+            device.type,
+            device.index,
             weights.data_ptr(),
             scales.data_ptr(),
             tuple(weights.shape),
@@ -2667,16 +2679,23 @@ def moe_w4a8(
         )
         entry = _MOE_W4A8_PREPACK_CACHE.get(key)
     if entry is None:
-        entry = moe_w4a8_prepack(
+        weights_s8, wscales, block = moe_w4a8_prepack(
             weights,
             scales,
             group_size=group_size,
             rescale_group_size=rescale_group_size,
         )
+        # Pin the source tensors in the entry: the address half of the key is
+        # pointer identity, and a freed-then-reallocated buffer can land on the
+        # same address (every MoE layer's expert weights share shape/dtype/
+        # group_size, so nothing else in the key would discriminate). Holding a
+        # reference keeps the allocator from handing the address to a different
+        # tensor for as long as the entry is cached.
+        entry = (weights_s8, wscales, block, weights, scales)
         if cache_prepack:
             _MOE_W4A8_PREPACK_CACHE[key] = entry
 
-    weights_s8, wscales, block = entry
+    weights_s8, wscales, block = entry[0], entry[1], entry[2]
     return moe_gemm_w4a8(
         activations,
         weights_s8,

@@ -167,8 +167,10 @@ ark.moe_w4a8_release_scratch()      # 归还设备端 scratch 内存
 | qwen3 up (E=128, N=1536, K=2048) | 201 MB | 402 MB |
 | qwen3 down (E=128, N=2048, K=768) | 100 MB | 201 MB |
 
-由于它们会在进程生命周期内一直保留，W4A8 是用内存换计算吞吐。如果在某个部署场景
-下这个权衡不划算，可以在 `ark.moe_w4a8` 上传 `cache_prepack=False` (或调用
+由于它们会在进程生命周期内一直保留，W4A8 是用内存换计算吞吐。缓存条目同时会持有源
+int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否则被释放后又重新分
+配的显存可能与其他层的权重发生地址碰撞)。如果在某个部署场景下这个权衡不划算，可以
+在 `ark.moe_w4a8` 上传 `cache_prepack=False` (或调用
 `clear_moe_w4a8_prepack_cache()`)。
 
 ## 环境变量
