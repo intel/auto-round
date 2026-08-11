@@ -12,6 +12,7 @@ pr:
   paths:
     include:
       - test/integration/test_cpu
+      - .azure-pipelines/nightly-test-cpu.yml
 
 parameters:
   - name: unitTestParts
@@ -33,7 +34,7 @@ schedules:
         - main
     always: true
 
-pool: ICX-16C
+pool: INTEL-CPU
 
 variables:
   IMAGE_NAME: "auto-round"

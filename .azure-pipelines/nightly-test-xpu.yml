@@ -12,6 +12,7 @@ pr:
   paths:
     include:
       - test/integration/test_xpu
+      - .azure-pipelines/nightly-test-xpu.yml
 
 parameters:
   - name: xpuTestParts
