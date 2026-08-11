@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 #
 # run_bf16_sparse_bench.sh
 # ========================
