@@ -102,8 +102,12 @@ steps:
 
       docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \
       bash -c "cd /auto-round/.azure-pipelines/scripts \
-        && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
+        && bash ut/${{ parameters.utScriptFileName }}.sh
     displayName: "Run UT"
+    env:
+      PYTHONUNBUFFERED: '1'
+      UV_NO_PROGRESS: '1'
+      UT_MODE: ${{ parameters.utTestMode }}
 
   - task: PublishPipelineArtifact@1
     condition: succeeded()

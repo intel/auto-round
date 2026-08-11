@@ -112,8 +112,11 @@ function print_coverage() {
 
 function main() {
     setup_environment
-    run_unit_test
-    run_unit_test_llmc
+    if [[ "${UT_MODE}" == "llmc" ]]; then
+        run_unit_test_llmc
+    else
+        run_unit_test
+    fi
     collect_log
     print_coverage
     print_summary

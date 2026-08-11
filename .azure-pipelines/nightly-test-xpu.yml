@@ -3,7 +3,22 @@
 # Scheduled daily; can also be triggered manually from the Azure DevOps UI.
 
 trigger: none
-pr: none
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - test/integration/test_xpu
+
+parameters:
+  - name: xpuTestParts
+    type: object
+    default:
+      - nightly
+      - llmc
 
 schedules:
   - cron: "0 19 * * *"   # 03:00 Asia/Shanghai every day
@@ -39,15 +54,19 @@ stages:
       - job:
         displayName: Nightly XPU Test
         timeoutInMinutes: 180
+        strategy:
+          matrix:
+            ${{ each part in parameters.xpuTestParts }}:
+              part_${{ part }}:
+                PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
               dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut_xpu"
-              # "integration" enables the XPU LLMC integration suite in run_ut_xpu.sh
-              utTestMode: "integration"
+              utTestMode: $(PART)
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "nightly-xpu"
+              utArtifact: "$(PART)-xpu"
               imageTag: $(IMAGE_TAG)
               dockerFileName: $(DOCKERFILE_NAME)
               utContainerName: "AutoRoundNightlyXPU$(NODE_LABEL)"

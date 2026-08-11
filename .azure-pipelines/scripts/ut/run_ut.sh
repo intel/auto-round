@@ -149,14 +149,16 @@ function collect_log() {
 
 function main() {
     setup_environment
-    run_unit_test
-    if [ "$test_part" -eq 5 ] && [ "$NIGHTLY_TEST" = 1 ]; then
+    if [ "$test_part" = "inc" ]; then
         run_inc_unit_test
+    elif [ "$test_part" = "llmc" ]; then
         run_llmc_unit_test
+    else
+        run_unit_test
     fi
     collect_log
     check_storage_usage
     print_summary
 }
 
-main
+main "$@"
