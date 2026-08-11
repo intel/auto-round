@@ -74,7 +74,6 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
 
   int k_tile_size = int(get<2>(wg_tile));
 
-  if (blocksize % k_tile_size == 0) {
     auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
     auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
 
@@ -156,66 +155,7 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
         tFrC(i) += static_cast<float>(tCrC(i)) * sb;
       }
     }
-  } else {
-    for (int ib = 0; ib < blks; ++ib) {
-      const int8_t* a_blk = a + size_t(ib) * size_t(blocksize);
-      const int8_t* b_blk = b + size_t(ib) * size_t(blocksize);
-
-      auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a_blk)), make_shape(m, blocksize), make_stride(k, _1{}));
-      auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b_blk)), make_shape(n, blocksize), make_stride(k, _1{}));
-
-      Tensor cA = make_identity_tensor(A.shape());
-      Tensor cB = make_identity_tensor(B.shape());
-
-      Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
-      Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
-
-      auto copy_a = make_block_2d_copy_A(mma, A);
-      auto copy_b = make_block_2d_copy_B(mma, B);
-
-      auto thr_copy_a = copy_a.get_slice(local_id);
-      auto thr_copy_b = copy_b.get_slice(local_id);
-
-      auto tCrA = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
-      auto tCrB = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
-
-      auto tArA = thr_copy_a.partition_sg_fragment_D(gA(_, _, 0));
-      auto tBrB = thr_copy_b.partition_sg_fragment_D(gB(_, _, 0));
-
-      Tensor tAgA = thr_copy_a.partition_S(gA);
-      Tensor tBgB = thr_copy_b.partition_S(gB);
-
-      clear(tCrC);
-
-      int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
-      for (int k_tile = 0; k_tile < k_tile_count; ++k_tile) {
-        barrier_arrive(barrier_scope);
-
-        copy(copy_a, tAgA(_, _, _, k_tile), tArA);
-        copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
-
-        reorder(tArA, tCrA);
-        reorder(tBrB, tCrB);
-        gemm(mma, tCrA, tCrB, tCrC);
-
-        barrier_wait(barrier_scope);
-      }
-
-      CUTE_UNROLL
-      for (int i = 0; i < size(tCrC); ++i) {
-        auto coord = tCgC(i);
-        int row = int(get<0>(coord));
-        int col = int(get<1>(coord));
-
-        if constexpr (!FullTile) {
-          if (row >= m || col >= n) continue;
-        }
-
-        float sb = static_cast<float>(scale_b[col * blks + ib]);
-        tFrC(i) += static_cast<float>(tCrC(i)) * sb;
-      }
-    }
-  }
+  
 
   CUTE_UNROLL
   for (int i = 0; i < size(tFrC); ++i) {
