@@ -35,6 +35,12 @@ stays short. Pass ``--all-shapes`` to also include ``bs32``::
 
     pytest -v -s auto_round_extension/ark/test/test_moe_decode_perf.py \
         --all-shapes
+
+``test_perf_int4_sym_qwen3_moe`` and
+``test_perf_int4_sym_qwen3_moe_dpas_vs_scalar`` benchmark a separate
+Qwen3-MoE shape group (``hidden=2048``, ``intermediate=768``, ``E=128``,
+``top_k=8``, ``group_size=32``); ``--all-shapes`` widens their
+model-token batch sweep instead.
 """
 
 import auto_round_kernel
@@ -258,6 +264,52 @@ DECODE_SHAPES = [
     ("minimax up   bs32", 192, list(_MINIMAX_TPE_BS32), 1536, 3072),  # gate/up-proj
     ("minimax down bs32", 192, list(_MINIMAX_TPE_BS32), 3072, 1536),  # down-proj
 ]
+
+
+# ---------------------------------------------------------------------------
+# Qwen3-MoE shapes (issue repro)
+#
+# Captured from a fused-MoE layer that reported the ARK grouped GEMM losing
+# to the native backend at small batch (``native_over_ark=0.604x``):
+#
+#   hidden_size = 2048, intermediate_size = 768, num_local_experts = 128,
+#   num_experts_per_tok = 8, int4-sym weights, group_size = 32
+#
+#   w13 (gate/up-proj) [128, 1536, 1024] -> N = 2 * 768 = 1536, K = 2048
+#   w2  (down-proj)    [128, 2048,  384] -> N = 2048,           K =  768
+#
+# The trailing weight dim is the *packed* nibble count (``K // 2``); the
+# reported scale tensors ``[128, 1536, 64]`` and ``[128, 2048, 24]`` pin
+# ``group_size`` to 32 (2048/64 == 768/24 == 32) rather than the 128 used
+# by the MiniMax rows above.
+#
+# Routed expert-token rows = ``batch * top_k`` spread round-robin over the
+# 128 experts, so the reported batch of 2 model tokens reproduces the
+# ``rows_per_expert_sum=16`` of the issue. Mirrors the identically named
+# block in ``test_moe_prefill_perf.py``.
+# ---------------------------------------------------------------------------
+
+_QWEN3_E = 128
+_QWEN3_HIDDEN = 2048
+_QWEN3_INTER = 768
+_QWEN3_TOPK = 8
+_QWEN3_GROUP_SIZE = 32
+
+# (label, N, K) for the two grouped GEMMs of one Qwen3-MoE layer.
+_QWEN3_NK = [
+    ("qwen3 up  ", 2 * _QWEN3_INTER, _QWEN3_HIDDEN),  # gemm1: gate/up-proj
+    ("qwen3 down", _QWEN3_HIDDEN, _QWEN3_INTER),  # gemm2: down-proj
+]
+
+# Model-token batches; routed expert-token count is ``batch * top_k``.
+# ``2`` is the batch from the issue report (16 routed rows / 16 active experts).
+_QWEN3_BATCHES = [2]
+
+# Appended when ``--all-shapes`` is passed. The default
+# ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE`` occupancy gate is 8 tokens per expert,
+# i.e. ``batch * 8 >= 128 * 8`` -> ``batch >= 128``, so these bracket the
+# gate from both sides.
+_QWEN3_BATCHES_EXTENDED = [8, 32, 128, 512]
 
 
 @pytest.fixture(autouse=True)
@@ -578,6 +630,126 @@ class TestMoEGemmDecodePerf:
                 dpas_ms = _xpu_time_ms(_run)
                 monkeypatch.delenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", raising=False)
                 _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_perf_int4_sym_qwen3_moe(self, request, dtype):
+        """INT4-sym decode at the Qwen3-MoE shape from the issue report.
+
+        ``hidden=2048``, ``intermediate=768``, ``E=128``, ``top_k=8``,
+        ``group_size=32`` -- the configuration where a fused-MoE layer
+        measured ``native_over_ark=0.604x`` (ARK ~1.66x slower than the
+        native backend) at batch 2. Distinct from :meth:`test_perf_int4`,
+        which sweeps the MiniMax-M2 shapes at ``group_size=128``.
+
+        ``ark(ms)`` is ``moe_gemm_decode`` under its **default** dispatch,
+        i.e. whatever the S4 occupancy gate picks for this batch, so the
+        row reports the number a model actually gets. See
+        :meth:`test_perf_int4_sym_qwen3_moe_dpas_vs_scalar` for the
+        path-level A/B behind that choice.
+
+        Only the reported batch of 2 model tokens runs by default so a CI
+        pass stays short; pass ``--all-shapes`` to sweep larger batches.
+        """
+        group_size = _QWEN3_GROUP_SIZE
+        E = _QWEN3_E
+        batches = list(_QWEN3_BATCHES)
+        if request.config.getoption("--all-shapes", default=False):
+            batches += _QWEN3_BATCHES_EXTENDED
+        _print_header(
+            f"INT4 sym qwen3-moe (E={E}, group_size={group_size}, act={str(dtype).split('.')[-1]}) "
+            f"-- ark.moe_gemm_decode vs dequant + per-expert A @ W.T"
+        )
+        for nk_label, N, K in _QWEN3_NK:
+            for batch in batches:
+                total_tokens = batch * _QWEN3_TOPK
+                tpe = _spread_tokens(total_tokens, E)
+                label = f"{nk_label} bs{batch}"
+
+                activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+                w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+                scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+                packed = _pack_int4_sym(w_float, scales, group_size)
+                dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+                ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+                base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, dequant, ntpe))
+                ark_ms = _xpu_time_ms(
+                    lambda: ark.moe_gemm_decode(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        weight_bits=4,
+                        group_size=group_size,
+                        asym=False,
+                    )
+                )
+                _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+
+                activations = w_float = scales = packed = dequant = ntpe = None
+                _release_xpu_memory()
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_perf_int4_sym_qwen3_moe_dpas_vs_scalar(self, request, monkeypatch, dtype):
+        """Qwen3-MoE int4-sym decode: S4 DPAS vs the scalar GEMV fallback.
+
+        Same shapes and batches as
+        :meth:`test_perf_int4_sym_qwen3_moe`, but ``speedup`` here is
+        ``scalar / dpas`` (the DPAS path is the "ark" column) so the
+        occupancy gate's routing decision can be checked directly against
+        the measurement. ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0`` disables the
+        tokens-per-expert gate so the DPAS column really runs DPAS -- at
+        the reported batch of 2 (16 routed rows over 128 experts, i.e.
+        0.125 tokens per expert) the default gate otherwise routes to the
+        scalar GEMV, which is the same kernel int4-asym uses.
+        """
+        group_size = _QWEN3_GROUP_SIZE
+        E = _QWEN3_E
+        batches = list(_QWEN3_BATCHES)
+        if request.config.getoption("--all-shapes", default=False):
+            batches += _QWEN3_BATCHES_EXTENDED
+        _print_header(
+            f"INT4 sym qwen3-moe DPAS vs scalar (E={E}, group_size={group_size}, "
+            f"act={str(dtype).split('.')[-1]}) -- scalar GEMV (baseline) vs S4 DPAS (ark)"
+        )
+        for nk_label, N, K in _QWEN3_NK:
+            # Both Qwen3 GEMMs must clear the S4 DPAS shape gate
+            # (``moe_prefill_dpas_s4_pergroup_shape_ok``, shared with decode)
+            # or the dpas column would silently re-measure the scalar GEMV.
+            assert N % 64 == 0 and K % 32 == 0 and K % group_size == 0, f"{nk_label}: N={N} K={K} misses the DPAS gate"
+            for batch in batches:
+                total_tokens = batch * _QWEN3_TOPK
+                tpe = _spread_tokens(total_tokens, E)
+                label = f"{nk_label} bs{batch}"
+
+                activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+                w_float = (torch.randn(E, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+                scales = torch.empty(E, N, K // group_size, dtype=dtype, device="xpu")
+                packed = _pack_int4_sym(w_float, scales, group_size)
+                ntpe = torch.tensor(tpe, dtype=torch.int32, device="xpu")
+
+                def _run():
+                    return ark.moe_gemm_decode(
+                        activations,
+                        packed,
+                        ntpe,
+                        scales=scales,
+                        weight_bits=4,
+                        group_size=group_size,
+                        asym=False,
+                    )
+
+                monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+                scalar_ms = _xpu_time_ms(_run)
+                monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+                monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", "0")
+                dpas_ms = _xpu_time_ms(_run)
+                monkeypatch.delenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", raising=False)
+                monkeypatch.delenv("ARK_MOE_DECODE_DPAS_S4", raising=False)
+                _print_row(label, N, K, total_tokens, scalar_ms, dpas_ms)
+
+                activations = w_float = scales = packed = ntpe = None
+                _release_xpu_memory()
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
