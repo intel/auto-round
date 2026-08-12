@@ -30,8 +30,9 @@ pr:
       - test/e2e
       - "*.md"
       - "**/*.md"
-      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
+      - .azure-pipelines/scripts/ut/run_ark_ut.sh
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
+      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
 pool: INTEL-CPU
