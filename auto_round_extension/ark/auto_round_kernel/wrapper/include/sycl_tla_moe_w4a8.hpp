@@ -818,6 +818,33 @@ constexpr int KSPLIT_WG_SGS = N_TILE;
 constexpr int KSPLIT_NCOLS_DEFAULT = 2;
 constexpr int KSPLIT_NCOLS_MAX = 4;
 
+// A lane's `CH`-byte chunk, as a register type.
+//
+// `sycl::vec` only exists for 1, 2, 3, 4, 8 and 16 elements, so a `CH = 32`
+// chunk cannot be spelled `sycl::vec<int8_t, 32>`: that instantiation is a hard
+// static_assert in the SYCL headers ("Invalid number of elements for
+// sycl::vec"). A chunk is therefore an aggregate of `CH / 16` 16-byte
+// sub-vectors covering *consecutive* bytes. The lane still reads one contiguous
+// `CH`-byte span at a `CH`-aligned address (`moe_w4a8_decode_ksplit_shape_ok`
+// makes every chunk offset a multiple of `CH` off a row base that is a multiple
+// of `K`, itself a multiple of `CH`), the sub-vectors are adjacent both in
+// memory and in the GRF, and the declared alignment lets IGC fold the pair back
+// into a single wider message. At the default `CH = 16` the aggregate holds a
+// single `sycl::vec<int8_t, 16>`, i.e. exactly the load this kernel issued
+// before.
+//
+// `operator[]` is only ever called from the fully unrolled inner loops, so the
+// sub-vector selection folds away at compile time and no dynamic indexing
+// (which would push the chunk out to scratch) is generated.
+template <int CH>
+struct alignas(CH) QChunk {
+  static constexpr int kSub = KSPLIT_CH_DEFAULT;
+  static_assert(CH % kSub == 0, "chunk width must be a whole number of 16-byte sub-vectors");
+  sycl::vec<int8_t, kSub> v[CH / kSub];
+
+  int8_t operator[](int i) const { return v[i / kSub][i % kSub]; }
+};
+
 // `ARK_MOE_W4A8_DECODE_KSPLIT` (default ON). Setting it to "0" / "false" /
 // "off" / "no" forces the legacy per-lane-strided GEMV, for A/B comparison and
 // as a regression escape. Re-read on every call so benchmarks can toggle the
@@ -913,7 +940,7 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
           s_rows[c] = wscale + (row0 + static_cast<size_t>(c)) * blks;
         }
 
-        using QVec = sycl::vec<int8_t, CH>;
+        using QVec = QChunk<CH>;
 
         float acc[NCOLS];
 #pragma unroll
