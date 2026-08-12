@@ -18,8 +18,11 @@
 //     int8_t, int8_t>` (`s8 x s8 -> s32`), modelled on the W4A8 weight-only
 //     GEMM in `sycl_tla_s8_gemm.hpp` (`sycl_tla_igemm_s8s8_dequant`) and the
 //     grouped scheduler in `sycl_tla_moe_prefill_int_dpas.hpp`.
-//   * decode -- int8 GEMV, one sub-group lane per output column, modelled on
-//     `moe_decode_detail::launch_int8`.
+//   * decode -- int8 GEMV. The default mapping splits K across the sub-group
+//     lanes (coalesced 256-byte weight reads, `NCOLS` output columns per
+//     sub-group), mirroring `moe_decode_detail::launch_fp8_ksplit`;
+//     `ARK_MOE_W4A8_DECODE_KSPLIT=0` restores the original one-lane-per-output
+//     mapping modelled on `moe_decode_detail::launch_int8`.
 //
 // The AUTO_S8 re-scale trick
 // --------------------------

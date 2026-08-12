@@ -40,6 +40,103 @@ in the epilogue, which is the highest-throughput configuration.
 This kernel applies the same idea to the MoE grouped GEMM. The conversion runs
 **once** (at model load), not per forward pass.
 
+## Performance targets and the roofline
+
+The goals for this kernel are **prefill > 100 TFLOPS** and **decode > 300 GB/s**
+of weight bandwidth. Whether the prefill goal is reachable at all is decided by
+the *routing*, not by the kernel. A W4A8 grouped GEMM reads every active
+expert's int8 weights exactly once and does `2 × rows_per_expert` FLOPs per
+weight byte, so
+
+```
+arithmetic intensity = 2 × rows_per_expert            [FLOP / byte]
+TFLOPS              <= 2 × rows_per_expert × weight_bandwidth
+rows_per_expert      = batch × top_k / active_experts
+```
+
+The `N` and `K` factors cancel — only the routing matters:
+
+| Model tokens | Routed rows | rows/expert | Bandwidth needed for 100 TFLOPS |
+|---|---|---|---|
+| 128 (default prefill batch) | 1024 | 8 | 6250 GB/s |
+| 512 | 4096 | 32 | 1563 GB/s |
+| 2048 | 16384 | 128 | 391 GB/s |
+| 4096 (`test_perf_prefill_compute_bound`) | 32768 | 256 | 195 GB/s |
+| 8192 (`--all-shapes`) | 65536 | 512 | 98 GB/s |
+
+So ~4.5 TFLOPS at the default batch is **not** a kernel deficiency: at 8 rows
+per expert and the ~285 GB/s of weight bandwidth the kernel actually achieves,
+the ceiling is `2 × 8 × 285e9 = 4.56 TFLOPS` — the measured value, i.e. the
+kernel is already running at the DRAM roofline. Reaching 100 TFLOPS there would
+require 6.25 TB/s, more than 10× any current GPU. On a device streaming
+~285 GB/s the target first becomes reachable at ~176 rows per expert (~2816
+model tokens), which is why `test_perf_prefill_compute_bound` measures at 4096
+model tokens.
+
+The perf table therefore prints `rows/E` and `BW@100T` next to the measured
+numbers, and each sweep ends with a verdict block:
+
+```
+targets [prefill]: prefill compute > 100 TFLOPS
+  device copy bandwidth probe: 400 GB/s
+  qwen3 up     tokens=1024   rows/E=8.0        4.56 TFLOPS vs 100 -> N/A (bandwidth bound: ...)
+  qwen3 down   tokens=32768  rows/E=256.0    102.40 TFLOPS vs 100 -> PASS
+```
+
+A row is reported `N/A` rather than `FAIL` when the device bandwidth probe (one
+large device-to-device copy, measured once per run) shows the target is
+unreachable at that routing. The verdict is informational by default; pass
+`--enforce-targets` to turn it into a hard assertion.
+
+### Why `vs w4a16` is below 1.0 at small batches
+
+The same intensity argument explains the `vs w4a16` column. W4A8 streams **2×
+the weight bytes** of the int4 path (one byte vs. half a byte per element) in
+exchange for ~2× the DPAS peak, so it only wins once the GEMM is compute bound:
+
+```
+crossover rows/expert ~= int8_peak_TOPS / (4 × weight_bandwidth)
+```
+
+With ~233 TOPS of int8 DPAS and ~285 GB/s that is ~200 rows per expert
+(~3200 model tokens). Decode (1 row per expert) and small-batch prefill are far
+below it, so readings of 0.55–0.71× are expected there: W4A8 is a large-batch
+prefill optimization, and at decode it can only help by improving the *memory*
+path.
+
+## Decode: coalesced K-split mapping
+
+The decode GEMV originally assigned **one work-item per output element**: lane
+`l` of a sub-group computed column `n0 + l` and walked the whole K axis alone.
+Consecutive lanes then read addresses `K` bytes apart, so a single load touched
+16 different cache lines and used 16 of the 64 bytes each one delivered. At
+batch 1 the kernel also launched only `total_tokens × N/16` sub-groups (768
+SIMD16 work-items for the up-proj) — far too few to cover memory latency.
+
+The fix is the **K-split** mapping that already put the FP8 decode path at its
+bandwidth target (`launch_fp8_ksplit` in `sycl_tla_moe_decode.hpp`): one
+sub-group cooperates on `NCOLS` output columns, and lane `l` owns the 16
+consecutive K elements at `l × 16` within each 256-element step. Every load now
+covers **256 contiguous weight bytes**, the grid grows ~16×, and one
+`sycl::reduce_over_group` per output element folds the lane partials.
+
+The loop is *block-outer* (for each AUTO_S8 re-scale block, then over K inside
+it), so the block scale is hoisted to a scalar and the hot loop contains no
+division — and, unlike the FP8 variant, no power-of-two constraint on the block
+size. The arithmetic is unchanged: int32 partials per lane per block, scaled by
+the block scale, summed across the sub-group, then multiplied by the per-token
+activation scale. `test_decode_ksplit_matches_legacy` asserts that both mappings
+produce bit-identical output.
+
+The mapping requires `N % 16 == 0`, a re-scale block that is a multiple of 16
+and at least 256, and `K % block == 0`. Anything else (for example an explicit
+`--rescale-group-size 64`) falls back to the original kernel automatically.
+
+Decode also issues **one kernel launch fewer per step**: each token's expert id
+is derived inside the activation-quantization kernel — which already runs one
+sub-group per token — instead of by a separate `fill_expert_id_per_token`
+launch. At batch 1 the entire GEMV takes ~45 µs, so a saved launch is not noise.
+
 ## What the script measures
 
 ### Accuracy table
@@ -62,13 +159,18 @@ block, transposed layout, wrong expert offset) rather than mere lossiness.
 
 | Column | Meaning |
 |---|---|
-| `torch(ms)` | Per-expert `A @ W.T` on **pre-dequantized** weights (the dequant is outside the timed region) — the matmul-only PyTorch ceiling |
+| `torch(ms)` | Per-expert `A @ W.T` on **pre-dequantized** weights (the dequant is outside the timed region) — the matmul-only PyTorch ceiling. `--` when the baseline is skipped (compute-bound rows, where the dequantized `[E, N, K]` copy would not fit alongside everything else) |
 | `w4a16(ms)` | The existing ARK int4 kernel for the same phase (`moe_gemm_decode` / `moe_gemm_prefill`) |
 | `w4a8(ms)` | The new int8-compute path (`ark.moe_gemm_w4a8`) |
+| `rows/E` | Routed tokens per **active** expert. Arithmetic intensity is `2 × rows/E` FLOPs per weight byte, so this single number decides whether a shape can be compute bound at all |
 | `TFLOPS` | `total_tokens × N × K × 2 / time` |
 | `W GB/s` | Expert-weight bandwidth actually touched by the routed tokens (`active_experts × N × K × 1 byte / time`) — the limiter for memory-bound decode |
+| `BW@100T` | Weight bandwidth this shape would need to reach 100 TFLOPS. When it exceeds what the device can stream, `TFLOPS` is capped by memory and no kernel change can hit the target at that shape |
 | `vs torch` / `vs w4a16` | Speedups (`other / w4a8`) |
 | `prepack(ms)` | One-shot int4 → int8 AUTO_S8 conversion cost. Paid once at model load, **not** per forward. |
+
+Each sweep is followed by a `targets [...]` block with the PASS / FAIL / N/A
+verdict described in [Performance targets and the roofline](#performance-targets-and-the-roofline).
 
 ## Shapes
 
@@ -86,6 +188,9 @@ qwen3 down  (down-proj)   :  N = 2048,            K =  768
 Routed expert-token rows are `batch × top_k`, spread round-robin over the 128
 experts. Default batches: `128` for prefill and `1` for decode; `--all-shapes`
 widens them to `{128, 512, 2048, 8192}` and `{1, 2, 8, 16}` respectively.
+`test_perf_prefill_compute_bound` adds a single batch of `4096` model tokens
+(256 rows per expert) — the smallest sweep point where the 100 TFLOPS goal is
+not capped by weight bandwidth.
 
 ## How to run
 
@@ -106,6 +211,12 @@ pytest -v -s test_moe_w4a8_perf.py -k perf
 
 # One phase
 pytest -v -s test_moe_w4a8_perf.py -k decode
+
+# The compute-bound prefill case (4096 model tokens), where the TFLOPS goal is reachable
+pytest -v -s test_moe_w4a8_perf.py -k compute_bound
+
+# Make the performance goals hard assertions instead of a printed verdict
+pytest -v -s test_moe_w4a8_perf.py -k perf --enforce-targets
 ```
 
 The `-s` flag is required to see the printed tables.
@@ -117,6 +228,7 @@ python test_moe_w4a8_perf.py                       # both phases, smallest batch
 python test_moe_w4a8_perf.py --all-shapes          # full sweep
 python test_moe_w4a8_perf.py --phase decode        # decode only
 python test_moe_w4a8_perf.py --skip-accuracy       # perf only
+python test_moe_w4a8_perf.py --compute-bound       # add the 4096-token prefill case
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 activations
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
@@ -189,6 +301,8 @@ it for a given deployment.
 |---|---|
 | `ARK_MOE_W4A8_AUTO_S8` | Override the AUTO_S8 re-scale block size. Unset / `-1` = one scale per output channel (fastest). Values that aren't a multiple of both `group_size` and 64, or that don't divide K, silently fall back to K. |
 | `ARK_MOE_W4A8_DECODE_MAX_TOKENS` | Token count at or below which `phase="auto"` picks the GEMV (default `128`). |
+| `ARK_MOE_W4A8_DECODE_KSPLIT` | Coalesced K-split decode mapping; **on by default**. Set to `0` to fall back to the original one-work-item-per-output GEMV (useful for A/B measurements). Ignored when the shape doesn't qualify. |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. |
 
 ## Shape constraints
 
@@ -201,6 +315,10 @@ The kernel requires:
 
 Both Qwen3-MoE GEMMs satisfy these (`K = 2048` and `K = 768`).
 
+The decode K-split mapping additionally needs a re-scale block of at least 256
+that is a multiple of 16; shapes that miss it use the original GEMV instead of
+failing.
+
 ## Status
 
 The W4A8 kernel is a new SYCL/CuTe port and is marked
@@ -209,3 +327,9 @@ The W4A8 kernel is a new SYCL/CuTe port and is marked
 intended on-hardware validation vehicle: run the accuracy sweep first (it will
 catch layout/scale bugs immediately), then the perf sweep to tune the tile
 ladder and the decode threshold.
+
+The decode K-split mapping is likewise unvalidated on hardware. Its index math
+was checked against the legacy mapping with a host-side mock, and
+`test_decode_ksplit_matches_legacy` re-checks it on device; if it ever
+regresses, `ARK_MOE_W4A8_DECODE_KSPLIT=0` restores the previous behaviour
+without a rebuild.
