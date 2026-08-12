@@ -356,20 +356,27 @@ The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA 
 auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
 ```
 
-INT8/W8A8 with AWQ smoothing and RTN:
+AWQ can also be paired with AutoRound optimization:
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
+```
+
+Recommended INT8/W8A8 recipe using AWQ smoothing:
 
 ```bash
 auto-round \
   --model meta-llama/Llama-3.1-8B-Instruct \
   --scheme INT8 \
-  --algorithm awq,rtn \
+  --algorithm awq \
   --nsamples 256 \
   --seqlen 512 \
   --awq-apply-clip \
   --format auto_round:llm_compressor
 ```
 
-For `INT8`, `disable_opt_rtn` defaults to `True`, so the command above uses plain RTN without requiring `--disable_opt_rtn`.
+The explicit `--nsamples 256` and `--seqlen 512` settings are recommended for W8A8 AWQ calibration. The default
+AutoRound values are tuned for AutoRound optimization, not plain AWQ smoothing.
 
 AWQ-specific options:
 - `--awq-duo-scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
@@ -382,20 +389,33 @@ API-only AWQ options:
 
 #### API Usage
 
+For default AWQ settings, the string alias is sufficient:
+
 ```python
-from auto_round import AWQConfig, AutoRound, RTNConfig
+from auto_round import AutoRound
+
+ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
+```
+
+Use `AWQConfig` when you need AWQ-specific options such as `apply_clip=True`:
+
+```python
+from auto_round import AWQConfig, AutoRound
 
 ar = AutoRound(
-    "meta-llama/Llama-3.1-8B-Instruct",
-    scheme="INT8",
-    alg_configs=[AWQConfig(apply_clip=True), RTNConfig(disable_opt_rtn=True)],
-    nsamples=256,
-    seqlen=512,
+    "Qwen/Qwen3-0.6B",
+    scheme="W4A16",
+    alg_configs=AWQConfig(apply_clip=True),
 )
 
 output_dir = "./tmp_awq"
 ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 ```
+
+`alg_configs="awq"` or `alg_configs=AWQConfig()` selects the AWQ algorithm. This is independent from export
+format selection such as `format="auto_awq"`. For example:
+- `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing with AutoRound packing.
+- `alg_configs="signround"` + `format="auto_awq"`: AutoAWQ packing without AWQ smoothing.
 
 ### AutoScheme
 
@@ -508,64 +528,6 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
 When using AutoScheme with `model_free=True`, only INT (`W2A16`/`W4A16`/`W8A16`) and MXFP (`MXFP4`/`MXFP8`) option families are supported. Options like `W3A16`, `GGUF:*`, and `NVFP4` will raise a `ValueError`. INT and MXFP families cannot be mixed in the same `AutoScheme`.
-
-### AWQ Quantization Algorithm
-
-AWQ (`alg_configs="awq"` or `alg_configs=AWQConfig()`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
-
-#### CLI Usage
-```bash
-# AWQ + default RTN (iters=0 auto-selected)
-auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
-
-# AWQ + AutoRound optimization
-auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
-
-# INT8/W8A8 + AWQ + RTN. disable_opt_rtn defaults to True for INT8.
-auto-round \
-  --model meta-llama/Llama-3.1-8B-Instruct \
-  --scheme INT8 \
-  --algorithm awq,rtn \
-  --nsamples 256 \
-  --seqlen 512 \
-  --awq-apply-clip \
-  --format auto_round:llm_compressor
-
-# AWQ flags
---awq-duo-scaling true|false|both  (default: true)
---awq-n-grid 20                    (default: 20)
---awq-apply-clip
-```
-
-`AWQConfig` also supports `smooth_seqlen=512` to cap AWQ scale-search replay length and `skip_moe=True` to leave routed MoE experts to the downstream block quantizer.
-
-#### API Usage
-```python
-from auto_round import AWQConfig, AutoRound, RTNConfig, SignRoundConfig
-
-# String alias (AWQ defaults, with RTN appended automatically)
-ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
-
-# AWQ + default RTN (simplest)
-ar = AutoRound(model, tokenizer, alg_configs=AWQConfig(), scheme="W4A16")
-
-# INT8/W8A8 + AWQ + RTN
-ar = AutoRound(
-    "meta-llama/Llama-3.1-8B-Instruct",
-    alg_configs=[AWQConfig(apply_clip=True), RTNConfig(disable_opt_rtn=True)],
-    scheme="INT8",
-    nsamples=256,
-    seqlen=512,
-)
-
-# AWQ + AutoRound via alg_configs (explicit pipeline)
-ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
-ar.quantize_and_save(output_dir="./qmodel")
-```
-
-**Important Note**: `alg_configs="awq"` or `alg_configs=AWQConfig()` (quantization algorithm) and `format="auto_awq"` (export format) are independent. You can use:
-- `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing + AutoRound packing
-- `alg_configs="signround"` + `format="auto_awq"`: No AWQ smoothing + AutoAWQ packing
 
 ### OPT RTN Mode
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
