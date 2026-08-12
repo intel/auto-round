@@ -128,6 +128,9 @@ class MoEW4A8Repack;
 template <typename ElementD>
 class MoEW4A8DecodeGemv;
 
+template <typename ElementD, int NCOLS>
+class MoEW4A8DecodeKSplit;
+
 template <class Policy, typename ElementD>
 class MoEW4A8GemmName;
 
@@ -158,10 +161,23 @@ inline DeviceScratchPool& expert_map_pool() {
 // absmax with `reduce_over_group`, then write back the quantized row. A row
 // that is entirely zero gets `scale = 0` and quantizes to all zeros (the
 // reciprocal is forced to 0 instead of inf).
+//
+// The decode path also needs `expert_id_per_token`, which
+// `moe_decode_detail::fill_expert_id_per_token` produces in a kernel of its
+// own. That kernel does one tiny scan per token, so at decode sizes it is pure
+// launch overhead on a timeline where the GEMV itself is only tens of
+// microseconds and one call is issued per generated token. This kernel already
+// runs one sub-group per token, so when `expert_id_per_token != nullptr` lane 0
+// folds the same scan in and the separate launch disappears -- the same "one
+// fewer kernel launch on the decode timeline" the FP8 DPAS decode dispatch
+// gets by consuming `num_tokens_per_expert` directly. The scan is the verbatim
+// body of `fill_expert_id_per_token`, including its clamp to
+// `num_experts - 1` for a routing table that sums to less than `total_tokens`.
 // ---------------------------------------------------------------------------
 template <typename ScalarT>
 void launch_act_dynamic_quant(sycl::queue* q, const ScalarT* activations, int8_t* qact, float* ascale,
-                              int total_tokens, int K) {
+                              int total_tokens, int K, int* expert_id_per_token = nullptr,
+                              const int* num_tokens_per_expert = nullptr, int num_experts = 0) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
   if (total_tokens == 0) return;
 
@@ -184,7 +200,22 @@ void launch_act_dynamic_quant(sycl::queue* q, const ScalarT* activations, int8_t
 
         const float scale = absmax / kInt8Max;
         const float inv = absmax > 0.0f ? kInt8Max / absmax : 0.0f;
-        if (lane == 0) ascale[token] = scale;
+        if (lane == 0) {
+          ascale[token] = scale;
+          if (expert_id_per_token != nullptr) {
+            int offset = 0;
+            int expert = num_experts - 1;
+            for (int e = 0; e < num_experts; ++e) {
+              const int n = num_tokens_per_expert[e];
+              if (token < offset + n) {
+                expert = e;
+                break;
+              }
+              offset += n;
+            }
+            expert_id_per_token[token] = expert;
+          }
+        }
 
         for (int k = lane; k < K; k += SG_SIZE) {
           const float v = sycl::rint(static_cast<float>(row[k]) * inv);
@@ -659,6 +690,235 @@ void launch_w4a8_decode(sycl::queue* q, const int8_t* qact, const float* ascale,
 }
 
 // ---------------------------------------------------------------------------
+// Decode GEMV, K-split lane mapping (default) -- one sub-group per output
+// element, lanes splitting K, plus N-blocking over `NCOLS` columns.
+//
+// `launch_w4a8_decode` above maps one *work-item* to one output element, so a
+// lane walks a whole `[n_global, K]` int8 weight row on its own. That is the
+// same mapping the FP8 decode GEMV started from, and it costs the same two
+// things on a kernel that does exactly one multiply-add per weight byte:
+//
+//   1. Weight loads are not coalesced. Lanes `l` and `l+1` read bytes `K`
+//      apart, so each 16-byte load turns into 16 scattered cache-line
+//      requests. No DRAM byte is wasted (each lane consumes its lines as it
+//      walks the row), but the memory controller sees 16 independent streams
+//      per sub-group -- the pattern DRAM row buffers handle worst.
+//   2. The grid is small: `total_tokens * N / 16` sub-groups, i.e. 768 SIMD16
+//      threads for a Qwen3-MoE batch-1 step (8 routed rows, N = 1536). That is
+//      below the thread slots of a BMG-class GPU, so there are never enough
+//      loads in flight to cover DRAM latency.
+//
+// This kernel transposes the mapping exactly like `launch_fp8_ksplit`: a whole
+// sub-group cooperates on one output element and lane `l` owns the
+// `KSPLIT_CH` consecutive K elements at `l * KSPLIT_CH` inside each
+// `KSPLIT_STEP`-wide K tile. One instruction then covers `KSPLIT_STEP`
+// *contiguous* weight bytes (256 B = four full cache lines) and the same span
+// of int8 activations, every thread walks a single sequential stream, and the
+// sub-group count grows by `SG_SIZE` (12288 for that batch-1 step). The price
+// is one `reduce_over_group` per output element -- a handful of shuffles
+// against `K` multiply-adds.
+//
+// On top of that the sub-group blocks N: it owns `NCOLS` consecutive columns
+// and reuses one activation load for all of them, which cuts activation
+// messages per weight chunk to `1 / NCOLS` and multiplies the number of
+// independent weight loads in flight by `NCOLS` (see
+// `moe_w4a8_decode_ksplit_ncols`).
+//
+// Numerics are unchanged: the int32 partial sums are still folded to float
+// once per AUTO_S8 block with that block's scale, only split across the 16
+// lanes and summed at the end (integer addition is associative, and the float
+// fold happens per block per lane exactly as before). A lane's chunk is 16
+// consecutive K elements starting at a multiple of 16 and every block boundary
+// is a multiple of 64, so a chunk never straddles two blocks.
+// ---------------------------------------------------------------------------
+
+// K elements a lane owns per step: one 16-byte int8 weight load and one
+// 16-byte int8 activation load, the same transactions the legacy GEMV issues.
+constexpr int KSPLIT_CH = 16;
+// K elements a sub-group covers per step -- the contiguous span its 16 lanes
+// read in one instruction.
+constexpr int KSPLIT_STEP = SG_SIZE * KSPLIT_CH;
+// Sub-groups per work-group. Each owns `NCOLS` output columns, so a work-group
+// covers `KSPLIT_WG_SGS * NCOLS` consecutive columns.
+constexpr int KSPLIT_WG_SGS = N_TILE;
+constexpr int KSPLIT_NCOLS_DEFAULT = 2;
+constexpr int KSPLIT_NCOLS_MAX = 4;
+
+// `ARK_MOE_W4A8_DECODE_KSPLIT` (default ON). Setting it to "0" / "false" /
+// "off" / "no" forces the legacy per-lane-strided GEMV, for A/B comparison and
+// as a regression escape. Re-read on every call so benchmarks can toggle the
+// path in-process.
+inline bool moe_w4a8_decode_ksplit_enabled() {
+  return moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_DECODE_KSPLIT", true);
+}
+
+// Shape gate. `blocksize >= KSPLIT_STEP` keeps every lane of the sub-group
+// busy: below that some lanes own no chunk in a block and only pay the
+// reduction, which is the one regime where splitting K cannot pay for itself.
+// The resolved AUTO_S8 block is always a multiple of 64 that divides K, so the
+// alignment condition holds for every shipped configuration and only very fine
+// re-scale blocks (64 / 128 / 192) fall back to the legacy GEMV.
+inline bool moe_w4a8_decode_ksplit_shape_ok(int N, int K, int blocksize) {
+  if (N % N_TILE != 0) return false;
+  if (blocksize < KSPLIT_STEP) return false;
+  if (blocksize % KSPLIT_CH != 0) return false;
+  if (K % blocksize != 0) return false;
+  return true;
+}
+
+// N-blocking factor. A work-group covers `KSPLIT_WG_SGS * ncols` columns, so
+// `ncols` shrinks until it tiles N. `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS`
+// overrides the default (1, 2 or 4); `NCOLS == 1` reproduces the plain K-split
+// mapping instruction for instruction.
+inline int moe_w4a8_decode_ksplit_ncols(int N) {
+  int ncols = KSPLIT_NCOLS_DEFAULT;
+  const char* env = std::getenv("ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS");
+  if (env != nullptr) {
+    char* end = nullptr;
+    const long long v = std::strtoll(env, &end, 10);
+    if (end != env && v >= 1 && v <= KSPLIT_NCOLS_MAX && (v & (v - 1)) == 0) {
+      ncols = static_cast<int>(v);
+    }
+  }
+  while (ncols > 1 && (N % (KSPLIT_WG_SGS * ncols)) != 0) ncols /= 2;
+  return ncols;
+}
+
+template <typename ElementD, int NCOLS>
+void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
+                               const float* wscale, ElementD* outputs, const int* expert_id_per_token,
+                               int total_tokens, int N, int K, int blocksize, int blks) {
+  static_assert(NCOLS >= 1 && (NCOLS & (NCOLS - 1)) == 0, "NCOLS must be a power of two");
+  if (!moe_w4a8_decode_ksplit_shape_ok(N, K, blocksize) || (N % (KSPLIT_WG_SGS * NCOLS)) != 0) {
+    throw std::invalid_argument("moe_gemm_w4a8(decode): K-split GEMV called on an unsupported shape");
+  }
+  if (total_tokens == 0) return;
+
+  // One sub-group per (token, NCOLS columns); `KSPLIT_WG_SGS` of them per
+  // work-group.
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(N / NCOLS) * SG_SIZE};
+  sycl::range<2> local{1, static_cast<size_t>(KSPLIT_WG_SGS * SG_SIZE)};
+
+  q->parallel_for<MoEW4A8DecodeKSplit<ElementD, NCOLS>>(
+      sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+        const auto sg = it.get_sub_group();
+        const int token = static_cast<int>(it.get_global_id(0));
+        const int local_id = static_cast<int>(it.get_local_id(1));
+        // The work-group is one row of `KSPLIT_WG_SGS * SG_SIZE` work-items, so
+        // sub-group index and lane index are the halves of the local id.
+        const int lane = local_id % SG_SIZE;
+        const int n_base = (static_cast<int>(it.get_group(1)) * KSPLIT_WG_SGS + local_id / SG_SIZE) * NCOLS;
+
+        const int expert = expert_id_per_token[token];
+        const int8_t* act_row = qact + static_cast<size_t>(token) * K;
+        const size_t row0 = static_cast<size_t>(expert) * N + static_cast<size_t>(n_base);
+        const int8_t* w_rows[NCOLS];
+        const float* s_rows[NCOLS];
+#pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+          w_rows[c] = weights + (row0 + static_cast<size_t>(c)) * K;
+          s_rows[c] = wscale + (row0 + static_cast<size_t>(c)) * blks;
+        }
+
+        using QVec = sycl::vec<int8_t, KSPLIT_CH>;
+
+        float acc[NCOLS];
+#pragma unroll
+        for (int c = 0; c < NCOLS; ++c) acc[c] = 0.0f;
+
+        for (int ib = 0; ib < blks; ++ib) {
+          const int block_begin = ib * blocksize;
+          const int block_end = block_begin + blocksize;
+          int32_t iacc[NCOLS];
+#pragma unroll
+          for (int c = 0; c < NCOLS; ++c) iacc[c] = 0;
+
+          int k0 = block_begin + lane * KSPLIT_CH;
+          // Two chunks per iteration: their loads are independent, so the pair
+          // doubles the weight requests a thread keeps in flight. All
+          // `2 * NCOLS` weight loads are issued before the first is consumed.
+          for (; k0 + KSPLIT_STEP + KSPLIT_CH <= block_end; k0 += 2 * KSPLIT_STEP) {
+            const QVec av0 = *reinterpret_cast<const QVec*>(act_row + k0);
+            const QVec av1 = *reinterpret_cast<const QVec*>(act_row + k0 + KSPLIT_STEP);
+            QVec wv0[NCOLS], wv1[NCOLS];
+#pragma unroll
+            for (int c = 0; c < NCOLS; ++c) {
+              wv0[c] = *reinterpret_cast<const QVec*>(w_rows[c] + k0);
+              wv1[c] = *reinterpret_cast<const QVec*>(w_rows[c] + k0 + KSPLIT_STEP);
+            }
+#pragma unroll
+            for (int c = 0; c < NCOLS; ++c) {
+              int p0 = 0;
+              int p1 = 0;
+#pragma unroll
+              for (int u = 0; u < KSPLIT_CH; u += 2) {
+                p0 += static_cast<int>(av0[u]) * static_cast<int>(wv0[c][u]);
+                p1 += static_cast<int>(av0[u + 1]) * static_cast<int>(wv0[c][u + 1]);
+                p0 += static_cast<int>(av1[u]) * static_cast<int>(wv1[c][u]);
+                p1 += static_cast<int>(av1[u + 1]) * static_cast<int>(wv1[c][u + 1]);
+              }
+              iacc[c] += p0 + p1;
+            }
+          }
+          // Tail: the chunk of a lane whose partner a full step away falls
+          // outside the block. At most one chunk per lane.
+          for (; k0 < block_end; k0 += KSPLIT_STEP) {
+            const QVec av = *reinterpret_cast<const QVec*>(act_row + k0);
+#pragma unroll
+            for (int c = 0; c < NCOLS; ++c) {
+              const QVec wv = *reinterpret_cast<const QVec*>(w_rows[c] + k0);
+              int p0 = 0;
+              int p1 = 0;
+#pragma unroll
+              for (int u = 0; u < KSPLIT_CH; u += 2) {
+                p0 += static_cast<int>(av[u]) * static_cast<int>(wv[u]);
+                p1 += static_cast<int>(av[u + 1]) * static_cast<int>(wv[u + 1]);
+              }
+              iacc[c] += p0 + p1;
+            }
+          }
+
+#pragma unroll
+          for (int c = 0; c < NCOLS; ++c) acc[c] += static_cast<float>(iacc[c]) * s_rows[c][ib];
+        }
+
+        const float sa = ascale[token];
+#pragma unroll
+        for (int c = 0; c < NCOLS; ++c) {
+          const float total = sycl::reduce_over_group(sg, acc[c], sycl::plus<float>{});
+          if (lane == 0) {
+            outputs[static_cast<size_t>(token) * N + n_base + c] = static_cast<ElementD>(total * sa);
+          }
+        }
+      });
+}
+
+// Runtime NCOLS -> compile-time NCOLS bridge, plus the K-split / legacy choice.
+template <typename ElementD>
+void launch_w4a8_decode_dispatch(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
+                                 const float* wscale, ElementD* outputs, const int* expert_id_per_token,
+                                 int total_tokens, int N, int K, int blocksize, int blks) {
+  if (moe_w4a8_decode_ksplit_enabled() && moe_w4a8_decode_ksplit_shape_ok(N, K, blocksize)) {
+    switch (moe_w4a8_decode_ksplit_ncols(N)) {
+      case 4:
+        launch_w4a8_decode_ksplit<ElementD, 4>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token,
+                                               total_tokens, N, K, blocksize, blks);
+        return;
+      case 2:
+        launch_w4a8_decode_ksplit<ElementD, 2>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token,
+                                               total_tokens, N, K, blocksize, blks);
+        return;
+      default:
+        launch_w4a8_decode_ksplit<ElementD, 1>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token,
+                                               total_tokens, N, K, blocksize, blks);
+        return;
+    }
+  }
+  launch_w4a8_decode<ElementD>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token, total_tokens, N, K,
+                               blocksize, blks);
+}
+
+// ---------------------------------------------------------------------------
 // Host-side helpers
 // ---------------------------------------------------------------------------
 
@@ -790,6 +1050,9 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   const int blocksize = rescale_block_size;
   const int blks = K / blocksize;
 
+  const bool use_decode =
+      phase == 1 || (phase != 2 && total_tokens <= moe_w4a8::moe_w4a8_decode_max_tokens());
+
   // Quantized activations + per-token scales share one slab: `[T, K]` int8
   // followed by `[T]` fp32 (the int8 region is already 4-byte aligned because
   // K is a multiple of 64).
@@ -800,32 +1063,39 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   int8_t* qact = reinterpret_cast<int8_t*>(slab);
   float* ascale = reinterpret_cast<float*>(slab + scale_offset);
 
-  if (act_dtype == BTLA_DTYPE::F16) {
-    moe_w4a8::launch_act_dynamic_quant<sycl::half>(q, static_cast<const sycl::half*>(activations), qact, ascale,
-                                                   total_tokens, K);
-  } else {
-    using BF = sycl::ext::oneapi::bfloat16;
-    moe_w4a8::launch_act_dynamic_quant<BF>(q, static_cast<const BF*>(activations), qact, ascale, total_tokens, K);
+  // Decode consumes `expert_id_per_token`; the activation-quant kernel already
+  // runs one sub-group per token, so it derives the map as well instead of
+  // paying for a second launch (`fill_expert_id_per_token`) on a timeline where
+  // one call is issued per generated token. Prefill passes nullptr and the scan
+  // is not compiled into the work.
+  int* expert_map = nullptr;
+  if (use_decode) {
+    expert_map = reinterpret_cast<int*>(
+        moe_w4a8::expert_map_pool().acquire(q, static_cast<size_t>(total_tokens) * sizeof(int)));
   }
 
-  const bool use_decode =
-      phase == 1 || (phase != 2 && total_tokens <= moe_w4a8::moe_w4a8_decode_max_tokens());
+  if (act_dtype == BTLA_DTYPE::F16) {
+    moe_w4a8::launch_act_dynamic_quant<sycl::half>(q, static_cast<const sycl::half*>(activations), qact, ascale,
+                                                   total_tokens, K, expert_map, num_tokens_per_expert,
+                                                   num_experts);
+  } else {
+    using BF = sycl::ext::oneapi::bfloat16;
+    moe_w4a8::launch_act_dynamic_quant<BF>(q, static_cast<const BF*>(activations), qact, ascale, total_tokens, K,
+                                           expert_map, num_tokens_per_expert, num_experts);
+  }
 
   const auto* weights = static_cast<const int8_t*>(weights_s8);
   const auto* wscale = static_cast<const float*>(wscales);
 
   if (use_decode) {
-    int* expert_map = reinterpret_cast<int*>(
-        moe_w4a8::expert_map_pool().acquire(q, static_cast<size_t>(total_tokens) * sizeof(int)));
-    moe_decode_detail::fill_expert_id_per_token(q, expert_map, num_tokens_per_expert, num_experts, total_tokens);
     if (act_dtype == BTLA_DTYPE::F16) {
-      moe_w4a8::launch_w4a8_decode<sycl::half>(q, qact, ascale, weights, wscale,
-                                               static_cast<sycl::half*>(outputs), expert_map, total_tokens, N, K,
-                                               blocksize, blks);
+      moe_w4a8::launch_w4a8_decode_dispatch<sycl::half>(q, qact, ascale, weights, wscale,
+                                                        static_cast<sycl::half*>(outputs), expert_map,
+                                                        total_tokens, N, K, blocksize, blks);
     } else {
       using BF = sycl::ext::oneapi::bfloat16;
-      moe_w4a8::launch_w4a8_decode<BF>(q, qact, ascale, weights, wscale, static_cast<BF*>(outputs), expert_map,
-                                       total_tokens, N, K, blocksize, blks);
+      moe_w4a8::launch_w4a8_decode_dispatch<BF>(q, qact, ascale, weights, wscale, static_cast<BF*>(outputs),
+                                                expert_map, total_tokens, N, K, blocksize, blks);
     }
     return;
   }

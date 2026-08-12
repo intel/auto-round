@@ -68,6 +68,7 @@ Useful environment variables (read by the kernel itself):
 """
 
 import argparse
+import contextlib
 import math
 import os
 import sys
@@ -152,6 +153,27 @@ def _release_xpu_memory() -> None:
         torch.xpu.synchronize()
         if hasattr(torch.xpu, "empty_cache"):
             torch.xpu.empty_cache()
+
+
+@contextlib.contextmanager
+def _env_override(**overrides):
+    """Temporarily set environment variables, restoring the previous values.
+
+    The kernel re-reads its dispatch flags on every call (they are never
+    cached in a static), so an in-process override is enough to A/B two code
+    paths without reloading the extension.
+    """
+    previous = {name: os.environ.get(name) for name in overrides}
+    try:
+        for name, value in overrides.items():
+            os.environ[name] = value
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _xpu_time_ms(fn, warmup: int = None, iters: int = None) -> float:
@@ -264,6 +286,10 @@ _DECODE_BATCHES = [1]
 _DECODE_BATCHES_EXTENDED = [1, 2, 8, 16]
 _PREFILL_BATCHES = [128]
 _PREFILL_BATCHES_EXTENDED = [128, 512, 2048, 8192]
+# Compute-bound prefill batch: 4096 model tokens * top_k 8 = 32768 routed rows
+# = 256 rows per expert, so 100 TFLOPS needs ~195 GB/s of weight bandwidth --
+# reachable, unlike the 6.25 TB/s the default batch of 128 would require.
+_PREFILL_TARGET_BATCHES = [4096]
 
 
 def _spread_tokens(total_tokens: int, num_experts: int) -> list:
@@ -287,7 +313,7 @@ def _prefill_batches(all_shapes: bool) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0):
+def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0, need_reference=True, need_dequant=True):
     """Build one W4A8 MoE test case.
 
     Returns a dict with the packed int4 weights + scales, the activations,
@@ -295,6 +321,14 @@ def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0):
     dequantized weights (so quantization error of the *weights* is excluded
     from the W4A8-vs-reference comparison, isolating the extra error the int8
     activation path introduces).
+
+    ``need_dequant`` / ``need_reference`` are opt-outs for the perf sweeps:
+    the dequantized ``[E, N, K]`` weights (805 MB at the Qwen3 up-proj shape in
+    bf16) are only needed by the torch baseline, and the fp32 reference
+    (``[total_tokens, N]`` plus a full fp32 grouped matmul) is only needed by
+    the accuracy sweep. Skipping them is what keeps the compute-bound batches
+    -- the only ones where a prefill TOPS target is physically reachable --
+    inside a sane memory and time budget.
     """
     generator = torch.Generator(device="cpu").manual_seed(seed)
     w_float = torch.randn(E, N, K, generator=generator, dtype=torch.float32) * 0.05
@@ -310,17 +344,21 @@ def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0):
     activations = activations.to(device)
     ntpe = ntpe.to(device)
 
-    dequant = _dequant_int4_sym(packed, scales, group_size)
+    dequant = _dequant_int4_sym(packed, scales, group_size) if (need_dequant or need_reference) else None
 
     # fp32 per-expert reference on the dequantized weights.
-    reference = torch.empty(total_tokens, N, device=device, dtype=torch.float32)
-    offset = 0
-    for e, n_e in enumerate(tpe):
-        if n_e == 0:
-            continue
-        a = activations[offset : offset + n_e].to(torch.float32)
-        reference[offset : offset + n_e] = a @ dequant[e].to(torch.float32).t()
-        offset += n_e
+    reference = None
+    if need_reference:
+        reference = torch.empty(total_tokens, N, device=device, dtype=torch.float32)
+        offset = 0
+        for e, n_e in enumerate(tpe):
+            if n_e == 0:
+                continue
+            a = activations[offset : offset + n_e].to(torch.float32)
+            reference[offset : offset + n_e] = a @ dequant[e].to(torch.float32).t()
+            offset += n_e
+        if not need_dequant:
+            dequant = None
 
     return {
         "packed": packed,
@@ -397,6 +435,88 @@ def _weight_bytes(E, N, K, bits) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Targets and the roofline they have to be read against
+#
+# A W4A8 MoE grouped GEMM reads every *active* expert's int8 weights exactly
+# once (1 byte per element) and does ``2 * rows_per_expert`` FLOPs per weight
+# byte, so its arithmetic intensity is fixed by the routing alone:
+#
+#     TFLOPS <= 2 * rows_per_expert * weight_bandwidth
+#
+# Equivalently, the DRAM bandwidth a shape would need to reach the prefill
+# target is ``_bw_needed_for_tflops``: ``50 TB/s / rows_per_expert`` for the
+# 100 TFLOPS goal. At 8 rows per expert (batch 128 x top_k 8 over 128 experts)
+# that is 6.25 TB/s -- more than an order of magnitude past any current GPU --
+# so the 100 TFLOPS target only becomes physically reachable from roughly 176
+# rows per expert upward on a device that streams ~285 GB/s. This is why the
+# perf table prints ``rows/E`` and ``BW@target`` next to the measured numbers,
+# and why the prefill target sweep uses a compute-bound batch.
+# ---------------------------------------------------------------------------
+
+_TARGET_PREFILL_TFLOPS = 100.0
+_TARGET_DECODE_GBPS = 300.0
+
+
+def _rows_per_expert(total_tokens, active_experts) -> float:
+    return float(total_tokens) / float(active_experts) if active_experts else 0.0
+
+
+def _bw_needed_for_tflops(total_tokens, active_experts, tflops_target=_TARGET_PREFILL_TFLOPS) -> float:
+    """GB/s of weight traffic a shape needs to hit ``tflops_target``.
+
+    ``bytes / (flops / target) = target * active_experts / (2 * rows)`` -- the
+    N/K factors cancel, so this depends only on the routing.
+    """
+    rows = _rows_per_expert(total_tokens, active_experts)
+    if rows <= 0.0:
+        return float("inf")
+    return tflops_target * 1e12 / (2.0 * rows) / 1e9
+
+
+def _tflops_ceiling(total_tokens, active_experts, gbps) -> float:
+    """Best TFLOPS this shape can reach at ``gbps`` of weight bandwidth."""
+    return 2.0 * _rows_per_expert(total_tokens, active_experts) * gbps * 1e9 / 1e12
+
+
+_DEVICE_BW_GBPS = None
+
+
+def _device_bandwidth_gbps():
+    """Measure achievable device DRAM bandwidth with a large device-to-device copy.
+
+    Used to turn ``rows/E`` into a *hard* TFLOPS ceiling for the current GPU,
+    so a prefill row can be reported as "unreachable at this routing" instead
+    of "slow". Deriving the ceiling from the kernel's own measured bandwidth
+    would be circular (it reproduces the measured TFLOPS exactly), hence the
+    independent probe.
+
+    The copy counts one read plus one write, which slightly *understates*
+    read-only weight streaming -- a conservative choice: it can only make the
+    ceiling smaller and therefore never turns a genuinely slow kernel into an
+    excused row. Cached after the first call; returns ``None`` if XPU is
+    unavailable or the probe fails.
+    """
+    global _DEVICE_BW_GBPS
+    if _DEVICE_BW_GBPS is not None:
+        return _DEVICE_BW_GBPS
+    if not _xpu_available():
+        return None
+    nbytes = 128 * 1024 * 1024  # far past any device cache
+    try:
+        src = torch.empty(nbytes, dtype=torch.int8, device="xpu")
+        dst = torch.empty_like(src)
+        ms = _xpu_time_ms(lambda: dst.copy_(src), warmup=3, iters=10)
+        _DEVICE_BW_GBPS = 2.0 * nbytes / (ms * 1e-3) / 1e9
+    except Exception as exc:  # pragma: no cover - depends on device/runtime
+        print(f"[moe-w4a8-perf] device bandwidth probe unavailable: {exc}")
+        return None
+    finally:
+        src = dst = None
+        _release_xpu_memory()
+    return _DEVICE_BW_GBPS
+
+
+# ---------------------------------------------------------------------------
 # Printing
 # ---------------------------------------------------------------------------
 
@@ -449,33 +569,80 @@ def _print_perf_header(title: str) -> None:
     * ``w4a8(ms)`` / ``TFLOPS`` / ``W GB/s``: the new int8-compute path.
       ``W GB/s`` counts only the expert weight traffic actually touched by
       the routed tokens, which is what a memory-bound decode is limited by.
+    * ``rows/E``: routed tokens per active expert -- the arithmetic intensity
+      of the grouped GEMM is ``2 * rows/E`` FLOPs per weight byte, so this
+      single number decides whether a shape can be compute bound at all.
+    * ``BW@100T``: weight bandwidth the shape would need to reach 100 TFLOPS.
+      When it exceeds what the device can stream, ``TFLOPS`` is capped by
+      memory and no kernel change can reach the target at that shape.
     * ``vs torch`` / ``vs w4a16``: speedups (``other / w4a8``).
     """
     print()
     print("=" * _PERF_WIDTH)
     print(title)
     print(
-        f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}"
+        f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'rows/E':>8}"
         f"{'torch(ms)':>12}{'w4a16(ms)':>12}{'w4a8(ms)':>12}"
-        f"{'TFLOPS':>10}{'W GB/s':>10}{'vs torch':>11}{'vs w4a16':>11}{'prepack(ms)':>13}"
+        f"{'TFLOPS':>10}{'W GB/s':>10}{'BW@100T':>10}{'vs torch':>11}{'vs w4a16':>11}{'prepack(ms)':>13}"
     )
     print("-" * _PERF_WIDTH)
 
 
-def _print_perf_row(label, E, N, K, tokens, torch_ms, w4a16_ms, w4a8_ms, tflops, gbps, prepack_ms):
+def _print_perf_row(
+    label, E, N, K, tokens, torch_ms, w4a16_ms, w4a8_ms, tflops, gbps, prepack_ms, rows_per_expert=None, bw_at_100t=None
+):
     def _fmt(v, digits=3):
-        return "--" if v is None else f"{v:.{digits}f}"
+        if v is None:
+            return "--"
+        if isinstance(v, float) and math.isinf(v):
+            return "inf"
+        return f"{v:.{digits}f}"
 
     vs_torch = None if (torch_ms is None or not w4a8_ms) else torch_ms / w4a8_ms
     vs_w4a16 = None if (w4a16_ms is None or not w4a8_ms) else w4a16_ms / w4a8_ms
     print(
-        f"{label:<14}{E:>5}{N:>7}{K:>7}{tokens:>8}"
+        f"{label:<14}{E:>5}{N:>7}{K:>7}{tokens:>8}{_fmt(rows_per_expert, 1):>8}"
         f"{_fmt(torch_ms):>12}{_fmt(w4a16_ms):>12}{_fmt(w4a8_ms):>12}"
-        f"{_fmt(tflops, 2):>10}{_fmt(gbps, 1):>10}"
+        f"{_fmt(tflops, 2):>10}{_fmt(gbps, 1):>10}{_fmt(bw_at_100t, 0):>10}"
         f"{(_fmt(vs_torch, 2) + 'x') if vs_torch else '--':>11}"
         f"{(_fmt(vs_w4a16, 2) + 'x') if vs_w4a16 else '--':>11}"
         f"{_fmt(prepack_ms, 2):>13}"
     )
+
+
+def _print_targets(phase: str, rows) -> None:
+    """Print the goal verdict for a perf sweep.
+
+    Prefill is judged on TFLOPS, decode on weight bandwidth. A prefill row
+    whose device-bandwidth ceiling is already below the target is reported as
+    ``N/A`` rather than ``FAIL``: at that routing the target is unreachable by
+    construction (see the roofline note above ``_TARGET_PREFILL_TFLOPS``), and
+    the row's measured bandwidth is what should be judged instead.
+    """
+    if not rows:
+        return
+    is_prefill = phase == "prefill"
+    target = _TARGET_PREFILL_TFLOPS if is_prefill else _TARGET_DECODE_GBPS
+    unit = "TFLOPS" if is_prefill else "GB/s"
+    device_bw = rows[0].get("device_bw_gbps")
+    print()
+    print(f"targets [{phase}]: {'prefill compute' if is_prefill else 'decode weight bandwidth'} > {target:g} {unit}")
+    if device_bw:
+        print(f"  device copy bandwidth probe: {device_bw:.0f} GB/s")
+    for row in rows:
+        measured = row["tflops"] if is_prefill else row["gbps"]
+        ceiling = row.get("tflops_ceiling")
+        if is_prefill and ceiling is not None and ceiling < target:
+            verdict = (
+                f"N/A (bandwidth bound: ceiling {ceiling:.1f} {unit} at {row['rows_per_expert']:.0f} rows/expert; "
+                f"reaching {target:g} would need {row['bw_at_100t']:.0f} GB/s)"
+            )
+        else:
+            verdict = "PASS" if measured > target else "FAIL"
+        print(
+            f"  {row['label']:<12} tokens={row['tokens']:<6} rows/E={row['rows_per_expert']:<6.1f} "
+            f"{measured:8.2f} {unit} vs {target:g} -> {verdict}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -551,9 +718,15 @@ def run_accuracy(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, ve
     return rows
 
 
-def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbose=True):
-    """Run the W4A8 perf sweep. Returns a list of per-row metric dicts."""
+def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbose=True, torch_baseline=True):
+    """Run the W4A8 perf sweep. Returns a list of per-row metric dicts.
+
+    ``torch_baseline=False`` skips both the dequantized weights and the torch
+    matmul timing; the compute-bound batches need it to stay within memory.
+    """
     rows = []
+    # Probed before anything large is allocated (and cached across sweeps).
+    device_bw = _device_bandwidth_gbps()
     if verbose:
         _print_perf_header(
             f"W4A8 perf [{phase}] (E={_QWEN3_E}, group_size={_QWEN3_GROUP_SIZE}, "
@@ -563,7 +736,16 @@ def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbos
     for nk_label, N, K in _QWEN3_NK:
         for batch in batches:
             total_tokens = batch * _QWEN3_TOPK
-            case = _build_case(N, K, _QWEN3_E, total_tokens, _QWEN3_GROUP_SIZE, dtype)
+            case = _build_case(
+                N,
+                K,
+                _QWEN3_E,
+                total_tokens,
+                _QWEN3_GROUP_SIZE,
+                dtype,
+                need_reference=False,
+                need_dequant=torch_baseline,
+            )
 
             # One-shot int4 -> int8 AUTO_S8 conversion. Timed separately: it
             # happens once at model load, not per forward.
@@ -585,7 +767,7 @@ def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbos
             )
 
             w4a8_ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase))
-            torch_ms = _xpu_time_ms(lambda: _torch_baseline(case))
+            torch_ms = _xpu_time_ms(lambda: _torch_baseline(case)) if torch_baseline else None
             try:
                 w4a16_ms = _xpu_time_ms(lambda: _w4a16(case, phase))
             except Exception as exc:  # pragma: no cover - depends on build
@@ -597,6 +779,8 @@ def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbos
             # W4A8 streams int8 weights: 1 byte per element, only for the
             # experts that actually received tokens.
             gbps = _weight_bytes(active_experts, N, K, 8) / (w4a8_ms * 1e-3) / 1e9
+            rows_per_expert = _rows_per_expert(total_tokens, active_experts)
+            bw_at_100t = _bw_needed_for_tflops(total_tokens, active_experts)
 
             row = {
                 "label": nk_label,
@@ -611,11 +795,32 @@ def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbos
                 "tflops": tflops,
                 "gbps": gbps,
                 "prepack_ms": prepack_ms,
+                "active_experts": active_experts,
+                "rows_per_expert": rows_per_expert,
+                "bw_at_100t": bw_at_100t,
+                # Hard ceiling for this routing on this device (``None`` when
+                # the bandwidth probe is unavailable).
+                "tflops_ceiling": (
+                    None if device_bw is None else _tflops_ceiling(total_tokens, active_experts, device_bw)
+                ),
+                "device_bw_gbps": device_bw,
             }
             rows.append(row)
             if verbose:
                 _print_perf_row(
-                    nk_label, _QWEN3_E, N, K, total_tokens, torch_ms, w4a16_ms, w4a8_ms, tflops, gbps, prepack_ms
+                    nk_label,
+                    _QWEN3_E,
+                    N,
+                    K,
+                    total_tokens,
+                    torch_ms,
+                    w4a16_ms,
+                    w4a8_ms,
+                    tflops,
+                    gbps,
+                    prepack_ms,
+                    rows_per_expert=rows_per_expert,
+                    bw_at_100t=bw_at_100t,
                 )
 
             # Drop the (large) int8 weights before the next shape allocates.
@@ -623,6 +828,8 @@ def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbos
             ark.clear_moe_w4a8_prepack_cache()
             ark.moe_w4a8_release_scratch()
             _release_xpu_memory()
+    if verbose:
+        _print_targets(phase, rows)
     return rows
 
 
@@ -684,11 +891,55 @@ if pytest is not None:
             all_shapes = request.config.getoption("--all-shapes", default=False)
             rows = run_perf("decode", _decode_batches(all_shapes))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            _assert_targets(request, "decode", rows)
 
         def test_perf_prefill(self, request):
             all_shapes = request.config.getoption("--all-shapes", default=False)
             rows = run_perf("prefill", _prefill_batches(all_shapes))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            _assert_targets(request, "prefill", rows)
+
+        def test_perf_prefill_compute_bound(self, request):
+            """Prefill throughput at a batch where the TFLOPS target is reachable.
+
+            ``test_perf_prefill`` runs 128 model tokens, i.e. 8 rows per
+            expert: at that routing the grouped GEMM only does 16 FLOPs per
+            weight byte, so it is pinned to the DRAM roofline and no amount of
+            kernel work can push it to 100 TFLOPS. This case routes 4096 model
+            tokens (256 rows per expert), which needs only ~195 GB/s of weight
+            bandwidth for 100 TFLOPS and is therefore the shape the compute
+            target should actually be measured at.
+            """
+            rows = run_perf("prefill", _PREFILL_TARGET_BATCHES, torch_baseline=False)
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            _assert_targets(request, "prefill", rows)
+
+        def test_decode_ksplit_matches_legacy(self):
+            """The K-split decode mapping must not change the result.
+
+            Runs the same decode problem with ``ARK_MOE_W4A8_DECODE_KSPLIT``
+            on and off and requires the two outputs to agree bit-for-bit: both
+            paths accumulate the same int32 partial sums per re-scale block,
+            only the assignment of K elements to lanes differs.
+            """
+            case = _build_case(
+                _QWEN3_NK[0][1],
+                _QWEN3_NK[0][2],
+                _QWEN3_E,
+                _DECODE_BATCHES[0] * _QWEN3_TOPK,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            outs = {}
+            for flag in ("0", "1"):
+                with _env_override(ARK_MOE_W4A8_DECODE_KSPLIT=flag):
+                    outs[flag] = _w4a8(case, weights_s8, wscales, block, "decode").clone()
+            torch.testing.assert_close(outs["1"], outs["0"], rtol=0, atol=0)
 
 
 # Minimum quality gate for the int8 activation path against an fp32 reference
@@ -706,6 +957,29 @@ def _assert_accuracy(rows) -> None:
         label = f"{row['label']} phase={row['phase']} N={row['N']} K={row['K']} tokens={row['tokens']}"
         assert row["snr_ref"] >= _MIN_SNR_DB, f"{label}: SNR vs fp32 reference {row['snr_ref']:.2f} dB is too low"
         assert row["cos_ref"] >= _MIN_COSINE, f"{label}: cosine vs fp32 reference {row['cos_ref']:.5f} is too low"
+
+
+def _assert_targets(request, phase, rows) -> None:
+    """Enforce the perf goals only when ``--enforce-targets`` was passed.
+
+    The goals are device-dependent (they assume a discrete Arc-class GPU), so
+    by default the verdict printed by ``_print_targets`` is informational and
+    the perf tests stay green anywhere the kernel merely runs. Rows whose
+    bandwidth-bound ceiling is below the target are never enforced: no kernel
+    change can satisfy the target at that routing.
+    """
+    if not request.config.getoption("--enforce-targets", default=False):
+        return
+    is_prefill = phase == "prefill"
+    target = _TARGET_PREFILL_TFLOPS if is_prefill else _TARGET_DECODE_GBPS
+    for row in rows:
+        ceiling = row.get("tflops_ceiling")
+        if is_prefill and ceiling is not None and ceiling < target:
+            continue
+        measured = row["tflops"] if is_prefill else row["gbps"]
+        unit = "TFLOPS" if is_prefill else "GB/s"
+        label = f"{row['label']} phase={phase} N={row['N']} K={row['K']} tokens={row['tokens']}"
+        assert measured > target, f"{label}: {measured:.2f} {unit} is below the {target:g} {unit} target"
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +1014,14 @@ def _parse_args(argv):
     )
     parser.add_argument("--skip-accuracy", action="store_true", help="Only run the perf sweep.")
     parser.add_argument("--skip-perf", action="store_true", help="Only run the accuracy sweep.")
+    parser.add_argument(
+        "--compute-bound",
+        action="store_true",
+        help=(
+            "Also run the compute-bound prefill batch (4096 model tokens = 256 rows per expert), "
+            "the smallest sweep point where the 100 TFLOPS goal is not capped by weight bandwidth."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     return parser.parse_args(argv)
@@ -772,6 +1054,14 @@ def main(argv=None) -> int:
                 failures.append(str(exc))
         if not args.skip_perf:
             run_perf(phase, batches, dtype=dtype, rescale_group_size=args.rescale_group_size)
+            if phase == "prefill" and args.compute_bound:
+                run_perf(
+                    phase,
+                    _PREFILL_TARGET_BATCHES,
+                    dtype=dtype,
+                    rescale_group_size=args.rescale_group_size,
+                    torch_baseline=False,
+                )
 
     if failures:
         print()
