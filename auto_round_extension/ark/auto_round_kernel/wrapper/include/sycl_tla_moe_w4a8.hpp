@@ -1,8 +1,13 @@
 // SYCL MoE W4A8 -- INT4 weights / INT8 compute (prefill + decode)
 //
-// STATUS: NEEDS-HARDWARE-VALIDATION -- this header has not been compiled or
-// run on an Intel GPU yet (the authoring environment has no XPU and no SYCL
-// compiler). It follows the same porting conventions as its siblings
+// STATUS: PARTIALLY HARDWARE-VALIDATED -- `test_perf_prefill_tile_sweep` and
+// `test_perf_decode_config_sweep` have been run on BMG, so both phases compile
+// and run and their dispatch defaults (tile ladder, decode CH / NCOLS) come
+// from those measurements; every swept configuration also passed the
+// cross-configuration equivalence check. The accuracy gates against the fp32
+// reference and `test_decode_ksplit_matches_legacy` still need a device run.
+// The authoring environment has no XPU and no SYCL compiler, so anything added
+// since follows the porting conventions of its siblings
 // `sycl_tla_moe_prefill_int_dpas.hpp` / `sycl_tla_moe_prefill_fp8_dpas.hpp`.
 // ---------------------------------------------------------------------------
 //
@@ -319,16 +324,28 @@ void launch_weight_rescale_s4_to_s8(sycl::queue* q, const uint8_t* weights, cons
 //
 //     M*K * ceil(N/TileN)  +  N*K * ceil(M/TileM)  ~=  M*N*K * (1/TileN + 1/TileM)
 //
-// i.e. A is re-read once per N tile and B once per M tile. At the compute-bound
-// Qwen3-MoE shape (256 rows/expert, N = 1536, K = 2048) a 128x128 tile re-reads
-// A twelve times, for ~1.6 GB of tile traffic per grouped GEMM -- ~470 GB/s at
-// the measured 3.3 ms, i.e. above the device's ~390 GB/s copy rate, so the GEMM
-// is still memory-bound even though the compact operands are only ~0.6 GB.
-// Doubling both extents to 256x256 halves that (`1/256 + 1/256` vs
-// `1/128 + 1/128`), which is why the reference `launch_igemm`'s large rung is
-// 256x256 and the W4A16 MoE policy uses a 256-wide N tile. `w4a8_policy_large`
-// matches it; `w4a8_policy_m_256_n128` keeps the narrower variant reachable
-// through `ARK_MOE_W4A8_PREFILL_TILE` for A/B measurement.
+// i.e. A is re-read once per N tile and B once per M tile. That argument alone
+// says "widen both extents", and it is wrong here: `test_perf_prefill_tile_sweep`
+// on BMG (256 rows/expert, bf16 act) measures the 256-wide N tiles *slower* than
+// the 128-wide ones on every shape, by a margin no traffic saving comes close to.
+//
+//   shape         128x128    256x128    128x256    256x256
+//   qwen3 up      3.377 ms   3.419 ms   4.703 ms   4.668 ms
+//   qwen3 down    2.614 ms   2.718 ms   3.862 ms   3.835 ms
+//   minimax up    6.743 ms   6.761 ms   8.964 ms   9.049 ms
+//   minimax down  7.350 ms   7.101 ms   9.928 ms   9.872 ms
+//
+// The split is by `TileN`, not by `TileM`: both 128-wide tiles land within ~4%
+// of each other and both 256-wide ones ~35-50% behind, whatever `TileM` is. The
+// sub-group layouts explain it -- `SGLayout` is 4 sub-groups wide in all four,
+// so `TileN = 256` gives every sub-group a 32x64 C fragment instead of 32x32,
+// i.e. 128 int32 accumulators per SIMD16 lane instead of 64. That is where the
+// register file stops holding the fragment plus the staged A/B tiles, and the
+// occupancy (or spill) cost of it swamps the halved tile traffic.
+//
+// So the ladder tops out at 128x128. The 256-wide policies stay compiled and
+// reachable through `ARK_MOE_W4A8_PREFILL_TILE` so the sweep can re-check them
+// on a device with a different register budget.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
@@ -629,13 +646,11 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // ---------------------------------------------------------------------------
 // Prefill driver: policy selection on the average per-expert M.
 //
-// The small-M rungs match the tile ladder of `launch_igemm_kblock` in
-// `sycl_tla_s8_gemm.hpp`. The large rung differs from the reference's `m > 1024`
-// threshold because a grouped GEMM's M is *per expert*: at 256 rows/expert the
-// dense ladder would still pick 128x128 and pay 12-16 re-reads of the A tile
-// (see the tile-policy comment above), which is what keeps the compute-bound
-// Qwen3-MoE shape memory-bound. 256 rows exactly fill a 256-row tile, so the
-// 256x256 policy takes over as soon as the average expert can fill it.
+// The rungs match the tile ladder of `launch_igemm_kblock` in
+// `sycl_tla_s8_gemm.hpp`, minus its `m > 1024` 256-wide rung: a grouped GEMM's
+// M is *per expert*, and the on-hardware sweep (see the tile-policy comment
+// above) measures every 256-wide N tile 35-50% slower than 128x128 at 256
+// rows/expert, so the ladder tops out at 128x128 instead.
 //
 // `ARK_MOE_W4A8_PREFILL_TILE` overrides the choice with an explicit `MxN` tile
 // (`8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`); anything
@@ -684,10 +699,8 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_8)
   } else if (A_avg_M < 128) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_64)
-  } else if (A_avg_M < 256) {
-    ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128)
   } else {
-    ARK_MOE_W4A8_LAUNCH(w4a8_policy_large)
+    ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128)
   }
 #undef ARK_MOE_W4A8_LAUNCH
 }
@@ -806,15 +819,23 @@ void launch_w4a8_decode(sycl::queue* q, const int8_t* qact, const float* ascale,
 // weight load and one 16-byte int8 activation load, the same transactions the
 // legacy GEMV issues. `ARK_MOE_W4A8_DECODE_KSPLIT_CH=32` doubles them to
 // 32-byte loads, which halves the number of memory messages per byte and
-// doubles the bytes a thread keeps in flight -- the lever for the gap between
-// the GEMV's measured streaming rate and the device's copy bandwidth. It costs
-// GRF (2 x NCOLS chunks live at once) and needs `blocksize >= SG_SIZE * CH`,
-// so it stays opt-in until measured on hardware.
+// doubles the bytes a thread keeps in flight; it costs GRF (2 x NCOLS chunks
+// live at once) and needs `blocksize >= SG_SIZE * CH`.
+//
+// Measured (`test_perf_decode_config_sweep`, BMG, 8 routed rows, bf16 act), at
+// the default NCOLS: 284.0 -> 278.9 GB/s (qwen3 up), 280.1 -> 244.4 (qwen3
+// down), 268.1 -> 259.9 (minimax up), 315.5 -> 308.7 (minimax down). The wider
+// chunk never wins at any NCOLS and costs up to 13%, so 16 stays the default
+// and 32 stays an opt-in sweep point.
 constexpr int KSPLIT_CH_DEFAULT = 16;
 constexpr int KSPLIT_CH_MAX = 32;
 // Sub-groups per work-group. Each owns `NCOLS` output columns, so a work-group
 // covers `KSPLIT_WG_SGS * NCOLS` consecutive columns.
 constexpr int KSPLIT_WG_SGS = N_TILE;
+// `NCOLS = 2` is the measured default: it is the fastest configuration on two
+// of the four swept shapes and within 2% of the best (`4` on qwen3 down, `1` on
+// minimax up) on the other two, while `1` costs 47% on qwen3 up and `4` costs
+// 14% on minimax up.
 constexpr int KSPLIT_NCOLS_DEFAULT = 2;
 constexpr int KSPLIT_NCOLS_MAX = 4;
 

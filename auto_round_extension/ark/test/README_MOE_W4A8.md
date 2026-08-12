@@ -331,6 +331,55 @@ otherwise collide with another layer's weights). Use `cache_prepack=False` on
 `ark.moe_w4a8` (or `clear_moe_w4a8_prepack_cache()`) if that trade isn't worth
 it for a given deployment.
 
+## Tuned defaults (measured)
+
+The defaults below come from one `-k sweep` run on BMG (bf16 activations, 8
+routed rows for decode, 256 rows/expert for prefill). Every configuration is
+checked for numerical equivalence with the first one before it is timed.
+
+### Prefill tile
+
+| shape | `128x128` | `256x128` | `128x256` | `256x256` |
+|---|---|---|---|---|
+| qwen3 up | **3.377 ms** | 3.419 ms | 4.703 ms | 4.668 ms |
+| qwen3 down | **2.614 ms** | 2.718 ms | 3.862 ms | 3.835 ms |
+| minimax up | **6.743 ms** | 6.761 ms | 8.964 ms | 9.049 ms |
+| minimax down | 7.350 ms | **7.101 ms** | 9.928 ms | 9.872 ms |
+
+The 256-wide N tiles are 35–50% *slower* than the 128-wide ones on every shape —
+the opposite of what the tile-traffic argument predicts (`1/TileM + 1/TileN`
+halves when both extents double, so `256x256` should have moved half the bytes
+of `128x128`). `TileM` barely matters; `TileN` does, because `SGLayout` is 4
+sub-groups wide in every policy: `TileN = 256` gives each sub-group a 32×64 C
+fragment — 128 int32 accumulators per SIMD16 lane — instead of 32×32 (64), past
+the point where the register file still holds the fragment plus the staged A/B
+tiles.
+
+The ladder therefore tops out at **`128x128`**: `< 16` rows/expert → `8x128`,
+`< 128` → `64x128`, otherwise `128x128`. The 256-wide policies stay compiled and
+selectable with `ARK_MOE_W4A8_PREFILL_TILE`, so the sweep can re-check them on a
+device with a different register budget.
+
+Even at the best tile the swept shapes reach 61.1 / 39.4 / 68.8 / 65.3 TFLOPS
+(qwen3 up / down, minimax up / down) — below both the 100 TFLOPS target and the
+`2 × 256 rows × bandwidth` roofline for this routing, so the tile is not the only
+remaining gap at 256 rows/expert.
+
+### Decode chunk width and column blocking
+
+| shape | fastest equivalent config | default (`CH=16`, `NCOLS=2`) | `CH=32`, same `NCOLS` |
+|---|---|---|---|
+| qwen3 up | ch16 ncols2 — **284.0 GB/s** | 284.0 GB/s | 278.9 GB/s |
+| qwen3 down | ch16 ncols4 — **285.7 GB/s** | 280.1 GB/s | 244.4 GB/s |
+| minimax up | ch16 ncols1 — **271.0 GB/s** | 268.1 GB/s | 259.9 GB/s |
+| minimax down | ch16 ncols2 — **315.5 GB/s** | 315.5 GB/s | 308.7 GB/s |
+
+`CH = 32` never wins and costs up to 13%, so `16` stays the default. `NCOLS = 2`
+is the fastest configuration on two of the four shapes and within 2% of the best
+on the other two, while `1` loses 47% on qwen3 up and `4` loses 14% on minimax
+up, so it stays the default as well. At those defaults the K-split mapping is
+worth 1.09–1.93× over the legacy GEMV.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -338,9 +387,9 @@ it for a given deployment.
 | `ARK_MOE_W4A8_AUTO_S8` | Override the AUTO_S8 re-scale block size. Unset / `-1` = one scale per output channel (fastest). Values that aren't a multiple of both `group_size` and 64, or that don't divide K, silently fall back to K. |
 | `ARK_MOE_W4A8_DECODE_MAX_TOKENS` | Token count at or below which `phase="auto"` picks the GEMV (default `128`). |
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | Coalesced K-split decode mapping; **on by default**. Set to `0` to fall back to the original one-work-item-per-output GEMV (useful for A/B measurements). Ignored when the shape doesn't qualify. |
-| `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. |
-| `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | K elements (= bytes) a lane loads per chunk: `16` (default) or `32`. `32` halves the number of memory messages and doubles the bytes a thread keeps in flight, at the cost of GRF; it needs a re-scale block of at least 512 and silently falls back to `16` otherwise. |
-| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder. A `TileM × TileN` tile re-reads A once per N tile and B once per M tile, so tile traffic is `~ M·N·K · (1/TileM + 1/TileN)` -- at 256 rows/expert the old `128x128` choice pulled ~1.6 GB per grouped GEMM (above the device copy rate), which is why the large rung is now `256x256`. |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. `2` is the measured default, see [Tuned defaults](#tuned-defaults-measured). |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | K elements (= bytes) a lane loads per chunk: `16` (default) or `32`. `32` halves the number of memory messages and doubles the bytes a thread keeps in flight, at the cost of GRF; it needs a re-scale block of at least 512 and silently falls back to `16` otherwise. Measured slower than `16` on every swept shape, so it is a sweep point rather than a recommendation. |
+| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder, which tops out at `128x128`. The 256-wide N tiles move less tile traffic but measure 35–50% slower (see [Tuned defaults](#tuned-defaults-measured)); `256x128` is within ~4% of `128x128` everywhere and slightly ahead on minimax down. |
 
 ## Shape constraints
 
@@ -359,15 +408,16 @@ failing.
 
 ## Status
 
-The W4A8 kernel is a new SYCL/CuTe port and is marked
-`STATUS: NEEDS-HARDWARE-VALIDATION` in
-`auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. This script is the
-intended on-hardware validation vehicle: run the accuracy sweep first (it will
-catch layout/scale bugs immediately), then the perf sweep to tune the tile
-ladder and the decode threshold.
+The W4A8 kernel is a new SYCL/CuTe port, marked
+`STATUS: PARTIALLY HARDWARE-VALIDATED` in
+`auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. Both perf sweeps have
+been run on BMG — that run is where the tile ladder and the decode `CH` /
+`NCOLS` defaults come from (see [Tuned defaults](#tuned-defaults-measured)) — and
+every swept configuration passed the cross-configuration equivalence check.
 
-The decode K-split mapping is likewise unvalidated on hardware. Its index math
-was checked against the legacy mapping with a host-side mock, and
-`test_decode_ksplit_matches_legacy` re-checks it on device; if it ever
+Still to run on device: the accuracy sweep against the fp32 reference (it will
+catch layout/scale bugs immediately) and `test_decode_ksplit_matches_legacy`,
+which re-checks the K-split mapping against the legacy one. The K-split index
+math has otherwise only been checked with a host-side mock; if it ever
 regresses, `ARK_MOE_W4A8_DECODE_KSPLIT=0` restores the previous behaviour
 without a rebuild.

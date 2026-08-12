@@ -310,6 +310,50 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 在 `ark.moe_w4a8` 上传 `cache_prepack=False` (或调用
 `clear_moe_w4a8_prepack_cache()`)。
 
+## 实测得到的默认值
+
+下面的默认值来自 BMG 上的一次 `-k sweep` (bf16 激活，decode 为 8 条 routed
+行，prefill 为每专家 256 行)。每种配置在计时之前都会先与第一种配置做数值等价性
+检查。
+
+### Prefill tile
+
+| 形状 | `128x128` | `256x128` | `128x256` | `256x256` |
+|---|---|---|---|---|
+| qwen3 up | **3.377 ms** | 3.419 ms | 4.703 ms | 4.668 ms |
+| qwen3 down | **2.614 ms** | 2.718 ms | 3.862 ms | 3.835 ms |
+| minimax up | **6.743 ms** | 6.761 ms | 8.964 ms | 9.049 ms |
+| minimax down | 7.350 ms | **7.101 ms** | 9.928 ms | 9.872 ms |
+
+在所有形状上，N 方向为 256 的 tile 都比 128 的**慢** 35–50%——这与 tile 访存量的
+推导恰好相反 (两个维度同时翻倍时 `1/TileM + 1/TileN` 会减半，`256x256` 本应只搬运
+`128x128` 一半的字节)。起决定作用的不是 `TileM` 而是 `TileN`：所有 policy 的
+`SGLayout` 在 N 方向都是 4 个 sub-group，因此 `TileN = 256` 会让每个 sub-group 的
+C fragment 从 32×32 (每个 SIMD16 lane 64 个 int32 累加器) 变成 32×64 (128 个)，超
+出了寄存器堆同时容纳 fragment 与暂存 A/B tile 的容量。
+
+因此 tile 阶梯的最大档就是 **`128x128`**：每专家 `< 16` 行 → `8x128`，`< 128` →
+`64x128`，其余 → `128x128`。N 方向为 256 的 policy 仍然会被编译，并可通过
+`ARK_MOE_W4A8_PREFILL_TILE` 选择，以便在寄存器预算不同的设备上重新验证。
+
+即使选用最优 tile，被扫描的四个形状也只达到 61.1 / 39.4 / 68.8 / 65.3 TFLOPS
+(qwen3 up / down、minimax up / down)——既低于 100 TFLOPS 的目标，也低于该路由下
+`2 × 256 行 × 带宽` 的 roofline，说明在每专家 256 行时 tile 并不是唯一的差距来源。
+
+### Decode 的 chunk 宽度与列分块
+
+| 形状 | 数值等价配置中最快的一个 | 默认值 (`CH=16`、`NCOLS=2`) | 相同 `NCOLS` 下的 `CH=32` |
+|---|---|---|---|
+| qwen3 up | ch16 ncols2 — **284.0 GB/s** | 284.0 GB/s | 278.9 GB/s |
+| qwen3 down | ch16 ncols4 — **285.7 GB/s** | 280.1 GB/s | 244.4 GB/s |
+| minimax up | ch16 ncols1 — **271.0 GB/s** | 268.1 GB/s | 259.9 GB/s |
+| minimax down | ch16 ncols2 — **315.5 GB/s** | 315.5 GB/s | 308.7 GB/s |
+
+`CH = 32` 从未取胜，最多还慢 13%，因此默认值保持 `16`。`NCOLS = 2` 在四个形状中的
+两个上最快，在另外两个上也与最优值相差不到 2%；而 `1` 在 qwen3 up 上慢 47%、`4` 在
+minimax up 上慢 14%，因此 `2` 同样保持为默认值。在这组默认值下，K-split 映射相对
+legacy GEMV 的收益为 1.09–1.93×。
+
 ## 环境变量
 
 | 变量 | 作用 |
@@ -317,9 +361,9 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 | `ARK_MOE_W4A8_AUTO_S8` | 覆盖 AUTO_S8 重缩放 block 大小。未设置 / `-1` 表示每个输出通道一个 scale (最快)。如果取值不是 `group_size` 和 64 的公倍数，或不能整除 K，则静默回退为 K。 |
 | `ARK_MOE_W4A8_DECODE_MAX_TOKENS` | `phase="auto"` 时选择 GEMV 的 token 数上限 (默认 `128`)。 |
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | 合并访存的 K-split decode 映射，**默认开启**。设为 `0` 可回退到原来每个输出一个 work-item 的 GEMV (便于 A/B 对比)。形状不满足条件时该开关无效。 |
-| `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | K-split 映射中每个 sub-group 处理的输出列数：`1`、`2` (默认) 或 `4`。取值越大，激活数据的加载可以摊到更多列上，但要求 `N % (16 × NCOLS) == 0`。 |
-| `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | 每个 lane 每次加载的 K 元素数 (即字节数)：`16` (默认) 或 `32`。`32` 可以把访存指令数减半、并让每个线程同时在途的字节数翻倍，代价是更多 GRF；它要求 re-scale block 至少为 512，否则会自动回退到 `16`。 |
-| `ARK_MOE_W4A8_PREFILL_TILE` | 强制指定 prefill 的 work-group tile：`8x128`、`64x128`、`128x128`、`128x256`、`256x128`、`256x256`。不设置 (默认) 时按 tile 阶梯自动选择。`TileM × TileN` 的 tile 会让 A 每个 N tile 重读一次、B 每个 M tile 重读一次，因此 tile 访存量约为 `M·N·K · (1/TileM + 1/TileN)`——在每专家 256 行时，原来的 `128x128` 每个 grouped GEMM 要搬运约 1.6 GB (已超过设备的拷贝带宽)，所以最大档现在改为 `256x256`。 |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | K-split 映射中每个 sub-group 处理的输出列数：`1`、`2` (默认) 或 `4`。取值越大，激活数据的加载可以摊到更多列上，但要求 `N % (16 × NCOLS) == 0`。默认值 `2` 来自实测，参见[实测得到的默认值](#实测得到的默认值)。 |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | 每个 lane 每次加载的 K 元素数 (即字节数)：`16` (默认) 或 `32`。`32` 可以把访存指令数减半、并让每个线程同时在途的字节数翻倍，代价是更多 GRF；它要求 re-scale block 至少为 512，否则会自动回退到 `16`。实测中它在所有形状上都慢于 `16`，因此只作为扫描项而非推荐值。 |
+| `ARK_MOE_W4A8_PREFILL_TILE` | 强制指定 prefill 的 work-group tile：`8x128`、`64x128`、`128x128`、`128x256`、`256x128`、`256x256`。不设置 (默认) 时按 tile 阶梯自动选择，其最大档为 `128x128`。N 方向为 256 的 tile 虽然访存量更小，但实测慢 35–50% (参见[实测得到的默认值](#实测得到的默认值))；`256x128` 在所有形状上与 `128x128` 相差约 4% 以内，在 minimax down 上还略微领先。 |
 
 ## 形状约束
 
@@ -339,10 +383,12 @@ decode 的 K-split 映射还额外要求重缩放 block 不小于 256 且是 16 
 
 W4A8 kernel 是新移植的 SYCL/CuTe 实现，在
 `auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp` 中被标记为
-`STATUS: NEEDS-HARDWARE-VALIDATION`。本脚本正是为在真实硬件上验证它而设计的：请
-先运行精度扫描 (它能立刻暴露 layout / scale 相关的 bug)，再运行性能扫描来调优
-tile 阶梯与 decode 阈值。
+`STATUS: PARTIALLY HARDWARE-VALIDATED`。两个性能扫描都已在 BMG 上跑过——tile 阶梯
+以及 decode 的 `CH` / `NCOLS` 默认值正是来自那次运行 (参见[实测得到的默认
+值](#实测得到的默认值))，并且所有被扫描的配置都通过了配置间的数值等价性检查。
 
-decode 的 K-split 映射同样尚未在硬件上验证。其下标计算已用宿主端 mock 与原映射逐
-一比对，`test_decode_ksplit_matches_legacy` 会在设备上再次校验；一旦出现回归，设置
-`ARK_MOE_W4A8_DECODE_KSPLIT=0` 即可在不重新编译的情况下恢复原有行为。
+仍需在设备上运行的部分：与 fp32 参考实现对比的精度扫描 (它能立刻暴露 layout /
+scale 相关的 bug)，以及重新校验 K-split 映射与原映射一致性的
+`test_decode_ksplit_matches_legacy`。除此之外，K-split 的下标计算目前只用宿主端
+mock 比对过；一旦出现回归，设置 `ARK_MOE_W4A8_DECODE_KSPLIT=0` 即可在不重新编译的
+情况下恢复原有行为。
