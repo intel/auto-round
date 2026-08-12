@@ -67,7 +67,7 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers chardet
+    uv pip install -U chardet
     uv pip install -U pytest-cov pytest-timeout
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
     uv pip uninstall torch torchvision
