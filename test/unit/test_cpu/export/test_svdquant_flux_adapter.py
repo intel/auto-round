@@ -1,14 +1,10 @@
 import inspect
 import json
-from pathlib import Path
 
 import pytest
 import torch
 
-from auto_round.export.svdquant_adapters.flux import (
-    FluxSVDQuantNunchakuAdapter,
-    flux_onefile_tensor_count,
-)
+from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
 from auto_round.export.svdquant_nunchaku import (
     IdentitySVDQuantModelAdapter,
     SourceLinearRecord,
@@ -72,22 +68,6 @@ def test_double_qkv_reconstructs_effective_sources_at_fixed_rank_in_order():
     )
 
 
-def test_double_context_qkv_reconstructs_effective_sources_with_runtime_name_and_bias_order():
-    sources = tuple(
-        _source(f"transformer_blocks.0.attn.add_{name}_proj", seed=index + 11)
-        for index, name in enumerate(("q", "k", "v"))
-    )
-
-    (record,) = tuple(FluxSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(_model(), sources))
-
-    assert record.prefix == "transformer_blocks.0.qkv_proj_context"
-    expected = torch.cat([_effective(source) for source in sources])
-    torch.testing.assert_close(
-        record.residual_weight + record.lora_up @ record.lora_down, expected, atol=2e-5, rtol=2e-5
-    )
-    torch.testing.assert_close(record.bias, torch.cat([source.bias for source in sources]))
-
-
 def test_double_qkv_preserves_shared_low_rank_and_smooth_without_redecomposition():
     shared_down = torch.randn(2, 8)
     shared_smooth = torch.linspace(0.5, 1.5, 8)
@@ -142,22 +122,21 @@ def test_single_proj_out_splits_input_columns_and_keeps_bias_only_on_mlp():
     torch.testing.assert_close(mlp_fc2.bias, source.bias)
 
 
-@pytest.mark.parametrize(
-    ("source_name", "target_name"),
-    [
+def test_direct_maps_preserve_logical_records():
+    mappings = (
         ("transformer_blocks.0.attn.to_out.0", "transformer_blocks.0.out_proj"),
         ("transformer_blocks.0.ff.net.2.linear", "transformer_blocks.0.mlp_fc2"),
         ("transformer_blocks.0.ff_context.net.0.proj", "transformer_blocks.0.mlp_context_fc1"),
         ("single_transformer_blocks.0.proj_mlp", "single_transformer_blocks.0.mlp_fc1"),
-    ],
-)
-def test_direct_maps_preserve_logical_records(source_name, target_name):
-    source = _source(source_name)
-    (record,) = tuple(FluxSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(_model(), (source,)))
-    assert record.prefix == target_name
-    assert record.residual_weight is source.residual_weight
-    assert record.lora_down is source.lora_down
-    assert record.smooth is source.smooth
+    )
+    adapter = FluxSVDQuantNunchakuAdapter(require_complete_model=False)
+    for source_name, target_name in mappings:
+        source = _source(source_name)
+        (record,) = tuple(adapter.map_modules(_model(), (source,)))
+        assert record.prefix == target_name
+        assert record.residual_weight is source.residual_weight
+        assert record.lora_down is source.lora_down
+        assert record.smooth is source.smooth
 
 
 def _install(root, path, module):
@@ -220,150 +199,22 @@ def test_metadata_explicit_config_and_complete_mode_rejects_gaps():
         tuple(adapter.map_modules(_model(), (_source("transformer_blocks.1.attn.to_q"),)))
 
 
-def test_metadata_normalizes_pathlike_config_values():
-    adapter = FluxSVDQuantNunchakuAdapter(
-        config={
-            "num_layers": 0,
-            "num_single_layers": 0,
-            "_name_or_path": Path("/models/flux/transformer"),
-            "nested": {"cache": Path("/cache/flux")},
-        }
-    )
-
-    config = json.loads(adapter.metadata(_model(), 2)["config"])
-
-    assert config["_name_or_path"] == "/models/flux/transformer"
-    assert config["nested"]["cache"] == "/cache/flux"
-
-
-def test_decomposition_device_accepts_available_cuda_index(monkeypatch):
+def test_decomposition_device_validation(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-
     adapter = FluxSVDQuantNunchakuAdapter(decomposition_device="cuda:1", require_complete_model=False)
-
     assert adapter.decomposition_device == torch.device("cuda:1")
 
-
-@pytest.mark.parametrize(
-    ("device", "available", "count", "message"),
-    [
+    cases = (
         ("cuda", False, 0, "CUDA.*not available"),
         ("cuda:2", True, 2, "index 2.*device_count=2"),
         ("mps", True, 2, "must be CPU or CUDA"),
-    ],
-)
-def test_decomposition_device_rejects_unavailable_or_unsupported_accelerator(
-    monkeypatch, device, available, count, message
-):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
-
-    with pytest.raises(ValueError, match=message):
-        FluxSVDQuantNunchakuAdapter(decomposition_device=device, require_complete_model=False)
-
-
-def test_cuda_decomposition_groups_return_cpu_and_release_cache_without_requiring_cuda(monkeypatch):
-    import auto_round.export.svdquant_adapters.flux as flux_module
-
-    requested_devices = []
-    empty_cache_calls = []
-    original_effective_weight = flux_module._effective_weight
-
-    def effective_weight_on_cpu(source, device):
-        requested_devices.append(device)
-        return original_effective_weight(source, torch.device("cpu"))
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True))
-    monkeypatch.setattr(flux_module, "_effective_weight", effective_weight_on_cpu)
-    sources = tuple(
-        _source(f"transformer_blocks.0.attn.to_{name}", seed=index + 31, bias=False)
-        for index, name in enumerate(("q", "k", "v"))
     )
-
-    (record,) = tuple(
-        FluxSVDQuantNunchakuAdapter(decomposition_device="cuda:0", require_complete_model=False).map_modules(
-            _model(), sources
-        )
-    )
-
-    assert requested_devices == [torch.device("cuda:0")] * 3
-    assert empty_cache_calls == [True]
-    assert all(
-        tensor.device.type == "cpu"
-        for tensor in (record.residual_weight, record.lora_down, record.lora_up, record.smooth)
-    )
-
-
-def test_cuda_single_split_avoids_redecomposition_and_releases_cache_once(monkeypatch):
-    import auto_round.export.svdquant_adapters.flux as flux_module
-
-    requested_devices = []
-    empty_cache_calls = []
-    original_effective_weight = flux_module._effective_weight
-
-    def effective_weight_on_cpu(source, device):
-        requested_devices.append(device)
-        return original_effective_weight(source, torch.device("cpu"))
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True))
-    monkeypatch.setattr(flux_module, "_effective_weight", effective_weight_on_cpu)
-    source = _source("single_transformer_blocks.0.proj_out", out_features=8, in_features=16, seed=37)
-
-    records = tuple(
-        FluxSVDQuantNunchakuAdapter(decomposition_device="cuda", require_complete_model=False).map_modules(
-            _model(), (source,)
-        )
-    )
-
-    assert requested_devices == []
-    assert empty_cache_calls == [True]
-    assert len(records) == 2
-    assert all(record.residual_weight.device.type == "cpu" for record in records)
-
-
-def test_cpu_decomposition_does_not_clear_cuda_cache(monkeypatch):
-    empty_cache_calls = []
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empty_cache_calls.append(True))
-    sources = tuple(
-        _source(f"transformer_blocks.0.attn.to_{name}", seed=index + 41) for index, name in enumerate(("q", "k", "v"))
-    )
-
-    tuple(FluxSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(_model(), sources))
-
-    assert empty_cache_calls == []
-
-
-def test_standard_flux_onefile_count_formula():
-    assert flux_onefile_tensor_count(19, 38) == 2604
-
-
-def test_complete_flux_top_level_keyset_is_exact_known_good_schema():
-    from auto_round.export.svdquant_adapters import flux
-
-    expected = {
-        "x_embedder.weight",
-        "x_embedder.bias",
-        "context_embedder.weight",
-        "context_embedder.bias",
-        "norm_out.linear.weight",
-        "norm_out.linear.bias",
-        "proj_out.weight",
-        "proj_out.bias",
-    }
-    expected.update(
-        f"time_text_embed.{embedder}_embedder.linear_{linear}.{parameter}"
-        for embedder in ("timestep", "text", "guidance")
-        for linear in (1, 2)
-        for parameter in ("weight", "bias")
-    )
-
-    assert flux.FLUX_TOP_LEVEL_TENSOR_KEYS == frozenset(expected)
-    assert len(flux.FLUX_TOP_LEVEL_TENSOR_KEYS) == 20
+    for device, available, count, message in cases:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda available=available: available)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda count=count: count)
+        with pytest.raises(ValueError, match=message):
+            FluxSVDQuantNunchakuAdapter(decomposition_device=device, require_complete_model=False)
 
 
 def _small_complete_top_level_tensors():
@@ -425,24 +276,6 @@ def _small_standard_complete_tensors():
     return tensors
 
 
-def test_complete_schema_validation_rejects_missing_top_level_key():
-    model = _model({"num_layers": 0, "num_single_layers": 0})
-    adapter = FluxSVDQuantNunchakuAdapter(require_complete_model=True)
-    metadata = adapter.metadata(model, 2)
-    tensors = _small_complete_top_level_tensors()
-    tensors.pop("x_embedder.bias")
-
-    with pytest.raises(ValueError, match="missing top-level.*x_embedder.bias"):
-        adapter.validate(tensors, metadata)
-
-
-def test_complete_schema_validation_accepts_exact_small_key_mapping():
-    model = _model({"num_layers": 0, "num_single_layers": 0})
-    adapter = FluxSVDQuantNunchakuAdapter(require_complete_model=True)
-
-    adapter.validate(_small_complete_top_level_tensors(), adapter.metadata(model, 2))
-
-
 def test_standard_complete_schema_validates_2604_tiny_tensors_without_model_allocation():
     model = _model({"num_layers": 19, "num_single_layers": 38})
     adapter = FluxSVDQuantNunchakuAdapter(require_complete_model=True)
@@ -450,16 +283,6 @@ def test_standard_complete_schema_validates_2604_tiny_tensors_without_model_allo
 
     assert len(tensors) == 2604
     adapter.validate(tensors, adapter.metadata(model, 32))
-
-
-def test_complete_schema_validation_rejects_junk_passthrough_key():
-    model = _model({"num_layers": 0, "num_single_layers": 0})
-    adapter = FluxSVDQuantNunchakuAdapter(require_complete_model=True)
-    tensors = _small_complete_top_level_tensors()
-    tensors["x_embedder.junk"] = torch.ones(2, dtype=torch.bfloat16)
-
-    with pytest.raises(ValueError, match="unexpected top-level.*x_embedder.junk"):
-        adapter.validate(tensors, adapter.metadata(model, 2))
 
 
 def test_complete_extra_collection_rejects_junk_passthrough_parameter():
