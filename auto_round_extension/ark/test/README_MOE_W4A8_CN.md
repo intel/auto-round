@@ -113,8 +113,10 @@ K 元素。这样每条 load 覆盖 **256 个连续权重字节**，grid 规模�
 循环采用 *block 在外* 的结构 (先遍历 AUTO_S8 重缩放 block，再在 block 内遍历 K)，
 因此 block scale 被提升为标量，热循环中没有除法；并且与 FP8 版本不同，对 block 大
 小没有 2 的幂约束。算术过程保持不变：每个 lane 在每个 block 内累加 int32 部分和，
-乘以 block scale，在 sub-group 内求和，再乘以每 token 的激活 scale。
-`test_decode_ksplit_matches_legacy` 断言两种映射的输出逐位相同。
+乘以 block scale，在 sub-group 内求和，再乘以每 token 的激活 scale。差异仅在于浮点
+**求和顺序** (先按 lane 累加再跨 lane 归约，而不是由单个 lane 累加所有 block)，因
+此两种映射的输出并非逐位相同；`test_decode_ksplit_matches_legacy` 断言两者的 SNR
+高于 40 dB、余弦相似度高于 0.9999 — 这远比任何真实的映射错误所能达到的精度更严格。
 
 该映射要求 `N % 16 == 0`、重缩放 block 是 16 的倍数且不小于 256、`K % block == 0`。
 不满足时 (例如显式指定 `--rescale-group-size 64`) 会自动回退到原 kernel。

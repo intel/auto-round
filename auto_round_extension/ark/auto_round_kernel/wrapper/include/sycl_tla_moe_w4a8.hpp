@@ -727,12 +727,15 @@ void launch_w4a8_decode(sycl::queue* q, const int8_t* qact, const float* ascale,
 // independent weight loads in flight by `NCOLS` (see
 // `moe_w4a8_decode_ksplit_ncols`).
 //
-// Numerics are unchanged: the int32 partial sums are still folded to float
-// once per AUTO_S8 block with that block's scale, only split across the 16
-// lanes and summed at the end (integer addition is associative, and the float
-// fold happens per block per lane exactly as before). A lane's chunk is 16
-// consecutive K elements starting at a multiple of 16 and every block boundary
-// is a multiple of 64, so a chunk never straddles two blocks.
+// Numerics are equivalent, not bit-identical: the int32 partial sums are still
+// folded to float once per AUTO_S8 block with that block's scale, but they are
+// split across the 16 lanes and summed at the end. Integer addition is exact
+// and associative, so the *integer* partition is lossless; only the float
+// accumulation is reordered (per lane, then across lanes, instead of one lane
+// folding every block in sequence), which can differ from the legacy result by
+// a rounding step. A lane's chunk is 16 consecutive K elements starting at a
+// multiple of 16 and every block boundary is a multiple of 64, so a chunk
+// never straddles two blocks.
 // ---------------------------------------------------------------------------
 
 // K elements a lane owns per step: one 16-byte int8 weight load and one

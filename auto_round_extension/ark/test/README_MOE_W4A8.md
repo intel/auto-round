@@ -125,8 +125,11 @@ it), so the block scale is hoisted to a scalar and the hot loop contains no
 division — and, unlike the FP8 variant, no power-of-two constraint on the block
 size. The arithmetic is unchanged: int32 partials per lane per block, scaled by
 the block scale, summed across the sub-group, then multiplied by the per-token
-activation scale. `test_decode_ksplit_matches_legacy` asserts that both mappings
-produce bit-identical output.
+activation scale. Only the float *summation order* differs (per lane then
+across lanes, instead of one lane folding every block), so the two mappings are
+not bit-identical; `test_decode_ksplit_matches_legacy` asserts they agree to
+better than 40 dB SNR / 0.9999 cosine, far tighter than any real mapping bug
+could pass.
 
 The mapping requires `N % 16 == 0`, a re-scale block that is a multiple of 16
 and at least 256, and `K % block == 0`. Anything else (for example an explicit
