@@ -16,7 +16,7 @@ import importlib.util
 import os
 import time
 
-import torch.nn
+import torch
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
@@ -491,21 +491,25 @@ def _load_gguf_model_if_needed(model_path, eval_model_dtype=None):
     return model, tokenizer, is_gguf_file, gguf_file
 
 
-def _get_lm_eval_task_manager(tasks):
+def _get_lm_eval_task_manager(tasks: list[str]) -> object | None:
     """Use exact installed task dirs when possible to avoid scanning all lm-eval tasks."""
     try:
         import lm_eval  # pylint: disable=E0401
         from lm_eval.tasks import TaskManager  # pylint: disable=E0401
+    except ImportError:
+        return None
 
-        tasks_root = os.path.join(os.path.dirname(lm_eval.__file__), "tasks")
-        task_paths = []
-        for task in tasks:
-            task_path = os.path.join(tasks_root, task)
-            if not os.path.isdir(task_path):
-                return None
-            task_paths.append(task_path)
+    tasks_root = os.path.join(os.path.dirname(lm_eval.__file__), "tasks")
+    task_paths = []
+    for task in tasks:
+        task_path = os.path.join(tasks_root, task)
+        if not os.path.isdir(task_path):
+            return None
+        task_paths.append(task_path)
+
+    try:
         return TaskManager(include_defaults=False, include_path=task_paths)
-    except Exception:
+    except TypeError:
         return None
 
 
@@ -568,42 +572,34 @@ def _evaluate_tasks_with_retry(
                     fewshot_as_multiturn=fewshot_as_multiturn,
                 )
                 break
-            except Exception as e:
+            except torch.OutOfMemoryError as e:
                 last_error = e
                 cuda_error_msg = traceback.format_exc()
-                if "out of memory" not in cuda_error_msg.lower():
-                    logger.error(cuda_error_msg)
-                    raise
+                ori_batch_sizes = getattr(hflm, "batch_sizes", None) or {"0": 64}
+                if not getattr(hflm, "batch_sizes", None):
+                    hflm.batch_sizes = ori_batch_sizes.copy()
                 try:
-                    ori_batch_sizes = hflm.batch_sizes or {"0": 64}
-                    if not hflm.batch_sizes:
-                        hflm.batch_sizes = ori_batch_sizes.copy()
-                    try:
-                        for k, v in hflm.batch_sizes.items():
-                            hflm.batch_sizes[k] = max(v // 2, 1)
-                        logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
-                        res = lm_eval.simple_evaluate(
-                            model=hflm,
-                            model_args=None,
-                            device=device_str,
-                            tasks=task,
-                            batch_size=1,
-                            limit=limit,
-                            num_fewshot=num_fewshot,
-                            gen_kwargs=gen_kwargs,
-                            task_manager=task_manager,
-                            fewshot_as_multiturn=fewshot_as_multiturn,
-                        )
-                        hflm.batch_sizes = ori_batch_sizes
-                    except Exception as e:
-                        last_error = e
-                        traceback.print_exc()
-                        res = None
-                except Exception as e:
+                    for k, v in hflm.batch_sizes.items():
+                        hflm.batch_sizes[k] = max(v // 2, 1)
+                    logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
+                    res = lm_eval.simple_evaluate(
+                        model=hflm,
+                        model_args=None,
+                        device=device_str,
+                        tasks=task,
+                        batch_size=1,
+                        limit=limit,
+                        num_fewshot=num_fewshot,
+                        gen_kwargs=gen_kwargs,
+                        task_manager=task_manager,
+                        fewshot_as_multiturn=fewshot_as_multiturn,
+                    )
+                except torch.OutOfMemoryError as e:
                     last_error = e
-                    logger.error(cuda_error_msg)
                     traceback.print_exc()
                     res = None
+                finally:
+                    hflm.batch_sizes = ori_batch_sizes
             current_retry_times -= 1
 
         if res is None:

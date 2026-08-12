@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 import transformers
 
 from auto_round.eval import eval_cli
@@ -599,7 +600,7 @@ class TestEvaluateTasksWithRetry:
         def fake_simple_evaluate(**kwargs):
             calls.append(kwargs.get("batch_size"))
             if len(calls) <= 2 and calls[-1] == 8:
-                raise RuntimeError("CUDA out of memory")
+                raise torch.OutOfMemoryError("CUDA out of memory")
             return fake_res
 
         monkeypatch.setattr("lm_eval.simple_evaluate", fake_simple_evaluate)
