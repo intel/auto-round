@@ -177,8 +177,26 @@ qwen3 down  (down-proj)   :  N = 2048,            K =  768
 被路由的 expert-token 行数为 `batch × top_k`，以 round-robin 方式分布到 128 个专
 家上。默认 batch：prefill 为 `128`，decode 为 `1`；`--all-shapes` 会分别扩展为
 `{128, 512, 2048, 8192}` 和 `{1, 2, 8, 16}`。
-`test_perf_prefill_compute_bound` 额外增加一个 `4096` 模型 token 的 batch (每专家
-256 行) — 这是 100 TFLOPS 目标不再被权重带宽限制的最小扫描点。
+`test_perf_prefill_compute_bound` 额外增加一个 batch，其大小保证每个专家拿到 256
+行 (Qwen3-MoE 为 4096 个模型 token) — 这是 100 TFLOPS 目标不再被权重带宽限制的最
+小扫描点。
+
+第二个形状组是 MiniMax-M2，与 `test_moe_prefill_perf.py` 保持一致：
+
+```
+hidden_size = 3072,  intermediate_size = 1536
+num_local_experts = 192,  num_experts_per_tok = 8
+
+minimax up    :  N = 1536,  K = 3072
+minimax down  :  N = 3072,  K = 1536
+```
+
+之所以需要它，是因为两个目标都与形状相关：192 个专家会把同样的 batch 摊到 1.5 倍
+的专家上 (每专家行数更少，因此相同 batch 下的算力上限*更低*)，而更长的 K 则让
+decode GEMV 的顺序访存流更长、也让 prefill 的 tile 每次加载覆盖更多 K。compute-
+bound 的 batch 按模型推导，因此 MiniMax 用 6144 个模型 token 达到同样的每专家 256
+行。形状组通过 `--models` 选择 (`qwen3` — 默认 —、`minimax`、逗号分隔的列表或
+`all`)；MiniMax 的重尾真实路由分布仍在 `test_moe_prefill_perf.py` 中。
 
 ## 如何运行
 
@@ -205,7 +223,20 @@ pytest -v -s test_moe_w4a8_perf.py -k compute_bound
 
 # 把性能目标从提示信息变成硬断言
 pytest -v -s test_moe_w4a8_perf.py -k perf --enforce-targets
+
+# 加入 MiniMax 形状 (--models all 则两组都跑)
+pytest -v -s test_moe_w4a8_perf.py -k perf --models minimax
+
+# 扫描 kernel 的各种 dispatch 配置，并打印最快且数值等价的一个
+pytest -v -s test_moe_w4a8_perf.py -k sweep
 ```
+
+`test_perf_decode_config_sweep` 和 `test_perf_prefill_tile_sweep` 只构造一次
+workload、只 prepack 一次，然后用同一份数据依次给每种 dispatch 配置计时——decode
+的 lane 映射 (legacy GEMV 以及 `CH` × `NCOLS` 的全部组合) 和 prefill 的 work-group
+tile。每种配置都会与第一种配置做数值等价性检查，表格之后还会打印一段 `best
+configuration`，按形状给出获胜配置对应的环境变量，因此在硬件上跑一次就能确定这些
+调优开关。
 
 需要加 `-s` 才能看到打印出的表格。
 
@@ -287,6 +318,8 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 | `ARK_MOE_W4A8_DECODE_MAX_TOKENS` | `phase="auto"` 时选择 GEMV 的 token 数上限 (默认 `128`)。 |
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | 合并访存的 K-split decode 映射，**默认开启**。设为 `0` 可回退到原来每个输出一个 work-item 的 GEMV (便于 A/B 对比)。形状不满足条件时该开关无效。 |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | K-split 映射中每个 sub-group 处理的输出列数：`1`、`2` (默认) 或 `4`。取值越大，激活数据的加载可以摊到更多列上，但要求 `N % (16 × NCOLS) == 0`。 |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | 每个 lane 每次加载的 K 元素数 (即字节数)：`16` (默认) 或 `32`。`32` 可以把访存指令数减半、并让每个线程同时在途的字节数翻倍，代价是更多 GRF；它要求 re-scale block 至少为 512，否则会自动回退到 `16`。 |
+| `ARK_MOE_W4A8_PREFILL_TILE` | 强制指定 prefill 的 work-group tile：`8x128`、`64x128`、`128x128`、`128x256`、`256x128`、`256x256`。不设置 (默认) 时按 tile 阶梯自动选择。`TileM × TileN` 的 tile 会让 A 每个 N tile 重读一次、B 每个 M tile 重读一次，因此 tile 访存量约为 `M·N·K · (1/TileM + 1/TileN)`——在每专家 256 行时，原来的 `128x128` 每个 grouped GEMM 要搬运约 1.6 GB (已超过设备的拷贝带宽)，所以最大档现在改为 `256x256`。 |
 
 ## 形状约束
 

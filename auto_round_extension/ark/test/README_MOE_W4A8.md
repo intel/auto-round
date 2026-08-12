@@ -191,9 +191,28 @@ qwen3 down  (down-proj)   :  N = 2048,            K =  768
 Routed expert-token rows are `batch × top_k`, spread round-robin over the 128
 experts. Default batches: `128` for prefill and `1` for decode; `--all-shapes`
 widens them to `{128, 512, 2048, 8192}` and `{1, 2, 8, 16}` respectively.
-`test_perf_prefill_compute_bound` adds a single batch of `4096` model tokens
-(256 rows per expert) — the smallest sweep point where the 100 TFLOPS goal is
-not capped by weight bandwidth.
+`test_perf_prefill_compute_bound` adds a single batch sized so every expert
+gets 256 rows (4096 model tokens for Qwen3-MoE) — the smallest sweep point where
+the 100 TFLOPS goal is not capped by weight bandwidth.
+
+A second shape group covers MiniMax-M2, matching `test_moe_prefill_perf.py`:
+
+```
+hidden_size = 3072,  intermediate_size = 1536
+num_local_experts = 192,  num_experts_per_tok = 8
+
+minimax up    :  N = 1536,  K = 3072
+minimax down  :  N = 3072,  K = 1536
+```
+
+It matters because both targets are shape dependent: 192 experts spread a given
+batch over 1.5× more experts (fewer rows per expert, so a *lower* compute
+ceiling at the same batch), while the longer K gives the decode GEMV a longer
+sequential stream and the prefill tile more K per tile-load. The compute-bound
+batch is derived per model, so MiniMax runs 6144 model tokens for the same 256
+rows per expert. Shape groups are selected with `--models`
+(`qwen3` — the default —, `minimax`, a comma-separated list, or `all`); the
+heavy-tailed empirical routing for MiniMax lives in `test_moe_prefill_perf.py`.
 
 ## How to run
 
@@ -220,7 +239,21 @@ pytest -v -s test_moe_w4a8_perf.py -k compute_bound
 
 # Make the performance goals hard assertions instead of a printed verdict
 pytest -v -s test_moe_w4a8_perf.py -k perf --enforce-targets
+
+# Add the MiniMax shapes (or --models all for both groups)
+pytest -v -s test_moe_w4a8_perf.py -k perf --models minimax
+
+# Sweep the kernel dispatch configurations and print the fastest equivalent one
+pytest -v -s test_moe_w4a8_perf.py -k sweep
 ```
+
+`test_perf_decode_config_sweep` and `test_perf_prefill_tile_sweep` build one
+workload, prepack it once, then time every dispatch configuration against it —
+the decode lane mapping (legacy GEMV plus every `CH` × `NCOLS` combination) and
+the prefill work-group tile. Each configuration is checked for numerical
+equivalence with the first one, and the table is followed by a `best
+configuration` block naming the winning environment variables per shape, so the
+tuning knobs can be settled in a single on-hardware run.
 
 The `-s` flag is required to see the printed tables.
 
@@ -306,6 +339,8 @@ it for a given deployment.
 | `ARK_MOE_W4A8_DECODE_MAX_TOKENS` | Token count at or below which `phase="auto"` picks the GEMV (default `128`). |
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | Coalesced K-split decode mapping; **on by default**. Set to `0` to fall back to the original one-work-item-per-output GEMV (useful for A/B measurements). Ignored when the shape doesn't qualify. |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. |
+| `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | K elements (= bytes) a lane loads per chunk: `16` (default) or `32`. `32` halves the number of memory messages and doubles the bytes a thread keeps in flight, at the cost of GRF; it needs a re-scale block of at least 512 and silently falls back to `16` otherwise. |
+| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder. A `TileM × TileN` tile re-reads A once per N tile and B once per M tile, so tile traffic is `~ M·N·K · (1/TileM + 1/TileN)` -- at 256 rows/expert the old `128x128` choice pulled ~1.6 GB per grouped GEMM (above the device copy rate), which is why the large rung is now `256x256`. |
 
 ## Shape constraints
 
