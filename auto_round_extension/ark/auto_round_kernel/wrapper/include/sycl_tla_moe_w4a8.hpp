@@ -81,6 +81,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 #ifdef ARK_XPU
@@ -131,7 +132,7 @@ class MoEW4A8Repack;
 template <typename ElementD>
 class MoEW4A8DecodeGemv;
 
-template <typename ElementD, int NCOLS>
+template <typename ElementD, int NCOLS, int CH>
 class MoEW4A8DecodeKSplit;
 
 template <class Policy, typename ElementD>
@@ -312,6 +313,22 @@ void launch_weight_rescale_s4_to_s8(sycl::queue* q, const uint8_t* weights, cons
 // (`SmallTileSG` / `SmallMidTileSG` / `MediumTileSG` / `LargeTileSG`), which
 // keeps `size(mma)` at 64 / 128 / 256 / 512 threads -- all divisors of the 512
 // threads-per-SM budget the persistent scheduler assumes.
+//
+// Tile shape *is* the prefill bandwidth knob. A `TileM x TileN` tile reads its
+// own A and B slabs, so the bytes a whole expert pulls through L2/DRAM are
+//
+//     M*K * ceil(N/TileN)  +  N*K * ceil(M/TileM)  ~=  M*N*K * (1/TileN + 1/TileM)
+//
+// i.e. A is re-read once per N tile and B once per M tile. At the compute-bound
+// Qwen3-MoE shape (256 rows/expert, N = 1536, K = 2048) a 128x128 tile re-reads
+// A twelve times, for ~1.6 GB of tile traffic per grouped GEMM -- ~470 GB/s at
+// the measured 3.3 ms, i.e. above the device's ~390 GB/s copy rate, so the GEMM
+// is still memory-bound even though the compact operands are only ~0.6 GB.
+// Doubling both extents to 256x256 halves that (`1/256 + 1/256` vs
+// `1/128 + 1/128`), which is why the reference `launch_igemm`'s large rung is
+// 256x256 and the W4A16 MoE policy uses a 256-wide N tile. `w4a8_policy_large`
+// matches it; `w4a8_policy_m_256_n128` keeps the narrower variant reachable
+// through `ARK_MOE_W4A8_PREFILL_TILE` for A/B measurement.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
@@ -331,9 +348,21 @@ class w4a8_policy_m_128 : public moe_dpas_fp8::dpas_policy_base {
   using SGLayout = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
 };
 
-class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
+class w4a8_policy_m_128_n256 : public moe_dpas_fp8::dpas_policy_base {
+ public:
+  using WGTile = Shape<_128, _256, _64>;
+  using SGLayout = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+};
+
+class w4a8_policy_m_256_n128 : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_256, _128, _64>;
+  using SGLayout = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+};
+
+class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
+ public:
+  using WGTile = Shape<_256, _256, _64>;
   using SGLayout = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
 };
 
@@ -598,8 +627,20 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 }
 
 // ---------------------------------------------------------------------------
-// Prefill driver: policy selection on the average per-expert M, matching the
-// tile ladder of `launch_igemm_kblock` in `sycl_tla_s8_gemm.hpp`.
+// Prefill driver: policy selection on the average per-expert M.
+//
+// The small-M rungs match the tile ladder of `launch_igemm_kblock` in
+// `sycl_tla_s8_gemm.hpp`. The large rung differs from the reference's `m > 1024`
+// threshold because a grouped GEMM's M is *per expert*: at 256 rows/expert the
+// dense ladder would still pick 128x128 and pay 12-16 re-reads of the A tile
+// (see the tile-policy comment above), which is what keeps the compute-bound
+// Qwen3-MoE shape memory-bound. 256 rows exactly fill a 256-row tile, so the
+// 256x256 policy takes over as soon as the average expert can fill it.
+//
+// `ARK_MOE_W4A8_PREFILL_TILE` overrides the choice with an explicit `MxN` tile
+// (`8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`); anything
+// else -- including the default `auto` -- keeps the ladder. It exists so the
+// tile can be swept on hardware without a rebuild.
 // ---------------------------------------------------------------------------
 template <typename ElementD>
 void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
@@ -616,11 +657,34 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
   MoEGEMMLauncher_w4a8<policy, ElementD>(*q, qact, weights, ascale, wscale, outputs, N, K,                 \
                                          num_tokens_per_expert, E, blocksize, blks, atomic_buffer);
 
+  const char* tile_env = std::getenv("ARK_MOE_W4A8_PREFILL_TILE");
+  if (tile_env != nullptr) {
+    if (std::strcmp(tile_env, "8x128") == 0) {
+      ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_8)
+      return;
+    } else if (std::strcmp(tile_env, "64x128") == 0) {
+      ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_64)
+      return;
+    } else if (std::strcmp(tile_env, "128x128") == 0) {
+      ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128)
+      return;
+    } else if (std::strcmp(tile_env, "128x256") == 0) {
+      ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128_n256)
+      return;
+    } else if (std::strcmp(tile_env, "256x128") == 0) {
+      ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_256_n128)
+      return;
+    } else if (std::strcmp(tile_env, "256x256") == 0) {
+      ARK_MOE_W4A8_LAUNCH(w4a8_policy_large)
+      return;
+    }
+  }
+
   if (A_avg_M < 16) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_8)
   } else if (A_avg_M < 128) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_64)
-  } else if (A_avg_M <= 1024) {
+  } else if (A_avg_M < 256) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128)
   } else {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_large)
@@ -712,13 +776,13 @@ void launch_w4a8_decode(sycl::queue* q, const int8_t* qact, const float* ascale,
 //      loads in flight to cover DRAM latency.
 //
 // This kernel transposes the mapping exactly like `launch_fp8_ksplit`: a whole
-// sub-group cooperates on one output element and lane `l` owns the
-// `KSPLIT_CH` consecutive K elements at `l * KSPLIT_CH` inside each
-// `KSPLIT_STEP`-wide K tile. One instruction then covers `KSPLIT_STEP`
-// *contiguous* weight bytes (256 B = four full cache lines) and the same span
-// of int8 activations, every thread walks a single sequential stream, and the
-// sub-group count grows by `SG_SIZE` (12288 for that batch-1 step). The price
-// is one `reduce_over_group` per output element -- a handful of shuffles
+// sub-group cooperates on one output element and lane `l` owns the `CH`
+// consecutive K elements at `l * CH` inside each `SG_SIZE * CH`-wide K tile.
+// One instruction then covers `SG_SIZE * CH` *contiguous* weight bytes (256 B =
+// four full cache lines at the default `CH = 16`, 512 B at `CH = 32`) and the
+// same span of int8 activations, every thread walks a single sequential stream,
+// and the sub-group count grows by `SG_SIZE` (12288 for that batch-1 step). The
+// price is one `reduce_over_group` per output element -- a handful of shuffles
 // against `K` multiply-adds.
 //
 // On top of that the sub-group blocks N: it owns `NCOLS` consecutive columns
@@ -733,17 +797,21 @@ void launch_w4a8_decode(sycl::queue* q, const int8_t* qact, const float* ascale,
 // and associative, so the *integer* partition is lossless; only the float
 // accumulation is reordered (per lane, then across lanes, instead of one lane
 // folding every block in sequence), which can differ from the legacy result by
-// a rounding step. A lane's chunk is 16 consecutive K elements starting at a
-// multiple of 16 and every block boundary is a multiple of 64, so a chunk
-// never straddles two blocks.
+// a rounding step. A lane's chunk is `CH` consecutive K elements starting at a
+// multiple of `CH`, and the shape gate requires the block to be a multiple of
+// `CH`, so a chunk never straddles two blocks.
 // ---------------------------------------------------------------------------
 
-// K elements a lane owns per step: one 16-byte int8 weight load and one
-// 16-byte int8 activation load, the same transactions the legacy GEMV issues.
-constexpr int KSPLIT_CH = 16;
-// K elements a sub-group covers per step -- the contiguous span its 16 lanes
-// read in one instruction.
-constexpr int KSPLIT_STEP = SG_SIZE * KSPLIT_CH;
+// K elements a lane owns per step: `KSPLIT_CH_DEFAULT` is one 16-byte int8
+// weight load and one 16-byte int8 activation load, the same transactions the
+// legacy GEMV issues. `ARK_MOE_W4A8_DECODE_KSPLIT_CH=32` doubles them to
+// 32-byte loads, which halves the number of memory messages per byte and
+// doubles the bytes a thread keeps in flight -- the lever for the gap between
+// the GEMV's measured streaming rate and the device's copy bandwidth. It costs
+// GRF (2 x NCOLS chunks live at once) and needs `blocksize >= SG_SIZE * CH`,
+// so it stays opt-in until measured on hardware.
+constexpr int KSPLIT_CH_DEFAULT = 16;
+constexpr int KSPLIT_CH_MAX = 32;
 // Sub-groups per work-group. Each owns `NCOLS` output columns, so a work-group
 // covers `KSPLIT_WG_SGS * NCOLS` consecutive columns.
 constexpr int KSPLIT_WG_SGS = N_TILE;
@@ -758,16 +826,31 @@ inline bool moe_w4a8_decode_ksplit_enabled() {
   return moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_DECODE_KSPLIT", true);
 }
 
-// Shape gate. `blocksize >= KSPLIT_STEP` keeps every lane of the sub-group
+// Per-lane chunk width in K elements (= bytes). 16 or 32; anything else falls
+// back to the default.
+inline int moe_w4a8_decode_ksplit_chunk() {
+  const char* env = std::getenv("ARK_MOE_W4A8_DECODE_KSPLIT_CH");
+  if (env != nullptr) {
+    char* end = nullptr;
+    const long long v = std::strtoll(env, &end, 10);
+    if (end != env && (v == 16 || v == 32)) return static_cast<int>(v);
+  }
+  return KSPLIT_CH_DEFAULT;
+}
+
+// Shape gate. `blocksize >= SG_SIZE * ch` keeps every lane of the sub-group
 // busy: below that some lanes own no chunk in a block and only pay the
 // reduction, which is the one regime where splitting K cannot pay for itself.
-// The resolved AUTO_S8 block is always a multiple of 64 that divides K, so the
-// alignment condition holds for every shipped configuration and only very fine
-// re-scale blocks (64 / 128 / 192) fall back to the legacy GEMV.
-inline bool moe_w4a8_decode_ksplit_shape_ok(int N, int K, int blocksize) {
+// `blocksize % ch == 0` combined with `K % blocksize == 0` also makes every
+// chunk offset a multiple of `ch` off a row base that is a multiple of `K`, so
+// the vector loads stay naturally aligned. The resolved AUTO_S8 block is always
+// a multiple of 64 that divides K, so the conditions hold for every shipped
+// configuration and only very fine re-scale blocks fall back to the legacy
+// GEMV.
+inline bool moe_w4a8_decode_ksplit_shape_ok(int N, int K, int blocksize, int ch = KSPLIT_CH_DEFAULT) {
   if (N % N_TILE != 0) return false;
-  if (blocksize < KSPLIT_STEP) return false;
-  if (blocksize % KSPLIT_CH != 0) return false;
+  if (blocksize < SG_SIZE * ch) return false;
+  if (blocksize % ch != 0) return false;
   if (K % blocksize != 0) return false;
   return true;
 }
@@ -790,12 +873,16 @@ inline int moe_w4a8_decode_ksplit_ncols(int N) {
   return ncols;
 }
 
-template <typename ElementD, int NCOLS>
+template <typename ElementD, int NCOLS, int CH = KSPLIT_CH_DEFAULT>
 void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
                                const float* wscale, ElementD* outputs, const int* expert_id_per_token,
                                int total_tokens, int N, int K, int blocksize, int blks) {
   static_assert(NCOLS >= 1 && (NCOLS & (NCOLS - 1)) == 0, "NCOLS must be a power of two");
-  if (!moe_w4a8_decode_ksplit_shape_ok(N, K, blocksize) || (N % (KSPLIT_WG_SGS * NCOLS)) != 0) {
+  static_assert(CH == 16 || CH == KSPLIT_CH_MAX, "CH must be 16 or 32");
+  // K elements a sub-group covers per step -- the contiguous span its 16 lanes
+  // read in one instruction.
+  constexpr int STEP = SG_SIZE * CH;
+  if (!moe_w4a8_decode_ksplit_shape_ok(N, K, blocksize, CH) || (N % (KSPLIT_WG_SGS * NCOLS)) != 0) {
     throw std::invalid_argument("moe_gemm_w4a8(decode): K-split GEMV called on an unsupported shape");
   }
   if (total_tokens == 0) return;
@@ -805,7 +892,7 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
   sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(N / NCOLS) * SG_SIZE};
   sycl::range<2> local{1, static_cast<size_t>(KSPLIT_WG_SGS * SG_SIZE)};
 
-  q->parallel_for<MoEW4A8DecodeKSplit<ElementD, NCOLS>>(
+  q->parallel_for<MoEW4A8DecodeKSplit<ElementD, NCOLS, CH>>(
       sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
         const auto sg = it.get_sub_group();
         const int token = static_cast<int>(it.get_global_id(0));
@@ -826,7 +913,7 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
           s_rows[c] = wscale + (row0 + static_cast<size_t>(c)) * blks;
         }
 
-        using QVec = sycl::vec<int8_t, KSPLIT_CH>;
+        using QVec = sycl::vec<int8_t, CH>;
 
         float acc[NCOLS];
 #pragma unroll
@@ -839,25 +926,25 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
 #pragma unroll
           for (int c = 0; c < NCOLS; ++c) iacc[c] = 0;
 
-          int k0 = block_begin + lane * KSPLIT_CH;
+          int k0 = block_begin + lane * CH;
           // Two chunks per iteration: their loads are independent, so the pair
           // doubles the weight requests a thread keeps in flight. All
           // `2 * NCOLS` weight loads are issued before the first is consumed.
-          for (; k0 + KSPLIT_STEP + KSPLIT_CH <= block_end; k0 += 2 * KSPLIT_STEP) {
+          for (; k0 + STEP + CH <= block_end; k0 += 2 * STEP) {
             const QVec av0 = *reinterpret_cast<const QVec*>(act_row + k0);
-            const QVec av1 = *reinterpret_cast<const QVec*>(act_row + k0 + KSPLIT_STEP);
+            const QVec av1 = *reinterpret_cast<const QVec*>(act_row + k0 + STEP);
             QVec wv0[NCOLS], wv1[NCOLS];
 #pragma unroll
             for (int c = 0; c < NCOLS; ++c) {
               wv0[c] = *reinterpret_cast<const QVec*>(w_rows[c] + k0);
-              wv1[c] = *reinterpret_cast<const QVec*>(w_rows[c] + k0 + KSPLIT_STEP);
+              wv1[c] = *reinterpret_cast<const QVec*>(w_rows[c] + k0 + STEP);
             }
 #pragma unroll
             for (int c = 0; c < NCOLS; ++c) {
               int p0 = 0;
               int p1 = 0;
 #pragma unroll
-              for (int u = 0; u < KSPLIT_CH; u += 2) {
+              for (int u = 0; u < CH; u += 2) {
                 p0 += static_cast<int>(av0[u]) * static_cast<int>(wv0[c][u]);
                 p1 += static_cast<int>(av0[u + 1]) * static_cast<int>(wv0[c][u + 1]);
                 p0 += static_cast<int>(av1[u]) * static_cast<int>(wv1[c][u]);
@@ -868,7 +955,7 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
           }
           // Tail: the chunk of a lane whose partner a full step away falls
           // outside the block. At most one chunk per lane.
-          for (; k0 < block_end; k0 += KSPLIT_STEP) {
+          for (; k0 < block_end; k0 += STEP) {
             const QVec av = *reinterpret_cast<const QVec*>(act_row + k0);
 #pragma unroll
             for (int c = 0; c < NCOLS; ++c) {
@@ -876,7 +963,7 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
               int p0 = 0;
               int p1 = 0;
 #pragma unroll
-              for (int u = 0; u < KSPLIT_CH; u += 2) {
+              for (int u = 0; u < CH; u += 2) {
                 p0 += static_cast<int>(av[u]) * static_cast<int>(wv[u]);
                 p1 += static_cast<int>(av[u + 1]) * static_cast<int>(wv[u + 1]);
               }
@@ -899,26 +986,44 @@ void launch_w4a8_decode_ksplit(sycl::queue* q, const int8_t* qact, const float* 
       });
 }
 
-// Runtime NCOLS -> compile-time NCOLS bridge, plus the K-split / legacy choice.
+// Runtime (NCOLS, CH) -> compile-time bridge, plus the K-split / legacy choice.
+// `CH = 32` needs a block of at least 512 elements, so it silently falls back to
+// 16 on shapes it cannot serve rather than dropping to the legacy GEMV.
 template <typename ElementD>
 void launch_w4a8_decode_dispatch(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
                                  const float* wscale, ElementD* outputs, const int* expert_id_per_token,
                                  int total_tokens, int N, int K, int blocksize, int blks) {
   if (moe_w4a8_decode_ksplit_enabled() && moe_w4a8_decode_ksplit_shape_ok(N, K, blocksize)) {
-    switch (moe_w4a8_decode_ksplit_ncols(N)) {
-      case 4:
-        launch_w4a8_decode_ksplit<ElementD, 4>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token,
-                                               total_tokens, N, K, blocksize, blks);
-        return;
-      case 2:
-        launch_w4a8_decode_ksplit<ElementD, 2>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token,
-                                               total_tokens, N, K, blocksize, blks);
-        return;
-      default:
-        launch_w4a8_decode_ksplit<ElementD, 1>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token,
-                                               total_tokens, N, K, blocksize, blks);
-        return;
+    const int ncols = moe_w4a8_decode_ksplit_ncols(N);
+    const int ch = moe_w4a8_decode_ksplit_chunk() == KSPLIT_CH_MAX &&
+                           moe_w4a8_decode_ksplit_shape_ok(N, K, blocksize, KSPLIT_CH_MAX)
+                       ? KSPLIT_CH_MAX
+                       : KSPLIT_CH_DEFAULT;
+
+#define ARK_MOE_W4A8_KSPLIT(ncols_v, ch_v)                                                                        \
+  launch_w4a8_decode_ksplit<ElementD, ncols_v, ch_v>(q, qact, ascale, weights, wscale, outputs,                    \
+                                                     expert_id_per_token, total_tokens, N, K, blocksize, blks);   \
+  return;
+
+    if (ch == KSPLIT_CH_MAX) {
+      switch (ncols) {
+        case 4:
+          ARK_MOE_W4A8_KSPLIT(4, KSPLIT_CH_MAX)
+        case 2:
+          ARK_MOE_W4A8_KSPLIT(2, KSPLIT_CH_MAX)
+        default:
+          ARK_MOE_W4A8_KSPLIT(1, KSPLIT_CH_MAX)
+      }
     }
+    switch (ncols) {
+      case 4:
+        ARK_MOE_W4A8_KSPLIT(4, KSPLIT_CH_DEFAULT)
+      case 2:
+        ARK_MOE_W4A8_KSPLIT(2, KSPLIT_CH_DEFAULT)
+      default:
+        ARK_MOE_W4A8_KSPLIT(1, KSPLIT_CH_DEFAULT)
+    }
+#undef ARK_MOE_W4A8_KSPLIT
   }
   launch_w4a8_decode<ElementD>(q, qact, ascale, weights, wscale, outputs, expert_id_per_token, total_tokens, N, K,
                                blocksize, blks);

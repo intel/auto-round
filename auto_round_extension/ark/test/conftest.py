@@ -37,6 +37,9 @@ Registers CLI flags used by the MoE perf tests:
 
 * ``--enforce-targets`` -- turn the W4A8 MoE performance goals into hard
   assertions instead of a printed verdict.
+
+* ``--models`` -- shape groups for the W4A8 MoE perf tests (``qwen3``,
+  ``minimax``, a comma-separated list, or ``all``).
 """
 
 
@@ -71,6 +74,16 @@ def pytest_addoption(parser):
             "Run test_moe_prefill_perf.py. The MoE prefill perf sweep is "
             "too expensive to run on every pytest invocation, so it is "
             "skipped by default. Pass this flag to opt in."
+        ),
+    )
+    parser.addoption(
+        "--models",
+        action="store",
+        default=None,
+        help=(
+            "Shape groups for the W4A8 MoE perf tests: 'qwen3', 'minimax', a "
+            "comma-separated list, or 'all'. Default (flag absent): qwen3 only, "
+            "so the default run stays short."
         ),
     )
     parser.addoption(

@@ -161,12 +161,17 @@ def _env_override(**overrides):
 
     The kernel re-reads its dispatch flags on every call (they are never
     cached in a static), so an in-process override is enough to A/B two code
-    paths without reloading the extension.
+    paths without reloading the extension. A ``None`` value unsets the variable
+    for the duration of the block, which is how a sweep expresses "kernel
+    default".
     """
     previous = {name: os.environ.get(name) for name in overrides}
     try:
         for name, value in overrides.items():
-            os.environ[name] = value
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         yield
     finally:
         for name, value in previous.items():
@@ -281,15 +286,73 @@ _QWEN3_NK = [
     ("qwen3 down", _QWEN3_HIDDEN, _QWEN3_INTER),
 ]
 
+# ---------------------------------------------------------------------------
+# MiniMax-M2 shapes, matching ``test_moe_prefill_perf.py``:
+#   hidden_size = 3072, intermediate_size = 1536, num_local_experts = 192,
+#   num_experts_per_tok = 8.
+#
+# A second shape group matters here because both perf targets are shape
+# dependent: with 192 experts a given batch spreads over 1.5x more experts
+# (fewer rows per expert, so a *lower* compute ceiling at the same batch), while
+# K doubles for the up-proj (3072 vs 2048), which lengthens the decode GEMV's
+# sequential stream and gives the prefill tile more K per tile-load. Routing is
+# the same round-robin spread used for Qwen3; the heavy-tailed empirical
+# distribution lives in ``test_moe_prefill_perf.py``'s ``minimax real`` rows.
+# ---------------------------------------------------------------------------
+_MINIMAX_E = 192
+_MINIMAX_HIDDEN = 3072
+_MINIMAX_INTER = 1536
+_MINIMAX_TOPK = 8
+_MINIMAX_NK = [
+    ("minimax up  ", _MINIMAX_INTER, _MINIMAX_HIDDEN),
+    ("minimax down", _MINIMAX_HIDDEN, _MINIMAX_INTER),
+]
+
+# A "model" is the (experts, top-k, group size, [(label, N, K)]) tuple the
+# sweeps iterate over. Everything downstream reads the per-row ``E``/``topk``,
+# so adding a group here is enough to get it benchmarked and target-checked.
+_MODELS = {
+    "qwen3": {"E": _QWEN3_E, "topk": _QWEN3_TOPK, "group_size": _QWEN3_GROUP_SIZE, "nk": _QWEN3_NK},
+    "minimax": {"E": _MINIMAX_E, "topk": _MINIMAX_TOPK, "group_size": _QWEN3_GROUP_SIZE, "nk": _MINIMAX_NK},
+}
+_DEFAULT_MODELS = ["qwen3"]
+
+
+def _models(names) -> list:
+    """Resolve model names (or ``"all"``) to ``(name, spec)`` pairs."""
+    if names is None:
+        names = _DEFAULT_MODELS
+    if isinstance(names, str):
+        names = _MODELS.keys() if names == "all" else [names]
+    return [(n, _MODELS[n]) for n in names]
+
+
+def _models_option(request):
+    """Read the ``--models`` pytest option (absent under a foreign conftest)."""
+    value = request.config.getoption("--models", default=None) if request is not None else None
+    if not value:
+        return None
+    if value == "all":
+        return "all"
+    return [name.strip() for name in value.split(",") if name.strip()]
+
+
 # Model-token batches (routed rows = batch * top_k).
 _DECODE_BATCHES = [1]
 _DECODE_BATCHES_EXTENDED = [1, 2, 8, 16]
 _PREFILL_BATCHES = [128]
 _PREFILL_BATCHES_EXTENDED = [128, 512, 2048, 8192]
-# Compute-bound prefill batch: 4096 model tokens * top_k 8 = 32768 routed rows
-# = 256 rows per expert, so 100 TFLOPS needs ~195 GB/s of weight bandwidth --
-# reachable, unlike the 6.25 TB/s the default batch of 128 would require.
-_PREFILL_TARGET_BATCHES = [4096]
+# Rows per expert at which a prefill TOPS target is physically reachable: the
+# ceiling is ``2 * rows/E * weight_bandwidth``, so 256 rows/expert needs only
+# ~195 GB/s for 100 TFLOPS -- unlike the 6.25 TB/s a batch of 128 would need.
+# The batch is derived per model (``rows/E * E / top_k``): 4096 model tokens for
+# Qwen3-MoE (128 experts), 6144 for MiniMax (192).
+_PREFILL_TARGET_ROWS_PER_EXPERT = 256
+
+
+def _compute_bound_batches(model: dict) -> list:
+    """Model-token batches that put ``_PREFILL_TARGET_ROWS_PER_EXPERT`` rows on every expert."""
+    return [_PREFILL_TARGET_ROWS_PER_EXPERT * model["E"] // model["topk"]]
 
 
 def _spread_tokens(total_tokens: int, num_experts: int) -> list:
@@ -718,119 +781,295 @@ def run_accuracy(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, ve
     return rows
 
 
-def run_perf(phase, batches, dtype=torch.bfloat16, rescale_group_size=-1, verbose=True, torch_baseline=True):
+def run_perf(
+    phase,
+    batches,
+    dtype=torch.bfloat16,
+    rescale_group_size=-1,
+    verbose=True,
+    torch_baseline=True,
+    models=None,
+    compute_bound=False,
+):
     """Run the W4A8 perf sweep. Returns a list of per-row metric dicts.
 
     ``torch_baseline=False`` skips both the dequantized weights and the torch
     matmul timing; the compute-bound batches need it to stay within memory.
+
+    ``models`` selects the shape groups (``"qwen3"``, ``"minimax"``, ``"all"``
+    or a list); ``compute_bound=True`` ignores ``batches`` and derives, per
+    model, the batch that puts ``_PREFILL_TARGET_ROWS_PER_EXPERT`` rows on every
+    expert -- the only regime where the prefill TOPS target is reachable.
     """
     rows = []
     # Probed before anything large is allocated (and cached across sweeps).
     device_bw = _device_bandwidth_gbps()
+    resolved = _models(models)
     if verbose:
         _print_perf_header(
-            f"W4A8 perf [{phase}] (E={_QWEN3_E}, group_size={_QWEN3_GROUP_SIZE}, "
+            f"W4A8 perf [{phase}] (models={'+'.join(n for n, _ in resolved)}, "
+            f"group_size={_QWEN3_GROUP_SIZE}, "
             f"act={str(dtype).split('.')[-1]}, rescale_group_size={rescale_group_size}) "
             f"-- ark.moe_gemm_w4a8 vs W4A16 vs torch"
         )
-    for nk_label, N, K in _QWEN3_NK:
-        for batch in batches:
-            total_tokens = batch * _QWEN3_TOPK
-            case = _build_case(
-                N,
-                K,
-                _QWEN3_E,
-                total_tokens,
-                _QWEN3_GROUP_SIZE,
-                dtype,
-                need_reference=False,
-                need_dequant=torch_baseline,
-            )
+    shapes = [
+        (nk_label, N, K, spec, batch)
+        for _, spec in resolved
+        for nk_label, N, K in spec["nk"]
+        for batch in (_compute_bound_batches(spec) if compute_bound else batches)
+    ]
+    for nk_label, N, K, spec, batch in shapes:
+        E, topk, group_size = spec["E"], spec["topk"], spec["group_size"]
+        total_tokens = batch * topk
+        case = _build_case(
+            N,
+            K,
+            E,
+            total_tokens,
+            group_size,
+            dtype,
+            need_reference=False,
+            need_dequant=torch_baseline,
+        )
 
-            # One-shot int4 -> int8 AUTO_S8 conversion. Timed separately: it
-            # happens once at model load, not per forward.
-            prepack_ms = _xpu_time_ms(
-                lambda: ark.moe_w4a8_prepack(
-                    case["packed"],
-                    case["scales"],
-                    group_size=_QWEN3_GROUP_SIZE,
-                    rescale_group_size=rescale_group_size,
-                ),
-                warmup=1,
-                iters=3,
-            )
-            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+        # One-shot int4 -> int8 AUTO_S8 conversion. Timed separately: it
+        # happens once at model load, not per forward.
+        prepack_ms = _xpu_time_ms(
+            lambda: ark.moe_w4a8_prepack(
                 case["packed"],
                 case["scales"],
-                group_size=_QWEN3_GROUP_SIZE,
+                group_size=group_size,
                 rescale_group_size=rescale_group_size,
+            ),
+            warmup=1,
+            iters=3,
+        )
+        weights_s8, wscales, block = ark.moe_w4a8_prepack(
+            case["packed"],
+            case["scales"],
+            group_size=group_size,
+            rescale_group_size=rescale_group_size,
+        )
+
+        w4a8_ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase))
+        torch_ms = _xpu_time_ms(lambda: _torch_baseline(case)) if torch_baseline else None
+        try:
+            w4a16_ms = _xpu_time_ms(lambda: _w4a16(case, phase))
+        except Exception as exc:  # pragma: no cover - depends on build
+            print(f"[moe-w4a8-perf] W4A16 timing unavailable for {nk_label}: {exc}")
+            w4a16_ms = None
+
+        active_experts = sum(1 for n_e in case["tpe"] if n_e > 0)
+        tflops = _flops(total_tokens, N, K) / (w4a8_ms * 1e-3) / 1e12
+        # W4A8 streams int8 weights: 1 byte per element, only for the
+        # experts that actually received tokens.
+        gbps = _weight_bytes(active_experts, N, K, 8) / (w4a8_ms * 1e-3) / 1e9
+        rows_per_expert = _rows_per_expert(total_tokens, active_experts)
+        bw_at_100t = _bw_needed_for_tflops(total_tokens, active_experts)
+
+        row = {
+            "label": nk_label,
+            "phase": phase,
+            "E": E,
+            "N": N,
+            "K": K,
+            "tokens": total_tokens,
+            "torch_ms": torch_ms,
+            "w4a16_ms": w4a16_ms,
+            "w4a8_ms": w4a8_ms,
+            "tflops": tflops,
+            "gbps": gbps,
+            "prepack_ms": prepack_ms,
+            "active_experts": active_experts,
+            "rows_per_expert": rows_per_expert,
+            "bw_at_100t": bw_at_100t,
+            # Hard ceiling for this routing on this device (``None`` when
+            # the bandwidth probe is unavailable).
+            "tflops_ceiling": (None if device_bw is None else _tflops_ceiling(total_tokens, active_experts, device_bw)),
+            "device_bw_gbps": device_bw,
+        }
+        rows.append(row)
+        if verbose:
+            _print_perf_row(
+                nk_label,
+                E,
+                N,
+                K,
+                total_tokens,
+                torch_ms,
+                w4a16_ms,
+                w4a8_ms,
+                tflops,
+                gbps,
+                prepack_ms,
+                rows_per_expert=rows_per_expert,
+                bw_at_100t=bw_at_100t,
             )
 
-            w4a8_ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase))
-            torch_ms = _xpu_time_ms(lambda: _torch_baseline(case)) if torch_baseline else None
-            try:
-                w4a16_ms = _xpu_time_ms(lambda: _w4a16(case, phase))
-            except Exception as exc:  # pragma: no cover - depends on build
-                print(f"[moe-w4a8-perf] W4A16 timing unavailable for {nk_label}: {exc}")
-                w4a16_ms = None
-
-            active_experts = sum(1 for n_e in case["tpe"] if n_e > 0)
-            tflops = _flops(total_tokens, N, K) / (w4a8_ms * 1e-3) / 1e12
-            # W4A8 streams int8 weights: 1 byte per element, only for the
-            # experts that actually received tokens.
-            gbps = _weight_bytes(active_experts, N, K, 8) / (w4a8_ms * 1e-3) / 1e9
-            rows_per_expert = _rows_per_expert(total_tokens, active_experts)
-            bw_at_100t = _bw_needed_for_tflops(total_tokens, active_experts)
-
-            row = {
-                "label": nk_label,
-                "phase": phase,
-                "E": _QWEN3_E,
-                "N": N,
-                "K": K,
-                "tokens": total_tokens,
-                "torch_ms": torch_ms,
-                "w4a16_ms": w4a16_ms,
-                "w4a8_ms": w4a8_ms,
-                "tflops": tflops,
-                "gbps": gbps,
-                "prepack_ms": prepack_ms,
-                "active_experts": active_experts,
-                "rows_per_expert": rows_per_expert,
-                "bw_at_100t": bw_at_100t,
-                # Hard ceiling for this routing on this device (``None`` when
-                # the bandwidth probe is unavailable).
-                "tflops_ceiling": (
-                    None if device_bw is None else _tflops_ceiling(total_tokens, active_experts, device_bw)
-                ),
-                "device_bw_gbps": device_bw,
-            }
-            rows.append(row)
-            if verbose:
-                _print_perf_row(
-                    nk_label,
-                    _QWEN3_E,
-                    N,
-                    K,
-                    total_tokens,
-                    torch_ms,
-                    w4a16_ms,
-                    w4a8_ms,
-                    tflops,
-                    gbps,
-                    prepack_ms,
-                    rows_per_expert=rows_per_expert,
-                    bw_at_100t=bw_at_100t,
-                )
-
-            # Drop the (large) int8 weights before the next shape allocates.
-            case = weights_s8 = wscales = None
-            ark.clear_moe_w4a8_prepack_cache()
-            ark.moe_w4a8_release_scratch()
-            _release_xpu_memory()
+        # Drop the (large) int8 weights before the next shape allocates.
+        case = weights_s8 = wscales = None
+        ark.clear_moe_w4a8_prepack_cache()
+        ark.moe_w4a8_release_scratch()
+        _release_xpu_memory()
     if verbose:
         _print_targets(phase, rows)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Kernel-configuration sweeps
+#
+# Both perf targets depend on a dispatch choice that can only be settled on
+# hardware (how many bytes a decode lane keeps in flight; how wide a prefill
+# tile should be). Every choice is reachable through an environment variable
+# and re-read per call, so one run can time them all against the same
+# workload -- built and prepacked once -- and name the winner.
+#
+# Each configuration is also checked against the first one for numerical
+# equivalence, so a configuration that is fast because it computes the wrong
+# thing cannot win.
+# ---------------------------------------------------------------------------
+
+# Decode: (label, env overrides). ``None`` unsets a variable.
+_DECODE_CONFIGS = [
+    ("legacy gemv", {"ARK_MOE_W4A8_DECODE_KSPLIT": "0"}),
+] + [
+    (
+        f"ksplit ch{ch} ncols{ncols}",
+        {
+            "ARK_MOE_W4A8_DECODE_KSPLIT": "1",
+            "ARK_MOE_W4A8_DECODE_KSPLIT_CH": str(ch),
+            "ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS": str(ncols),
+        },
+    )
+    for ch in (16, 32)
+    for ncols in (1, 2, 4)
+]
+
+# Prefill: work-group tile shapes. ``auto`` is the built-in ladder.
+_PREFILL_TILES = ["auto", "128x128", "128x256", "256x128", "256x256"]
+_PREFILL_TILE_CONFIGS = [
+    (f"tile {tile}", {"ARK_MOE_W4A8_PREFILL_TILE": None if tile == "auto" else tile}) for tile in _PREFILL_TILES
+]
+
+_SWEEP_MIN_SNR_DB = 40.0
+
+
+def _print_sweep_header(title: str, metric: str) -> None:
+    print()
+    print("=" * _PERF_WIDTH)
+    print(title)
+    print(
+        f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'rows/E':>8}  "
+        f"{'config':<22}{'ms':>10}{metric:>10}{'vs default':>12}{'SNR(dB)':>10}"
+    )
+    print("-" * _PERF_WIDTH)
+
+
+def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=True, compute_bound=None):
+    """Time every kernel configuration in ``configs`` on the same workload.
+
+    ``phase`` picks the sweep's shapes and its metric: ``decode`` reports
+    weight bandwidth (the decode target), ``prefill`` reports TFLOPS (the
+    prefill target) at the compute-bound batch. Returns one dict per
+    (shape, configuration).
+    """
+    is_prefill = phase == "prefill"
+    compute_bound = is_prefill if compute_bound is None else compute_bound
+    metric_name = "TFLOPS" if is_prefill else "W GB/s"
+    device_bw = _device_bandwidth_gbps()
+    resolved = _models(models)
+    if verbose:
+        _print_sweep_header(
+            f"W4A8 config sweep [{phase}] (models={'+'.join(n for n, _ in resolved)}, "
+            f"act={str(dtype).split('.')[-1]}) -- same workload, one row per kernel configuration",
+            metric_name,
+        )
+    batches = _DECODE_BATCHES if not is_prefill else None
+    rows = []
+    for _, spec in resolved:
+        E, topk, group_size = spec["E"], spec["topk"], spec["group_size"]
+        for nk_label, N, K in spec["nk"]:
+            for batch in _compute_bound_batches(spec) if compute_bound else batches:
+                total_tokens = batch * topk
+                case = _build_case(N, K, E, total_tokens, group_size, dtype, need_reference=False, need_dequant=False)
+                weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                    case["packed"], case["scales"], group_size=group_size, rescale_group_size=-1
+                )
+                active_experts = sum(1 for n_e in case["tpe"] if n_e > 0)
+                rows_per_expert = _rows_per_expert(total_tokens, active_experts)
+
+                baseline_out = None
+                baseline_ms = None
+                for label, overrides in configs:
+                    with _env_override(**overrides):
+                        out = _w4a8(case, weights_s8, wscales, block, phase)
+                        ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase))
+                    if baseline_out is None:
+                        # Cloned: the kernel may hand back a reused scratch
+                        # buffer, which would make every later comparison
+                        # compare a tensor with itself.
+                        baseline_out, baseline_ms, snr = out.clone(), ms, float("inf")
+                    else:
+                        snr = _snr_db(baseline_out.to(torch.float32), out.to(torch.float32))
+                    tflops = _flops(total_tokens, N, K) / (ms * 1e-3) / 1e12
+                    gbps = _weight_bytes(active_experts, N, K, 8) / (ms * 1e-3) / 1e9
+                    row = {
+                        "label": nk_label,
+                        "phase": phase,
+                        "config": label,
+                        "overrides": overrides,
+                        "E": E,
+                        "N": N,
+                        "K": K,
+                        "tokens": total_tokens,
+                        "rows_per_expert": rows_per_expert,
+                        "w4a8_ms": ms,
+                        "tflops": tflops,
+                        "gbps": gbps,
+                        "snr_db": snr,
+                        "speedup": baseline_ms / ms if ms else None,
+                        "device_bw_gbps": device_bw,
+                    }
+                    rows.append(row)
+                    if verbose:
+                        metric = tflops if is_prefill else gbps
+                        snr_txt = "--" if math.isinf(snr) else f"{snr:.1f}"
+                        speedup_txt = "--" if row["speedup"] is None else f"{row['speedup']:.2f}x"
+                        print(
+                            f"{nk_label:<14}{E:>5}{N:>7}{K:>7}{total_tokens:>8}{rows_per_expert:>8.1f}  "
+                            f"{label:<22}{ms:>10.3f}{metric:>10.2f}{speedup_txt:>12}{snr_txt:>10}"
+                        )
+                    out = None
+                case = weights_s8 = wscales = baseline_out = None
+                ark.clear_moe_w4a8_prepack_cache()
+                ark.moe_w4a8_release_scratch()
+                _release_xpu_memory()
+    if verbose:
+        _print_sweep_best(phase, rows)
+    return rows
+
+
+def _print_sweep_best(phase, rows) -> None:
+    """Report, per shape, the fastest numerically-equivalent configuration."""
+    if not rows:
+        return
+    is_prefill = phase == "prefill"
+    print()
+    print(f"best configuration [{phase}] (equivalent within {_SWEEP_MIN_SNR_DB:g} dB SNR of the first configuration):")
+    shapes = []
+    for row in rows:
+        if row["label"] not in shapes:
+            shapes.append(row["label"])
+    for shape in shapes:
+        candidates = [r for r in rows if r["label"] == shape and r["snr_db"] >= _SWEEP_MIN_SNR_DB]
+        if not candidates:
+            print(f"  {shape:<14} no numerically-equivalent configuration")
+            continue
+        best = min(candidates, key=lambda r: r["w4a8_ms"])
+        metric = f"{best['tflops']:.2f} TFLOPS" if is_prefill else f"{best['gbps']:.1f} GB/s"
+        env = " ".join(f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None) or "(defaults)"
+        print(f"  {shape:<14} {best['config']:<22} {best['w4a8_ms']:.3f} ms  {metric:<16} {env}")
 
 
 # ---------------------------------------------------------------------------
@@ -889,13 +1128,13 @@ if pytest is not None:
 
         def test_perf_decode(self, request):
             all_shapes = request.config.getoption("--all-shapes", default=False)
-            rows = run_perf("decode", _decode_batches(all_shapes))
+            rows = run_perf("decode", _decode_batches(all_shapes), models=_models_option(request))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
             _assert_targets(request, "decode", rows)
 
         def test_perf_prefill(self, request):
             all_shapes = request.config.getoption("--all-shapes", default=False)
-            rows = run_perf("prefill", _prefill_batches(all_shapes))
+            rows = run_perf("prefill", _prefill_batches(all_shapes), models=_models_option(request))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
             _assert_targets(request, "prefill", rows)
 
@@ -910,9 +1149,42 @@ if pytest is not None:
             bandwidth for 100 TFLOPS and is therefore the shape the compute
             target should actually be measured at.
             """
-            rows = run_perf("prefill", _PREFILL_TARGET_BATCHES, torch_baseline=False)
+            rows = run_perf("prefill", None, torch_baseline=False, compute_bound=True, models=_models_option(request))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
             _assert_targets(request, "prefill", rows)
+
+        def test_perf_decode_config_sweep(self, request):
+            """Time every decode lane mapping on one workload and name the best.
+
+            The decode target is weight bandwidth, and how close the GEMV gets
+            to the device's streaming rate is decided by how many bytes a lane
+            keeps in flight (``CH``) and how many output columns a sub-group
+            blocks over (``NCOLS``). Both are dispatch-time environment knobs,
+            so a single run can measure the whole grid -- including the legacy
+            mapping -- against the same prepacked weights.
+            """
+            rows = run_config_sweep("decode", _DECODE_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"decode config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_tile_sweep(self, request):
+            """Time every prefill work-group tile at the compute-bound batch.
+
+            A ``TileM x TileN`` tile re-reads A once per N tile and B once per M
+            tile, so the tile shape sets the GEMM's tile-load traffic
+            (``~ M*N*K * (1/TileM + 1/TileN)``) and therefore whether a
+            compute-bound shape is actually limited by compute. This sweep
+            measures the ladder's choice against every explicit tile.
+            """
+            rows = run_config_sweep("prefill", _PREFILL_TILE_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"prefill tile {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
         def test_decode_ksplit_matches_legacy(self):
             """The K-split decode mapping must agree with the legacy one.
@@ -1015,6 +1287,22 @@ def _parse_args(argv):
         help="Activation dtype (default: bf16).",
     )
     parser.add_argument(
+        "--models",
+        default=",".join(_DEFAULT_MODELS),
+        help=(
+            "Comma-separated shape groups to benchmark, or 'all' "
+            f"(available: {', '.join(_MODELS)}; default: {','.join(_DEFAULT_MODELS)})."
+        ),
+    )
+    parser.add_argument(
+        "--sweep-configs",
+        action="store_true",
+        help=(
+            "Also sweep the kernel dispatch configurations (decode lane mapping, prefill tile) "
+            "and report the fastest numerically-equivalent one per shape."
+        ),
+    )
+    parser.add_argument(
         "--rescale-group-size",
         type=int,
         default=-1,
@@ -1026,7 +1314,7 @@ def _parse_args(argv):
         "--compute-bound",
         action="store_true",
         help=(
-            "Also run the compute-bound prefill batch (4096 model tokens = 256 rows per expert), "
+            f"Also run the compute-bound prefill batch ({_PREFILL_TARGET_ROWS_PER_EXPERT} rows per expert), "
             "the smallest sweep point where the 100 TFLOPS goal is not capped by weight bandwidth."
         ),
     )
@@ -1051,6 +1339,8 @@ def main(argv=None) -> int:
     if env_block is not None:
         print(f"[moe-w4a8-perf] ARK_MOE_W4A8_AUTO_S8={env_block} overrides --rescale-group-size")
 
+    models = "all" if args.models == "all" else [m.strip() for m in args.models.split(",") if m.strip()]
+
     failures = []
     for phase in phases:
         batches = _decode_batches(args.all_shapes) if phase == "decode" else _prefill_batches(args.all_shapes)
@@ -1061,15 +1351,20 @@ def main(argv=None) -> int:
             except AssertionError as exc:
                 failures.append(str(exc))
         if not args.skip_perf:
-            run_perf(phase, batches, dtype=dtype, rescale_group_size=args.rescale_group_size)
+            run_perf(phase, batches, dtype=dtype, rescale_group_size=args.rescale_group_size, models=models)
             if phase == "prefill" and args.compute_bound:
                 run_perf(
                     phase,
-                    _PREFILL_TARGET_BATCHES,
+                    None,
                     dtype=dtype,
                     rescale_group_size=args.rescale_group_size,
                     torch_baseline=False,
+                    compute_bound=True,
+                    models=models,
                 )
+            if args.sweep_configs:
+                configs = _PREFILL_TILE_CONFIGS if phase == "prefill" else _DECODE_CONFIGS
+                run_config_sweep(phase, configs, dtype=dtype, models=models)
 
     if failures:
         print()
