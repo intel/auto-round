@@ -17,14 +17,16 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 
-    uv pip install pytest-cov
-    uv pip install -U chardet
-    uv pip list
-
     # install latest gguf for ut test
     cd ~ || exit 1
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
+    # install unit report dependencies
+    uv pip install pytest-cov pytest-timeout
+    uv pip install -U chardet
+    uv pip list
+
+    # install auto-round for unit tests
     cd /auto-round && uv pip install .
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
@@ -65,8 +67,10 @@ function check_storage_usage() {
 function run_unit_test() {
     cd /auto-round/test || exit 1
 
-    # Split test files into 5 parts
-    find ./test_cpu -name "test*.py" | grep -Ev "test_llmc|test_inc" | sort > all_tests.txt
+    # Split test files into 5 parts.
+    # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
+    # run in the nightly/weekly pipelines (see nightly-test.yml / weekly-test.yml).
+    find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=5
     q=$(( total_lines / NUM_CHUNKS ))
@@ -86,8 +90,9 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest -m "not skip_ci" --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -95,18 +100,19 @@ function run_unit_test() {
 
 function run_inc_unit_test() {
     echo "##[group]set up INC UT env..."
-    INC_PT_ONLY=1 uv pip install -r /auto-round/test/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     echo "##[endgroup]"
 
-    cd /auto-round/test || exit 1
+    cd /auto-round/test/integration || exit 1
 
     for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -114,20 +120,21 @@ function run_inc_unit_test() {
 
 function run_llmc_unit_test() {
     echo "##[group]set up LLMC UT env..."
-    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    BUILD_TYPE="nightly" uv pip install -r /auto-round/test/integration/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     uv pip uninstall auto-round
     cd /auto-round && uv pip install .
     echo "##[endgroup]"
 
-    cd /auto-round/test || exit 1
+    cd /auto-round/test/integration || exit 1
 
     for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov=auto_round --cov-report= --cov-append \
+        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+                --cov=auto_round --cov-report= --cov-append \
                 -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -143,7 +150,7 @@ function collect_log() {
 function main() {
     setup_environment
     run_unit_test
-    if [ "$test_part" -eq 5 ]; then
+    if [ "$test_part" -eq 5 ] && [ "$NIGHTLY_TEST" = 1 ]; then
         run_inc_unit_test
         run_llmc_unit_test
     fi

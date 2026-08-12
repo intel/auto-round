@@ -34,6 +34,7 @@ Usage:
 import torch
 from torch import nn
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
 
@@ -225,17 +226,35 @@ def linear_loop_experts_forward(
     # Get current hidden states for selected samples
     selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
 
-    # Allocate output tensor
-    out_per_sample = torch.zeros(token_idx.size(0), hidden_dim, device=device, dtype=hidden_states.dtype)
+    # Group token-expert pairs by expert using a single sort, then run each
+    # expert on a contiguous *static* slice, instead of doing a per-expert
+    # nonzero()/boolean-mask lookup inside the Python loop.
+    #
+    # Why: repeatedly issuing dynamic-shape gather kernels (nonzero(),
+    # index_select() or boolean-mask indexing) once per expert in a loop
+    # reliably triggers a driver-level bug on some XPU builds - either a
+    # "vectorized gather kernel index out of bounds" device-side assertion or
+    # a hard UR_RESULT_ERROR_DEVICE_LOST - even when every index is valid.
+    # This was confirmed with minimal PyTorch-only reproductions unrelated to
+    # this model/library, so working around it in application code is the
+    # practical fix. Sorting once needs only two dynamic gather/scatter calls
+    # in total (regardless of num_experts): one index_select to group tokens
+    # by expert, and one index_copy_ to scatter results back to their
+    # original positions. Each expert's slice `permuted[start:end]` is a
+    # plain view (no gather kernel involved), so this is also efficient.
+    sort_order = torch.argsort(expert_ids)
+    permuted_hidden_states = selected_hidden_states.index_select(0, sort_order)  # (S, hidden_dim)
 
-    # Process each expert
-    for expert_idx in range(num_experts):
-        # Find samples routed to this expert
-        mask = expert_ids == expert_idx
-        if not mask.any():
+    # Per-expert token counts, computed once on host to drive static slicing.
+    counts = torch.bincount(expert_ids, minlength=num_experts).tolist()
+
+    out_permuted = torch.zeros_like(permuted_hidden_states)
+    start = 0
+    for expert_idx, count in enumerate(counts):
+        if count == 0:
             continue
-
-        expert_input = selected_hidden_states[mask]  # (num_samples_for_expert, hidden_dim)
+        end = start + count
+        expert_input = permuted_hidden_states[start:end]  # static slice/view, no gather kernel
 
         # Get this expert's container with its projection layers
         expert = getattr(self, str(expert_idx))
@@ -252,8 +271,12 @@ def linear_loop_experts_forward(
         # Down projection
         expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
 
-        # Store results
-        out_per_sample[mask] = expert_out.to(out_per_sample.dtype)
+        out_permuted[start:end] = expert_out.to(out_permuted.dtype)
+        start = end
+
+    # Scatter results back to their original (pre-sort) token-expert order.
+    out_per_sample = torch.empty_like(out_permuted)
+    out_per_sample.index_copy_(0, sort_order, out_permuted)
 
     # Apply routing weights
     out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
@@ -519,6 +542,13 @@ def _unfuse_experts_weights_inplace(
         dim1, dim2 = first_param.shape[1], first_param.shape[2]
         is_transposed = dim1 < dim2
 
+    fusion_spec = build_standard_moe_fusion_spec(
+        detected_projections={name: config.copy() for name, config in detected_projections.items()},
+        num_experts=num_experts,
+        checkpoint_transposed=is_transposed,
+        module=module,
+    )
+
     dtype = first_param.dtype
     target_device = first_param.device if first_param.device.type != "meta" else "cpu"
 
@@ -590,6 +620,8 @@ def _unfuse_experts_weights_inplace(
     # Ensure num_experts is set
     if not hasattr(module, "num_experts"):
         module.num_experts = num_experts
+
+    register_moe_fusion_spec(module, fusion_spec)
 
     # Mark as unfused for detection during save
     module._unfused_experts = True

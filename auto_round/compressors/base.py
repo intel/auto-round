@@ -77,7 +77,7 @@ from auto_round.utils.device import (
     patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
 from auto_round.utils.offload import OffloadManager
 
 
@@ -110,6 +110,8 @@ class SerializedCompressorConfig:
     supported_types: Optional[list[str]] = SUPPORTED_LAYER_TYPES
     static_attention_dtype: Optional[str] = None
     static_kv_dtype: Optional[str] = None
+    static_attention_granularity: Optional[str] = "tensor"
+    static_kv_granularity: Optional[str] = "tensor"
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
@@ -314,12 +316,18 @@ class BaseOrchestrator(object):
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
+        from auto_round.experimental.utils import normalize_fp8_granularity
+
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
+        self.static_attention_granularity = normalize_fp8_granularity(
+            kwargs.pop("static_attention_granularity", "tensor")
+        )
         # Attention static dtype
         if self.static_attention_dtype is not None:
             logger.warning("The static attention dtype is experimental and currently has limited support.")
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_granularity = normalize_fp8_granularity(kwargs.pop("static_kv_granularity", "tensor"))
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
 
@@ -354,13 +362,19 @@ class BaseOrchestrator(object):
         self.nblocks = nblocks
 
         if enable_torch_compile is None:
-            enable_torch_compile = sys.platform != "win32"
+            enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
             if not enable_torch_compile:
-                logger.warning_once(
-                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
-                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
-                    "`--enable_torch_compile` to force enable it."
-                )
+                if self.device == "xpu":
+                    logger.warning_once(
+                        "`torch.compile` is disabled by default on XPU for compatibility. "
+                        "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
+                    )
+                else:
+                    logger.warning_once(
+                        "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                        "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                        "`--enable_torch_compile` to force enable it."
+                    )
         elif enable_torch_compile and sys.platform == "win32":
             logger.warning_once(
                 "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
@@ -426,6 +440,8 @@ class BaseOrchestrator(object):
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,
+            static_kv_granularity=self.static_kv_granularity,
+            static_attention_granularity=self.static_attention_granularity,
         )
         self.shard_writer = None
         # Resumability state deferred from Orchestrator._quantize_data_driven() until
@@ -1826,13 +1842,21 @@ class BaseOrchestrator(object):
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 
-            with attention_quant_ctx(self.model_context.model, static_attention_dtype=self.static_attention_dtype):
+            with attention_quant_ctx(
+                self.model_context.model,
+                static_attention_dtype=self.static_attention_dtype,
+                static_attention_granularity=self.static_attention_granularity,
+            ):
                 self.quantize()
                 self.model_context.quantized = True
         elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
 
-            with kvcache_quant_context(self.model_context.model, static_kv_dtype=self.static_kv_dtype):
+            with kvcache_quant_context(
+                self.model_context.model,
+                static_kv_dtype=self.static_kv_dtype,
+                static_kv_granularity=self.static_kv_granularity,
+            ):
                 self.quantize()
                 self.model_context.quantized = True
         else:

@@ -25,7 +25,7 @@ repos:
         exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
         args:
           [
-            --license-filepath=.azure-pipelines/license_template.txt,
+            --license-filepath=.github/license_template.txt,
             --use-current-year,
             --detect-license-in-X-top-lines=40,
             --skip-license-insertion-comment=Copyright,

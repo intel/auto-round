@@ -338,6 +338,8 @@ _ENTRY_KWARG_OWNERS = {
     "enable_deterministic_algorithms": "base",
     "static_kv_dtype": "base",
     "static_attention_dtype": "base",
+    "static_kv_granularity": "base",
+    "static_attention_granularity": "base",
     "processor": "mllm",
     "image_processor": "mllm",
     "template": "mllm",

@@ -1,0 +1,195 @@
+# Weekly CUDA pipeline: runs the heavy GPU integration + e2e suites
+# (vLLM / SGLang / LLMCompressor and the throughput e2e tests) that are
+# excluded from the PR CUDA unit-test pipeline. Scheduled weekly; can also be
+# triggered manually from the Azure DevOps UI.
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 18 * * 0"   # 02:00 Asia/Shanghai every Sunday
+    displayName: Weekly CUDA integration + e2e run
+    branches:
+      include:
+        - main
+    always: true
+
+variables:
+  - name: POOL_NAME
+    value: "RunPod-GPU-Pool"
+  - name: AGENT_NAME
+    value: "runpod-agent-$(Build.BuildId)"
+
+parameters:
+  - name: matrix
+    type: object
+    default:
+      part0:
+        PART: 0
+
+stages:
+  - ${{ each pair in parameters.matrix }}:
+      - stage: Start_Pod_${{ pair.key }}
+        displayName: "Start Pod ${{ pair.value.PART }}"
+        dependsOn: []
+        jobs:
+          - job: Start_Pod_Job
+            displayName: "Launch Pod & Run CUDA Tests"
+            timeoutInMinutes: 60
+            pool:
+              vmImage: "ubuntu-latest"
+            steps:
+              - checkout: self
+
+              - task: UsePythonVersion@0
+                inputs:
+                  versionSpec: "3.13"
+                displayName: "Use Python 3.13"
+
+              - task: Bash@3
+                displayName: "Install dependencies"
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    pip install requests
+
+              - task: Bash@3
+                displayName: "Create RunPod Instance"
+                name: create_runpod
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    export PYTHONUNBUFFERED=1
+                    cd ${BUILD_SOURCESDIRECTORY}
+                    CUDA_VERSION="13.0"
+                    python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
+                      --action create \
+                      --api_key $(RUNPOD_API_KEY) \
+                      --name "weekly-$(Build.BuildId)-${{ pair.value.PART }}" \
+                      --container_disk_size "100" \
+                      --part ${{ pair.value.PART }} \
+                      --cuda_version "${CUDA_VERSION}" \
+                      --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
+
+              - task: Bash@3
+                displayName: "Wait for Pod to be Online"
+                name: wait_for_pod
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    cd ${BUILD_SOURCESDIRECTORY}
+                    export PYTHONUNBUFFERED=1
+                    python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
+                      --action wait \
+                      --api_key $(RUNPOD_API_KEY) \
+                      --name "weekly-$(Build.BuildId)-${{ pair.value.PART }}"
+
+              - task: Bash@3
+                displayName: "Wait for Agent to be Online"
+                name: wait_for_agent
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    cd ${BUILD_SOURCESDIRECTORY}
+                    export PYTHONUNBUFFERED=1
+                    python .azure-pipelines/scripts/cuda_unit_test/azure_agent.py \
+                      --action wait \
+                      --url "$(System.CollectionUri)" \
+                      --pat "$(AZP_DEVOPS_PAT)" \
+                      --pool "$(POOL_NAME)" \
+                      --agent "$(AGENT_NAME)-part${{ pair.value.PART }}"
+
+      - stage: GPU_Test_${{ pair.key }}
+        displayName: "GPU Test ${{ pair.value.PART }}"
+        dependsOn: Start_Pod_${{ pair.key }}
+        jobs:
+          - job: GpuTests
+            timeoutInMinutes: 180
+            pool:
+              name: "$(POOL_NAME)"
+              demands: Agent.Name -equals runpod-agent-$(Build.BuildId)-part${{ pair.value.PART }}
+            steps:
+              - checkout: self
+                clean: true
+                displayName: "Checkout Repo"
+
+              - script: |
+                  echo "Running on GPU Agent: $(Agent.Name)"
+                  nvidia-smi
+                  lscpu
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  nohup uv run monitor_gpu.py daemon > monitor.log 2>&1 &
+                displayName: "Verify GPU Access"
+
+              - script: |
+                  echo "##[group]Installing Python dependencies..."
+                  uv pip install -U "pytest-cov" "pytest-html" "requests" "huggingface_hub"
+                  hf auth login --token "$(HF_TOKEN)"
+                  echo "##[endgroup]"
+                displayName: "Install Python Dependencies"
+
+              - script: |
+                  export UV_NO_CACHE=0
+                  bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
+                    --test_case=specific
+                displayName: "Run GPU Integration + E2E Tests"
+
+              - script: |
+                  cd .azure-pipelines/scripts/cuda_unit_test
+                  uv run monitor_gpu.py stop
+                condition: always()
+                displayName: "GPU Monitor"
+
+      - stage: Cleanup_Verification_${{ pair.key }}
+        displayName: "Verify Pod Cleanup ${{ pair.value.PART }}"
+        dependsOn:
+          - Start_Pod_${{ pair.key }}
+          - GPU_Test_${{ pair.key }}
+        condition: always()
+        jobs:
+          - job: Verify_Cleanup
+            pool:
+              vmImage: "ubuntu-latest"
+            steps:
+              - checkout: self
+
+              - task: UsePythonVersion@0
+                inputs:
+                  versionSpec: "3.13"
+                displayName: "Use Python 3.13"
+
+              - task: Bash@3
+                displayName: "Install dependencies"
+                condition: always()
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    pip install requests
+
+              - task: Bash@3
+                displayName: "Terminate RunPod Instance"
+                condition: always()
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    echo "Terminating Pod: weekly-$(Build.BuildId)-${{ pair.value.PART }}"
+                    export PYTHONUNBUFFERED=1
+                    python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
+                      --action terminate \
+                      --api_key $(RUNPOD_API_KEY) \
+                      --name "weekly-$(Build.BuildId)-${{ pair.value.PART }}"
+
+              - task: Bash@3
+                displayName: "Deregister Agent from Pool"
+                condition: always()
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    cd ${BUILD_SOURCESDIRECTORY}
+                    export PYTHONUNBUFFERED=1
+                    python .azure-pipelines/scripts/cuda_unit_test/azure_agent.py \
+                      --action deregister \
+                      --url "$(System.CollectionUri)" \
+                      --pat "$(AZP_DEVOPS_PAT)" \
+                      --pool "$(POOL_NAME)" \
+                      --agent "$(AGENT_NAME)-part${{ pair.value.PART }}"
