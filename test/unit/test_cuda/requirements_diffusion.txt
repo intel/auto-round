@@ -2,3 +2,4 @@ diffusers @ git+https://github.com/huggingface/diffusers.git@main
 image-reward
 clip
 optimum
+transformers>=5.5.0,<5.15.0
