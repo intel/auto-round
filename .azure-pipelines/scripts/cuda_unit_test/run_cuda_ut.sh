@@ -90,7 +90,7 @@ function run_unit_test() {
 
         COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
-            -vs --disable-warnings --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+            -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -123,8 +123,8 @@ function run_unit_test_llmc() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
         COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -157,8 +157,8 @@ function run_unit_test_sglang() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
         COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
              ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -191,8 +191,8 @@ function run_unit_test_vllm() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
         COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
