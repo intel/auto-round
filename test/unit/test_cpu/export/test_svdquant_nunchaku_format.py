@@ -20,7 +20,6 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.compressors.base import BaseCompressor
 from auto_round.export.formats.backends.svdquant_nunchaku import SVDQuantNunchakuFormat
 from auto_round.formats import get_formats
@@ -33,35 +32,6 @@ def _mxfp4_compressor(**updates):
     return SimpleNamespace(**values)
 
 
-def _toy_svd_model():
-    model = torch.nn.Module()
-    residual = torch.nn.Linear(32, 32)
-    residual.data_type = "mx_fp4e2m1"
-    residual.bits = 4
-    residual.group_size = 32
-    residual.sym = True
-    residual.act_data_type = "mx_fp4e2m1"
-    residual.act_bits = 4
-    residual.act_group_size = 32
-    residual.act_sym = True
-    residual.act_dynamic = True
-    model.svd = SVDQuantLinear(
-        residual,
-        torch.nn.Linear(32, 1, bias=False),
-        torch.nn.Linear(1, 32, bias=False),
-        torch.ones(32),
-    )
-    return model
-
-
-def test_get_formats_resolves_full_model_svdquant_nunchaku_format():
-    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
-
-    assert output_format.format_name == "svdquant_nunchaku"
-    assert output_format.is_supported_immediate_packing() is False
-    assert output_format.is_supported_immediate_saving() is False
-
-
 def test_svdquant_nunchaku_rejects_incompatible_scheme():
     scheme = PRESET_SCHEMES["MXFP4"].copy()
     scheme.group_size = 64
@@ -70,8 +40,28 @@ def test_svdquant_nunchaku_rejects_incompatible_scheme():
         SVDQuantNunchakuFormat.check_scheme_args(scheme)
 
 
+def test_format_rejects_incompatible_residual_override():
+    from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+    residual = torch.nn.Linear(32, 32)
+    model = torch.nn.Module()
+    model.svd = SVDQuantLinear(
+        residual,
+        torch.nn.Linear(32, 1, bias=False),
+        torch.nn.Linear(1, 32, bias=False),
+        torch.ones(32),
+    )
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+
+    with pytest.raises(ValueError, match=r"group_size=64.*group_size=32"):
+        output_format._validate_svd_layer_overrides(model, {"svd.residual_linear": {"group_size": 64}})
+
+
 def test_full_model_format_disables_immediate_packing_and_saving():
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    assert output_format.format_name == "svdquant_nunchaku"
+    assert output_format.is_supported_immediate_packing() is False
+    assert output_format.is_supported_immediate_saving() is False
     compressor = SimpleNamespace(
         formats=[output_format],
         inplace=True,
@@ -135,24 +125,6 @@ def test_format_rejects_models_without_runtime_adapter(tmp_path):
 
     with pytest.raises(ValueError, match="runtime model adapter"):
         output_format.save_quantized(tmp_path, model=torch.nn.Linear(2, 2), model_adapter="auto")
-
-
-def test_format_rejects_incompatible_residual_override(monkeypatch, tmp_path):
-    import auto_round.export.svdquant_nunchaku as exporter
-
-    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
-    monkeypatch.setattr(
-        exporter,
-        "save_svdquant_nunchaku_safetensors",
-        lambda *args, **kwargs: pytest.fail("exporter must not be called"),
-    )
-
-    with pytest.raises(ValueError, match=r"group_size=64.*group_size=32"):
-        output_format.save_quantized(
-            tmp_path,
-            model=_toy_svd_model(),
-            layer_config={"svd.residual_linear": {"group_size": 64}},
-        )
 
 
 def test_diffusion_save_exports_self_contained_nunchaku_pipeline(tmp_path):

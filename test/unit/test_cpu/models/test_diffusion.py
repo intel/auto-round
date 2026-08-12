@@ -35,7 +35,7 @@ def test_low_gpu_memory_diffusion_calibration_uses_model_cpu_offload():
 
 def test_regular_diffusion_calibration_moves_pipeline_to_device():
     class Pipeline:
-        device = torch.device("cpu")
+        device = None
 
         def __init__(self):
             self.target_device = None
@@ -44,11 +44,12 @@ def test_regular_diffusion_calibration_moves_pipeline_to_device():
             self.target_device = device
 
     pipe = Pipeline()
+    target_device = torch.device("cpu")
 
-    mode = _prepare_pipeline_for_calibration(pipe, "cuda:0", low_gpu_mem_usage=False)
+    mode = _prepare_pipeline_for_calibration(pipe, target_device, low_gpu_mem_usage=False)
 
     assert mode is None
-    assert pipe.target_device == "cuda:0"
+    assert pipe.target_device == target_device
 
 
 @pytest.fixture
