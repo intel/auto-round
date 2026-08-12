@@ -64,7 +64,7 @@ function run_unit_test() {
     echo "##[endgroup]"
 
     uv pip list
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
@@ -88,7 +88,7 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
+        pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
             -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
@@ -116,13 +116,13 @@ function run_unit_test_llmc() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
+        pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
@@ -150,13 +150,13 @@ function run_unit_test_sglang() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
+        pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" \
              ${test_file} 2>&1 | tee ${ut_log_name}
@@ -184,13 +184,13 @@ function run_unit_test_vllm() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
+        pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}

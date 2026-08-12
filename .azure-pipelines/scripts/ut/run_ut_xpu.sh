@@ -22,7 +22,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}
@@ -38,7 +38,7 @@ function run_unit_test() {
 
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=30 --session-timeout=600 \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
@@ -50,7 +50,7 @@ function run_unit_test() {
 
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=30 --session-timeout=600 \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
@@ -71,7 +71,7 @@ function run_unit_test_llmc() {
 
         echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=30 --session-timeout=600 \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}

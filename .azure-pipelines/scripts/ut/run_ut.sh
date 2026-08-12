@@ -31,7 +31,7 @@ function setup_environment() {
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
     echo "##[endgroup]"
 
     uv pip list
@@ -78,7 +78,7 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
             pytest -m "not skip_ci" --timeout=30 --session-timeout=600 \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
@@ -98,7 +98,7 @@ function run_inc_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=30 --session-timeout=600 \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
@@ -120,7 +120,7 @@ function run_llmc_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=30 --session-timeout=600 \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
