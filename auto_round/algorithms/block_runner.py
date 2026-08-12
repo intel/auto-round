@@ -76,6 +76,8 @@ register_diffusion_output("OvisImageTransformerBlock", ["encoder_hidden_states",
 register_diffusion_output("OvisImageSingleTransformerBlock", ["encoder_hidden_states", "hidden_states"])
 register_diffusion_output("StableAudioDiTBlock", ["hidden_states"])
 register_diffusion_output("WanTransformerBlock", ["hidden_states"])
+register_diffusion_output("MiniMaxH3TransformerBlock", ["hidden_states"])
+register_diffusion_output("MiniMaxH3TokenRefinerBlock", ["hidden_states"])
 
 # GLM DSA full indexer layers return top-k indices for subsequent shared layers.
 register_block_output("GlmMoeDsaDecoderLayer", ["hidden_states", "prev_topk_indices"])
