@@ -245,6 +245,7 @@ class XpuWrapper {
       auto st = p->scale_type;
       if (st == BTLA_DTYPE::F32) {
         using T = float;
+        const float weight_fullrange = get_weight_fullrange(p);
         auto ker2 = [&](sycl::handler& cgh) {
           cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
                            [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
@@ -260,7 +261,7 @@ class XpuWrapper {
                                for (int i = start_blk; i < end_blk; i += 1) {
                                  maxv = std::max(abs(sptr[i * n + g_1]), maxv);
                                }
-                               sxtptr[g_1 * newblks + j] = maxv * get_weight_fullrange(p) / 127.f;
+                               sxtptr[g_1 * newblks + j] = maxv * weight_fullrange / 127.f;
                              }
                            });
         };
