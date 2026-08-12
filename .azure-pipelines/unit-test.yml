@@ -44,6 +44,16 @@ variables:
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
 
+parameters:
+  - name: unitTestParts
+    type: object
+    default:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+
 stages:
   - template: template/lib-build-template.yml
     parameters:
@@ -60,16 +70,9 @@ stages:
         timeoutInMinutes: 60
         strategy:
           matrix:
-            part1:
-              PART: 1
-            part2:
-              PART: 2
-            part3:
-              PART: 3
-            part4:
-              PART: 4
-            part5:
-              PART: 5
+            ${{ each part in parameters.unitTestParts }}:
+              part_${{ part }}:
+                PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
