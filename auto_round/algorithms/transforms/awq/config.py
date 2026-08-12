@@ -75,7 +75,10 @@ class AWQConfig(QuantizationConfig):
             field="clip_as_init",
             dest="awq_clip_as_init",
             action="store_true",
-            help="Use the searched AWQ clip to initialize the block quantizer's weight range instead of hard-clamping (requires --awq-apply-clip).",
+            help=(
+                "Use the searched AWQ clip to initialize the block quantizer's weight range "
+                "instead of hard-clamping (requires --awq-apply-clip)."
+            ),
         )
 
     def __init__(

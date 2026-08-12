@@ -532,18 +532,30 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
                 continue
             owners = _owning_algorithm_names(key)
             if owners:
-                raise TypeError(
-                    f"Parameter '{key}' belongs to {owners}, but the selected alg_configs "
-                    f"does not include {'it' if len(owners) == 1 else 'any of them'}. Pass it through the "
-                    f"matching config object instead, e.g. alg_configs={owners[0]}({key}=...)."
+                logger.error(
+                    "Parameter '%s' belongs to %s, but the selected alg_configs does not include "
+                    "%s. Pass it through the matching config object instead, e.g. alg_configs=%s(%s=...). "
+                    "The parameter is ignored.",
+                    key,
+                    owners,
+                    "it" if len(owners) == 1 else "any of them",
+                    owners[0],
+                    key,
                 )
-            raise TypeError(f"Unknown parameter '{key}' passed to AutoRound.")
+            else:
+                logger.error(
+                    "Unknown parameter '%s' passed to AutoRound. The parameter is ignored.",
+                    key,
+                )
+            continue
         if len(targets) > 1:
-            raise TypeError(
-                f"Parameter '{key}' matches multiple algorithm configs "
-                f"({[type(config).__name__ for config in targets]}). Pass it through the matching "
-                "config object in 'alg_configs' instead of as a direct keyword argument."
+            logger.error(
+                "Parameter '%s' matches multiple algorithm configs (%s). Pass it through the matching "
+                "config object in 'alg_configs' instead of as a direct keyword argument. The parameter is ignored.",
+                key,
+                [type(config).__name__ for config in targets],
             )
+            continue
         target = targets[0]
         if key in ("disable_opt_rtn", "enable_opt_rtn"):
             if key == "disable_opt_rtn" or value:
