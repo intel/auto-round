@@ -304,6 +304,7 @@ def test_collection_rejects_malformed_packed_residual_payloads():
         ),
     )
     for payload, message in cases:
+
         class Provider:
             def tensors_for(self, record):
                 return payload
