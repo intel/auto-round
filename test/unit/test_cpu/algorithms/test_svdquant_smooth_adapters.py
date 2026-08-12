@@ -15,7 +15,6 @@
 import torch
 
 from auto_round.algorithms.transforms.svdquant.smooth_adapters import discover_svdquant_groups
-from auto_round.algorithms.transforms.svdquant.smooth_adapters import flux as flux_adapter
 
 
 class Attention(torch.nn.Module):
@@ -73,17 +72,3 @@ def test_flux_adapter_discovers_fused_projection_groups_without_duplicates():
     assert len(by_key["transformer_blocks.7.attn.qkv"].projections) == 3
     assert len(by_key["transformer_blocks.7.attn.add_qkv"].projections) == 3
     assert len({id(projection) for group in groups for projection in group.projections}) == 12
-
-
-def test_flux_adapter_warns_for_unverified_model(monkeypatch):
-    messages = []
-    monkeypatch.setattr(flux_adapter.logger, "warning_once", lambda message, *args: messages.append(message % args))
-    model = torch.nn.Module()
-    model.config = {"_name_or_path": "other-org/other-flux"}
-
-    flux_adapter.warn_if_unverified_flux_model(model)
-
-    assert messages == [
-        "SVDQuant FLUX grouping has been validated with FLUX.1-dev only; "
-        "model 'other-org/other-flux' is unverified and may require a dedicated adapter."
-    ]

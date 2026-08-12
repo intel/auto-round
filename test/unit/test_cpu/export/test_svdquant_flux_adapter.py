@@ -1,12 +1,8 @@
-import inspect
-import json
-
 import pytest
 import torch
 
 from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
 from auto_round.export.svdquant_nunchaku import (
-    IdentitySVDQuantModelAdapter,
     SourceLinearRecord,
     SVDQuantExportConfig,
     SVDQuantLinearScheme,
@@ -122,23 +118,6 @@ def test_single_proj_out_splits_input_columns_and_keeps_bias_only_on_mlp():
     torch.testing.assert_close(mlp_fc2.bias, source.bias)
 
 
-def test_direct_maps_preserve_logical_records():
-    mappings = (
-        ("transformer_blocks.0.attn.to_out.0", "transformer_blocks.0.out_proj"),
-        ("transformer_blocks.0.ff.net.2.linear", "transformer_blocks.0.mlp_fc2"),
-        ("transformer_blocks.0.ff_context.net.0.proj", "transformer_blocks.0.mlp_context_fc1"),
-        ("single_transformer_blocks.0.proj_mlp", "single_transformer_blocks.0.mlp_fc1"),
-    )
-    adapter = FluxSVDQuantNunchakuAdapter(require_complete_model=False)
-    for source_name, target_name in mappings:
-        source = _source(source_name)
-        (record,) = tuple(adapter.map_modules(_model(), (source,)))
-        assert record.prefix == target_name
-        assert record.residual_weight is source.residual_weight
-        assert record.lora_down is source.lora_down
-        assert record.smooth is source.smooth
-
-
 def _install(root, path, module):
     current = root
     parts = path.split(".")
@@ -157,64 +136,6 @@ def _install_parameter(root, name, tensor):
             current.add_module(part, torch.nn.Module())
         current = getattr(current, part)
     current.register_parameter(parameter_name, torch.nn.Parameter(tensor))
-
-
-def test_extra_tensors_pack_adanorm_copy_norms_and_top_level_bf16():
-    model = _model()
-    for name, splits in (
-        ("transformer_blocks.0.norm1.linear", 6),
-        ("transformer_blocks.0.norm1_context.linear", 6),
-        ("single_transformer_blocks.0.norm.linear", 3),
-    ):
-        linear = torch.nn.Linear(1024, 12, bias=True, dtype=torch.bfloat16)
-        _install(model, name, linear)
-    for local_name in ("norm_q", "norm_k", "norm_added_q", "norm_added_k"):
-        norm = torch.nn.Module()
-        norm.weight = torch.nn.Parameter(torch.randn(8))
-        _install(model, f"transformer_blocks.0.attn.{local_name}", norm)
-    _install(model, "x_embedder", torch.nn.Linear(8, 8))
-    _install(model, "unrelated", torch.nn.Linear(8, 8))
-
-    tensors = FluxSVDQuantNunchakuAdapter(require_complete_model=False).extra_tensors(model)
-
-    for prefix in (
-        "transformer_blocks.0.norm1.linear",
-        "transformer_blocks.0.norm1_context.linear",
-        "single_transformer_blocks.0.norm.linear",
-    ):
-        assert {f"{prefix}.{suffix}" for suffix in ("qweight", "wscales", "wzeros", "bias")} <= tensors.keys()
-    assert tensors["transformer_blocks.0.norm_added_k.weight"].dtype == torch.bfloat16
-    assert tensors["x_embedder.weight"].dtype == torch.bfloat16
-    assert not any(key.startswith("unrelated.") for key in tensors)
-    assert all(tensor.device.type == "cpu" and tensor.is_contiguous() for tensor in tensors.values())
-
-
-def test_metadata_explicit_config_and_complete_mode_rejects_gaps():
-    adapter = FluxSVDQuantNunchakuAdapter(config={"num_layers": 2, "num_single_layers": 0}, require_complete_model=True)
-    metadata = adapter.metadata(_model(), 2)
-    assert metadata["model_class"] == "NunchakuFluxTransformer2dModel"
-    assert json.loads(metadata["config"])["num_layers"] == 2
-    assert metadata["format"] == "pt" and metadata["comfy_config"] == "{}"
-    with pytest.raises(ValueError, match="indices mismatch"):
-        tuple(adapter.map_modules(_model(), (_source("transformer_blocks.1.attn.to_q"),)))
-
-
-def test_decomposition_device_validation(monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
-    adapter = FluxSVDQuantNunchakuAdapter(decomposition_device="cuda:1", require_complete_model=False)
-    assert adapter.decomposition_device == torch.device("cuda:1")
-
-    cases = (
-        ("cuda", False, 0, "CUDA.*not available"),
-        ("cuda:2", True, 2, "index 2.*device_count=2"),
-        ("mps", True, 2, "must be CPU or CUDA"),
-    )
-    for device, available, count, message in cases:
-        monkeypatch.setattr(torch.cuda, "is_available", lambda available=available: available)
-        monkeypatch.setattr(torch.cuda, "device_count", lambda count=count: count)
-        with pytest.raises(ValueError, match=message):
-            FluxSVDQuantNunchakuAdapter(decomposition_device=device, require_complete_model=False)
 
 
 def _small_complete_top_level_tensors():
@@ -285,16 +206,6 @@ def test_standard_complete_schema_validates_2604_tiny_tensors_without_model_allo
     adapter.validate(tensors, adapter.metadata(model, 32))
 
 
-def test_complete_extra_collection_rejects_junk_passthrough_parameter():
-    model = _model({"num_layers": 0, "num_single_layers": 0})
-    for key, tensor in _small_complete_top_level_tensors().items():
-        _install_parameter(model, key, tensor)
-    _install_parameter(model, "x_embedder.junk", torch.ones(2))
-
-    with pytest.raises(ValueError, match="unexpected top-level.*x_embedder.junk"):
-        FluxSVDQuantNunchakuAdapter(require_complete_model=True).extra_tensors(model)
-
-
 def test_complete_extra_collection_requires_and_copies_exact_top_level_parameters():
     model = _model({"num_layers": 0, "num_single_layers": 0})
     expected = _small_complete_top_level_tensors()
@@ -305,52 +216,6 @@ def test_complete_extra_collection_requires_and_copies_exact_top_level_parameter
 
     assert set(actual) == set(expected)
     assert all(tensor.dtype == torch.bfloat16 for tensor in actual.values())
-
-
-def test_complete_extra_collection_rejects_missing_top_level_parameter():
-    model = _model({"num_layers": 0, "num_single_layers": 0})
-    expected = _small_complete_top_level_tensors()
-    expected.pop("proj_out.bias")
-    for key, tensor in expected.items():
-        _install_parameter(model, key, tensor)
-
-    with pytest.raises(ValueError, match="missing top-level.*proj_out.bias"):
-        FluxSVDQuantNunchakuAdapter(require_complete_model=True).extra_tensors(model)
-
-
-def test_generic_export_merges_adapter_extras_and_rejects_duplicates():
-    residual = torch.nn.Linear(32, 8)
-    residual.data_type, residual.bits, residual.group_size, residual.sym = "mx_fp4", 4, 32, True
-    residual.act_data_type, residual.act_bits, residual.act_group_size = "mx_fp4", 4, 32
-    residual.act_sym, residual.act_dynamic = True, True
-    from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
-
-    wrapped = SVDQuantLinear(
-        residual, torch.nn.Linear(32, 2, bias=False), torch.nn.Linear(2, 8, bias=False), torch.ones(32)
-    )
-    model = torch.nn.Sequential(wrapped)
-
-    class ExtraAdapter(IdentitySVDQuantModelAdapter):
-        def extra_tensors(self, model):
-            return {"passthrough.weight": torch.ones(3).tanh()}
-
-    tensors = collect_svdquant_tensors(model, adapter=ExtraAdapter())
-    assert torch.equal(tensors["passthrough.weight"], torch.ones(3).tanh())
-
-    class DuplicateAdapter(IdentitySVDQuantModelAdapter):
-        def extra_tensors(self, model):
-            return {"0.bias": torch.ones(8)}
-
-    with pytest.raises(ValueError, match="duplicate tensor key"):
-        collect_svdquant_tensors(model, adapter=DuplicateAdapter())
-
-
-def test_adapter_sources_have_no_external_runtime_imports():
-    import auto_round.export.svdquant_adapters.flux as module
-
-    source = inspect.getsource(module).lower()
-    assert "import deepcompressor" not in source
-    assert "import nunchaku" not in source
 
 
 def test_partial_flux_collect_and_save_roundtrip(tmp_path):

@@ -28,6 +28,7 @@
     - [AutoScheme 中的超参数](#autoscheme-超参数说明)
   + [OPT RTN 模式](#opt-rtn-模式)
   + [AWQ 算法-实验性功能](#awq-算法)
+  + [SVDQuant 算法-实验性功能](#svdquant-算法)
   + [免模型架构量化模式](#免模型架构量化模式)
   + [GGUF 格式](#gguf-格式量化)
   + [量化成本](#量化成本)
@@ -411,6 +412,45 @@ ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 `alg_configs="awq"` 或 `alg_configs=AWQConfig()` 选择的是 AWQ 算法；这与 `format="auto_awq"` 等导出格式相互独立。例如：
 - `alg_configs="awq"` + `format="auto_round"`：使用 AWQ 平滑，并采用 AutoRound 打包。
 - `alg_configs="signround"` + `format="auto_awq"`：不使用 AWQ 平滑，但采用 AutoAWQ 打包。
+
+### SVDQuant 算法
+
+**实验性功能：目前仅在 FLUX.1-dev 上完成端到端流程验证。**
+
+SVDQuant 将每个 Linear 权重拆分为量化残差分支和较小的浮点低秩分支，并可与 RTN 或 SignRound 组合，生成供 Nunchaku 推理使用的 MXFP4 模型。
+
+RTN（建议先使用此配置）：
+
+```bash
+auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --format svdquant_nunchaku \
+  --output_dir ./flux-dev-mxfp4-svdquant-rtn
+```
+
+SignRound：
+
+```bash
+auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --format svdquant_nunchaku \
+  --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
+  --output_dir ./flux-dev-mxfp4-svdquant-signround
+```
+
+使用 Nunchaku commit [`4de4986`](https://github.com/changwangss/nunchaku/commit/4de49869eaa8565d8c29da344323e82298bdf198) 测得的 FLUX.1-dev 质量结果：
+
+| 配置 | CLIP | CLIP-IQA | ImageReward |
+|---|---:|---:|---:|
+| BF16 | 26.0189 | 0.954360 | 1.018340 |
+| MXFP4，smooth + SVDQuant + SignRound | **26.1039** | **0.962655** | **1.021020** |
+| MXFP4，no smooth + SVDQuant + SignRound | 26.0727 | 0.959363 | 1.002380 |
+| MXFP4，smooth + SVDQuant + RTN | 25.9719 | 0.947763 | 0.939392 |
+| MXFP4，no smooth + SVDQuant + RTN | 25.9624 | 0.946939 | 0.934579 |
+
+SignRound 配置使用 128 个 calibration samples、50 个 inference steps、200 次 tuning iterations、rank 32 和 20 次 residual iterations。
+
+Smooth 搜索、residual iterations、导出和推理说明请参阅 [SVDQuant 详细说明](./svdquant_details_CN.md)。
 
 
 ### AutoScheme 自动混合精度量化方案

@@ -28,6 +28,7 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [OPT RTN mode](#opt-rtn-mode)
   + [AWQ Algorithm-Experimental](#awq-algorithm)
+  + [SVDQuant Algorithm-Experimental](#svdquant-algorithm)
   + [Model-Free Mode](#model-free-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
@@ -418,6 +419,45 @@ ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 format selection such as `format="auto_awq"`. For example:
 - `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing with AutoRound packing.
 - `alg_configs="signround"` + `format="auto_awq"`: AutoAWQ packing without AWQ smoothing.
+
+### SVDQuant Algorithm
+
+**Experimental feature: the end-to-end workflow has currently been validated with FLUX.1-dev only.**
+
+SVDQuant decomposes each Linear weight into a quantized residual branch and a small floating-point low-rank branch. It can be combined with RTN or SignRound to produce an MXFP4 model for Nunchaku inference.
+
+RTN (recommended starting point):
+
+```bash
+auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --format svdquant_nunchaku \
+  --output_dir ./flux-dev-mxfp4-svdquant-rtn
+```
+
+SignRound:
+
+```bash
+auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --format svdquant_nunchaku \
+  --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
+  --output_dir ./flux-dev-mxfp4-svdquant-signround
+```
+
+FLUX.1-dev quality results using Nunchaku commit [`4de4986`](https://github.com/changwangss/nunchaku/commit/4de49869eaa8565d8c29da344323e82298bdf198):
+
+| Configuration | CLIP | CLIP-IQA | ImageReward |
+|---|---:|---:|---:|
+| BF16 | 26.0189 | 0.954360 | 1.018340 |
+| MXFP4, smooth + SVDQuant + SignRound | **26.1039** | **0.962655** | **1.021020** |
+| MXFP4, no smooth + SVDQuant + SignRound | 26.0727 | 0.959363 | 1.002380 |
+| MXFP4, smooth + SVDQuant + RTN | 25.9719 | 0.947763 | 0.939392 |
+| MXFP4, no smooth + SVDQuant + RTN | 25.9624 | 0.946939 | 0.934579 |
+
+SignRound used 128 calibration samples, 50 inference steps, 200 tuning iterations, rank 32, and 20 residual iterations.
+
+See [SVDQuant Details](./svdquant_details.md) for smooth search, residual iterations, export, and inference.
 
 ### AutoScheme
 

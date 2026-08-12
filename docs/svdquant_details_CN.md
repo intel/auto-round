@@ -34,11 +34,12 @@ CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
   --model_dtype bf16 \
   --scheme MXFP4 \
   --algorithm svdquant \
+  --format svdquant_nunchaku \
   --device 0 \
   --output_dir ./flux-dev-mxfp4-svdquant-rtn
 ```
 
-选择 `svdquant` 且未指定 `--format` 时，CLI 会自动使用
+选择 `svdquant` 且未指定 `--format` 时，CLI 也会默认使用
 `svdquant_nunchaku`。
 
 ### 默认 SignRound 流程
@@ -51,6 +52,7 @@ CUDA_VISIBLE_DEVICES=0 auto-round \
   --model_dtype bf16 \
   --scheme MXFP4 \
   --algorithm svdquant,auto_round \
+  --format svdquant_nunchaku \
   --dataset /path/to/coco2017-captions.tsv \
   --batch_size 1 \
   --device 0 \
@@ -65,6 +67,10 @@ id	caption
 0	A photo of a cat
 1	A city street at night
 ```
+
+COCO2017 calibration captions 可从
+[`changwangss/coco2017`](https://huggingface.co/datasets/changwangss/coco2017)
+获取。
 
 ### 可选的质量参数
 
@@ -181,14 +187,29 @@ autoround.quantize_and_save(
 activation 均为对称量化、dynamic activation quantization，并使用受支持的运行时
 adapter。量化过程不会导入 Nunchaku；只有推理时需要安装 Nunchaku。
 
-输出目录是一个完整的 Diffusers pipeline，可以直接加载：
+可直接使用以下已量化的 FLUX.1-dev checkpoint：
+[smooth SVDQuant + SignRound](https://huggingface.co/changwangss/smooth_svdquant_signround)
+和
+[no-smooth SVDQuant + SignRound](https://huggingface.co/changwangss/nosmooth_svdquant_signround)。
+
+输出目录是一个完整的 Diffusers pipeline。需要显式加载其中的 Nunchaku
+transformer，再传给 Diffusers：
 
 ```python
 import torch
 from diffusers import FluxPipeline
+from nunchaku import NunchakuFluxTransformer2dModel
 
+model_dir = "./flux-dev-mxfp4-svdquant-signround"
+transformer = NunchakuFluxTransformer2dModel.from_pretrained(
+    f"{model_dir}/transformer/diffusion_pytorch_model.safetensors",
+    torch_dtype=torch.bfloat16,
+    precision="mxfp4",
+    device="cuda:0",
+)
 pipe = FluxPipeline.from_pretrained(
-    "./flux-dev-mxfp4-svdquant-signround",
+    model_dir,
+    transformer=transformer,
     torch_dtype=torch.bfloat16,
     local_files_only=True,
 )

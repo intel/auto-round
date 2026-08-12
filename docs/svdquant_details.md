@@ -37,12 +37,13 @@ CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
   --model_dtype bf16 \
   --scheme MXFP4 \
   --algorithm svdquant \
+  --format svdquant_nunchaku \
   --device 0 \
   --output_dir ./flux-dev-mxfp4-svdquant-rtn
 ```
 
-When `svdquant` is selected and `--format` is omitted, the CLI automatically
-uses `svdquant_nunchaku`.
+When `svdquant` is selected and `--format` is omitted, the CLI also defaults to
+`svdquant_nunchaku`.
 
 ### Default SignRound workflow
 
@@ -54,6 +55,7 @@ CUDA_VISIBLE_DEVICES=0 auto-round \
   --model_dtype bf16 \
   --scheme MXFP4 \
   --algorithm svdquant,auto_round \
+  --format svdquant_nunchaku \
   --dataset /path/to/coco2017-captions.tsv \
   --batch_size 1 \
   --device 0 \
@@ -68,6 +70,9 @@ id	caption
 0	A photo of a cat
 1	A city street at night
 ```
+
+The COCO2017 calibration captions are available from
+[`changwangss/coco2017`](https://huggingface.co/datasets/changwangss/coco2017).
 
 ### Optional quality settings
 
@@ -189,14 +194,29 @@ The `svdquant_nunchaku` format currently requires MXFP4 E2M1 W4A4, group size
 supported runtime adapter. Nunchaku is not imported during quantization; it is
 required only for inference.
 
-The output is a self-contained Diffusers pipeline. Load it directly:
+Pre-quantized FLUX.1-dev checkpoints are available for
+[smooth SVDQuant + SignRound](https://huggingface.co/changwangss/smooth_svdquant_signround)
+and
+[no-smooth SVDQuant + SignRound](https://huggingface.co/changwangss/nosmooth_svdquant_signround).
+
+The output is a self-contained Diffusers pipeline. Load its Nunchaku transformer
+explicitly, then pass it to Diffusers:
 
 ```python
 import torch
 from diffusers import FluxPipeline
+from nunchaku import NunchakuFluxTransformer2dModel
 
+model_dir = "./flux-dev-mxfp4-svdquant-signround"
+transformer = NunchakuFluxTransformer2dModel.from_pretrained(
+    f"{model_dir}/transformer/diffusion_pytorch_model.safetensors",
+    torch_dtype=torch.bfloat16,
+    precision="mxfp4",
+    device="cuda:0",
+)
 pipe = FluxPipeline.from_pretrained(
-    "./flux-dev-mxfp4-svdquant-signround",
+    model_dir,
+    transformer=transformer,
     torch_dtype=torch.bfloat16,
     local_files_only=True,
 )

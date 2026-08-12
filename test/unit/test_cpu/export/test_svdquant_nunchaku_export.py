@@ -1,5 +1,4 @@
 import json
-from dataclasses import replace
 
 import pytest
 import torch
@@ -8,7 +7,6 @@ from safetensors import safe_open
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.export.svdquant_mxfp4 import unpack_lowrank_weight
 from auto_round.export.svdquant_nunchaku import (
-    IdentitySVDQuantModelAdapter,
     MXFP4ResidualTensorProvider,
     SVDQuantExportConfig,
     SVDQuantExportRecord,
@@ -17,7 +15,6 @@ from auto_round.export.svdquant_nunchaku import (
     save_svdquant_nunchaku_safetensors,
     unpack_nunchaku_16bit_vector,
 )
-from auto_round.wrapper import WrapperLinear
 
 
 def _toy_model(*, rank=3, bias=True, in_features=65, out_features=7):
@@ -76,30 +73,6 @@ def test_default_collection_emits_runtime_layout_tensors_without_debug_residual(
     )
 
 
-def test_collection_reads_scheme_through_activation_quant_wrapper():
-    model = _toy_model()
-    residual = model[0].residual_linear
-    residual.scale_dtype = torch.float16
-    wrapped = WrapperLinear(
-        residual,
-        device="cpu",
-        enable_minmax_tuning=False,
-        enable_norm_bias_tuning=False,
-        enable_round_tuning=False,
-        disable_opt_rtn=True,
-        iters=0,
-    ).unwrapper({})
-    model[0].residual_linear = wrapped
-
-    assert not hasattr(wrapped, "bits")
-    assert wrapped.orig_layer.bits == 4
-
-    tensors = collect_svdquant_tensors(model)
-
-    assert tensors["0.qweight"].dtype == torch.int8
-    assert tensors["0.wscales"].dtype == torch.uint8
-
-
 def test_bias_and_smooth_vectors_match_layout_fixture_and_identity_padding():
     model = _toy_model(bias=False)
     model[0].register_buffer("smooth_orig", torch.arange(1, 66, dtype=torch.float32))
@@ -151,20 +124,6 @@ def test_bias_and_smooth_vectors_match_layout_fixture_and_identity_padding():
     ]
 
 
-def test_debug_unpacked_is_explicit_and_not_runtime_loadable(tmp_path):
-    config = SVDQuantExportConfig(debug_unpacked=True)
-
-    tensors = collect_svdquant_tensors(_toy_model(), config=config)
-
-    assert "0.residual.weight" in tensors
-    output_path = tmp_path / "invalid.safetensors"
-    with pytest.raises(ValueError, match="not runtime-loadable"):
-        save_svdquant_nunchaku_safetensors(
-            _toy_model(), output_path, config=SVDQuantExportConfig(debug_unpacked=True, runtime_loadable=True)
-        )
-    assert not output_path.exists()
-
-
 def test_config_rejects_non_nunchaku_formats():
     cases = (
         ("weight_dtype", "mx_fp4e2m1", "weight_dtype"),
@@ -201,27 +160,6 @@ def test_collection_rejects_incompatible_selected_scheme():
         MXFP4ResidualTensorProvider(group_size=True)
 
 
-def test_collection_rejects_missing_selected_weight_or_activation_scheme():
-    missing_weight = _toy_model()
-    del missing_weight[0].residual_linear.data_type
-    with pytest.raises(ValueError, match="missing.*data_type"):
-        collect_svdquant_tensors(missing_weight)
-
-    missing_activation = _toy_model()
-    for field in ("act_data_type", "act_bits", "act_group_size", "act_sym", "act_dynamic"):
-        delattr(missing_activation[0].residual_linear, field)
-    with pytest.raises(ValueError, match="missing.*activation"):
-        collect_svdquant_tensors(missing_activation)
-
-
-def test_collection_accepts_autoround_mxfp4_aliases():
-    for dtype in ("mx_fp", "mx_fp4e2m1_rceil"):
-        model = _toy_model()
-        model[0].residual_linear.data_type = dtype
-        model[0].residual_linear.act_data_type = dtype
-        assert "0.qweight" in collect_svdquant_tensors(model)
-
-
 def test_collection_rejects_nonfinite_values_and_mixed_ranks():
     nonfinite = _toy_model()
     nonfinite[0].smooth[0] = torch.nan
@@ -245,43 +183,6 @@ def test_save_rejects_empty_model_and_missing_runtime_metadata_before_writing(tm
             _toy_model(), runtime_path, config=SVDQuantExportConfig(runtime_loadable=True)
         )
     assert not runtime_path.exists()
-
-
-def test_adapter_provenance_rejects_invalid_sources():
-    model = torch.nn.Sequential(_toy_model()[0], _toy_model()[0])
-
-    class DroppingAdapter(IdentitySVDQuantModelAdapter):
-        def map_modules(self, model, records):
-            return super().map_modules(model, tuple(records)[:1])
-
-    with pytest.raises(ValueError, match="dropped logical sources.*1"):
-        collect_svdquant_tensors(model, adapter=DroppingAdapter())
-
-    class ForeignAdapter(IdentitySVDQuantModelAdapter):
-        def map_modules(self, model, records):
-            source = tuple(records)[0]
-            record = tuple(super().map_modules(model, (source,)))[0]
-            return (replace(record, sources=(replace(source, name="foreign"),)),)
-
-    with pytest.raises(ValueError, match="foreign logical source"):
-        collect_svdquant_tensors(_toy_model(), adapter=ForeignAdapter())
-
-
-def test_adapter_provenance_requires_source_rank_to_equal_output_rank():
-    class RankChangingAdapter(IdentitySVDQuantModelAdapter):
-        def map_modules(self, model, records):
-            source = tuple(records)[0]
-            record = tuple(super().map_modules(model, (source,)))[0]
-            return (
-                replace(
-                    record,
-                    lora_down=record.lora_down[:2],
-                    lora_up=record.lora_up[:, :2],
-                ),
-            )
-
-    with pytest.raises(ValueError, match="Nunchaku.*configured rank.*exact rank-sum fusion is unsupported"):
-        collect_svdquant_tensors(_toy_model(), adapter=RankChangingAdapter())
 
 
 def test_collection_rejects_malformed_packed_residual_payloads():

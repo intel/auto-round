@@ -264,7 +264,7 @@ def tune(args):
         )
 
     if args.format is None:
-        args.format = AlgorithmHandler.get_default_format(args.algorithm) or "auto_round"
+        args.format = "auto_round"
 
     formats = args.format.lower().replace(" ", "").split(",")
     from auto_round.utils import SUPPORTED_FORMATS

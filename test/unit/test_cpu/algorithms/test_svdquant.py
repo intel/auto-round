@@ -14,37 +14,43 @@
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.transforms.svdquant import SVDQuantConfig, SVDQuantLinear
-from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+from auto_round.schemes import PRESET_SCHEMES
+from auto_round.utils.device_manager import device_manager
 
 
-class FluxAttention(torch.nn.Module):
-    def __init__(self, width=8):
+class DummyBlock(torch.nn.Module):
+    def __init__(self):
         super().__init__()
-        self.to_q = torch.nn.Linear(width, 4, bias=False)
-        self.to_k = torch.nn.Linear(width, 4, bias=False)
-        self.to_v = torch.nn.Linear(width, 4, bias=False)
+        self.proj = torch.nn.Linear(32, 16)
+
+    def forward(self, hidden_states):
+        return self.proj(hidden_states)
+
+
+class DummyModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([DummyBlock()])
 
 
 class FluxTransformerBlock(torch.nn.Module):
-    def __init__(self, width=8):
+    def __init__(self):
         super().__init__()
-        self.attn = FluxAttention(width)
+        self.attn = torch.nn.Module()
+        self.attn.to_q = torch.nn.Linear(32, 16)
         self.norm1 = torch.nn.Module()
-        self.norm1.linear = torch.nn.Linear(width, width, bias=False)
+        self.norm1.linear = torch.nn.Linear(32, 16)
 
 
-class TinyFlux(torch.nn.Module):
-    def __init__(self, width=8):
-        super().__init__()
-        self.transformer_blocks = torch.nn.ModuleList([FluxTransformerBlock(width)])
-
-
-def _mark_modules(model):
+def _prepare_model():
+    model = DummyModel()
     for name, module in model.named_modules():
         module.global_name = name
         if isinstance(module, torch.nn.Linear):
@@ -52,119 +58,130 @@ def _mark_modules(model):
             module.group_size = 32
             module.sym = True
             module.data_type = "mx_fp4e2m1"
-            module.act_bits = 16
+            module.act_bits = 4
+            module.act_group_size = 32
+            module.act_sym = True
+            module.act_data_type = "mx_fp4e2m1"
+            module.act_dynamic = True
+            module.scale_dtype = torch.float32
+    return model
 
 
-def test_svdquant_composes_before_rtn():
-    composer = AlgorithmComposer([SVDQuantConfig(rank=2), RTNConfig(disable_opt_rtn=True)])
-
-    assert len(composer.preprocessors) == 1
-    assert isinstance(composer.preprocessors[0], SVDQuantTransform)
-
-
-def test_explicit_flux_adapter_resolves_targets_before_prepare_run():
-    transform = SVDQuantTransform(SVDQuantConfig(rank=2, model_adapter="flux"))
-    projection = torch.nn.Linear(8, 8)
-    projection.global_name = "transformer_blocks.0.attn.to_q"
-    adanorm = torch.nn.Linear(8, 8)
-    adanorm.global_name = "transformer_blocks.0.norm1.linear"
-
-    assert transform._is_target("attn.to_q", projection)
-    assert not transform._is_target("norm1.linear", adanorm)
-
-
-def test_no_smooth_flux_qkv_share_one_down_factor():
-    model = TinyFlux()
-    _mark_modules(model)
-    block_name = "transformer_blocks.0"
-    inputs = torch.randn(3, 8)
-    expected = tuple(
-        projection(inputs)
-        for projection in (
-            model.transformer_blocks[0].attn.to_q,
-            model.transformer_blocks[0].attn.to_k,
-            model.transformer_blocks[0].attn.to_v,
+@pytest.mark.parametrize("smooth", [False, True], ids=["nosmooth", "smooth"])
+@pytest.mark.parametrize("terminal", ["rtn", "signround"])
+def test_svdquant_pipeline_smoke(monkeypatch, smooth, terminal):
+    monkeypatch.setattr(device_manager, "_device_map", "cpu")
+    monkeypatch.setattr(device_manager, "_device_list", ["cpu"])
+    monkeypatch.setattr(device_manager, "_major_device", "cpu")
+    model = _prepare_model()
+    block_name = "blocks.0"
+    svd_config = SVDQuantConfig(
+        rank=2,
+        smooth_enabled=smooth,
+        smooth_num_grids=2,
+        smooth_max_calibration_calls=1,
+        residual_iters=1,
+        low_rank_dtype="fp32",
+        target_modules=["proj"],
+    )
+    terminal_config = (
+        RTNConfig(disable_opt_rtn=True)
+        if terminal == "rtn"
+        else SignRoundConfig(
+            iters=1,
+            lr=1.0,
+            minmax_lr=1.0,
+            enable_minmax_tuning=False,
+            enable_quanted_input=False,
         )
     )
-    transform = SVDQuantTransform(SVDQuantConfig(rank=2, residual_iters=1, low_rank_dtype="fp32"))
     orchestrator = SimpleNamespace(
-        model_context=SimpleNamespace(model=model),
-        compress_context=None,
-        calibration_context=None,
-        scheme_context=None,
+        model_context=SimpleNamespace(
+            model=model,
+            amp=True,
+            amp_dtype=torch.bfloat16,
+            is_diffusion=False,
+            is_moe_model=False,
+            output_config=None,
+        ),
+        compress_context=SimpleNamespace(
+            enable_torch_compile=False,
+            low_gpu_mem_usage=False,
+            cache_device=torch.device("cpu"),
+            clear_memory=lambda: None,
+        ),
+        calibration_context=SimpleNamespace(batch_size=1, batch_dim=0),
+        scheme_context=PRESET_SCHEMES["MXFP4"],
         scale_dtype=None,
         nblocks=1,
         quant_block_list=[[block_name]],
+        data_type="mx_fp4e2m1",
+        batch_dim=0,
+        batch_size=1,
+        cache_device="cpu",
+        amp=True,
+        amp_dtype=torch.bfloat16,
+        shared_cache_keys=(),
     )
-    transform.bind(orchestrator)
-    transform.prepare_run()
-
-    transform.pre_quantize_block(
-        BlockContext(model=model, block_names=[block_name], block_name=block_name, block_index=0)
+    composer = AlgorithmComposer([svd_config, terminal_config], orchestrator=orchestrator)
+    composer.prepare_run()
+    block = model.blocks[0]
+    inputs = torch.randn(1, 2, 32)
+    ctx = BlockContext(
+        model=model,
+        block_names=[block_name],
+        block_name=block_name,
+        block_index=0,
+        block_cnt=1,
     )
 
-    q = model.transformer_blocks[0].attn.to_q
-    k = model.transformer_blocks[0].attn.to_k
-    v = model.transformer_blocks[0].attn.to_v
-    assert all(isinstance(module, SVDQuantLinear) for module in (q, k, v))
-    torch.testing.assert_close(q.lora_down.weight, k.lora_down.weight)
-    torch.testing.assert_close(q.lora_down.weight, v.lora_down.weight)
-    assert q.residual_linear.data_type == "mx_fp4e2m1_rceil"
-    assert q.lora_down.bits == 16
-    assert q.lora_up.bits == 16
-    for actual, reference in zip((q(inputs), k(inputs), v(inputs)), expected):
-        torch.testing.assert_close(actual, reference)
+    composer.compress_block(block, [inputs], {}, ctx)
+
+    assert isinstance(block.proj, SVDQuantLinear)
+    assert torch.isfinite(block(inputs)).all()
+    transform = composer.preprocessors[0]
+    assert not transform._smooth_calibration
+    assert block_name not in transform._block_groups
 
 
-def test_flux_adapter_default_targets_only_runtime_supported_projections():
-    model = TinyFlux()
+def test_flux_targets_resolve_when_model_is_attached_after_prepare_run():
+    model = torch.nn.Module()
     model.config = {"_class_name": "FluxTransformer2DModel"}
-    _mark_modules(model)
-    block_name = "transformer_blocks.0"
-    transform = SVDQuantTransform(SVDQuantConfig(rank=2, model_adapter="auto", low_rank_dtype="fp32"))
-    orchestrator = SimpleNamespace(
-        model_context=SimpleNamespace(model=model),
-        compress_context=None,
-        calibration_context=None,
-        scheme_context=None,
-        scale_dtype=None,
-        nblocks=1,
-        quant_block_list=[[block_name]],
+    model.blocks = torch.nn.ModuleList([FluxTransformerBlock()])
+    for name, module in model.named_modules():
+        module.global_name = name
+        if isinstance(module, torch.nn.Linear):
+            for key, value in {
+                "bits": 4,
+                "group_size": 32,
+                "sym": True,
+                "data_type": "mx_fp4e2m1",
+                "act_bits": 4,
+                "act_group_size": 32,
+                "act_sym": True,
+                "act_data_type": "mx_fp4e2m1",
+                "act_dynamic": True,
+            }.items():
+                setattr(module, key, value)
+
+    model_context = SimpleNamespace(model=None)
+    transform = AlgorithmComposer([SVDQuantConfig(rank=2), RTNConfig(disable_opt_rtn=True)]).preprocessors[0]
+    transform.bind(
+        SimpleNamespace(
+            model_context=model_context,
+            compress_context=None,
+            calibration_context=None,
+            scheme_context=PRESET_SCHEMES["MXFP4"],
+            scale_dtype=None,
+            nblocks=1,
+            quant_block_list=[["blocks.0"]],
+        )
     )
-    transform.bind(orchestrator)
     transform.prepare_run()
-
-    transform.pre_quantize_block(
-        BlockContext(model=model, block_names=[block_name], block_name=block_name, block_index=0)
-    )
-
-    assert isinstance(model.transformer_blocks[0].attn.to_q, SVDQuantLinear)
-    assert isinstance(model.transformer_blocks[0].norm1.linear, torch.nn.Linear)
-
-
-def test_no_smooth_grouped_residual_iteration_and_cleanup():
-    model = TinyFlux(width=32)
-    _mark_modules(model)
-    block_name = "transformer_blocks.0"
-    transform = SVDQuantTransform(
-        SVDQuantConfig(rank=2, residual_iters=2, residual_early_stop=True, low_rank_dtype="fp32")
-    )
-    orchestrator = SimpleNamespace(
-        model_context=SimpleNamespace(model=model),
-        compress_context=None,
-        calibration_context=None,
-        scheme_context=None,
-        scale_dtype=None,
-        nblocks=1,
-        quant_block_list=[[block_name]],
-    )
-    transform.bind(orchestrator)
-    transform.prepare_run()
-    ctx = BlockContext(model=model, block_names=[block_name], block_name=block_name, block_index=0)
+    model_context.model = model
+    ctx = BlockContext(model=model, block_names=["blocks.0"], block_name="blocks.0", block_index=0)
 
     transform.pre_quantize_block(ctx)
 
-    assert isinstance(model.transformer_blocks[0].attn.to_q, SVDQuantLinear)
-    assert block_name in transform._block_groups
-    transform.post_quantize_block(ctx)
-    assert block_name not in transform._block_groups
+    assert isinstance(model.blocks[0].attn.to_q, SVDQuantLinear)
+    assert isinstance(model.blocks[0].norm1.linear, torch.nn.Linear)

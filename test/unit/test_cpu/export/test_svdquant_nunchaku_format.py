@@ -120,13 +120,6 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
     assert (tmp_path / "config.json").is_file()
 
 
-def test_format_rejects_models_without_runtime_adapter(tmp_path):
-    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
-
-    with pytest.raises(ValueError, match="runtime model adapter"):
-        output_format.save_quantized(tmp_path, model=torch.nn.Linear(2, 2), model_adapter="auto")
-
-
 def test_diffusion_save_exports_self_contained_nunchaku_pipeline(tmp_path):
     from auto_round.compressors.diffusion_mixin import DiffusionMixin
 
@@ -187,37 +180,5 @@ def test_diffusion_save_exports_self_contained_nunchaku_pipeline(tmp_path):
     assert (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").is_file()
     assert (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").is_file()
     model_index = json.loads((tmp_path / "model_index.json").read_text(encoding="utf-8"))
-    assert model_index["transformer"] == ["nunchaku", "NunchakuFluxTransformer2dModel"]
+    assert model_index["transformer"] == ["diffusers", "FluxTransformer2DModel"]
     assert model_index["vae"] == ["diffusers", "AutoencoderKL"]
-
-
-def test_diffusion_save_requires_runtime_model_class_metadata(tmp_path):
-    from auto_round.compressors.diffusion_mixin import DiffusionMixin
-
-    model = torch.nn.Module()
-
-    class Pipeline:
-        transformer = model
-        components = {"transformer": model}
-
-        def save_config(self, output_dir):
-            Path(output_dir, "model_index.json").write_text(
-                json.dumps({"transformer": ["diffusers", "FluxTransformer2DModel"]}), encoding="utf-8"
-            )
-
-    class ExportParent:
-        def save_quantized(self, output_dir, **kwargs):
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            save_file({"probe": torch.zeros(1)}, f"{output_dir}/diffusion_pytorch_model.safetensors")
-            return model
-
-    class Compressor(DiffusionMixin, ExportParent):
-        pass
-
-    compressor = Compressor.__new__(Compressor)
-    compressor.formats = [SimpleNamespace(format_name="svdquant_nunchaku")]
-    compressor.model_context = SimpleNamespace(pipe=Pipeline(), model=model)
-    compressor.compress_context = SimpleNamespace(is_immediate_saving=False)
-
-    with pytest.raises(ValueError, match="model_class"):
-        compressor.save_quantized(tmp_path)

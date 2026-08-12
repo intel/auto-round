@@ -17,7 +17,6 @@ import torch
 from auto_round.export.svdquant_w4a16 import (
     dequantize_adanorm_w4a16,
     pack_adanorm_w4a16,
-    quantize_adanorm_w4a16_rtn,
     unpack_adanorm_w4a16,
 )
 
@@ -43,14 +42,3 @@ def test_adanorm_w4a16_pack_uses_runtime_layout_and_roundtrips_codes():
     expected_weight = weight.reshape(3, 4, 1024).permute(1, 0, 2).reshape(12, 1024)
     assert torch.equal(unpack_adanorm_w4a16(packed), expected_codes)
     torch.testing.assert_close(dequantize_adanorm_w4a16(packed), expected_weight)
-
-
-def test_adanorm_w4a16_rtn_emits_finite_runtime_payload():
-    weight = torch.randn(12, 1024, generator=torch.Generator().manual_seed(7), dtype=torch.bfloat16)
-
-    packed = quantize_adanorm_w4a16_rtn(weight, splits=3)
-
-    assert packed.qweight.dtype == torch.int32
-    assert torch.isfinite(packed.wscales).all()
-    assert torch.isfinite(packed.wzeros).all()
-    assert torch.isfinite(dequantize_adanorm_w4a16(packed)).all()

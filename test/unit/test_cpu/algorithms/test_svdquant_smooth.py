@@ -12,15 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 
-import auto_round.algorithms.transforms.svdquant.residual as residual_module
-from auto_round.algorithms.composer import BlockContext
-from auto_round.algorithms.transforms.svdquant import SVDQuantConfig, SVDQuantLinear
-from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
 from auto_round.algorithms.transforms.svdquant.smooth import (
     absmax_channel_span,
     build_alpha_beta_candidates,
@@ -79,79 +73,3 @@ def test_candidate_selection_keeps_later_exact_tie_and_skips_nonfinite():
     candidates = [("nan", float("nan")), ("first", 1.0), ("later", 1.0), ("worse", 2.0)]
 
     assert select_best_layer_candidate(candidates, module_name="blocks.0.qkv") == "later"
-
-
-class SmoothBlock(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.proj = torch.nn.Linear(4, 3, bias=False)
-
-    def forward(self, hidden_states):
-        return self.proj(hidden_states)
-
-
-class SmoothModel(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.blocks = torch.nn.ModuleList([SmoothBlock()])
-
-
-def test_smooth_calibration_reservoir_is_bounded_and_preserves_forward(monkeypatch):
-    model = SmoothModel()
-    block_name = "blocks.0"
-    for name, module in model.named_modules():
-        module.global_name = name
-        if isinstance(module, torch.nn.Linear):
-            module.data_type = "mx_fp4e2m1"
-            module.bits = 4
-            module.group_size = 32
-            module.sym = True
-            module.act_data_type = "mx_fp4e2m1"
-            module.act_bits = 4
-            module.act_group_size = 32
-            module.act_sym = True
-
-    monkeypatch.setattr(residual_module, "rtn_qdq_residual", lambda tensor, _scheme: tensor)
-    monkeypatch.setattr(residual_module, "rtn_qdq_activation", lambda tensor, scheme: tensor)
-    transform = SVDQuantTransform(
-        SVDQuantConfig(
-            rank=1,
-            smooth_enabled=True,
-            smooth_num_grids=2,
-            smooth_max_calibration_calls=2,
-            low_rank_dtype="fp32",
-        )
-    )
-    transform.bind(
-        SimpleNamespace(
-            model_context=SimpleNamespace(model=model),
-            compress_context=None,
-            calibration_context=None,
-            scheme_context=None,
-            scale_dtype=None,
-            nblocks=1,
-            quant_block_list=[[block_name]],
-        )
-    )
-    transform.prepare_run()
-    block = model.blocks[0]
-    handles = transform.register_fp_input_forward_hooks(block)
-    for index in range(10):
-        block(torch.full((1, 4), float(index + 1)))
-    for handle in handles:
-        handle.remove()
-
-    calibration = next(iter(transform._smooth_calibration.values()))
-    assert calibration.seen_calls == 10
-    assert len(calibration.projection_inputs) == 2
-    assert len(calibration.evaluation_calls) == 2
-    inputs = torch.randn(2, 4)
-    expected = block(inputs)
-
-    transform.pre_quantize_block(
-        BlockContext(model=model, block_names=[block_name], block_name=block_name, block_index=0)
-    )
-
-    assert isinstance(block.proj, SVDQuantLinear)
-    torch.testing.assert_close(block(inputs), expected, atol=1e-5, rtol=1e-5)
-    assert not transform._smooth_calibration

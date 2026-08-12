@@ -137,26 +137,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._block_groups.clear()
         if self.model is None:
             return
-        model_adapter = self.config.model_adapter or "auto"
-        if model_adapter == "auto":
-            model_config = getattr(self.model, "config", None)
-            class_name = (
-                model_config.get("_class_name", type(self.model).__name__)
-                if hasattr(model_config, "get")
-                else type(self.model).__name__
-            )
-            if "fluxtransformer" in str(class_name).lower():
-                model_adapter = "flux"
-        self.model._autoround_svdquant_model_adapter = model_adapter
-        if model_adapter == "flux":
-            from auto_round.algorithms.transforms.svdquant.smooth_adapters.flux import warn_if_unverified_flux_model
-
-            warn_if_unverified_flux_model(self.model)
-        self._target_modules = self.config.target_modules
-        if self._target_modules is None and model_adapter == "flux":
-            from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
-
-            self._target_modules = FLUX_SVDQUANT_TARGET_MODULES
+        self._resolve_model_adapter(self.model)
         for block_name in self._configured_block_names:
             block = self.model.get_submodule(block_name)
             self._block_groups[block_name] = discover_svdquant_groups(block, self._is_target)
@@ -166,9 +147,40 @@ class SVDQuantTransform(BasePreprocessor):
             len(self._block_groups),
         )
 
+    def _resolve_model_adapter(self, model: torch.nn.Module | None, block: torch.nn.Module | None = None) -> str:
+        model_adapter = self.config.model_adapter or "auto"
+        if model_adapter == "auto":
+            model_config = getattr(model, "config", None)
+            class_name = (
+                model_config.get("_class_name", type(model).__name__)
+                if hasattr(model_config, "get")
+                else type(model).__name__
+            )
+            if "fluxtransformer" in str(class_name).lower():
+                model_adapter = "flux"
+            elif block is not None and block.__class__.__name__ in {
+                "FluxTransformerBlock",
+                "FluxSingleTransformerBlock",
+            }:
+                model_adapter = "flux"
+        if model is not None:
+            model._autoround_svdquant_model_adapter = model_adapter
+        if model_adapter == "flux":
+            from auto_round.algorithms.transforms.svdquant.smooth_adapters.flux import warn_if_unverified_flux_model
+
+            if model is not None:
+                warn_if_unverified_flux_model(model)
+        self._target_modules = self.config.target_modules
+        if self._target_modules is None and model_adapter == "flux":
+            from auto_round.export.svdquant_adapters import FLUX_SVDQUANT_TARGET_MODULES
+
+            self._target_modules = FLUX_SVDQUANT_TARGET_MODULES
+        return model_adapter
+
     def register_fp_input_forward_hooks(self, block) -> list:
         if not self.config.smooth_enabled:
             return []
+        self._resolve_model_adapter(self.model, block)
         self._clear_smooth_calibration()
         block_name = str(getattr(block, "global_name", ""))
         groups = self._block_groups.get(block_name)
@@ -207,6 +219,7 @@ class SVDQuantTransform(BasePreprocessor):
             raise ValueError(f"SVDQuant requires one block at a time, got {ctx.block_names!r}.")
         block_name = ctx.block_name
         block = ctx.model.get_submodule(block_name)
+        self._resolve_model_adapter(ctx.model, block)
         groups = self._block_groups.get(block_name)
         if groups is None:
             groups = discover_svdquant_groups(block, self._is_target)

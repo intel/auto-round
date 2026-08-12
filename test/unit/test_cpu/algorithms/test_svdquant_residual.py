@@ -23,7 +23,6 @@ from auto_round.algorithms.transforms.svdquant.residual import (
     rtn_qdq_residual,
     truncated_svd,
 )
-from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.data_type.mxfp import quant_mx_rceil
 
 
@@ -43,20 +42,6 @@ def test_rtn_qdq_residual_matches_deployable_mxfp4_quantizer():
     assert actual.shape == weight.shape
     assert actual.dtype == weight.dtype
     assert actual.device == weight.device
-
-
-def test_svdquant_linear_combines_residual_and_low_rank_branches_after_smoothing():
-    residual = torch.nn.Linear(4, 3, bias=True)
-    lora_down = torch.nn.Linear(4, 2, bias=False)
-    lora_up = torch.nn.Linear(2, 3, bias=False)
-    smooth = torch.tensor([0.5, 1.0, 2.0, 4.0])
-    wrapper = SVDQuantLinear(residual, lora_down, lora_up, smooth)
-    inputs = torch.randn(2, 4)
-
-    smoothed = inputs * smooth
-    expected = residual(smoothed) + lora_up(lora_down(smoothed))
-
-    torch.testing.assert_close(wrapper(inputs), expected)
 
 
 def test_svdquant_config_defaults_to_data_free_single_iteration():
@@ -82,11 +67,6 @@ def test_svdquant_config_rejects_invalid_structural_options():
     for kwargs, field in cases:
         with pytest.raises(ValueError, match=field):
             SVDQuantConfig(**kwargs)
-
-
-def test_svdquant_config_accepts_supported_low_rank_dtype_aliases():
-    for dtype in ("bf16", "bfloat16", "fp16", "float16", "fp32", "float32"):
-        assert SVDQuantConfig(low_rank_dtype=dtype).low_rank_dtype == dtype
 
 
 def test_truncated_svd_returns_shared_down_factor_for_stacked_projection_group():

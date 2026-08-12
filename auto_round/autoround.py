@@ -634,6 +634,9 @@ class _CompressorBuilder(object):
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
+        if is_svdquant:
+            format = "svdquant_nunchaku"
 
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
@@ -643,6 +646,10 @@ class _CompressorBuilder(object):
         # route predicate; otherwise the fast path silently drops them and
         # cannot emit the required export metadata.
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
+        is_svdquant_rtn = type(quant_config) is RTNConfig and is_svdquant
+        if is_svdquant_rtn and not route_kwargs.get("model_free", False):
+            # SVDQuant must run before plain RTN on the regular blockwise path.
+            route_decision_kwargs["disable_model_free"] = True
         route_scheme = (
             scheme
             if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
