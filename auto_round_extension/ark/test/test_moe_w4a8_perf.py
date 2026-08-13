@@ -962,6 +962,20 @@ _ACT_QUANT_CONFIGS = [
     ("act-quant vec", {"ARK_MOE_W4A8_ACT_QUANT_VEC": "1"}),
 ]
 
+# Prefill: activation-quantization loads in flight. Widening the messages set
+# how many bytes each *request* moves; this sets how many requests a work-item
+# has outstanding. ``UNROLL`` vectors are loaded before any is consumed, and
+# reduced into ``UNROLL`` partial maxima so they do not serialize behind the
+# accumulator either. ``1`` is the kernel as it was before the batching, so the
+# first row is an exact A/B baseline.
+_ACT_QUANT_UNROLL_CONFIGS = [
+    (
+        f"act-quant unroll {u}",
+        {"ARK_MOE_W4A8_ACT_QUANT_VEC": "1", "ARK_MOE_W4A8_ACT_QUANT_UNROLL": str(u)},
+    )
+    for u in (1, 2, 4)
+]
+
 # Prefill: epilogue guard. A tile that touches neither the M nor the N edge
 # needs no store predicate and no scale-index clamp, and whether it does is
 # uniform across the work-group. The guarded path is what every tile used to
@@ -1224,6 +1238,28 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"act-quant config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_act_quant_unroll_sweep(self, request):
+            """Time the activation quantizer's loads-in-flight depth.
+
+            Widening the messages (the sweep above) set how many bytes each
+            request moves; it did not change how many requests a work-item has
+            outstanding. The pass walks K with a runtime trip count and folds
+            every vector into one ``local_max``, so an in-order thread keeps
+            about one 256-byte load in flight -- roughly 160 KB across the
+            device, well under what a ~400 GB/s part needs to stay busy over a
+            memory latency. ``UNROLL`` loads that many independent vectors
+            before consuming any of them. The first row is the kernel as it was
+            before the batching, so this is an exact A/B measurement; the
+            arithmetic is unchanged, which
+            ``test_act_quant_unroll_matches`` asserts bit-for-bit.
+            """
+            rows = run_config_sweep("prefill", _ACT_QUANT_UNROLL_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"act-quant unroll {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
         def test_perf_prefill_epilogue_sweep(self, request):
             """Time the epilogue guard at the compute-bound batch.
 
@@ -1276,6 +1312,51 @@ if pytest is not None:
                 "vectorized activation quantization disagrees with the scalar mapping: "
                 f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
             )
+
+        def test_act_quant_unroll_matches(self):
+            """Batching the quantizer's loads must be bit-identical at every depth.
+
+            ``UNROLL`` only changes how many vectors are in flight before any
+            is consumed: the per-lane reduction is still ``fmax`` over the same
+            values (exact and order-independent, so the partial maxima merge to
+            the same bits as one chain), and every element goes through the
+            same ``rint``/``clamp``. ``UNROLL = 1`` is the kernel as it was
+            before the batching, so it is the reference here.
+
+            Both K are checked because the tail loop is what a wrong bound
+            would break: at ``VEC = 8`` a lane walks ``K / 128`` vectors, so
+            K = 2048 divides by the default depth of 4 and K = 768 leaves a
+            two-vector tail. A missed or double-counted tail changes the
+            absmax, and hence every element of the row.
+            """
+            for nk_label, N, K in _QWEN3_NK:
+                case = _build_case(
+                    N,
+                    K,
+                    _QWEN3_E,
+                    _PREFILL_BATCHES[0] * _QWEN3_TOPK,
+                    _QWEN3_GROUP_SIZE,
+                    torch.bfloat16,
+                    need_reference=False,
+                    need_dequant=False,
+                )
+                weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                    case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+                )
+                outs = {}
+                for unroll in ("1", "2", "4"):
+                    with _env_override(ARK_MOE_W4A8_ACT_QUANT_VEC="1", ARK_MOE_W4A8_ACT_QUANT_UNROLL=unroll):
+                        outs[unroll] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+                for unroll in ("2", "4"):
+                    assert torch.equal(outs["1"], outs[unroll]), (
+                        f"{nk_label.strip()} (K={K}): activation quantization at unroll {unroll} disagrees with "
+                        f"unroll 1: max |diff| "
+                        f"{(outs['1'].float() - outs[unroll].float()).abs().max().item():.6g}"
+                    )
+                case = weights_s8 = wscales = outs = None
+                ark.clear_moe_w4a8_prepack_cache()
+                ark.moe_w4a8_release_scratch()
+                _release_xpu_memory()
 
         def test_full_tile_epilogue_matches_predicated(self):
             """Skipping the epilogue guard on interior tiles must change nothing.

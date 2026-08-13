@@ -1,18 +1,21 @@
 // SYCL MoE W4A8 -- INT4 weights / INT8 compute (prefill + decode)
 //
 // STATUS: PARTIALLY HARDWARE-VALIDATED -- `test_perf_prefill_tile_sweep`,
-// `test_perf_prefill_act_quant_sweep`, `test_perf_decode_config_sweep`,
-// `test_act_quant_vec_matches_scalar` and `test_decode_ksplit_matches_legacy`
-// have been run on BMG, so both phases compile and run and every dispatch
-// default (tile ladder, activation-quant message width, decode CH / NCOLS)
-// comes from those measurements; every swept configuration also passed the
-// cross-configuration equivalence check. The accuracy gates against the fp32
-// reference still need a device run. The authoring environment has no XPU and
-// no SYCL compiler, so anything added since follows the porting conventions of
-// its siblings `sycl_tla_moe_prefill_int_dpas.hpp` /
-// `sycl_tla_moe_prefill_fp8_dpas.hpp` -- currently the interior-tile epilogue
-// (`ARK_MOE_W4A8_PREFILL_FULL_TILE`), which is pure C++ around the same
-// arithmetic.
+// `test_perf_prefill_act_quant_sweep`, `test_perf_prefill_epilogue_sweep`,
+// `test_perf_decode_config_sweep`, `test_act_quant_vec_matches_scalar`,
+// `test_full_tile_epilogue_matches_predicated` and
+// `test_decode_ksplit_matches_legacy` have been run on BMG, so both phases
+// compile and run and every dispatch default (tile ladder, activation-quant
+// message width, interior-tile epilogue, decode CH / NCOLS) comes from those
+// measurements; every swept configuration also passed the cross-configuration
+// equivalence check. The accuracy gates against the fp32 reference still need
+// a device run. The authoring environment has no XPU and no SYCL compiler, so
+// anything added since follows the porting conventions of its siblings
+// `sycl_tla_moe_prefill_int_dpas.hpp` /
+// `sycl_tla_moe_prefill_fp8_dpas.hpp` -- currently the activation quantizer's
+// batched loads (`ARK_MOE_W4A8_ACT_QUANT_UNROLL`), which are pure C++ around
+// the same arithmetic and are swept by
+// `test_perf_prefill_act_quant_unroll_sweep`.
 // ---------------------------------------------------------------------------
 //
 // What this file implements
@@ -133,7 +136,7 @@ constexpr int kPrepackOctet = 8;
 template <typename ScalarT>
 class MoEW4A8ActQuant;
 
-template <typename ScalarT, int VEC>
+template <typename ScalarT, int VEC, int UNROLL>
 class MoEW4A8ActQuantVec;
 
 template <typename ScalarT>
@@ -218,15 +221,50 @@ inline DeviceScratchPool& expert_map_pool() {
 // `ARK_MOE_W4A8_ACT_QUANT_VEC=0` forces it for A/B measurement.
 //
 // `test_perf_prefill_act_quant_sweep` on BMG (256 rows/expert, bf16 act) puts
-// the widened messages at 1.14x (qwen3 up), 1.07x (qwen3 down), 1.10x (minimax
-// up) and 1.07x (minimax down) of the scalar mapping on the *whole*
+// the widened messages at 1.13x (qwen3 up), 1.14x (qwen3 down), 1.12x (minimax
+// up) and 1.04x (minimax down) of the scalar mapping on the *whole*
 // `moe_gemm_w4a8` call -- the quantization pass alone is a larger share of
-// prefill than that, since the GEMM around it is unchanged.
+// prefill than that, since the GEMM around it is unchanged. (An earlier run of
+// the same sweep read 1.14 / 1.07 / 1.10 / 1.07: the ranking is stable, the
+// individual ratios move by a few percent between runs.)
 //
 // `sycl::vec<uint16_t, VEC>` is used rather than `sycl::vec<ScalarT, VEC>`
 // because `sycl::vec` of `bfloat16` is not universally available; the elements
 // are `bit_cast` back one at a time, exactly like the decode kernels'
 // `ActVec` loads in `sycl_tla_moe_decode.hpp`.
+//
+// Requests in flight (the cost widening the messages did not address)
+// -------------------------------------------------------------------
+// Wide messages fix how many bytes each *request* moves; they do not change
+// how many requests a work-item has outstanding. This kernel walks K with a
+// runtime trip count (`steps = K / (SG_SIZE * VEC)`) and folds every vector
+// into the same `local_max` accumulator, so the loop reads as: issue one load,
+// stall until it returns, `fmax` it, repeat. Xe cores execute in order and
+// `fmax` is not reassociated without fast-math, so each thread keeps roughly
+// *one* 256-byte load in flight.
+//
+// That is a Little's-law problem, not a bandwidth one: 640 concurrent
+// sub-groups (20 Xe cores x 32 threads) x 256 bytes is ~160 KB of in-flight
+// reads, well under the ~400 KB a ~400 GB/s device needs to stay busy across a
+// ~1 us memory latency. The same argument is why the decode GEMV loads two
+// chunks per iteration (`launch_w4a8_decode_ksplit`), and why the pair is
+// spelled out there rather than left to the compiler.
+//
+// `UNROLL` gives the pass the same treatment: each iteration loads `UNROLL`
+// *independent* vectors before consuming any of them, and reduces them into
+// `UNROLL` separate partial maxima so the loads do not serialize behind the
+// accumulator chain either. The quantize pass batches its loads the same way,
+// and its stores are already independent. `steps % UNROLL` vectors are left to
+// a tail loop -- `K = 768` (qwen3 down) gives `steps = 6`, so the tail is real
+// code, not a formality.
+//
+// Nothing that rounds changes: the per-lane partial reduction is still `fmax`
+// over the same values (exact and order-independent, so partial maxima merge
+// to the same bits), and every element goes through the same `rint`/`clamp`
+// expression. `UNROLL = 1` is the previous kernel instruction for instruction,
+// so `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` is an exact A/B baseline;
+// `test_act_quant_unroll_matches` asserts every depth is bit-identical and
+// `test_perf_prefill_act_quant_unroll_sweep` times them.
 // ---------------------------------------------------------------------------
 
 // Fold the per-token expert scan (decode only) into the quantization kernel.
@@ -248,38 +286,67 @@ inline void act_quant_write_scale(float* ascale, int token, float scale, int* ex
   expert_id_per_token[token] = expert;
 }
 
-template <typename ScalarT, int VEC>
+template <typename ScalarT, int VEC, int UNROLL>
 void launch_act_dynamic_quant_vec(sycl::queue* q, const ScalarT* activations, int8_t* qact, float* ascale,
                                   int total_tokens, int K, int* expert_id_per_token,
                                   const int* num_tokens_per_expert, int num_experts) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
   static_assert(VEC == 4 || VEC == 8, "VEC must be 4 or 8");
+  static_assert(UNROLL >= 1 && (UNROLL & (UNROLL - 1)) == 0, "UNROLL must be a power of two");
   using ActVec = sycl::vec<uint16_t, VEC>;
   using QVec = sycl::vec<int8_t, VEC>;
 
   // Vectors a lane walks over. `K % (SG_SIZE * VEC) == 0` is checked by the
-  // caller, so the loop needs no tail.
+  // caller, so the loop needs no tail -- but `steps` need not be a multiple of
+  // `UNROLL` (K = 768 gives 6 vectors at VEC = 8), hence the second loop.
   const int steps = K / (SG_SIZE * VEC);
+  const int main_steps = steps - (steps % UNROLL);
 
   sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
   sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
 
-  q->parallel_for<MoEW4A8ActQuantVec<ScalarT, VEC>>(
+  q->parallel_for<MoEW4A8ActQuantVec<ScalarT, VEC, UNROLL>>(
       sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
         const int token = static_cast<int>(it.get_global_id(0));
         const int lane = static_cast<int>(it.get_local_id(1));
         const ActVec* row = reinterpret_cast<const ActVec*>(activations + static_cast<size_t>(token) * K);
         QVec* out = reinterpret_cast<QVec*>(qact + static_cast<size_t>(token) * K);
 
-        float local_max = 0.0f;
-        for (int s = 0; s < steps; ++s) {
-          const ActVec v = row[static_cast<size_t>(s) * SG_SIZE + lane];
+        // One partial maximum per unrolled slot: `fmax` is exact, so merging
+        // them below gives the same absmax as a single chain, but the loads no
+        // longer wait on it.
+        float part_max[UNROLL];
 #pragma unroll
-          for (int u = 0; u < VEC; ++u) {
-            const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[u]));
-            local_max = sycl::fmax(local_max, sycl::fabs(static_cast<float>(a)));
+        for (int u = 0; u < UNROLL; ++u) part_max[u] = 0.0f;
+
+        for (int s = 0; s < main_steps; s += UNROLL) {
+          ActVec v[UNROLL];
+#pragma unroll
+          for (int u = 0; u < UNROLL; ++u) {
+            v[u] = row[static_cast<size_t>(s + u) * SG_SIZE + lane];
+          }
+#pragma unroll
+          for (int u = 0; u < UNROLL; ++u) {
+#pragma unroll
+            for (int e = 0; e < VEC; ++e) {
+              const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[u][e]));
+              part_max[u] = sycl::fmax(part_max[u], sycl::fabs(static_cast<float>(a)));
+            }
           }
         }
+        for (int s = main_steps; s < steps; ++s) {
+          const ActVec v = row[static_cast<size_t>(s) * SG_SIZE + lane];
+#pragma unroll
+          for (int e = 0; e < VEC; ++e) {
+            const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[e]));
+            part_max[0] = sycl::fmax(part_max[0], sycl::fabs(static_cast<float>(a)));
+          }
+        }
+
+        float local_max = part_max[0];
+#pragma unroll
+        for (int u = 1; u < UNROLL; ++u) local_max = sycl::fmax(local_max, part_max[u]);
+
         auto sg = it.get_sub_group();
         const float absmax = sycl::reduce_over_group(sg, local_max, sycl::maximum<float>{});
 
@@ -289,18 +356,72 @@ void launch_act_dynamic_quant_vec(sycl::queue* q, const ScalarT* activations, in
           act_quant_write_scale(ascale, token, scale, expert_id_per_token, num_tokens_per_expert, num_experts);
         }
 
-        for (int s = 0; s < steps; ++s) {
+        // Same batching on the way back: the re-read of a row the first pass
+        // just touched is served by the cache, but only if enough of it is
+        // requested at once.
+        for (int s = 0; s < main_steps; s += UNROLL) {
+          ActVec v[UNROLL];
+#pragma unroll
+          for (int u = 0; u < UNROLL; ++u) {
+            v[u] = row[static_cast<size_t>(s + u) * SG_SIZE + lane];
+          }
+#pragma unroll
+          for (int u = 0; u < UNROLL; ++u) {
+            QVec qv;
+#pragma unroll
+            for (int e = 0; e < VEC; ++e) {
+              const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[u][e]));
+              const float x = sycl::rint(static_cast<float>(a) * inv);
+              qv[e] = static_cast<int8_t>(sycl::clamp(x, -kInt8Max, kInt8Max));
+            }
+            out[static_cast<size_t>(s + u) * SG_SIZE + lane] = qv;
+          }
+        }
+        for (int s = main_steps; s < steps; ++s) {
           const ActVec v = row[static_cast<size_t>(s) * SG_SIZE + lane];
           QVec qv;
 #pragma unroll
-          for (int u = 0; u < VEC; ++u) {
-            const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[u]));
+          for (int e = 0; e < VEC; ++e) {
+            const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[e]));
             const float x = sycl::rint(static_cast<float>(a) * inv);
-            qv[u] = static_cast<int8_t>(sycl::clamp(x, -kInt8Max, kInt8Max));
+            qv[e] = static_cast<int8_t>(sycl::clamp(x, -kInt8Max, kInt8Max));
           }
           out[static_cast<size_t>(s) * SG_SIZE + lane] = qv;
         }
       });
+}
+
+// Vectors a lane loads before it consumes any of them. `4` covers every
+// shipped shape's `steps` (6 / 12 / 16 / 24 at VEC = 8) with at most a
+// two-vector tail. `ARK_MOE_W4A8_ACT_QUANT_UNROLL` selects 1 (the previous
+// kernel), 2 or 4; anything else falls back to the default.
+constexpr int kActQuantUnrollDefault = 4;
+
+inline int moe_w4a8_act_quant_unroll() {
+  const char* env = std::getenv("ARK_MOE_W4A8_ACT_QUANT_UNROLL");
+  if (env != nullptr) {
+    char* end = nullptr;
+    const long long v = std::strtoll(env, &end, 10);
+    if (end != env && (v == 1 || v == 2 || v == 4)) return static_cast<int>(v);
+  }
+  return kActQuantUnrollDefault;
+}
+
+// Runtime unroll depth -> compile-time bridge.
+template <typename ScalarT, int VEC>
+void launch_act_dynamic_quant_vec_unroll(int unroll, sycl::queue* q, const ScalarT* activations, int8_t* qact,
+                                         float* ascale, int total_tokens, int K, int* expert_id_per_token,
+                                         const int* num_tokens_per_expert, int num_experts) {
+  if (unroll == 1) {
+    launch_act_dynamic_quant_vec<ScalarT, VEC, 1>(q, activations, qact, ascale, total_tokens, K,
+                                                  expert_id_per_token, num_tokens_per_expert, num_experts);
+  } else if (unroll == 2) {
+    launch_act_dynamic_quant_vec<ScalarT, VEC, 2>(q, activations, qact, ascale, total_tokens, K,
+                                                  expert_id_per_token, num_tokens_per_expert, num_experts);
+  } else {
+    launch_act_dynamic_quant_vec<ScalarT, VEC, 4>(q, activations, qact, ascale, total_tokens, K,
+                                                  expert_id_per_token, num_tokens_per_expert, num_experts);
+  }
 }
 
 template <typename ScalarT>
@@ -317,14 +438,15 @@ void launch_act_dynamic_quant(sycl::queue* q, const ScalarT* activations, int8_t
   if (moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_ACT_QUANT_VEC", true)) {
     const auto act_addr = reinterpret_cast<std::uintptr_t>(activations);
     const auto q_addr = reinterpret_cast<std::uintptr_t>(qact);
+    const int unroll = moe_w4a8_act_quant_unroll();
     if (K % (SG_SIZE * 8) == 0 && act_addr % (8 * sizeof(ScalarT)) == 0 && q_addr % 8 == 0) {
-      launch_act_dynamic_quant_vec<ScalarT, 8>(q, activations, qact, ascale, total_tokens, K, expert_id_per_token,
-                                               num_tokens_per_expert, num_experts);
+      launch_act_dynamic_quant_vec_unroll<ScalarT, 8>(unroll, q, activations, qact, ascale, total_tokens, K,
+                                                      expert_id_per_token, num_tokens_per_expert, num_experts);
       return;
     }
     if (K % (SG_SIZE * 4) == 0 && act_addr % (4 * sizeof(ScalarT)) == 0 && q_addr % 4 == 0) {
-      launch_act_dynamic_quant_vec<ScalarT, 4>(q, activations, qact, ascale, total_tokens, K, expert_id_per_token,
-                                               num_tokens_per_expert, num_experts);
+      launch_act_dynamic_quant_vec_unroll<ScalarT, 4>(unroll, q, activations, qact, ascale, total_tokens, K,
+                                                      expert_id_per_token, num_tokens_per_expert, num_experts);
       return;
     }
   }
@@ -460,30 +582,35 @@ void launch_weight_rescale_s4_to_s8(sycl::queue* q, const uint8_t* weights, cons
 // file stops holding the fragment plus the staged A/B tiles.
 //
 // `test_perf_prefill_tile_sweep` on BMG (256 rows/expert, bf16 act), re-run
-// after the vectorized activation quantizer and the single-block epilogue
-// landed:
+// after the vectorized activation quantizer, the single-block epilogue and the
+// interior-tile epilogue landed:
 //
-//   shape         128x128    256x128    128x256    256x256
-//   qwen3 up      2.846 ms   2.914 ms   2.938 ms   3.057 ms
-//   qwen3 down    2.078 ms   2.049 ms   2.170 ms   2.387 ms
-//   minimax up    5.866 ms   5.856 ms   5.997 ms   5.861 ms
-//   minimax down  6.271 ms   5.676 ms   6.001 ms   6.250 ms
+//   shape         128x128    256x128    128x256    256x256    auto
+//   qwen3 up      2.774 ms   2.719 ms   2.809 ms   2.808 ms   2.815 ms
+//   qwen3 down    1.904 ms   1.829 ms   2.041 ms   2.058 ms   2.007 ms
+//   minimax up    5.584 ms   5.595 ms   5.694 ms   5.477 ms   5.674 ms
+//   minimax down  5.681 ms   5.605 ms   5.541 ms   5.662 ms   5.535 ms
 //
-// The 35-50% cliff the previous sweep saw on every 256-wide N tile is gone --
-// it was the float C shadow the mainloop used to keep live (see
-// `xe_gemm_w4a8`), which doubled the per-lane C footprint and made `TileN =
-// 256` ask for the entire 256-register large-GRF file. What is left is a
-// 3-8% deficit, so the ladder still stays 128 wide in N.
+// The 35-50% cliff the first sweep saw on every 256-wide N tile is gone -- it
+// was the float C shadow the mainloop used to keep live (see `xe_gemm_w4a8`),
+// which doubled the per-lane C footprint and made `TileN = 256` ask for the
+// entire 256-register large-GRF file. What is left in N is a 0-8% deficit on
+// three of the four shapes, so the ladder still stays 128 wide: the one row
+// where `256x256` leads (minimax up, by 1.9% over `256x128`) is inside the
+// noise band below.
 //
-// In M the two down-projections now prefer the 256-row tile -- 1.4% (qwen3
-// down) and 9.5% (minimax down) faster than 128x128 -- while the two
-// up-projections are a wash: 0.2% faster on minimax up and 2.4% slower on
-// qwen3 up. The same run measures the ladder's own 128x128 choice 0.3-6% apart
-// from the explicit `128x128` row, so only minimax down is clearly outside
-// run-to-run noise -- hence the M rung is taken only where it measured faster
-// (`N >= K`, the down-projection regime; see `moe_w4a8_prefill_dispatch`), and
-// every policy stays reachable through `ARK_MOE_W4A8_PREFILL_TILE` for a
-// re-sweep on a device with a different register budget.
+// In M the 256-row tile is now at least as fast as `128x128` on **all four**
+// shapes -- +2.0% (qwen3 up), +3.9% (qwen3 down), +1.3% (minimax down) and
+// -0.2% (minimax up) -- which is why the rung is no longer gated on `N >= K`.
+// The earlier run that produced that gate had the up-projections at -2.4% /
+// +0.2%; the disagreement is the measurement noise, not the shapes. The same
+// run puts the ladder's own choice up to 9% away from the explicit row it
+// resolves to (qwen3 down: 2.007 ms "auto" vs 1.829 ms "256x128" -- the same
+// kernel), which bounds run-to-run spread at ~5-9% and is why the rung is
+// taken on the sign of the effect across shapes rather than on any single
+// shape's margin. Every policy stays reachable through
+// `ARK_MOE_W4A8_PREFILL_TILE` for a re-sweep on a device with a different
+// register budget.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
@@ -924,14 +1051,17 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 //
 // The top rung is the 256-row tile, which halves how often each expert's
 // weights are pulled through L2/DRAM (B is read once per M tile). It is taken
-// only when both conditions the sweep found it winning under hold:
+// on the single condition the sweep supports:
 //
-//   * `A_avg_M >= 256` -- otherwise the tile is half empty and the doubled
-//     `TileM` buys nothing but padding, and
-//   * `N >= K` -- the down-projection regime, where it measured 1.4% (qwen3
-//     down) and 9.5% (minimax down) faster than 128x128. On the two
-//     up-projections (`N < K`) it measured 0.2% faster and 2.4% slower, i.e.
-//     inside the same run's noise, so those keep 128x128.
+//   * `A_avg_M >= 256` -- below that the tile is half empty and the doubled
+//     `TileM` buys nothing but padding.
+//
+// The rung used to carry a second condition, `N >= K` (the down-projection
+// regime), because the first sweep measured the up-projections 0.2% faster and
+// 2.4% slower with it. The re-run after the epilogue work (see the tile-policy
+// comment above) has the 256-row tile ahead on three of four shapes and level
+// on the fourth, with the disagreement smaller than the ~5-9% run-to-run
+// spread the same table shows -- so the gate was measuring noise and is gone.
 //
 // `ARK_MOE_W4A8_PREFILL_TILE` overrides the choice with an explicit `MxN` tile
 // (`8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`); anything
@@ -986,7 +1116,7 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_8)
   } else if (A_avg_M < 128) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_64)
-  } else if (A_avg_M >= 256 && N >= K) {
+  } else if (A_avg_M >= 256) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_256_n128)
   } else {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128)
