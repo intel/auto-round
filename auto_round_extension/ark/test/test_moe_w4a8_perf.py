@@ -952,6 +952,16 @@ _PREFILL_TILE_CONFIGS = [
     (f"tile {tile}", {"ARK_MOE_W4A8_PREFILL_TILE": None if tile == "auto" else tile}) for tile in _PREFILL_TILES
 ]
 
+# Prefill: activation-quantization message width. The vectorized kernel hands
+# each lane ``VEC`` *consecutive* elements, turning the scalar mapping's 32-byte
+# loads / 16-byte stores into 256-byte / 128-byte ones. At prefill sizes this
+# pass streams ~200 MB next to the GEMM's ~400 MB, so it is a real share of the
+# call, not a preamble.
+_ACT_QUANT_CONFIGS = [
+    ("act-quant scalar", {"ARK_MOE_W4A8_ACT_QUANT_VEC": "0"}),
+    ("act-quant vec", {"ARK_MOE_W4A8_ACT_QUANT_VEC": "1"}),
+]
+
 _SWEEP_MIN_SNR_DB = 40.0
 
 
@@ -1185,6 +1195,58 @@ if pytest is not None:
                 assert (
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"prefill tile {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_act_quant_sweep(self, request):
+            """Time both activation-quantization mappings at the compute-bound batch.
+
+            Quantizing the routed activations is a pure streaming pass -- read
+            ``[T, K]`` twice, write ``[T, K]`` int8 -- so its cost is set by how
+            wide a message the sub-group issues, not by arithmetic. The scalar
+            mapping (``k = lane; k += SG_SIZE``) stores 16 bytes per message, a
+            quarter of a cache line; the vectorized one gives each lane
+            ``VEC`` consecutive elements instead. Both are dispatch-time
+            choices, so one run measures the pair against the same workload.
+            """
+            rows = run_config_sweep("prefill", _ACT_QUANT_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"act-quant config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_act_quant_vec_matches_scalar(self):
+            """The vectorized activation quantizer must be bit-identical to the scalar one.
+
+            Unlike the K-split decode rewrite, this one reorders nothing that
+            rounds: the per-lane partial reduction is ``fmax``, which is exact
+            and order-independent, so both mappings feed the sub-group reduce
+            the same absmax and therefore the same reciprocal. Every element is
+            then put through the same ``rint``/``clamp`` expression, and the
+            GEMM that consumes the int8 is deterministic. Only the lane -> K
+            assignment differs, so any difference at all is a bug (a wrong
+            vector index, a row-stride slip, or a missed tail).
+            """
+            case = _build_case(
+                _QWEN3_NK[0][1],
+                _QWEN3_NK[0][2],
+                _QWEN3_E,
+                _PREFILL_BATCHES[0] * _QWEN3_TOPK,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            outs = {}
+            for flag in ("0", "1"):
+                with _env_override(ARK_MOE_W4A8_ACT_QUANT_VEC=flag):
+                    outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+            assert torch.equal(outs["0"], outs["1"]), (
+                "vectorized activation quantization disagrees with the scalar mapping: "
+                f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
+            )
 
         def test_decode_ksplit_matches_legacy(self):
             """The K-split decode mapping must agree with the legacy one.

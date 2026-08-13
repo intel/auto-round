@@ -140,6 +140,65 @@ is derived inside the activation-quantization kernel — which already runs one
 sub-group per token — instead of by a separate `fill_expert_id_per_token`
 launch. At batch 1 the entire GEMV takes ~45 µs, so a saved launch is not noise.
 
+## Prefill: message width and register pressure
+
+Two costs sit next to the grouped GEMM at prefill sizes, and both were paid in
+full before this change.
+
+**Activation quantization.** Converting the routed activations to int8 is a pure
+streaming pass — read `[T, K]` twice (absmax, then quantize), write `[T, K]`
+int8. At 32768 routed rows and `K = 2048` that is ~200 MB, next to the ~400 MB
+the qwen3 up-proj GEMM streams for weights, so it is a real share of the call
+rather than a preamble. The original mapping (`k = lane; k += SG_SIZE`) moved it
+in the *narrowest* messages a sub-group can issue: 16 lanes × one 16-bit element
+is a 32-byte load, and 16 lanes × one int8 is a **16-byte store** — a quarter of
+a cache line per store message. That is exactly the defect the decode GEMV had
+before the K-split rewrite, where fixing it was worth 1.09–1.93×.
+
+Each lane now owns `VEC` *consecutive* elements, so one message covers
+`SG_SIZE × VEC` contiguous elements: 256 bytes of activations and 128 bytes of
+int8 at `VEC = 8`. `VEC` is picked from K — 8 when `K % 128 == 0` (every shipped
+MoE shape: 768 / 1536 / 2048 / 3072), otherwise 4, which the `K % 64 == 0` shape
+gate always satisfies — and a misaligned base pointer falls back to the scalar
+kernel. Nothing that rounds is reordered: the per-lane partial reduction is
+`fmax`, which is exact and order-independent, so both mappings feed the
+sub-group reduce the same absmax and quantize every element identically.
+`test_act_quant_vec_matches_scalar` asserts the two are **bit-identical**, and
+`ARK_MOE_W4A8_ACT_QUANT_VEC=0` restores the scalar mapping for A/B measurement.
+
+**The GEMM epilogue.** The mainloop kept two C fragments live: the int32 DPAS
+accumulator, cleared once per AUTO_S8 re-scale block, and a float shadow that
+had to survive across blocks because each block's weight scale is applied before
+the next block overwrites the accumulator. A lane holds both in GRF for the
+*entire* mainloop:
+
+| tile | sub-group C fragment | int32 regs/lane | + float regs/lane |
+|---|---|---|---|
+| `128x128` | 32 × 32 | 64 | 64 |
+| `128x256` | 32 × 64 | 128 | 128 |
+
+With `grf_size<256>` a lane has 256 registers, so at `128x128` the float shadow
+alone reserved a quarter of the register file for the whole mainloop, and at
+`128x256` the two fragments together *are* the register file — leaving nothing
+for the staged A/B tiles. That is the measured 256-wide cliff in
+[Tuned defaults](#tuned-defaults-measured), and at the default re-scale block it
+was pure overhead: `blks == 1` (the AUTO_S8 `group=-1` default) has nothing to
+carry across blocks, so the scale can be folded on the way out instead. That
+path now runs without the float fragment, and applies
+`scale_b[col] × scale_a[row]` in a single pass — the same shape as the
+`AccumBlock == false` branch of the reference dense int8 GEMM.
+
+The same epilogue also stopped branching around out-of-range elements. A grouped
+GEMM's per-expert M is arbitrary, so tiles at the M edge are partial and the
+*store* must stay predicated — but the scale *loads* need not be: their indices
+are clamped into range instead, which makes both reads unconditional loads at a
+compile-time offset from a uniform base. That is what lets the compiler collapse
+the per-element reads into the handful of distinct addresses a sub-group's
+fragment actually covers (all lanes of a row group share `scale_a[row]`, and a
+lane repeats the same `scale_b[col]` for every row it owns); under the previous
+`continue` guard each read sat in its own basic block and none of it could be
+hoisted.
+
 ## What the script measures
 
 ### Accuracy table
@@ -247,11 +306,12 @@ pytest -v -s test_moe_w4a8_perf.py -k perf --models minimax
 pytest -v -s test_moe_w4a8_perf.py -k sweep
 ```
 
-`test_perf_decode_config_sweep` and `test_perf_prefill_tile_sweep` build one
-workload, prepack it once, then time every dispatch configuration against it —
-the decode lane mapping (legacy GEMV plus every `CH` × `NCOLS` combination) and
-the prefill work-group tile. Each configuration is checked for numerical
-equivalence with the first one, and the table is followed by a `best
+`test_perf_decode_config_sweep`, `test_perf_prefill_tile_sweep` and
+`test_perf_prefill_act_quant_sweep` build one workload, prepack it once, then
+time every dispatch configuration against it — the decode lane mapping (legacy
+GEMV plus every `CH` × `NCOLS` combination), the prefill work-group tile, and the
+activation-quantization message width. Each configuration is checked for
+numerical equivalence with the first one, and the table is followed by a `best
 configuration` block naming the winning environment variables per shape, so the
 tuning knobs can be settled in a single on-hardware run.
 
@@ -365,6 +425,14 @@ Even at the best tile the swept shapes reach 61.1 / 39.4 / 68.8 / 65.3 TFLOPS
 `2 × 256 rows × bandwidth` roofline for this routing, so the tile is not the only
 remaining gap at 256 rows/expert.
 
+> These numbers were measured while the mainloop still kept a float shadow of the
+> C fragment live throughout, which doubled the per-lane C footprint — 128 + 128
+> registers at `TileN = 256`, i.e. the entire large-GRF file. The single-block
+> epilogue no longer allocates it (see
+> [Prefill: message width and register pressure](#prefill-message-width-and-register-pressure)),
+> so the 256-wide policies now ask for half of what they did when they lost and
+> are worth re-sweeping before the ladder is considered settled.
+
 ### Decode chunk width and column blocking
 
 | shape | fastest equivalent config | default (`CH=16`, `NCOLS=2`) | `CH=32`, same `NCOLS` |
@@ -390,6 +458,7 @@ worth 1.09–1.93× over the legacy GEMV.
 | `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. `2` is the measured default, see [Tuned defaults](#tuned-defaults-measured). |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | K elements (= bytes) a lane loads per chunk: `16` (default) or `32`. `32` halves the number of memory messages and doubles the bytes a thread keeps in flight, at the cost of GRF; it needs a re-scale block of at least 512 and silently falls back to `16` otherwise. Measured slower than `16` on every swept shape, so it is a sweep point rather than a recommendation. |
 | `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder, which tops out at `128x128`. The 256-wide N tiles move less tile traffic but measure 35–50% slower (see [Tuned defaults](#tuned-defaults-measured)); `256x128` is within ~4% of `128x128` everywhere and slightly ahead on minimax down. |
+| `ARK_MOE_W4A8_ACT_QUANT_VEC` | Vectorized per-token activation quantization (each lane owns 4 or 8 consecutive K elements instead of striding by the sub-group width); **on by default**. Set to `0` to force the scalar mapping for A/B measurement. Ignored when K or the buffer alignment doesn't qualify, in which case the scalar kernel runs anyway. |
 
 ## Shape constraints
 
@@ -421,3 +490,12 @@ which re-checks the K-split mapping against the legacy one. The K-split index
 math has otherwise only been checked with a host-side mock; if it ever
 regresses, `ARK_MOE_W4A8_DECODE_KSPLIT=0` restores the previous behaviour
 without a rebuild.
+
+The two prefill changes above are in the same position: the vectorized
+activation quantizer and the single-block epilogue have been reasoned through
+but not timed. `test_act_quant_vec_matches_scalar` and
+`test_perf_prefill_act_quant_sweep` are the device checks for the first
+(`ARK_MOE_W4A8_ACT_QUANT_VEC=0` reverts it without a rebuild); the second has no
+knob because it is the same arithmetic in the same order — its effect shows up
+as a re-sweep of `test_perf_prefill_tile_sweep`, where the 256-wide tiles should
+move now that they no longer need a doubled C fragment.
