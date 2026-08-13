@@ -51,6 +51,11 @@ class TestCompressLayerNames:
         result = compress_layer_names(names)
         assert result == "model.layers.3.mlp.gate_proj"
 
+    def test_sequential_layers_get_compressed(self):
+        names = [f"layer.{i}.self_attn.q_proj" for i in range(4)]
+        result = compress_layer_names(names)
+        assert result == "layer.[0-3].self_attn.q_proj"
+
     def test_non_consecutive_ranges(self):
         names = [f"model.layers.{i}.self_attn.q_proj" for i in [0, 1, 3, 4]]
         result = compress_layer_names(names)

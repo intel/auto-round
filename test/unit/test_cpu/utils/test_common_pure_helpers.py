@@ -420,25 +420,6 @@ class TestTransformersVersionChecks:
 
 
 # ---------------------------------------------------------------------------
-# compress_layer_names
-# ---------------------------------------------------------------------------
-class TestCompressLayerNames:
-    def test_single_name_unchanged(self):
-        from auto_round.utils.common import compress_layer_names
-
-        result = compress_layer_names(["layer.0"])
-        assert result == "layer.0"
-
-    def test_sequential_layers_get_compressed(self):
-        from auto_round.utils.common import compress_layer_names
-
-        names = [f"layer.{i}.self_attn.q_proj" for i in range(4)]
-        result = compress_layer_names(names)
-        # Implementation compresses to a single regex string
-        assert result == "layer.[0-3].self_attn.q_proj"
-
-
-# ---------------------------------------------------------------------------
 # infer_bits_by_data_type
 # ---------------------------------------------------------------------------
 class TestInferBitsByDataType:

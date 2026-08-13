@@ -886,6 +886,46 @@ class TestSetAttr:
         # Verify the attribute was set
         assert model.bias is not None
 
+    def test_set_attr_nested(self):
+        """Test set_attr on a nested attribute path."""
+        from auto_round.utils.model import set_attr
+
+        class MockModule:
+            pass
+
+        model = MockModule()
+        inner = MockModule()
+        model.inner = inner
+
+        set_attr(model, "inner.new_attr", "new_value")
+
+        assert getattr(model.inner, "new_attr") == "new_value"
+
+    def test_set_attr_missing_parent(self):
+        """Test set_attr does not raise when the parent path doesn't exist."""
+        from auto_round.utils.model import set_attr
+
+        class MockModule:
+            pass
+
+        model = MockModule()
+
+        # Should not raise even if parent doesn't exist
+        set_attr(model, "nonexistent.parent.attr", "value")
+
+    def test_set_attr_simple(self):
+        """Test set_attr with a top-level (non-nested) attribute."""
+        from auto_round.utils.model import set_attr
+
+        class MockModule:
+            pass
+
+        model = MockModule()
+
+        set_attr(model, "simple_attr", "value")
+
+        assert model.simple_attr == "value"
+
 
 class TestGetModule:
     """Test get_module function."""
