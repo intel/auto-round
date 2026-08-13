@@ -2540,6 +2540,17 @@ def is_model_free_route(
             return common_conditions and family == "mx_fp"
         return False
 
+    if fmt_first == "llm_compressor":
+        # llm_compressor output format is only supported for MXFP schemes.
+        from auto_round.compressors.utils import is_mx_fp
+
+        try:
+            from auto_round.compressors.model_free import _normalize_scheme
+
+            scheme_obj = _normalize_scheme(scheme)
+            return common_conditions and is_mx_fp((scheme_obj.data_type or "").lower())
+        except (ValueError, TypeError):
+            return False
     if fmt_first != "auto_round":
         return False
     return common_conditions and is_model_free_supported_scheme(scheme, kwargs)

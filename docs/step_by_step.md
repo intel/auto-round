@@ -561,16 +561,17 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 ### Model-Free Mode
 
-Model-free mode performs RTN WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
+Model-free mode performs calibration-free WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
 
-> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ or MXFP scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.
+> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ or MXFP scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.  
+> When using `--model_free` explicitly, INT WOQ always uses **plain RTN** (opt_rtn is disabled for INT WOQ to preserve accuracy); MXFP schemes use **optimized RTN (opt_rtn) by default** — pass `--disable_opt_rtn` to use plain RTN for MXFP.
 
 **Key features:**
 - **No model object required** – only `config.json` and safetensors files are needed
 - **Low disk memory required** (If no local model files) – downloads and quantizes one shard at a time, deleting the source shard after processing
 - **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
 - **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
-- **Bit-exact parity** with the standard `--iters 0 --disable_opt_rtn` flow for all supported schemes
+- **Optimized RTN (opt_rtn) for MXFP** — MXFP schemes use opt_rtn by default; pass `--disable_opt_rtn` for plain RTN. INT WOQ always uses plain RTN (opt_rtn disabled for INT to preserve accuracy).
 - **AutoScheme integration** – pass an `AutoScheme` object as `scheme` to get automatic mixed-bit selection followed by shard-by-shard packing (two-phase: score with model briefly loaded, then free and pack)
 
 <details>
@@ -641,13 +642,13 @@ Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXINT
 #### CLI Usage
 
 ```bash
-# Easiest: --iters 0 --disable_opt_rtn auto-routes to model-free
+# Easiest: --iters 0 --disable_opt_rtn auto-routes to model-free (plain RTN)
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --scheme W4A16 \
   --iters 0 --disable_opt_rtn \
   --output_dir ./int4-llama
 
-# Equivalent explicit invocation
+# Explicit model_free (INT WOQ always uses plain RTN; bit-exact with the auto-route above)
 auto_round meta-llama/Llama-3.2-1B-Instruct \
   --model_free \
   --scheme W4A16 \
@@ -699,7 +700,7 @@ AutoRound(
 ).quantize_and_save("./int4-llama")
 ```
 
-> **Note:** Model-free mode uses RTN (no calibration data, no iterative tuning).  INT schemes output in `auto_round:auto_gptq` format; MXFP schemes output in compressed-tensors format (`mxfp4-pack-quantized` / `mxfp8-quantized`).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
+> **Note:** Model-free mode always uses **plain RTN for INT WOQ** (opt_rtn is disabled to preserve accuracy). For MXFP schemes, **optimized RTN (opt_rtn) is enabled by default**; pass `disable_opt_rtn=True` for plain RTN.  INT schemes output in `auto_round:auto_gptq` format; MXFP schemes output in compressed-tensors format (`mxfp4-pack-quantized` / `mxfp8-quantized`).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
 
 </details>
 
