@@ -1,1 +1,1 @@
-../../test_cpu/integrations/test_llmc_integration.py
+../test_cpu/test_llmc_integration.py
