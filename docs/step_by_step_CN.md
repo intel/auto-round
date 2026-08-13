@@ -1060,6 +1060,7 @@ CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_ope
 
 - 对于原始模型和量化后的模型，都支持用 `--eval` 参数直接评估。
 - 为应对部分任务运行失败的情况，可使用 `--eval_task_by_task` 参数，按顺序执行评测任务（该参数目前只适用于 HF 后端）。
+- 可使用 `--num_fewshot`、`--eval_gen_kwargs` 和 `--fewshot_as_multiturn` 将 few-shot 与生成参数传递给 lm-eval。
 - 若导出了多种格式，会自动选用列表中的**最后一种格式**的模型评估。
 - 对于 vLLM 后端，可通过 `--device 0,1,2` 指定 GPU 设备。该参数会自动设置 `CUDA_VISIBLE_DEVICES`，并根据设备数量配置 `tensor_parallel_size` 。此外，也支持通过环境变量和 `--vllm_args` 参数进行手动设置。
 

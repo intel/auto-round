@@ -138,6 +138,7 @@ class TestAutoRoundCmd:
             ],
         )
 
+    @pytest.mark.timeout(60)
     def test_auto_round_cmd8(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
         _assert_cli_ok(
             monkeypatch,

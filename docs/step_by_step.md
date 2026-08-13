@@ -1094,6 +1094,7 @@ CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_ope
 
 - Use the `--eval` flag to evaluate models directly. This supports both original and quantized models.
 - The `--eval_task_by_task` option helps handle task failures by evaluating tasks sequentially. This only applies to the HF backend.
+- Use `--num_fewshot`, `--eval_gen_kwargs`, and `--fewshot_as_multiturn` to pass few-shot and generation options through to lm-eval.
 - When multiple formats are exported, the last format in the list will be used for evaluation.
 - For vLLM backend, you can use `--device 0,1,2` to specify GPU devices. This will automatically set `CUDA_VISIBLE_DEVICES` and configure `tensor_parallel_size` based on the number of devices. Alternatively, you can manually set these via environment variables and `--vllm_args`.
 
