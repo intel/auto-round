@@ -32,20 +32,8 @@ function setup_environment() {
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function check_storage_usage() {
@@ -76,7 +64,7 @@ function run_unit_test() {
     echo "##[endgroup]"
 
     uv pip list
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
@@ -100,9 +88,9 @@ function run_unit_test() {
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
+        pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
-            -vs --disable-warnings --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+            -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -128,15 +116,15 @@ function run_unit_test_llmc() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -162,15 +150,15 @@ function run_unit_test_sglang() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
              ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -196,15 +184,15 @@ function run_unit_test_vllm() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
