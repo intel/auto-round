@@ -10,7 +10,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound, AWQConfig
 from auto_round.calib_dataset import get_dataset
 
-from ...envs import multi_card
+from ...unit.envs import multi_card
 
 recipe_str = """
 quant_stage:
