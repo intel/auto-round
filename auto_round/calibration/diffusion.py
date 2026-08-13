@@ -45,7 +45,7 @@ def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage:
         enable_model_cpu_offload(device=resolved_device)
         return "model"
     if pipe.device != resolved_device:
-        pipe.to(target_device)
+        pipe.to(resolved_device)
     return None
 
 
