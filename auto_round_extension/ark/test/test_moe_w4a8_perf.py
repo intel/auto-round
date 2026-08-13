@@ -52,6 +52,14 @@ It also runs standalone, without pytest::
     python auto_round_extension/ark/test/test_moe_w4a8_perf.py --all-shapes
     python auto_round_extension/ark/test/test_moe_w4a8_perf.py --phase decode
     python auto_round_extension/ark/test/test_moe_w4a8_perf.py --rescale-group-size 256
+    python auto_round_extension/ark/test/test_moe_w4a8_perf.py --phase prefill --long-seq
+
+The prefill throughput points are two: ``--compute-bound`` derives, per model,
+the batch that puts 384 rows on every expert (the smallest routing where the
+100 TFLOPS goal is reachable at all), and ``--long-seq`` runs a fixed 8K-token
+prompt, whose 65536 routed rows divide into 512 rows per expert for Qwen3-MoE
+and 341 for MiniMax -- a higher intensity than the compute-bound batch for one
+model and a lower one for the other.
 
 Useful environment variables (read by the kernel itself):
 
@@ -367,6 +375,26 @@ _PREFILL_BATCHES_EXTENDED = [128, 512, 2048, 8192]
 # 9216 for MiniMax (192).
 _PREFILL_TARGET_ROWS_PER_EXPERT = 384
 
+# A second prefill point, sized like a real prompt instead of by a target
+# rows/expert: one 8K-token sequence, i.e. 65536 routed rows -- the same 8K
+# group ``test_moe_prefill_perf.py`` sweeps.
+#
+# It is not a larger copy of the compute-bound batch. That batch is *derived*
+# per model so both land on 384 rows/expert; a fixed token count is divided by
+# a different expert count in each model, so the same 8K prompt puts 512 rows
+# on each of Qwen3-MoE's 128 experts and 341 on each of MiniMax's 192. The
+# arithmetic intensity therefore moves in opposite directions, and the roofline
+# with it: at a 400 GB/s probe the ceilings go 129 -> 145 and 112 -> 123 TFLOPS
+# for qwen3 up/down, and 137 -> 129 and 154 -> 145 for minimax up/down.
+#
+# 512 rows/expert also moves the *tile ladder*, which is why this point is
+# worth a sweep of its own rather than one more perf row: the 256-row tile is
+# gated on padding no worse than the 128-row one
+# (``ceil(M/256)*256 == ceil(M/128)*128``), false at 384 and true at 512, so
+# the Qwen3-MoE shapes take the ``256x256`` rung here and nowhere else in the
+# suite.
+_PREFILL_LONG_SEQ_LEN = 8192
+
 
 # Rows per expert for the epilogue equivalence tests: enough to give every
 # expert interior *and* ragged tiles against the prefill tile the ladder picks
@@ -381,6 +409,16 @@ _RAGGED_TILE_ROWS_PER_EXPERT = 300
 def _compute_bound_batches(model: dict) -> list:
     """Model-token batches that put ``_PREFILL_TARGET_ROWS_PER_EXPERT`` rows on every expert."""
     return [_PREFILL_TARGET_ROWS_PER_EXPERT * model["E"] // model["topk"]]
+
+
+def _long_seq_batches() -> list:
+    """The long-prompt prefill point: one ``_PREFILL_LONG_SEQ_LEN``-token sequence.
+
+    Unlike ``_compute_bound_batches`` this is *not* derived per model -- the
+    point of it is that a fixed prompt length routes differently in each model
+    (see ``_PREFILL_LONG_SEQ_LEN``).
+    """
+    return [_PREFILL_LONG_SEQ_LEN]
 
 
 def _spread_tokens(total_tokens: int, num_experts: int) -> list:
@@ -1132,16 +1170,21 @@ def _print_sweep_header(title: str, metric: str) -> None:
     print("-" * _PERF_WIDTH)
 
 
-def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=True, compute_bound=None):
+def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=True, compute_bound=None, batches=None):
     """Time every kernel configuration in ``configs`` on the same workload.
 
     ``phase`` picks the sweep's shapes and its metric: ``decode`` reports
     weight bandwidth (the decode target), ``prefill`` reports TFLOPS (the
-    prefill target) at the compute-bound batch. Returns one dict per
-    (shape, configuration).
+    prefill target) at the compute-bound batch. ``batches`` runs the sweep at
+    an explicit list of model-token batches instead -- what the long-prompt
+    sweeps use, since a fixed prompt length is exactly what the compute-bound
+    derivation replaces. Returns one dict per (shape, batch, configuration).
     """
     is_prefill = phase == "prefill"
-    compute_bound = is_prefill if compute_bound is None else compute_bound
+    # An explicit batch list opts out of the compute-bound derivation, which
+    # ignores ``batches`` and sizes the batch from the target rows/expert.
+    if compute_bound is None:
+        compute_bound = is_prefill and batches is None
     metric_name = "TFLOPS" if is_prefill else "W GB/s"
     device_bw = _device_bandwidth_gbps()
     resolved = _models(models)
@@ -1151,7 +1194,8 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
             f"act={str(dtype).split('.')[-1]}) -- same workload, one row per kernel configuration",
             metric_name,
         )
-    batches = _DECODE_BATCHES if not is_prefill else None
+    if batches is None:
+        batches = _DECODE_BATCHES
     rows = []
     for _, spec in resolved:
         E, topk, group_size = spec["E"], spec["topk"], spec["group_size"]
@@ -1217,7 +1261,12 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
 
 
 def _print_sweep_best(phase, rows) -> None:
-    """Report, per shape, the fastest numerically-equivalent configuration."""
+    """Report, per shape, the fastest numerically-equivalent configuration.
+
+    A shape swept at more than one batch gets one line per batch: the winner
+    is a property of the routing as much as of the shape (the tile ladder
+    changes rung with ``rows/expert``), so the two must not be pooled.
+    """
     if not rows:
         return
     is_prefill = phase == "prefill"
@@ -1228,14 +1277,22 @@ def _print_sweep_best(phase, rows) -> None:
         if row["label"] not in shapes:
             shapes.append(row["label"])
     for shape in shapes:
-        candidates = [r for r in rows if r["label"] == shape and r["snr_db"] >= _SWEEP_MIN_SNR_DB]
-        if not candidates:
-            print(f"  {shape:<14} no numerically-equivalent configuration")
-            continue
-        best = min(candidates, key=lambda r: r["w4a8_ms"])
-        metric = f"{best['tflops']:.2f} TFLOPS" if is_prefill else f"{best['gbps']:.1f} GB/s"
-        env = " ".join(f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None) or "(defaults)"
-        print(f"  {shape:<14} {best['config']:<22} {best['w4a8_ms']:.3f} ms  {metric:<16} {env}")
+        shape_rows = [r for r in rows if r["label"] == shape]
+        batches = []
+        for row in shape_rows:
+            if row["tokens"] not in batches:
+                batches.append(row["tokens"])
+        for tokens in batches:
+            group = [r for r in shape_rows if r["tokens"] == tokens]
+            name = shape if len(batches) == 1 else f"{shape.strip()} T={tokens}"
+            candidates = [r for r in group if r["snr_db"] >= _SWEEP_MIN_SNR_DB]
+            if not candidates:
+                print(f"  {name:<14} no numerically-equivalent configuration")
+                continue
+            best = min(candidates, key=lambda r: r["w4a8_ms"])
+            metric = f"{best['tflops']:.2f} TFLOPS" if is_prefill else f"{best['gbps']:.1f} GB/s"
+            env = " ".join(f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None) or "(defaults)"
+            print(f"  {name:<14} {best['config']:<22} {best['w4a8_ms']:.3f} ms  {metric:<16} {env}")
 
 
 # ---------------------------------------------------------------------------
@@ -1321,6 +1378,35 @@ if pytest is not None:
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
             _assert_targets(request, "prefill", rows)
 
+        def test_perf_prefill_long_seq(self, request):
+            """Prefill throughput for one 8K-token prompt.
+
+            ``test_perf_prefill_compute_bound`` derives its batch per model so
+            that both land on the same 384 rows per expert. A prompt does not
+            work that way: a fixed 8192 model tokens (65536 routed rows) is
+            divided by whatever expert count the model has, which puts 512 rows
+            on each of Qwen3-MoE's 128 experts and 341 on each of MiniMax's
+            192.
+
+            Both directions are worth measuring. More rows per expert raise the
+            arithmetic intensity -- the weights are the only stream that does
+            not grow with the token count -- so the qwen3 ceilings rise from
+            129 / 112 to 145 / 123 TFLOPS at a 400 GB/s probe, which is the
+            regime where the 100 TFLOPS target has the most margin. Fewer rows
+            lower it, so minimax comes down from 137 / 154 to 129 / 145 and the
+            same kernel should read *slower* there: the point of running both
+            is that the prompt length alone does not decide the throughput, the
+            routing it produces does.
+            """
+            rows = run_perf(
+                "prefill",
+                _long_seq_batches(),
+                torch_baseline=False,
+                models=_models_option(request),
+            )
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            _assert_targets(request, "prefill", rows)
+
         def test_perf_decode_config_sweep(self, request):
             """Time every decode lane mapping on one workload and name the best.
 
@@ -1348,6 +1434,30 @@ if pytest is not None:
             measures the ladder's choice against every explicit tile.
             """
             rows = run_config_sweep("prefill", _PREFILL_TILE_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"prefill tile {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_tile_sweep_long_seq(self, request):
+            """Time every prefill work-group tile at the 8K-prompt routing.
+
+            The tile sweep above runs at the derived compute-bound batch, where
+            every model sits at 384 rows per expert -- a routing the 256-row
+            tile is *excluded* from, because it would schedule 512 rows for 384
+            rows of data. A fixed 8K prompt is the routing that changes that:
+            Qwen3-MoE's 128 experts get 512 rows each, the padding test
+            (``ceil(M/256)*256 == ceil(M/128)*128``) turns true, and the ladder
+            takes its ``256x256`` rung -- the one rung no other case in this
+            suite reaches. This sweep is what says whether it should.
+            """
+            rows = run_config_sweep(
+                "prefill",
+                _PREFILL_TILE_CONFIGS,
+                models=_models_option(request),
+                batches=_long_seq_batches(),
+            )
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
             for row in rows:
                 assert (
@@ -1795,6 +1905,16 @@ def _parse_args(argv):
             "the smallest sweep point where the 100 TFLOPS goal is not capped by weight bandwidth."
         ),
     )
+    parser.add_argument(
+        "--long-seq",
+        action="store_true",
+        help=(
+            f"Also run the long-prompt prefill point ({_PREFILL_LONG_SEQ_LEN} model tokens, one 8K sequence), "
+            "where Qwen3-MoE routes 512 rows per expert -- a higher intensity than the compute-bound batch, "
+            "and the only routing at which the tile ladder takes its 256-row rung. With --sweep-configs the "
+            "prefill tile sweep is repeated there."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     return parser.parse_args(argv)
@@ -1839,9 +1959,20 @@ def main(argv=None) -> int:
                     compute_bound=True,
                     models=models,
                 )
+            if phase == "prefill" and args.long_seq:
+                run_perf(
+                    phase,
+                    _long_seq_batches(),
+                    dtype=dtype,
+                    rescale_group_size=args.rescale_group_size,
+                    torch_baseline=False,
+                    models=models,
+                )
             if args.sweep_configs:
                 configs = _PREFILL_TILE_CONFIGS if phase == "prefill" else _DECODE_CONFIGS
                 run_config_sweep(phase, configs, dtype=dtype, models=models)
+                if phase == "prefill" and args.long_seq:
+                    run_config_sweep(phase, configs, dtype=dtype, models=models, batches=_long_seq_batches())
 
     if failures:
         print()

@@ -147,6 +147,40 @@ it reaches, which is the part a kernel change can move. The verdict is
 informational by default; pass `--enforce-targets` to turn it into a hard
 assertion.
 
+### The 8K-prompt point: a prompt is not a rows/expert target
+
+`_PREFILL_TARGET_ROWS_PER_EXPERT` is *derived* per model, so both shape groups
+land on the same 384 rows per expert (6144 model tokens for Qwen3-MoE, 9216 for
+MiniMax). A real prefill does the opposite: the prompt length is fixed and the
+expert count divides it. `test_perf_prefill_long_seq` therefore runs a single
+**8K-token prompt** — 8192 model tokens, 65536 routed rows, the same 8K group
+`test_moe_prefill_perf.py` sweeps — and the two models land in *different*
+regimes:
+
+| Shape | rows/expert | Weights | Total traffic | BW for 100 TFLOPS | Ceiling at 400 GB/s | Ceiling at 384 rows/E |
+|---|---|---|---|---|---|---|
+| qwen3 up (N=1536, K=2048) | 512 | 403 MB | 1141 MB | 277 GB/s | **145 TFLOPS** | 129 |
+| qwen3 down (N=2048, K=768) | 512 | 201 MB | 671 MB | 326 GB/s | **123 TFLOPS** | 112 |
+| minimax up (N=1536, K=3072) | 341 | 906 MB | 1913 MB | 309 GB/s | **129 TFLOPS** | 137 |
+| minimax down (N=3072, K=1536) | 341 | 906 MB | 1711 MB | 277 GB/s | **145 TFLOPS** | 154 |
+
+For Qwen3-MoE's 128 experts an 8K prompt is 512 rows each, a third more than the
+compute-bound batch, so its ceiling rises by 10–12% and the 100 TFLOPS target
+gains margin — this is the point where the suite's highest prefill TFLOPS should
+be. For MiniMax's 192 experts the same prompt is only 341 rows each, *below* the
+compute-bound batch, so its ceiling falls by 6%. The same kernel therefore reads
+faster on one model and slower on the other at the same prompt length, which is
+the reason to measure both: throughput follows the routing, not the sequence
+length.
+
+512 rows per expert also moves the **tile ladder**. The 256-row tile is gated on
+padding no worse than the 128-row one (`⌈M/256⌉·256 == ⌈M/128⌉·128`) — false at
+384, true at 512 — so the Qwen3-MoE shapes take the `256x256` rung here and
+nowhere else in the suite. `test_perf_prefill_tile_sweep_long_seq` re-runs the
+tile sweep at this routing for exactly that reason: the rung the ladder picks at
+an 8K prompt has never been measured against its alternatives at a routing where
+it does not pad (see [Prefill tile](#prefill-tile)).
+
 ### Why `vs w4a16` is below 1.0 at small batches
 
 The same intensity argument explains the `vs w4a16` column. W4A8 streams **2×
@@ -432,7 +466,10 @@ widens them to `{128, 512, 2048, 8192}` and `{1, 2, 8, 16}` respectively.
 gets 384 rows (6144 model tokens for Qwen3-MoE) — the smallest round sweep point
 where the 100 TFLOPS goal is under the device's bandwidth ceiling on *every*
 shipped shape, counting [all five streams](#the-weights-are-not-the-only-stream)
-and not just the weights.
+and not just the weights. `test_perf_prefill_long_seq` adds the other kind of
+prefill point: a fixed **8K-token prompt** (8192 model tokens, 65536 routed
+rows), which is 512 rows per expert for Qwen3-MoE and 341 for MiniMax — see
+[The 8K-prompt point](#the-8k-prompt-point-a-prompt-is-not-a-rowsexpert-target).
 
 A second shape group covers MiniMax-M2, matching `test_moe_prefill_perf.py`:
 
@@ -476,6 +513,9 @@ pytest -v -s test_moe_w4a8_perf.py -k decode
 # The compute-bound prefill case (6144 model tokens), where the TFLOPS goal is reachable
 pytest -v -s test_moe_w4a8_perf.py -k compute_bound
 
+# The 8K-prompt prefill case (8192 model tokens) and its tile sweep
+pytest -v -s test_moe_w4a8_perf.py -k long_seq
+
 # Make the performance goals hard assertions instead of a printed verdict
 pytest -v -s test_moe_w4a8_perf.py -k perf --enforce-targets
 
@@ -497,6 +537,12 @@ with the first one, and the table is followed by a `best configuration` block
 naming the winning environment variables per shape, so the tuning knobs can be
 settled in a single on-hardware run.
 
+`test_perf_prefill_tile_sweep_long_seq` is the same tile sweep at the 8K-prompt
+routing, where the ladder's rung differs (512 rows per expert for Qwen3-MoE
+instead of 384); a shape swept at more than one batch gets one `best
+configuration` line per batch, because the winner is a property of the routing
+as much as of the shape.
+
 The `-s` flag is required to see the printed tables.
 
 ### As a standalone script (no pytest)
@@ -507,10 +553,14 @@ python test_moe_w4a8_perf.py --all-shapes          # full sweep
 python test_moe_w4a8_perf.py --phase decode        # decode only
 python test_moe_w4a8_perf.py --skip-accuracy       # perf only
 python test_moe_w4a8_perf.py --compute-bound       # add the 6144-token prefill case
+python test_moe_w4a8_perf.py --long-seq            # add the 8K-prompt prefill case
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 activations
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
 ```
+
+`--long-seq` also repeats the prefill tile sweep at the 8K prompt when combined
+with `--sweep-configs`.
 
 The script exits non-zero if any accuracy gate fails.
 
@@ -650,6 +700,15 @@ One caveat that has not changed: the ladder compares `total_tokens / E`, the
 *average* rows/expert, so a skewed routing that averages 384 can still leave
 individual experts with very different tile counts.
 
+The table above is measured at 384 rows/expert, where the padding gate keeps the
+256-row tile *out*, so the `256x*` columns there are the cost of padding rather
+than a verdict on the tile. The routing that actually selects it is the 8K
+prompt (512 rows/expert on Qwen3-MoE, an exact multiple of 256), and
+`test_perf_prefill_tile_sweep_long_seq` is the sweep that measures the rung the
+ladder picks there against its alternatives — the one open question left in the
+tile ladder, since the only prior evidence for `TileM = 256` is the older run at
+256 rows/expert (1.3–3.9% ahead on all four shapes).
+
 ### Prefill activation quantization
 
 | shape | scalar | vectorized (default) | speedup |
@@ -786,7 +845,11 @@ pass on device, so each optimization is checked against its predecessor as well
 as timed.
 
 Still to run on device: the accuracy sweep against the fp32 reference, which
-will catch layout/scale bugs immediately.
+will catch layout/scale bugs immediately, and the two 8K-prompt prefill cases
+(`test_perf_prefill_long_seq`, `test_perf_prefill_tile_sweep_long_seq`) — they
+add no new kernel code, only a routing the suite did not measure at, but the
+`256x256` rung the ladder takes there has not been timed against its
+alternatives at a non-padding routing.
 
 Three prefill changes used to be listed here as reasoned-through but unmeasured,
 because the authoring environment has no XPU and no SYCL compiler. All three
@@ -821,6 +884,24 @@ of their true ceilings, and the compute-bound batch moved from 256 to 384 rows
 per expert so that 100 TFLOPS is reachable on all of them. The remaining gap is
 traffic, not arithmetic: the largest single win still on the table is fusing the
 activation quantization into the GEMM's A-tile load, which would delete the int8
-copy's write *and* read — 2 of the 5 streams, ~25% of the traffic on the
-small-K shapes — but that is a mainloop change and wants a device to develop
-against.
+copy's write *and* read — 2 of the 5 streams, 14–22% of the traffic depending on
+K — but that is a mainloop change and wants a device to develop against.
+
+### Where the remaining prefill headroom is
+
+At the ladder's choice the four compute-bound shapes read 88.2 / 62.1 / 99.7 /
+103.7 TFLOPS, i.e. 56–73% of their bandwidth ceilings, so the headroom splits
+into traffic the call still moves and ceiling the routing sets:
+
+| Lead | What it would change | Where it shows |
+|---|---|---|
+| Fusing the activation quantization into the GEMM's A-tile load | Deletes 2 of the 5 streams (the int8 copy written, then read back) — 14% of the traffic at `K = 768`, 21% at `K = 2048`, 22% at `K = 3072` | Every shape; it is the largest single item left |
+| Routing more rows per expert | Nothing in the kernel — it *raises* the ceiling, because the weight stream is the only one that does not grow with the token count | The 8K prompt is exactly this experiment for Qwen3-MoE: 512 rows/expert lifts the ceilings from 129 / 112 to 145 / 123 TFLOPS |
+| The `256x256` rung the 8K prompt selects | Halves how often B is re-read per M tile, on top of the N-tile saving already taken | `test_perf_prefill_tile_sweep_long_seq`; unmeasured at a non-padding routing since the 256 rows/expert run |
+| A single-pass activation quantizer for `K = 3072` | The second read of `[T, K]`, ~450 MB at the compute-bound batch | minimax up only; its row is 96 dwords per lane, past the 16-vector rung |
+
+`qwen3 down` (`N = 2048, K = 768`) stays the outlier at ~62–69 TFLOPS: 12
+k-tiles per tile is the shortest mainloop of the four, its output is as large as
+its weights, and its ceiling is the lowest of the set at every routing. It is
+also the shape the traffic-side leads above would help most.
+

@@ -134,6 +134,35 @@ targets [prefill]: prefill compute > 100 TFLOPS
 多少 — 这才是 kernel 改动能够撬动的部分。该结论默认只用于提示；加上
 `--enforce-targets` 可以把它变成硬断言。
 
+### 8K 提示词用例：提示词长度不等于每专家行数目标
+
+`_PREFILL_TARGET_ROWS_PER_EXPERT` 是**按模型推导**出来的，所以两组形状都落在同样的
+每专家 384 行上 (Qwen3-MoE 是 6144 个模型 token，MiniMax 是 9216)。真实的 prefill
+恰好相反：提示词长度是固定的，由专家数去除它。因此 `test_perf_prefill_long_seq` 跑
+的是一条 **8K token 的提示词** — 8192 个模型 token、65536 条路由行，与
+`test_moe_prefill_perf.py` 扫描的 8K 组相同 — 而两个模型会落在**不同**的区间：
+
+| 形状 | 每专家行数 | 权重 | 总访存量 | 达到 100 TFLOPS 所需带宽 | 400 GB/s 下的上限 | 每专家 384 行时的上限 |
+|---|---|---|---|---|---|---|
+| qwen3 up (N=1536, K=2048) | 512 | 403 MB | 1141 MB | 277 GB/s | **145 TFLOPS** | 129 |
+| qwen3 down (N=2048, K=768) | 512 | 201 MB | 671 MB | 326 GB/s | **123 TFLOPS** | 112 |
+| minimax up (N=1536, K=3072) | 341 | 906 MB | 1913 MB | 309 GB/s | **129 TFLOPS** | 137 |
+| minimax down (N=3072, K=1536) | 341 | 906 MB | 1711 MB | 277 GB/s | **145 TFLOPS** | 154 |
+
+对 Qwen3-MoE 的 128 个专家来说，8K 提示词是每专家 512 行，比计算受限 batch 多三分之
+一，所以上限提高 10–12%、100 TFLOPS 目标的余量更大 — 这里应当出现整个套件中最高的
+prefill TFLOPS。而对 MiniMax 的 192 个专家来说，同一条提示词只有每专家 341 行，**低
+于**计算受限 batch，上限反而下降 6%。也就是说同一个 kernel 在同样的提示词长度下，
+在一个模型上更快、在另一个模型上更慢 — 这正是两个模型都要测的原因：决定吞吐的是路
+由，而不是序列长度。
+
+每专家 512 行同时还会改变 **tile 阶梯**。256 行 tile 的门槛是它的 padding 不比 128
+行 tile 更差 (`⌈M/256⌉·256 == ⌈M/128⌉·128`) — 384 行时不成立、512 行时成立 — 因此
+Qwen3-MoE 的形状只有在这里才会走到 `256x256` 这一档。
+`test_perf_prefill_tile_sweep_long_seq` 正是为此在该路由下重跑 tile 扫描：8K 提示词
+下阶梯选中的这一档，从未在一个不产生 padding 的路由上与其它 tile 对比过 (见
+[Prefill tile](#prefill-tile))。
+
 ### 为什么小 batch 下 `vs w4a16` 小于 1.0
 
 同样的计算强度分析也解释了 `vs w4a16` 这一列。W4A8 需要传输 int4 路径 **2 倍的权
@@ -383,7 +412,10 @@ qwen3 down  (down-proj)   :  N = 2048,            K =  768
 `test_perf_prefill_compute_bound` 额外增加一个 batch，其大小保证每个专家拿到 384 行
 (Qwen3-MoE 为 6144 个模型 token) — 这是在计入
 [全部五条数据流](#权重并不是唯一的数据流)而不只是权重之后，100 TFLOPS 目标在*所有*已
-支持形状上都低于设备带宽天花板的最小整值扫描点。
+支持形状上都低于设备带宽天花板的最小整值扫描点。`test_perf_prefill_long_seq` 则补上
+另一类 prefill 采样点：一条固定长度的 **8K token 提示词** (8192 个模型 token、65536
+条路由行)，对 Qwen3-MoE 是每专家 512 行、对 MiniMax 是 341 行 — 详见
+[8K 提示词用例](#8k-提示词用例提示词长度不等于每专家行数目标)。
 
 第二个形状组是 MiniMax-M2，与 `test_moe_prefill_perf.py` 保持一致：
 
@@ -425,6 +457,9 @@ pytest -v -s test_moe_w4a8_perf.py -k decode
 # 计算受限的 prefill 用例 (6144 个模型 token)，TFLOPS 目标在此可达
 pytest -v -s test_moe_w4a8_perf.py -k compute_bound
 
+# 8K 提示词的 prefill 用例 (8192 个模型 token) 及其 tile 扫描
+pytest -v -s test_moe_w4a8_perf.py -k long_seq
+
 # 把性能目标从提示信息变成硬断言
 pytest -v -s test_moe_w4a8_perf.py -k perf --enforce-targets
 
@@ -445,6 +480,11 @@ tile、激活量化的消息宽度与在途请求深度，以及 epilogue 的边
 configuration`，按形状给出获胜配置对应的环境变量，因此在硬件上跑一次就能确定这些
 调优开关。
 
+`test_perf_prefill_tile_sweep_long_seq` 是同一个 tile 扫描在 8K 提示词路由下的版本，
+那里阶梯选中的档位不同 (Qwen3-MoE 是每专家 512 行而不是 384 行)；同一形状若在多个
+batch 上被扫描，`best configuration` 会为每个 batch 各打印一行 — 因为最优配置既取决
+于形状，也同样取决于路由。
+
 需要加 `-s` 才能看到打印出的表格。
 
 ### 作为独立脚本运行 (不依赖 pytest)
@@ -455,10 +495,14 @@ python test_moe_w4a8_perf.py --all-shapes          # 完整扫描
 python test_moe_w4a8_perf.py --phase decode        # 仅 decode
 python test_moe_w4a8_perf.py --skip-accuracy       # 仅性能
 python test_moe_w4a8_perf.py --compute-bound       # 追加 6144 token 的 prefill 用例
+python test_moe_w4a8_perf.py --long-seq            # 追加 8K 提示词的 prefill 用例
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 激活
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
 ```
+
+`--long-seq` 与 `--sweep-configs` 一起使用时，还会在 8K 提示词下重跑一遍 prefill 的
+tile 扫描。
 
 任何精度门限未通过时，脚本以非 0 状态码退出。
 
@@ -579,6 +623,13 @@ float C 影子 (参见
 
 有一点没有变：阶梯比较的是 `total_tokens / E` 这个**平均**每专家行数，因此在路由不均衡
 时，即便平均为 384 行，各个专家的 tile 数仍可能相差很大。
+
+上表是在每专家 384 行下测得的，而 padding 判据在那里恰好把 256 行的 tile **挡在门外**，
+所以那两列 `256x*` 反映的是 padding 的代价，而不是对该 tile 本身的结论。真正会选中它的
+路由是 8K 提示词 (Qwen3-MoE 每专家 512 行，正好是 256 的整数倍)，
+`test_perf_prefill_tile_sweep_long_seq` 就是在那里把阶梯选中的这一档与其它 tile 对比的
+扫描 — 这也是 tile 阶梯中仅剩的未决问题，因为 `TileM = 256` 目前唯一的证据来自更早那次
+每专家 256 行的运行 (四个形状上领先 1.3–3.9%)。
 
 ### Prefill 激活量化
 
@@ -702,7 +753,10 @@ W4A8 kernel 是新移植的 SYCL/CuTe 实现，在
 在设备上通过，因此每一项优化既有计时数据，也都与各自的前身做过比对。
 
 仍需在设备上运行的部分：与 fp32 参考实现对比的精度扫描，它能立刻暴露 layout /
-scale 相关的 bug。
+scale 相关的 bug；以及两个 8K 提示词的 prefill 用例
+(`test_perf_prefill_long_seq`、`test_perf_prefill_tile_sweep_long_seq`) — 它们没有新增
+任何 kernel 代码，只是补上了套件此前没有测过的一种路由，但阶梯在那里选中的 `256x256`
+一档，尚未在不产生 padding 的路由上与其它 tile 对比过。
 
 本节此前列有三项"只经过推导、既未实测计时也尚未在设备上运行"的 prefill 改动，因为编写
 它们的环境既没有 XPU 也没有 SYCL 编译器。这三项现在都已实测，并且都保持了原有默认值：
@@ -730,5 +784,22 @@ int32 累加器做 2D 写出的。事实证明那个参考对象选错了：`reo
 之后，四个受算力约束的形状实际上跑在各自真实天花板的 60–74%，而受算力约束的 batch 也
 从每专家 256 行提高到 384 行，好让 100 TFLOPS 在所有形状上都是可达的。剩下的差距在访
 存而不是算术：目前仍摆在桌面上的最大一项收益，是把激活量化融合进 GEMM 的 A-tile 加载
-中，这将同时消掉 int8 副本的写与读——5 条数据流中的 2 条，在 K 较小的形状上约占 25%
-的流量——但那是主循环的改动，需要在有设备的环境里开发。
+中，这将同时消掉 int8 副本的写与读——5 条数据流中的 2 条，视 K 而定约占 14–22% 的流
+量——但那是主循环的改动，需要在有设备的环境里开发。
+
+### prefill 还剩下多少空间
+
+在阶梯选中的 tile 下，四个受算力约束的形状为 88.2 / 62.1 / 99.7 / 103.7 TFLOPS，即各自
+带宽天花板的 56–73%，因此剩余空间分成两部分：这次调用仍在搬的流量，以及路由所决定的天
+花板。
+
+| 方向 | 会改变什么 | 体现在哪里 |
+|---|---|---|
+| 把激活量化融合进 GEMM 的 A-tile 加载 | 消掉 5 条数据流中的 2 条 (int8 副本的写、以及随后的读回) — `K = 768` 时占 14%、`K = 2048` 时 21%、`K = 3072` 时 22% | 所有形状；这是仍未做的最大一项 |
+| 让每个专家分到更多行 | kernel 里什么都不用改 — 它*抬高*的是天花板，因为只有权重这一条流不随 token 数增长 | 8K 提示词对 Qwen3-MoE 正是这个实验：每专家 512 行把天花板从 129 / 112 抬到 145 / 123 TFLOPS |
+| 8K 提示词会选中的 `256x256` 一档 | 在已经拿到的 N tile 收益之上，进一步把每个 M tile 重复读 B 的次数减半 | `test_perf_prefill_tile_sweep_long_seq`；自每专家 256 行那次运行以来，没有在不产生 padding 的路由上测过 |
+| `K = 3072` 的单遍激活量化 | 省掉对 `[T, K]` 的第二次读，在受算力约束的 batch 下约 450 MB | 仅 minimax up；它的一行是每 lane 96 个 dword，超过了 16 向量那一档 |
+
+`qwen3 down` (`N = 2048, K = 768`) 仍是那个异常值，只有约 62–69 TFLOPS：每个 tile 只有
+12 个 k-tile，是四者中最短的主循环，其输出与权重一样大，而它在任何路由下的天花板也都是
+四者中最低的。它同时也是上面这些访存侧改动收益最大的形状。
