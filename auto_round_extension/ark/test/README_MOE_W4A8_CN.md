@@ -300,9 +300,9 @@ sub-group fragment 要发 **64** 条。通过硬件 2D block store，同样的�
 稠密 GEMM 在完全相同的累加器形状上采用的方式。
 
 D 才是这件事在 prefill 尺寸下值得做、而不只是"顺手整理"的原因：每专家 384 行时，
-qwen3 down-projection 每个专家要写 0.79 MB 的 fp16，而权重只有 1.5 MB 的 int8——占
-tile 总流量的三分之一，因为那里的 N (2048) 比 K (768) 更大；而它恰好又是主循环最短的
-形状，等于把 epilogue 的代价付了两遍。
+qwen3 down-projection 每个专家要写 1.5 MB 的 fp16——与它读入的 int8 权重字节数恰好相
+等，因为那里的 N (2048) 比 K (768) 更大，占该专家流量的三分之一以上；而它恰好又是主
+循环最短的形状，等于把 epilogue 的代价付了两遍。
 
 移植参考的是 `dense_gemm_detail::gemm_device_impl`，而不是同族的 MoE kernel。后者用
 `reorder(tCrC, tCrC_out)` 把 MMA fragment 搬进显式选定的 `XE_STORE_2D` atom 的

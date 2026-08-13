@@ -287,8 +287,8 @@ inline DeviceScratchPool& expert_map_pool() {
 // -----------------------------------------------------------
 // Batching the loads did not change how many there are. The absmax has to see
 // the whole row before the first element can be quantized, so the kernel reads
-// `[T, K]`, reduces, then reads `[T, K]` again -- and at 256 rows per expert
-// the activation matrix is 1.0 MB for K = 2048, against 3.1 MB of weights for
+// `[T, K]`, reduces, then reads `[T, K]` again -- and at 384 rows per expert
+// the activation matrix is 1.5 MB for K = 2048, against 3.1 MB of weights for
 // the whole GEMM. The re-read is L2-resident when the row is still there, but
 // the rows a work-group quantizes second are evicted by the ones it quantized
 // first well before the pass ends: at 8 MB of L2 and 4 KB per bf16 row of
@@ -895,10 +895,11 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 // `sycl_tla_dense_gemm.hpp` uses on this exact accumulator shape.
 //
 // D is the reason this is worth doing at prefill sizes rather than a tidy-up:
-// at 256 rows per expert the qwen3 down-projection writes `M*N` fp16 (0.79 MB
-// per expert) against `N*K` int8 of weights (1.5 MB) -- a third of the tile
-// traffic -- because N (2048) is larger than K (768) there. It is the same
-// shape whose mainloop is shortest, so it pays the epilogue twice.
+// at 384 rows per expert the qwen3 down-projection writes `M*N` fp16 (1.5 MB
+// per expert) -- exactly as many bytes as the `N*K` int8 weights it reads,
+// because N (2048) is larger than K (768) there, and over a third of the
+// expert's traffic. It is the same shape whose mainloop is shortest, so it
+// pays the epilogue twice.
 //
 // The port follows `dense_gemm_detail::gemm_device_impl` rather than the
 // sibling MoE kernels, because those `reorder(tCrC, tCrC_out)` from the MMA

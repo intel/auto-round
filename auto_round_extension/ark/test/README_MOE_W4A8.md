@@ -341,10 +341,10 @@ is what every sibling prefill kernel already uses for D
 `sycl_tla_dense_gemm.hpp` uses on this exact accumulator shape.
 
 D is why this is worth doing at prefill sizes rather than as a tidy-up: at 384
-rows per expert the qwen3 down-projection writes 0.79 MB of fp16 per expert
-against 1.5 MB of int8 weights — a third of the tile traffic, because N (2048)
-is larger than K (768) there — and it is the same shape whose mainloop is
-shortest, so it pays the epilogue twice.
+rows per expert the qwen3 down-projection writes 1.5 MB of fp16 per expert —
+exactly as many bytes as the int8 weights it reads, because N (2048) is larger
+than K (768) there, and over a third of that expert's traffic — and it is the
+same shape whose mainloop is shortest, so it pays the epilogue twice.
 
 The port follows `dense_gemm_detail::gemm_device_impl` rather than the sibling
 MoE kernels. Those `reorder(tCrC, tCrC_out)` from the MMA fragment into an
