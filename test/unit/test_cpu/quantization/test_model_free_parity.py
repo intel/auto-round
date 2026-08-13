@@ -16,13 +16,13 @@
 
 The integer tests cover two behaviors. Plain RTN
 (``disable_opt_rtn=True``) is expected to be bit-exact between the model-free
-path and the regular RTN flow. Optimized RTN
-(``enable_opt_rtn=True`` / ``disable_opt_rtn=False``) is *not* expected to be
-bit-exact against the regular flow because the regular path uses calibration-
-time imatrix statistics. Instead, the optimized-RTN tests compare model-free
-optimized RTN against model-free plain RTN to confirm the optimized branch is
-actually exercised. The MXFP tests compare the AutoRound-format quantization
-metadata produced for a mixed MXFP4/MXFP8 AutoScheme. These tests assert that:
+path and the regular RTN flow.  Integer WOQ in model-free mode always uses
+plain RTN regardless of ``disable_opt_rtn``; opt_rtn is disabled for INT WOQ
+because it does not improve accuracy.  A dedicated test verifies that passing
+``disable_opt_rtn=False`` for INT WOQ still produces the same tensors as
+``disable_opt_rtn=True``.  The MXFP tests compare the AutoRound-format
+quantization metadata produced for a mixed MXFP4/MXFP8 AutoScheme.
+These tests assert that:
 
 1. The ``quantization_config`` keys ``bits``, ``group_size``, ``sym``,
    ``data_type`` (family), ``quant_method``, ``packing_format`` agree.
@@ -362,11 +362,12 @@ def test_plain_rtn_asymmetric_export_contract_parity(
 
 
 @pytest.mark.parametrize("scheme_name,scheme_preset,scheme_kwargs", _OPT_RTN_PARITY_SCHEMES)
-def test_model_free_opt_rtn_differs_from_plain_model_free(
+def test_model_free_int_opt_rtn_same_as_plain_rtn(
     tmp_path, tiny_opt_model_path, scheme_name, scheme_preset, scheme_kwargs
 ):
-    """``AutoRound(model_free=True, disable_opt_rtn=False)`` must exercise the
-    optimized model-free RTN branch rather than falling back to plain RTN.
+    """``AutoRound(model_free=True, disable_opt_rtn=False)`` for integer WOQ must
+    produce identical tensors to plain RTN (``disable_opt_rtn=True``), because
+    opt_rtn is always disabled for INT WOQ in model-free mode.
     """
     from auto_round import AutoRound
 
@@ -408,7 +409,7 @@ def test_model_free_opt_rtn_differs_from_plain_model_free(
     _, out_plain_rtn = plain_rtn.quantize_and_save(format=export_format, output_dir=out_plain_rtn)
 
     _assert_int_export_contract_parity(out_opt_rtn, out_plain_rtn)
-    _assert_int_tensor_difference(out_opt_rtn, out_plain_rtn)
+    _assert_int_tensor_parity(out_opt_rtn, out_plain_rtn)
 
 
 def test_auto_routing_to_model_free(tiny_opt_model_path):

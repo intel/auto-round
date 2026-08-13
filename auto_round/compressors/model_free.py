@@ -626,6 +626,8 @@ def _quantize_single_tensor(
             return layer_name, {tensor_name: tensor}, None, layer_name
 
     # ---- Integer WOQ path ----
+    # opt_rtn is always disabled for integer WOQ in model-free mode because
+    # the scale search does not improve accuracy for INT quantization here.
     try:
         qweight, qzeros, scales = quantize_func(
             weight=tensor,
@@ -633,7 +635,7 @@ def _quantize_single_tensor(
             group_size=group_size,
             sym=sym,
             device=device,
-            disable_opt_rtn=disable_opt_rtn,
+            disable_opt_rtn=True,
         )
 
         out: dict[str, torch.Tensor] = {
@@ -2490,19 +2492,18 @@ class _ModelFreeCompressorCore:
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         else:
             packing_format = "auto_round:auto_gptq"
-        if not self.disable_opt_rtn:
-            if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
+        if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
+            if not self.disable_opt_rtn:
                 logger.info(
                     "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
-                    "2x scale, and 0.5x scale independently for each group."
+                    "2x scale, and 0.5x scale independently for each group. "
                     "Pass --disable_opt_rtn to use plain RTN."
                 )
-            else:
-                logger.info(
-                    "Integer WOQ optimized RTN is enabled: using scale search "
-                    "(quant_tensor_opt_rtn_sym) for symmetric quantization. "
-                    "Pass --disable_opt_rtn to use plain RTN."
-                )
+        else:
+            logger.info(
+                "Integer WOQ model-free quantization uses plain RTN "
+                "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
+            )
 
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
