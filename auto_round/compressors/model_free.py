@@ -663,14 +663,257 @@ def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[t
         if name.endswith(".weight") and tensor.dtype == torch.float8_e4m3fn:
             layer_name = name[: -len(".weight")]
             scale_key = f"{layer_name}.weight_scale"
-            if scale_key in raw_tensors:
+            # MXFP scales are raw E8M0 bytes stored as uint8.
+            if scale_key in raw_tensors and raw_tensors[scale_key].dtype == torch.uint8:
                 entries.append((layer_name, name, scale_key, 8))
         elif name.endswith(".weight_packed") and tensor.dtype in (torch.int8, torch.uint8):
             layer_name = name[: -len(".weight_packed")]
             scale_key = f"{layer_name}.weight_scale"
-            if scale_key in raw_tensors:
+            # Guard against incorrectly detecting non-MXFP INT4 sources that also use
+            # ".weight_packed" + ".weight_scale" but with floating-point scales.
+            if scale_key in raw_tensors and raw_tensors[scale_key].dtype == torch.uint8:
                 entries.append((layer_name, name, scale_key, 4))
     return entries
+
+
+def _read_int_like(value: Any) -> int | None:
+    """Best-effort conversion for int-like config values."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        v = value.strip()
+        if v.isdigit() or (v.startswith("-") and v[1:].isdigit()):
+            return int(v)
+    return None
+
+
+def _read_bool_like(value: Any) -> bool | None:
+    """Best-effort conversion for bool-like config values."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "1", "yes"}:
+            return True
+        if v in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _resolve_kimi_k25_int4_params(source_quant_config: dict | None) -> tuple[int | None, bool]:
+    """Resolve default (group_size, sym) for kimi_k25 INT4 source dequant.
+
+    The source tensor shapes are still treated as the source of truth, while
+    config values are used as defaults or for logging consistency checks.
+    """
+    group_size: int | None = None
+    sym = True
+
+    if not isinstance(source_quant_config, dict):
+        return group_size, sym
+
+    candidates = [source_quant_config]
+    weights_cfg = source_quant_config.get("weights")
+    if isinstance(weights_cfg, dict):
+        candidates.append(weights_cfg)
+
+    for cfg in candidates:
+        if group_size is None:
+            for key in ("group_size", "weight_group_size"):
+                maybe = _read_int_like(cfg.get(key))
+                if maybe is not None and maybe > 0:
+                    group_size = maybe
+                    break
+
+        sym_val = _read_bool_like(cfg.get("sym"))
+        if sym_val is not None:
+            sym = sym_val
+
+        # Some configs store asymmetry as zero_point=True.
+        zp_val = _read_bool_like(cfg.get("zero_point"))
+        if zp_val is not None:
+            sym = not zp_val
+
+    return group_size, sym
+
+
+def _collect_kimi_k25_int4_source_entries(
+    raw_tensors: dict[str, torch.Tensor],
+) -> list[tuple[str, str, str, str | None]]:
+    """Collect kimi_k25 INT4 source tensors.
+
+    Expected source layout per layer:
+      * ``<layer>.weight_packed``: uint8/int8 packed 2x int4 values per byte
+      * ``<layer>.weight_scale``: floating-point per-group scales
+      * optional ``<layer>.weight_zero_point`` or ``<layer>.zero_point``
+    """
+    entries: list[tuple[str, str, str, str | None]] = []
+    for name, packed in raw_tensors.items():
+        if not name.endswith(".weight_packed"):
+            continue
+        if packed.dtype not in (torch.uint8, torch.int8):
+            continue
+
+        layer_name = name[: -len(".weight_packed")]
+        scale_key = f"{layer_name}.weight_scale"
+        if scale_key not in raw_tensors:
+            continue
+
+        scale = raw_tensors[scale_key]
+        if scale.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            continue
+        if packed.dim() != 2 or scale.dim() != 2:
+            continue
+
+        zp_key = None
+        for candidate in (f"{layer_name}.weight_zero_point", f"{layer_name}.zero_point"):
+            if candidate in raw_tensors:
+                zp_key = candidate
+                break
+
+        entries.append((layer_name, name, scale_key, zp_key))
+
+    return entries
+
+
+def _unpack_int4_weight_packed(packed: torch.Tensor) -> torch.Tensor:
+    """Unpack uint8/int8 ``[out, in/2]`` bytes into int16 ``[out, in]`` nibbles."""
+    packed_u8 = packed.view(torch.uint8)
+    lo = packed_u8 & 0x0F
+    hi = (packed_u8 >> 4) & 0x0F
+
+    out = torch.empty(
+        (packed_u8.shape[0], packed_u8.shape[1] * 2),
+        dtype=torch.int16,
+        device=packed_u8.device,
+    )
+    out[:, 0::2] = lo.to(torch.int16)
+    out[:, 1::2] = hi.to(torch.int16)
+    return out
+
+
+def _dequant_kimi_k25_int4_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    source_quant_config: dict | None = None,
+    device: str = "cpu",
+    shard_name: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Dequantize kimi_k25-style INT4 packed weights to bfloat16 ``.weight``.
+
+    This normalizes source tensors so the downstream model-free path can
+    requantize them into the requested target format (for example MXFP4).
+    """
+    entries = _collect_kimi_k25_int4_source_entries(raw_tensors)
+    if not entries:
+        return raw_tensors
+
+    default_group_size, default_sym = _resolve_kimi_k25_int4_params(source_quant_config)
+    dequant_device = str(device or "cpu")
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+    logger.info(
+        f"{shard_prefix}Dequantizing kimi_k25 INT4 tensor(s) to bfloat16 on {dequant_device}: " f"total={len(entries)}."
+    )
+
+    for layer_name, packed_key, scale_key, zp_key in entries:
+        packed = raw_tensors.pop(packed_key)
+        scale = raw_tensors.pop(scale_key)
+        zero = raw_tensors.pop(zp_key) if zp_key is not None else None
+
+        in_features = packed.shape[1] * 2
+        groups = scale.shape[1]
+        inferred_group_size = (in_features // groups) if groups > 0 and in_features % groups == 0 else None
+        group_size = inferred_group_size or default_group_size
+        if group_size is None or group_size <= 0:
+            raise ValueError(
+                f"Cannot resolve group_size for INT4 tensor '{layer_name}': "
+                f"packed_shape={tuple(packed.shape)}, scale_shape={tuple(scale.shape)}"
+            )
+        if in_features % group_size != 0:
+            raise ValueError(
+                f"Invalid group_size={group_size} for INT4 tensor '{layer_name}': "
+                f"in_features={in_features} is not divisible by group_size."
+            )
+
+        if (
+            inferred_group_size is not None
+            and default_group_size is not None
+            and inferred_group_size != default_group_size
+        ):
+            logger.warning(
+                f"{shard_prefix}k25 INT4 group_size mismatch for {layer_name}: "
+                f"config={default_group_size}, inferred={inferred_group_size}. "
+                "Using inferred value from tensor shapes."
+            )
+
+        n_groups = in_features // group_size
+        if scale.shape[1] != n_groups:
+            raise ValueError(
+                f"Scale shape mismatch for INT4 tensor '{layer_name}': "
+                f"scale.shape={tuple(scale.shape)}, expected second dim {n_groups}."
+            )
+
+        def _dequant_impl(target_device: str) -> torch.Tensor:
+            q = _unpack_int4_weight_packed(packed.to(target_device, non_blocking=True))
+            sc = scale.to(target_device, non_blocking=True).to(torch.float32)
+
+            if zero is not None:
+                zp = zero.to(target_device, non_blocking=True)
+                if zp.dim() == 2 and zp.shape == packed.shape and zp.dtype in (torch.int8, torch.uint8):
+                    zp = _unpack_int4_weight_packed(zp)
+                elif zp.dim() == 2 and zp.shape[1] != n_groups:
+                    raise ValueError(f"Unsupported zero-point shape for INT4 tensor '{layer_name}': {tuple(zp.shape)}")
+                if zp.dim() == 2 and zp.shape[1] == n_groups:
+                    zp = zp.to(torch.int16).repeat_interleave(group_size, dim=1)
+                zp = zp[:, : q.shape[1]].to(torch.int16)
+                q = q - zp
+            else:
+                if default_sym:
+                    q = torch.where(q >= 8, q - 16, q)
+                else:
+                    # Conservative fallback for asymmetric INT4 without explicit
+                    # zero-point tensor: recenter to [-8, 7].
+                    q = q - 8
+
+            sc = sc.repeat_interleave(group_size, dim=1)[:, : q.shape[1]]
+            return (q.to(torch.float32) * sc).to(torch.bfloat16)
+
+        dq_weight = _dequantize_with_device_fallback(
+            dequant_device=dequant_device,
+            shard_prefix=shard_prefix,
+            op_name="kimi_k25 INT4 dequant",
+            tensor_label=layer_name,
+            on_device=lambda: _dequant_impl(dequant_device).to("cpu"),
+            on_cpu=lambda: _dequant_impl("cpu"),
+        )
+        raw_tensors[f"{layer_name}.weight"] = dq_weight
+
+    return raw_tensors
+
+
+def _handle_model_type_low_precision_source_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    model_type: str | None,
+    source_quant_config: dict | None = None,
+    device: str = "cpu",
+    shard_name: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Handle model-type-specific low-precision source tensors.
+
+    Currently supports:
+      * ``model_type='kimi_k25'`` INT4 packed tensors.
+    """
+    if (model_type or "").lower() == "kimi_k25":
+        return _dequant_kimi_k25_int4_tensors(
+            raw_tensors,
+            source_quant_config=source_quant_config,
+            device=device,
+            shard_name=shard_name,
+        )
+    return raw_tensors
 
 
 def _is_out_of_memory_error(exc: Exception) -> bool:
@@ -929,6 +1172,7 @@ def _process_shard(
     matcher: "_PatternMatcher | None" = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
+    source_quant_config: dict | None = None,
     enable_torch_compile: bool = False,
     disable_opt_rtn: bool = False,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
@@ -1005,6 +1249,15 @@ def _process_shard(
 
     # 1) model-type-specific preprocessing (format conversion only)
     raw_tensors, source_state = _preprocess_model_type_source_tensors(raw_tensors, model_type=model_type)
+
+    # 1.5) model-type-specific low-precision dequantization (e.g. kimi_k25 INT4)
+    raw_tensors = _handle_model_type_low_precision_source_tensors(
+        raw_tensors,
+        model_type=model_type,
+        source_quant_config=source_quant_config,
+        device=device,
+        shard_name=shard_name,
+    )
 
     # 2) generic MXFP handling for both preprocessed and normal source models
     raw_tensors, passthrough_tensors, passthrough_layers = _handle_mxfp_source_tensors(
@@ -1558,6 +1811,7 @@ def _process_single_shard_task(
     ignore_patterns: list[str],
     fp8_block_size: list | None,
     model_type: str | None,
+    source_quant_config: dict | None,
     quant_output_dir: str,
     total_shards: int,
     enable_torch_compile: bool = False,
@@ -1587,6 +1841,7 @@ def _process_single_shard_task(
         device=device,
         fp8_block_size=fp8_block_size,
         model_type=model_type,
+        source_quant_config=source_quant_config,
         enable_torch_compile=enable_torch_compile,
         disable_opt_rtn=disable_opt_rtn,
     )
@@ -2297,6 +2552,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
+                        source_quant_config=self.config.get("quantization_config"),
                         enable_torch_compile=self.enable_torch_compile,
                         disable_opt_rtn=self.disable_opt_rtn,
                         quant_output_dir=self._quant_output_dir,
