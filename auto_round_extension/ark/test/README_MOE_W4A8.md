@@ -299,8 +299,9 @@ With `grf_size<256>` a lane has 256 registers, so at `128x128` the float shadow
 alone reserved a quarter of the register file for the whole mainloop, and at
 `128x256` the two fragments together *are* the register file — leaving nothing
 for the staged A/B tiles. That was the 35–50% penalty the 256-wide tiles used to
-pay in [Tuned defaults](#tuned-defaults-measured); with the shadow gone the whole
-tile table fits in a 0–8% band. At the default re-scale block the shadow was pure
+pay in [Tuned defaults](#tuned-defaults-measured); with the shadow gone — and
+with the epilogue's scalar store gone after it — the 256-wide tiles are now the
+ladder's default choice. At the default re-scale block the shadow was pure
 overhead: `blks == 1` (the AUTO_S8 `group=-1` default) has nothing to
 carry across blocks, so the scale can be folded on the way out instead. That
 path now runs without the float fragment, and applies
@@ -581,100 +582,140 @@ B60, cache the layers that are prefill-bound and leave the rest on
 
 ## Tuned defaults (measured)
 
-The defaults below come from one `-k sweep` run on the Arc Pro B60 above (bf16
-activations, 8 routed rows for decode, 256 rows/expert for prefill). Every
-configuration is checked for numerical equivalence with the first one before it
-is timed.
+Every default below comes from `-k sweep` runs on the Arc Pro B60 above (bf16
+activations, 8 routed rows for decode, **384 rows/expert** for prefill — the
+compute-bound batch the suite uses). Each configuration is checked for numerical
+equivalence with the first one before it is timed.
 
-Two defaults are *not* in this section because they have not been measured yet:
-`ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` and `ARK_MOE_W4A8_PREFILL_STORE_2D` are
-both on, on reasoning alone. `test_perf_prefill_act_quant_single_pass_sweep` and
-`test_perf_prefill_store_sweep` are the runs that fill them in; see
-[Status](#status).
+Nothing in the prefill path is unmeasured any more: the single-pass quantizer
+and the 2D block store, which used to be on by reasoning alone, both have their
+own tables below.
+
+**Reading the tables — the noise floor is ~4%.** The unroll sweep times three
+shapes whose K puts them on the single-pass quantizer, where `UNROLL` is dead
+code, so those rows are three sets of *identical* kernels: they spread 0.4%,
+2.1% and 3.9%. Treat anything below ~4% as run-to-run variation.
 
 ### Prefill tile
 
-| shape | `128x128` | `256x128` | `128x256` | `256x256` |
+| shape | `128x128` | `128x256` | `256x128` | `256x256` |
 |---|---|---|---|---|
-| qwen3 up | 2.774 ms | **2.719 ms** | 2.809 ms | 2.808 ms |
-| qwen3 down | 1.904 ms | **1.829 ms** | 2.041 ms | 2.058 ms |
-| minimax up | 5.584 ms | 5.595 ms | 5.694 ms | **5.477 ms** |
-| minimax down | 5.681 ms | 5.605 ms | **5.541 ms** | 5.662 ms |
+| qwen3 up | **3.457 ms** | 3.507 ms | 4.507 ms | 3.952 ms |
+| qwen3 down | 2.512 ms | **2.488 ms** | 2.777 ms | 2.696 ms |
+| minimax up | **6.940 ms** | 6.978 ms | 8.895 ms | 8.111 ms |
+| minimax down | 7.255 ms | **6.710 ms** | 9.166 ms | 7.779 ms |
 
-The spread across the whole table is now 0–8%. It used to be 35–50%, and the
-cliff was not the tile shape: the mainloop kept a float shadow of the C fragment
-live next to the int32 one, so `TileN = 256` asked for 128 + 128 registers per
-SIMD16 lane — the entire large-GRF file. With the shadow gone (see
-[Prefill: message width and register pressure](#prefill-message-width-and-register-pressure))
-the 256-wide N tiles are merely a few percent behind, which is what a 32×64 C
-fragment per sub-group (`SGLayout` is 4 wide in every policy) costs in
-occupancy rather than in spills.
+**M is about padding, not registers.** An expert launches `ceil(M / TileM)`
+*full* tiles, so at 384 rows/expert the 256-row tile schedules 512 rows for 384
+rows of data — a third of the MACs spent on nothing — against exactly three
+128-row tiles. That is the whole 1.11–1.30× deficit in the `256x*` columns: on
+the two long-K shapes, where the mainloop dominates, the measured ratio (1.30×
+qwen3 up, 1.28× minimax up) *is* the padding ratio 512/384 = 1.33 to within
+noise. It is not an argument against `TileM = 256` — the earlier run at 256
+rows/expert, where the tile divides the rows exactly, had it 1.3–3.9% ahead on
+all four shapes.
 
-`TileM = 256` is the direction that pays. It keeps the per-lane fragment at
-32×32 because `SGLayout` grows to 8×4 instead, while halving how often the
-expert's B panel is re-read: per-expert tile traffic is
-`M·K·⌈N/TileN⌉ + N·K·⌈M/TileM⌉`. It is now at least as fast as `128x128` on
-**all four** shapes — +2.0% (qwen3 up), +3.9% (qwen3 down), +1.3% (minimax
-down), −0.2% (minimax up).
+So the rung is gated on padding rather than on a row count: take the 256-row
+tile only where `ceil(M/256)·256 == ceil(M/128)·128`, i.e. where it launches no
+more rows than the 128-row tile would. True at 256, 400, 512, 2048; false at
+384, which is exactly the batch that used to fall off the cliff.
 
-The ladder therefore is: `< 16` rows/expert → `8x128`, `< 128` → `64x128`,
-`≥ 256` → **`256x128`**, otherwise `128x128`. All six policies stay compiled and
-selectable with `ARK_MOE_W4A8_PREFILL_TILE`.
+**N is now free.** The 256-wide tile is ahead or level everywhere the table can
+compare it: at `TileM = 128` it takes minimax down by 1.08× and ties the other
+three (within 1.4% either way), and at `TileM = 256` it takes all four, by
+2.9–15.1%. The 35–50% cliff the first sweep saw on 256-wide N tiles was the
+float C shadow (see
+[Prefill: message width and register pressure](#prefill-message-width-and-register-pressure));
+what was left of it in the second sweep — 0–8% behind on three shapes — was
+measured with the *scalar* epilogue store, and it disappears now that a 32×64
+fragment goes out in a handful of block messages instead of 128 scalar ones. So
+the ladder is 256 wide wherever `N % 256 == 0` (every shipped N: 1536 / 2048 /
+3072), and 128 wide otherwise, where the wider tile would only pad.
 
-The `≥ 256` rung used to carry a second condition, `N ≥ K`, because the first
-sweep had the two up-projections at +0.2% / −2.4%. That gate is gone: this run
-disagrees with it by more than the noise floor below, so it was fitting a
-measurement rather than the hardware.
+The ladder therefore is: `< 16` rows/expert → `8x128`, `< 128` → `64x128`, then
+`256x256` / `256x128` when the 256-row tile costs no extra padding and
+`128x256` / `128x128` when it does — the N choice being `N % 256 == 0` in both
+cases. All six policies stay compiled and selectable with
+`ARK_MOE_W4A8_PREFILL_TILE`.
 
-Two caveats on reading the table. "tile auto" and the explicit row it resolves
-to run the same kernel yet differ by up to 9% (2.007 vs 1.829 ms on qwen3
-down), so anything under ~5–9% here is inside run-to-run noise — including the
-one row where `256x256` leads. The rung is therefore taken on the sign of the
-effect across shapes, not on any single shape's margin. And the ladder's
-rows/expert threshold is compared against `total_tokens / E`, the *average*, so
-a skewed routing that averages 256 rows can still leave many experts with ragged
-256-row tiles.
+At the ladder's choice the four swept shapes land on 3.507 / 2.488 / 6.978 /
+6.710 ms — 88.2 / 62.1 / 99.7 / 103.7 TFLOPS, against 69.9 / 52.7 / 76.9 / 75.5
+for the ladder as it was (1.26× / 1.18× / 1.30× / 1.37×), and within 1.4% of the
+fastest tile on every shape. Three of the four now clear the 100 TFLOPS target
+or sit within 1%; qwen3 down is still the outlier at 62 TFLOPS, because at
+`K = 768` a tile runs only 12 k-tiles and the epilogue and prologue are a large
+share of it.
 
-At the chosen tile the swept shapes reach 75.8 / 56.4 / 82.9 / 82.8 TFLOPS
-(qwen3 up / down, minimax up / down) — 39% / 29% / 42% / 42% of the B60's
-~197 TOPS of int8 peak, up from 61.1 / 39.4 / 68.8 / 65.3 before the C-shadow
-removal and the vectorized activation quantizer, but qwen3 down is still short
-of the 100 TFLOPS target (51% of peak): at `K = 768` a tile runs only 12
-k-tiles, so the epilogue and the prologue are a large share of it.
+One caveat that has not changed: the ladder compares `total_tokens / E`, the
+*average* rows/expert, so a skewed routing that averages 384 can still leave
+individual experts with very different tile counts.
 
 ### Prefill activation quantization
 
 | shape | scalar | vectorized (default) | speedup |
 |---|---|---|---|
-| qwen3 up | 3.040 ms | **2.699 ms** | 1.13× |
-| qwen3 down | 2.088 ms | **1.824 ms** | 1.14× |
-| minimax up | 6.269 ms | **5.623 ms** | 1.12× |
-| minimax down | 5.965 ms | **5.716 ms** | 1.04× |
+| qwen3 up | 4.806 ms | **4.574 ms** | 1.05× |
+| qwen3 down | 3.120 ms | **2.769 ms** | 1.13× |
+| minimax up | 9.959 ms | **8.981 ms** | 1.11× |
+| minimax down | 9.581 ms | **9.221 ms** | 1.04× |
 
 Quantizing the routed activations is a streaming pass over `[T, K]` next to a
-GEMM that already moves ~400 MB, and it is worth 4–14% of the whole call purely
+GEMM that already moves ~400 MB, and it is worth 4–13% of the whole call purely
 by issuing 256-byte loads and 128-byte stores instead of 32-byte and 16-byte
 ones. `ARK_MOE_W4A8_ACT_QUANT_VEC=0` restores the scalar mapping.
 
 How many of those wide loads a work-item keeps *outstanding* is the separate
-knob `ARK_MOE_W4A8_ACT_QUANT_UNROLL` (1 = the mapping as measured above, 2, or
-4 = default); `test_perf_prefill_act_quant_unroll_sweep` times it and the row
-above is its `unroll 1` baseline.
+knob `ARK_MOE_W4A8_ACT_QUANT_UNROLL` (1, 2, or 4 = default). Only minimax up is
+a real A/B for it — the other three shapes take the single-pass kernel below,
+where `UNROLL` is dead code — and there the default wins: **8.959 ms** at 4,
+8.967 ms at 2, 9.139 ms at 1.
+
+### Prefill single-pass activation quantization
+
+| shape | K | two-pass | single-pass (default) | speedup |
+|---|---|---|---|---|
+| qwen3 up | 2048 | 4.455 ms | **4.416 ms** | 1.01× |
+| qwen3 down | 768 | 2.836 ms | **2.694 ms** | 1.05× |
+| minimax down | 1536 | **9.232 ms** | 9.244 ms | 1.00× |
+| minimax up | 3072 | 8.991 ms | 8.962 ms | — (not eligible) |
+
+This was the one change with real downside risk: the row is held in registers
+between the absmax and the quantize pass, and a spill would have made the pass
+slower rather than faster. It does not spill. minimax up's `K = 3072` is past
+the 16-vector rung, so both of its rows run the same two-pass kernel and their
+0.3% gap is noise.
+
+### Prefill store
+
+| shape | scalar store | 2D block store (default) | speedup |
+|---|---|---|---|
+| qwen3 up | 5.111 ms | **4.388 ms** | 1.16× |
+| qwen3 down | 3.603 ms | **2.669 ms** | 1.35× |
+| minimax up | 9.604 ms | **8.570 ms** | 1.12× |
+| minimax down | 10.837 ms | **9.048 ms** | 1.20× |
+
+The largest single prefill win of the set, and it is the epilogue rather than
+the mainloop: a 32×32 sub-group fragment goes out in a handful of block messages
+instead of 64 half-cache-line scalar ones. The ordering follows the argument —
+qwen3 down, whose 12-k-tile mainloop amortizes the epilogue least and whose D is
+as large as its weights, gains the most.
 
 ### Prefill epilogue guard
 
 | shape | guarded | interior-tile (default) | speedup |
 |---|---|---|---|
-| qwen3 up | 2.774 ms | **2.634 ms** | 1.05× |
-| qwen3 down | 2.214 ms | **1.924 ms** | 1.15× |
-| minimax up | 5.884 ms | **5.785 ms** | 1.02× |
-| minimax down | 5.968 ms | **5.700 ms** | 1.05× |
+| qwen3 up | **4.428 ms** | 4.466 ms | 0.99× |
+| qwen3 down | 2.840 ms | **2.625 ms** | 1.08× |
+| minimax up | 8.971 ms | **8.794 ms** | 1.02× |
+| minimax down | **8.990 ms** | 9.020 ms | 1.00× |
 
 The mainloop is identical in both columns; only the store differs, so this is
 the cost of ~4 instructions per output element. It is largest exactly where the
 mainloop is shortest — qwen3 down runs 12 k-tiles per tile at `K = 768` — which
-is the shape the ordering argument predicted. `ARK_MOE_W4A8_PREFILL_FULL_TILE=0`
-restores the guarded epilogue; the two are bit-identical.
+is the shape the ordering argument predicted, and the two rows that come out
+behind do so by 0.9% and 0.3%, inside the noise floor.
+`ARK_MOE_W4A8_PREFILL_FULL_TILE=0` restores the guarded epilogue; the two are
+bit-identical.
 
 ### Decode chunk width and column blocking
 
@@ -705,12 +746,12 @@ nothing else, so the remaining gap is message efficiency, not arithmetic.
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | Coalesced K-split decode mapping; **on by default**. Set to `0` to fall back to the original one-work-item-per-output GEMV (useful for A/B measurements). Ignored when the shape doesn't qualify. |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. `2` is the measured default, see [Tuned defaults](#tuned-defaults-measured). |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | K elements (= bytes) a lane loads per chunk: `16` (default) or `32`. `32` halves the number of memory messages and doubles the bytes a thread keeps in flight, at the cost of GRF; it needs a re-scale block of at least 512 and silently falls back to `16` otherwise. Measured slower than `16` on every swept shape, so it is a sweep point rather than a recommendation. |
-| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder, which picks `256x128` at ≥ 256 rows/expert and `128x128` otherwise (see [Tuned defaults](#tuned-defaults-measured)). The whole table is now within 0–8%, so this is a re-tuning knob rather than a cliff. |
-| `ARK_MOE_W4A8_ACT_QUANT_VEC` | Vectorized per-token activation quantization (each lane owns 4 or 8 consecutive K elements instead of striding by the sub-group width); **on by default**, worth 1.04–1.14× on the swept shapes. Set to `0` to force the scalar mapping for A/B measurement. Ignored when K or the buffer alignment doesn't qualify, in which case the scalar kernel runs anyway. |
-| `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | Vectors the activation quantizer loads before it consumes any of them: `1`, `2` or `4` (default). Higher values raise the bytes a work-item keeps in flight — the pass is latency-bound, not bandwidth-bound, at one outstanding load per thread — at the cost of GRF. `1` is the kernel as it was before the batching, so it is the A/B baseline; every value is bit-identical. Values outside `{1, 2, 4}` fall back to the default. Only applies to the vectorized mapping. |
-| `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | Keep the activation row in registers between the absmax and the quantize pass instead of reading `[T, K]` twice; **on by default** where the row fits (`K ≤ 2048` at `VEC = 8`, 64 of the 128 dwords a lane gets). Set to `0` to force the two-pass kernel, which is also what runs for longer rows. Bit-identical to it. Not yet measured on hardware — if the register array spills, this is a slowdown, and the sweep is what decides. |
-| `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth 1.02–1.15× on the swept shapes. The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
-| `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape). Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Not yet measured on hardware. |
+| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder: `< 16` rows/expert → `8x128`, `< 128` → `64x128`, then the 256-row tile when it pads no further than the 128-row one would (`⌈M/256⌉·256 == ⌈M/128⌉·128`) and the 128-row tile otherwise, each 256 wide in N when `N % 256 == 0` (see [Tuned defaults](#tuned-defaults-measured)). Forcing a tile the ladder would not pick costs up to 1.30× at 384 rows/expert. |
+| `ARK_MOE_W4A8_ACT_QUANT_VEC` | Vectorized per-token activation quantization (each lane owns 4 or 8 consecutive K elements instead of striding by the sub-group width); **on by default**, worth 1.04–1.13× on the swept shapes. Set to `0` to force the scalar mapping for A/B measurement. Ignored when K or the buffer alignment doesn't qualify, in which case the scalar kernel runs anyway. |
+| `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | Vectors the activation quantizer loads before it consumes any of them: `1`, `2` or `4` (default, measured fastest). Higher values raise the bytes a work-item keeps in flight — the pass is latency-bound, not bandwidth-bound, at one outstanding load per thread — at the cost of GRF. `1` is the kernel as it was before the batching, so it is the A/B baseline; every value is bit-identical. Values outside `{1, 2, 4}` fall back to the default. Only applies to the vectorized *two-pass* mapping: the single-pass kernel below issues the whole row at once and ignores this. |
+| `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | Keep the activation row in registers between the absmax and the quantize pass instead of reading `[T, K]` twice; **on by default** where the row fits (`K ≤ 2048` at `VEC = 8`, 64 of the 128 dwords a lane gets), worth 1.00–1.05× on the shapes that qualify. Set to `0` to force the two-pass kernel, which is also what runs for longer rows. Bit-identical to it. |
+| `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth up to 1.08× on the swept shapes (and never more than 0.9% behind). The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
+| `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. |
 
 ## Shape constraints
 
@@ -731,45 +772,45 @@ failing.
 
 The W4A8 kernel is a new SYCL/CuTe port, marked
 `STATUS: PARTIALLY HARDWARE-VALIDATED` in
-`auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. The perf sweeps have
-been run on an Intel Arc Pro B60 — that run is where the tile ladder, the
-activation-quantization default, the interior-tile epilogue and the decode
-`CH` / `NCOLS` defaults come from (see
-[Tuned defaults](#tuned-defaults-measured)) — and every swept
-configuration passed the cross-configuration equivalence check.
-`test_act_quant_vec_matches_scalar`, `test_full_tile_epilogue_matches_predicated`
-and `test_decode_ksplit_matches_legacy` pass on device, so the vectorized
-activation quantizer, the interior-tile epilogue and the K-split decode mapping
-are each checked against their predecessors as well as timed.
+`auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. Every perf sweep has
+been run on an Intel Arc Pro B60, and **every** dispatch default now comes from
+those runs — the tile ladder, the activation quantizer's message width, unroll
+depth and single-pass rung, the interior-tile epilogue, the 2D block store, and
+the decode `CH` / `NCOLS` (see [Tuned defaults](#tuned-defaults-measured)).
+Every swept configuration also passed the cross-configuration equivalence check,
+and all six bit-identity tests — `test_act_quant_vec_matches_scalar`,
+`test_act_quant_unroll_matches`, `test_act_quant_single_pass_matches`,
+`test_full_tile_epilogue_matches_predicated`,
+`test_prefill_2d_store_matches_scalar` and `test_decode_ksplit_matches_legacy` —
+pass on device, so each optimization is checked against its predecessor as well
+as timed.
 
 Still to run on device: the accuracy sweep against the fp32 reference, which
 will catch layout/scale bugs immediately.
 
-Three prefill changes have been reasoned through but neither timed nor run,
-because the authoring environment has no XPU and no SYCL compiler. Each keeps
-its predecessor one environment variable away, and each has a bit-identity test
-that runs on device:
+Three prefill changes used to be listed here as reasoned-through but unmeasured,
+because the authoring environment has no XPU and no SYCL compiler. All three
+have now been timed, and all three kept their default:
 
-| Change | Revert with | Device checks |
+| Change | Revert with | Measured |
 |---|---|---|
-| Activation quantizer's batched loads — `UNROLL` vectors in flight instead of one | `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` | `test_act_quant_unroll_matches`, `test_perf_prefill_act_quant_unroll_sweep` |
-| Single-pass activation quantizer — the row stays in registers, so `[T, K]` is read once instead of twice | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | `test_act_quant_single_pass_matches`, `test_perf_prefill_act_quant_single_pass_sweep` |
-| 2D block store for D — a handful of block messages instead of 64 scalar 32-byte ones per sub-group fragment | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | `test_prefill_2d_store_matches_scalar`, `test_perf_prefill_store_sweep` |
+| Activation quantizer's batched loads — `UNROLL` vectors in flight instead of one | `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` | 1.02× at `UNROLL = 4` on the only shape that exercises it |
+| Single-pass activation quantizer — the row stays in registers, so `[T, K]` is read once instead of twice | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | 1.00–1.05×; the register-resident row does not spill |
+| 2D block store for D — a handful of block messages instead of 64 scalar 32-byte ones per sub-group fragment | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.12–1.35×, the largest single prefill win |
 
-The 2D store was previously listed here as needing a device rather than a flag,
-on the grounds that the sibling MoE kernels reach it through
+The 2D store was previously listed as needing a device rather than a flag, on
+the grounds that the sibling MoE kernels reach it through
 `partition_sg_fragment_S` + `reorder` and no sibling 2D-stores a *scaled int32*
 accumulator. That turned out to be the wrong reference: `reorder` moves
 registers and does not convert, so it could never have carried an int32→fp16
 epilogue. `sycl_tla_dense_gemm.hpp` — in the same translation unit — already
 compiles the sequence that does (`make_block_2d_copy_D(mma, D)` +
 `make_tensor_like<ElementD>(tCrC)` + `copy(copy_d, tCrD, tCgC)`, with a 32-bit
-accumulator and a 16-bit output), so the port is a pure-C++ change after all.
+accumulator and a 16-bit output), so the port was a pure-C++ change after all.
 
-The single-pass quantizer is the one with a real downside risk: if the
-register-resident row spills, the pass gets slower rather than faster, and only
-`test_perf_prefill_act_quant_single_pass_sweep` can say which. Flip the default
-in `launch_act_dynamic_quant_vec_unroll` if it does.
+The single-pass quantizer was the one with a real downside risk — a spilled
+register-resident row makes the pass slower rather than faster — and the sweep
+settled it in its favour on every shape that takes it.
 
 What the sweeps should be read against has also changed. The prefill roofline in
 this document used to count weight bytes only, which understated the bandwidth
