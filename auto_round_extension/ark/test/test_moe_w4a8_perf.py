@@ -504,23 +504,43 @@ def _weight_bytes(E, N, K, bits) -> float:
     return float(E) * N * K * bits / 8.0
 
 
+def _dtype_bytes(dtype) -> int:
+    return torch.empty((), dtype=dtype).element_size()
+
+
 # ---------------------------------------------------------------------------
 # Targets and the roofline they have to be read against
 #
-# A W4A8 MoE grouped GEMM reads every *active* expert's int8 weights exactly
-# once (1 byte per element) and does ``2 * rows_per_expert`` FLOPs per weight
-# byte, so its arithmetic intensity is fixed by the routing alone:
+# The weights are the largest single stream, but they are not the only one. A
+# W4A8 MoE call moves, per invocation:
 #
-#     TFLOPS <= 2 * rows_per_expert * weight_bandwidth
+#   * ``T * K * sizeof(act)``  -- the routed activations, read by the quantizer
+#   * ``T * K``                -- the int8 quantized copy, written
+#   * ``T * K``                -- and read back by the GEMM
+#   * ``E_active * N * K``     -- every active expert's int8 weights, once
+#   * ``T * N * sizeof(out)``  -- the output
 #
-# Equivalently, the DRAM bandwidth a shape would need to reach the prefill
-# target is ``_bw_needed_for_tflops``: ``50 TB/s / rows_per_expert`` for the
-# 100 TFLOPS goal. At 8 rows per expert (batch 128 x top_k 8 over 128 experts)
-# that is 6.25 TB/s -- more than an order of magnitude past any current GPU --
-# so the 100 TFLOPS target only becomes physically reachable from roughly 176
-# rows per expert upward on a device that streams ~285 GB/s. This is why the
-# perf table prints ``rows/E`` and ``BW@target`` next to the measured numbers,
-# and why the prefill target sweep uses a compute-bound batch.
+# Only the fourth line is what ``W GB/s`` reports, and it is a *minority* of
+# the total whenever K is small: at 256 rows per expert the qwen3
+# down-projection (N = 2048, K = 768) moves 201 MB of weights inside 436 MB of
+# traffic, so a roofline built on weights alone understates the bandwidth a
+# shape needs by more than 2x. This matters for the verdict, not just the
+# bookkeeping: that shape needs ~423 GB/s to reach 100 TFLOPS, which is past
+# what a 456 GB/s part delivers in practice, so it is bandwidth bound and no
+# kernel change reaches the target there.
+#
+# The old model -- ``TFLOPS <= 2 * rows_per_expert * weight_bandwidth``, i.e.
+# ``BW@100T = 50 TB/s / rows_per_expert`` -- is the weights-only special case
+# and is what the earlier tuning rounds were judged against. It is kept in mind
+# here only as the reason those rounds read as "close to target": the target
+# was measured against half the traffic.
+#
+# The intensity still rises with ``rows/E`` (the weight term is the only one
+# that does not grow with T), which is why the perf table prints ``rows/E`` and
+# why the prefill target sweep uses a compute-bound batch -- but the ceiling
+# now saturates instead of growing without bound, because the activation,
+# quantized-activation and output streams all scale with T exactly as the
+# FLOPs do.
 # ---------------------------------------------------------------------------
 
 _TARGET_PREFILL_TFLOPS = 100.0
@@ -531,21 +551,38 @@ def _rows_per_expert(total_tokens, active_experts) -> float:
     return float(total_tokens) / float(active_experts) if active_experts else 0.0
 
 
-def _bw_needed_for_tflops(total_tokens, active_experts, tflops_target=_TARGET_PREFILL_TFLOPS) -> float:
-    """GB/s of weight traffic a shape needs to hit ``tflops_target``.
+def _traffic_bytes(total_tokens, active_experts, N, K, act_bytes=2, out_bytes=2) -> float:
+    """Compulsory DRAM traffic of one ``moe_gemm_w4a8`` call, in bytes.
 
-    ``bytes / (flops / target) = target * active_experts / (2 * rows)`` -- the
-    N/K factors cancel, so this depends only on the routing.
+    Counts each byte once: re-reads of A across the N tiles are L2 hits at any
+    launch this kernel produces (~20 concurrent work-groups against 8 MB of
+    L2), so they are not DRAM traffic. This is a lower bound, which keeps the
+    derived ceiling optimistic and therefore never excuses a slow kernel.
     """
-    rows = _rows_per_expert(total_tokens, active_experts)
-    if rows <= 0.0:
+    act_read = float(total_tokens) * K * act_bytes
+    qact_write_read = 2.0 * float(total_tokens) * K
+    weights = float(active_experts) * N * K
+    out_write = float(total_tokens) * N * out_bytes
+    return act_read + qact_write_read + weights + out_write
+
+
+def _bw_needed_for_tflops(
+    total_tokens, active_experts, N, K, act_bytes=2, out_bytes=2, tflops_target=_TARGET_PREFILL_TFLOPS
+) -> float:
+    """GB/s of DRAM traffic a shape needs to hit ``tflops_target``."""
+    flops = _flops(total_tokens, N, K)
+    if flops <= 0.0:
         return float("inf")
-    return tflops_target * 1e12 / (2.0 * rows) / 1e9
+    seconds_at_target = flops / (tflops_target * 1e12)
+    return _traffic_bytes(total_tokens, active_experts, N, K, act_bytes, out_bytes) / seconds_at_target / 1e9
 
 
-def _tflops_ceiling(total_tokens, active_experts, gbps) -> float:
-    """Best TFLOPS this shape can reach at ``gbps`` of weight bandwidth."""
-    return 2.0 * _rows_per_expert(total_tokens, active_experts) * gbps * 1e9 / 1e12
+def _tflops_ceiling(total_tokens, active_experts, N, K, gbps, act_bytes=2, out_bytes=2) -> float:
+    """Best TFLOPS this shape can reach at ``gbps`` of DRAM bandwidth."""
+    traffic = _traffic_bytes(total_tokens, active_experts, N, K, act_bytes, out_bytes)
+    if traffic <= 0.0:
+        return float("inf")
+    return _flops(total_tokens, N, K) / (traffic / (gbps * 1e9)) / 1e12
 
 
 _DEVICE_BW_GBPS = None
@@ -591,7 +628,7 @@ def _device_bandwidth_gbps():
 # ---------------------------------------------------------------------------
 
 _ACC_WIDTH = 150
-_PERF_WIDTH = 168
+_PERF_WIDTH = 179
 
 
 def _print_acc_header(title: str) -> None:
@@ -639,10 +676,14 @@ def _print_perf_header(title: str) -> None:
     * ``w4a8(ms)`` / ``TFLOPS`` / ``W GB/s``: the new int8-compute path.
       ``W GB/s`` counts only the expert weight traffic actually touched by
       the routed tokens, which is what a memory-bound decode is limited by.
-    * ``rows/E``: routed tokens per active expert -- the arithmetic intensity
-      of the grouped GEMM is ``2 * rows/E`` FLOPs per weight byte, so this
-      single number decides whether a shape can be compute bound at all.
-    * ``BW@100T``: weight bandwidth the shape would need to reach 100 TFLOPS.
+    * ``DRAM GB/s``: *all* the traffic the call moves -- the activations the
+      quantizer reads, the int8 copy it writes, the GEMM's read of that copy,
+      the weights and the output. On the small-K shapes the weights are under
+      half of this, so it is the number to compare against the device probe.
+    * ``rows/E``: routed tokens per active expert. The weight stream is the
+      only one that does not grow with the token count, so this is what raises
+      the arithmetic intensity -- but the other four streams keep it bounded.
+    * ``BW@100T``: DRAM bandwidth the shape would need to reach 100 TFLOPS.
       When it exceeds what the device can stream, ``TFLOPS`` is capped by
       memory and no kernel change can reach the target at that shape.
     * ``vs torch`` / ``vs w4a16``: speedups (``other / w4a8``).
@@ -653,13 +694,27 @@ def _print_perf_header(title: str) -> None:
     print(
         f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'rows/E':>8}"
         f"{'torch(ms)':>12}{'w4a16(ms)':>12}{'w4a8(ms)':>12}"
-        f"{'TFLOPS':>10}{'W GB/s':>10}{'BW@100T':>10}{'vs torch':>11}{'vs w4a16':>11}{'prepack(ms)':>13}"
+        f"{'TFLOPS':>10}{'W GB/s':>10}{'DRAM GB/s':>11}{'BW@100T':>10}"
+        f"{'vs torch':>11}{'vs w4a16':>11}{'prepack(ms)':>13}"
     )
     print("-" * _PERF_WIDTH)
 
 
 def _print_perf_row(
-    label, E, N, K, tokens, torch_ms, w4a16_ms, w4a8_ms, tflops, gbps, prepack_ms, rows_per_expert=None, bw_at_100t=None
+    label,
+    E,
+    N,
+    K,
+    tokens,
+    torch_ms,
+    w4a16_ms,
+    w4a8_ms,
+    tflops,
+    gbps,
+    prepack_ms,
+    rows_per_expert=None,
+    bw_at_100t=None,
+    dram_gbps=None,
 ):
     def _fmt(v, digits=3):
         if v is None:
@@ -673,7 +728,7 @@ def _print_perf_row(
     print(
         f"{label:<14}{E:>5}{N:>7}{K:>7}{tokens:>8}{_fmt(rows_per_expert, 1):>8}"
         f"{_fmt(torch_ms):>12}{_fmt(w4a16_ms):>12}{_fmt(w4a8_ms):>12}"
-        f"{_fmt(tflops, 2):>10}{_fmt(gbps, 1):>10}{_fmt(bw_at_100t, 0):>10}"
+        f"{_fmt(tflops, 2):>10}{_fmt(gbps, 1):>10}{_fmt(dram_gbps, 1):>11}{_fmt(bw_at_100t, 0):>10}"
         f"{(_fmt(vs_torch, 2) + 'x') if vs_torch else '--':>11}"
         f"{(_fmt(vs_w4a16, 2) + 'x') if vs_w4a16 else '--':>11}"
         f"{_fmt(prepack_ms, 2):>13}"
@@ -688,6 +743,11 @@ def _print_targets(phase: str, rows) -> None:
     ``N/A`` rather than ``FAIL``: at that routing the target is unreachable by
     construction (see the roofline note above ``_TARGET_PREFILL_TFLOPS``), and
     the row's measured bandwidth is what should be judged instead.
+
+    The ceiling counts every stream the call moves, not just the weights, so a
+    small-K shape can be ``N/A`` here while the weights-only model of earlier
+    rounds called it reachable. A reachable row also prints how much of the
+    ceiling it actually reaches, which is the number a kernel change can move.
     """
     if not rows:
         return
@@ -705,10 +765,12 @@ def _print_targets(phase: str, rows) -> None:
         if is_prefill and ceiling is not None and ceiling < target:
             verdict = (
                 f"N/A (bandwidth bound: ceiling {ceiling:.1f} {unit} at {row['rows_per_expert']:.0f} rows/expert; "
-                f"reaching {target:g} would need {row['bw_at_100t']:.0f} GB/s)"
+                f"reaching {target:g} would need {row['bw_at_100t']:.0f} GB/s of DRAM traffic)"
             )
         else:
             verdict = "PASS" if measured > target else "FAIL"
+            if is_prefill and ceiling:
+                verdict += f" ({measured / ceiling * 100:.0f}% of the {ceiling:.0f} {unit} bandwidth ceiling)"
         print(
             f"  {row['label']:<12} tokens={row['tokens']:<6} rows/E={row['rows_per_expert']:<6.1f} "
             f"{measured:8.2f} {unit} vs {target:g} -> {verdict}"
@@ -871,8 +933,14 @@ def run_perf(
         # W4A8 streams int8 weights: 1 byte per element, only for the
         # experts that actually received tokens.
         gbps = _weight_bytes(active_experts, N, K, 8) / (w4a8_ms * 1e-3) / 1e9
+        # Everything the call moves, not just the weights: the quantizer's read
+        # of A, the int8 copy it writes, the GEMM's read of that copy and the
+        # output. On the small-K shapes the weights are under half of it.
+        act_bytes = _dtype_bytes(dtype)
+        traffic = _traffic_bytes(total_tokens, active_experts, N, K, act_bytes, act_bytes)
+        dram_gbps = traffic / (w4a8_ms * 1e-3) / 1e9
         rows_per_expert = _rows_per_expert(total_tokens, active_experts)
-        bw_at_100t = _bw_needed_for_tflops(total_tokens, active_experts)
+        bw_at_100t = _bw_needed_for_tflops(total_tokens, active_experts, N, K, act_bytes, act_bytes)
 
         row = {
             "label": nk_label,
@@ -886,13 +954,18 @@ def run_perf(
             "w4a8_ms": w4a8_ms,
             "tflops": tflops,
             "gbps": gbps,
+            "dram_gbps": dram_gbps,
             "prepack_ms": prepack_ms,
             "active_experts": active_experts,
             "rows_per_expert": rows_per_expert,
             "bw_at_100t": bw_at_100t,
             # Hard ceiling for this routing on this device (``None`` when
             # the bandwidth probe is unavailable).
-            "tflops_ceiling": (None if device_bw is None else _tflops_ceiling(total_tokens, active_experts, device_bw)),
+            "tflops_ceiling": (
+                None
+                if device_bw is None
+                else _tflops_ceiling(total_tokens, active_experts, N, K, device_bw, act_bytes, act_bytes)
+            ),
             "device_bw_gbps": device_bw,
         }
         rows.append(row)
@@ -911,6 +984,7 @@ def run_perf(
                 prepack_ms,
                 rows_per_expert=rows_per_expert,
                 bw_at_100t=bw_at_100t,
+                dram_gbps=dram_gbps,
             )
 
         # Drop the (large) int8 weights before the next shape allocates.
@@ -983,6 +1057,24 @@ _ACT_QUANT_UNROLL_CONFIGS = [
     for u in (1, 2, 4)
 ]
 
+# Prefill: activation-quantization passes over the row. The two-pass kernel
+# reads ``[T, K]`` twice -- once for the absmax, once to quantize -- because the
+# scale is not known until the row has been seen. The single-pass kernel keeps
+# the row in registers between the two, which removes the second read at the
+# cost of ``K / 16`` elements of register pressure per lane. Whether that trade
+# pays depends on whether it spills, which only hardware can say; rows longer
+# than the register budget take the two-pass kernel either way.
+_ACT_QUANT_SINGLE_PASS_CONFIGS = [
+    (
+        "act-quant two-pass",
+        {"ARK_MOE_W4A8_ACT_QUANT_VEC": "1", "ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS": "0"},
+    ),
+    (
+        "act-quant single-pass",
+        {"ARK_MOE_W4A8_ACT_QUANT_VEC": "1", "ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS": "1"},
+    ),
+]
+
 # Prefill: epilogue guard. A tile that touches neither the M nor the N edge
 # needs no store predicate and no scale-index clamp, and whether it does is
 # uniform across the work-group. The guarded path is what every tile used to
@@ -991,6 +1083,17 @@ _ACT_QUANT_UNROLL_CONFIGS = [
 _EPILOGUE_CONFIGS = [
     ("epilogue guarded", {"ARK_MOE_W4A8_PREFILL_FULL_TILE": "0"}),
     ("epilogue interior", {"ARK_MOE_W4A8_PREFILL_FULL_TILE": "1"}),
+]
+
+# Prefill: how D leaves the registers. The DPAS C fragment gives a lane one
+# column of each 8x16 atom, so a scalar store is a 32-byte message for 16-bit D
+# and a 32x32 sub-group fragment issues 64 of them; the hardware 2D block store
+# moves the same bytes in a handful of messages and needs no predicate, because
+# it clips to the output surface. D is a third of the tile traffic on the
+# down-projection shapes, so this is where the store width should show.
+_PREFILL_STORE_CONFIGS = [
+    ("store scalar", {"ARK_MOE_W4A8_PREFILL_STORE_2D": "0"}),
+    ("store block2d", {"ARK_MOE_W4A8_PREFILL_STORE_2D": "1"}),
 ]
 
 _SWEEP_MIN_SNR_DB = 40.0
@@ -1268,6 +1371,53 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"act-quant unroll {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_act_quant_single_pass_sweep(self, request):
+            """Time the quantizer against its own second read of the row.
+
+            The absmax has to see the whole row before the first element can
+            be quantized, so the two-pass kernel reads ``[T, K]``, reduces,
+            then reads ``[T, K]`` again. The single-pass kernel keeps the row
+            in registers across the reduction and deletes the second read --
+            ~0.5 MB per expert at 256 rows and K = 2048, against 3.1 MB of
+            weights for the whole GEMM. It costs ``K / 16`` elements of
+            register pressure per lane (64 dwords of the default 128-dword
+            budget at K = 2048), which is exactly the risk this sweep exists to
+            settle: if it spills, the single-pass row is *slower*, and the
+            default should be flipped. Rows too long for the budget take the
+            two-pass kernel in both rows of the sweep, so those shapes should
+            read as noise.
+            """
+            rows = run_config_sweep("prefill", _ACT_QUANT_SINGLE_PASS_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert row["snr_db"] >= _SWEEP_MIN_SNR_DB, (
+                    f"act-quant pass count {row['config']} disagrees with {rows[0]['config']}: "
+                    f"SNR {row['snr_db']:.2f} dB"
+                )
+
+        def test_perf_prefill_store_sweep(self, request):
+            """Time the D store width at the compute-bound batch.
+
+            The mainloop is identical in both rows. The DPAS C fragment hands a
+            lane one column of each 8x16 atom, so the 16 lanes of a sub-group
+            hold 16 consecutive columns of one row: a scalar store is a
+            32-byte message for 16-bit D, and a 32x32 sub-group fragment issues
+            64 of them. The 2D block store moves the same bytes in a handful of
+            messages and needs no predicate, because it clips to the output
+            surface in hardware.
+
+            Expect the largest gain where D is the largest share of tile
+            traffic and the mainloop the shortest -- the small-K
+            down-projections, which are also the shapes furthest from the
+            compute target.
+            """
+            rows = run_config_sweep("prefill", _PREFILL_STORE_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"store config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
         def test_perf_prefill_epilogue_sweep(self, request):
             """Time the epilogue guard at the compute-bound batch.
 
@@ -1401,6 +1551,91 @@ if pytest is not None:
                     outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
             assert torch.equal(outs["0"], outs["1"]), (
                 "the interior-tile epilogue disagrees with the guarded one: "
+                f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
+            )
+
+        def test_act_quant_single_pass_matches(self):
+            """Holding the row in registers must be bit-identical to re-reading it.
+
+            The single-pass kernel changes *when* the row is read, not what is
+            computed from it: the per-lane reduction is still ``fmax`` over the
+            same values into the same four partial maxima (exact and
+            order-independent, so any grouping merges to the same bits), the
+            sub-group reduce and the reciprocal are untouched, and every
+            element goes through the same ``rint``/``clamp``. So the two-pass
+            kernel is an exact reference, not an approximate one.
+
+            Both K are checked because the register array is bounded at compile
+            time and the rung is chosen from ``K``: at ``VEC = 8`` a lane walks
+            ``K / 128`` vectors, so K = 768 (6 vectors) takes the 8-slot rung
+            and K = 2048 (16) fills the 16-slot one exactly. An off-by-one in
+            the ``s < steps`` guard would either drop a vector from the absmax
+            or quantize past the end of the row, and both show up here.
+            """
+            for nk_label, N, K in _QWEN3_NK:
+                case = _build_case(
+                    N,
+                    K,
+                    _QWEN3_E,
+                    _PREFILL_BATCHES[0] * _QWEN3_TOPK,
+                    _QWEN3_GROUP_SIZE,
+                    torch.bfloat16,
+                    need_reference=False,
+                    need_dequant=False,
+                )
+                weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                    case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+                )
+                outs = {}
+                for flag in ("0", "1"):
+                    with _env_override(ARK_MOE_W4A8_ACT_QUANT_VEC="1", ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=flag):
+                        outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+                assert torch.equal(outs["0"], outs["1"]), (
+                    f"{nk_label.strip()} (K={K}): the single-pass activation quantizer disagrees with the "
+                    f"two-pass one: max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
+                )
+                case = weights_s8 = wscales = outs = None
+                ark.clear_moe_w4a8_prepack_cache()
+                ark.moe_w4a8_release_scratch()
+                _release_xpu_memory()
+
+        def test_prefill_2d_store_matches_scalar(self):
+            """The 2D block store must write exactly what the scalar store wrote.
+
+            Only the store mechanism changes: the scaled value is computed by
+            the same convert and the same two multiplies in the same order, and
+            the fragment is handed to ``copy`` through the same coordinates the
+            scalar path indexes with. The store predicate is gone because the
+            block message clips to the ``m x n`` output surface in hardware, so
+            the interesting failure is a *ragged* tile writing rows that belong
+            to the next expert -- which is silent corruption, not a crash.
+
+            The batch is therefore the one from the interior-tile test: 300
+            rows on every expert against a 256-row tile gives each expert one
+            interior tile and one ragged tile, and the experts are adjacent in
+            the output, so anything spilling past an expert's last row lands in
+            the comparison.
+            """
+            rows_per_expert = _PREFILL_TARGET_ROWS_PER_EXPERT + 44
+            case = _build_case(
+                _QWEN3_NK[1][1],
+                _QWEN3_NK[1][2],
+                _QWEN3_E,
+                rows_per_expert * _QWEN3_E,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            outs = {}
+            for flag in ("0", "1"):
+                with _env_override(ARK_MOE_W4A8_PREFILL_STORE_2D=flag):
+                    outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+            assert torch.equal(outs["0"], outs["1"]), (
+                "the 2D block store disagrees with the scalar store: "
                 f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
             )
 

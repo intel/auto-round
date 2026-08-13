@@ -17,7 +17,17 @@
 // `sycl_tla_moe_prefill_fp8_dpas.hpp` -- currently the activation quantizer's
 // batched loads (`ARK_MOE_W4A8_ACT_QUANT_UNROLL`), which are pure C++ around
 // the same arithmetic and are swept by
-// `test_perf_prefill_act_quant_unroll_sweep`.
+// `test_perf_prefill_act_quant_unroll_sweep`; the register-resident
+// single-pass activation quantizer
+// (`ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS`, swept by
+// `test_perf_prefill_act_quant_single_pass_sweep`), likewise; and the 2D block
+// store epilogue (`ARK_MOE_W4A8_PREFILL_STORE_2D`, swept by
+// `test_perf_prefill_store_sweep`), which is the D-side port of the
+// `make_block_2d_copy_D` + `copy(copy_d, tCrD, tCgC)` sequence already
+// compiled in `sycl_tla_dense_gemm.hpp` for the same accumulator and output
+// widths. All three keep their predecessor one environment variable away and
+// are covered by bit-identity tests, because none of them has been run on a
+// device yet.
 // ---------------------------------------------------------------------------
 //
 // What this file implements
@@ -140,6 +150,9 @@ class MoEW4A8ActQuant;
 
 template <typename ScalarT, int VEC, int UNROLL>
 class MoEW4A8ActQuantVec;
+
+template <typename ScalarT, int VEC, int MAX_STEPS>
+class MoEW4A8ActQuantSingle;
 
 template <typename ScalarT>
 class MoEW4A8ScaleReduce;
@@ -269,6 +282,42 @@ inline DeviceScratchPool& expert_map_pool() {
 // so `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` is an exact A/B baseline;
 // `test_act_quant_unroll_matches` asserts every depth is bit-identical and
 // `test_perf_prefill_act_quant_unroll_sweep` times them.
+//
+// Reading the row once (the traffic the two passes duplicate)
+// -----------------------------------------------------------
+// Batching the loads did not change how many there are. The absmax has to see
+// the whole row before the first element can be quantized, so the kernel reads
+// `[T, K]`, reduces, then reads `[T, K]` again -- and at 256 rows per expert
+// the activation matrix is 1.0 MB for K = 2048, against 3.1 MB of weights for
+// the whole GEMM. The re-read is L2-resident when the row is still there, but
+// the rows a work-group quantizes second are evicted by the ones it quantized
+// first well before the pass ends: at 8 MB of L2 and 4 KB per bf16 row of
+// K = 2048, only ~2000 of 2048 tokens' rows fit *if nothing else is resident*,
+// and the GEMM's weights are competing for the same cache immediately after.
+//
+// A row is small enough to keep in registers instead: a lane owns `K / 16`
+// elements, so `K = 2048` is 256 bytes -- 64 of the 128 dwords per lane the
+// quantizer gets (it launches without `grf_size<256>`, unlike the GEMM). Load
+// the row once, reduce it, then quantize out of the registers. The second read
+// disappears, and every load is issued before any of them is consumed, which
+// subsumes what `UNROLL` was doing (`UNROLL = steps`, effectively) rather than
+// competing with it.
+//
+// `MAX_STEPS` is the compile-time cap that makes the fragment a register array
+// rather than scratch: the loop is `#pragma unroll` over `MAX_STEPS` with an
+// `if (s < steps)` guard, so every index is a constant and SROA can promote it.
+// Two rungs are instantiated -- 8 vectors (K <= 1024 at VEC = 8, 32 dwords) and
+// 16 (K <= 2048, 64 dwords) -- and anything longer keeps the two-pass kernel,
+// which is why minimax's K = 3072 up-projection still takes the old path. The
+// partial maxima stay at four accumulators, as in the two-pass kernel, so the
+// reduction chain is unchanged in both cost and value.
+//
+// This is a register-pressure gamble that the authoring environment cannot
+// settle: if 64 dwords of row plus addressing spills, the pass gets slower, not
+// faster. Hence `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` restores the two-pass
+// kernel exactly, `test_perf_prefill_act_quant_single_pass_sweep` times the
+// pair, and `test_act_quant_single_pass_matches` asserts they agree bit for bit
+// (same `fmax` set, same `inv`, same `rint`/`clamp`).
 // ---------------------------------------------------------------------------
 
 // Fold the per-token expert scan (decode only) into the quantization kernel.
@@ -401,6 +450,96 @@ void launch_act_dynamic_quant_vec(sycl::queue* q, const ScalarT* activations, in
 // kernel), 2 or 4; anything else falls back to the default.
 constexpr int kActQuantUnrollDefault = 4;
 
+// Partial maxima the single-pass kernel reduces into, matching the two-pass
+// kernel's default `UNROLL` so the two produce the same value bit for bit.
+constexpr int kActQuantSinglePartials = 4;
+
+// Longest row a lane keeps in registers, in vectors. 16 vectors is 64 dwords
+// per lane at VEC = 8 (K = 2048), half the default 128-dword budget; longer
+// rows take the two-pass kernel rather than risk a spill.
+constexpr int kActQuantSingleMaxSteps = 16;
+
+// Single-pass variant: the row is loaded once into registers, reduced, then
+// quantized out of them. `MAX_STEPS` bounds the register array at compile time
+// (see the design note above); `steps <= MAX_STEPS` is the caller's contract.
+template <typename ScalarT, int VEC, int MAX_STEPS>
+void launch_act_dynamic_quant_vec_single(sycl::queue* q, const ScalarT* activations, int8_t* qact, float* ascale,
+                                         int total_tokens, int K, int* expert_id_per_token,
+                                         const int* num_tokens_per_expert, int num_experts) {
+  static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+  static_assert(VEC == 4 || VEC == 8, "VEC must be 4 or 8");
+  static_assert(MAX_STEPS >= kActQuantSinglePartials, "MAX_STEPS must cover the partial accumulators");
+  using ActVec = sycl::vec<uint16_t, VEC>;
+  using QVec = sycl::vec<int8_t, VEC>;
+
+  const int steps = K / (SG_SIZE * VEC);
+
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
+  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
+
+  q->parallel_for<MoEW4A8ActQuantSingle<ScalarT, VEC, MAX_STEPS>>(
+      sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+        const int token = static_cast<int>(it.get_global_id(0));
+        const int lane = static_cast<int>(it.get_local_id(1));
+        const ActVec* row = reinterpret_cast<const ActVec*>(activations + static_cast<size_t>(token) * K);
+        QVec* out = reinterpret_cast<QVec*>(qact + static_cast<size_t>(token) * K);
+
+        // The whole row, one load per slot, every one issued before the first
+        // is consumed. Constant indices under the unroll keep it in registers.
+        ActVec v[MAX_STEPS];
+#pragma unroll
+        for (int s = 0; s < MAX_STEPS; ++s) {
+          if (s < steps) {
+            v[s] = row[static_cast<size_t>(s) * SG_SIZE + lane];
+          }
+        }
+
+        float part_max[kActQuantSinglePartials];
+#pragma unroll
+        for (int u = 0; u < kActQuantSinglePartials; ++u) part_max[u] = 0.0f;
+
+#pragma unroll
+        for (int s = 0; s < MAX_STEPS; ++s) {
+          if (s < steps) {
+#pragma unroll
+            for (int e = 0; e < VEC; ++e) {
+              const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[s][e]));
+              part_max[s % kActQuantSinglePartials] =
+                  sycl::fmax(part_max[s % kActQuantSinglePartials], sycl::fabs(static_cast<float>(a)));
+            }
+          }
+        }
+
+        float local_max = part_max[0];
+#pragma unroll
+        for (int u = 1; u < kActQuantSinglePartials; ++u) local_max = sycl::fmax(local_max, part_max[u]);
+
+        auto sg = it.get_sub_group();
+        const float absmax = sycl::reduce_over_group(sg, local_max, sycl::maximum<float>{});
+
+        const float scale = absmax / kInt8Max;
+        const float inv = absmax > 0.0f ? kInt8Max / absmax : 0.0f;
+        if (lane == 0) {
+          act_quant_write_scale(ascale, token, scale, expert_id_per_token, num_tokens_per_expert, num_experts);
+        }
+
+        // No second read of the row: it is already here.
+#pragma unroll
+        for (int s = 0; s < MAX_STEPS; ++s) {
+          if (s < steps) {
+            QVec qv;
+#pragma unroll
+            for (int e = 0; e < VEC; ++e) {
+              const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[s][e]));
+              const float x = sycl::rint(static_cast<float>(a) * inv);
+              qv[e] = static_cast<int8_t>(sycl::clamp(x, -kInt8Max, kInt8Max));
+            }
+            out[static_cast<size_t>(s) * SG_SIZE + lane] = qv;
+          }
+        }
+      });
+}
+
 inline int moe_w4a8_act_quant_unroll() {
   const char* env = std::getenv("ARK_MOE_W4A8_ACT_QUANT_UNROLL");
   if (env != nullptr) {
@@ -416,6 +555,22 @@ template <typename ScalarT, int VEC>
 void launch_act_dynamic_quant_vec_unroll(int unroll, sycl::queue* q, const ScalarT* activations, int8_t* qact,
                                          float* ascale, int total_tokens, int K, int* expert_id_per_token,
                                          const int* num_tokens_per_expert, int num_experts) {
+  // Register-resident single pass when the row fits, the two-pass kernel
+  // otherwise. The smallest rung that covers `steps` is chosen so a short row
+  // does not reserve registers for slots it never loads.
+  const int steps = K / (SG_SIZE * VEC);
+  if (steps <= kActQuantSingleMaxSteps &&
+      moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS", true)) {
+    if (steps <= kActQuantSingleMaxSteps / 2) {
+      launch_act_dynamic_quant_vec_single<ScalarT, VEC, kActQuantSingleMaxSteps / 2>(
+          q, activations, qact, ascale, total_tokens, K, expert_id_per_token, num_tokens_per_expert, num_experts);
+    } else {
+      launch_act_dynamic_quant_vec_single<ScalarT, VEC, kActQuantSingleMaxSteps>(
+          q, activations, qact, ascale, total_tokens, K, expert_id_per_token, num_tokens_per_expert, num_experts);
+    }
+    return;
+  }
+
   if (unroll == 1) {
     launch_act_dynamic_quant_vec<ScalarT, VEC, 1>(q, activations, qact, ascale, total_tokens, K,
                                                   expert_id_per_token, num_tokens_per_expert, num_experts);
@@ -726,11 +881,59 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 // (`test_full_tile_epilogue_matches_predicated`), and
 // `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` forces the guarded path for A/B
 // measurement.
+//
+// The store itself: one 2D block message instead of `size(tCrC)` scalar ones
+// -----------------------------------------------------------------------
+// Removing instructions from around the store left the store. The Xe DPAS C
+// fragment gives a lane one *column* of each 8x16 atom, so the 16 lanes of a
+// sub-group hold 16 *consecutive columns of one row*: a scalar
+// `c[row * n + col] = ...` is a 32-byte message for 16-bit `ElementD`, half a
+// cache line, and a 32x32 sub-group fragment issues **64** of them. The same
+// bytes go out in 4 messages through the hardware 2D block store, which is
+// what every sibling prefill kernel already uses for D
+// (`sycl_tla_moe_prefill_{fp8,int,s4}_dpas.hpp`) and what the dense GEMM in
+// `sycl_tla_dense_gemm.hpp` uses on this exact accumulator shape.
+//
+// D is the reason this is worth doing at prefill sizes rather than a tidy-up:
+// at 256 rows per expert the qwen3 down-projection writes `M*N` fp16 (0.79 MB
+// per expert) against `N*K` int8 of weights (1.5 MB) -- a third of the tile
+// traffic -- because N (2048) is larger than K (768) there. It is the same
+// shape whose mainloop is shortest, so it pays the epilogue twice.
+//
+// The port follows `dense_gemm_detail::gemm_device_impl` rather than the
+// sibling MoE kernels, because those `reorder(tCrC, tCrC_out)` from the MMA
+// fragment into an explicitly chosen `XE_STORE_2D` atom's fragment, and
+// `reorder` moves *registers*: with a `float` accumulator that is free, but
+// this kernel's accumulator is `int32` (`FrgTypeC` of
+// `XE_DPAS_TT<8, int32_t, int8_t, int8_t>`) and has to be scaled and
+// numerically converted first, which `reorder` does not do. `dense_gemm`'s
+// shape is the one that fits: `make_block_2d_copy_D(mma, D)` derives its
+// layout from the MMA's own C partition, so the scaled `ElementD` fragment
+// (`make_tensor_like<ElementD>(tCrC)`, filled through the same `tCgC(i)`
+// coordinates the scalar path uses) can be handed straight to
+// `copy(copy_d, tCrD, tCgC)` with no `reorder` in between.
+//
+// It also *removes* the store predicate rather than skipping it: the 2D block
+// message clips to the surface (`m` rows x `n` columns) described by the D
+// tensor, so a partial tile at the M edge drops its out-of-range rows in
+// hardware -- exactly how the sibling grouped GEMMs handle their ragged
+// experts. Only the scale *loads* still need their index clamps, and only on
+// edge tiles. The value written is computed by the same expression in the same
+// order as the scalar path, so the two are bit-identical
+// (`test_prefill_2d_store_matches_scalar`); `ARK_MOE_W4A8_PREFILL_STORE_2D=0`
+// restores the scalar store for A/B measurement.
+//
+// The block 2D descriptor wants a 64-byte aligned base and a row pitch that is
+// a multiple of 16 bytes. The base here is the expert's slice
+// `Outputs + pre_rows * N`, with `pre_rows` a runtime routing value, so the
+// dispatcher gates on `N * sizeof(ElementD) % 64 == 0` (which makes *every*
+// expert's base 64-byte aligned given an aligned tensor) and on the base
+// pointer itself; anything else keeps the scalar store.
 // ---------------------------------------------------------------------------
 template <class GmemTiledCopyA, class GmemTiledCopyB, class TiledMMA, typename ElementD>
 CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, const float* scale_a,
                               const float* scale_b, int m, int n, int k, int blocksize, int blks, int m_coord,
-                              int n_coord, bool allow_full_tile, TiledMMA const& mma) {
+                              int n_coord, bool allow_full_tile, bool allow_block_2d_store, TiledMMA const& mma) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   const int local_id = static_cast<int>(item.get_local_linear_id());
 
@@ -739,10 +942,11 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
 
   auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
   auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
+  auto D = make_tensor(make_gmem_ptr(c), make_shape(m, n), make_stride(n, _1{}));
 
   Tensor cA = make_identity_tensor(A.shape());
   Tensor cB = make_identity_tensor(B.shape());
-  Tensor cC = make_identity_tensor(make_shape(m, n));
+  Tensor cC = make_identity_tensor(D.shape());
 
   Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(m_coord, _));
   Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(n_coord, _));
@@ -750,6 +954,7 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
 
   auto copy_a = get_block_2d_copy_A<GmemTiledCopyA>(mma, A);
   auto copy_b = get_block_2d_copy_B<GmemTiledCopyB>(mma, B);
+  auto copy_d = make_block_2d_copy_D(mma, D);
 
   auto thr_mma = mma.get_slice(local_id);
   auto thr_copy_a = copy_a.get_slice(local_id);
@@ -850,7 +1055,36 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
       }
     };
 
-    if (full_tile) {
+    // Same values in the same order, through the hardware 2D block store. The
+    // element predicate is gone because the message clips to the `m x n`
+    // surface; only the scale loads still clamp their indices.
+    auto store_scaled_2d = [&](auto full) {
+      Tensor tCrD = make_tensor_like<ElementD>(tCrC);
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        auto coord = tCgC(i);
+        const int row = static_cast<int>(get<0>(coord));
+        const int col = static_cast<int>(get<1>(coord));
+        if constexpr (decltype(full)::value) {
+          tCrD(i) = static_cast<ElementD>(static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col)] *
+                                          scale_a[row]);
+        } else {
+          const int row_in = row < m ? row : m - 1;
+          const int col_in = col < n ? col : n - 1;
+          tCrD(i) = static_cast<ElementD>(static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in)] *
+                                          scale_a[row_in]);
+        }
+      }
+      copy(copy_d, tCrD, tCgC);
+    };
+
+    if (allow_block_2d_store) {
+      if (full_tile) {
+        store_scaled_2d(std::true_type{});
+      } else {
+        store_scaled_2d(std::false_type{});
+      }
+    } else if (full_tile) {
       store_scaled(std::true_type{});
     } else {
       store_scaled(std::false_type{});
@@ -886,6 +1120,26 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
         tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in) * blks + ib];
       }
     }
+  }
+
+  if (allow_block_2d_store) {
+    Tensor tCrD = make_tensor_like<ElementD>(tFrC);
+    if (full_tile) {
+      CUTE_UNROLL
+      for (int i = 0; i < size(tFrC); ++i) {
+        const int row = static_cast<int>(get<0>(tCgC(i)));
+        tCrD(i) = static_cast<ElementD>(tFrC(i) * scale_a[row]);
+      }
+    } else {
+      CUTE_UNROLL
+      for (int i = 0; i < size(tFrC); ++i) {
+        const int row = static_cast<int>(get<0>(tCgC(i)));
+        const int row_in = row < m ? row : m - 1;
+        tCrD(i) = static_cast<ElementD>(tFrC(i) * scale_a[row_in]);
+      }
+    }
+    copy(copy_d, tCrD, tCgC);
+    return;
   }
 
   if (full_tile) {
@@ -928,7 +1182,7 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
                               const float* ScaleB, ElementD* Outputs, TiledMMA const& mma,
                               const int* rows_per_expert, const int32_t num_experts, const int32_t gemm_n,
                               const int32_t gemm_k, const int32_t blocksize, const int32_t blks,
-                              const bool allow_full_tile, int32_t* atomic_buffer,
+                              const bool allow_full_tile, const bool allow_block_2d_store, int32_t* atomic_buffer,
                               const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   auto wg_tile = mma.tile_mnk();
@@ -982,7 +1236,8 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
 
       xe_gemm_w4a8<GmemTiledCopyA, GmemTiledCopyB>(ptr_A_curr_batch, ptr_B_curr_batch, ptr_D_curr_batch,
                                                    ptr_SA_curr_batch, ptr_SB_curr_batch, gemm_m, gemm_n, gemm_k,
-                                                   blocksize, blks, m_coord, n_coord, allow_full_tile, mma);
+                                                   blocksize, blks, m_coord, n_coord, allow_full_tile,
+                                                   allow_block_2d_store, mma);
 
       if (local_id == 0) {
         slm_mem[0] = cutlass::atomicAdd(atomic_buffer, 1);
@@ -1004,7 +1259,8 @@ template <class Policy, typename ElementD>
 void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const int8_t* weights,
                           const float* scale_a, const float* scale_b, ElementD* outputs, const int gemm_n,
                           const int gemm_k, const int* rows_per_expert, const int num_experts, const int blocksize,
-                          const int blks, const bool allow_full_tile, int32_t* atomic_buffer) {
+                          const int blks, const bool allow_full_tile, const bool allow_block_2d_store,
+                          int32_t* atomic_buffer) {
   using Op = XE_DPAS_TT<8, int32_t, int8_t, int8_t>;
   using WGTile = typename Policy::WGTile;
   using SGLayout = typename Policy::SGLayout;
@@ -1036,7 +1292,8 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
         sycl::nd_range<3>{global * local, local}, kernel_props, [=](auto) {
           MoEGEMM_w4a8<GmemTiledCopyA, GmemTiledCopyB>(activations, weights, scale_a, scale_b, outputs, mma,
                                                        rows_per_expert, num_experts, gemm_n, gemm_k, blocksize,
-                                                       blks, allow_full_tile, atomic_buffer, local_mem);
+                                                       blks, allow_full_tile, allow_block_2d_store, atomic_buffer,
+                                                       local_mem);
         });
   });
 
@@ -1075,6 +1332,16 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` makes every tile take the guarded
 // epilogue (see `xe_gemm_w4a8`), which is the A/B baseline for the interior-
 // tile fast path; it is read here, once per call, rather than on the device.
+//
+// `ARK_MOE_W4A8_PREFILL_STORE_2D=0` puts the epilogue back on the scalar
+// predicated store instead of the hardware 2D block store, the A/B baseline
+// for that change. The block message needs a 64-byte aligned surface base and
+// a 16-byte multiple row pitch; D's per-expert base is `outputs + pre_rows * N`
+// for a routing-dependent `pre_rows`, so the gate is on the row stride itself
+// (`N * sizeof(ElementD) % 64 == 0`, which covers the pitch as well) plus the
+// tensor base. Every shipped N (1536 / 2048 / 3072 with 16-bit D) clears it;
+// anything that does not keeps the scalar store rather than risking a
+// misaligned descriptor.
 // ---------------------------------------------------------------------------
 template <typename ElementD>
 void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
@@ -1086,12 +1353,16 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
 
   const int A_avg_M = total_tokens / E;
   const bool allow_full_tile = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_FULL_TILE", true);
+  const bool store_2d_aligned = (static_cast<size_t>(N) * sizeof(ElementD)) % 64 == 0 &&
+                                reinterpret_cast<uintptr_t>(outputs) % 64 == 0;
+  const bool allow_block_2d_store =
+      store_2d_aligned && moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_STORE_2D", true);
   int32_t* atomic_buffer = moe_dpas_fp8::get_persistent_atomic_buffer(q);
 
-#define ARK_MOE_W4A8_LAUNCH(policy)                                                                       \
-  MoEGEMMLauncher_w4a8<policy, ElementD>(*q, qact, weights, ascale, wscale, outputs, N, K,                 \
-                                         num_tokens_per_expert, E, blocksize, blks, allow_full_tile,      \
-                                         atomic_buffer);
+#define ARK_MOE_W4A8_LAUNCH(policy)                                                                        \
+  MoEGEMMLauncher_w4a8<policy, ElementD>(*q, qact, weights, ascale, wscale, outputs, N, K,                  \
+                                         num_tokens_per_expert, E, blocksize, blks, allow_full_tile,       \
+                                         allow_block_2d_store, atomic_buffer);
 
   const char* tile_env = std::getenv("ARK_MOE_W4A8_PREFILL_TILE");
   if (tile_env != nullptr) {
