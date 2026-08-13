@@ -120,8 +120,7 @@ class DiffusionCalibrator(LLMCalibrator):
             exit(-1)
 
         target_device = device_manager.device
-        if pipe.device != torch.device(target_device):
-            pipe.to(target_device)
+        pipe.to(torch.device(target_device))
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         # Check if this is an I2V pipeline (needs calibration image)
         requires_image = False

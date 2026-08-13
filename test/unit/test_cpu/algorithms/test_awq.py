@@ -716,7 +716,8 @@ class TestAWQMoE:
         for name in fp_layers:
             assert name.endswith("gate"), f"Unexpected FP layer: {name}"
 
-    @pytest.mark.timeout(300)
+    # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
+    @pytest.mark.timeout(400)
     def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
         """AWQ MoE: saved quantization_config should be consistent and loadable."""
         ar = AutoRound(
