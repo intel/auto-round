@@ -221,7 +221,7 @@ class TestDiffusionCalibrator:
         ):
             calibrator.calib(nsamples=2, bs=1)
 
-        assert seen == ["cuda:0"]
+        assert seen == [torch.device("cuda:0")]
 
     def test_calib_uses_autoround_pipeline_fn_when_available(self, calibrator):
         calls = []
