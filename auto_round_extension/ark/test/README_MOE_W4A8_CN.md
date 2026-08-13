@@ -414,6 +414,11 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 在 `ark.moe_w4a8` 上传 `cache_prepack=False` (或调用
 `clear_moe_w4a8_prepack_cache()`)。
 
+在 24 GB 的 B60 上这个权衡有一条硬上限：上表两个 GEMM 每个 MoE 层约需 0.6 GB int8，
+外加它所持有的约 0.3 GB int4，因此 48 层的 Qwen3-MoE 需要约 29 GB 预处理权重，放不
+下。要缓存整个模型就得用多卡或更大显存的配置；在单块 B60 上，只缓存受 prefill 支配
+的那些层，其余传 `cache_prepack=False`。
+
 ## 实测得到的默认值
 
 下面的默认值来自上文那块 Arc Pro B60 上的一次 `-k sweep` (bf16 激活，decode 为 8 条

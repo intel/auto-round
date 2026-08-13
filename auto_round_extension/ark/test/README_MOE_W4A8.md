@@ -451,6 +451,13 @@ otherwise collide with another layer's weights). Use `cache_prepack=False` on
 `ark.moe_w4a8` (or `clear_moe_w4a8_prepack_cache()`) if that trade isn't worth
 it for a given deployment.
 
+On the 24 GB B60 that trade has a hard limit: the two GEMMs above are ~0.6 GB of
+int8 per MoE layer on top of the ~0.3 GB of int4 they pin, so a 48-layer
+Qwen3-MoE stack would ask for ~29 GB of prepacked weights and does not fit.
+Caching the whole model is a multi-card or larger-VRAM configuration; on one
+B60, cache the layers that are prefill-bound and leave the rest on
+`cache_prepack=False`.
+
 ## Tuned defaults (measured)
 
 The defaults below come from one `-k sweep` run on the Arc Pro B60 above (bf16
