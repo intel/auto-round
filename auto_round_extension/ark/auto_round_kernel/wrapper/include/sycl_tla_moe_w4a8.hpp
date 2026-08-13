@@ -2,9 +2,10 @@
 //
 // STATUS: PARTIALLY HARDWARE-VALIDATED -- every perf sweep in
 // `test_moe_w4a8_perf.py` (`test_perf_prefill_tile_sweep`,
-// `test_perf_prefill_act_quant_sweep`, `..._unroll_sweep`,
-// `..._single_pass_sweep`, `test_perf_prefill_store_sweep`,
-// `test_perf_prefill_epilogue_sweep`, `test_perf_decode_config_sweep`) and
+// `test_perf_prefill_tile_sweep_long_seq`, `test_perf_prefill_act_quant_-
+// sweep`, `..._unroll_sweep`, `..._single_pass_sweep`,
+// `test_perf_prefill_store_sweep`, `test_perf_prefill_epilogue_sweep`,
+// `test_perf_decode_config_sweep`) and
 // every cross-configuration equivalence test (`test_act_quant_vec_matches_-
 // scalar`, `test_act_quant_unroll_matches`, `test_act_quant_single_pass_-
 // matches`, `test_full_tile_epilogue_matches_predicated`,
@@ -15,7 +16,9 @@
 // dispatch default -- tile ladder, activation-quant message width / unroll /
 // single-pass, interior-tile epilogue, 2D block store, decode CH / NCOLS --
 // comes from those measurements at the compute-bound batch (384 rows/expert),
-// with each configuration checked numerically against the others before it was
+// with the tile ladder measured at the 8K-prompt routing (512 / 341
+// rows/expert) as well, and each configuration checked numerically against the
+// others before it was
 // timed. The accuracy gates against the fp32 reference still need a device
 // run. The authoring environment has no XPU and no SYCL compiler, so anything
 // added *since* that run follows the porting conventions of its siblings
@@ -229,13 +232,13 @@ inline DeviceScratchPool& expert_map_pool() {
 // `ARK_MOE_W4A8_ACT_QUANT_VEC=0` forces it for A/B measurement.
 //
 // `test_perf_prefill_act_quant_sweep` on BMG (384 rows/expert, bf16 act) puts
-// the widened messages at 1.05x (qwen3 up), 1.13x (qwen3 down), 1.11x (minimax
-// up) and 1.04x (minimax down) of the scalar mapping on the *whole*
+// the widened messages at 1.12x (qwen3 up), 1.10x (qwen3 down), 1.15x (minimax
+// up) and 1.07x (minimax down) of the scalar mapping on the *whole*
 // `moe_gemm_w4a8` call -- the quantization pass alone is a larger share of
 // prefill than that, since the GEMM around it is unchanged. (Earlier runs of
-// the same sweep read 1.13 / 1.14 / 1.12 / 1.04 and 1.14 / 1.07 / 1.10 / 1.07:
-// the ranking is stable, the individual ratios move by a few percent between
-// runs.)
+// the same sweep read 1.05 / 1.13 / 1.11 / 1.04, 1.13 / 1.14 / 1.12 / 1.04 and
+// 1.14 / 1.07 / 1.10 / 1.07: the ranking is stable, the individual ratios move
+// by a few percent between runs.)
 //
 // `sycl::vec<uint16_t, VEC>` is used rather than `sycl::vec<ScalarT, VEC>`
 // because `sycl::vec` of `bfloat16` is not universally available; the elements
@@ -277,11 +280,15 @@ inline DeviceScratchPool& expert_map_pool() {
 // `test_act_quant_unroll_matches` asserts every depth is bit-identical and
 // `test_perf_prefill_act_quant_unroll_sweep` times them.
 //
-// That sweep confirms the default: only minimax up is a real A/B in it (the
-// other three shapes take the single-pass kernel below, where `UNROLL` is dead
-// code, so their rows are three sets of identical kernels -- a useful noise
-// probe, spreading 0.4-3.9%), and there `UNROLL = 4` is fastest: 8.959 ms
-// against 8.967 ms at 2 and 9.139 ms at 1.
+// That sweep keeps the default, though not by much: only minimax up is a real
+// A/B in it (the other three shapes take the single-pass kernel below, where
+// `UNROLL` is dead code, so their rows are three sets of identical kernels --
+// a useful noise probe, spreading 3.3-7.3% in the latest run and 0.4-3.9% in
+// the one before). On that shape the three depths read 6.982 ms at 1,
+// 6.795 ms at 2 and 6.837 ms at 4: the batched loads are worth 1.02-1.03x over
+// `UNROLL = 1`, and the 0.6% between 2 and 4 is an order of magnitude inside
+// the noise the identical-kernel rows show, so the default stays at 4 (the
+// earlier run had it 8.959 / 8.967 / 9.139 ms, i.e. 4 fastest).
 //
 // Reading the row once (the traffic the two passes duplicate)
 // -----------------------------------------------------------
@@ -314,10 +321,12 @@ inline DeviceScratchPool& expert_map_pool() {
 //
 // This was a register-pressure gamble -- if 64 dwords of row plus addressing
 // spilled, the pass would get slower, not faster -- and the sweep settled it in
-// its favour: at 384 rows/expert the single-pass kernel is 1.05x (qwen3 down,
-// K = 768) and 1.01x (qwen3 up, K = 2048, the rung filled exactly) against the
-// two-pass one, and level on minimax down (K = 1536, 0.1% apart). Nothing
-// spills. `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` still restores the two-pass
+// its favour: at 384 rows/expert the single-pass kernel is 1.06x (qwen3 down,
+// K = 768), 1.04x (qwen3 up, K = 2048, the rung filled exactly) and 1.02x
+// (minimax down, K = 1536) against the two-pass one. Nothing spills. minimax
+// up (K = 3072) is past the last rung, so both of its rows run the *same*
+// two-pass kernel and their 1.01x is this sweep's noise probe.
+// `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` still restores the two-pass
 // kernel exactly, `test_perf_prefill_act_quant_single_pass_sweep` times the
 // pair, and `test_act_quant_single_pass_matches` asserts they agree bit for bit
 // (same `fmax` set, same `inv`, same `rint`/`clamp`).
@@ -740,44 +749,62 @@ void launch_weight_rescale_s4_to_s8(sycl::queue* q, const uint8_t* weights, cons
 // divide the rows/expert pays for rows that do not exist.
 //
 // `test_perf_prefill_tile_sweep` on BMG at the compute-bound batch the suite
-// now runs (384 rows/expert, bf16 act), with the 2D block store and the
+// runs (384 rows/expert, bf16 act), with the 2D block store and the
 // single-pass activation quantizer in:
 //
-//   shape         128x128    128x256    256x128    256x256    auto (was)
-//   qwen3 up      3.457 ms   3.507 ms   4.507 ms   3.952 ms   4.423 ms
-//   qwen3 down    2.512 ms   2.488 ms   2.777 ms   2.696 ms   2.933 ms
-//   minimax up    6.940 ms   6.978 ms   8.895 ms   8.111 ms   9.043 ms
-//   minimax down  7.255 ms   6.710 ms   9.166 ms   7.779 ms   9.211 ms
+//   shape         auto     128x128   128x256   256x128   256x256
+//   qwen3 up      3.540 ms  3.518 ms  3.585 ms  4.404 ms  3.970 ms
+//   qwen3 down    2.472 ms  2.473 ms  2.432 ms  2.696 ms  2.547 ms
+//   minimax up    6.976 ms  6.823 ms  6.878 ms  8.899 ms  8.019 ms
+//   minimax down  6.749 ms  7.227 ms  6.874 ms  9.096 ms  7.823 ms
 //
-// M: the 256-row tile is 1.11-1.30x *behind* the 128-row one here, and that is
-// arithmetic, not a register effect. 384 rows/expert take `ceil(384/256) = 2`
-// 256-row tiles -- 512 rows scheduled for 384 rows of data, a third of the
-// MACs spent on padding -- against exactly 3 full 128-row tiles. The measured
-// ratio (1.30x on qwen3 up, 1.28x on minimax up, both long-K shapes where the
-// mainloop dominates) is the padding ratio 512/384 = 1.33 to within noise.
-// It is *not* an argument against `TileM = 256` as such: the earlier run at
-// 256 rows/expert, where the tile divides the rows exactly, had it 1.3-3.9%
-// ahead on all four shapes. The ladder therefore gates it on padding rather
-// than on a row threshold (see `moe_w4a8_prefill_dispatch`).
+// and `test_perf_prefill_tile_sweep_long_seq`, the same sweep at one 8K prompt
+// -- 512 rows/expert on qwen3 (128 experts), 341 on minimax (192):
 //
-// N: the 256-wide tile is now ahead or level everywhere the table can compare
-// it -- at `TileM = 128` it takes minimax down by 1.08x and ties the other
-// three (within 1.4% either way), and at `TileM = 256` it takes all four, by
-// 2.9% to 15.1%.
-// The 35-50% cliff the first sweep saw on every 256-wide N tile is gone -- it
-// was the float C shadow the mainloop used to keep live (see `xe_gemm_w4a8`),
-// which doubled the per-lane C footprint and made `TileN = 256` ask for the
-// entire 256-register large-GRF file -- and what remained of it in the second
-// sweep (0-8% behind on three shapes, measured with the *scalar* epilogue
-// store) is gone too, now that a 32x64 fragment goes out in a handful of block
-// messages instead of 128 scalar ones. So the ladder is 256 wide in N wherever
-// N divides into it.
+//   shape         auto     128x128   128x256   256x128   256x256
+//   qwen3 up      4.371 ms  4.382 ms  4.393 ms  4.468 ms  4.394 ms
+//   qwen3 down    3.075 ms  3.030 ms  2.903 ms  3.025 ms  3.059 ms
+//   minimax up    6.564 ms  6.673 ms  6.449 ms  9.057 ms  7.744 ms
+//   minimax down  6.466 ms  6.725 ms  6.450 ms  9.373 ms  7.307 ms
 //
-// Noise floor for reading all of this: `test_perf_prefill_act_quant_unroll_-
-// sweep` in the same run times three shapes whose K puts them on the
-// single-pass quantizer, where `UNROLL` is dead code -- i.e. three sets of
-// *identical* kernels -- and they spread 0.4% / 2.1% / 3.9%. Anything under
-// ~4% here is run-to-run variation; the padding effect above is 11-30%.
+// M: `TileM = 256` never pays. At 384 and 341 rows/expert it is 1.05-1.45x
+// *behind*, and that part is arithmetic rather than a register effect: 384
+// rows take `ceil(384/256) = 2` 256-row tiles -- 512 rows scheduled for 384
+// rows of data, a third of the MACs spent on padding -- against exactly 3 full
+// 128-row tiles, and the like-for-like ratio on the long-K shapes, where the
+// mainloop dominates, is that padding ratio (512/384 = 1.33) to within noise
+// (1.25x qwen3 up, 1.30x minimax up, both at `TileN = 128`).
+// The 8K prompt is the case where that argument does *not* apply: 512 rows per
+// expert is an exact multiple of 256, so both tiles schedule the same rows.
+// The 256-row tile is still not ahead there. Like for like on `TileN` it reads
+// -2.0% / 0.0% (qwen3 up at `TileN` 128 / 256) and +0.2% / -5.4% (qwen3 down),
+// i.e. never better than a tie and 5.4% behind on the shape with the shortest
+// mainloop -- so halving how often B is pulled per M tile buys nothing that the
+// larger work-group (512 threads, one per Xe core) does not give back in
+// scheduling granularity. The only reading ever in its favour is an older run
+// at 256 rows/expert, 1.3-3.9% ahead, inside the noise floor. The ladder
+// therefore stops taking it (see `moe_w4a8_prefill_dispatch`): it has no
+// measured upside, and a routing skewed around the average the ladder sees
+// puts individual experts back on the padding cliff.
+//
+// N: the 256-wide tile is ahead or level everywhere the tables can compare it
+// -- at 384 rows/expert it takes minimax down by 1.05x and qwen3 down by 1.02x
+// and is 0.8-1.9% behind on the other two, and at the 8K prompt it takes three
+// of four by 3.5-4.4% and ties qwen3 up (0.3%). The 35-50% cliff the first
+// sweep saw on every 256-wide N tile is gone -- it was the float C shadow the
+// mainloop used to keep live (see `xe_gemm_w4a8`), which doubled the per-lane
+// C footprint and made `TileN = 256` ask for the entire 256-register large-GRF
+// file -- and what remained of it in the second sweep (0-8% behind on three
+// shapes, measured with the *scalar* epilogue store) is gone too, now that a
+// 32x64 fragment goes out in a handful of block messages instead of 128 scalar
+// ones. So the ladder is 256 wide in N wherever N divides into it.
+//
+// Noise floor for reading all of this: the `auto` column is not an independent
+// measurement -- it launches whichever explicit tile the ladder picks, so each
+// row above contains one *duplicate* pair (`128x256` at 384 rows/expert and at
+// the minimax 8K point, `256x256` at the qwen3 8K point). Across the eight
+// pairs the two readings of the same kernel differ by 0.2-1.9%, which is the
+// run-to-run floor for these tables; the padding effect reaches 45%.
 //
 // Every policy stays reachable through `ARK_MOE_W4A8_PREFILL_TILE` for a
 // re-sweep on a device with a different register budget.
@@ -886,15 +913,15 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 // these shapes. A 128x128 tile runs `K / 64` k-tiles -- 12 of them for the
 // qwen3 down-projection (K = 768) -- while it always writes `TileM * TileN`
 // elements, and qwen3 down is exactly the shape the sweep reports furthest
-// from the compute target (62 TFLOPS against 89-104 for the other three). The
+// from the compute target (63 TFLOPS against 87-103 for the other three). The
 // fast path emits the same expression in the same order for every element it
 // stores, so it is bit-identical to the guarded one
 // (`test_full_tile_epilogue_matches_predicated`), and
 // `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` forces the guarded path for A/B
 // measurement. `test_perf_prefill_epilogue_sweep` at 384 rows/expert has it at
-// 1.08x (qwen3 down) and 1.02x (minimax up), level on the other two -- the
-// shape ordering the instruction-count argument predicted, with the gain
-// concentrated where the mainloop is shortest.
+// 1.04x (qwen3 down), 1.03x (qwen3 up) and 1.00-1.01x on the two minimax
+// shapes -- the shape ordering the instruction-count argument predicted, with
+// the gain concentrated where the mainloop is shortest.
 //
 // The store itself: one 2D block message instead of `size(tCrC)` scalar ones
 // -----------------------------------------------------------------------
@@ -938,8 +965,9 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 // (`test_prefill_2d_store_matches_scalar`); `ARK_MOE_W4A8_PREFILL_STORE_2D=0`
 // restores the scalar store for A/B measurement. `test_perf_prefill_store_-
 // sweep` at 384 rows/expert makes it the largest single prefill win of the
-// set: 1.16x (qwen3 up), 1.35x (qwen3 down -- the shape that pays the epilogue
-// twice), 1.12x (minimax up) and 1.20x (minimax down).
+// set: 1.14x (qwen3 up), 1.21x (qwen3 down -- the shape that pays the epilogue
+// twice), 1.09x (minimax up) and 1.16x (minimax down); the run before read
+// 1.16 / 1.35 / 1.12 / 1.20, same ordering.
 //
 // The block 2D descriptor wants a 64-byte aligned base and a row pitch that is
 // a multiple of 16 bytes. The base here is the expert's slice
@@ -1326,21 +1354,26 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // `sycl_tla_s8_gemm.hpp`: a grouped GEMM's M is *per expert*, so the ladder
 // walks the average rows/expert rather than the total token count.
 //
-// Both the M and the N rung are gated on the same thing -- that the wider tile
-// does not schedule work the shape does not have:
+// The M rung is a row threshold and the N rung a divisibility test, and both
+// are about not scheduling work the shape does not have:
 //
-//   * `TileM = 256` halves how often each expert's B panel is pulled through
-//     L2/DRAM (B is read once per M tile), but an expert launches
-//     `ceil(M / TileM)` *full* tiles. It is taken only where that rounds to the
-//     same row count the 128-row tile would launch --
-//     `ceil(M/256)*256 == ceil(M/128)*128`, true at M = 256, 512, 400, ... and
-//     false at M = 384, where the 256-row tile computes 512 rows for 384 rows
-//     of data. The sweep in the tile-policy comment measures exactly that
-//     third of wasted MACs (1.26-1.37x in favour of `TileM = 128` at M = 384).
-//     `A_avg_M >= 256` is implied by the equality but kept for readability.
+//   * `TileM` stops at 128. The 256-row tile halves how often each expert's B
+//     panel is pulled through L2/DRAM (B is read once per M tile), but an
+//     expert launches `ceil(M / TileM)` *full* tiles, so it only breaks even
+//     where `ceil(M/256)*256 == ceil(M/128)*128` -- false at the 384 and 341
+//     rows/expert the perf suite measures, where it computes 512 rows for 384
+//     rows of data and reads 1.05-1.45x slower. The 8K prompt puts Qwen3-MoE
+//     at exactly 512 rows/expert, where the padding argument does not apply,
+//     and `test_perf_prefill_tile_sweep_long_seq` measures it there: still not
+//     ahead (a tie on qwen3 up, 5.4% behind on qwen3 down). So the rung is
+//     gone rather than gated -- there is no routing at which it has been
+//     measured to win, and the ladder only sees the *average* rows/expert, so
+//     a skewed routing would put individual experts back on the padding cliff
+//     even when the average divides. Both 256-row policies stay compiled and
+//     reachable through `ARK_MOE_W4A8_PREFILL_TILE` for a re-sweep.
 //
 //   * `TileN = 256` halves how often A is re-read (once per N tile) and is
-//     ahead or level everywhere the sweep can compare it, so it is taken
+//     ahead or level everywhere the sweeps can compare it, so it is taken
 //     whenever N divides into it exactly. `N % 256 != 0` would pad the last
 //     tile the same way a ragged M does, and no shipped shape needs it: every
 //     N here (1536 / 2048 / 3072) is a multiple of 256.
@@ -1348,7 +1381,8 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // The rung used to be `A_avg_M >= 256 -> 256x128` with no padding test and a
 // 128-wide N at every rung, which is what made the 384 rows/expert batch --
 // the compute-bound batch the perf suite now runs -- land on the slowest
-// column of its own sweep.
+// column of its own sweep; it then became a padding-gated 256-row tile, which
+// the 8K-prompt sweep has now retired.
 //
 // `ARK_MOE_W4A8_PREFILL_TILE` overrides the choice with an explicit `MxN` tile
 // (`8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`); anything
@@ -1378,11 +1412,6 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
   compat::set_default_queue(*q);
 
   const int A_avg_M = total_tokens / E;
-  // Rows a whole expert actually schedules at each candidate `TileM`. The
-  // 256-row tile only pays where it does not launch more rows than the 128-row
-  // one would: see the tile-policy comment for the measurement.
-  const auto padded_rows = [](int m, int tile) { return (m + tile - 1) / tile * tile; };
-  const bool tile_m_256 = A_avg_M >= 256 && padded_rows(A_avg_M, 256) == padded_rows(A_avg_M, 128);
   const bool tile_n_256 = (N % 256) == 0;
   const bool allow_full_tile = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_FULL_TILE", true);
   const bool store_2d_aligned = (static_cast<size_t>(N) * sizeof(ElementD)) % 64 == 0 &&
@@ -1423,12 +1452,6 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_8)
   } else if (A_avg_M < 128) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_64)
-  } else if (tile_m_256) {
-    if (tile_n_256) {
-      ARK_MOE_W4A8_LAUNCH(w4a8_policy_large)
-    } else {
-      ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_256_n128)
-    }
   } else if (tile_n_256) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128_n256)
   } else {

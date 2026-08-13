@@ -388,11 +388,12 @@ _PREFILL_TARGET_ROWS_PER_EXPERT = 384
 # for qwen3 up/down, and 137 -> 129 and 154 -> 145 for minimax up/down.
 #
 # 512 rows/expert also moves the *tile ladder*, which is why this point is
-# worth a sweep of its own rather than one more perf row: the 256-row tile is
-# gated on padding no worse than the 128-row one
-# (``ceil(M/256)*256 == ceil(M/128)*128``), false at 384 and true at 512, so
-# the Qwen3-MoE shapes take the ``256x256`` rung here and nowhere else in the
-# suite.
+# worth a sweep of its own rather than one more perf row: it is the only
+# routing in the suite at which the 256-row tile does not pad
+# (``ceil(M/256)*256 == ceil(M/128)*128``, false at 384 and true at 512), i.e.
+# the only one that can measure `TileM = 256` on its merits rather than on its
+# padding. ``test_perf_prefill_tile_sweep_long_seq`` did, and it came out level
+# or behind, which is why the ladder no longer has a 256-row rung.
 _PREFILL_LONG_SEQ_LEN = 8192
 
 
@@ -1444,13 +1445,14 @@ if pytest is not None:
             """Time every prefill work-group tile at the 8K-prompt routing.
 
             The tile sweep above runs at the derived compute-bound batch, where
-            every model sits at 384 rows per expert -- a routing the 256-row
-            tile is *excluded* from, because it would schedule 512 rows for 384
-            rows of data. A fixed 8K prompt is the routing that changes that:
-            Qwen3-MoE's 128 experts get 512 rows each, the padding test
-            (``ceil(M/256)*256 == ceil(M/128)*128``) turns true, and the ladder
-            takes its ``256x256`` rung -- the one rung no other case in this
-            suite reaches. This sweep is what says whether it should.
+            every model sits at 384 rows per expert -- a routing at which the
+            256-row tile can only lose, because it would schedule 512 rows for
+            384 rows of data. A fixed 8K prompt is the routing that changes
+            that: Qwen3-MoE's 128 experts get 512 rows each, an exact multiple
+            of 256, so both candidate ``TileM`` values schedule the same rows
+            and the sweep measures the tile rather than its padding. It is the
+            only case in the suite that can, which is what makes it the
+            evidence for (or, as it turned out, against) a 256-row rung.
             """
             rows = run_config_sweep(
                 "prefill",
@@ -1911,7 +1913,7 @@ def _parse_args(argv):
         help=(
             f"Also run the long-prompt prefill point ({_PREFILL_LONG_SEQ_LEN} model tokens, one 8K sequence), "
             "where Qwen3-MoE routes 512 rows per expert -- a higher intensity than the compute-bound batch, "
-            "and the only routing at which the tile ladder takes its 256-row rung. With --sweep-configs the "
+            "and the only routing at which a 256-row tile does not pad. With --sweep-configs the "
             "prefill tile sweep is repeated there."
         ),
     )
