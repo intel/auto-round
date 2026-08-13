@@ -128,6 +128,9 @@ constexpr int kPrepackOctet = 8;
 template <typename ScalarT>
 class MoEW4A8ActQuant;
 
+template <typename ScalarT, int VEC>
+class MoEW4A8ActQuantVec;
+
 template <typename ScalarT>
 class MoEW4A8ScaleReduce;
 
@@ -182,13 +185,138 @@ inline DeviceScratchPool& expert_map_pool() {
 // gets by consuming `num_tokens_per_expert` directly. The scan is the verbatim
 // body of `fill_expert_id_per_token`, including its clamp to
 // `num_experts - 1` for a routing table that sums to less than `total_tokens`.
+//
+// Message width (the prefill cost that matters)
+// ---------------------------------------------
+// This kernel is a pure streaming pass -- it reads `[T, K]` activations twice
+// (absmax, then quantize) and writes `[T, K]` int8 -- so at prefill sizes it is
+// a sizeable fraction of the whole `moe_gemm_w4a8` call, not a preamble. At
+// 32768 routed rows and K = 2048 it touches ~200 MB, next to the ~400 MB the
+// grouped GEMM streams for the qwen3 up-proj weights.
+//
+// The scalar mapping below (`k = lane; k < K; k += SG_SIZE`) moves that traffic
+// in the *narrowest* messages the sub-group can issue: 16 lanes x one 16-bit
+// element is a 32-byte load and 16 lanes x one int8 is a **16-byte** store, i.e.
+// a quarter of a cache line per store message. That is the same defect the
+// decode GEMV had before the K-split rewrite, and it was worth 1.09-1.93x there.
+//
+// `launch_act_dynamic_quant_vec` fixes it the same way: each lane owns `VEC`
+// *consecutive* elements, so one message covers `SG_SIZE * VEC` contiguous
+// elements -- 256 bytes of activations and 128 bytes of int8 at `VEC = 8`.
+// Both passes read the same `sycl::vec`, and the second pass re-reads a row the
+// first pass just touched, so it is served by the cache rather than DRAM.
+//
+// `VEC` is chosen from K: 8 when `K % 128 == 0` (every shipped MoE shape --
+// 768 / 1536 / 2048 / 3072), otherwise 4, which the `K % 64 == 0` shape gate
+// always satisfies. A misaligned base pointer (never the case for torch
+// allocations or the scratch pool) falls back to the scalar kernel, and
+// `ARK_MOE_W4A8_ACT_QUANT_VEC=0` forces it for A/B measurement.
+//
+// `sycl::vec<uint16_t, VEC>` is used rather than `sycl::vec<ScalarT, VEC>`
+// because `sycl::vec` of `bfloat16` is not universally available; the elements
+// are `bit_cast` back one at a time, exactly like the decode kernels'
+// `ActVec` loads in `sycl_tla_moe_decode.hpp`.
 // ---------------------------------------------------------------------------
+
+// Fold the per-token expert scan (decode only) into the quantization kernel.
+// Verbatim body of `moe_decode_detail::fill_expert_id_per_token`.
+inline void act_quant_write_scale(float* ascale, int token, float scale, int* expert_id_per_token,
+                                  const int* num_tokens_per_expert, int num_experts) {
+  ascale[token] = scale;
+  if (expert_id_per_token == nullptr) return;
+  int offset = 0;
+  int expert = num_experts - 1;
+  for (int e = 0; e < num_experts; ++e) {
+    const int n = num_tokens_per_expert[e];
+    if (token < offset + n) {
+      expert = e;
+      break;
+    }
+    offset += n;
+  }
+  expert_id_per_token[token] = expert;
+}
+
+template <typename ScalarT, int VEC>
+void launch_act_dynamic_quant_vec(sycl::queue* q, const ScalarT* activations, int8_t* qact, float* ascale,
+                                  int total_tokens, int K, int* expert_id_per_token,
+                                  const int* num_tokens_per_expert, int num_experts) {
+  static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+  static_assert(VEC == 4 || VEC == 8, "VEC must be 4 or 8");
+  using ActVec = sycl::vec<uint16_t, VEC>;
+  using QVec = sycl::vec<int8_t, VEC>;
+
+  // Vectors a lane walks over. `K % (SG_SIZE * VEC) == 0` is checked by the
+  // caller, so the loop needs no tail.
+  const int steps = K / (SG_SIZE * VEC);
+
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
+  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
+
+  q->parallel_for<MoEW4A8ActQuantVec<ScalarT, VEC>>(
+      sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+        const int token = static_cast<int>(it.get_global_id(0));
+        const int lane = static_cast<int>(it.get_local_id(1));
+        const ActVec* row = reinterpret_cast<const ActVec*>(activations + static_cast<size_t>(token) * K);
+        QVec* out = reinterpret_cast<QVec*>(qact + static_cast<size_t>(token) * K);
+
+        float local_max = 0.0f;
+        for (int s = 0; s < steps; ++s) {
+          const ActVec v = row[static_cast<size_t>(s) * SG_SIZE + lane];
+#pragma unroll
+          for (int u = 0; u < VEC; ++u) {
+            const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[u]));
+            local_max = sycl::fmax(local_max, sycl::fabs(static_cast<float>(a)));
+          }
+        }
+        auto sg = it.get_sub_group();
+        const float absmax = sycl::reduce_over_group(sg, local_max, sycl::maximum<float>{});
+
+        const float scale = absmax / kInt8Max;
+        const float inv = absmax > 0.0f ? kInt8Max / absmax : 0.0f;
+        if (lane == 0) {
+          act_quant_write_scale(ascale, token, scale, expert_id_per_token, num_tokens_per_expert, num_experts);
+        }
+
+        for (int s = 0; s < steps; ++s) {
+          const ActVec v = row[static_cast<size_t>(s) * SG_SIZE + lane];
+          QVec qv;
+#pragma unroll
+          for (int u = 0; u < VEC; ++u) {
+            const ScalarT a = sycl::bit_cast<ScalarT>(static_cast<uint16_t>(v[u]));
+            const float x = sycl::rint(static_cast<float>(a) * inv);
+            qv[u] = static_cast<int8_t>(sycl::clamp(x, -kInt8Max, kInt8Max));
+          }
+          out[static_cast<size_t>(s) * SG_SIZE + lane] = qv;
+        }
+      });
+}
+
 template <typename ScalarT>
 void launch_act_dynamic_quant(sycl::queue* q, const ScalarT* activations, int8_t* qact, float* ascale,
                               int total_tokens, int K, int* expert_id_per_token = nullptr,
                               const int* num_tokens_per_expert = nullptr, int num_experts = 0) {
   static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
   if (total_tokens == 0) return;
+
+  // Widest lane chunk this shape and these buffers support. The alignment
+  // checks never fire for torch allocations or the scratch pool (both are at
+  // least 256-byte aligned), but a caller-supplied activation view could be
+  // offset, and an unaligned `sycl::vec` access would be undefined.
+  if (moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_ACT_QUANT_VEC", true)) {
+    const auto act_addr = reinterpret_cast<std::uintptr_t>(activations);
+    const auto q_addr = reinterpret_cast<std::uintptr_t>(qact);
+    if (K % (SG_SIZE * 8) == 0 && act_addr % (8 * sizeof(ScalarT)) == 0 && q_addr % 8 == 0) {
+      launch_act_dynamic_quant_vec<ScalarT, 8>(q, activations, qact, ascale, total_tokens, K, expert_id_per_token,
+                                               num_tokens_per_expert, num_experts);
+      return;
+    }
+    if (K % (SG_SIZE * 4) == 0 && act_addr % (4 * sizeof(ScalarT)) == 0 && q_addr % 4 == 0) {
+      launch_act_dynamic_quant_vec<ScalarT, 4>(q, activations, qact, ascale, total_tokens, K, expert_id_per_token,
+                                               num_tokens_per_expert, num_experts);
+      return;
+    }
+  }
 
   sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
   sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
@@ -210,20 +338,7 @@ void launch_act_dynamic_quant(sycl::queue* q, const ScalarT* activations, int8_t
         const float scale = absmax / kInt8Max;
         const float inv = absmax > 0.0f ? kInt8Max / absmax : 0.0f;
         if (lane == 0) {
-          ascale[token] = scale;
-          if (expert_id_per_token != nullptr) {
-            int offset = 0;
-            int expert = num_experts - 1;
-            for (int e = 0; e < num_experts; ++e) {
-              const int n = num_tokens_per_expert[e];
-              if (token < offset + n) {
-                expert = e;
-                break;
-              }
-              offset += n;
-            }
-            expert_id_per_token[token] = expert;
-          }
+          act_quant_write_scale(ascale, token, scale, expert_id_per_token, num_tokens_per_expert, num_experts);
         }
 
         for (int k = lane; k < K; k += SG_SIZE) {
@@ -346,6 +461,14 @@ void launch_weight_rescale_s4_to_s8(sycl::queue* q, const uint8_t* weights, cons
 // So the ladder tops out at 128x128. The 256-wide policies stay compiled and
 // reachable through `ARK_MOE_W4A8_PREFILL_TILE` so the sweep can re-check them
 // on a device with a different register budget.
+//
+// Re-sweep note: those numbers were measured when the mainloop also kept a
+// float shadow of the C fragment live throughout (see `xe_gemm_w4a8`), which
+// *doubled* the per-lane C footprint -- 128 + 128 registers at `TileN = 256`,
+// i.e. the entire 256-register large-GRF file. The single-block epilogue no
+// longer allocates it, so the 256-wide policies now ask for half of what they
+// did when they lost, and are worth re-sweeping on device before the ladder is
+// considered settled.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
@@ -394,13 +517,48 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 //   * A/B/D base pointers are the per-expert slices.
 //
 // `blks == 1` (the AUTO_S8 `group=-1` default) collapses the outer loop to a
-// single full-K int32 accumulation -- the maximum-efficiency shape.
+// single full-K int32 accumulation -- the maximum-efficiency shape -- and gets
+// its own instantiation, because on this architecture the *register file*, not
+// the tile traffic, is what the prefill GEMM runs out of.
+//
+// Why `blks == 1` is specialized (the register-file argument)
+// -----------------------------------------------------------
+// The blocked path needs two C fragments: the int32 DPAS accumulator `tCrC`,
+// cleared once per re-scale block, and a float `tFrC` that survives across
+// blocks because the per-block weight scale has to be applied before the next
+// block overwrites `tCrC`. Both are the size of the work-group tile divided by
+// the sub-group count, and a lane holds them in GRF for the *entire* mainloop:
+//
+//   tile      SG C fragment   int32 regs/lane   + float regs/lane
+//   128x128       32 x 32          64                  64
+//   128x256       32 x 64         128                 128
+//
+// With `grf_size<256>` a lane has 256 registers in total, so at 128x128 the
+// float shadow alone reserves a quarter of the register file for the whole
+// mainloop, and at 128x256 the two fragments together *are* the register file
+// -- leaving nothing for the staged A/B tiles. That is the measured cliff
+// documented in the tile-policy comment above (256-wide N tiles 35-50% slower
+// than 128-wide ones, split by `TileN` and not by `TileM`), and it is pure
+// overhead when `blks == 1`: with one block there is nothing to carry across
+// blocks, so the scale can be folded on the way out and no float fragment
+// needs to exist while the mainloop runs.
+//
+// The single-block epilogue therefore keeps only `tCrC` live and applies
+// `scale_b[col] * scale_a[row]` in one pass, exactly like the `AccumBlock ==
+// false` branch of the reference `igemm_device_impl`.
 //
 // The epilogue writes through the raw `[m, n]` row-major output pointer using
 // the coordinates of `thr_mma.partition_C(...)`, exactly like the reference,
 // because the int32 accumulator has to be converted and scaled per element
-// anyway. Bounds are always checked: a grouped GEMM's per-expert M is
-// arbitrary, so tiles at the M edge are partial.
+// anyway. A grouped GEMM's per-expert M is arbitrary, so tiles at the M edge
+// are partial and the *store* is always predicated -- but the scale *loads*
+// are not: their indices are clamped into range instead. Both scale reads are
+// then unconditional loads at a compile-time offset from a uniform base, which
+// is what lets the compiler collapse the `size(tCrC)` per-element reads into
+// the handful of distinct addresses a sub-group's fragment actually covers
+// (all lanes of a row group share `scale_a[row]`, and a lane repeats the same
+// `scale_b[col]` for every row it owns). Under the previous `continue` guard
+// each read sat in its own basic block and none of that could be hoisted.
 // ---------------------------------------------------------------------------
 template <class GmemTiledCopyA, class GmemTiledCopyB, class TiledMMA, typename ElementD>
 CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, const float* scale_a,
@@ -440,7 +598,6 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
   Tensor tBgB = thr_copy_b.partition_S(gB);
 
   Tensor tCrC = partition_fragment_C(mma, select<0, 1>(wg_tile));
-  Tensor tFrC = make_tensor_like<float>(tCrC);
   Tensor tCgC = thr_mma.partition_C(gC);
 
   auto prefetch_a = make_block_2d_prefetch(copy_a);
@@ -457,10 +614,26 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
   const int k_tile_count = blks * k_tiles_per_block;
   int k_tile_prefetch = 0;
 
-  CUTE_UNROLL
-  for (int i = 0; i < size(tFrC); ++i) {
-    tFrC(i) = 0.0f;
-  }
+  // One k-tile of the DPAS pipeline. Shared by both paths so the two
+  // instantiations differ only in what they keep live around it.
+  auto run_k_tile = [&](int k_tile) {
+    barrier_arrive(barrier_scope);
+
+    copy(copy_a, tAgA(_, _, _, k_tile), tArA);
+    copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+
+    if (k_tile_prefetch < k_tile_count) {
+      prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+      prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+    }
+    ++k_tile_prefetch;
+
+    reorder(tArA, tCrA);
+    reorder(tBrB, tCrB);
+    cute::gemm(mma, tCrA, tCrB, tCrC);
+
+    barrier_wait(barrier_scope);
+  };
 
   CUTE_UNROLL
   for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; ++k_tile_prefetch) {
@@ -468,28 +641,13 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
     prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
   }
 
-  for (int ib = 0; ib < blks; ++ib) {
+  // `blks` is a kernel argument, so it is uniform across the work-group and
+  // this branch never splits the split-barrier pairing below.
+  if (blks == 1) {
     clear(tCrC);
 
-    for (int bk = 0; bk < k_tiles_per_block; ++bk) {
-      const int k_tile = ib * k_tiles_per_block + bk;
-
-      barrier_arrive(barrier_scope);
-
-      copy(copy_a, tAgA(_, _, _, k_tile), tArA);
-      copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
-
-      if (k_tile_prefetch < k_tile_count) {
-        prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
-        prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
-      }
-      ++k_tile_prefetch;
-
-      reorder(tArA, tCrA);
-      reorder(tBrB, tCrB);
-      cute::gemm(mma, tCrA, tCrB, tCrC);
-
-      barrier_wait(barrier_scope);
+    for (int k_tile = 0; k_tile < k_tile_count; ++k_tile) {
+      run_k_tile(k_tile);
     }
 
     CUTE_UNROLL
@@ -497,8 +655,40 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
       auto coord = tCgC(i);
       const int row = static_cast<int>(get<0>(coord));
       const int col = static_cast<int>(get<1>(coord));
-      if (row >= m || col >= n) continue;
-      tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col) * blks + ib];
+      // Clamp rather than branch: an out-of-range element's value is dropped
+      // by the guarded store, and unconditional loads let the redundant reads
+      // across the fragment collapse. `m` and `n` are both >= 1 here (an
+      // expert with no rows contributes no tiles).
+      const int row_in = row < m ? row : m - 1;
+      const int col_in = col < n ? col : n - 1;
+      const float value = static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in)] * scale_a[row_in];
+      if (row < m && col < n) {
+        c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(value);
+      }
+    }
+    return;
+  }
+
+  Tensor tFrC = make_tensor_like<float>(tCrC);
+
+  CUTE_UNROLL
+  for (int i = 0; i < size(tFrC); ++i) {
+    tFrC(i) = 0.0f;
+  }
+
+  for (int ib = 0; ib < blks; ++ib) {
+    clear(tCrC);
+
+    for (int bk = 0; bk < k_tiles_per_block; ++bk) {
+      run_k_tile(ib * k_tiles_per_block + bk);
+    }
+
+    CUTE_UNROLL
+    for (int i = 0; i < size(tCrC); ++i) {
+      auto coord = tCgC(i);
+      const int col = static_cast<int>(get<1>(coord));
+      const int col_in = col < n ? col : n - 1;
+      tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in) * blks + ib];
     }
   }
 
@@ -507,8 +697,11 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
     auto coord = tCgC(i);
     const int row = static_cast<int>(get<0>(coord));
     const int col = static_cast<int>(get<1>(coord));
-    if (row >= m || col >= n) continue;
-    c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(tFrC(i) * scale_a[row]);
+    const int row_in = row < m ? row : m - 1;
+    const float value = tFrC(i) * scale_a[row_in];
+    if (row < m && col < n) {
+      c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(value);
+    }
   }
 }
 
