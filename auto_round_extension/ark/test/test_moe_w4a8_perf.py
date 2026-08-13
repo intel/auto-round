@@ -1252,9 +1252,10 @@ if pytest is not None:
             request moves; it did not change how many requests a work-item has
             outstanding. The pass walks K with a runtime trip count and folds
             every vector into one ``local_max``, so an in-order thread keeps
-            about one 256-byte load in flight -- roughly 160 KB across the
-            device, well under what a ~400 GB/s part needs to stay busy over a
-            memory latency. ``UNROLL`` loads that many independent vectors
+            about one 256-byte load in flight -- ~320 KB even at a B60's
+            1280-thread occupancy ceiling, under what a 456 GB/s part needs to
+            stay busy over a memory latency. ``UNROLL`` loads that many
+            independent vectors
             before consuming any of them. The first row is the kernel as it was
             before the batching, so this is an exact A/B measurement; the
             arithmetic is unchanged, which

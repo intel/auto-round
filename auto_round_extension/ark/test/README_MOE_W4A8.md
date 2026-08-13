@@ -42,6 +42,22 @@ This kernel applies the same idea to the MoE grouped GEMM. The conversion runs
 
 ## Performance targets and the roofline
 
+### The device every number in this document was measured on
+
+An **Intel Arc Pro B60** (Battlemage, `BMG-G21` — the default AOT target
+`intel_gpu_bmg_g21`): 20 Xe2 cores / 160 XVEs at ~2.4 GHz, 24 GB GDDR6 on a
+192-bit bus. The ceilings it sets:
+
+| Ceiling | Value |
+|---|---|
+| int8 XMX (DPAS) | 160 XVEs × 512 int8 ops/clk × 2.4 GHz ≈ **197 TOPS** |
+| bf16 / fp16 XMX | ≈ **98 TFLOPS**, half the int8 rate — the reason W4A8 exists |
+| DRAM pin bandwidth | **456 GB/s**; the harness' device-copy probe reads ~400 GB/s (88% of pin) |
+| Occupancy ceiling | 160 XVEs × 8 thread slots = **1280 concurrent SIMD16 sub-groups** |
+
+So the two targets below are 51% of int8 peak and 66% of pin bandwidth. The
+`Arc Pro B60 Dual` card exposes two such devices; the kernel sees one.
+
 The goals for this kernel are **prefill > 100 TFLOPS** and **decode > 300 GB/s**
 of weight bandwidth. Whether the prefill goal is reachable at all is decided by
 the *routing*, not by the kernel. A W4A8 grouped GEMM reads every active
@@ -68,10 +84,10 @@ So ~4.5 TFLOPS at the default batch is **not** a kernel deficiency: at 8 rows
 per expert and the ~285 GB/s of weight bandwidth the kernel actually achieves,
 the ceiling is `2 × 8 × 285e9 = 4.56 TFLOPS` — the measured value, i.e. the
 kernel is already running at the DRAM roofline. Reaching 100 TFLOPS there would
-require 6.25 TB/s, more than 10× any current GPU. On a device streaming
-~285 GB/s the target first becomes reachable at ~176 rows per expert (~2816
-model tokens), which is why `test_perf_prefill_compute_bound` measures at 4096
-model tokens.
+require 6.25 TB/s, 13× the B60's 456 GB/s and more than 10× any current GPU. On
+a device streaming ~285 GB/s the target first becomes reachable at ~176 rows per
+expert (~2816 model tokens), which is why `test_perf_prefill_compute_bound`
+measures at 4096 model tokens.
 
 The perf table therefore prints `rows/E` and `BW@100T` next to the measured
 numbers, and each sweep ends with a verdict block:
@@ -98,11 +114,13 @@ exchange for ~2× the DPAS peak, so it only wins once the GEMM is compute bound:
 crossover rows/expert ~= int8_peak_TOPS / (4 × weight_bandwidth)
 ```
 
-With ~233 TOPS of int8 DPAS and ~285 GB/s that is ~200 rows per expert
-(~3200 model tokens). Decode (1 row per expert) and small-batch prefill are far
-below it, so readings of 0.55–0.71× are expected there: W4A8 is a large-batch
-prefill optimization, and at decode it can only help by improving the *memory*
-path.
+With the B60's ~197 TOPS of int8 DPAS and the ~285 GB/s the kernel streams, that
+is ~173 rows per expert (~2760 model tokens) — essentially the same routing at
+which the bandwidth roofline first admits 100 TFLOPS (~176 rows above), so on
+this part the two crossings coincide. Decode (1 row per expert) and small-batch
+prefill are far below it, so readings of 0.55–0.71× are expected there: W4A8 is
+a large-batch prefill optimization, and at decode it can only help by improving
+the *memory* path.
 
 ## Decode: coalesced K-split mapping
 
@@ -172,16 +190,20 @@ pass walks K with a runtime trip count (`steps = K / (SG_SIZE × VEC)`) and fold
 every vector into the same `local_max`, so the loop reads as: issue one load,
 stall until it returns, `fmax` it, repeat. Xe cores execute in order and `fmax`
 is not reassociated without fast-math, so a thread keeps roughly *one* 256-byte
-load in flight. That is a Little's-law problem, not a bandwidth one: 640
-concurrent sub-groups × 256 bytes is ~160 KB of in-flight reads, well under the
-~400 KB a ~400 GB/s device needs to stay busy across a ~1 µs memory latency. It
-is the same argument that made the decode GEMV load two chunks per iteration.
+load in flight. That is a Little's-law problem, not a bandwidth one: 1280
+concurrent sub-groups (the B60's occupancy ceiling — 160 XVEs × 8 thread slots)
+× 256 bytes is ~320 KB of in-flight reads, under the ~456 KB a 456 GB/s device
+needs to stay busy across a ~1 µs memory latency, and a real launch rarely fills
+every slot. It is the same argument that made the decode GEMV load two chunks
+per iteration.
 
 Each iteration now loads `UNROLL` *independent* vectors before consuming any of
 them, and reduces them into `UNROLL` separate partial maxima so the loads do not
 serialize behind the accumulator chain either; the quantize pass batches its
-loads the same way. `steps % UNROLL` vectors are left to a tail loop — at
-`K = 768` a lane walks 6 vectors, so with the default `UNROLL = 4` the tail is
+loads the same way. At the default `UNROLL = 4` a thread holds 1 KB, which
+clears the 456 KB well before every slot is occupied. `steps % UNROLL` vectors
+are left to a tail loop — at `K = 768` a lane walks 6 vectors, so with the
+default `UNROLL = 4` the tail is
 real code rather than a formality. Nothing that rounds changes (`fmax` is exact
 and order-independent, so the partial maxima merge to the same bits), and
 `UNROLL = 1` is the previous kernel instruction for instruction, so
@@ -431,9 +453,10 @@ it for a given deployment.
 
 ## Tuned defaults (measured)
 
-The defaults below come from one `-k sweep` run on BMG (bf16 activations, 8
-routed rows for decode, 256 rows/expert for prefill). Every configuration is
-checked for numerical equivalence with the first one before it is timed.
+The defaults below come from one `-k sweep` run on the Arc Pro B60 above (bf16
+activations, 8 routed rows for decode, 256 rows/expert for prefill). Every
+configuration is checked for numerical equivalence with the first one before it
+is timed.
 
 ### Prefill tile
 
@@ -479,10 +502,11 @@ a skewed routing that averages 256 rows can still leave many experts with ragged
 256-row tiles.
 
 At the chosen tile the swept shapes reach 75.8 / 56.4 / 82.9 / 82.8 TFLOPS
-(qwen3 up / down, minimax up / down) — up from 61.1 / 39.4 / 68.8 / 65.3 before
-the C-shadow removal and the vectorized activation quantizer, but qwen3 down is
-still short of the 100 TFLOPS target: at `K = 768` a tile runs only 12 k-tiles,
-so the epilogue and the prologue are a large share of it.
+(qwen3 up / down, minimax up / down) — 39% / 29% / 42% / 42% of the B60's
+~197 TOPS of int8 peak, up from 61.1 / 39.4 / 68.8 / 65.3 before the C-shadow
+removal and the vectorized activation quantizer, but qwen3 down is still short
+of the 100 TFLOPS target (51% of peak): at `K = 768` a tile runs only 12
+k-tiles, so the epilogue and the prologue are a large share of it.
 
 ### Prefill activation quantization
 
@@ -533,6 +557,11 @@ on the other two, while `1` loses 47% on qwen3 up and `4` loses 14% on minimax
 up, so it stays the default as well. At those defaults the K-split mapping is
 worth 1.09–1.93× over the legacy GEMV.
 
+Those readings are 59–69% of the B60's 456 GB/s of pin bandwidth (68–79% of what
+the device-copy probe actually reaches), so only minimax down clears the
+300 GB/s target. A decode step reads one weight byte per multiply-add and
+nothing else, so the remaining gap is message efficiency, not arithmetic.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -567,9 +596,10 @@ failing.
 The W4A8 kernel is a new SYCL/CuTe port, marked
 `STATUS: PARTIALLY HARDWARE-VALIDATED` in
 `auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. The perf sweeps have
-been run on BMG — that run is where the tile ladder, the activation-quantization
-default, the interior-tile epilogue and the decode `CH` / `NCOLS` defaults come
-from (see [Tuned defaults](#tuned-defaults-measured)) — and every swept
+been run on an Intel Arc Pro B60 — that run is where the tile ladder, the
+activation-quantization default, the interior-tile epilogue and the decode
+`CH` / `NCOLS` defaults come from (see
+[Tuned defaults](#tuned-defaults-measured)) — and every swept
 configuration passed the cross-configuration equivalence check.
 `test_act_quant_vec_matches_scalar`, `test_full_tile_epilogue_matches_predicated`
 and `test_decode_ksplit_matches_legacy` pass on device, so the vectorized

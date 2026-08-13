@@ -4,9 +4,11 @@
 // `test_perf_prefill_act_quant_sweep`, `test_perf_prefill_epilogue_sweep`,
 // `test_perf_decode_config_sweep`, `test_act_quant_vec_matches_scalar`,
 // `test_full_tile_epilogue_matches_predicated` and
-// `test_decode_ksplit_matches_legacy` have been run on BMG, so both phases
-// compile and run and every dispatch default (tile ladder, activation-quant
-// message width, interior-tile epilogue, decode CH / NCOLS) comes from those
+// `test_decode_ksplit_matches_legacy` have been run on an Intel Arc Pro B60
+// (Battlemage, BMG-G21 -- 20 Xe2 cores / 160 XVEs at ~2.4 GHz, ~197 int8 TOPS,
+// 24 GB GDDR6 at 456 GB/s), so both phases compile and run and every dispatch
+// default (tile ladder, activation-quant message width, interior-tile epilogue,
+// decode CH / NCOLS) comes from those
 // measurements; every swept configuration also passed the cross-configuration
 // equivalence check. The accuracy gates against the fp32 reference still need
 // a device run. The authoring environment has no XPU and no SYCL compiler, so
@@ -243,20 +245,22 @@ inline DeviceScratchPool& expert_map_pool() {
 // `fmax` is not reassociated without fast-math, so each thread keeps roughly
 // *one* 256-byte load in flight.
 //
-// That is a Little's-law problem, not a bandwidth one: 640 concurrent
-// sub-groups (20 Xe cores x 32 threads) x 256 bytes is ~160 KB of in-flight
-// reads, well under the ~400 KB a ~400 GB/s device needs to stay busy across a
-// ~1 us memory latency. The same argument is why the decode GEMV loads two
-// chunks per iteration (`launch_w4a8_decode_ksplit`), and why the pair is
-// spelled out there rather than left to the compiler.
+// That is a Little's-law problem, not a bandwidth one: 1280 concurrent
+// sub-groups (the B60's occupancy ceiling -- 160 XVEs x 8 thread slots) x 256
+// bytes is ~320 KB of in-flight reads, under the ~456 KB a 456 GB/s device
+// needs to stay busy across a ~1 us memory latency, and a real launch rarely
+// fills every slot. The same argument is why the decode GEMV loads two chunks
+// per iteration (`launch_w4a8_decode_ksplit`), and why the pair is spelled out
+// there rather than left to the compiler.
 //
 // `UNROLL` gives the pass the same treatment: each iteration loads `UNROLL`
 // *independent* vectors before consuming any of them, and reduces them into
 // `UNROLL` separate partial maxima so the loads do not serialize behind the
-// accumulator chain either. The quantize pass batches its loads the same way,
-// and its stores are already independent. `steps % UNROLL` vectors are left to
-// a tail loop -- `K = 768` (qwen3 down) gives `steps = 6`, so the tail is real
-// code, not a formality.
+// accumulator chain either. At the default `UNROLL = 4` a thread holds 1 KB,
+// which clears the 456 KB well before every slot is occupied. The quantize
+// pass batches its loads the same way, and its stores are already independent.
+// `steps % UNROLL` vectors are left to a tail loop -- `K = 768` (qwen3 down)
+// gives `steps = 6`, so the tail is real code, not a formality.
 //
 // Nothing that rounds changes: the per-lane partial reduction is still `fmax`
 // over the same values (exact and order-independent, so partial maxima merge
@@ -1204,8 +1208,8 @@ void launch_w4a8_decode(sycl::queue* q, const int8_t* qact, const float* ascale,
 //      per sub-group -- the pattern DRAM row buffers handle worst.
 //   2. The grid is small: `total_tokens * N / 16` sub-groups, i.e. 768 SIMD16
 //      threads for a Qwen3-MoE batch-1 step (8 routed rows, N = 1536). That is
-//      below the thread slots of a BMG-class GPU, so there are never enough
-//      loads in flight to cover DRAM latency.
+//      below the thread slots of a BMG-class GPU (1280 on a B60), so there are
+//      never enough loads in flight to cover DRAM latency.
 //
 // This kernel transposes the mapping exactly like `launch_fp8_ksplit`: a whole
 // sub-group cooperates on one output element and lane `l` owns the `CH`

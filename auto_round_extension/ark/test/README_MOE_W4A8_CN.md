@@ -40,6 +40,22 @@ w8[e][n][k]  = round( w4[e][n][k] * s[e][n][k / group_size] / sxt[e][n][j] )
 
 ## 性能目标与 roofline
 
+### 本文所有实测数据所用的设备
+
+一块 **Intel Arc Pro B60** (Battlemage，`BMG-G21` — 也就是默认的 AOT 目标
+`intel_gpu_bmg_g21`)：20 个 Xe2 core / 160 个 XVE，频率约 2.4 GHz，24 GB GDDR6，
+192-bit 位宽。它给出的各条上限：
+
+| 上限 | 数值 |
+|---|---|
+| int8 XMX (DPAS) | 160 XVE × 512 int8 ops/clk × 2.4 GHz ≈ **197 TOPS** |
+| bf16 / fp16 XMX | ≈ **98 TFLOPS**，是 int8 速率的一半 — 这正是 W4A8 存在的理由 |
+| DRAM 引脚带宽 | **456 GB/s**；测试脚本的 device-copy 探测读到约 400 GB/s (引脚带宽的 88%) |
+| 占用率上限 | 160 XVE × 8 个线程槽 = **1280 个并发 SIMD16 sub-group** |
+
+因此下面两个目标分别是 int8 峰值的 51% 和引脚带宽的 66%。`Arc Pro B60 Dual` 卡会
+暴露两个这样的设备，kernel 只看到其中一个。
+
 本 kernel 的目标是 **prefill > 100 TFLOPS**、**decode 权重带宽 > 300 GB/s**。
 prefill 目标是否*可能*达到，取决于**路由**而不是 kernel 本身：W4A8 grouped GEMM
 对每个活跃专家的 int8 权重只读一次，而每读一个权重字节要做 `2 × rows_per_expert`
@@ -64,9 +80,9 @@ rows_per_expert = batch × top_k / active_experts
 因此默认 batch 下约 4.5 TFLOPS **并不是 kernel 的缺陷**：在每专家 8 行、kernel 实
 测约 285 GB/s 权重带宽的条件下，上限就是 `2 × 8 × 285e9 = 4.56 TFLOPS` — 正好等于
 实测值，说明 kernel 已经跑在 DRAM roofline 上。要在该形状上达到 100 TFLOPS 需要
-6.25 TB/s，比当前任何 GPU 都高 10 倍以上。在带宽约 285 GB/s 的设备上，该目标最早
-在每专家约 176 行 (约 2816 个模型 token) 时才变得可达，这正是
-`test_perf_prefill_compute_bound` 使用 4096 个模型 token 的原因。
+6.25 TB/s，是 B60 那 456 GB/s 的 13 倍，也比当前任何 GPU 高 10 倍以上。在带宽约
+285 GB/s 的设备上，该目标最早在每专家约 176 行 (约 2816 个模型 token) 时才变得可达，
+这正是 `test_perf_prefill_compute_bound` 使用 4096 个模型 token 的原因。
 
 因此性能表在实测值旁边额外打印 `rows/E` 和 `BW@100T`，并在每次扫描后输出结论：
 
@@ -91,8 +107,10 @@ targets [prefill]: prefill compute > 100 TFLOPS
 交叉点 rows/expert ~= int8 峰值 TOPS / (4 × 权重带宽)
 ```
 
-按约 233 TOPS 的 int8 DPAS 和约 285 GB/s 计算，交叉点约为每专家 200 行 (约 3200 个
-模型 token)。decode (每专家 1 行) 和小 batch prefill 都远低于该点，所以
+按 B60 的约 197 TOPS int8 DPAS 和 kernel 实测约 285 GB/s 计算，交叉点约为每专家
+173 行 (约 2760 个模型 token) — 这与带宽 roofline 首次允许 100 TFLOPS 的路由 (上面
+的约 176 行) 基本重合，也就是说在这块卡上两个交叉点落在同一处。decode (每专家 1 行)
+和小 batch prefill 都远低于该点，所以
 0.55–0.71× 是预期结果：W4A8 是面向大 batch prefill 的优化，在 decode 阶段只能通过
 改善**访存**路径来获益。
 
@@ -154,14 +172,17 @@ absmax，再量化)，写一遍 `[T, K]` 的 int8。在 32768 条路由行、`K 
 (`steps = K / (SG_SIZE × VEC)`)，且每个向量都折进同一个 `local_max`，因此循环读起来
 就是：发一条 load，停下来等它返回，做一次 `fmax`，再来一遍。Xe core 是顺序执行的，而
 `fmax` 在没有 fast-math 时不会被重结合，所以一个线程大约只保持**一条** 256 字节的
-load 在途。这是 Little 定律的问题，而不是带宽的问题：640 个并发 sub-group × 256 字节
-只有约 160 KB 的在途读取，而一块约 400 GB/s 的设备要在约 1 µs 的访存延迟下保持忙碌需
-要约 400 KB。这与 decode GEMV 每次迭代加载两个 chunk 是同一个论证。
+load 在途。这是 Little 定律的问题，而不是带宽的问题：1280 个并发 sub-group (B60 的
+占用率上限 — 160 个 XVE × 8 个线程槽) × 256 字节只有约 320 KB 的在途读取，而一块
+456 GB/s 的设备要在约 1 µs 的访存延迟下保持忙碌需要约 456 KB，何况实际 launch 很少
+能填满每一个线程槽。这与 decode GEMV 每次迭代加载两个 chunk 是同一个论证。
 
 现在每次迭代先加载 `UNROLL` 个**互相独立**的向量，然后才开始消费它们，并把它们归约到
 `UNROLL` 个各自独立的局部最大值上，使这些 load 也不必串行等待累加器链；量化那一遍同样
-按此批量化其 load。`steps % UNROLL` 个向量交给尾循环处理——`K = 768` 时一个 lane 要走
-6 个向量，因此在默认 `UNROLL = 4` 下尾循环是真实会执行的代码，而不是形式上的补充。任
+按此批量化其 load。在默认 `UNROLL = 4` 下每个线程持有 1 KB，因此远在填满线程槽之前
+就已经越过了那 456 KB 的门槛。`steps % UNROLL` 个向量交给尾循环处理——`K = 768` 时一
+个 lane 要走 6 个向量，因此在默认 `UNROLL = 4` 下尾循环是真实会执行的代码，而不是形
+式上的补充。任
 何会产生舍入的步骤都没有改变 (`fmax` 精确且与顺序无关，因此各局部最大值合并后逐位相
 同)，且 `UNROLL = 1` 与批量化之前的 kernel 逐条指令一致，所以
 `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` 是精确的 A/B 基线。
@@ -395,8 +416,8 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 
 ## 实测得到的默认值
 
-下面的默认值来自 BMG 上的一次 `-k sweep` (bf16 激活，decode 为 8 条 routed
-行，prefill 为每专家 256 行)。每种配置在计时之前都会先与第一种配置做数值等价性
+下面的默认值来自上文那块 Arc Pro B60 上的一次 `-k sweep` (bf16 激活，decode 为 8 条
+routed 行，prefill 为每专家 256 行)。每种配置在计时之前都会先与第一种配置做数值等价性
 检查。
 
 ### Prefill tile
@@ -437,9 +458,11 @@ fragment 仍保持 32×32，同时把专家 B 面板的重复读取次数减半�
 多专家只有残缺的 256 行 tile。
 
 在选中的 tile 下，被扫描的四个形状达到 75.8 / 56.4 / 82.9 / 82.8 TFLOPS
-(qwen3 up / down、minimax up / down)——相比去掉 float 影子和引入向量化激活量化之前的
-61.1 / 39.4 / 68.8 / 65.3 有明显提升，但 qwen3 down 距离 100 TFLOPS 的目标仍有差距：
-`K = 768` 时一个 tile 只有 12 个 k-tile，epilogue 与 prologue 因此占了相当大的比例。
+(qwen3 up / down、minimax up / down)——分别是 B60 那约 197 TOPS int8 峰值的
+39% / 29% / 42% / 42%，相比去掉 float 影子和引入向量化激活量化之前的
+61.1 / 39.4 / 68.8 / 65.3 有明显提升，但 qwen3 down 距离 100 TFLOPS (峰值的 51%)
+的目标仍有差距：`K = 768` 时一个 tile 只有 12 个 k-tile，epilogue 与 prologue 因此
+占了相当大的比例。
 
 ### Prefill 激活量化
 
@@ -486,6 +509,10 @@ fragment 仍保持 32×32，同时把专家 B 面板的重复读取次数减半�
 minimax up 上慢 14%，因此 `2` 同样保持为默认值。在这组默认值下，K-split 映射相对
 legacy GEMV 的收益为 1.09–1.93×。
 
+这些读数相当于 B60 那 456 GB/s 引脚带宽的 59–69% (若以 device-copy 探测实际达到的
+带宽为基准则是 68–79%)，因此只有 minimax down 越过了 300 GB/s 的目标。decode 每做
+一次乘加就要读一个权重字节、别无其他，所以剩下的差距在访存消息效率，而不在算力。
+
 ## 环境变量
 
 | 变量 | 作用 |
@@ -518,8 +545,9 @@ decode 的 K-split 映射还额外要求重缩放 block 不小于 256 且是 16 
 
 W4A8 kernel 是新移植的 SYCL/CuTe 实现，在
 `auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp` 中被标记为
-`STATUS: PARTIALLY HARDWARE-VALIDATED`。各项性能扫描都已在 BMG 上跑过——tile 阶梯、
-激活量化的默认值、内部 tile 的 epilogue 以及 decode 的 `CH` / `NCOLS` 默认值正是来自
+`STATUS: PARTIALLY HARDWARE-VALIDATED`。各项性能扫描都已在一块 Intel Arc Pro B60 上
+跑过——tile 阶梯、激活量化的默认值、内部 tile 的 epilogue 以及 decode 的
+`CH` / `NCOLS` 默认值正是来自
 那些运行 (参见[实测得到的默认值](#实测得到的默认值))，并且所有被扫描的配置都通过了配
 置间的数值等价性检查。`test_act_quant_vec_matches_scalar`、
 `test_full_tile_epilogue_matches_predicated` 与 `test_decode_ksplit_matches_legacy`
