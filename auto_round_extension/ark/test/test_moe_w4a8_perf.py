@@ -60,11 +60,18 @@ Useful environment variables (read by the kernel itself):
 * ``ARK_MOE_W4A8_DECODE_MAX_TOKENS`` -- token count at or below which
   ``phase="auto"`` picks the GEMV (default 128).
 
+The dispatch knobs the sweeps here drive -- ``ARK_MOE_W4A8_PREFILL_TILE``,
+``ARK_MOE_W4A8_ACT_QUANT_VEC``, ``ARK_MOE_W4A8_ACT_QUANT_UNROLL``,
+``ARK_MOE_W4A8_PREFILL_FULL_TILE`` and the ``ARK_MOE_W4A8_DECODE_KSPLIT*``
+family -- are documented in ``README_MOE_W4A8.md``; each sweep sets them itself
+and restores the environment afterwards.
+
 .. note::
 
    The W4A8 kernel is a new SYCL/CuTe port; this script is the intended
    on-hardware validation vehicle for it (the kernel header is marked
-   ``STATUS: NEEDS-HARDWARE-VALIDATION``).
+   ``STATUS: PARTIALLY HARDWARE-VALIDATED`` and names the paths that still
+   need a device run).
 """
 
 import argparse

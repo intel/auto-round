@@ -149,6 +149,25 @@ absmax，再量化)，写一遍 `[T, K]` 的 int8。在 32768 条路由行、`K 
 同。`test_act_quant_vec_matches_scalar` 断言两者**逐位相同**，而
 `ARK_MOE_W4A8_ACT_QUANT_VEC=0` 可恢复标量映射以便做 A/B 对比测量。
 
+**在途请求数 (loads in flight)。** 加宽消息解决的是每个**请求**搬运多少字节，并没有
+改变一个 work-item 同时挂起多少个请求。这一遍扫描 K 的循环次数是运行期决定的
+(`steps = K / (SG_SIZE × VEC)`)，且每个向量都折进同一个 `local_max`，因此循环读起来
+就是：发一条 load，停下来等它返回，做一次 `fmax`，再来一遍。Xe core 是顺序执行的，而
+`fmax` 在没有 fast-math 时不会被重结合，所以一个线程大约只保持**一条** 256 字节的
+load 在途。这是 Little 定律的问题，而不是带宽的问题：640 个并发 sub-group × 256 字节
+只有约 160 KB 的在途读取，而一块约 400 GB/s 的设备要在约 1 µs 的访存延迟下保持忙碌需
+要约 400 KB。这与 decode GEMV 每次迭代加载两个 chunk 是同一个论证。
+
+现在每次迭代先加载 `UNROLL` 个**互相独立**的向量，然后才开始消费它们，并把它们归约到
+`UNROLL` 个各自独立的局部最大值上，使这些 load 也不必串行等待累加器链；量化那一遍同样
+按此批量化其 load。`steps % UNROLL` 个向量交给尾循环处理——`K = 768` 时一个 lane 要走
+6 个向量，因此在默认 `UNROLL = 4` 下尾循环是真实会执行的代码，而不是形式上的补充。任
+何会产生舍入的步骤都没有改变 (`fmax` 精确且与顺序无关，因此各局部最大值合并后逐位相
+同)，且 `UNROLL = 1` 与批量化之前的 kernel 逐条指令一致，所以
+`ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` 是精确的 A/B 基线。
+`test_act_quant_unroll_matches` 会在"K 能整除展开深度"和"K 会留下尾巴"两种情况下断言
+逐位相同。
+
 **GEMM 尾声 (epilogue)。** 原先的主循环同时保持两份 C fragment：int32 的 DPAS 累加
 器 (每个 AUTO_S8 重缩放 block 清零一次)，以及一份必须跨 block 存活的 float 影子——
 因为每个 block 的权重 scale 必须在下一个 block 覆盖累加器之前应用。在**整个**主循
@@ -163,7 +182,7 @@ absmax，再量化)，写一遍 `[T, K]` 的 int8。在 32768 条路由行、`K 
 在整个主循环里占掉了四分之一的寄存器堆，而 `128x256` 时两份 fragment 加起来*就是*
 整个寄存器堆——留给暂存 A/B tile 的空间为零。这正是 N 方向 256 的 tile 过去在
 [实测得到的默认值](#实测得到的默认值)中要多付 35–50% 的原因；去掉 float 影子之后，
-整张 tile 表已经收敛到 3–8% 的区间内。而在默认重缩放 block 下它完全是白付的开销：
+整张 tile 表已经收敛到 0–8% 的区间内。而在默认重缩放 block 下它完全是白付的开销：
 `blks == 1` (AUTO_S8 `group=-1` 默认值) 根本没有需要跨 block 携带的东西，scale 完全
 可以在写出时再折进去。该路径现在不再分配 float fragment，而是一次遍历就应用
 `scale_b[col] × scale_a[row]`——与参考的稠密 int8 GEMM 中 `AccumBlock == false`
@@ -293,10 +312,11 @@ pytest -v -s test_moe_w4a8_perf.py -k sweep
 ```
 
 `test_perf_decode_config_sweep`、`test_perf_prefill_tile_sweep`、
-`test_perf_prefill_act_quant_sweep` 和 `test_perf_prefill_epilogue_sweep` 只构造一
+`test_perf_prefill_act_quant_sweep`、`test_perf_prefill_act_quant_unroll_sweep`
+和 `test_perf_prefill_epilogue_sweep` 只构造一
 次 workload、只 prepack 一次，然后用同一份数据依次给每种 dispatch 配置计时——decode
 的 lane 映射 (legacy GEMV 以及 `CH` × `NCOLS` 的全部组合)、prefill 的 work-group
-tile、激活量化的消息宽度，以及 epilogue 的边界保护。每
+tile、激活量化的消息宽度与在途请求深度，以及 epilogue 的边界保护。每
 种配置都会与第一种配置做数值等价性检查，表格之后还会打印一段 `best
 configuration`，按形状给出获胜配置对应的环境变量，因此在硬件上跑一次就能确定这些
 调优开关。
@@ -383,12 +403,12 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 
 | 形状 | `128x128` | `256x128` | `128x256` | `256x256` |
 |---|---|---|---|---|
-| qwen3 up | **2.846 ms** | 2.914 ms | 2.938 ms | 3.057 ms |
-| qwen3 down | 2.078 ms | **2.049 ms** | 2.170 ms | 2.387 ms |
-| minimax up | 5.866 ms | **5.856 ms** | 5.997 ms | 5.861 ms |
-| minimax down | 6.271 ms | **5.676 ms** | 6.001 ms | 6.250 ms |
+| qwen3 up | 2.774 ms | **2.719 ms** | 2.809 ms | 2.808 ms |
+| qwen3 down | 1.904 ms | **1.829 ms** | 2.041 ms | 2.058 ms |
+| minimax up | 5.584 ms | 5.595 ms | 5.694 ms | **5.477 ms** |
+| minimax down | 5.681 ms | 5.605 ms | **5.541 ms** | 5.662 ms |
 
-现在整张表的差距只有 3–8%。它曾经是 35–50%，而那道悬崖的成因并不是 tile 形状：当时
+现在整张表的差距只有 0–8%。它曾经是 35–50%，而那道悬崖的成因并不是 tile 形状：当时
 主循环在 int32 累加器之外还全程保持一份 C fragment 的 float 影子，于是 `TileN = 256`
 需要每个 SIMD16 lane 128 + 128 个寄存器，即整个 large-GRF 寄存器堆。去掉这份影子之后
 (参见 [Prefill：访存消息宽度与寄存器压力](#prefill访存消息宽度与寄存器压力))，N 方向
@@ -397,37 +417,60 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 
 真正有收益的方向是 `TileM = 256`：它把 `SGLayout` 变成 8×4，从而让每个 lane 的
 fragment 仍保持 32×32，同时把专家 B 面板的重复读取次数减半——每个专家的 tile 访存量
-为 `M·K·⌈N/TileN⌉ + N·K·⌈M/TileM⌉`。只有当 B 是较大的那个操作数时 (即 down 投影，
-`N ≥ K`) 这个收益才成立，此时可得 1.5% (qwen3) 到 9.5% (minimax) 的提升；而在
-qwen3 up (`N < K`) 上则要倒亏 2.4%。
+为 `M·K·⌈N/TileN⌉ + N·K·⌈M/TileM⌉`。现在它在**全部四个**形状上都不慢于
+`128x128`——+2.0% (qwen3 up)、+3.9% (qwen3 down)、+1.3% (minimax down)、
+−0.2% (minimax up)。
 
-因此 tile 阶梯为：每专家 `< 16` 行 → `8x128`，`< 128` → `64x128`，`≥ 256` **且**
-`N ≥ K` → **`256x128`**，其余 → `128x128`。六个 policy 全部保留编译，并可通过
+因此 tile 阶梯为：每专家 `< 16` 行 → `8x128`，`< 128` → `64x128`，`≥ 256` →
+**`256x128`**，其余 → `128x128`。六个 policy 全部保留编译，并可通过
 `ARK_MOE_W4A8_PREFILL_TILE` 手动选择。
 
-读这张表时有两点需要注意。"tile auto" 与 "tile `128x128`" 跑的是同一个 kernel，二者
-却相差最多 6% (qwen3 down 上 2.212 vs 2.078 ms)，因此这里 ~5% 以内的差异都在运行间
-噪声范围内——只有 minimax down 那一行明显超出噪声。另外，阶梯里的每专家行数阈值比较
-的是 `total_tokens / E` 这个**平均值**，因此在路由不均衡时，即便平均为 256 行，仍可
-能有很多专家只有残缺的 256 行 tile。
+`≥ 256` 这一档过去还附带第二个条件 `N ≥ K`，因为上一次 sweep 中两个 up 投影分别是
++0.2% / −2.4%。这个条件现在已经去掉：本次测量与它的分歧超出了下面所说的噪声下限，说
+明它拟合的是一次测量结果，而不是硬件本身的行为。
 
-在各自选中的 tile 下，被扫描的四个形状达到 72.7 / 50.3 / 79.2 / 81.7 TFLOPS
+读这张表时有两点需要注意。"tile auto" 与它实际解析到的那一列跑的是同一个 kernel，二
+者却相差最多 9% (qwen3 down 上 2.007 vs 1.829 ms)，因此这里 ~5–9% 以内的差异都在运行
+间噪声范围内——`256x256` 领先的那一行也在其中。所以这一档是依据各形状上效果的**符
+号**来决定的，而不是依据某一个形状的具体幅度。另外，阶梯里的每专家行数阈值比较的是
+`total_tokens / E` 这个**平均值**，因此在路由不均衡时，即便平均为 256 行，仍可能有很
+多专家只有残缺的 256 行 tile。
+
+在选中的 tile 下，被扫描的四个形状达到 75.8 / 56.4 / 82.9 / 82.8 TFLOPS
 (qwen3 up / down、minimax up / down)——相比去掉 float 影子和引入向量化激活量化之前的
-61.1 / 39.4 / 68.8 / 65.3 有明显提升，但 qwen3 down 距离 100 TFLOPS 的目标仍然很远：
+61.1 / 39.4 / 68.8 / 65.3 有明显提升，但 qwen3 down 距离 100 TFLOPS 的目标仍有差距：
 `K = 768` 时一个 tile 只有 12 个 k-tile，epilogue 与 prologue 因此占了相当大的比例。
 
 ### Prefill 激活量化
 
 | 形状 | 标量 | 向量化 (默认) | 加速比 |
 |---|---|---|---|
-| qwen3 up | 3.082 ms | **2.713 ms** | 1.14× |
-| qwen3 down | 2.165 ms | **2.017 ms** | 1.07× |
-| minimax up | 6.161 ms | **5.611 ms** | 1.10× |
-| minimax down | 6.563 ms | **6.142 ms** | 1.07× |
+| qwen3 up | 3.040 ms | **2.699 ms** | 1.13× |
+| qwen3 down | 2.088 ms | **1.824 ms** | 1.14× |
+| minimax up | 6.269 ms | **5.623 ms** | 1.12× |
+| minimax down | 5.965 ms | **5.716 ms** | 1.04× |
 
 量化 routed 激活只是对 `[T, K]` 的一次流式遍历，而与它并行的 GEMM 本身就要搬运约
 400 MB；仅仅把 32 字节 load / 16 字节 store 换成 256 字节 / 128 字节，就能带来整次调
-用 7–14% 的收益。`ARK_MOE_W4A8_ACT_QUANT_VEC=0` 可恢复标量映射。
+用 4–14% 的收益。`ARK_MOE_W4A8_ACT_QUANT_VEC=0` 可恢复标量映射。
+
+一个 work-item 能让多少条这样的宽 load 同时**在途**，则由另一个开关
+`ARK_MOE_W4A8_ACT_QUANT_UNROLL` 控制 (1 = 上表所测的映射、2、4 = 默认值)；
+`test_perf_prefill_act_quant_unroll_sweep` 会为它计时，上表就是其 `unroll 1` 基线。
+
+### Prefill epilogue 边界保护
+
+| 形状 | 带保护 | 内部 tile 快速路径 (默认) | 加速比 |
+|---|---|---|---|
+| qwen3 up | 2.774 ms | **2.634 ms** | 1.05× |
+| qwen3 down | 2.214 ms | **1.924 ms** | 1.15× |
+| minimax up | 5.884 ms | **5.785 ms** | 1.02× |
+| minimax down | 5.968 ms | **5.700 ms** | 1.05× |
+
+两列的主循环完全相同，只有 store 不同，因此这就是每个输出元素约 4 条指令的代价。它在
+主循环最短的形状上占比最大——`K = 768` 的 qwen3 down 每个 tile 只跑 12 个 k-tile——正
+是当初按指令数推理所预期的那个形状。`ARK_MOE_W4A8_PREFILL_FULL_TILE=0` 可切回带保护
+的 epilogue；两者逐位相同。
 
 ### Decode 的 chunk 宽度与列分块
 
@@ -452,9 +495,10 @@ legacy GEMV 的收益为 1.09–1.93×。
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | 合并访存的 K-split decode 映射，**默认开启**。设为 `0` 可回退到原来每个输出一个 work-item 的 GEMV (便于 A/B 对比)。形状不满足条件时该开关无效。 |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | K-split 映射中每个 sub-group 处理的输出列数：`1`、`2` (默认) 或 `4`。取值越大，激活数据的加载可以摊到更多列上，但要求 `N % (16 × NCOLS) == 0`。默认值 `2` 来自实测，参见[实测得到的默认值](#实测得到的默认值)。 |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | 每个 lane 每次加载的 K 元素数 (即字节数)：`16` (默认) 或 `32`。`32` 可以把访存指令数减半、并让每个线程同时在途的字节数翻倍，代价是更多 GRF；它要求 re-scale block 至少为 512，否则会自动回退到 `16`。实测中它在所有形状上都慢于 `16`，因此只作为扫描项而非推荐值。 |
-| `ARK_MOE_W4A8_PREFILL_TILE` | 强制指定 prefill 的 work-group tile：`8x128`、`64x128`、`128x128`、`128x256`、`256x128`、`256x256`。不设置 (默认) 时按 tile 阶梯自动选择：每专家 ≥ 256 行且 `N ≥ K` 时取 `256x128`，否则取 `128x128` (参见[实测得到的默认值](#实测得到的默认值))。现在整张表的差距已收敛到 3–8%，因此这个开关是重新调优用的旋钮，而不再对应一道性能悬崖。 |
-| `ARK_MOE_W4A8_ACT_QUANT_VEC` | 向量化的每 token 激活量化 (每个 lane 负责 4 或 8 个连续的 K 元素，而不是按 sub-group 宽度跨步)；**默认开启**，在被扫描的形状上带来 1.07–1.14× 的收益。设为 `0` 可强制使用标量映射以便做 A/B 测量。当 K 或缓冲区对齐不满足条件时该开关被忽略，此时本就会运行标量 kernel。 |
-| `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
+| `ARK_MOE_W4A8_PREFILL_TILE` | 强制指定 prefill 的 work-group tile：`8x128`、`64x128`、`128x128`、`128x256`、`256x128`、`256x256`。不设置 (默认) 时按 tile 阶梯自动选择：每专家 ≥ 256 行时取 `256x128`，否则取 `128x128` (参见[实测得到的默认值](#实测得到的默认值))。现在整张表的差距已收敛到 0–8%，因此这个开关是重新调优用的旋钮，而不再对应一道性能悬崖。 |
+| `ARK_MOE_W4A8_ACT_QUANT_VEC` | 向量化的每 token 激活量化 (每个 lane 负责 4 或 8 个连续的 K 元素，而不是按 sub-group 宽度跨步)；**默认开启**，在被扫描的形状上带来 1.04–1.14× 的收益。设为 `0` 可强制使用标量映射以便做 A/B 测量。当 K 或缓冲区对齐不满足条件时该开关被忽略，此时本就会运行标量 kernel。 |
+| `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | 激活量化 kernel 在开始消费之前先加载的向量个数：`1`、`2` 或 `4` (默认)。取值越大，一个 work-item 保持在途的字节越多——这一遍在每线程仅一条在途 load 时受限于延迟而非带宽——代价是 GRF 占用。`1` 即批量化之前的 kernel，可作为 A/B 基线；所有取值逐位相同。不在 `{1, 2, 4}` 中的取值会回退到默认值。只对向量化映射生效。 |
+| `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上带来 1.02–1.15× 的收益。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
 
 ## 形状约束
 
@@ -475,22 +519,29 @@ decode 的 K-split 映射还额外要求重缩放 block 不小于 256 且是 16 
 W4A8 kernel 是新移植的 SYCL/CuTe 实现，在
 `auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp` 中被标记为
 `STATUS: PARTIALLY HARDWARE-VALIDATED`。各项性能扫描都已在 BMG 上跑过——tile 阶梯、
-激活量化的默认值以及 decode 的 `CH` / `NCOLS` 默认值正是来自那些运行 (参见[实测得到
-的默认值](#实测得到的默认值))，并且所有被扫描的配置都通过了配置间的数值等价性检查。
-`test_act_quant_vec_matches_scalar` 与 `test_decode_ksplit_matches_legacy` 也已在设
-备上通过，因此向量化激活量化与 K-split decode 映射既有计时数据，也都与各自的前身做
-过比对。
+激活量化的默认值、内部 tile 的 epilogue 以及 decode 的 `CH` / `NCOLS` 默认值正是来自
+那些运行 (参见[实测得到的默认值](#实测得到的默认值))，并且所有被扫描的配置都通过了配
+置间的数值等价性检查。`test_act_quant_vec_matches_scalar`、
+`test_full_tile_epilogue_matches_predicated` 与 `test_decode_ksplit_matches_legacy`
+也已在设备上通过，因此向量化激活量化、内部 tile 的 epilogue 与 K-split decode 映射既
+有计时数据，也都与各自的前身做过比对。
 
 仍需在设备上运行的部分：与 fp32 参考实现对比的精度扫描，它能立刻暴露 layout /
 scale 相关的 bug。
 
-内部 tile 的 epilogue 是唯一一项只经过推导、既未实测计时也尚未在设备上运行的改动：
-既不触及 M 边界也不触及 N 边界的 tile 在写出时不再使用谓词，读 scale 时也不再钳制下
-标。它在设备上的检查是 `test_full_tile_epilogue_matches_predicated` (逐位一致性，所
-用 batch 让每个专家恰好有一个完整 tile 和一个残缺 tile) 与
-`test_perf_prefill_epilogue_sweep`；设置 `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` 即可在
-不重新编译的情况下回退。
+激活量化的批量 load 是唯一一项只经过推导、既未实测计时也尚未在设备上运行的改动：先加
+载 `UNROLL` 个向量再开始消费，使一个 work-item 同时挂起这么多请求，而不是只有一个。它
+在设备上的检查是 `test_act_quant_unroll_matches` (在"K 能整除展开深度"和"K 会留下尾
+巴"两种情况下的逐位一致性) 与 `test_perf_prefill_act_quant_unroll_sweep`；设置
+`ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` 即可在不重新编译的情况下回退。
 
 这一项落地之后，prefill 的下一步是写出本身：epilogue 目前仍然通过标量指针、按谓词逐
-元素写 D，而同类的 int8 与 fp8 kernel 对 D 用的是 block-2D copy。在卡在 50 TFLOPS 的
+元素写 D，而同类的 int8 与 fp8 kernel 对 D 用的是 block-2D copy。在卡在 56 TFLOPS 的
 `K = 768` 形状上，一个 tile 只有 12 个 k-tile，写出因此占据了其中相当大的一部分时间。
+与上面几项不同，它并不是纯 C++ 的改动：Xe DPAS 的 C fragment 给每个 lane 分配的是一
+*列*，因此同一个 lane 的相邻数值在内存中相隔 N，只有硬件的 2D block-store 消息才能把
+它们合并成宽消息。移植它需要用到 `partition_sg_fragment_C` /
+`partition_sg_fragment_S` 以及经由 float 中间 fragment 的 `reorder` (累加器是 int32，
+必须先按行、再按列施加 scale)，而同类 kernel 中没有任何一个是对**带 scale 的** int32
+累加器做 2D 写出的——因此这项工作需要一个具备 SYCL 编译器和设备的环境，而不是一个开
+关。
