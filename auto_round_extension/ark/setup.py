@@ -126,7 +126,7 @@ def detect_sycl_target():
         if "pvc" in text or "max 1550" in text or "max 1100" in text:
             return "intel_gpu_pvc"
 
-        return "bmg"  # fallback to bmg if detection fails
+        return None
 
     override = os.environ.get("ARK_SYCL_TARGET")
     if override:
@@ -167,7 +167,7 @@ def detect_sycl_target():
         print(f"Warning: {failure}")
     print("Warning: falling back to bmg")
 
-    return "intel_gpu_bmg_g21"
+    return "bmg"
 
 
 sycl_target = detect_sycl_target() if enable_sycl_tla else None

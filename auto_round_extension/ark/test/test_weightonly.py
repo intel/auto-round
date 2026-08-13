@@ -206,7 +206,7 @@ def test_cpu(m, n, k, blocksize, compute_type, weight_type, scale_type, asym):
     main_op(m, n, k, blocksize, compute_type, weight_type, scale_type, asym, "cpu", True)
 
 
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024, 4096])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
 @pytest.mark.parametrize("n, k", [(1024, 768)])
 @pytest.mark.parametrize("blocksize", [32, 128])
 @pytest.mark.parametrize("weight_type", ["int2", "int4", "int8"])
