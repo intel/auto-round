@@ -34,12 +34,6 @@ using namespace cute;
 template <bool AccumBlock, bool HasBias, bool FullTile, class ElementOut, int TileM, int TileN, class SGLayout>
 class S8DequantKernelName;
 
-template <class ElementOut>
-class S8FinalizeKernelName;
-
-template <int TileM, int TileN, class SGLayout>
-class S8AccumKernelName;
-
 template <bool HasBias, bool FullTile, class ElementOut, int TileM, int TileN, class SGLayout>
 class S8KBlockDequantKernelName;
 
@@ -74,87 +68,87 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
 
   int k_tile_size = int(get<2>(wg_tile));
 
-    auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
-    auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
+  auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
+  auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
 
-    Tensor cA = make_identity_tensor(A.shape());
-    Tensor cB = make_identity_tensor(B.shape());
+  Tensor cA = make_identity_tensor(A.shape());
+  Tensor cB = make_identity_tensor(B.shape());
 
-    Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
-    Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
+  Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
+  Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
 
-    auto copy_a = make_block_2d_copy_A(mma, A);
-    auto copy_b = make_block_2d_copy_B(mma, B);
+  auto copy_a = make_block_2d_copy_A(mma, A);
+  auto copy_b = make_block_2d_copy_B(mma, B);
 
-    auto thr_copy_a = copy_a.get_slice(local_id);
-    auto thr_copy_b = copy_b.get_slice(local_id);
+  auto thr_copy_a = copy_a.get_slice(local_id);
+  auto thr_copy_b = copy_b.get_slice(local_id);
 
-    auto tCrA = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
-    auto tCrB = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
+  auto tCrA = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
+  auto tCrB = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
 
-    auto tArA = thr_copy_a.partition_sg_fragment_D(gA(_, _, 0));
-    auto tBrB = thr_copy_b.partition_sg_fragment_D(gB(_, _, 0));
+  auto tArA = thr_copy_a.partition_sg_fragment_D(gA(_, _, 0));
+  auto tBrB = thr_copy_b.partition_sg_fragment_D(gB(_, _, 0));
 
-    Tensor tAgA = thr_copy_a.partition_S(gA);
-    Tensor tBgB = thr_copy_b.partition_S(gB);
+  Tensor tAgA = thr_copy_a.partition_S(gA);
+  Tensor tBgB = thr_copy_b.partition_S(gB);
 
-    auto prefetch_a = make_block_2d_prefetch(copy_a);
-    auto prefetch_b = make_block_2d_prefetch(copy_b);
+  auto prefetch_a = make_block_2d_prefetch(copy_a);
+  auto prefetch_b = make_block_2d_prefetch(copy_b);
 
-    auto thr_prefetch_A = prefetch_a.get_slice(local_id);
-    auto thr_prefetch_B = prefetch_b.get_slice(local_id);
+  auto thr_prefetch_A = prefetch_a.get_slice(local_id);
+  auto thr_prefetch_B = prefetch_b.get_slice(local_id);
 
-    auto pAgA = thr_prefetch_A.partition_S(gA);
-    auto pBgB = thr_prefetch_B.partition_S(gB);
+  auto pAgA = thr_prefetch_A.partition_S(gA);
+  auto pBgB = thr_prefetch_B.partition_S(gB);
 
-    int k_tiles_per_block = blocksize / k_tile_size;
-    int k_tile_count = blks * k_tiles_per_block;
-    int k_tile_prefetch = 0;
+  int k_tiles_per_block = blocksize / k_tile_size;
+  int k_tile_count = blks * k_tiles_per_block;
+  int k_tile_prefetch = 0;
+
+  CUTE_UNROLL
+  for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; ++k_tile_prefetch) {
+    prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+    prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+  }
+
+  for (int ib = 0; ib < blks; ++ib) {
+    clear(tCrC);
+
+    for (int bk = 0; bk < k_tiles_per_block; ++bk) {
+      int k_tile = ib * k_tiles_per_block + bk;
+
+      barrier_arrive(barrier_scope);
+
+      copy(copy_a, tAgA(_, _, _, k_tile), tArA);
+      copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+
+      if (k_tile_prefetch < k_tile_count) {
+        prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+        prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+      }
+      ++k_tile_prefetch;
+
+      reorder(tArA, tCrA);
+      reorder(tBrB, tCrB);
+      gemm(mma, tCrA, tCrB, tCrC);
+
+      barrier_wait(barrier_scope);
+    }
 
     CUTE_UNROLL
-    for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; ++k_tile_prefetch) {
-      prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
-      prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
-    }
+    for (int i = 0; i < size(tCrC); ++i) {
+      auto coord = tCgC(i);
+      int row = int(get<0>(coord));
+      int col = int(get<1>(coord));
 
-    for (int ib = 0; ib < blks; ++ib) {
-      clear(tCrC);
-
-      for (int bk = 0; bk < k_tiles_per_block; ++bk) {
-        int k_tile = ib * k_tiles_per_block + bk;
-
-        barrier_arrive(barrier_scope);
-
-        copy(copy_a, tAgA(_, _, _, k_tile), tArA);
-        copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
-
-        if (k_tile_prefetch < k_tile_count) {
-          prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
-          prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
-        }
-        ++k_tile_prefetch;
-
-        reorder(tArA, tCrA);
-        reorder(tBrB, tCrB);
-        gemm(mma, tCrA, tCrB, tCrC);
-
-        barrier_wait(barrier_scope);
+      if constexpr (!FullTile) {
+        if (row >= m || col >= n) continue;
       }
 
-      CUTE_UNROLL
-      for (int i = 0; i < size(tCrC); ++i) {
-        auto coord = tCgC(i);
-        int row = int(get<0>(coord));
-        int col = int(get<1>(coord));
-
-        if constexpr (!FullTile) {
-          if (row >= m || col >= n) continue;
-        }
-
-        float sb = static_cast<float>(scale_b[col * blks + ib]);
-        tFrC(i) += static_cast<float>(tCrC(i)) * sb;
-      }
+      float sb = static_cast<float>(scale_b[col * blks + ib]);
+      tFrC(i) += static_cast<float>(tCrC(i)) * sb;
     }
+  }
   
 
   CUTE_UNROLL
@@ -368,6 +362,19 @@ void launch_igemm_tile(sycl::queue* q, int m, int n, int gemm_k, int lda, int ld
   }
 }
 
+template <class ElementOut, int TileM, int TileN, class SGLayout>
+void launch_igemm_kblock_tile_dispatch(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_t* b,
+                                       ElementOut* c, const ElementOut* scale_a, const ElementOut* scale_b,
+                                       const ElementOut* bias, int blocksize, int blks) {
+  if (bias) {
+    launch_igemm_kblock_tile<true, ElementOut, TileM, TileN, SGLayout>(
+        q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
+  } else {
+    launch_igemm_kblock_tile<false, ElementOut, TileM, TileN, SGLayout>(
+        q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
+  }
+}
+
 template <class ElementOut>
 void launch_igemm_kblock(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_t* b, ElementOut* c,
                          const ElementOut* scale_a, const ElementOut* scale_b, const ElementOut* bias, int blocksize,
@@ -377,40 +384,18 @@ void launch_igemm_kblock(sycl::queue* q, int m, int n, int k, const int8_t* a, c
   using MediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
   using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
 
-  bool has_bias = bias != nullptr;
-
   if (m < 16) {
-    if (has_bias) {
-      launch_igemm_kblock_tile<true, ElementOut, 8, 128, SmallTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    } else {
-      launch_igemm_kblock_tile<false, ElementOut, 8, 128, SmallTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    }
+    launch_igemm_kblock_tile_dispatch<ElementOut, 8, 128, SmallTileSG>(
+        q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
   } else if (m < 128) {
-    if (has_bias) {
-      launch_igemm_kblock_tile<true, ElementOut, 64, 128, SmallMidTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    } else {
-      launch_igemm_kblock_tile<false, ElementOut, 64, 128, SmallMidTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    }
+    launch_igemm_kblock_tile_dispatch<ElementOut, 64, 128, SmallMidTileSG>(
+        q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
   } else if (m <= 1024) {
-    if (has_bias) {
-      launch_igemm_kblock_tile<true, ElementOut, 128, 128, MediumTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    } else {
-      launch_igemm_kblock_tile<false, ElementOut, 128, 128, MediumTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    }
+    launch_igemm_kblock_tile_dispatch<ElementOut, 128, 128, MediumTileSG>(
+        q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
   } else {
-    if (has_bias) {
-      launch_igemm_kblock_tile<true, ElementOut, 256, 128, LargeTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    } else {
-      launch_igemm_kblock_tile<false, ElementOut, 256, 128, LargeTileSG>(
-          q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
-    }
+    launch_igemm_kblock_tile_dispatch<ElementOut, 256, 128, LargeTileSG>(
+        q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
   }
 }
 
@@ -440,17 +425,15 @@ void launch_igemm(sycl::queue* q, int m, int n, int gemm_k, int lda, int ldb,
   }
 }
 
-template <class ElementOut>
-void finalize_block_output(sycl::queue* q, int m, int n, const float* accum, ElementOut* c,
-                           const ElementOut* scale_a, const ElementOut* bias) {
-  q->parallel_for<S8FinalizeKernelName<ElementOut>>(sycl::range<1>(size_t(m) * size_t(n)), [=](sycl::id<1> id) {
-    size_t idx = id[0];
-    int row = int(idx / n);
-    int col = int(idx - size_t(row) * size_t(n));
-    float value = accum[idx] * static_cast<float>(scale_a[row]);
-    if (bias) value += static_cast<float>(bias[col]);
-    c[idx] = static_cast<ElementOut>(value);
-  });
+static constexpr int S8_GEMM_TILE_K = 64;
+
+static inline void validate_s8_kblock_args(int k, int blocksize) {
+  if (blocksize <= 0 || k % blocksize != 0) {
+    throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: blocksize must divide k");
+  }
+  if (blocksize % S8_GEMM_TILE_K != 0) {
+    throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: k-block blocksize must be a multiple of 64");
+  }
 }
 
 template <class ElementOut>
@@ -463,9 +446,7 @@ void run_typed(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_
     return;
   }
 
-  if (blocksize <= 0 || k % blocksize != 0) {
-    throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: blocksize must divide k");
-  }
+  validate_s8_kblock_args(k, blocksize);
 
   int blks = k / blocksize;
   launch_igemm_kblock<ElementOut>(q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);

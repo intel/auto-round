@@ -70,7 +70,7 @@ class XpuWrapper {
 
   static inline size_t get_scalext_size(QuantParam* p) {
     using namespace bestla::utils;
-    if (env_params::Instance()->auto_s8 == 0) return 0;
+    if (env_params::Instance()->auto_s8 == 0 or !rescale(p)) return 0;
     size_t nblk = 1;
     if (env_params::Instance()->auto_s8 != -1) {
       nblk *= p->k / env_params::Instance()->auto_s8;
@@ -671,6 +671,7 @@ class XpuWrapper {
 
   static inline bool rescale(QuantParam* p) {
 #ifdef ARK_RESCALE
+    if (p->weight_type != BTLA_DTYPE::S2 && p->weight_type != BTLA_DTYPE::S4) return false;
     if (env_params::Instance()->auto_s8 == -1) return true;
     if (env_params::Instance()->auto_s8 > p->blocksize && p->k % env_params::Instance()->auto_s8 == 0) return true;
 #endif
@@ -679,6 +680,7 @@ class XpuWrapper {
 
   static inline int rescale_blocksize(QuantParam* p) {
 #ifdef ARK_RESCALE
+    if (!rescale(p)) return p->blocksize;
     if (env_params::Instance()->auto_s8 == 0) return p->blocksize;
     return env_params::Instance()->auto_s8 == -1 ? p->k : env_params::Instance()->auto_s8;
 #else
