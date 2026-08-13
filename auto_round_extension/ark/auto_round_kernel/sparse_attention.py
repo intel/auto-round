@@ -284,9 +284,7 @@ def sage_sparse_sdpa(
         tensor_layout=tensor_layout,
     )
     stream = get_stream(query)
-    O = _empty_attention_output(
-        B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout
-    )
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout)
     q_dtype = 1 if query.dtype == torch.bfloat16 else 0  # FlashAttnDtype: 0=FP16, 1=BF16
     lib.sage_sparse_sdpa(
         stream,
@@ -767,9 +765,7 @@ def _block_map_lut_torch(block_map: torch.Tensor) -> tuple[torch.Tensor, torch.T
     # in-place assignment silently misses entries on the XPU backend (torch-xpu-ops),
     # leaving 0s in the mask that become -1 in the LUT after sort and drive the
     # ScatterGatherKernels out-of-bounds assert downstream. Use torch.where instead.
-    filled_matrix = torch.where(
-        block_map, masked_cum_matrix, torch.full_like(masked_cum_matrix, 10_000_000)
-    )
+    filled_matrix = torch.where(block_map, masked_cum_matrix, torch.full_like(masked_cum_matrix, 10_000_000))
     lut = torch.sort(filled_matrix, dim=-1)[0] - 1
     lut[..., 1:] = lut[..., 1:] - lut[..., :-1]
     invalid_mask = torch.arange(num_k_blocks, device=block_map.device).view(
@@ -1542,8 +1538,8 @@ def sparge_sage2_attn_meansim_topk_xpu(
         effective_query_tile_tokens = q_tile_override
     elif effective_query_tile_tokens is not None:
         if q_tile_override == 0:
-            effective_q_tile_override = 0 if D == 64 and int(effective_query_tile_tokens) == 64 else int(
-                effective_query_tile_tokens
+            effective_q_tile_override = (
+                0 if D == 64 and int(effective_query_tile_tokens) == 64 else int(effective_query_tile_tokens)
             )
         elif q_tile_override != int(effective_query_tile_tokens):
             raise ValueError(
@@ -1714,5 +1710,3 @@ def sparge_sage2_attn_meansim_topk_xpu_sdpa(
     if return_sparsity:
         return out, sparsity_ratio
     return out
-
-
