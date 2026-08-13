@@ -180,9 +180,10 @@ the next block overwrites the accumulator. A lane holds both in GRF for the
 With `grf_size<256>` a lane has 256 registers, so at `128x128` the float shadow
 alone reserved a quarter of the register file for the whole mainloop, and at
 `128x256` the two fragments together *are* the register file — leaving nothing
-for the staged A/B tiles. That is the measured 256-wide cliff in
-[Tuned defaults](#tuned-defaults-measured), and at the default re-scale block it
-was pure overhead: `blks == 1` (the AUTO_S8 `group=-1` default) has nothing to
+for the staged A/B tiles. That was the 35–50% penalty the 256-wide tiles used to
+pay in [Tuned defaults](#tuned-defaults-measured); with the shadow gone the whole
+tile table fits in a 3–8% band. At the default re-scale block the shadow was pure
+overhead: `blks == 1` (the AUTO_S8 `group=-1` default) has nothing to
 carry across blocks, so the scale can be folded on the way out instead. That
 path now runs without the float fragment, and applies
 `scale_b[col] × scale_a[row]` in a single pass — the same shape as the
@@ -198,6 +199,18 @@ fragment actually covers (all lanes of a row group share `scale_a[row]`, and a
 lane repeats the same `scale_b[col]` for every row it owns); under the previous
 `continue` guard each read sat in its own basic block and none of it could be
 hoisted.
+
+**Interior tiles.** Both of those guards — the store predicate and the two
+clamps — are needed only where a tile hangs off the edge of the expert's rows or
+of N, and whether it does is uniform across the work-group: `m`, `n` and the
+tile coordinates are all kernel-uniform. Testing it once per tile instead of
+once per fragment element removes ~4 instructions from every output element of
+an interior tile, and at `K = 768` (12 k-tiles per tile) the epilogue is a real
+share of the tile's time. The guarded path stays for edge tiles and behind
+`ARK_MOE_W4A8_PREFILL_FULL_TILE=0`; the arithmetic and its order are untouched,
+so the two are bit-identical and
+`test_full_tile_epilogue_matches_predicated` asserts exactly that at a batch
+that gives every expert one interior tile and one ragged one.
 
 ## What the script measures
 
@@ -306,11 +319,12 @@ pytest -v -s test_moe_w4a8_perf.py -k perf --models minimax
 pytest -v -s test_moe_w4a8_perf.py -k sweep
 ```
 
-`test_perf_decode_config_sweep`, `test_perf_prefill_tile_sweep` and
-`test_perf_prefill_act_quant_sweep` build one workload, prepack it once, then
-time every dispatch configuration against it — the decode lane mapping (legacy
-GEMV plus every `CH` × `NCOLS` combination), the prefill work-group tile, and the
-activation-quantization message width. Each configuration is checked for
+`test_perf_decode_config_sweep`, `test_perf_prefill_tile_sweep`,
+`test_perf_prefill_act_quant_sweep` and `test_perf_prefill_epilogue_sweep` build
+one workload, prepack it once, then time every dispatch configuration against
+it — the decode lane mapping (legacy GEMV plus every `CH` × `NCOLS`
+combination), the prefill work-group tile, the activation-quantization message
+width, and the epilogue's edge guard. Each configuration is checked for
 numerical equivalence with the first one, and the table is followed by a `best
 configuration` block naming the winning environment variables per shape, so the
 tuning knobs can be settled in a single on-hardware run.
@@ -401,37 +415,57 @@ checked for numerical equivalence with the first one before it is timed.
 
 | shape | `128x128` | `256x128` | `128x256` | `256x256` |
 |---|---|---|---|---|
-| qwen3 up | **3.377 ms** | 3.419 ms | 4.703 ms | 4.668 ms |
-| qwen3 down | **2.614 ms** | 2.718 ms | 3.862 ms | 3.835 ms |
-| minimax up | **6.743 ms** | 6.761 ms | 8.964 ms | 9.049 ms |
-| minimax down | 7.350 ms | **7.101 ms** | 9.928 ms | 9.872 ms |
+| qwen3 up | **2.846 ms** | 2.914 ms | 2.938 ms | 3.057 ms |
+| qwen3 down | 2.078 ms | **2.049 ms** | 2.170 ms | 2.387 ms |
+| minimax up | 5.866 ms | **5.856 ms** | 5.997 ms | 5.861 ms |
+| minimax down | 6.271 ms | **5.676 ms** | 6.001 ms | 6.250 ms |
 
-The 256-wide N tiles are 35–50% *slower* than the 128-wide ones on every shape —
-the opposite of what the tile-traffic argument predicts (`1/TileM + 1/TileN`
-halves when both extents double, so `256x256` should have moved half the bytes
-of `128x128`). `TileM` barely matters; `TileN` does, because `SGLayout` is 4
-sub-groups wide in every policy: `TileN = 256` gives each sub-group a 32×64 C
-fragment — 128 int32 accumulators per SIMD16 lane — instead of 32×32 (64), past
-the point where the register file still holds the fragment plus the staged A/B
-tiles.
+The spread across the whole table is now 3–8%. It used to be 35–50%, and the
+cliff was not the tile shape: the mainloop kept a float shadow of the C fragment
+live next to the int32 one, so `TileN = 256` asked for 128 + 128 registers per
+SIMD16 lane — the entire large-GRF file. With the shadow gone (see
+[Prefill: message width and register pressure](#prefill-message-width-and-register-pressure))
+the 256-wide N tiles are merely a few percent behind, which is what a 32×64 C
+fragment per sub-group (`SGLayout` is 4 wide in every policy) costs in
+occupancy rather than in spills.
 
-The ladder therefore tops out at **`128x128`**: `< 16` rows/expert → `8x128`,
-`< 128` → `64x128`, otherwise `128x128`. The 256-wide policies stay compiled and
-selectable with `ARK_MOE_W4A8_PREFILL_TILE`, so the sweep can re-check them on a
-device with a different register budget.
+`TileM = 256` is the direction that pays. It keeps the per-lane fragment at
+32×32 because `SGLayout` grows to 8×4 instead, while halving how often the
+expert's B panel is re-read: per-expert tile traffic is
+`M·K·⌈N/TileN⌉ + N·K·⌈M/TileM⌉`. The win is real only where B is the larger
+operand — the down-projections, `N ≥ K` — and there it is 1.5% (qwen3) to 9.5%
+(minimax). On qwen3 up (`N < K`) it costs 2.4%.
 
-Even at the best tile the swept shapes reach 61.1 / 39.4 / 68.8 / 65.3 TFLOPS
-(qwen3 up / down, minimax up / down) — below both the 100 TFLOPS target and the
-`2 × 256 rows × bandwidth` roofline for this routing, so the tile is not the only
-remaining gap at 256 rows/expert.
+The ladder therefore is: `< 16` rows/expert → `8x128`, `< 128` → `64x128`,
+`≥ 256` **and** `N ≥ K` → **`256x128`**, otherwise `128x128`. All six policies
+stay compiled and selectable with `ARK_MOE_W4A8_PREFILL_TILE`.
 
-> These numbers were measured while the mainloop still kept a float shadow of the
-> C fragment live throughout, which doubled the per-lane C footprint — 128 + 128
-> registers at `TileN = 256`, i.e. the entire large-GRF file. The single-block
-> epilogue no longer allocates it (see
-> [Prefill: message width and register pressure](#prefill-message-width-and-register-pressure)),
-> so the 256-wide policies now ask for half of what they did when they lost and
-> are worth re-sweeping before the ladder is considered settled.
+Two caveats on reading the table. "tile auto" and "tile `128x128`" run the same
+kernel yet differ by up to 6% (2.212 vs 2.078 ms on qwen3 down), so anything
+under ~5% here is inside run-to-run noise — only the minimax down row is clearly
+outside it. And the ladder's rows/expert threshold is compared against
+`total_tokens / E`, the *average*, so a skewed routing that averages 256 rows
+can still leave many experts with ragged 256-row tiles.
+
+At the chosen tiles the swept shapes reach 72.7 / 50.3 / 79.2 / 81.7 TFLOPS
+(qwen3 up / down, minimax up / down) — up from 61.1 / 39.4 / 68.8 / 65.3 before
+the C-shadow removal and the vectorized activation quantizer, but qwen3 down is
+still far short of the 100 TFLOPS target: at `K = 768` a tile runs only 12
+k-tiles, so the epilogue and the prologue are a large share of it.
+
+### Prefill activation quantization
+
+| shape | scalar | vectorized (default) | speedup |
+|---|---|---|---|
+| qwen3 up | 3.082 ms | **2.713 ms** | 1.14× |
+| qwen3 down | 2.165 ms | **2.017 ms** | 1.07× |
+| minimax up | 6.161 ms | **5.611 ms** | 1.10× |
+| minimax down | 6.563 ms | **6.142 ms** | 1.07× |
+
+Quantizing the routed activations is a streaming pass over `[T, K]` next to a
+GEMM that already moves ~400 MB, and it is worth 7–14% of the whole call purely
+by issuing 256-byte loads and 128-byte stores instead of 32-byte and 16-byte
+ones. `ARK_MOE_W4A8_ACT_QUANT_VEC=0` restores the scalar mapping.
 
 ### Decode chunk width and column blocking
 
@@ -457,8 +491,9 @@ worth 1.09–1.93× over the legacy GEMV.
 | `ARK_MOE_W4A8_DECODE_KSPLIT` | Coalesced K-split decode mapping; **on by default**. Set to `0` to fall back to the original one-work-item-per-output GEMV (useful for A/B measurements). Ignored when the shape doesn't qualify. |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_NCOLS` | Output columns per sub-group in the K-split mapping: `1`, `2` (default) or `4`. Higher values amortize the activation loads over more columns but need `N % (16 × NCOLS) == 0`. `2` is the measured default, see [Tuned defaults](#tuned-defaults-measured). |
 | `ARK_MOE_W4A8_DECODE_KSPLIT_CH` | K elements (= bytes) a lane loads per chunk: `16` (default) or `32`. `32` halves the number of memory messages and doubles the bytes a thread keeps in flight, at the cost of GRF; it needs a re-scale block of at least 512 and silently falls back to `16` otherwise. Measured slower than `16` on every swept shape, so it is a sweep point rather than a recommendation. |
-| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder, which tops out at `128x128`. The 256-wide N tiles move less tile traffic but measure 35–50% slower (see [Tuned defaults](#tuned-defaults-measured)); `256x128` is within ~4% of `128x128` everywhere and slightly ahead on minimax down. |
-| `ARK_MOE_W4A8_ACT_QUANT_VEC` | Vectorized per-token activation quantization (each lane owns 4 or 8 consecutive K elements instead of striding by the sub-group width); **on by default**. Set to `0` to force the scalar mapping for A/B measurement. Ignored when K or the buffer alignment doesn't qualify, in which case the scalar kernel runs anyway. |
+| `ARK_MOE_W4A8_PREFILL_TILE` | Force a prefill work-group tile: `8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`. Unset (default) uses the ladder, which picks `256x128` at ≥ 256 rows/expert when `N ≥ K` and `128x128` otherwise (see [Tuned defaults](#tuned-defaults-measured)). The whole table is now within 3–8%, so this is a re-tuning knob rather than a cliff. |
+| `ARK_MOE_W4A8_ACT_QUANT_VEC` | Vectorized per-token activation quantization (each lane owns 4 or 8 consecutive K elements instead of striding by the sub-group width); **on by default**, worth 1.07–1.14× on the swept shapes. Set to `0` to force the scalar mapping for A/B measurement. Ignored when K or the buffer alignment doesn't qualify, in which case the scalar kernel runs anyway. |
+| `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**. The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
 
 ## Shape constraints
 
@@ -479,23 +514,28 @@ failing.
 
 The W4A8 kernel is a new SYCL/CuTe port, marked
 `STATUS: PARTIALLY HARDWARE-VALIDATED` in
-`auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. Both perf sweeps have
-been run on BMG — that run is where the tile ladder and the decode `CH` /
-`NCOLS` defaults come from (see [Tuned defaults](#tuned-defaults-measured)) — and
-every swept configuration passed the cross-configuration equivalence check.
+`auto_round_kernel/wrapper/include/sycl_tla_moe_w4a8.hpp`. The perf sweeps have
+been run on BMG — that run is where the tile ladder, the activation-quantization
+default and the decode `CH` / `NCOLS` defaults come from (see
+[Tuned defaults](#tuned-defaults-measured)) — and every swept configuration
+passed the cross-configuration equivalence check.
+`test_act_quant_vec_matches_scalar` and `test_decode_ksplit_matches_legacy` pass
+on device, so both the vectorized activation quantizer and the K-split decode
+mapping are checked against their predecessors as well as timed.
 
-Still to run on device: the accuracy sweep against the fp32 reference (it will
-catch layout/scale bugs immediately) and `test_decode_ksplit_matches_legacy`,
-which re-checks the K-split mapping against the legacy one. The K-split index
-math has otherwise only been checked with a host-side mock; if it ever
-regresses, `ARK_MOE_W4A8_DECODE_KSPLIT=0` restores the previous behaviour
-without a rebuild.
+Still to run on device: the accuracy sweep against the fp32 reference, which
+will catch layout/scale bugs immediately.
 
-The two prefill changes above are in the same position: the vectorized
-activation quantizer and the single-block epilogue have been reasoned through
-but not timed. `test_act_quant_vec_matches_scalar` and
-`test_perf_prefill_act_quant_sweep` are the device checks for the first
-(`ARK_MOE_W4A8_ACT_QUANT_VEC=0` reverts it without a rebuild); the second has no
-knob because it is the same arithmetic in the same order — its effect shows up
-as a re-sweep of `test_perf_prefill_tile_sweep`, where the 256-wide tiles should
-move now that they no longer need a doubled C fragment.
+The interior-tile epilogue is the one change that has been reasoned through but
+neither timed nor run: a tile that touches neither the M nor the N edge stores
+without a predicate and indexes the scales without clamping. Its device checks
+are `test_full_tile_epilogue_matches_predicated` (bit-identity, at a batch that
+gives every expert one interior and one ragged tile) and
+`test_perf_prefill_epilogue_sweep`; `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` reverts
+it without a rebuild.
+
+The next prefill step, once that lands, is the store itself: the epilogue still
+writes D one element per predicate through a scalar pointer, where the sibling
+int8 and fp8 kernels use a block-2D copy for D. At `K = 768` — the shape stuck
+at 50 TFLOPS — a tile runs only 12 k-tiles, so the store is a large fraction of
+its time.

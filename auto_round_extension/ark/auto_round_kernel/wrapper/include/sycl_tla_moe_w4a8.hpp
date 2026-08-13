@@ -1,14 +1,18 @@
 // SYCL MoE W4A8 -- INT4 weights / INT8 compute (prefill + decode)
 //
-// STATUS: PARTIALLY HARDWARE-VALIDATED -- `test_perf_prefill_tile_sweep` and
-// `test_perf_decode_config_sweep` have been run on BMG, so both phases compile
-// and run and their dispatch defaults (tile ladder, decode CH / NCOLS) come
-// from those measurements; every swept configuration also passed the
+// STATUS: PARTIALLY HARDWARE-VALIDATED -- `test_perf_prefill_tile_sweep`,
+// `test_perf_prefill_act_quant_sweep`, `test_perf_decode_config_sweep`,
+// `test_act_quant_vec_matches_scalar` and `test_decode_ksplit_matches_legacy`
+// have been run on BMG, so both phases compile and run and every dispatch
+// default (tile ladder, activation-quant message width, decode CH / NCOLS)
+// comes from those measurements; every swept configuration also passed the
 // cross-configuration equivalence check. The accuracy gates against the fp32
-// reference and `test_decode_ksplit_matches_legacy` still need a device run.
-// The authoring environment has no XPU and no SYCL compiler, so anything added
-// since follows the porting conventions of its siblings
-// `sycl_tla_moe_prefill_int_dpas.hpp` / `sycl_tla_moe_prefill_fp8_dpas.hpp`.
+// reference still need a device run. The authoring environment has no XPU and
+// no SYCL compiler, so anything added since follows the porting conventions of
+// its siblings `sycl_tla_moe_prefill_int_dpas.hpp` /
+// `sycl_tla_moe_prefill_fp8_dpas.hpp` -- currently the interior-tile epilogue
+// (`ARK_MOE_W4A8_PREFILL_FULL_TILE`), which is pure C++ around the same
+// arithmetic.
 // ---------------------------------------------------------------------------
 //
 // What this file implements
@@ -88,6 +92,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -211,6 +216,12 @@ inline DeviceScratchPool& expert_map_pool() {
 // always satisfies. A misaligned base pointer (never the case for torch
 // allocations or the scratch pool) falls back to the scalar kernel, and
 // `ARK_MOE_W4A8_ACT_QUANT_VEC=0` forces it for A/B measurement.
+//
+// `test_perf_prefill_act_quant_sweep` on BMG (256 rows/expert, bf16 act) puts
+// the widened messages at 1.14x (qwen3 up), 1.07x (qwen3 down), 1.10x (minimax
+// up) and 1.07x (minimax down) of the scalar mapping on the *whole*
+// `moe_gemm_w4a8` call -- the quantization pass alone is a larger share of
+// prefill than that, since the GEMM around it is unchanged.
 //
 // `sycl::vec<uint16_t, VEC>` is used rather than `sycl::vec<ScalarT, VEC>`
 // because `sycl::vec` of `bfloat16` is not universally available; the elements
@@ -439,36 +450,40 @@ void launch_weight_rescale_s4_to_s8(sycl::queue* q, const uint8_t* weights, cons
 //
 //     M*K * ceil(N/TileN)  +  N*K * ceil(M/TileM)  ~=  M*N*K * (1/TileN + 1/TileM)
 //
-// i.e. A is re-read once per N tile and B once per M tile. That argument alone
-// says "widen both extents", and it is wrong here: `test_perf_prefill_tile_sweep`
-// on BMG (256 rows/expert, bf16 act) measures the 256-wide N tiles *slower* than
-// the 128-wide ones on every shape, by a margin no traffic saving comes close to.
+// i.e. A is re-read once per N tile and B once per M tile. Doubling `TileM` is
+// the half of that argument which survives measurement: at 256 rows/expert it
+// takes B from "read twice per expert" to "read once", i.e. -25% tile traffic,
+// while leaving the per-lane C fragment at 32x32 (`SGLayout` grows to 8x4 with
+// the tile). Doubling `TileN` does not: `SGLayout` stays 4 sub-groups wide, so
+// `TileN = 256` gives every sub-group a 32x64 fragment -- 128 int32
+// accumulators per SIMD16 lane instead of 64 -- and that is where the register
+// file stops holding the fragment plus the staged A/B tiles.
+//
+// `test_perf_prefill_tile_sweep` on BMG (256 rows/expert, bf16 act), re-run
+// after the vectorized activation quantizer and the single-block epilogue
+// landed:
 //
 //   shape         128x128    256x128    128x256    256x256
-//   qwen3 up      3.377 ms   3.419 ms   4.703 ms   4.668 ms
-//   qwen3 down    2.614 ms   2.718 ms   3.862 ms   3.835 ms
-//   minimax up    6.743 ms   6.761 ms   8.964 ms   9.049 ms
-//   minimax down  7.350 ms   7.101 ms   9.928 ms   9.872 ms
+//   qwen3 up      2.846 ms   2.914 ms   2.938 ms   3.057 ms
+//   qwen3 down    2.078 ms   2.049 ms   2.170 ms   2.387 ms
+//   minimax up    5.866 ms   5.856 ms   5.997 ms   5.861 ms
+//   minimax down  6.271 ms   5.676 ms   6.001 ms   6.250 ms
 //
-// The split is by `TileN`, not by `TileM`: both 128-wide tiles land within ~4%
-// of each other and both 256-wide ones ~35-50% behind, whatever `TileM` is. The
-// sub-group layouts explain it -- `SGLayout` is 4 sub-groups wide in all four,
-// so `TileN = 256` gives every sub-group a 32x64 C fragment instead of 32x32,
-// i.e. 128 int32 accumulators per SIMD16 lane instead of 64. That is where the
-// register file stops holding the fragment plus the staged A/B tiles, and the
-// occupancy (or spill) cost of it swamps the halved tile traffic.
+// The 35-50% cliff the previous sweep saw on every 256-wide N tile is gone --
+// it was the float C shadow the mainloop used to keep live (see
+// `xe_gemm_w4a8`), which doubled the per-lane C footprint and made `TileN =
+// 256` ask for the entire 256-register large-GRF file. What is left is a
+// 3-8% deficit, so the ladder still stays 128 wide in N.
 //
-// So the ladder tops out at 128x128. The 256-wide policies stay compiled and
-// reachable through `ARK_MOE_W4A8_PREFILL_TILE` so the sweep can re-check them
-// on a device with a different register budget.
-//
-// Re-sweep note: those numbers were measured when the mainloop also kept a
-// float shadow of the C fragment live throughout (see `xe_gemm_w4a8`), which
-// *doubled* the per-lane C footprint -- 128 + 128 registers at `TileN = 256`,
-// i.e. the entire 256-register large-GRF file. The single-block epilogue no
-// longer allocates it, so the 256-wide policies now ask for half of what they
-// did when they lost, and are worth re-sweeping on device before the ladder is
-// considered settled.
+// In M the two down-projections now prefer the 256-row tile -- 1.4% (qwen3
+// down) and 9.5% (minimax down) faster than 128x128 -- while the two
+// up-projections are a wash: 0.2% faster on minimax up and 2.4% slower on
+// qwen3 up. The same run measures the ladder's own 128x128 choice 0.3-6% apart
+// from the explicit `128x128` row, so only minimax down is clearly outside
+// run-to-run noise -- hence the M rung is taken only where it measured faster
+// (`N >= K`, the down-projection regime; see `moe_w4a8_prefill_dispatch`), and
+// every policy stays reachable through `ARK_MOE_W4A8_PREFILL_TILE` for a
+// re-sweep on a device with a different register budget.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
@@ -551,7 +566,7 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 // the coordinates of `thr_mma.partition_C(...)`, exactly like the reference,
 // because the int32 accumulator has to be converted and scaled per element
 // anyway. A grouped GEMM's per-expert M is arbitrary, so tiles at the M edge
-// are partial and the *store* is always predicated -- but the scale *loads*
+// are partial and their *store* has to be predicated -- but the scale *loads*
 // are not: their indices are clamped into range instead. Both scale reads are
 // then unconditional loads at a compile-time offset from a uniform base, which
 // is what lets the compiler collapse the `size(tCrC)` per-element reads into
@@ -559,11 +574,32 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 // (all lanes of a row group share `scale_a[row]`, and a lane repeats the same
 // `scale_b[col]` for every row it owns). Under the previous `continue` guard
 // each read sat in its own basic block and none of that could be hoisted.
+//
+// Interior tiles skip the guard entirely (the cost that shows up at small K)
+// -------------------------------------------------------------------------
+// `m`, `n`, `m_coord` and `n_coord` are all uniform across the work-group, so
+// "does this tile touch the M or N edge" is one uniform compare, not a
+// per-element one. Off the edge the clamps and the store predicate are dead
+// weight: per fragment element they add two compares plus two selects for the
+// scale indices and another compare pair for the store, roughly doubling the
+// instruction count of an epilogue whose real work is one int32->float
+// convert, two multiplies and one store.
+//
+// That matters because the epilogue is *not* amortized over a long mainloop at
+// these shapes. A 128x128 tile runs `K / 64` k-tiles -- 12 of them for the
+// qwen3 down-projection (K = 768) -- while it always writes `TileM * TileN`
+// elements, and qwen3 down is exactly the shape the sweep reports furthest
+// from the compute target (50 TFLOPS against 73-82 for the other three). The
+// fast path emits the same expression in the same order for every element it
+// stores, so it is bit-identical to the guarded one
+// (`test_full_tile_epilogue_matches_predicated`), and
+// `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` forces the guarded path for A/B
+// measurement.
 // ---------------------------------------------------------------------------
 template <class GmemTiledCopyA, class GmemTiledCopyB, class TiledMMA, typename ElementD>
 CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, const float* scale_a,
                               const float* scale_b, int m, int n, int k, int blocksize, int blks, int m_coord,
-                              int n_coord, TiledMMA const& mma) {
+                              int n_coord, bool allow_full_tile, TiledMMA const& mma) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   const int local_id = static_cast<int>(item.get_local_linear_id());
 
@@ -641,6 +677,12 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
     prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
   }
 
+  // Does this tile touch the M or N edge? Uniform across the work-group (`m`,
+  // `n` and both coordinates are), so the epilogues below branch once instead
+  // of testing every fragment element.
+  const bool full_tile = allow_full_tile && (m_coord + 1) * static_cast<int>(get<0>(wg_tile)) <= m &&
+                         (n_coord + 1) * static_cast<int>(get<1>(wg_tile)) <= n;
+
   // `blks` is a kernel argument, so it is uniform across the work-group and
   // this branch never splits the split-barrier pairing below.
   if (blks == 1) {
@@ -650,21 +692,37 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
       run_k_tile(k_tile);
     }
 
-    CUTE_UNROLL
-    for (int i = 0; i < size(tCrC); ++i) {
-      auto coord = tCgC(i);
-      const int row = static_cast<int>(get<0>(coord));
-      const int col = static_cast<int>(get<1>(coord));
-      // Clamp rather than branch: an out-of-range element's value is dropped
-      // by the guarded store, and unconditional loads let the redundant reads
-      // across the fragment collapse. `m` and `n` are both >= 1 here (an
-      // expert with no rows contributes no tiles).
-      const int row_in = row < m ? row : m - 1;
-      const int col_in = col < n ? col : n - 1;
-      const float value = static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in)] * scale_a[row_in];
-      if (row < m && col < n) {
-        c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(value);
+    // Single expression, instantiated once guarded and once not. `FullTile`
+    // only removes work: the value stored is computed by the same operations
+    // in the same order, so the two paths are bit-identical.
+    auto store_scaled = [&](auto full) {
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        auto coord = tCgC(i);
+        const int row = static_cast<int>(get<0>(coord));
+        const int col = static_cast<int>(get<1>(coord));
+        if constexpr (decltype(full)::value) {
+          c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(
+              static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col)] * scale_a[row]);
+        } else {
+          // Clamp rather than branch: an out-of-range element's value is
+          // dropped by the guarded store, and unconditional loads let the
+          // redundant reads across the fragment collapse. `m` and `n` are both
+          // >= 1 here (an expert with no rows contributes no tiles).
+          const int row_in = row < m ? row : m - 1;
+          const int col_in = col < n ? col : n - 1;
+          const float value = static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in)] * scale_a[row_in];
+          if (row < m && col < n) {
+            c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(value);
+          }
+        }
       }
+    };
+
+    if (full_tile) {
+      store_scaled(std::true_type{});
+    } else {
+      store_scaled(std::false_type{});
     }
     return;
   }
@@ -683,13 +741,31 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
       run_k_tile(ib * k_tiles_per_block + bk);
     }
 
-    CUTE_UNROLL
-    for (int i = 0; i < size(tCrC); ++i) {
-      auto coord = tCgC(i);
-      const int col = static_cast<int>(get<1>(coord));
-      const int col_in = col < n ? col : n - 1;
-      tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in) * blks + ib];
+    if (full_tile) {
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        const int col = static_cast<int>(get<1>(tCgC(i)));
+        tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col) * blks + ib];
+      }
+    } else {
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        const int col = static_cast<int>(get<1>(tCgC(i)));
+        const int col_in = col < n ? col : n - 1;
+        tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in) * blks + ib];
+      }
     }
+  }
+
+  if (full_tile) {
+    CUTE_UNROLL
+    for (int i = 0; i < size(tFrC); ++i) {
+      auto coord = tCgC(i);
+      const int row = static_cast<int>(get<0>(coord));
+      const int col = static_cast<int>(get<1>(coord));
+      c[static_cast<size_t>(row) * n + col] = static_cast<ElementD>(tFrC(i) * scale_a[row]);
+    }
+    return;
   }
 
   CUTE_UNROLL
@@ -721,7 +797,8 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
                               const float* ScaleB, ElementD* Outputs, TiledMMA const& mma,
                               const int* rows_per_expert, const int32_t num_experts, const int32_t gemm_n,
                               const int32_t gemm_k, const int32_t blocksize, const int32_t blks,
-                              int32_t* atomic_buffer, const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
+                              const bool allow_full_tile, int32_t* atomic_buffer,
+                              const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   auto wg_tile = mma.tile_mnk();
   auto wg_tile_m = get<0>(wg_tile);
@@ -774,7 +851,7 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
 
       xe_gemm_w4a8<GmemTiledCopyA, GmemTiledCopyB>(ptr_A_curr_batch, ptr_B_curr_batch, ptr_D_curr_batch,
                                                    ptr_SA_curr_batch, ptr_SB_curr_batch, gemm_m, gemm_n, gemm_k,
-                                                   blocksize, blks, m_coord, n_coord, mma);
+                                                   blocksize, blks, m_coord, n_coord, allow_full_tile, mma);
 
       if (local_id == 0) {
         slm_mem[0] = cutlass::atomicAdd(atomic_buffer, 1);
@@ -796,7 +873,7 @@ template <class Policy, typename ElementD>
 void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const int8_t* weights,
                           const float* scale_a, const float* scale_b, ElementD* outputs, const int gemm_n,
                           const int gemm_k, const int* rows_per_expert, const int num_experts, const int blocksize,
-                          const int blks, int32_t* atomic_buffer) {
+                          const int blks, const bool allow_full_tile, int32_t* atomic_buffer) {
   using Op = XE_DPAS_TT<8, int32_t, int8_t, int8_t>;
   using WGTile = typename Policy::WGTile;
   using SGLayout = typename Policy::SGLayout;
@@ -828,7 +905,7 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
         sycl::nd_range<3>{global * local, local}, kernel_props, [=](auto) {
           MoEGEMM_w4a8<GmemTiledCopyA, GmemTiledCopyB>(activations, weights, scale_a, scale_b, outputs, mma,
                                                        rows_per_expert, num_experts, gemm_n, gemm_k, blocksize,
-                                                       blks, atomic_buffer, local_mem);
+                                                       blks, allow_full_tile, atomic_buffer, local_mem);
         });
   });
 
@@ -840,15 +917,30 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // Prefill driver: policy selection on the average per-expert M.
 //
 // The rungs match the tile ladder of `launch_igemm_kblock` in
-// `sycl_tla_s8_gemm.hpp`, minus its `m > 1024` 256-wide rung: a grouped GEMM's
-// M is *per expert*, and the on-hardware sweep (see the tile-policy comment
-// above) measures every 256-wide N tile 35-50% slower than 128x128 at 256
-// rows/expert, so the ladder tops out at 128x128 instead.
+// `sycl_tla_s8_gemm.hpp`: a grouped GEMM's M is *per expert*, so the ladder
+// walks the average rows/expert rather than the total token count. It stays
+// 128 wide in N at every rung -- the on-hardware sweep (see the tile-policy
+// comment above) never measures a 256-wide N tile ahead.
+//
+// The top rung is the 256-row tile, which halves how often each expert's
+// weights are pulled through L2/DRAM (B is read once per M tile). It is taken
+// only when both conditions the sweep found it winning under hold:
+//
+//   * `A_avg_M >= 256` -- otherwise the tile is half empty and the doubled
+//     `TileM` buys nothing but padding, and
+//   * `N >= K` -- the down-projection regime, where it measured 1.4% (qwen3
+//     down) and 9.5% (minimax down) faster than 128x128. On the two
+//     up-projections (`N < K`) it measured 0.2% faster and 2.4% slower, i.e.
+//     inside the same run's noise, so those keep 128x128.
 //
 // `ARK_MOE_W4A8_PREFILL_TILE` overrides the choice with an explicit `MxN` tile
 // (`8x128`, `64x128`, `128x128`, `128x256`, `256x128`, `256x256`); anything
 // else -- including the default `auto` -- keeps the ladder. It exists so the
 // tile can be swept on hardware without a rebuild.
+//
+// `ARK_MOE_W4A8_PREFILL_FULL_TILE=0` makes every tile take the guarded
+// epilogue (see `xe_gemm_w4a8`), which is the A/B baseline for the interior-
+// tile fast path; it is read here, once per call, rather than on the device.
 // ---------------------------------------------------------------------------
 template <typename ElementD>
 void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
@@ -859,11 +951,13 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
   compat::set_default_queue(*q);
 
   const int A_avg_M = total_tokens / E;
+  const bool allow_full_tile = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_FULL_TILE", true);
   int32_t* atomic_buffer = moe_dpas_fp8::get_persistent_atomic_buffer(q);
 
 #define ARK_MOE_W4A8_LAUNCH(policy)                                                                       \
   MoEGEMMLauncher_w4a8<policy, ElementD>(*q, qact, weights, ascale, wscale, outputs, N, K,                 \
-                                         num_tokens_per_expert, E, blocksize, blks, atomic_buffer);
+                                         num_tokens_per_expert, E, blocksize, blks, allow_full_tile,      \
+                                         atomic_buffer);
 
   const char* tile_env = std::getenv("ARK_MOE_W4A8_PREFILL_TILE");
   if (tile_env != nullptr) {
@@ -892,6 +986,8 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_8)
   } else if (A_avg_M < 128) {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_64)
+  } else if (A_avg_M >= 256 && N >= K) {
+    ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_256_n128)
   } else {
     ARK_MOE_W4A8_LAUNCH(w4a8_policy_m_128)
   }

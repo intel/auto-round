@@ -962,6 +962,16 @@ _ACT_QUANT_CONFIGS = [
     ("act-quant vec", {"ARK_MOE_W4A8_ACT_QUANT_VEC": "1"}),
 ]
 
+# Prefill: epilogue guard. A tile that touches neither the M nor the N edge
+# needs no store predicate and no scale-index clamp, and whether it does is
+# uniform across the work-group. The guarded path is what every tile used to
+# run; it stays reachable so the saving can be measured (it is largest where
+# the mainloop is shortest, i.e. small K).
+_EPILOGUE_CONFIGS = [
+    ("epilogue guarded", {"ARK_MOE_W4A8_PREFILL_FULL_TILE": "0"}),
+    ("epilogue interior", {"ARK_MOE_W4A8_PREFILL_FULL_TILE": "1"}),
+]
+
 _SWEEP_MIN_SNR_DB = 40.0
 
 
@@ -1214,6 +1224,25 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"act-quant config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_epilogue_sweep(self, request):
+            """Time the epilogue guard at the compute-bound batch.
+
+            The mainloop is identical in both rows; only the store differs. A
+            tile that lies entirely inside the expert's rows and inside N can
+            skip the per-element store predicate and the two scale-index
+            clamps, and the answer is uniform across the work-group, so the
+            branch costs one comparison per tile rather than per element. The
+            saving is a fixed number of instructions per output element, so it
+            shows up as a larger fraction where the mainloop is shortest --
+            the small-K down-projections -- and should never be negative.
+            """
+            rows = run_config_sweep("prefill", _EPILOGUE_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"epilogue config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
         def test_act_quant_vec_matches_scalar(self):
             """The vectorized activation quantizer must be bit-identical to the scalar one.
 
@@ -1245,6 +1274,44 @@ if pytest is not None:
                     outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
             assert torch.equal(outs["0"], outs["1"]), (
                 "vectorized activation quantization disagrees with the scalar mapping: "
+                f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
+            )
+
+        def test_full_tile_epilogue_matches_predicated(self):
+            """Skipping the epilogue guard on interior tiles must change nothing.
+
+            The fast path drops only the store predicate and the two
+            scale-index clamps, all three of which are no-ops on a tile that
+            lies inside the expert's rows and inside N; the convert, the two
+            multiplies and their order are untouched, so the results must be
+            bit-identical, not merely close.
+
+            The shape matters: the batch puts 300 rows on every expert against
+            a 256-row tile, so each expert has one interior tile *and* one
+            ragged tile and a single launch exercises both paths. A
+            small-batch case would leave every tile ragged and the test would
+            pass without the fast path ever running.
+            """
+            rows_per_expert = _PREFILL_TARGET_ROWS_PER_EXPERT + 44
+            case = _build_case(
+                _QWEN3_NK[1][1],
+                _QWEN3_NK[1][2],
+                _QWEN3_E,
+                rows_per_expert * _QWEN3_E,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            outs = {}
+            for flag in ("0", "1"):
+                with _env_override(ARK_MOE_W4A8_PREFILL_FULL_TILE=flag):
+                    outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+            assert torch.equal(outs["0"], outs["1"]), (
+                "the interior-tile epilogue disagrees with the guarded one: "
                 f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
             )
 
