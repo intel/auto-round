@@ -339,11 +339,11 @@ W2G64 在 13 个任务上的平均精度与耗时
 
 ### AWQ 算法
 
-实验性功能：原始实现中未使用 weight clipping（权重裁剪）逻辑，因此相比原版 AWQ 算法，可能会存在一定精度下降
+实验性功能：AWQ weight clipping（权重裁剪）为可选功能。如需更接近原始 AWQ 流程，可使用 `--awq_apply_clip` 开启。
 
 AWQ（Activation-Aware Weight Quantization，激活感知权重量化）是一种可选的量化算法。AWQ 通过分析激活模式来保护关键权重通道，在标准量化前对权重施加通道级缩放，从而降低量化误差。
 
-AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**W8A8** 搭配 AWQ 平滑化也可通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
+AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**INT8** 是 AutoRound 的 W8A8 scheme，可在 RTN 量化前使用 AWQ 平滑化，并通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
 
 #### 命令行用法
 
@@ -351,26 +351,66 @@ AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核�
 auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
 ```
 
+AWQ 也可以与 AutoRound 优化组合使用：
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
+```
+
+推荐的 INT8/W8A8 配方，使用 AWQ 平滑化：
+
+```bash
+auto-round \
+  --model Qwen/Qwen3-0.6B \
+  --scheme INT8 \
+  --algorithm awq \
+  --nsamples 256 \
+  --awq_seqlen 512 \
+  --awq_apply_clip \
+  --format auto_round:llm_compressor
+```
+
+这里显式设置 `--nsamples 256` 和 `--awq_seqlen 512` 是 W8A8 AWQ 标定的推荐配方。AutoRound 默认值主要面向
+AutoRound 优化调优，并不适合作为 plain AWQ smoothing 的默认选择。
+
 AWQ 专用选项：
-- `--duo_scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
-- `--n_grid`：缩放比率搜索的网格点数（默认：20）。
+- `--awq_duo_scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
+- `--awq_n_grid`：缩放比率搜索的网格点数（默认：20）。
+- `--awq_apply_clip`：在 AWQ 平滑后搜索并应用权重裁剪。
+- `--awq_seqlen`：AWQ 标定使用的最大序列长度，包括激活统计、smoothing scale search 以及 clip-search
+  输入特征。它不同于全局 `--seqlen`，后者用于控制标定样本构造。设为 `<= 0` 时使用完整标定序列。
+
+仅 API 支持的 AWQ 选项：
+- `AWQConfig(skip_moe=True)`：AWQ 平滑时跳过 routed MoE experts，仅保留 attention 和 dense/shared 路径。显式传入的 `mappings` 会按原样使用。
 
 #### API 用法
 
-W8A8 搭配 AWQ 平滑化：
+使用默认 AWQ 参数时，字符串别名就足够：
+
+```python
+from auto_round import AutoRound
+
+ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
+```
+
+需要 `apply_clip=True` 等 AWQ 专用选项时，再使用 `AWQConfig`：
 
 ```python
 from auto_round import AWQConfig, AutoRound
 
 ar = AutoRound(
     "Qwen/Qwen3-0.6B",
-    scheme="INT8",
-    alg_configs=AWQConfig(),
+    scheme="W4A16",
+    alg_configs=AWQConfig(apply_clip=True),
 )
 
 output_dir = "./tmp_awq"
 ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 ```
+
+`alg_configs="awq"` 或 `alg_configs=AWQConfig()` 选择的是 AWQ 算法；这与 `format="auto_awq"` 等导出格式相互独立。例如：
+- `alg_configs="awq"` + `format="auto_round"`：使用 AWQ 平滑，并采用 AutoRound 打包。
+- `alg_configs="signround"` + `format="auto_awq"`：不使用 AWQ 平滑，但采用 AutoAWQ 打包。
 
 
 ### AutoScheme 自动混合精度量化方案
@@ -484,42 +524,6 @@ ar.quantize_and_save()
 AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量化**。该层将直接采用候选方案中精度最高的配置。
 
 当 AutoScheme 与 `model_free=True` 联合使用时，仅支持 INT（`W2A16`/`W4A16`/`W8A16`）和 MXFP（`MXFP4`/`MXFP8`）两种选项族。`W3A16`、`GGUF:*`、`NVFP4` 等不支持的选项会直接抛出 `ValueError`；同一 `AutoScheme` 中也不允许混用 INT 和 MXFP 选项族。
-
-### AWQ 量化算法
-
-AWQ（`alg_configs="awq"` 或 `alg_configs=AWQConfig()`）是一种预处理量化算法，通过分析激活分布并应用通道缩放（channel-wise scaling）来保护重要的权重。它在实际量化（默认为 RTN，或使用 auto_round/SignRound）之前运行。
-
-#### 命令行用法
-```bash
-# AWQ + 默认 RTN (自动选择 iters=0)
-auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
-
-# AWQ + AutoRound 优化
-auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
-
-# AWQ 相关参数
---duo-scaling true|false|both  (默认: true)
---n-grid 20                    (默认: 20)
-```
-
-#### API 用法
-```python
-from auto_round import AWQConfig, AutoRound, SignRoundConfig
-
-# 字符串别名（使用 AWQ 默认参数，并自动追加 RTN）
-ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
-
-# AWQ + 默认 RTN (最简用法)
-ar = AutoRound(model, tokenizer, alg_configs=AWQConfig(), scheme="W4A16")
-
-# 通过 alg_configs 指定 AWQ + AutoRound (显式流水线)
-ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
-ar.quantize_and_save(output_dir="./qmodel")
-```
-
-**重要提示**：`alg_configs="awq"` 或 `alg_configs=AWQConfig()`（量化算法）与 `format="auto_awq"`（导出格式）是相互独立的。你可以使用：
-- `alg_configs="awq"` + `format="auto_round"`：AWQ 平滑 + AutoRound 打包
-- `alg_configs="signround"` + `format="auto_awq"`：不使用 AWQ 平滑 + AutoAWQ 打包
 
 ### OPT-RTN 模式
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。

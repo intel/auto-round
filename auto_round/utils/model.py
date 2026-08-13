@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import psutil
 import torch
@@ -1789,6 +1789,23 @@ def to_device(input, device=torch.device("cpu")):
             input_res = tuple(input_res)
         input = input_res
 
+    return input
+
+
+def move_to_device(input: Any, device=torch.device("cpu"), non_blocking: bool = False) -> Any:
+    """Return a nested tensor container moved to *device* without mutating it."""
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(device, non_blocking=non_blocking)
+    if isinstance(input, UserDict):
+        return type(input)({k: move_to_device(v, device, non_blocking) for k, v in input.items()})
+    if isinstance(input, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in input.items()}
+    if isinstance(input, tuple):
+        return tuple(move_to_device(v, device, non_blocking) for v in input)
+    if isinstance(input, list):
+        return [move_to_device(v, device, non_blocking) for v in input]
     return input
 
 

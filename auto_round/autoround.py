@@ -381,6 +381,9 @@ _AWQ_FIELDS = {
     "clip_n_grid",
     "clip_max_shrink",
     "clip_n_sample_token",
+    "awq_seqlen",
+    "smooth_batch_size",
+    "skip_moe",
     "mappings",
 }
 _ROTATION_FIELDS = {

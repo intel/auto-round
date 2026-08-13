@@ -344,11 +344,11 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ### AWQ Algorithm
 
-**Experimental feature: our current implementation does not apply weight clipping yet, so accuracy may drop compared to the original AWQ algorithm.**
+**Experimental feature:** AWQ weight clipping is optional. Enable it with `--awq_apply_clip` when you want to match the original AWQ flow more closely.
 
 AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
 
-The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **W8A8** with AWQ smoothing can also be served via vLLM's compressed_tensors backend (cutlass INT8 GEMM).
+The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
 #### CLI Usage
 
@@ -356,24 +356,68 @@ The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA 
 auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
 ```
 
+AWQ can also be paired with AutoRound optimization:
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
+```
+
+Recommended INT8/W8A8 recipe using AWQ smoothing:
+
+```bash
+auto-round \
+  --model Qwen/Qwen3-0.6B \
+  --scheme INT8 \
+  --algorithm awq \
+  --nsamples 256 \
+  --awq_seqlen 512 \
+  --awq_apply_clip \
+  --format auto_round:llm_compressor
+```
+
+The explicit `--nsamples 256` and `--awq_seqlen 512` settings are recommended for W8A8 AWQ calibration. The default
+AutoRound values are tuned for AutoRound optimization, not plain AWQ smoothing.
+
 AWQ-specific options:
-- `--duo_scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
-- `--n_grid`: Number of grid points for scaling ratio search (default: 20).
+- `--awq_duo_scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
+- `--awq_n_grid`: Number of grid points for scaling ratio search (default: 20).
+- `--awq_apply_clip`: Search and apply AWQ weight clipping after smoothing.
+- `--awq_seqlen`: Maximum sequence length used by AWQ calibration, including activation statistics, smoothing
+  scale search, and clip-search input features. This is separate from the global `--seqlen`, which controls
+  calibration sample construction. Set a value `<= 0` to use the full calibration sequence.
+
+API-only AWQ options:
+- `AWQConfig(skip_moe=True)`: Skips routed MoE experts during AWQ smoothing while keeping attention and dense/shared paths. Explicit `mappings` are used as provided.
 
 #### API Usage
+
+For default AWQ settings, the string alias is sufficient:
+
+```python
+from auto_round import AutoRound
+
+ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
+```
+
+Use `AWQConfig` when you need AWQ-specific options such as `apply_clip=True`:
 
 ```python
 from auto_round import AWQConfig, AutoRound
 
 ar = AutoRound(
     "Qwen/Qwen3-0.6B",
-    scheme="INT8",
-    alg_configs=AWQConfig(),
+    scheme="W4A16",
+    alg_configs=AWQConfig(apply_clip=True),
 )
 
 output_dir = "./tmp_awq"
 ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 ```
+
+`alg_configs="awq"` or `alg_configs=AWQConfig()` selects the AWQ algorithm. This is independent from export
+format selection such as `format="auto_awq"`. For example:
+- `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing with AutoRound packing.
+- `alg_configs="signround"` + `format="auto_awq"`: AutoAWQ packing without AWQ smoothing.
 
 ### AutoScheme
 
@@ -486,42 +530,6 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
 When using AutoScheme with `model_free=True`, only INT (`W2A16`/`W4A16`/`W8A16`) and MXFP (`MXFP4`/`MXFP8`) option families are supported. Options like `W3A16`, `GGUF:*`, and `NVFP4` will raise a `ValueError`. INT and MXFP families cannot be mixed in the same `AutoScheme`.
-
-### AWQ Quantization Algorithm
-
-AWQ (`alg_configs="awq"` or `alg_configs=AWQConfig()`) is a pre-processing quantization algorithm that analyzes activation patterns and applies channel-wise scaling to protect salient weights. It runs BEFORE the actual quantization (RTN by default, or auto_round/SignRound).
-
-#### CLI Usage
-```bash
-# AWQ + default RTN (iters=0 auto-selected)
-auto-round --model Qwen/Qwen3-0.6B --algorithm awq --scheme W4A16
-
-# AWQ + AutoRound optimization
-auto-round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round --scheme W4A16
-
-# AWQ flags
---duo-scaling true|false|both  (default: true)
---n-grid 20                    (default: 20)
-```
-
-#### API Usage
-```python
-from auto_round import AWQConfig, AutoRound, SignRoundConfig
-
-# String alias (AWQ defaults, with RTN appended automatically)
-ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
-
-# AWQ + default RTN (simplest)
-ar = AutoRound(model, tokenizer, alg_configs=AWQConfig(), scheme="W4A16")
-
-# AWQ + AutoRound via alg_configs (explicit pipeline)
-ar = AutoRound(model, tokenizer, alg_configs=[AWQConfig(), SignRoundConfig(iters=200)], scheme="W4A16")
-ar.quantize_and_save(output_dir="./qmodel")
-```
-
-**Important Note**: `alg_configs="awq"` or `alg_configs=AWQConfig()` (quantization algorithm) and `format="auto_awq"` (export format) are independent. You can use:
-- `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing + AutoRound packing
-- `alg_configs="signround"` + `format="auto_awq"`: No AWQ smoothing + AutoAWQ packing
 
 ### OPT RTN Mode
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
