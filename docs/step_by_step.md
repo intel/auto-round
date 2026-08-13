@@ -344,7 +344,7 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 ### AWQ Algorithm
 
-**Experimental feature:** AWQ weight clipping is optional. Enable it with `--awq-apply-clip` when you want to match the original AWQ flow more closely.
+**Experimental feature:** AWQ weight clipping is optional. Enable it with `--awq_apply_clip` when you want to match the original AWQ flow more closely.
 
 AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
 
@@ -371,7 +371,7 @@ auto-round \
   --algorithm awq \
   --nsamples 256 \
   --awq_seqlen 512 \
-  --awq-apply-clip \
+  --awq_apply_clip \
   --format auto_round:llm_compressor
 ```
 
@@ -379,9 +379,9 @@ The explicit `--nsamples 256` and `--awq_seqlen 512` settings are recommended fo
 AutoRound values are tuned for AutoRound optimization, not plain AWQ smoothing.
 
 AWQ-specific options:
-- `--awq-duo-scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
-- `--awq-n-grid`: Number of grid points for scaling ratio search (default: 20).
-- `--awq-apply-clip`: Search and apply AWQ weight clipping after smoothing.
+- `--awq_duo_scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
+- `--awq_n_grid`: Number of grid points for scaling ratio search (default: 20).
+- `--awq_apply_clip`: Search and apply AWQ weight clipping after smoothing.
 - `--awq_seqlen`: Maximum sequence length used by AWQ calibration, including activation statistics, smoothing
   scale search, and clip-search input features. This is separate from the global `--seqlen`, which controls
   calibration sample construction. Set a value `<= 0` to use the full calibration sequence.

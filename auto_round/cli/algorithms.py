@@ -191,7 +191,7 @@ class AWQ(AlgorithmHandler):
 
     def register(self, group) -> None:
         group.add_argument(
-            "--awq-duo-scaling",
+            "--awq_duo_scaling",
             dest="duo_scaling",
             default=True,
             type=_parse_bool_or_mode,
@@ -199,7 +199,7 @@ class AWQ(AlgorithmHandler):
             help="Use activation+weight duo scaling (true/false/both).",
         )
         group.add_argument(
-            "--awq-n-grid",
+            "--awq_n_grid",
             dest="n_grid",
             default=20,
             type=int,
@@ -216,25 +216,25 @@ class AWQ(AlgorithmHandler):
             ),
         )
         group.add_argument(
-            "--awq-smooth-batch-size",
+            "--awq_smooth_batch_size",
             dest="awq_smooth_batch_size",
             default=None,
             type=int,
             help="Microbatch size for AWQ parent replay during scale search; <=0 disables microbatching.",
         )
         group.add_argument(
-            "--awq-apply-clip",
+            "--awq_apply_clip",
             dest="awq_apply_clip",
             action="store_true",
             help="Search and hard-clamp per-group AWQ weight clipping after smoothing.",
         )
         group.add_argument(
-            "--awq-clip-as-init",
+            "--awq_clip_as_init",
             dest="awq_clip_as_init",
             action="store_true",
             help=(
                 "Use the searched AWQ clip to initialize the block quantizer's "
-                "weight range instead of hard-clamping (requires --awq-apply-clip)."
+                "weight range instead of hard-clamping (requires --awq_apply_clip)."
             ),
         )
 

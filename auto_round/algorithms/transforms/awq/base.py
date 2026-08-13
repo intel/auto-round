@@ -107,6 +107,8 @@ def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
 def _slice_seq_tensor(v: Any, actual_seq: int, seqlen: int) -> Any:
     """Slice a value's sequence dimension to *seqlen*, recursing into containers."""
     if isinstance(v, torch.Tensor):
+        if v.ndim == 1 and v.shape[0] == actual_seq:
+            return v[:seqlen]
         if v.ndim == 3 and v.shape[1] == actual_seq:
             return v[:, :seqlen]
         if v.ndim == 2 and v.shape[1] == actual_seq:
@@ -387,6 +389,8 @@ class AWQTransform(BasePreprocessor):
             # Drop the transient clip attribute once the block quantizer has
             # consumed it (the persistent copy lives on the model context).
             for bl in m.balance_layers:
+                if hasattr(bl, "awq_clip_min"):
+                    delattr(bl, "awq_clip_min")
                 if hasattr(bl, "awq_clip_max"):
                     delattr(bl, "awq_clip_max")
         seen_parents: set[int] = set()
@@ -943,15 +947,16 @@ class AWQTransform(BasePreprocessor):
         recorded on the model context (and, in ``clip_as_init`` mode, on the
         balance layer) so it is kept for downstream use. Two modes:
 
-        * ``clip_as_init=False`` (default): the clip is hard-clamped in place on
-          the (already smoothed) balance-layer weights, so any downstream block
-          quantizer (RTN / SignRound / SignRoundV2) re-derives its min/max
-          range from the clipped weights.
-        * ``clip_as_init=True``: the weights are left untouched and the clip is
-          stored on the layer (``awq_clip_max``); the downstream SignRound /
-          SignRoundV2 quantizer uses it to *initialize* its tunable weight range
-          (capping ``weight_min``/``weight_max`` or clamping before the scale
-          search) and then tunes ``min_scale``/``max_scale`` on top.
+        * ``clip_as_init=False`` (default): the clip range is hard-clamped in
+          place on the (already smoothed) balance-layer weights, so any
+          downstream block quantizer (RTN / SignRound / SignRoundV2) re-derives
+          its min/max range from the clipped weights.
+        * ``clip_as_init=True``: the weights are left untouched and the clip
+          range is stored on the layer (``awq_clip_min`` / ``awq_clip_max``);
+          the downstream SignRound / SignRoundV2 quantizer uses it to
+          *initialize* its tunable weight range (capping
+          ``weight_min``/``weight_max`` or clamping before the scale search) and
+          then tunes ``min_scale``/``max_scale`` on top.
         """
         clip_store = getattr(self.model_context, "awq_clip_values", None)
         for mapping in block_mappings:
@@ -967,29 +972,37 @@ class AWQTransform(BasePreprocessor):
                 if self._should_skip_clip(name):
                     logger.debug("AWQ: skip clip for '%s' (avoid-clipping layer).", name)
                     continue
-                max_val = self._compute_best_clip(bl, feat)
-                if max_val is None:
+                clip_range = self._compute_best_clip(bl, feat)
+                if clip_range is None:
                     continue
+                min_val, max_val = clip_range
                 key = getattr(bl, "global_name", None) or name
                 if clip_store is not None:
-                    clip_store[key] = max_val.detach().to("cpu")
+                    if torch.allclose(min_val, -max_val):
+                        clip_store[key] = max_val.detach().to("cpu")
+                    else:
+                        clip_store[key] = {
+                            "min": min_val.detach().to("cpu"),
+                            "max": max_val.detach().to("cpu"),
+                        }
                 if self.clip_as_init:
                     # Keep the weights intact; hand the clip to the block
                     # quantizer as the initialization of its weight range.
+                    bl.awq_clip_min = min_val.detach()
                     bl.awq_clip_max = max_val.detach()
                 else:
-                    self._apply_clip(bl, max_val)
+                    self._apply_clip(bl, min_val, max_val)
 
     @torch.no_grad()
     def _compute_best_clip(
         self,
         layer: torch.nn.Module,
         input_feat: torch.Tensor,
-    ) -> torch.Tensor | None:
+    ) -> tuple[torch.Tensor, torch.Tensor] | None:
         """Search the per-group clip threshold that minimizes output MSE.
 
-        Returns a ``[out_channels, n_group]`` tensor of clip magnitudes, or
-        ``None`` if clipping is not applicable to this layer.
+        Returns ``(min_val, max_val)`` per-group tensors, or ``None`` if
+        clipping is not applicable to this layer.
         """
         params = self._qdq_tool.resolve_params(layer)
         bits = params["bits"]
@@ -1031,39 +1044,53 @@ class AWQTransform(BasePreprocessor):
 
         # Batch output channels to bound peak memory.
         oc_batch = 256 if out_features % 256 == 0 else (64 if out_features % 64 == 0 else out_features)
+        use_asym_clip = params["sym"] is False
+        best_min_val_all = []
         best_max_val_all = []
         n_steps = max(1, int(self.clip_max_shrink * self.clip_n_grid))
 
         for i_b in range(0, out_features, oc_batch):
             w_b = w[i_b : i_b + oc_batch]
-            org_max_val = w_b.abs().amax(dim=-1, keepdim=True)  # [oc_b, 1, n_group, 1]
+            if use_asym_clip:
+                org_min_val = w_b.amin(dim=-1, keepdim=True).clamp(max=0)
+                org_max_val = w_b.amax(dim=-1, keepdim=True).clamp(min=0)
+            else:
+                org_max_val = w_b.abs().amax(dim=-1, keepdim=True)  # [oc_b, 1, n_group, 1]
+                org_min_val = -org_max_val
+            best_min_val = org_min_val.clone()
             best_max_val = org_max_val.clone()
             min_errs = torch.full_like(org_max_val, 1e9)
             org_out = (feat * w_b).sum(dim=-1)  # [oc_b, n_token, n_group]
 
             for i_s in range(n_steps):
-                max_val = org_max_val * (1 - i_s / self.clip_n_grid)
-                cur_w = torch.clamp(w_b, -max_val, max_val)
+                shrink = 1 - i_s / self.clip_n_grid
+                min_val = org_min_val * shrink
+                max_val = org_max_val * shrink
+                cur_w = torch.clamp(w_b, min_val, max_val)
                 cur_w_flat = cur_w.reshape(cur_w.shape[0], n_group * gs)
                 q_w = self._qdq_tool.qdq(cur_w_flat, clip_params, quant_func=quant_func).reshape(cur_w.shape)
                 cur_out = (feat * q_w).sum(dim=-1)
                 err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
                 improved = err < min_errs
                 min_errs[improved] = err[improved]
+                best_min_val[improved] = min_val[improved]
                 best_max_val[improved] = max_val[improved]
                 del cur_w, q_w, cur_out
 
+            best_min_val_all.append(best_min_val)
             best_max_val_all.append(best_max_val)
 
+        best_min_val = torch.cat(best_min_val_all, dim=0)
         best_max_val = torch.cat(best_max_val_all, dim=0)
-        return best_max_val.squeeze(1)  # [out_features, n_group, 1]
+        return best_min_val.squeeze(1), best_max_val.squeeze(1)  # [out_features, n_group, 1]
 
     @torch.no_grad()
-    def _apply_clip(self, layer: torch.nn.Module, max_val: torch.Tensor) -> None:
-        """Hard-clamp the layer weight to ``[-max_val, max_val]`` per group."""
+    def _apply_clip(self, layer: torch.nn.Module, min_val: torch.Tensor, max_val: torch.Tensor) -> None:
+        """Hard-clamp the layer weight to ``[min_val, max_val]`` per group."""
         org_dtype = layer.weight.dtype
+        min_val = min_val.to(device=layer.weight.device, dtype=org_dtype)
         max_val = max_val.to(device=layer.weight.device, dtype=org_dtype)
         org_shape = layer.weight.shape
         w = layer.weight.data.reshape(*max_val.shape[:2], -1)
-        w = torch.clamp(w, -max_val, max_val)
+        w = torch.clamp(w, min_val, max_val)
         layer.weight.data = w.reshape(org_shape).to(org_dtype)

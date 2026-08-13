@@ -78,8 +78,10 @@ class AWQConfig(QuantizationConfig):
                 resulting scales. ``1`` reproduces the original single-pass AWQ.
             apply_clip: Whether to search and apply AWQ weight clipping after
                 smoothing. When True, AWQ searches a per-group clipping
-                threshold for each balance layer (minimizing output MSE) and
-                hard-clamps the weights to ``[-max_val, max_val]`` in place.
+                range for each balance layer (minimizing output MSE) and
+                hard-clamps the weights in place. Symmetric quantization uses a
+                symmetric ``[-max_val, max_val]`` range; asymmetric quantization
+                searches separate ``min_val`` and ``max_val`` bounds.
                 This is a pure weight transformation, so it composes with any
                 downstream block quantizer: a SignRound/SignRoundV2 quantizer
                 re-derives its ``weight_min``/``weight_max`` from the clamped
@@ -90,7 +92,7 @@ class AWQConfig(QuantizationConfig):
             clip_as_init: Selects how the searched clip threshold is consumed
                 (only relevant when ``apply_clip`` is True). When False
                 (default), the weights are hard-clamped in place. When True,
-                the weights are left untouched and the per-group clip magnitude
+                the weights are left untouched and the per-group clip range
                 is instead stored (on the model context and on each balance
                 layer) so the downstream block quantizer uses it to *initialize*
                 its tunable weight range: SignRound caps its

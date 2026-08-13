@@ -672,19 +672,26 @@ class TestAWQMoE:
 
         hidden_states = torch.zeros(1, 16, 8)
         position_ids = torch.arange(16).reshape(1, 16)
+        cache_position = torch.arange(16)
         attention_mask = torch.zeros(1, 1, 16, 16)
         rotary = (torch.zeros(1, 16, 8), torch.ones(1, 16, 8))
         feat = _truncate_awq_tensor(hidden_states, seqlen=4)
 
         args, kwargs = _truncate_args_kwargs(
             (hidden_states,),
-            {"position_ids": position_ids, "attention_mask": attention_mask, "position_embeddings": rotary},
+            {
+                "position_ids": position_ids,
+                "cache_position": cache_position,
+                "attention_mask": attention_mask,
+                "position_embeddings": rotary,
+            },
             seqlen=4,
         )
 
         assert feat.shape == (1, 4, 8)
         assert args[0].shape == (1, 4, 8)
         assert kwargs["position_ids"].shape == (1, 4)
+        assert kwargs["cache_position"].shape == (4,)
         assert kwargs["attention_mask"].shape == (1, 1, 4, 4)
         assert kwargs["position_embeddings"][0].shape == (1, 4, 8)
         assert kwargs["position_embeddings"][1].shape == (1, 4, 8)
@@ -767,6 +774,45 @@ class TestAWQWeightClip:
         self.save_dir = str(tmp_path / "saved")
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    def test_awq_asym_clip_uses_separate_min_max_bounds(self):
+        """Asymmetric AWQ clip should not use a symmetric absmax range."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        layer = nn.Linear(4, 2, bias=False)
+        layer.weight.data = torch.tensor([[-8.0, -2.0, 1.0, 2.0], [-1.0, 3.0, 4.0, 5.0]])
+        transform = AWQTransform(
+            AWQConfig(
+                bits=4,
+                group_size=4,
+                sym=False,
+                data_type="int",
+                apply_clip=True,
+                clip_n_grid=2,
+                clip_n_sample_token=32,
+            )
+        )
+
+        input_feat = torch.randn(32, 4)
+        clip_range = transform._compute_best_clip(layer, input_feat)
+        assert clip_range is not None
+        min_val, max_val = clip_range
+
+        grouped = layer.weight.data.reshape(*max_val.shape[:2], -1)
+        org_min = grouped.amin(dim=-1, keepdim=True).clamp(max=0)
+        org_max = grouped.amax(dim=-1, keepdim=True).clamp(min=0)
+
+        assert torch.all(min_val >= org_min)
+        assert torch.all(max_val <= org_max)
+        assert max_val[0, 0, 0] <= 2.0
+
+        transform._apply_clip(layer, min_val, max_val)
+        clipped = layer.weight.data.reshape(*max_val.shape[:2], -1)
+        assert torch.all(clipped >= min_val)
+        assert torch.all(clipped <= max_val)
 
     def test_awq_clip_then_rtn(self, tiny_opt_model_path):
         """AWQ smooth+clip → RTN: produces a valid W4 model that can generate."""

@@ -339,7 +339,7 @@ W2G64 在 13 个任务上的平均精度与耗时
 
 ### AWQ 算法
 
-实验性功能：AWQ weight clipping（权重裁剪）为可选功能。如需更接近原始 AWQ 流程，可使用 `--awq-apply-clip` 开启。
+实验性功能：AWQ weight clipping（权重裁剪）为可选功能。如需更接近原始 AWQ 流程，可使用 `--awq_apply_clip` 开启。
 
 AWQ（Activation-Aware Weight Quantization，激活感知权重量化）是一种可选的量化算法。AWQ 通过分析激活模式来保护关键权重通道，在标准量化前对权重施加通道级缩放，从而降低量化误差。
 
@@ -366,7 +366,7 @@ auto-round \
   --algorithm awq \
   --nsamples 256 \
   --awq_seqlen 512 \
-  --awq-apply-clip \
+  --awq_apply_clip \
   --format auto_round:llm_compressor
 ```
 
@@ -374,9 +374,9 @@ auto-round \
 AutoRound 优化调优，并不适合作为 plain AWQ smoothing 的默认选择。
 
 AWQ 专用选项：
-- `--awq-duo-scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
-- `--awq-n-grid`：缩放比率搜索的网格点数（默认：20）。
-- `--awq-apply-clip`：在 AWQ 平滑后搜索并应用权重裁剪。
+- `--awq_duo_scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
+- `--awq_n_grid`：缩放比率搜索的网格点数（默认：20）。
+- `--awq_apply_clip`：在 AWQ 平滑后搜索并应用权重裁剪。
 - `--awq_seqlen`：AWQ 标定使用的最大序列长度，包括激活统计、smoothing scale search 以及 clip-search
   输入特征。它不同于全局 `--seqlen`，后者用于控制标定样本构造。设为 `<= 0` 时使用完整标定序列。
 
