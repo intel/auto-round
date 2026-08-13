@@ -698,6 +698,7 @@ class TestAutoRound:
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
+    @pytest.mark.timeout(60)
     def test_attention_mask_via_tokenize_in_dataset(self):
         from transformers import AutoTokenizer
 
