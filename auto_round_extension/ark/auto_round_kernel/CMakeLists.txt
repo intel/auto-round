@@ -93,10 +93,17 @@ endif()
 list(APPEND libs bestla)
 
 file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(NOT ARK_XPU)
+    list(APPEND SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/sdpa.cpp
+    )
+endif()
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
 
 include_directories(wrapper/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 # Build flash_attn_wrapper as a separate static library with sycl-tla flags
 if(ARK_XPU AND ARK_SYCL_TLA)
@@ -154,7 +161,6 @@ endif()
 pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS})
 target_compile_features(${PY_NAME} PRIVATE cxx_std_17)
 target_compile_definitions(${PY_NAME} PRIVATE PY_NAME=${PY_NAME} ${ARK_TYPE}=1)
-
 if(ARK_DNNL)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_DNNL=1)
 endif()
