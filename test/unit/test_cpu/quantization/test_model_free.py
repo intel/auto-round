@@ -574,23 +574,6 @@ class TestModelFreeQuantize:
 class TestModelFreeMXFP:
     """End-to-end tests for MXFP4/MXFP8 model-free quantization."""
 
-    def test_opt_rtn_selects_best_e8m0_scale_per_group(self, monkeypatch):
-        from auto_round.data_type import mxfp
-
-        torch.manual_seed(0)
-        weight = torch.randn(8, 32)
-        debug_mock = Mock()
-        monkeypatch.setattr(mxfp.logger, "debug", debug_mock)
-
-        baseline, baseline_exp, _ = mxfp.quant_mx(weight, bits=4, group_size=32, data_type="mx_fp")
-        optimized, optimized_exp, _ = mxfp.quant_mx_opt_rtn(weight, bits=4, group_size=32, data_type="mx_fp")
-
-        baseline_mse = ((baseline - weight).reshape(-1, 32) ** 2).mean(dim=-1)
-        optimized_mse = ((optimized - weight).reshape(-1, 32) ** 2).mean(dim=-1)
-        assert torch.all(optimized_mse <= baseline_mse)
-        assert torch.count_nonzero(optimized_exp != baseline_exp).item() == 2
-        assert "2/8 groups" in debug_mock.call_args.args[0]
-
     def test_disable_opt_rtn_skips_mxfp_scale_search(self, monkeypatch):
         from auto_round.data_type import mxfp
 

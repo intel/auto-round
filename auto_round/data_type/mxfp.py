@@ -22,7 +22,6 @@ from auto_round.data_type.utils import (
     revert_tensor_by_pad,
     round_ste,
 )
-from auto_round.logger import logger
 
 MXFP_FORMAT_CACHE = {
     # data type: ebits, mbits, emax, max_norm, min_norm
