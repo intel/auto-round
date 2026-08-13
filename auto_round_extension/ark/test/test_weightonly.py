@@ -206,7 +206,7 @@ def test_cpu(m, n, k, blocksize, compute_type, weight_type, scale_type, asym):
     main_op(m, n, k, blocksize, compute_type, weight_type, scale_type, asym, "cpu", True)
 
 
-@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024])
+@pytest.mark.parametrize("m", [1, 8, 16, 32, 64, 128, 256, 1024, 4096])
 @pytest.mark.parametrize("n, k", [(1024, 768)])
 @pytest.mark.parametrize("blocksize", [32, 128])
 @pytest.mark.parametrize("weight_type", ["int2", "int4", "int8"])
@@ -219,6 +219,13 @@ def test_xpu(m, n, k, blocksize, compute_type, weight_type, scale_type, asym):
         main_op(m, n, k, blocksize, compute_type, weight_type, scale_type, asym, "xpu", True)
         torch.xpu.empty_cache()
 
+@pytest.mark.parametrize("m, n, k", [(1280, 256, 256), (1281, 288, 256)])
+def test_xpu_s8_large_tile(m, n, k):
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    with torch.no_grad():
+        main_op(m, n, k, 128, "int8", "int8", "fp16", False, "xpu", True)
+        torch.xpu.empty_cache()
 
 @pytest.mark.parametrize("m", [1, 1024])
 @pytest.mark.parametrize("n, k", [(1024, 768)])

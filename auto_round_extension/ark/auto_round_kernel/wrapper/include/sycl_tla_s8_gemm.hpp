@@ -28,14 +28,18 @@ namespace sycl_tla_s8_detail {
 
 using namespace cute;
 
-// template <bool AccumBlock, class ElementOut, int TileM, int TileN, class SGLayout>
-// class S8DequantKernelName;
-
 template <bool AccumBlock, bool HasBias, bool FullTile, class ElementOut, int TileM, int TileN, class SGLayout>
 class S8DequantKernelName;
 
 template <bool HasBias, bool FullTile, class ElementOut, int TileM, int TileN, class SGLayout>
 class S8KBlockDequantKernelName;
+
+static constexpr int S8_GEMM_TILE_K = 64;
+
+using SmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
+using SmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
+using MediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
 
 template <bool HasBias, bool FullTile, class TiledMMA, class ElementOut>
 void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t* b, ElementOut* c,
@@ -66,7 +70,7 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
   constexpr SPIRVScope barrier_scope = ScopeWorkgroup;
   constexpr int prefetch_dist = 3;
 
-  int k_tile_size = int(get<2>(wg_tile));
+  constexpr int k_tile_size = S8_GEMM_TILE_K;
 
   auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
   auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
@@ -379,11 +383,6 @@ template <class ElementOut>
 void launch_igemm_kblock(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_t* b, ElementOut* c,
                          const ElementOut* scale_a, const ElementOut* scale_b, const ElementOut* bias, int blocksize,
                          int blks) {
-  using SmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
-  using SmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
-  using MediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
-  using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
-
   if (m < 16) {
     launch_igemm_kblock_tile_dispatch<ElementOut, 8, 128, SmallTileSG>(
         q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
@@ -405,11 +404,6 @@ void launch_igemm(sycl::queue* q, int m, int n, int gemm_k, int lda, int ldb,
                   const int8_t* a, const int8_t* b, ElementOut* c, float* accum,
                   const ElementOut* scale_a, const ElementOut* scale_b,
                   const ElementOut* bias, int block_idx, int scale_b_stride) {
-  using SmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
-  using SmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
-  using MediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
-  using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
-
   if (m < 16) {
     launch_igemm_tile<AccumBlock, ElementOut, 8, 128, SmallTileSG>(
         q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
@@ -424,8 +418,6 @@ void launch_igemm(sycl::queue* q, int m, int n, int gemm_k, int lda, int ldb,
         q, m, n, gemm_k, lda, ldb, a, b, c, accum, scale_a, scale_b, bias, block_idx, scale_b_stride);
   }
 }
-
-static constexpr int S8_GEMM_TILE_K = 64;
 
 static inline void validate_s8_kblock_args(int k, int blocksize) {
   if (blocksize <= 0 || k % blocksize != 0) {

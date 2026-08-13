@@ -126,7 +126,7 @@ def detect_sycl_target():
         if "pvc" in text or "max 1550" in text or "max 1100" in text:
             return "intel_gpu_pvc"
 
-        return None
+        return "bmg"  # fallback to bmg if detection fails
 
     override = os.environ.get("ARK_SYCL_TARGET")
     if override:
