@@ -369,8 +369,9 @@ _PREFILL_TARGET_ROWS_PER_EXPERT = 384
 
 
 # Rows per expert for the epilogue equivalence tests: enough to give every
-# expert one *interior* tile and one *ragged* tile against the 256-row prefill
-# tile, which is what makes a single launch exercise both epilogue paths. It is
+# expert interior *and* ragged tiles against the prefill tile the ladder picks
+# for this shape (128 rows: 300 is two full tiles plus a 44-row remainder),
+# which is what makes a single launch exercise both epilogue paths. It is
 # deliberately not tied to the perf batch above -- these tests need a specific
 # tile geometry, not a compute-bound routing, and the smaller batch keeps them
 # quick.
@@ -1548,11 +1549,11 @@ if pytest is not None:
             multiplies and their order are untouched, so the results must be
             bit-identical, not merely close.
 
-            The shape matters: the batch puts 300 rows on every expert against
-            a 256-row tile, so each expert has one interior tile *and* one
-            ragged tile and a single launch exercises both paths. A
-            small-batch case would leave every tile ragged and the test would
-            pass without the fast path ever running.
+            The shape matters: the batch puts 300 rows on every expert, which
+            the tile ladder resolves to a 128-row tile, so each expert has two
+            interior tiles *and* one ragged 44-row tile and a single launch
+            exercises both paths. A small-batch case would leave every tile
+            ragged and the test would pass without the fast path ever running.
             """
             rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
             case = _build_case(
@@ -1634,10 +1635,10 @@ if pytest is not None:
             to the next expert -- which is silent corruption, not a crash.
 
             The batch is therefore the one from the interior-tile test: 300
-            rows on every expert against a 256-row tile gives each expert one
-            interior tile and one ragged tile, and the experts are adjacent in
-            the output, so anything spilling past an expert's last row lands in
-            the comparison.
+            rows on every expert against the ladder's 128-row tile gives each
+            expert two interior tiles and one ragged one, and the experts are
+            adjacent in the output, so anything spilling past an expert's last
+            row lands in the comparison.
             """
             rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
             case = _build_case(
