@@ -366,25 +366,27 @@ Recommended INT8/W8A8 recipe using AWQ smoothing:
 
 ```bash
 auto-round \
-  --model meta-llama/Llama-3.1-8B-Instruct \
+  --model Qwen/Qwen3-0.6B \
   --scheme INT8 \
   --algorithm awq \
   --nsamples 256 \
-  --seqlen 512 \
+  --awq_seqlen 512 \
   --awq-apply-clip \
   --format auto_round:llm_compressor
 ```
 
-The explicit `--nsamples 256` and `--seqlen 512` settings are recommended for W8A8 AWQ calibration. The default
+The explicit `--nsamples 256` and `--awq_seqlen 512` settings are recommended for W8A8 AWQ calibration. The default
 AutoRound values are tuned for AutoRound optimization, not plain AWQ smoothing.
 
 AWQ-specific options:
 - `--awq-duo-scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
 - `--awq-n-grid`: Number of grid points for scaling ratio search (default: 20).
 - `--awq-apply-clip`: Search and apply AWQ weight clipping after smoothing.
+- `--awq_seqlen`: Maximum sequence length used by AWQ calibration, including activation statistics, smoothing
+  scale search, and clip-search input features. This is separate from the global `--seqlen`, which controls
+  calibration sample construction. Set a value `<= 0` to use the full calibration sequence.
 
 API-only AWQ options:
-- `AWQConfig(smooth_seqlen=512)`: Caps the parent-forward replay length used by AWQ scale search. Set a value `<= 0` to use the full calibration sequence.
 - `AWQConfig(skip_moe=True)`: Skips routed MoE experts during AWQ smoothing while keeping attention and dense/shared paths. Explicit `mappings` are used as provided.
 
 #### API Usage

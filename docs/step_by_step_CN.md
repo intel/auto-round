@@ -361,25 +361,26 @@ auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
 
 ```bash
 auto-round \
-  --model meta-llama/Llama-3.1-8B-Instruct \
+  --model Qwen/Qwen3-0.6B \
   --scheme INT8 \
   --algorithm awq \
   --nsamples 256 \
-  --seqlen 512 \
+  --awq_seqlen 512 \
   --awq-apply-clip \
   --format auto_round:llm_compressor
 ```
 
-这里显式设置 `--nsamples 256` 和 `--seqlen 512` 是 W8A8 AWQ 标定的推荐配方。AutoRound 默认值主要面向
+这里显式设置 `--nsamples 256` 和 `--awq_seqlen 512` 是 W8A8 AWQ 标定的推荐配方。AutoRound 默认值主要面向
 AutoRound 优化调优，并不适合作为 plain AWQ smoothing 的默认选择。
 
 AWQ 专用选项：
 - `--awq-duo-scaling`：同时使用激活和权重计算缩放因子。选项：`true`、`false` 或 `both`（搜索两种模式并选择最佳）。（默认：True）。
 - `--awq-n-grid`：缩放比率搜索的网格点数（默认：20）。
 - `--awq-apply-clip`：在 AWQ 平滑后搜索并应用权重裁剪。
+- `--awq_seqlen`：AWQ 标定使用的最大序列长度，包括激活统计、smoothing scale search 以及 clip-search
+  输入特征。它不同于全局 `--seqlen`，后者用于控制标定样本构造。设为 `<= 0` 时使用完整标定序列。
 
 仅 API 支持的 AWQ 选项：
-- `AWQConfig(smooth_seqlen=512)`：限制 AWQ scale search 中 parent-forward replay 使用的序列长度。设为 `<= 0` 时使用完整标定序列。
 - `AWQConfig(skip_moe=True)`：AWQ 平滑时跳过 routed MoE experts，仅保留 attention 和 dense/shared 路径。显式传入的 `mappings` 会按原样使用。
 
 #### API 用法

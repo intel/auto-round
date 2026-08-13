@@ -47,7 +47,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_grid: int = 20,
         clip_max_shrink: float = 0.5,
         clip_n_sample_token: int = 512,
-        smooth_seqlen: int = 512,
+        awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
@@ -107,10 +107,12 @@ class AWQConfig(QuantizationConfig):
             clip_n_sample_token: Maximum number of calibration tokens used per
                 balance layer when searching the clip threshold (subsampled to
                 bound memory).
-            smooth_seqlen: Maximum sequence length (number of tokens) used per
-                calibration sample during the AWQ scale grid search. Defaults to
-                ``512``. Set a larger positive integer to use longer sequences,
-                or a value ``<= 0`` to disable truncation entirely.
+            awq_seqlen: Maximum sequence length (number of tokens) used per
+                calibration sample during AWQ calibration, including activation
+                statistics, smoothing scale search, and clip-search input
+                features. Defaults to ``512``. Set a larger positive integer to
+                use longer sequences, or a value ``<= 0`` to disable truncation
+                entirely.
             smooth_batch_size: Optional microbatch size used when replaying AWQ
                 parent modules during scale grid search. Smaller values reduce
                 peak VRAM while preserving the AWQ parent-output loss, at the
@@ -132,6 +134,9 @@ class AWQConfig(QuantizationConfig):
                 data_type, and activation quantization fields.
         """
         super().__init__(**kwargs)
+
+        if awq_seqlen is None:
+            awq_seqlen = 512
 
         if isinstance(duo_scaling, str) and duo_scaling != "both":
             raise ValueError(f"duo_scaling must be True, False, or 'both', got '{duo_scaling!r}'")
@@ -159,7 +164,7 @@ class AWQConfig(QuantizationConfig):
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
         self.clip_n_sample_token = clip_n_sample_token
-        self.smooth_seqlen = smooth_seqlen
+        self.awq_seqlen = awq_seqlen
         self.smooth_batch_size = smooth_batch_size
         self.skip_moe = skip_moe
         self.mappings = mappings
@@ -183,7 +188,7 @@ class AWQConfig(QuantizationConfig):
             f"AWQConfig(duo_scaling={self.duo_scaling!r}, n_grid={self.n_grid}, "
             f"smooth_iters={self.smooth_iters}, "
             f"apply_clip={self.apply_clip}, clip_as_init={self.clip_as_init}, "
-            f"smooth_seqlen={self.smooth_seqlen}, smooth_batch_size={self.smooth_batch_size}, "
+            f"awq_seqlen={self.awq_seqlen}, smooth_batch_size={self.smooth_batch_size}, "
             f"skip_moe={self.skip_moe}, "
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"

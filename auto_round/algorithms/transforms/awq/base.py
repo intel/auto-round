@@ -51,6 +51,7 @@ from auto_round.data_type.utils import (
     revert_tensor_by_pad,
 )
 from auto_round.logger import logger
+from auto_round.utils.model import move_to_device
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
@@ -148,6 +149,14 @@ def _truncate_args_kwargs(args: tuple, kwargs: dict, seqlen: int) -> tuple[tuple
     return new_args, new_kwargs
 
 
+def _truncate_awq_tensor(x: torch.Tensor, seqlen: int) -> torch.Tensor:
+    """Truncate an AWQ activation tensor to at most *seqlen* tokens."""
+    actual_seq = _detect_actual_seq((x,))
+    if actual_seq is None or actual_seq <= seqlen:
+        return x
+    return _slice_seq_tensor(x, actual_seq, seqlen)
+
+
 def _detect_actual_batch(values) -> int | None:
     """Infer batch size from the first tensor with an explicit batch axis."""
     for v in values:
@@ -222,10 +231,10 @@ class AWQTransform(BasePreprocessor):
         self.clip_max_shrink: float = getattr(config, "clip_max_shrink", 0.5)
         self.clip_n_sample_token: int = getattr(config, "clip_n_sample_token", 512)
 
-        # Cap parent-forward samples used by the expensive scale search.
+        # Cap sequence length consistently across AWQ calibration.
         # A value <= 0 disables truncation and uses the full calibration sequence.
-        smooth_seqlen = getattr(config, "smooth_seqlen", 512)
-        self._smooth_seqlen: int | None = smooth_seqlen if smooth_seqlen > 0 else None
+        awq_seqlen = getattr(config, "awq_seqlen", 512)
+        self._awq_seqlen: int | None = awq_seqlen if awq_seqlen > 0 else None
         smooth_batch_size = getattr(config, "smooth_batch_size", None)
         self._smooth_batch_size: int | None = smooth_batch_size if smooth_batch_size and smooth_batch_size > 0 else None
 
@@ -453,6 +462,8 @@ class AWQTransform(BasePreprocessor):
                         return
 
                     feat = x.detach()
+                    if self._awq_seqlen is not None:
+                        feat = _truncate_awq_tensor(feat, self._awq_seqlen)
                     if feat.ndim == 1:
                         feat = feat.view(1, -1)
                     else:
@@ -522,8 +533,8 @@ class AWQTransform(BasePreprocessor):
                     proc_args = tuple(_proc(a) for a in args)
                     proc_kwargs = {k: _proc(v) for k, v in kwargs.items()}
 
-                    if self._smooth_seqlen is not None:
-                        proc_args, proc_kwargs = _truncate_args_kwargs(proc_args, proc_kwargs, self._smooth_seqlen)
+                    if self._awq_seqlen is not None:
+                        proc_args, proc_kwargs = _truncate_args_kwargs(proc_args, proc_kwargs, self._awq_seqlen)
                     self._parent_args_cache[parent_module].append((proc_args, proc_kwargs))
 
                 return hook_fn
@@ -783,17 +794,6 @@ class AWQTransform(BasePreprocessor):
             yield _slice_batch_args_kwargs(stored_args, stored_kwargs, actual_batch, start, end)
 
     @staticmethod
-    def _move_parent_value_to_device(v: Any, device: torch.device | str) -> Any:
-        """Move a nested parent-call value to the parent execution device."""
-        if isinstance(v, torch.Tensor):
-            return v.to(device)
-        if isinstance(v, (tuple, list)):
-            return type(v)(AWQTransform._move_parent_value_to_device(t, device) for t in v)
-        if isinstance(v, dict):
-            return {k: AWQTransform._move_parent_value_to_device(t, device) for k, t in v.items()}
-        return v
-
-    @staticmethod
     def _normalize_parent_output(out: Any) -> torch.Tensor:
         """Extract the tensor output used by AWQ parent-output loss."""
         if isinstance(out, tuple):
@@ -813,8 +813,8 @@ class AWQTransform(BasePreprocessor):
         outputs = []
         for stored_args, stored_kwargs in kwargs_list:
             for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
-                call_args = tuple(self._move_parent_value_to_device(a, device) for a in micro_args)
-                call_kwargs = {k: self._move_parent_value_to_device(v, device) for k, v in micro_kwargs.items()}
+                call_args = tuple(move_to_device(a, device) for a in micro_args)
+                call_kwargs = {k: move_to_device(v, device) for k, v in micro_kwargs.items()}
                 out = self._normalize_parent_output(parent(*call_args, **call_kwargs)).detach()
                 if offload_to_cpu:
                     out = out.to("cpu", non_blocking=False)
@@ -839,8 +839,8 @@ class AWQTransform(BasePreprocessor):
             for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
                 if output_idx >= len(fp16_outputs):
                     return float("inf")
-                call_args = tuple(self._move_parent_value_to_device(a, device) for a in micro_args)
-                call_kwargs = {k: self._move_parent_value_to_device(v, device) for k, v in micro_kwargs.items()}
+                call_args = tuple(move_to_device(a, device) for a in micro_args)
+                call_kwargs = {k: move_to_device(v, device) for k, v in micro_kwargs.items()}
                 out = self._normalize_parent_output(parent(*call_args, **call_kwargs))
                 fp16_out = fp16_outputs[output_idx].to(device, non_blocking=False)
                 loss += torch.nn.functional.mse_loss(

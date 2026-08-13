@@ -44,6 +44,12 @@ class TestAWQNormalLLM:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
+    def test_awq_config_uses_awq_seqlen(self):
+        """awq_seqlen should configure AWQ calibration truncation."""
+        cfg = AWQConfig(awq_seqlen=128)
+
+        assert cfg.awq_seqlen == 128
+
     @pytest.mark.timeout(60)
     def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
         """W4A16 AWQ quantization produces valid layer_config and model can generate."""
@@ -660,14 +666,15 @@ class TestAWQMoE:
         assert parent.batch_sizes == [2, 2, 1]
         assert streamed_loss == expected_loss
 
-    def test_awq_smooth_seqlen_truncates_parent_forward_inputs(self):
-        """smooth_seqlen replay cache should truncate matching sequence dimensions consistently."""
-        from auto_round.algorithms.transforms.awq.base import _truncate_args_kwargs
+    def test_awq_seqlen_truncates_awq_inputs(self):
+        """awq_seqlen should truncate matching sequence dimensions consistently."""
+        from auto_round.algorithms.transforms.awq.base import _truncate_args_kwargs, _truncate_awq_tensor
 
         hidden_states = torch.zeros(1, 16, 8)
         position_ids = torch.arange(16).reshape(1, 16)
         attention_mask = torch.zeros(1, 1, 16, 16)
         rotary = (torch.zeros(1, 16, 8), torch.ones(1, 16, 8))
+        feat = _truncate_awq_tensor(hidden_states, seqlen=4)
 
         args, kwargs = _truncate_args_kwargs(
             (hidden_states,),
@@ -675,6 +682,7 @@ class TestAWQMoE:
             seqlen=4,
         )
 
+        assert feat.shape == (1, 4, 8)
         assert args[0].shape == (1, 4, 8)
         assert kwargs["position_ids"].shape == (1, 4)
         assert kwargs["attention_mask"].shape == (1, 1, 4, 4)

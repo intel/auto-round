@@ -206,11 +206,14 @@ class AWQ(AlgorithmHandler):
             help="Number of grid-search points for AWQ scaling ratio.",
         )
         group.add_argument(
-            "--awq-smooth-seqlen",
-            dest="awq_smooth_seqlen",
+            "--awq_seqlen",
+            dest="awq_seqlen",
             default=None,
             type=int,
-            help="Maximum sequence length used by AWQ scale-search parent replay.",
+            help=(
+                "Maximum sequence length used by AWQ calibration. "
+                "This is distinct from the global calibration --seqlen."
+            ),
         )
         group.add_argument(
             "--awq-smooth-batch-size",
@@ -238,12 +241,13 @@ class AWQ(AlgorithmHandler):
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
+        awq_seqlen = getattr(args, "awq_seqlen", None)
         return AWQConfig(
             duo_scaling=getattr(args, "duo_scaling", True),
             n_grid=getattr(args, "n_grid", 20),
             apply_clip=getattr(args, "awq_apply_clip", False),
             clip_as_init=getattr(args, "awq_clip_as_init", False),
-            smooth_seqlen=getattr(args, "awq_smooth_seqlen", None) or 512,
+            awq_seqlen=512 if awq_seqlen is None else awq_seqlen,
             smooth_batch_size=getattr(args, "awq_smooth_batch_size", None),
             **common_kwargs,
         )
