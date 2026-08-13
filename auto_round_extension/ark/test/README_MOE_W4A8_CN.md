@@ -57,9 +57,13 @@ w8[e][n][k]  = round( w4[e][n][k] * s[e][n][k / group_size] / sxt[e][n][j] )
 暴露两个这样的设备，kernel 只看到其中一个。
 
 本 kernel 的目标是 **prefill > 100 TFLOPS**、**decode 权重带宽 > 300 GB/s**。
-prefill 目标是否*可能*达到，取决于**路由**而不是 kernel 本身：W4A8 grouped GEMM
-对每个活跃专家的 int8 权重只读一次，而每读一个权重字节要做 `2 × rows_per_expert`
-次浮点运算，因此
+prefill 目标是否*可能*达到，取决于**路由**而不是 kernel 本身。
+
+### 权重并不是唯一的数据流
+
+本文早期版本用**权重这一条流**来建立 prefill 的 roofline：W4A8 grouped GEMM 对每个
+活跃专家的 int8 权重只读一次，每读一个权重字节要做 `2 × rows_per_expert` 次浮点运算，
+因此
 
 ```
 计算强度   = 2 × rows_per_expert                    [FLOP / byte]
@@ -67,34 +71,67 @@ TFLOPS   <= 2 × rows_per_expert × 权重带宽
 rows_per_expert = batch × top_k / active_experts
 ```
 
-其中 `N`、`K` 因子相互抵消 — 只有路由起作用：
+其中 `N`、`K` 因子相互抵消。这个式子对**权重流**是对的，对**总流量**是错的。一次
+`moe_gemm_w4a8` 调用要搬运的是五条流，而不是一条 (`T = batch × top_k` 为路由行数)：
+
+| 数据流 | 字节数 | 随谁增长 |
+|---|---|---|
+| 量化 kernel 读入的激活 | `T × K × sizeof(act)` | `T` |
+| 写出的 int8 副本 | `T × K` | `T` |
+| GEMM 再读回的同一份 int8 副本 | `T × K` | `T` |
+| 所有活跃专家的权重 | `E_active × N × K` | `E_active` |
+| 输出 | `T × N × sizeof(out)` | `T` |
+
+只有第四行是 `W GB/s` 统计的、也是旧模型唯一计入的部分。因为它是唯一**不**随 token
+数增长的一条，所以它在小 batch 下占主导 (那里旧公式几乎是精确的)，而恰恰在用于衡量
+目标的计算受限区间里变成了**少数**。在每专家 256 行 (本测试脚本此前使用的 batch) 时：
+
+| 形状 | 权重 | 总流量 | 权重占比 | 达到 100 TFLOPS 所需带宽 (旧模型) | 400 GB/s 下的上限 |
+|---|---|---|---|---|---|
+| qwen3 up (N=1536, K=2048) | 403 MB | 772 MB | 52% | **374** GB/s (195) | 107 TFLOPS |
+| qwen3 down (N=2048, K=768) | 201 MB | 436 MB | 46% | **423** GB/s (195) | **94 TFLOPS** |
+| minimax up (N=1536, K=3072) | 906 MB | 1661 MB | 55% | **358** GB/s (195) | 112 TFLOPS |
+| minimax down (N=3072, K=1536) | 906 MB | 1510 MB | 60% | **326** GB/s (195) | 123 TFLOPS |
+
+旧模型给这四个形状打印的都是 195 GB/s。真实需求是它的 1.7–2.2 倍 — 而对 qwen3
+down-projection 来说，这个需求**超过了设备能提供的带宽**：需要 423 GB/s，而引脚带宽
+456 GB/s 的实测拷贝只有约 400 GB/s。该路由下它的上限是 94 TFLOPS，也就是说
+**无论 kernel 怎么改，在此前测量所用的 batch 上这个形状都不可能达到 100 TFLOPS**。
+它也正是历次扫描中离目标最远的形状 (50–56 TFLOPS)，这并非巧合：K 最小意味着非权重
+流量占比最大。
+
+因此 `_PREFILL_TARGET_ROWS_PER_EXPERT` 从 256 提高到 **384** — 这是能让四个形状的
+上限全部越过 100 TFLOPS 的最小整数路由 (在 400 GB/s 探测值下分别为 112 / 130 /
+137 / 154 TFLOPS；其中 qwen3 down 单独要求 ≥ 290 行/专家)。换算成模型 token 数，
+Qwen3-MoE 为 6144，MiniMax 为 9216。
+
+小 batch 的结论不变，因为那里权重项占主导：
 
 | 模型 token 数 | 路由行数 | 每专家行数 | 达到 100 TFLOPS 所需带宽 |
 |---|---|---|---|
-| 128 (prefill 默认 batch) | 1024 | 8 | 6250 GB/s |
-| 512 | 4096 | 32 | 1563 GB/s |
-| 2048 | 16384 | 128 | 391 GB/s |
-| 4096 (`test_perf_prefill_compute_bound`) | 32768 | 256 | 195 GB/s |
-| 8192 (`--all-shapes`) | 65536 | 512 | 98 GB/s |
+| 128 (prefill 默认 batch) | 1024 | 8 | 约 6300 GB/s |
+| 512 | 4096 | 32 | 约 1600 GB/s |
+| 2048 | 16384 | 128 | 约 440 GB/s |
+| 6144 (`test_perf_prefill_compute_bound`) | 49152 | 384 | 约 310 GB/s |
 
-因此默认 batch 下约 4.5 TFLOPS **并不是 kernel 的缺陷**：在每专家 8 行、kernel 实
-测约 285 GB/s 权重带宽的条件下，上限就是 `2 × 8 × 285e9 = 4.56 TFLOPS` — 正好等于
-实测值，说明 kernel 已经跑在 DRAM roofline 上。要在该形状上达到 100 TFLOPS 需要
-6.25 TB/s，是 B60 那 456 GB/s 的 13 倍，也比当前任何 GPU 高 10 倍以上。在带宽约
-285 GB/s 的设备上，该目标最早在每专家约 176 行 (约 2816 个模型 token) 时才变得可达，
-这正是 `test_perf_prefill_compute_bound` 使用 4096 个模型 token 的原因。
+默认 batch 下约 4.5 TFLOPS **并不是 kernel 的缺陷**：在每专家 8 行、kernel 实测约
+285 GB/s 的条件下，上限就是 `2 × 8 × 285e9 = 4.56 TFLOPS` — 正好等于实测值，说明
+kernel 已经跑在 DRAM roofline 上。要在该形状上达到 100 TFLOPS 需要 6 TB/s 以上，
+是 B60 那 456 GB/s 的 13 倍以上。
 
-因此性能表在实测值旁边额外打印 `rows/E` 和 `BW@100T`，并在每次扫描后输出结论：
+因此性能表在实测值旁边额外打印 `rows/E`、`DRAM GB/s` (五条流的总和) 和 `BW@100T`，
+并在每次扫描后输出结论：
 
 ```
 targets [prefill]: prefill compute > 100 TFLOPS
   device copy bandwidth probe: 400 GB/s
   qwen3 up     tokens=1024   rows/E=8.0        4.56 TFLOPS vs 100 -> N/A (bandwidth bound: ...)
-  qwen3 down   tokens=32768  rows/E=256.0    102.40 TFLOPS vs 100 -> PASS
+  qwen3 down   tokens=49152  rows/E=384.0    102.40 TFLOPS vs 100 -> PASS (92% of the 112 TFLOPS bandwidth ceiling)
 ```
 
 当设备带宽探测 (每次运行执行一次的大块 device-to-device 拷贝) 表明该路由下目标不
-可达时，该行显示 `N/A` 而不是 `FAIL`。该结论默认只用于提示；加上
+可达时，该行显示 `N/A` 而不是 `FAIL`；可达的行还会额外打印它达到了自身上限的百分之
+多少 — 这才是 kernel 改动能够撬动的部分。该结论默认只用于提示；加上
 `--enforce-targets` 可以把它变成硬断言。
 
 ### 为什么小 batch 下 `vs w4a16` 小于 1.0
@@ -189,6 +226,32 @@ load 在途。这是 Little 定律的问题，而不是带宽的问题：1280 �
 `test_act_quant_unroll_matches` 会在"K 能整除展开深度"和"K 会留下尾巴"两种情况下断言
 逐位相同。
 
+**只读一遍这一行。** 批量化只改变了加载的方式，没有减少加载的次数。absmax 必须先看
+完整行才能量化第一个元素，因此这一遍要先读一次 `[T, K]`、做归约、再读一次 `[T, K]`。
+只要行还在缓存里，第二次读就由 L2 提供；但一个 work-group 后量化的那些行，会在这一遍
+结束之前把它先量化的那些行挤出去——在 8 MB 的 L2 和 `K = 2048` 时每行 4 KB 的条件下，
+*在没有任何其它数据驻留*的前提下也只装得下约 2000 行，而紧接着 GEMM 的权重还要争抢同
+一块缓存。
+
+一行数据小到足以放进寄存器：一个 lane 拥有 `K / 16` 个元素，`K = 2048` 时是 256 字节
+——占量化 kernel 每 lane 128 个 dword 预算中的 64 个 (与 GEMM 不同，它没有用
+`grf_size<256>` 启动)。单遍 kernel 把整行一次性读入、做归约、再直接从寄存器里量化写
+出；第二次读消失了，而且所有 load 都在第一次被消费之前就发出，这等于把 `UNROLL` 想做
+的事情一并做了，而不是与它冲突。
+
+`MAX_STEPS` 是让这段 fragment 落在寄存器而不是 scratch 上的编译期上界：循环是对
+`MAX_STEPS` 的 `#pragma unroll`，配合 `if (s < steps)` 保护，因此所有下标都是常量，
+SROA 可以把数组提升为标量。共实例化两档——8 个向量 (`VEC = 8` 时 `K ≤ 1024`，32 个
+dword) 与 16 个向量 (`K ≤ 2048`，64 个 dword)——更长的行仍走两遍 kernel，这也是
+minimax 的 `K = 3072` up-projection 依旧走旧路径的原因。局部最大值仍然是 4 个累加器，
+因此归约的代价和结果都没有变化。
+
+这是一次寄存器压力上的赌博：如果 64 个 dword 的行数据加上寻址导致溢出，这一遍会变得
+**更慢**。`ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` 可以精确地切回两遍 kernel，
+`test_perf_prefill_act_quant_single_pass_sweep` 负责给两者计时，
+`test_act_quant_single_pass_matches` 则在"恰好填满一档的 K (2048)"和"填不满的
+K (768)"两种情况下断言二者逐位相同。
+
 **GEMM 尾声 (epilogue)。** 原先的主循环同时保持两份 C fragment：int32 的 DPAS 累加
 器 (每个 AUTO_S8 重缩放 block 清零一次)，以及一份必须跨 block 存活的 float 影子——
 因为每个 block 的权重 scale 必须在下一个 block 覆盖累加器之前应用。在**整个**主循
@@ -227,6 +290,43 @@ load 在途。这是 Little 定律的问题，而不是带宽的问题：1280 �
 `test_full_tile_epilogue_matches_predicated` 正是在"每个专家恰好有一个完整 tile 和一
 个残缺 tile"的 batch 上断言这一点。
 
+**store 本身。** 把 store 周围的指令削减之后，剩下的就是 store 本身。Xe DPAS 的 C
+fragment 让一个 lane 持有每个 8×16 atom 的一*列*，因此一个 sub-group 的 16 个 lane
+持有的是*同一行的 16 个连续列*：对 16 位的 `ElementD` 来说，一次标量
+`c[row * n + col] = ...` 只是一条 32 字节的消息——半条 cache line——而一个 32×32 的
+sub-group fragment 要发 **64** 条。通过硬件 2D block store，同样的字节只需要少数几条
+消息，这也正是所有同族 prefill kernel 写 D 时采用的方式
+(`sycl_tla_moe_prefill_{fp8,int,s4}_dpas.hpp`)，以及 `sycl_tla_dense_gemm.hpp` 中的
+稠密 GEMM 在完全相同的累加器形状上采用的方式。
+
+D 才是这件事在 prefill 尺寸下值得做、而不只是"顺手整理"的原因：每专家 384 行时，
+qwen3 down-projection 每个专家要写 0.79 MB 的 fp16，而权重只有 1.5 MB 的 int8——占
+tile 总流量的三分之一，因为那里的 N (2048) 比 K (768) 更大；而它恰好又是主循环最短的
+形状，等于把 epilogue 的代价付了两遍。
+
+移植参考的是 `dense_gemm_detail::gemm_device_impl`，而不是同族的 MoE kernel。后者用
+`reorder(tCrC, tCrC_out)` 把 MMA fragment 搬进显式选定的 `XE_STORE_2D` atom 的
+fragment，而 `reorder` 搬的是**寄存器**：在 `float` 累加器下这是免费的，但本 kernel
+用 `int32` 累加 (`XE_DPAS_TT<8, int32_t, int8_t, int8_t>` 的 `FrgTypeC`)，必须先缩放
+并做数值转换，而 `reorder` 并不做转换。`make_block_2d_copy_D` 的布局直接来自 MMA 自身
+的 C 划分，因此缩放后的 `ElementD` fragment——`make_tensor_like<ElementD>(tCrC)`，用
+标量路径所用的同一组 `tCgC(i)` 坐标填充——可以直接交给
+`copy(copy_d, tCrD, tCgC)`，中间不需要任何 `reorder`。
+
+它还**去掉**了 store 谓词，而不只是跳过它：2D block 消息会裁剪到 D tensor 所描述的表
+面，因此 M 边缘的部分 tile 由硬件丢弃越界的行——同族 grouped GEMM 处理残缺专家时依赖
+的正是这一点。只有 scale 的 load 仍需钳制下标，而且只在边缘 tile 上。
+
+该描述符要求基址 64 字节对齐、行 pitch 是 16 字节的倍数。D 的每专家基址是
+`outputs + pre_rows × N`，其中 `pre_rows` 是运行期的路由值，因此 dispatcher 检查的是
+`N × sizeof(ElementD) % 64 == 0`——在 tensor 本身对齐的前提下，这能保证*每一个*专家的
+基址都对齐，同时也覆盖了 pitch——外加 tensor 基址本身。所有已支持的 N (16 位 D 下的
+1536 / 2048 / 3072) 都满足；不满足的形状继续走标量 store。
+`ARK_MOE_W4A8_PREFILL_STORE_2D=0` 同样会切回标量 store 以便 A/B 测量，
+`test_prefill_2d_store_matches_scalar` 则在"每个专家恰好有一个完整 tile 和一个残缺
+tile"的 batch 上断言两者写出的比特完全一致——这正是一个不做裁剪的 store 会污染下一个
+专家行数据的场景。
+
 ## 脚本测量的内容
 
 ### 精度表
@@ -255,7 +355,8 @@ int8 激活大约损失 7 bit 尾数，正常情况下会明显高于该门限�
 | `rows/E` | 每个**活跃**专家分到的路由 token 数。计算强度为每权重字节 `2 × rows/E` 次浮点运算，因此该数值单独决定了某个形状是否可能成为计算受限 |
 | `TFLOPS` | `total_tokens × N × K × 2 / time` |
 | `W GB/s` | 被路由 token 实际访问到的专家权重带宽 (`active_experts × N × K × 1 byte / time`) — decode 访存瓶颈的衡量指标 |
-| `BW@100T` | 该形状达到 100 TFLOPS 所需的权重带宽。当它超过设备实际能提供的带宽时，`TFLOPS` 就被访存限制，任何 kernel 改动都无法在该形状上达标 |
+| `DRAM GB/s` | 本次调用搬运的**全部**流量：读入的 fp16 激活、写出并再读回的 int8 副本、专家权重，以及输出——参见[权重并不是唯一的数据流](#权重并不是唯一的数据流)。这才是应当与设备 456 GB/s 相比较的数值 |
+| `BW@100T` | 该形状达到 100 TFLOPS 所需的 DRAM 带宽 (计入全部五条数据流)。当它超过设备实际能提供的带宽时，`TFLOPS` 就被访存限制，任何 kernel 改动都无法在该形状上达标 |
 | `vs torch` / `vs w4a16` | 加速比 (`other / w4a8`) |
 | `prepack(ms)` | 一次性的 int4 → int8 AUTO_S8 转换开销。只在模型加载时支付，**不是**每次前向都支付。 |
 
@@ -278,9 +379,10 @@ qwen3 down  (down-proj)   :  N = 2048,            K =  768
 被路由的 expert-token 行数为 `batch × top_k`，以 round-robin 方式分布到 128 个专
 家上。默认 batch：prefill 为 `128`，decode 为 `1`；`--all-shapes` 会分别扩展为
 `{128, 512, 2048, 8192}` 和 `{1, 2, 8, 16}`。
-`test_perf_prefill_compute_bound` 额外增加一个 batch，其大小保证每个专家拿到 256
-行 (Qwen3-MoE 为 4096 个模型 token) — 这是 100 TFLOPS 目标不再被权重带宽限制的最
-小扫描点。
+`test_perf_prefill_compute_bound` 额外增加一个 batch，其大小保证每个专家拿到 384 行
+(Qwen3-MoE 为 6144 个模型 token) — 这是在计入
+[全部五条数据流](#权重并不是唯一的数据流)而不只是权重之后，100 TFLOPS 目标在*所有*已
+支持形状上都低于设备带宽天花板的最小整值扫描点。
 
 第二个形状组是 MiniMax-M2，与 `test_moe_prefill_perf.py` 保持一致：
 
@@ -295,7 +397,7 @@ minimax down  :  N = 3072,  K = 1536
 之所以需要它，是因为两个目标都与形状相关：192 个专家会把同样的 batch 摊到 1.5 倍
 的专家上 (每专家行数更少，因此相同 batch 下的算力上限*更低*)，而更长的 K 则让
 decode GEMV 的顺序访存流更长、也让 prefill 的 tile 每次加载覆盖更多 K。compute-
-bound 的 batch 按模型推导，因此 MiniMax 用 6144 个模型 token 达到同样的每专家 256
+bound 的 batch 按模型推导，因此 MiniMax 用 9216 个模型 token 达到同样的每专家 384
 行。形状组通过 `--models` 选择 (`qwen3` — 默认 —、`minimax`、逗号分隔的列表或
 `all`)；MiniMax 的重尾真实路由分布仍在 `test_moe_prefill_perf.py` 中。
 
@@ -319,7 +421,7 @@ pytest -v -s test_moe_w4a8_perf.py -k perf
 # 单个阶段
 pytest -v -s test_moe_w4a8_perf.py -k decode
 
-# 计算受限的 prefill 用例 (4096 个模型 token)，TFLOPS 目标在此可达
+# 计算受限的 prefill 用例 (6144 个模型 token)，TFLOPS 目标在此可达
 pytest -v -s test_moe_w4a8_perf.py -k compute_bound
 
 # 把性能目标从提示信息变成硬断言
@@ -351,7 +453,7 @@ python test_moe_w4a8_perf.py                       # 两个阶段，最小 batch
 python test_moe_w4a8_perf.py --all-shapes          # 完整扫描
 python test_moe_w4a8_perf.py --phase decode        # 仅 decode
 python test_moe_w4a8_perf.py --skip-accuracy       # 仅性能
-python test_moe_w4a8_perf.py --compute-bound       # 追加 4096 token 的 prefill 用例
+python test_moe_w4a8_perf.py --compute-bound       # 追加 6144 token 的 prefill 用例
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 激活
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
@@ -424,6 +526,11 @@ int4 `weights` / `scales` 张量的引用 (缓存 key 基于指针标识，否�
 下面的默认值来自上文那块 Arc Pro B60 上的一次 `-k sweep` (bf16 激活，decode 为 8 条
 routed 行，prefill 为每专家 256 行)。每种配置在计时之前都会先与第一种配置做数值等价性
 检查。
+
+有两项默认值**不在**本节中，因为它们尚未被实测：
+`ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` 与 `ARK_MOE_W4A8_PREFILL_STORE_2D` 都是仅凭推导
+就默认开启的。`test_perf_prefill_act_quant_single_pass_sweep` 与
+`test_perf_prefill_store_sweep` 正是用来补齐这两项数据的运行；参见[状态](#状态)。
 
 ### Prefill tile
 
@@ -530,7 +637,9 @@ legacy GEMV 的收益为 1.09–1.93×。
 | `ARK_MOE_W4A8_PREFILL_TILE` | 强制指定 prefill 的 work-group tile：`8x128`、`64x128`、`128x128`、`128x256`、`256x128`、`256x256`。不设置 (默认) 时按 tile 阶梯自动选择：每专家 ≥ 256 行时取 `256x128`，否则取 `128x128` (参见[实测得到的默认值](#实测得到的默认值))。现在整张表的差距已收敛到 0–8%，因此这个开关是重新调优用的旋钮，而不再对应一道性能悬崖。 |
 | `ARK_MOE_W4A8_ACT_QUANT_VEC` | 向量化的每 token 激活量化 (每个 lane 负责 4 或 8 个连续的 K 元素，而不是按 sub-group 宽度跨步)；**默认开启**，在被扫描的形状上带来 1.04–1.14× 的收益。设为 `0` 可强制使用标量映射以便做 A/B 测量。当 K 或缓冲区对齐不满足条件时该开关被忽略，此时本就会运行标量 kernel。 |
 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | 激活量化 kernel 在开始消费之前先加载的向量个数：`1`、`2` 或 `4` (默认)。取值越大，一个 work-item 保持在途的字节越多——这一遍在每线程仅一条在途 load 时受限于延迟而非带宽——代价是 GRF 占用。`1` 即批量化之前的 kernel，可作为 A/B 基线；所有取值逐位相同。不在 `{1, 2, 4}` 中的取值会回退到默认值。只对向量化映射生效。 |
+| `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | 在 absmax 与量化两步之间把激活行留在寄存器里，而不是把 `[T, K]` 读两遍；在行放得下时**默认开启** (`VEC = 8` 下 `K ≤ 2048`，占每 lane 128 个 dword 中的 64 个)。设为 `0` 可强制走两遍 kernel——更长的行本来也走它。两者逐位相同。尚未在硬件上实测：如果寄存器数组发生溢出，这反而是减速，最终由扫描结果决定。 |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上带来 1.02–1.15× 的收益。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
+| `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。尚未在硬件上实测。 |
 
 ## 形状约束
 
@@ -562,19 +671,34 @@ W4A8 kernel 是新移植的 SYCL/CuTe 实现，在
 仍需在设备上运行的部分：与 fp32 参考实现对比的精度扫描，它能立刻暴露 layout /
 scale 相关的 bug。
 
-激活量化的批量 load 是唯一一项只经过推导、既未实测计时也尚未在设备上运行的改动：先加
-载 `UNROLL` 个向量再开始消费，使一个 work-item 同时挂起这么多请求，而不是只有一个。它
-在设备上的检查是 `test_act_quant_unroll_matches` (在"K 能整除展开深度"和"K 会留下尾
-巴"两种情况下的逐位一致性) 与 `test_perf_prefill_act_quant_unroll_sweep`；设置
-`ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` 即可在不重新编译的情况下回退。
+有三项 prefill 改动只经过推导，既未实测计时也尚未在设备上运行，因为编写它们的环境既没
+有 XPU 也没有 SYCL 编译器。每一项都只隔着一个环境变量就能退回其前身，并且都配有可在设
+备上运行的逐位一致性测试：
 
-这一项落地之后，prefill 的下一步是写出本身：epilogue 目前仍然通过标量指针、按谓词逐
-元素写 D，而同类的 int8 与 fp8 kernel 对 D 用的是 block-2D copy。在卡在 56 TFLOPS 的
-`K = 768` 形状上，一个 tile 只有 12 个 k-tile，写出因此占据了其中相当大的一部分时间。
-与上面几项不同，它并不是纯 C++ 的改动：Xe DPAS 的 C fragment 给每个 lane 分配的是一
-*列*，因此同一个 lane 的相邻数值在内存中相隔 N，只有硬件的 2D block-store 消息才能把
-它们合并成宽消息。移植它需要用到 `partition_sg_fragment_C` /
-`partition_sg_fragment_S` 以及经由 float 中间 fragment 的 `reorder` (累加器是 int32，
-必须先按行、再按列施加 scale)，而同类 kernel 中没有任何一个是对**带 scale 的** int32
-累加器做 2D 写出的——因此这项工作需要一个具备 SYCL 编译器和设备的环境，而不是一个开
-关。
+| 改动 | 回退方式 | 设备上的检查 |
+|---|---|---|
+| 激活量化的批量 load——同时挂起 `UNROLL` 个请求而不是一个 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` | `test_act_quant_unroll_matches`、`test_perf_prefill_act_quant_unroll_sweep` |
+| 单遍激活量化——行数据留在寄存器中，`[T, K]` 只读一次而不是两次 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | `test_act_quant_single_pass_matches`、`test_perf_prefill_act_quant_single_pass_sweep` |
+| D 的 2D block store——每个 sub-group fragment 由少数几条 block 消息取代 64 条 32 字节的标量消息 | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | `test_prefill_2d_store_matches_scalar`、`test_perf_prefill_store_sweep` |
+
+本节此前把 2D store 列为"需要设备而不是一个开关"的工作，理由是同类 MoE kernel 都经由
+`partition_sg_fragment_S` + `reorder` 抵达它，而其中没有任何一个是对**带 scale 的**
+int32 累加器做 2D 写出的。事实证明那个参考对象选错了：`reorder` 搬的是寄存器、并不做
+数值转换，因此它本来就承载不了 int32→fp16 的 epilogue。而同一个编译单元里的
+`sycl_tla_dense_gemm.hpp` 早就在编译真正可用的那套序列 (`make_block_2d_copy_D(mma, D)`
++ `make_tensor_like<ElementD>(tCrC)` + `copy(copy_d, tCrD, tCgC)`，且正是 32 位累加器
+配 16 位输出)，所以这项移植终究是纯 C++ 的改动。
+
+单遍量化 kernel 是其中唯一存在真实下行风险的一项：如果留在寄存器里的行数据发生溢出，
+这一遍会变慢而不是变快，而只有
+`test_perf_prefill_act_quant_single_pass_sweep` 能给出结论。真是如此的话，把
+`launch_act_dynamic_quant_vec_unroll` 里的默认值翻转即可。
+
+这些扫描该拿什么作为参照，也已经改变了。本文档中 prefill 的 roofline 此前只统计了权重
+字节数，把这些形状真正需要的带宽低估了 1.7–2.2×，让一个天花板只有 94 TFLOPS 的形状看
+起来像是 kernel 的缺陷 (参见 [roofline](#权重并不是唯一的数据流))。把所有数据流都计入
+之后，四个受算力约束的形状实际上跑在各自真实天花板的 60–74%，而受算力约束的 batch 也
+从每专家 256 行提高到 384 行，好让 100 TFLOPS 在所有形状上都是可达的。剩下的差距在访
+存而不是算术：目前仍摆在桌面上的最大一项收益，是把激活量化融合进 GEMM 的 A-tile 加载
+中，这将同时消掉 int8 副本的写与读——5 条数据流中的 2 条，在 K 较小的形状上约占 25%
+的流量——但那是主循环的改动，需要在有设备的环境里开发。

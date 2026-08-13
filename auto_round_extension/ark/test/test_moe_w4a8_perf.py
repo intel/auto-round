@@ -349,12 +349,32 @@ _DECODE_BATCHES = [1]
 _DECODE_BATCHES_EXTENDED = [1, 2, 8, 16]
 _PREFILL_BATCHES = [128]
 _PREFILL_BATCHES_EXTENDED = [128, 512, 2048, 8192]
-# Rows per expert at which a prefill TOPS target is physically reachable: the
-# ceiling is ``2 * rows/E * weight_bandwidth``, so 256 rows/expert needs only
-# ~195 GB/s for 100 TFLOPS -- unlike the 6.25 TB/s a batch of 128 would need.
-# The batch is derived per model (``rows/E * E / top_k``): 4096 model tokens for
-# Qwen3-MoE (128 experts), 6144 for MiniMax (192).
-_PREFILL_TARGET_ROWS_PER_EXPERT = 256
+# Rows per expert at which the prefill TFLOPS target is physically reachable.
+#
+# This was 256, chosen from the weights-only roofline (``2 * rows/E *
+# weight_bandwidth``, i.e. "256 rows/expert needs only ~195 GB/s"). Counting
+# every stream the call moves (see ``_traffic_bytes``) puts the real
+# requirement at 374-423 GB/s, and 423 GB/s -- the qwen3 down-projection, the
+# shape with the smallest K and therefore the largest non-weight share -- is
+# past what a 456 GB/s part delivers: its ceiling at 256 rows/expert is 94
+# TFLOPS, so the target was *unreachable at the batch it was being measured
+# at*, whatever the kernel did.
+#
+# 384 is the smallest round value that clears 100 TFLOPS on every shipped shape
+# with margin (ceilings 112 / 130 / 137 / 154 TFLOPS at a 400 GB/s probe;
+# qwen3 down alone needs >= 290). The batch is derived per model
+# (``rows/E * E / top_k``): 6144 model tokens for Qwen3-MoE (128 experts),
+# 9216 for MiniMax (192).
+_PREFILL_TARGET_ROWS_PER_EXPERT = 384
+
+
+# Rows per expert for the epilogue equivalence tests: enough to give every
+# expert one *interior* tile and one *ragged* tile against the 256-row prefill
+# tile, which is what makes a single launch exercise both epilogue paths. It is
+# deliberately not tied to the perf batch above -- these tests need a specific
+# tile geometry, not a compute-bound routing, and the smaller batch keeps them
+# quick.
+_RAGGED_TILE_ROWS_PER_EXPERT = 300
 
 
 def _compute_bound_batches(model: dict) -> list:
@@ -521,13 +541,14 @@ def _dtype_bytes(dtype) -> int:
 #   * ``T * N * sizeof(out)``  -- the output
 #
 # Only the fourth line is what ``W GB/s`` reports, and it is a *minority* of
-# the total whenever K is small: at 256 rows per expert the qwen3
-# down-projection (N = 2048, K = 768) moves 201 MB of weights inside 436 MB of
+# the total whenever K is small: at 384 rows per expert the qwen3
+# down-projection (N = 2048, K = 768) moves 201 MB of weights inside 554 MB of
 # traffic, so a roofline built on weights alone understates the bandwidth a
-# shape needs by more than 2x. This matters for the verdict, not just the
-# bookkeeping: that shape needs ~423 GB/s to reach 100 TFLOPS, which is past
-# what a 456 GB/s part delivers in practice, so it is bandwidth bound and no
-# kernel change reaches the target there.
+# shape needs by ~2.7x. This matters for the verdict, not just the bookkeeping:
+# at the 256 rows per expert this harness used to measure at, the same shape
+# needs 423 GB/s to reach 100 TFLOPS -- past what a 456 GB/s part delivers, so
+# the target was unreachable there whatever the kernel did. See
+# ``_PREFILL_TARGET_ROWS_PER_EXPERT``.
 #
 # The old model -- ``TFLOPS <= 2 * rows_per_expert * weight_bandwidth``, i.e.
 # ``BW@100T = 50 TB/s / rows_per_expert`` -- is the weights-only special case
@@ -1288,10 +1309,12 @@ if pytest is not None:
             ``test_perf_prefill`` runs 128 model tokens, i.e. 8 rows per
             expert: at that routing the grouped GEMM only does 16 FLOPs per
             weight byte, so it is pinned to the DRAM roofline and no amount of
-            kernel work can push it to 100 TFLOPS. This case routes 4096 model
-            tokens (256 rows per expert), which needs only ~195 GB/s of weight
-            bandwidth for 100 TFLOPS and is therefore the shape the compute
-            target should actually be measured at.
+            kernel work can push it to 100 TFLOPS. This case routes enough
+            tokens to put ``_PREFILL_TARGET_ROWS_PER_EXPERT`` rows on every
+            expert, which is the smallest routing where 100 TFLOPS is under the
+            device's bandwidth ceiling for *all* the shipped shapes -- counting
+            the activation, quantized-activation and output streams, not just
+            the weights.
             """
             rows = run_perf("prefill", None, torch_baseline=False, compute_bound=True, models=_models_option(request))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
@@ -1378,7 +1401,7 @@ if pytest is not None:
             be quantized, so the two-pass kernel reads ``[T, K]``, reduces,
             then reads ``[T, K]`` again. The single-pass kernel keeps the row
             in registers across the reduction and deletes the second read --
-            ~0.5 MB per expert at 256 rows and K = 2048, against 3.1 MB of
+            ~0.8 MB per expert at 384 rows and K = 2048, against 3.1 MB of
             weights for the whole GEMM. It costs ``K / 16`` elements of
             register pressure per lane (64 dwords of the default 128-dword
             budget at K = 2048), which is exactly the risk this sweep exists to
@@ -1531,7 +1554,7 @@ if pytest is not None:
             small-batch case would leave every tile ragged and the test would
             pass without the fast path ever running.
             """
-            rows_per_expert = _PREFILL_TARGET_ROWS_PER_EXPERT + 44
+            rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
             case = _build_case(
                 _QWEN3_NK[1][1],
                 _QWEN3_NK[1][2],
@@ -1616,7 +1639,7 @@ if pytest is not None:
             the output, so anything spilling past an expert's last row lands in
             the comparison.
             """
-            rows_per_expert = _PREFILL_TARGET_ROWS_PER_EXPERT + 44
+            rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
             case = _build_case(
                 _QWEN3_NK[1][1],
                 _QWEN3_NK[1][2],
