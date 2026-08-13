@@ -182,6 +182,8 @@ ARK provides a full family of scaled dot-product attention kernels on XPU, rangi
 ### Drop-in SDPA Replacement
 
 Replace `torch.nn.functional.scaled_dot_product_attention` globally for lm-eval:
+#### Replace torch SDPA and run lm-eval
+  ARK exposes a standard SDPA interface through `ARK.sdpa(...)`. The implementation borrows from Neural Speed route logic internally, but the public contract is the standard scaled-dot-product-attention surface. If you want to replace `torch.nn.functional.scaled_dot_product_attention` globally for evaluation without editing model code, use the helper launcher in [tools/lm_eval_with_ark_sdpa.py](tools/lm_eval_with_ark_sdpa.py).
 
 ```bash
 cd /path/to/auto_round_extension/ark
