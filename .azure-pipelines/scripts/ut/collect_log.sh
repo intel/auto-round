@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 uv pip install coverage
-export COVERAGE_RCFILE=${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage
+export COVERAGE_RCFILE=${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc
 coverage_log="${BUILD_SOURCESDIRECTORY}/log_dir/coverage_log"
 cd "${BUILD_SOURCESDIRECTORY}/log_dir"
 

@@ -17,7 +17,7 @@ function setup_environment() {
 
     export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}
@@ -33,37 +33,25 @@ function run_unit_test() {
 
         echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
-        COVERAGE_CORE=sysmon PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
-            --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
-            --cov-report= --cov-append -vs --disable-warnings \
+        PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
+            --timeout=30 --session-timeout=600 \
+            --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
 
         echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
-        COVERAGE_CORE=sysmon PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
-            --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
-            --cov-report= --cov-append -vs --disable-warnings \
+        PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
+            --timeout=30 --session-timeout=600 \
+            --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python /auto-round/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function collect_log() {
