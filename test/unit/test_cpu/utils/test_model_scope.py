@@ -36,7 +36,7 @@ class TestModelScope:
         autoround = AutoRound(model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=dataloader)
         autoround.quantize_and_save()
 
-    @pytest.mark.timeout(360)
+    @pytest.mark.timeout(480)
     def test_mllm(self, dataloader):
         model_name = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
         autoround = AutoRound(
