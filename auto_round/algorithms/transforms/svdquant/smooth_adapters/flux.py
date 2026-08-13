@@ -38,23 +38,22 @@ class FluxSmoothGroupSpec:
     projection_paths: tuple[str, ...]
     evaluation_path: str
     output_indices: tuple[int, ...] | None
-    output_splits: tuple[int, ...]
 
 
 _DOUBLE_GROUPS = (
-    FluxSmoothGroupSpec("attn.qkv", ("attn.to_q", "attn.to_k", "attn.to_v"), "attn", (0,), (3,)),
-    FluxSmoothGroupSpec("attn.add_qkv", ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj"), "attn", (1,), (3,)),
-    FluxSmoothGroupSpec("attn.to_out.0", ("attn.to_out.0",), "attn.to_out.0", None, (1,)),
-    FluxSmoothGroupSpec("attn.to_add_out", ("attn.to_add_out",), "attn.to_add_out", None, (1,)),
-    FluxSmoothGroupSpec("ff.net.0.proj", ("ff.net.0.proj",), "ff.net.0.proj", None, (1,)),
-    FluxSmoothGroupSpec("ff.net.2", ("ff.net.2",), "ff.net.2", None, (1,)),
-    FluxSmoothGroupSpec("ff_context.net.0.proj", ("ff_context.net.0.proj",), "ff_context.net.0.proj", None, (1,)),
-    FluxSmoothGroupSpec("ff_context.net.2", ("ff_context.net.2",), "ff_context.net.2", None, (1,)),
+    FluxSmoothGroupSpec("attn.qkv", ("attn.to_q", "attn.to_k", "attn.to_v"), "attn", (0,)),
+    FluxSmoothGroupSpec("attn.add_qkv", ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj"), "attn", (1,)),
+    FluxSmoothGroupSpec("attn.to_out.0", ("attn.to_out.0",), "attn.to_out.0", None),
+    FluxSmoothGroupSpec("attn.to_add_out", ("attn.to_add_out",), "attn.to_add_out", None),
+    FluxSmoothGroupSpec("ff.net.0.proj", ("ff.net.0.proj",), "ff.net.0.proj", None),
+    FluxSmoothGroupSpec("ff.net.2", ("ff.net.2",), "ff.net.2", None),
+    FluxSmoothGroupSpec("ff_context.net.0.proj", ("ff_context.net.0.proj",), "ff_context.net.0.proj", None),
+    FluxSmoothGroupSpec("ff_context.net.2", ("ff_context.net.2",), "ff_context.net.2", None),
 )
 
 _SINGLE_GROUPS = (
-    FluxSmoothGroupSpec("parallel_qkv_mlp", ("attn.to_q", "attn.to_k", "attn.to_v", "proj_mlp"), "", None, (3, 1)),
-    FluxSmoothGroupSpec("proj_out", ("proj_out",), "proj_out", None, (1,)),
+    FluxSmoothGroupSpec("parallel_qkv_mlp", ("attn.to_q", "attn.to_k", "attn.to_v", "proj_mlp"), "", None),
+    FluxSmoothGroupSpec("proj_out", ("proj_out",), "proj_out", None),
 )
 
 
@@ -100,9 +99,6 @@ def _make_group(
         )
     names = tuple(module_global_name(block, path) for path, _ in selected)
     projections = tuple(module for _, module in selected)
-    splits = (
-        specification.output_splits if sum(specification.output_splits) == len(projections) else (len(projections),)
-    )
     return SmoothSearchGroup(
         key=module_global_name(block, specification.key),
         projection_names=names,
@@ -112,7 +108,6 @@ def _make_group(
         evaluation_input_key=module_global_name(block, specification.evaluation_path),
         evaluation_module=evaluation_module,
         output_indices=specification.output_indices,
-        output_splits=splits,
     )
 
 

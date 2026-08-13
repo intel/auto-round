@@ -69,7 +69,6 @@ class SmoothSearchGroup:
     evaluation_input_key: str
     evaluation_module: torch.nn.Module
     output_indices: tuple[int, ...] | None = None
-    output_splits: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.projections:
@@ -78,8 +77,6 @@ class SmoothSearchGroup:
             raise ValueError(f"SVDQuant group {self.key!r} has mismatched names and projections.")
         if len({projection.in_features for projection in self.projections}) != 1:
             raise ValueError(f"SVDQuant group {self.key!r} projections must share an input width.")
-        if self.output_splits and sum(self.output_splits) != len(self.projections):
-            raise ValueError(f"SVDQuant group {self.key!r} output splits do not cover its projections.")
 
     def filter_evaluation_kwargs(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         return filter_supported_kwargs(self.evaluation_module, kwargs)
@@ -132,7 +129,6 @@ def generic_linear_groups(
                 projection_input_module=module,
                 evaluation_input_key=name,
                 evaluation_module=module,
-                output_splits=(1,),
             )
         )
     return groups
