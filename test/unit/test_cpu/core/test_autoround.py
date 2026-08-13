@@ -680,6 +680,7 @@ class TestAutoRound:
         assert ar.optimizer == torch.optim.AdamW
         assert ar.mllm
 
+    @pytest.mark.timeout(60)
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
 
