@@ -44,7 +44,7 @@ variables:
 stages:
   - template: template/lib-build-template.yml
     parameters:
-      enableChangeDetection: false
+      enableChangeDetection: true
       publishToTestPyPI: false
 
   - stage: Nightly_xpu_test
