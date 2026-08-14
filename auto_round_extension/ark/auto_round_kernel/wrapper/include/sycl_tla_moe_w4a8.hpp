@@ -1558,7 +1558,7 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
 #define ARK_MOE_W4A8_LAUNCH(policy)                                                                        \
   MoEGEMMLauncher_w4a8<policy, ElementD>(*q, qact, weights, ascale, wscale, outputs, N, K,                  \
                                          num_tokens_per_expert, E, blocksize, blks, allow_full_tile,       \
-                                         allow_block_2d_store, atomic_buffer);
+                                         allow_block_2d_store, prefetch_dist, reduce, atomic_buffer);
 
   const char* tile_env = std::getenv("ARK_MOE_W4A8_PREFILL_TILE");
   if (tile_env != nullptr) {
