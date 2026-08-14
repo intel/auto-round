@@ -44,8 +44,7 @@ def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage:
             raise ValueError("The diffusion pipeline does not support component-level model CPU offload.")
         enable_model_cpu_offload(device=resolved_device)
         return "model"
-    if pipe.device != resolved_device:
-        pipe.to(resolved_device)
+    pipe.to(resolved_device)
     return None
 
 

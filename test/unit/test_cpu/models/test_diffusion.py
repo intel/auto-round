@@ -52,6 +52,24 @@ def test_regular_diffusion_calibration_moves_pipeline_to_device():
     assert pipe.target_device == target_device
 
 
+def test_regular_diffusion_calibration_moves_all_components_when_pipeline_reports_target_device():
+    class Pipeline:
+        device = torch.device("cuda:0")
+
+        def __init__(self):
+            self.target_device = None
+
+        def to(self, device):
+            self.target_device = device
+
+    pipe = Pipeline()
+    target_device = torch.device("cuda:0")
+
+    _prepare_pipeline_for_calibration(pipe, target_device, low_gpu_mem_usage=False)
+
+    assert pipe.target_device == target_device
+
+
 @pytest.fixture
 def setup_flux():
     """Fixture to set up the Flux model and tokenizer."""
