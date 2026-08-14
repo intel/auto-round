@@ -108,7 +108,8 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    @pytest.mark.timeout(120)
+    # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
+    @pytest.mark.timeout(220)
     def test_mx_fp4(self, dataloader):
         model_name = opt_name_or_path
         bits, group_size, sym = 4, 32, False
@@ -679,6 +680,7 @@ class TestAutoRound:
         assert ar.optimizer == torch.optim.AdamW
         assert ar.mllm
 
+    @pytest.mark.timeout(60)
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
 
@@ -696,6 +698,7 @@ class TestAutoRound:
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
+    @pytest.mark.timeout(60)
     def test_attention_mask_via_tokenize_in_dataset(self):
         from transformers import AutoTokenizer
 

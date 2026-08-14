@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 import transformers
 
 from auto_round.eval import eval_cli
@@ -130,6 +131,21 @@ class TestEvalArgumentParser:
         parser = eval_cli.EvalArgumentParser()
         args = parser.parse_args(["--vllm_args", "tensor_parallel_size=2,gpu_memory_utilization=0.9"])
         assert args.vllm_args == "tensor_parallel_size=2,gpu_memory_utilization=0.9"
+
+    def test_fewshot_and_generation_args_are_accepted(self):
+        parser = eval_cli.EvalArgumentParser()
+        args = parser.parse_args(
+            [
+                "--num-fewshot",
+                "3",
+                "--eval-gen-kwargs",
+                "temperature=0.1",
+                "--fewshot-as-multiturn",
+            ]
+        )
+        assert args.num_fewshot == 3
+        assert args.eval_gen_kwargs == "temperature=0.1"
+        assert args.fewshot_as_multiturn is True
 
 
 class TestEvalInit:
@@ -584,7 +600,7 @@ class TestEvaluateTasksWithRetry:
         def fake_simple_evaluate(**kwargs):
             calls.append(kwargs.get("batch_size"))
             if len(calls) <= 2 and calls[-1] == 8:
-                raise RuntimeError("oom")
+                raise torch.OutOfMemoryError("CUDA out of memory")
             return fake_res
 
         monkeypatch.setattr("lm_eval.simple_evaluate", fake_simple_evaluate)
@@ -601,13 +617,19 @@ class TestEvaluateTasksWithRetry:
 
         assert calls == [8, 1]
 
-    def test_exhausted_retries_raises_runtime_error(self, monkeypatch):
+    def test_non_oom_error_is_raised_without_retry(self, monkeypatch):
+        calls = []
+
+        def fake_simple_evaluate(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("permanent failure")
+
         monkeypatch.setattr(
             "lm_eval.simple_evaluate",
-            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("permanent failure")),
+            fake_simple_evaluate,
         )
 
-        with pytest.raises(RuntimeError, match="Failed to evaluate task 'bad-task'"):
+        with pytest.raises(RuntimeError, match="permanent failure"):
             eval_cli._evaluate_tasks_with_retry(
                 tasks=["bad-task"],
                 hflm=object(),
@@ -616,6 +638,8 @@ class TestEvaluateTasksWithRetry:
                 limit=None,
                 retry_times=2,
             )
+
+        assert len(calls) == 1
 
     def test_multiple_tasks_are_aggregated(self, monkeypatch):
         fake_hflm = object()

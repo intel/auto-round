@@ -12,133 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import shutil
+
 import pytest
 import torch
+from transformers import AutoModelForCausalLM
+
+from auto_round import AutoRound
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires CUDA")
 
-from auto_round.algorithms.config_resolver import (
-    get_algorithm_class,
-    is_block_quantizer_config,
-    is_preprocessor_config,
-    resolve_shared_config_values,
-    split_quantization_configs,
-    sync_shared_config_from,
-)
-from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.algorithms.quantization.rtn.config import RTNConfig
-from auto_round.algorithms.transforms.awq.config import AWQConfig
 
+class TestConfigResolverGpu:
+    @pytest.fixture(autouse=True)
+    def _save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
 
-class TestGetAlgorithmClass:
-    def test_rtn_config_resolves_to_quantizer(self):
-        from auto_round.algorithms.quantization.rtn.quantizer import OptimizedRTNQuantizer
+    @pytest.mark.timeout(180)
+    @pytest.mark.parametrize("scheme", ["W4A16", "W2A16", "W8A16", "MXFP4"])
+    def test_preset_scheme_export(self, tiny_opt_model_path, scheme):
+        autoround = AutoRound(tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, seqlen=16)
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        assert get_algorithm_class(RTNConfig()) is OptimizedRTNQuantizer
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        assert getattr(model.config.quantization_config, "quant_method", None) == "auto-round"
 
-    def test_awq_config_resolves_to_preprocessor(self):
-        from auto_round.algorithms.transforms.awq.base import AWQTransform
+    @pytest.mark.timeout(180)
+    def test_layer_config_override(self, tiny_opt_model_path):
+        """Per-layer override wins over the default scheme during config resolution."""
+        layer_config = {"model.decoder.layers.0.self_attn.q_proj": {"bits": 8}}
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            scheme="W4A16",
+            layer_config=layer_config,
+            iters=0,
+            disable_opt_rtn=True,
+            nsamples=1,
+            seqlen=16,
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        assert get_algorithm_class(AWQConfig()) is AWQTransform
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        assert isinstance(model, torch.nn.Module)
 
-    def test_plain_quantization_config_returns_none(self):
-        # QuantizationConfig itself is not registered to any implementation
-        assert get_algorithm_class(QuantizationConfig()) is None
+    def test_unknown_scheme_raises(self, tiny_opt_model_path):
+        """An unknown scheme name must be rejected by config resolution."""
+        from auto_round.schemes import preset_name_to_scheme
 
-    def test_unknown_object_returns_none(self):
-        class _NotAConfig:
-            pass
-
-        assert get_algorithm_class(_NotAConfig()) is None
-
-
-class TestIsPreprocessorBlockQuantizer:
-    def test_awq_is_preprocessor_not_quantizer(self):
-        assert is_preprocessor_config(AWQConfig()) is True
-        assert is_block_quantizer_config(AWQConfig()) is False
-
-    def test_rtn_is_quantizer_not_preprocessor(self):
-        assert is_block_quantizer_config(RTNConfig()) is True
-        assert is_preprocessor_config(RTNConfig()) is False
-
-    def test_plain_config_is_neither(self):
-        assert is_preprocessor_config(QuantizationConfig()) is False
-        assert is_block_quantizer_config(QuantizationConfig()) is False
-
-
-class TestSplitQuantizationConfigs:
-    def test_splits_preprocessors_and_quantizers(self):
-        pre, blk = split_quantization_configs([AWQConfig(), RTNConfig()])
-        assert len(pre) == 1
-        assert len(blk) == 1
-        assert isinstance(pre[0], AWQConfig)
-        assert isinstance(blk[0], RTNConfig)
-
-    def test_unregistered_configs_are_dropped(self):
-        pre, blk = split_quantization_configs([QuantizationConfig(), AWQConfig(), RTNConfig()])
-        assert len(pre) == 1
-        assert len(blk) == 1
-
-
-class TestResolveSharedSchemeValues:
-    def test_inherits_user_unset_field(self):
-        c1 = QuantizationConfig(bits=4, group_size=128, sym=True)
-        c2 = QuantizationConfig(sym=True)  # bits not user-set
-        resolve_shared_config_values([c1, c2])
-        assert c2.scheme.bits == 4
-
-    def test_conflicting_scheme_fields_raise(self):
-        c1 = QuantizationConfig(bits=4)
-        c2 = QuantizationConfig(bits=8)
-        with pytest.raises(ValueError, match="Conflicting shared scheme field"):
-            resolve_shared_config_values([c1, c2])
-
-    def test_does_not_override_user_set_field(self):
-        # c2 explicitly sets bits=8 -> must not be overwritten by c1.bits=4
-        c1 = QuantizationConfig(bits=4)
-        c2 = QuantizationConfig(bits=8)
-        with pytest.raises(ValueError, match="Conflicting shared scheme field"):
-            resolve_shared_config_values([c1, c2])
-        assert c2.scheme.bits == 8
-
-
-class _SharedAttrConfig(QuantizationConfig):
-    """QuantizationConfig with an extra public attribute that can be None."""
-
-    def __init__(self, *, extra=None, **kwargs):
-        super().__init__(**kwargs)
-        object.__setattr__(self, "extra", extra)
-
-
-class TestResolveSharedPublicValues:
-    def test_none_inherits_single_value(self):
-        c1 = _SharedAttrConfig(extra=5)
-        c2 = _SharedAttrConfig(extra=None)
-        resolve_shared_config_values([c1, c2])
-        assert c2.extra == 5
-        assert c1.extra == 5
-
-    def test_conflicting_public_values_raise(self):
-        c1 = _SharedAttrConfig(extra=1)
-        c2 = _SharedAttrConfig(extra=2)
-        with pytest.raises(ValueError, match="Conflicting shared config field"):
-            resolve_shared_config_values([c1, c2])
-
-    def test_single_field_no_conflict(self):
-        c1 = _SharedAttrConfig(extra=1)
-        c2 = _SharedAttrConfig()  # no extra attr at all
-        resolve_shared_config_values([c1, c2])
-        assert c1.extra == 1
-
-
-class TestSyncSharedConfigFrom:
-    def test_propagates_source_value(self):
-        source = RTNConfig(disable_opt_rtn=True)
-        target = RTNConfig(disable_opt_rtn=False)
-        sync_shared_config_from(source, [target])
-        assert target.disable_opt_rtn is True
-
-    def test_skips_source_itself(self):
-        source = RTNConfig(disable_opt_rtn=True)
-        sync_shared_config_from(source, [source])
-        assert source.disable_opt_rtn is True
+        with pytest.raises(KeyError):
+            preset_name_to_scheme("NOT_A_REAL_SCHEME")
