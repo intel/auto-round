@@ -1833,9 +1833,9 @@ def _process_single_shard_task(
     ignore_patterns: list[str],
     fp8_block_size: list | None,
     model_type: str | None,
-    source_quant_config: dict | None,
     quant_output_dir: str,
     total_shards: int,
+    source_quant_config: dict | None = None,
     enable_torch_compile: bool = False,
     disable_opt_rtn: bool = False,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
