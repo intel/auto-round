@@ -191,3 +191,65 @@ write 差异是这里能采到的最佳 spill/pressure proxy，符合 K64 带来
 
 建议：BF16 稀疏 SDPA 的已选中 block 路径保持 K32；除非后续 compiler/offline assembly 数据证明可以
 用其它方式消除 write/SBID 压力，否则 K64 应视为性能回退。
+
+## 最新 ARK SDPA 对比
+
+拉取最新 K32 实现后，在 XPU 0 和 XPU 1 上使用相同的 75k-token shape 与 launch 配置，重新运行了
+dense ARK SDPA 和 BF16 sparse SDPA：
+
+- Commit：`9b1a9512`
+- Shape：`seq_len=75000`、HND、40 个 Q heads、40 个 KV heads、head_dim 128
+- Sparse 配置：`topk=0.5`、`q_tile_override=256`、`sparse_q_block_tokens=256`、
+  `sparse_k_block_tokens=64`
+- Benchmark 选项：`--warmup 1 --iters 2`
+- Timing：XPU 0 和 XPU 1 的均值；sparse 同时记录 kernel-only 和 end-to-end
+
+| 路径 | 平均延迟 | 相对 dense ARK 加速比 |
+|---|---:|---:|
+| dense ARK SDPA | 994.6 ms | 1.00x |
+| BF16 sparse K32，kernel-only | 598.2 ms | 1.66x |
+| BF16 sparse K32，end-to-end | 697.6 ms | 1.43x |
+
+最新 Unitrace kernel-property pass 报告：dense ARK 为 SIMD16、SLM 0、private memory 0 B/thread、
+spill 0、GRF 256；BF16 sparse 为 SIMD16、SLM 0、private memory 2176 B/thread、spill 0、GRF 256。
+
+当前 ComputeBasic 和 VectorEngineStalls counter pass 因主机 `observation_paranoid=1`，无法创建
+metric query 或 streamer。没有修改系统策略，因此最新比较使用相同 shape 的 unprofiled timing 加
+kernel-property pass。原始 Unitrace 输出和 timing CSV 位于：
+
+`benchmarks/results/apple_to_apple_ark_sdpa_bf16_sparse_75k_xpu0_20260814_135844/`
+
+Timing CSV：
+
+- `benchmarks/results/k32_rerun_bf16_xpu0_20260814_134727.csv`
+- `benchmarks/results/k32_rerun_bf16_xpu1_20260814_134959.csv`
+
+## Flux BF16 sparse topk sweep
+
+最新 K32 BF16 sparse 路径通过 Flux example 运行了 1024x1024 sweep，使用相同 prompt、seed、50 个
+denoising steps、qtile 256、Q block 256 和 K routing block 64。每个 topk 在独立 XPU 上并行运行。
+全部运行均完成了 2,850/2,850 次 sparse attention call，runtime fallback 为 0。
+
+| topk | XPU | 实测 sparsity | PNG |
+|---:|---:|---:|---|
+| 1.0 | 0 | 0.00% | `flux_topk1p0.png` |
+| 0.9 | 1 | 11.11% | `flux_topk0p9.png` |
+| 0.8 | 2 | 20.83% | `flux_topk0p8.png` |
+| 0.7 | 3 | 30.56% | `flux_topk0p7.png` |
+| 0.6 | 4 | 40.28% | `flux_topk0p6.png` |
+| 0.5 | 5 | 50.00% | `flux_topk0p5.png` |
+| 0.4 | 6 | 61.11% | `flux_topk0p4.png` |
+| 0.3 | 7 | 70.83% | `flux_topk0p3.png` |
+| 0.2 | 0 | 80.56% | `flux_topk0p2.png` |
+| 0.1 | 1 | 90.28% | `flux_topk0p1.png` |
+| 0.01 | 2 | 98.61% | `flux_topk0p01.png` |
+
+主 sweep artifacts：
+
+`benchmarks/results/flux_bf16_topk_sweep_1024_parallel_20260814_160126/`
+
+新增低 topk artifacts：
+
+`benchmarks/results/flux_bf16_topk_sweep_1024_parallel_extra_20260814_160550/`
+
+每个目录包含 `summary.csv`、精确 per-run command、log、status 文件和 PNG。

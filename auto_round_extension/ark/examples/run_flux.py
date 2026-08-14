@@ -54,10 +54,10 @@ cpu_offload_enabled = env_flag("FLUX_ENABLE_CPU_OFFLOAD", "0" if benchmark_scope
 
 model_id = os.getenv("FLUX_MODEL", "~/workspace/models/black-forest-labs/FLUX.1-dev/")
 pipe = FluxPipeline.from_pretrained(model_id, torch_dtype=dtype)
-if benchmark_scope != "block":
-    pipe.to(device)
 if cpu_offload_enabled:
-    pipe.enable_model_cpu_offload()
+    pipe.enable_model_cpu_offload(device=device)
+elif benchmark_scope != "block":
+    pipe.to(device)
 
 height = int(os.getenv("FLUX_HEIGHT", "1024"))
 width = int(os.getenv("FLUX_WIDTH", "1024"))
