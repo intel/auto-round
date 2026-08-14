@@ -256,12 +256,23 @@ kernel's own quantizer produces (`round(x × 127 / absmax)`, `absmax / 127`). Th
 producer computes that absmax in the same registers it already holds the row in,
 so upstream this is free; here it deletes three of the five streams — the fp16
 read, the int8 write and the int8 read-back — plus one kernel launch. The GEMM
-itself is untouched, so results agree with passing fp16 and letting the kernel
-quantize **to within one step of the output format** — a caller that reproduces
-the formula in exact fp32 will not match the device's own divisions bit for bit,
-which moves a handful of elements by one bf16 ulp and nothing further
-(`test_prequantized_activations_match_internal`, and the decode equivalent,
-assert exactly that bound).
+itself is untouched, so the same int8 in gives the same result out, to within
+the single step of the output format that the row scale's own division is
+allowed (`test_prequantized_activations_match_internal`, and the decode
+equivalent, assert exactly that bound).
+
+What the contract does *not* promise is that a caller who re-derives the int8
+from the same fp16 gets the bytes the kernel would have computed. Both round
+`x × 127 / absmax`, but SPIR-V allows a division a few ulp of error and a 16-bit
+activation grid is coarse enough that exact ties are common, so a handful of
+elements can round the other way. Each one is then a different *input* to every
+dot product it takes part in — an absolute perturbation, unbounded in ULP
+wherever an accumulator cancels to near zero, even though the energy involved is
+negligible. That difference belongs to the caller's quantizer, not to this call:
+hand over the bytes the producer actually computed and the question does not
+arise. The two tests above avoid it by construction, quantizing rows that lie on
+the int8 grid (`a = q × 2^-e`, `|q| ≤ 127`), where every product is an integer
+and neither quantizer has a tie to break.
 
 ### Contract 2 — the top-k reduction fused into the epilogue
 
@@ -1100,15 +1111,17 @@ environment has no XPU and no SYCL compiler. What needs to be checked on device,
 in order:
 
 1. `test_prequantized_activations_match_internal` and its decode counterpart —
-   the int8-in path against the kernel's own quantizer, to within one step of
-   the output format. That bound, not exact equality, is what the contract can
-   promise: the harness runs `127 / absmax` and `absmax / 127` in exact fp32
-   while SPIR-V allows a division a few ulp of error, so a few products land on
-   the other side of a rounding tie. A failure therefore means a genuine
-   contract bug — a transposed scale, an off-by-one row, the scale read as its
-   reciprocal — since none of those are worth one step. The assertion prints
-   the max ULP distance and how much of the tensor moved, which separates the
-   two cases immediately.
+   the int8-in path against the kernel's own quantizer. Both cases are built on
+   the int8 grid (`a = q × 2^-e`, `|q| ≤ 127`), where the row absmax is exactly
+   `127 × 2^-e` and both `127 / absmax` and `absmax / 127` are powers of two, so
+   no product is anywhere near a rounding tie and the two paths must produce
+   identical int8. What is left is the device's own division for the row scale,
+   worth at most an ulp — and it multiplies the whole row, so it moves an output
+   by at most one step of the output format wherever that output lies. A failure
+   therefore means a genuine contract bug — a transposed scale, an off-by-one
+   row, the scale read as its reciprocal — since none of those are worth one
+   step. The assertion prints the max ULP distance, how much of the tensor moved
+   and the SNR, which separates a last-bit difference from a structural one.
 2. `test_fused_reduce_matches_unfused` — SNR/cosine against the unfused path.
    Expected around 54 dB (bf16 rounding of the unfused rows dominates the fp32
    atomic's reassociation), against a 20 dB / 0.99 gate.

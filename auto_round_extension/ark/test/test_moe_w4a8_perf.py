@@ -308,13 +308,22 @@ def _ulp_diff(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def _ulp_report(a: torch.Tensor, b: torch.Tensor) -> str:
-    """``max ULP`` plus how much of the tensor moved, for assertion messages."""
+    """``max ULP`` plus how much of the tensor moved, for assertion messages.
+
+    The SNR is printed alongside because the two numbers fail differently: a
+    contract that reads the wrong scale or the wrong row misses by orders of
+    magnitude and takes the SNR down with it, while a difference confined to
+    the last bits leaves the SNR high however large the worst ULP distance is
+    (an output that cancels to near zero is many steps from its neighbour at
+    no cost in energy).
+    """
     ulp = _ulp_diff(a, b)
     differing = int((ulp > 0).sum().item())
     total = ulp.numel()
     return (
         f"max {int(ulp.max().item())} ULP, {differing}/{total} elements differ "
-        f"({differing / total:.3%}), max |diff| {(a.float() - b.float()).abs().max().item():.6g}"
+        f"({differing / total:.3%}), max |diff| {(a.float() - b.float()).abs().max().item():.6g}, "
+        f"SNR {_snr_db(a, b):.2f} dB"
     )
 
 
@@ -490,6 +499,49 @@ def _prefill_batches(all_shapes: bool) -> list:
 # ---------------------------------------------------------------------------
 
 
+def _int8_grid_activations(total_tokens, K, dtype, generator):
+    """Activations every correct absmax quantizer maps to the *same* int8 bytes.
+
+    The pre-quantized contract is only testable if the caller's int8 and the
+    kernel's own agree, and on arbitrary data they are not required to. Both
+    compute ``inv = 127 / absmax`` and round ``a * inv``, but the harness runs
+    that division in exact fp32 while SPIR-V lets the device's carry a few ulp,
+    so any product sitting on a ``.5`` tie can land on either side. With 16-bit
+    activations that is not a rare accident -- a bf16 row carries 8 mantissa
+    bits, so exact ties are common -- and a flipped int8 is *not* a rounding
+    difference in the output: it is a different input to the dot product, which
+    moves the result by ``|w| * scales`` in absolute terms, i.e. without bound
+    in ULP wherever the accumulator happens to cancel to near zero.
+
+    So the rows are put on the quantizer's own grid instead. ``a = q * 2^-e``
+    with integer ``|q| <= 127`` is exact in every 16-bit float format, ``127``
+    is planted in each row so its absmax is exactly ``127 * 2^-e``, and both
+    ``127 / absmax = 2^e`` and ``absmax / 127 = 2^-e`` are powers of two. Every
+    product is then the integer ``q`` itself -- half a step from the nearest
+    tie, a margin no plausible division error comes close to bridging -- so the
+    two quantizers must produce identical bytes and any difference in the
+    output belongs to the contract rather than to the rounding.
+
+    ``e`` walks 4..8 down the rows so neighbouring rows have different scales:
+    a scale read from the wrong row is then a factor of two, not a coincidence.
+    """
+    q = torch.randint(-127, 128, (total_tokens, K), generator=generator, dtype=torch.int32)
+    q[:, 0] = 127
+    exponent = -(4 + torch.arange(total_tokens, dtype=torch.int32) % 5)
+    activations = torch.ldexp(q.to(torch.float32), exponent.unsqueeze(1)).to(dtype)
+
+    # The construction is only worth anything if it survives the cast to
+    # `dtype` and the reference quantizer's own two divisions, so it is checked
+    # here -- cheaply, on the host, before the rows reach the device -- rather
+    # than left for a later edit to reintroduce the ties unnoticed.
+    q_back, scale_back = _quantize_rows(activations)
+    assert torch.equal(q_back.to(torch.int32), q), f"the int8 grid does not survive {dtype}"
+    assert torch.equal(
+        scale_back, torch.ldexp(torch.ones(total_tokens), exponent)
+    ), "the row scales are not the powers of two the grid was built from"
+    return activations
+
+
 def _build_case(
     N,
     K,
@@ -502,6 +554,7 @@ def _build_case(
     need_reference=True,
     need_dequant=True,
     topk=None,
+    act_int8_grid=False,
 ):
     """Build one W4A8 MoE test case.
 
@@ -525,13 +578,22 @@ def _build_case(
     -- because an expert's block of rows is shorter than ``batch`` at every
     shipped ``E`` -- never twice on the same expert, i.e. the same structure a
     real router produces after the rows are sorted by expert.
+
+    ``act_int8_grid`` swaps the normally-distributed activations for rows that
+    quantize exactly (:func:`_int8_grid_activations`). It is for the tests that
+    compare two *quantizers* against each other rather than the kernel against
+    a reference, where a tie broken differently on either side would swamp what
+    is being measured.
     """
     generator = torch.Generator(device="cpu").manual_seed(seed)
     w_float = torch.randn(E, N, K, generator=generator, dtype=torch.float32) * 0.05
     scales = torch.empty(E, N, K // group_size, dtype=dtype)
     packed = _pack_int4_sym(w_float, scales, group_size)
 
-    activations = (torch.randn(total_tokens, K, generator=generator, dtype=torch.float32) * 0.5).to(dtype)
+    if act_int8_grid:
+        activations = _int8_grid_activations(total_tokens, K, dtype, generator)
+    else:
+        activations = (torch.randn(total_tokens, K, generator=generator, dtype=torch.float32) * 0.5).to(dtype)
     tpe = _spread_tokens(total_tokens, E)
     ntpe = torch.tensor(tpe, dtype=torch.int32)
 
@@ -636,10 +698,11 @@ def _quantize_rows(activations):
     Same expressions is not the same bits, though. Those two divisions are
     exact in IEEE fp32 here and only approximate on the device -- SPIR-V lets
     a division carry a few ulp of error, and the kernel is not built with the
-    flags that would forbid that -- so ``inv`` can land one step off. Almost
-    every product then rounds to the same int8 anyway, and the handful within
-    a hair of a ``.5`` tie do not, which is why the pre-quantized entry point
-    is checked against the internal one to within a step rather than exactly.
+    flags that would forbid that -- so ``inv`` can land one step off, and any
+    product that sits on a ``.5`` tie then rounds the other way. The callers
+    that need the two to agree byte for byte hand this function rows that
+    cannot tie (:func:`_int8_grid_activations`); on arbitrary rows it is a
+    faithful model of the kernel, not a bit-exact one.
     """
     a = activations.to(torch.float32)
     absmax = a.abs().amax(dim=1)
@@ -1930,16 +1993,30 @@ if pytest is not None:
 
             :func:`_quantize_rows` is that pass expression for expression, but
             it runs its two divisions in exact fp32 while the device is allowed
-            a few ulp on them, so a few products fall on the other side of a
-            rounding tie and a scale can land one step off. That moves an
-            output by at most one step of the output format: one flipped int8
-            perturbs a dot product by a small fraction of a bf16 ulp, and so
-            does a one-ulp scale. Hence the bound below, which is not a fitted
-            tolerance but the smallest difference the format can express.
+            a few ulp on them, so on ordinary activations a product that sits
+            on a rounding tie can round the other way. That is not a rounding
+            difference in the *output*: a flipped int8 is a different input to
+            every dot product it takes part in, and one that lands next to a
+            cancelling accumulator moves the result by any number of steps. No
+            useful bound survives it, so the case is built on the quantizer's
+            own grid instead (:func:`_int8_grid_activations`), where every
+            product is an integer half a step from the nearest tie and both
+            quantizers must emit the same bytes.
+
+            What is left is the row scale. ``absmax / 127`` is a power of two
+            on this grid, so the exact result is representable and the device's
+            division can miss it by at most an ulp -- and it enters the
+            epilogue as a *factor*, so it perturbs every output by the same
+            relative amount rather than by an absolute one, which is at most
+            one step of the output format wherever the output lies. Hence the
+            bound below, which is not a fitted tolerance but the smallest
+            difference the format can express.
 
             It still fails loudly for the bugs this is here to catch -- a
             transposed scale, an off-by-one row, the scale read as its
-            reciprocal -- because none of those are worth one step.
+            reciprocal -- because none of those are worth one step, and the
+            per-row exponent makes a scale taken from the wrong row a factor of
+            two rather than a coincidence.
 
             Both K are covered because the internal quantizer picks its lane
             mapping from K, and only one of the two rungs would be exercised by
@@ -1955,6 +2032,7 @@ if pytest is not None:
                     torch.bfloat16,
                     need_reference=False,
                     need_dequant=False,
+                    act_int8_grid=True,
                 )
                 weights_s8, wscales, block = ark.moe_w4a8_prepack(
                     case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
@@ -1980,8 +2058,8 @@ if pytest is not None:
             standalone scan instead -- a different code path producing a value
             the GEMV indexes its weights with. If it were wrong every token
             would read another expert's weights, which this test sees as a
-            gross mismatch rather than the one-step rounding difference the
-            two quantizers are entitled to.
+            gross mismatch rather than the one-step scale difference the two
+            paths are entitled to.
             """
             case = _build_case(
                 _QWEN3_NK[0][1],
@@ -1992,6 +2070,7 @@ if pytest is not None:
                 torch.bfloat16,
                 need_reference=False,
                 need_dequant=False,
+                act_int8_grid=True,
             )
             weights_s8, wscales, block = ark.moe_w4a8_prepack(
                 case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
