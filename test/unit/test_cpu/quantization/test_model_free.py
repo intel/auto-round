@@ -59,6 +59,7 @@ from auto_round.compressors.model_free import (
     _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
+    _handle_model_type_low_precision_source_tensors,
     _handle_mxfp_source_tensors,
     _looks_like_auto_scheme,
     _ModelFreeCompressorCore,
@@ -933,6 +934,19 @@ class TestLLMCompressorMXFPSource:
         raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
         assert raw_out is raw and passthrough == {} and layers == []
 
+    def test_reject_non_mxfp_packed_float_scale(self):
+        """weight_packed + float scale must NOT be treated as MXFP source."""
+        raw = {
+            "layer.weight_packed": torch.randint(0, 255, (64, 64), dtype=torch.uint8),
+            "layer.weight_scale": torch.ones(64, 8, dtype=torch.float16),
+        }
+        matcher = _matcher(default={"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"})
+        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
+
+        assert raw_out is raw
+        assert passthrough == {}
+        assert layers == []
+
     @require_compressed_tensors
     def test_e2e_mxfp8_passthrough(self, tmp_path):
         """End-to-end: MXFP8 source + MXFP8 target → passthrough, weight bytes unchanged."""
@@ -1139,6 +1153,75 @@ class TestSchemeValidation:
         for name in _UNSUPPORTED:
             assert is_model_free_supported_scheme(name) is False
         assert is_model_free_supported_scheme("DOES_NOT_EXIST") is False
+
+
+# ===========================================================================
+#  kimi_k25 INT4 packed source models
+# ===========================================================================
+
+
+_KIMI_K25_CFG = {
+    "architectures": ["KimiK25ForConditionalGeneration"],
+    "model_type": "kimi_k25",
+    "quantization_config": {
+        "quant_method": "compressed-tensors",
+        "weights": {"num_bits": 4, "type": "int", "group_size": 8, "symmetric": True},
+    },
+}
+
+
+class TestKimiK25Int4Source:
+    def test_kimi_k25_int4_dequant_helper(self):
+        raw = {
+            "layer.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
+            "layer.weight_scale": torch.ones(128, 16, dtype=torch.float16),
+        }
+        out = _handle_model_type_low_precision_source_tensors(
+            raw,
+            model_type="kimi_k25",
+            source_quant_config=_KIMI_K25_CFG["quantization_config"],
+            device="cpu",
+        )
+        assert "layer.weight" in out
+        assert out["layer.weight"].dtype == torch.bfloat16
+        assert out["layer.weight"].shape == (128, 128)
+        assert "layer.weight_packed" not in out
+        assert "layer.weight_scale" not in out
+
+    @require_compressed_tensors
+    def test_kimi_k25_int4_to_mxfp4_via_model_free(self, tmp_path):
+        tensors = {
+            "model.layers.0.mlp.fc1.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
+            "model.layers.0.mlp.fc1.weight_scale": torch.ones(128, 16, dtype=torch.float16),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _KIMI_K25_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="MXFP4",
+            format="llm_compressor",
+        ).run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp4-pack-quantized"
+        assert qc["quant_method"] == "compressed-tensors"
+
+        found_scale_dtype = None
+        found_packed_shape = None
+        for fname in os.listdir(output_dir):
+            if not fname.endswith(".safetensors"):
+                continue
+            with safe_open(os.path.join(output_dir, fname), framework="pt") as sf:
+                if "model.layers.0.mlp.fc1.weight_scale" in sf.keys():
+                    found_scale_dtype = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale").dtype
+                    found_packed_shape = sf.get_tensor("model.layers.0.mlp.fc1.weight_packed").shape
+
+        # Re-quantized MXFP4 scales are uint8 E8M0 (source INT4 scales were fp16).
+        assert found_scale_dtype == torch.uint8
+        assert found_packed_shape == (128, 64)
 
 
 # ===========================================================================
