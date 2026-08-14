@@ -87,6 +87,6 @@ class FP8Format(OutputFormat):
             inplace=inplace,
             device=device,
             serialization_dict=serialization_dict,
-            quant_method=backend,
+            backend=backend,
             **kwargs,
         )
