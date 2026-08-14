@@ -227,8 +227,10 @@ out = ark.moe_gemm_w4a8(
 的结果 (`round(x × 127 / absmax)`、`absmax / 127`)。生产者在它本来就持有整行的那批
 寄存器里就能算出 absmax，所以上游是零成本；在本次调用里则删掉了五条流中的三条 —
 fp16 读、int8 写、int8 读回 — 外加一次 kernel launch。GEMM 本身没有任何改动，因此
-结果与传 fp16 让 kernel 自己量化**逐位相同**
-(`test_prequantized_activations_match_internal` 及其 decode 版本断言的就是这一点)。
+结果与传 fp16 让 kernel 自己量化的差距**不超过输出格式的一个步长** — 调用方即便用
+精确的 fp32 复现同一套公式，也无法与设备自身的除法逐位相同，这会让极少数元素相差
+一个 bf16 ulp，仅此而已
+(`test_prequantized_activations_match_internal` 及其 decode 版本断言的就是这个界)。
 
 ### 契约 2 — 把 top-k 规约折进 epilogue
 
@@ -966,8 +968,11 @@ int32 累加器做 2D 写出的。事实证明那个参考对象选错了：`reo
 过时，因为撰写环境既没有 XPU 也没有 SYCL 编译器。需要在设备上按顺序验证的是：
 
 1. `test_prequantized_activations_match_internal` 及其 decode 版本 — int8 输入路径与
-   kernel 自带量化器逐位相同。不一致说明 harness 的参考量化器与
-   `launch_act_dynamic_quant` 在舍入上有分歧，而不是契约本身有问题。
+   kernel 自带量化器的差距不超过输出格式的一个步长。契约能保证的是这个界而不是完全
+   相等：harness 用精确的 fp32 计算 `127 / absmax` 与 `absmax / 127`，而 SPIR-V 允许
+   除法带若干 ulp 的误差，于是少量乘积会落到舍入分界的另一侧。因此一旦失败，就说明
+   契约确有问题 — scale 转置、行错位、把 scale 当成其倒数 — 因为这些都不止一个步长。
+   断言会打印最大 ULP 距离以及有多少元素发生了变化，可以立刻区分这两种情况。
 2. `test_fused_reduce_matches_unfused` — 与无融合路径的 SNR/余弦对比。预期约 54 dB
    (无融合那一侧的 bf16 舍入误差主导，超过 fp32 atomic 的重结合误差)，门槛是
    20 dB / 0.99。

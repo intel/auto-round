@@ -271,6 +271,53 @@ def _max_rel_err(reference: torch.Tensor, actual: torch.Tensor) -> float:
     return float(((ref - act).abs() / denom).max().item())
 
 
+_ULP_INT_DTYPE = {
+    torch.bfloat16: torch.int16,
+    torch.float16: torch.int16,
+    torch.float32: torch.int32,
+}
+
+
+def _ulp_diff(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Elementwise distance between two tensors counted in representable steps.
+
+    ``1`` means the two values are neighbours in the format -- the smallest
+    disagreement that can be expressed -- and ``0`` means identical. This is
+    the right unit for comparing two computations that are algebraically the
+    same but not required to round identically: a tolerance in absolute or
+    relative terms has to be picked to fit the magnitudes at hand, while "one
+    step apart" is a property of the format and holds across the whole range.
+
+    Floats are ordered by their bit pattern within a sign, so the pattern read
+    as an integer counts steps directly; the negatives run backwards, so their
+    magnitude is negated to get one monotone key over the whole line (which
+    also makes ``-0`` and ``+0`` the same key).
+    """
+    if a.dtype != b.dtype:
+        raise TypeError(f"_ulp_diff needs one dtype, got {a.dtype} and {b.dtype}")
+    int_dtype = _ULP_INT_DTYPE.get(a.dtype)
+    if int_dtype is None:
+        raise TypeError(f"_ulp_diff does not know the bit layout of {a.dtype}")
+    magnitude = torch.iinfo(int_dtype).max  # 0x7fff / 0x7fffffff: everything but the sign
+
+    def key(t: torch.Tensor) -> torch.Tensor:
+        bits = t.contiguous().view(int_dtype).to(torch.int64)
+        return torch.where(bits < 0, -(bits & magnitude), bits)
+
+    return (key(a) - key(b)).abs()
+
+
+def _ulp_report(a: torch.Tensor, b: torch.Tensor) -> str:
+    """``max ULP`` plus how much of the tensor moved, for assertion messages."""
+    ulp = _ulp_diff(a, b)
+    differing = int((ulp > 0).sum().item())
+    total = ulp.numel()
+    return (
+        f"max {int(ulp.max().item())} ULP, {differing}/{total} elements differ "
+        f"({differing / total:.3%}), max |diff| {(a.float() - b.float()).abs().max().item():.6g}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shapes
 #
@@ -581,12 +628,18 @@ def _w4a16(case, phase):
 def _quantize_rows(activations):
     """Per-row absmax int8 quantization -- the reference for what the kernel does.
 
-    Reproduces ``launch_act_dynamic_quant`` element for element: the absmax is
-    an exact reduction, ``inv = 127 / absmax`` and ``scale = absmax / 127`` are
-    the same two fp32 operations, and ``rint`` is round-half-to-even, which is
-    what ``torch.round`` does as well. So handing the result back through the
-    pre-quantized entry point must reproduce the internally-quantized call
-    bit-for-bit, not merely closely.
+    Reproduces ``launch_act_dynamic_quant`` expression for expression: the
+    absmax is an exact reduction, ``inv = 127 / absmax`` and
+    ``scale = absmax / 127`` are the same two fp32 operations, and ``rint`` is
+    round-half-to-even, which is what ``torch.round`` does as well.
+
+    Same expressions is not the same bits, though. Those two divisions are
+    exact in IEEE fp32 here and only approximate on the device -- SPIR-V lets
+    a division carry a few ulp of error, and the kernel is not built with the
+    flags that would forbid that -- so ``inv`` can land one step off. Almost
+    every product then rounds to the same int8 anyway, and the handful within
+    a hair of a ``.5`` tie do not, which is why the pre-quantized entry point
+    is checked against the internal one to within a step rather than exactly.
     """
     a = activations.to(torch.float32)
     absmax = a.abs().amax(dim=1)
@@ -1870,12 +1923,23 @@ if pytest is not None:
 
             The pre-quantized entry point does not change any arithmetic: it
             removes the pass that computes the int8 copy and takes the caller's
-            instead. :func:`_quantize_rows` is that pass, expression for
-            expression -- an exact absmax, the same ``127 / absmax``
-            reciprocal, the same round-half-to-even and the same clamp -- so
-            the GEMM sees the same bytes and the results must be bit-identical.
-            Any difference is a contract bug: a transposed scale, an off-by-one
-            row, or the scale being interpreted as its reciprocal.
+            instead. Everything downstream -- the policy, the tiling, the
+            accumulation order, the epilogue -- is selected from the same
+            arguments on both contracts, so the only thing that can differ is
+            the int8 bytes and the row scales.
+
+            :func:`_quantize_rows` is that pass expression for expression, but
+            it runs its two divisions in exact fp32 while the device is allowed
+            a few ulp on them, so a few products fall on the other side of a
+            rounding tie and a scale can land one step off. That moves an
+            output by at most one step of the output format: one flipped int8
+            perturbs a dot product by a small fraction of a bf16 ulp, and so
+            does a one-ulp scale. Hence the bound below, which is not a fitted
+            tolerance but the smallest difference the format can express.
+
+            It still fails loudly for the bugs this is here to catch -- a
+            transposed scale, an off-by-one row, the scale read as its
+            reciprocal -- because none of those are worth one step.
 
             Both K are covered because the internal quantizer picks its lane
             mapping from K, and only one of the two rungs would be exercised by
@@ -1897,9 +1961,9 @@ if pytest is not None:
                 )
                 internal = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
                 external = _w4a8(case, weights_s8, wscales, block, "prefill", prequant=True).clone()
-                assert torch.equal(internal, external), (
+                assert int(_ulp_diff(internal, external).max().item()) <= 1, (
                     f"{nk_label.strip()} (K={K}): pre-quantized activations disagree with the in-call "
-                    f"quantizer: max |diff| {(internal.float() - external.float()).abs().max().item():.6g}"
+                    f"quantizer by more than a rounding step: {_ulp_report(internal, external)}"
                 )
                 case = weights_s8 = wscales = internal = external = None
                 ark.clear_moe_w4a8_prepack_cache()
@@ -1916,7 +1980,8 @@ if pytest is not None:
             standalone scan instead -- a different code path producing a value
             the GEMV indexes its weights with. If it were wrong every token
             would read another expert's weights, which this test sees as a
-            gross mismatch rather than a rounding difference.
+            gross mismatch rather than the one-step rounding difference the
+            two quantizers are entitled to.
             """
             case = _build_case(
                 _QWEN3_NK[0][1],
@@ -1933,9 +1998,9 @@ if pytest is not None:
             )
             internal = _w4a8(case, weights_s8, wscales, block, "decode").clone()
             external = _w4a8(case, weights_s8, wscales, block, "decode", prequant=True).clone()
-            assert torch.equal(internal, external), (
-                "pre-quantized activations disagree with the in-call quantizer on decode: "
-                f"max |diff| {(internal.float() - external.float()).abs().max().item():.6g}"
+            assert int(_ulp_diff(internal, external).max().item()) <= 1, (
+                "pre-quantized activations disagree with the in-call quantizer on decode by more than a "
+                f"rounding step: {_ulp_report(internal, external)}"
             )
 
         def test_fused_reduce_matches_unfused(self):

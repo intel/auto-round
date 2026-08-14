@@ -177,13 +177,25 @@ void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weig
  *        `moe_w4a8_rescale_block_size`); must be a multiple of 64 dividing K.
  * @param phase 0 = auto (decode when the batch is small), 1 = force decode,
  *        2 = force prefill.
+ * @param qact_in Optional `[total_tokens, K]` int8 activations already
+ *        quantized by the caller, with `ascale_in` their `[total_tokens]` fp32
+ *        per-row scales (`absmax / 127`). Supplying both skips the internal
+ *        quantization pass and `activations` is then unused; neither may be
+ *        given without the other.
+ * @param row_to_token / routing_weights / fused_out / fused_batch Optional
+ *        fused top-k reduction: the epilogue scales each row and scatter-adds
+ *        it into the zeroed `[fused_batch, N]` fp32 `fused_out` instead of
+ *        writing the unreduced `[total_tokens, N]` to `outputs`. Prefill only,
+ *        and all four must be given together.
  *
  * STATUS: NEEDS-HARDWARE-VALIDATION. Implementation is header-only in
- * `sycl_tla_moe_w4a8.hpp`.
+ * `sycl_tla_moe_w4a8.hpp`, which is also where the trailing optional
+ * parameters get their defaults.
  */
 void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, void* wscales, void* outputs,
                    BTLA_DTYPE act_dtype, int N, int K, int rescale_block_size, int* num_tokens_per_expert,
-                   int num_experts, int total_tokens, int phase);
+                   int num_experts, int total_tokens, int phase, const void* qact_in, const float* ascale_in,
+                   const int* row_to_token, const float* routing_weights, float* fused_out, int fused_batch);
 
 /**
  * @brief Resolve the effective W4A8 AUTO_S8 re-scale block size for a given

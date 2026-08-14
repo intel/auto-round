@@ -256,9 +256,12 @@ kernel's own quantizer produces (`round(x × 127 / absmax)`, `absmax / 127`). Th
 producer computes that absmax in the same registers it already holds the row in,
 so upstream this is free; here it deletes three of the five streams — the fp16
 read, the int8 write and the int8 read-back — plus one kernel launch. The GEMM
-itself is untouched, so results are **bit-identical** to passing fp16 and letting
-the kernel quantize (`test_prequantized_activations_match_internal`, and the
-decode equivalent, assert exactly that).
+itself is untouched, so results agree with passing fp16 and letting the kernel
+quantize **to within one step of the output format** — a caller that reproduces
+the formula in exact fp32 will not match the device's own divisions bit for bit,
+which moves a handful of elements by one bf16 ulp and nothing further
+(`test_prequantized_activations_match_internal`, and the decode equivalent,
+assert exactly that bound).
 
 ### Contract 2 — the top-k reduction fused into the epilogue
 
@@ -1097,10 +1100,15 @@ environment has no XPU and no SYCL compiler. What needs to be checked on device,
 in order:
 
 1. `test_prequantized_activations_match_internal` and its decode counterpart —
-   bit-identity of the int8-in path against the kernel's own quantizer. A
-   mismatch means the harness's reference quantizer and
-   `launch_act_dynamic_quant` disagree on rounding, not that the contract is
-   wrong.
+   the int8-in path against the kernel's own quantizer, to within one step of
+   the output format. That bound, not exact equality, is what the contract can
+   promise: the harness runs `127 / absmax` and `absmax / 127` in exact fp32
+   while SPIR-V allows a division a few ulp of error, so a few products land on
+   the other side of a rounding tie. A failure therefore means a genuine
+   contract bug — a transposed scale, an off-by-one row, the scale read as its
+   reciprocal — since none of those are worth one step. The assertion prints
+   the max ULP distance and how much of the tensor moved, which separates the
+   two cases immediately.
 2. `test_fused_reduce_matches_unfused` — SNR/cosine against the unfused path.
    Expected around 54 dB (bf16 rounding of the unfused rows dominates the fp32
    atomic's reassociation), against a 20 dB / 0.99 gate.
