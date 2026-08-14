@@ -217,8 +217,8 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
     return (cast_to_fp4(clipped_x) * dequant_scale).reshape(m, n), scale
 
 
-@register_dtype("fp4_v2_with_global_scale")
-def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None, max_scale=1.0, **kwargs):
+@register_dtype("nvfp4_v2_with_global_scale")
+def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None, max_scale=1.0, **kwargs):
     assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
