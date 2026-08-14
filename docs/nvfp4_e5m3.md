@@ -22,6 +22,8 @@ Key properties:
 
 ---
 
+> Important: `llm_compressor` export is not supported for the `NVFP4_E5M3` scheme in LLMC/llm-compressor for now. Please prefer the AutoRound format or the `fake` format for current workflows, and keep following the vLLM usage docs for the latest supported path.
+
 ## Supported Output Formats
 
 | Format flag | Description |

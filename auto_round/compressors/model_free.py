@@ -105,6 +105,7 @@ import re
 import shutil
 import sys
 import time
+import warnings
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
 from functools import lru_cache
@@ -207,17 +208,50 @@ def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _is_model_cached(model_name_or_path: str) -> bool:
-    """Return True if the model is already available locally or in HF cache."""
+def _get_model_cache_status(model_name_or_path: str) -> tuple[bool, str]:
+    """Return cache decision and a short reason string.
+
+    Cached means local dir, or HF cache contains config plus at least one
+    weight entry file (index or single-file checkpoint).
+    """
     if os.path.isdir(model_name_or_path):
-        return True
+        return True, "input is an existing local directory"
+
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        result = try_to_load_from_cache(model_name_or_path, "config.json")
-        return isinstance(result, str)
-    except Exception:
-        return False
+        # ``config.json`` alone is not enough: many workflows prefetch only
+        # config/tokenizer files, which would otherwise route to full
+        # ``snapshot_download``.
+        config_cached = isinstance(try_to_load_from_cache(model_name_or_path, "config.json"), str)
+        if not config_cached:
+            return False, "HF cache miss: config.json not found"
+
+        weight_entry_candidates = (
+            "model.safetensors.index.json",
+            "pytorch_model.bin.index.json",
+            "model.safetensors",
+            "pytorch_model.bin",
+        )
+        hit_entries: list[str] = []
+        for fname in weight_entry_candidates:
+            if isinstance(try_to_load_from_cache(model_name_or_path, fname), str):
+                hit_entries.append(fname)
+
+        if hit_entries:
+            return True, f"HF cache hit: config.json + {', '.join(hit_entries)}"
+        return (
+            False,
+            "HF cache partial hit: config.json exists but no weight entry file found",
+        )
+    except Exception as e:
+        return False, f"cache probe failed: {type(e).__name__}: {e}"
+
+
+def _is_model_cached(model_name_or_path: str) -> bool:
+    """Return True if the model is already available locally or in HF cache."""
+    cached, _ = _get_model_cache_status(model_name_or_path)
+    return cached
 
 
 def _resolve_source_dir(model_name_or_path: str) -> str:
@@ -1881,6 +1915,12 @@ def _build_quantization_config(
     default_bits = default_scheme.get("bits", 4)
     is_fp_default = (default_bits or 0) >= 16 and not is_mx_fp(data_type)
     if data_type == _NVFP4_E5M3_DATA_TYPE and format == "llm_compressor":
+        warnings.warn(
+            "LLMC/llm-compressor does not currently support the NVFP4_E5M3 scheme. "
+            "Please refer to docs/nvfp4_e5m3.md for the recommended export and usage path.",
+            UserWarning,
+            stacklevel=2,
+        )
         return _build_nvfp4_e5m3_quantization_config(ignored_layers)
     # BF16/FP16 default with NVFP4 layer_config overrides and llm_compressor format:
     # build an NVFP4 config that targets only the explicitly quantized layers.
@@ -1888,6 +1928,12 @@ def _build_quantization_config(
         nvfp4_dt = _get_layer_config_nvfp4_dt(layer_config)
         targets = list(dict.fromkeys(quantized_layers)) if quantized_layers else ["Linear"]
         if nvfp4_dt == _NVFP4_E5M3_DATA_TYPE:
+            warnings.warn(
+                "LLMC/llm-compressor does not currently support the NVFP4_E5M3 scheme. "
+                "Please refer to docs/nvfp4_e5m3.md for the recommended export and usage path.",
+                UserWarning,
+                stacklevel=2,
+            )
             # Global-scale-free variant (NVFP4_E5M3)
             from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
@@ -2706,9 +2752,19 @@ class _ModelFreeCompressorCore:
 
     def _resolve_source(self) -> None:
         os.makedirs(self.output_dir, exist_ok=True)
-        self.is_streaming = not _is_model_cached(self.model_name_or_path)
+        cached, cache_reason = _get_model_cache_status(self.model_name_or_path)
+        self.is_streaming = not cached
+        logger.info(
+            "Model-free source decision: %s (%s)",
+            "streaming" if self.is_streaming else "local/snapshot",
+            cache_reason,
+        )
         if self.is_streaming:
-            logger.info("Model not found locally or in cache — using streaming download mode.")
+            logger.info(
+                "Path selected: streaming mode. Will download metadata first "
+                "(snapshot_download with weight ignore patterns), then fetch "
+                "weight shards on demand (hf_hub_download)."
+            )
             self.work_dir = self.output_dir
             _download_metadata_files(self.model_name_or_path, self.work_dir)
             transformer_work_dir = os.path.join(self.work_dir, "transformer")
@@ -2726,6 +2782,12 @@ class _ModelFreeCompressorCore:
                 )
             self.config = _load_config(self.work_dir)
         else:
+            if os.path.isdir(self.model_name_or_path):
+                logger.info("Path selected: local directory mode. Reading shards from local path.")
+            else:
+                logger.info(
+                    "Path selected: snapshot/local-cache mode. Resolving source dir via snapshot_download."
+                )
             self.source_dir = _resolve_source_dir(self.model_name_or_path)
             transformer_source_dir = os.path.join(self.source_dir, "transformer")
             if (
