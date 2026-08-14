@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
@@ -19,10 +20,32 @@ from auto_round.logger import logger
 class RTNConfig(QuantizationConfig):
     need_calib = False
 
+    @classmethod
+    def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        mutex = registry.add_mutually_exclusive_group()
+        mutex.add_argument(
+            "--disable_opt_rtn",
+            field="disable_opt_rtn",
+            default=None,
+            dest="disable_opt_rtn",
+            action="store_const",
+            const=True,
+            help="Force plain RTN (disable optimized path).",
+        )
+        mutex.add_argument(
+            "--enable_opt_rtn",
+            field="disable_opt_rtn",
+            dest="disable_opt_rtn",
+            action="store_const",
+            const=False,
+            help="Force optimized RTN path.",
+        )
+
     def __init__(
         self,
         *,
         disable_opt_rtn: bool = None,
+        enable_opt_rtn: bool = None,
         **kwargs,
     ) -> None:
         """Initialize an RTN configuration.
@@ -31,12 +54,11 @@ class RTNConfig(QuantizationConfig):
             disable_opt_rtn: Whether to disable the optimized RTN path.
                 ``None`` keeps the default heuristic, True forces plain
                 RTN, and False forces the optimized implementation.
+            enable_opt_rtn: Convenience alias for ``disable_opt_rtn=False``.
             **kwargs: Common quantization arguments forwarded to
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
-        # pop before super().__init__ so it doesn't leak into QuantizationConfig as an unknown kwarg
-        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         super().__init__(**kwargs)
 
         if enable_opt_rtn:

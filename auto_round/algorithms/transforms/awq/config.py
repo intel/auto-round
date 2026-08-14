@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
@@ -31,6 +32,54 @@ class AWQConfig(QuantizationConfig):
     The definitive quantization parameters for the final weight compression
     step come from the pipeline's ``block_quantizer`` config.
     """
+
+    @staticmethod
+    def _parse_duo_scaling(value: str) -> bool | str:
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if lowered == "both":
+            return "both"
+        raise ValueError("Expected one of: true, false, both")
+
+    @classmethod
+    def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        registry.add_argument(
+            "--awq-duo-scaling",
+            field="duo_scaling",
+            dest="duo_scaling",
+            default=True,
+            type=cls._parse_duo_scaling,
+            metavar="{true,false,both}",
+            help="Use activation+weight duo scaling (true/false/both).",
+        )
+        registry.add_argument(
+            "--awq-n-grid",
+            field="n_grid",
+            dest="n_grid",
+            default=20,
+            type=int,
+            help="Number of grid-search points for AWQ scaling ratio.",
+        )
+        registry.add_argument(
+            "--awq-apply-clip",
+            field="apply_clip",
+            dest="awq_apply_clip",
+            action="store_true",
+            help="Search and hard-clamp per-group AWQ weight clipping after smoothing.",
+        )
+        registry.add_argument(
+            "--awq-clip-as-init",
+            field="clip_as_init",
+            dest="awq_clip_as_init",
+            action="store_true",
+            help=(
+                "Use the searched AWQ clip to initialize the block quantizer's weight range "
+                "instead of hard-clamping (requires --awq-apply-clip)."
+            ),
+        )
 
     def __init__(
         self,

@@ -17,7 +17,6 @@ class AlgRegistryEntry:
     name: str
     aliases: tuple[str, ...] = ()
     config_factory: Callable[[], object] | None = None
-    cli_handler: type | None = None
     summary: str = ""
     alias_factories: dict[str, Callable[[], object]] = field(default_factory=dict)
 
@@ -33,7 +32,48 @@ def _ensure_builtin_algorithms_registered() -> None:
     global _builtin_algorithms_registered
     if _builtin_algorithms_registered:
         return
-    importlib.import_module("auto_round.cli.algorithms")
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+    from auto_round.algorithms.transforms.awq.config import AWQConfig
+    from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+    from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
+
+    register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, summary="Round-To-Nearest quantization.")
+    register_algorithm(
+        "auto_round",
+        aliases=("auto_round", "autoround", "sign_round", "signround"),
+        config_factory=SignRoundConfig,
+        summary="SignRound-style iterative block quantization.",
+    )
+    register_algorithm(
+        "awq",
+        aliases=("awq",),
+        config_factory=AWQConfig,
+        summary="Activation-Aware Weight Quantization (pre-processing).",
+    )
+    register_algorithm(
+        "hadamard",
+        aliases=("hadamard", "random_hadamard", "quarot_hadamard"),
+        config_factory=RotationConfig,
+        summary="Hadamard rotation/transform applied before quantization.",
+        alias_factories={
+            "random_hadamard": lambda: RotationConfig(hadamard_type="random_hadamard"),
+            "quarot_hadamard": lambda: RotationConfig(hadamard_type="quarot_hadamard"),
+        },
+    )
+    register_algorithm(
+        "quarot",
+        aliases=("quarot",),
+        config_factory=lambda: SpinQuantConfig(trainable_rotation=False, trainable_smooth=False),
+        summary="QuaRot fixed-Hadamard rotation (no training, no calibration data).",
+    )
+    register_algorithm(
+        "spinquant",
+        aliases=("spinquant",),
+        config_factory=lambda: SpinQuantConfig(trainable_rotation=True, trainable_smooth=True),
+        summary="SpinQuant trainable rotation (experimental).",
+    )
+
     _builtin_algorithms_registered = True
 
 
@@ -57,7 +97,6 @@ def register_algorithm(
     *,
     aliases: tuple[str, ...] = (),
     config_factory: Callable[[], object] | None = None,
-    cli_handler: type | None = None,
     summary: str = "",
     alias_factories: dict[str, Callable[[], object]] | None = None,
 ) -> None:
@@ -72,8 +111,6 @@ def register_algorithm(
     )
     if config_factory is not None:
         entry.config_factory = config_factory
-    if cli_handler is not None:
-        entry.cli_handler = cli_handler
     if summary:
         entry.summary = summary
     if alias_factories:

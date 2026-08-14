@@ -16,11 +16,11 @@ This is most useful for aggressive low-bit schemes such as MXFP4, NVFP4 and W4A4
 AutoRound provides two independent rotation implementations:
 
 - **QuaRot / SpinQuant** — architecture-aware, full-model rotation applied at up to
-  four positions (R1–R4). Selected via `rotation_config="quarot"`,
-  `rotation_config="spinquant"`, or a `SpinQuantConfig` instance. **Recommended.**
+  four positions (R1–R4). Selected via `alg_configs=[..., "quarot"]`,
+  `alg_configs=[..., "spinquant"]`, or a `SpinQuantConfig` instance. **Recommended.**
 - **Per-Linear Block Rotation** — an earlier, simpler implementation that applies a
   block-diagonal Hadamard uniformly to every `nn.Linear`. Selected via
-  `rotation_config="default"` / a string Hadamard type, or a `RotationConfig`
+  `alg_configs=[..., "hadamard"]` / a string Hadamard type, or a `RotationConfig`
   instance. Also exposed through the `--algorithm hadamard` CLI.
 
 ---
@@ -92,13 +92,14 @@ Defined in `auto_round/algorithms/transforms/spinquant/preprocessor.py`.
 
 ### 1.3 String shortcuts
 
-| Value | Equivalent |
+Both are registered algorithm aliases usable directly in `alg_configs`:
+
+| Alias | Equivalent |
 |-------|-----------|
 | `"quarot"` | `SpinQuantConfig(trainable_rotation=False, trainable_smooth=False)` — deterministic Hadamard, no training, no calibration data. |
 | `"spinquant"` | `SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)` — **experimental**, requires a dataloader. |
 
-Both presets keep the default `r1=True, r2=True, r3=False, r4=False`. A dict with
-`algorithm="spinquant"` is also parsed into a `SpinQuantConfig`.
+Both presets keep the default `r1=True, r2=True, r3=False, r4=False`.
 
 > ⚠️ **SpinQuant trainable rotation** (`trainable_rotation=True`) enables learnable
 > rotation matrices optimized via Cayley SGD. This feature is experimental and not
@@ -113,14 +114,17 @@ from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
 model_name = "Qwen/Qwen3-0.6B"
 
-# QuaRot preset: R1+R2 deterministic Hadamard, no training
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+# QuaRot preset: R1+R2 deterministic Hadamard, no training. Rotation configs are
+# passed alongside a quantization algorithm through `alg_configs`.
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", "quarot"])
 
-# Choose how many positions to rotate:
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))  # R1 only
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))  # R1+R2
+# Choose how many positions to rotate by passing a SpinQuantConfig instance instead:
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", SpinQuantConfig(r1=True)])  # R1 only
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", SpinQuantConfig(r1=True, r2=True)])  # R1+R2
 ar = AutoRound(
-    model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)
+    model_name,
+    scheme="MXFP4",
+    alg_configs=["auto_round", SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)],
 )  # all four
 
 ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
@@ -147,16 +151,19 @@ from `known_hadamard.py`, combining it with a Sylvester block.
 ar = AutoRound(
     model_name,
     scheme="MXFP4",
-    rotation_config=SpinQuantConfig(
-        r1=True,
-        r2=True,
-        r3=True,
-        r4=True,
-        random_r1=True,
-        random_r2=True,
-        random_r3=True,
-        random_r4=True,
-    ),
+    alg_configs=[
+        "auto_round",
+        SpinQuantConfig(
+            r1=True,
+            r2=True,
+            r3=True,
+            r4=True,
+            random_r1=True,
+            random_r2=True,
+            random_r3=True,
+            random_r4=True,
+        ),
+    ],
 )
 ```
 
@@ -249,8 +256,8 @@ from auto_round import AutoRound
 
 model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
 
-# rotation_config="default": block_size auto (32 for MXFP), hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
+# "hadamard": block_size auto (32 for MXFP), hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", alg_configs=["auto_round", "hadamard"])
 ar.quantize_and_save(output_dir="./Llama-3.1-8B-Instruct-mxfp4-ht", format="auto_round")
 ```
 
@@ -268,18 +275,21 @@ CLI flags: `--rotation_type {hadamard,random_hadamard,quarot_hadamard}`,
 
 ---
 
-## 3. How `rotation_config` is dispatched
+## 3. How rotation configs are dispatched
 
-`rotation_config` is accepted by `AutoRound` and normalized by the unified
-`apply_rotation()` entry point in
+A rotation config is passed alongside a quantization algorithm through `alg_configs`
+(e.g. `alg_configs=["auto_round", "hadamard"]` or
+`alg_configs=["auto_round", SpinQuantConfig(...)]`). It is not accepted as a separate
+top-level `AutoRound(...)` parameter. Once resolved, it is normalized and dispatched by
+the unified `apply_rotation()` entry point in
 `auto_round/algorithms/transforms/__init__.py`:
 
 - A `BaseRotationConfig` instance (`SpinQuantConfig` or `RotationConfig`) is used
   directly.
-- The strings `"quarot"` / `"spinquant"` map to the `SpinQuantConfig` shortcuts above.
-- A dict with `algorithm="spinquant"` becomes a `SpinQuantConfig`.
-- Any other string (e.g. `"default"`, `"hadamard"`, `"random_hadamard"`) or dict maps to
-  the per-linear `RotationConfig`.
+- The registered aliases `"quarot"` / `"spinquant"` resolve to the `SpinQuantConfig`
+  shortcuts above.
+- The registered aliases `"hadamard"`, `"random_hadamard"`, `"quarot_hadamard"` resolve
+  to the per-linear `RotationConfig` presets.
 
 ---
 

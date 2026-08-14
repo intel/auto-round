@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
@@ -349,49 +351,71 @@ _ENTRY_KWARG_OWNERS = {
 }
 
 _SCHEME_FIELDS = set(QuantizationScheme.get_attributes())
-_SIGNROUND_FIELDS = {
-    "iters",
-    "lr",
-    "minmax_lr",
-    "lr_scheduler",
-    "momentum",
-    "nblocks",
-    "enable_minmax_tuning",
-    "enable_norm_bias_tuning",
-    "gradient_accumulate_steps",
-    "enable_alg_ext",
-    "not_use_best_mse",
-    "dynamic_max_gap",
-    "enable_quanted_input",
-    "optimizer",
-    "enable_adam",
-    "enable_lfq",
-}
-_RTN_FIELDS = {"disable_opt_rtn", "enable_opt_rtn"}
-_AWQ_FIELDS = {
-    "duo_scaling",
-    "n_grid",
-    "seqlen",
-    "nsamples",
-    "batch_size",
-    "apply_smooth",
-    "smooth_iters",
-    "apply_clip",
-    "clip_as_init",
-    "clip_n_grid",
-    "clip_max_shrink",
-    "clip_n_sample_token",
-    "awq_seqlen",
-    "smooth_batch_size",
-    "skip_moe",
-    "mappings",
-}
-_ROTATION_FIELDS = {
-    "hadamard_type",
-    "block_size",
-    "fuse_online_to_weight",
-    "allow_online_rotation",
-}
+
+
+def _iter_registered_alg_configs() -> list[tuple[str, type]]:
+    """Return ``(canonical_name, config_class)`` for every registered algorithm.
+
+    Backs the auto-discovery of algorithm-specific kwargs below: any config
+    registered via ``auto_round.algorithms.registry.register_algorithm`` is
+    picked up automatically, so no manually maintained per-algorithm field
+    list needs to be kept in sync here.
+    """
+    from auto_round.algorithms.registry import iter_algorithm_entries
+
+    result = []
+    seen = set()
+    for entry in iter_algorithm_entries():
+        factory = entry.config_factory
+        if factory is None:
+            continue
+        cls = factory if isinstance(factory, type) else type(factory())
+        if cls not in seen:
+            seen.add(cls)
+            result.append((entry.name, cls))
+    return result
+
+
+@functools.lru_cache(maxsize=None)
+def _discover_alg_config_fields(config_cls: type) -> frozenset:
+    """Auto-discover the keyword field names ``config_cls`` accepts.
+
+    Introspects the class's own ``__init__`` (walking its MRO, stopping at
+    the shared ``QuantizationConfig``/``AlgorithmConfig`` base whose kwargs
+    already map onto ``QuantizationScheme`` fields handled separately), or
+    the pydantic model fields for ``BaseModel``-based configs such as
+    ``RotationConfig``. This means a newly registered algorithm config is
+    understood immediately, without editing a hand-maintained field set.
+    """
+    from pydantic import BaseModel
+
+    if issubclass(config_cls, BaseModel):
+        return frozenset(config_cls.model_fields.keys())
+
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.quantization.config import QuantizationConfig
+
+    stop_classes = (QuantizationConfig, AlgorithmConfig, object)
+    fields = set()
+    for klass in config_cls.__mro__:
+        if klass in stop_classes:
+            break
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        for name, param in inspect.signature(init).parameters.items():
+            if name == "self" or param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+            fields.add(name)
+    return frozenset(fields)
+
+
+def _owning_algorithm_names(field_name: str) -> list[str]:
+    """Return the config class names of every registered algorithm accepting ``field_name``."""
+    return [cls.__name__ for _, cls in _iter_registered_alg_configs() if field_name in _discover_alg_config_fields(cls)]
 
 
 def _filter_supported_entry_kwargs(kwargs, *, context="AutoRound"):
@@ -413,41 +437,25 @@ def _split_entry_kwargs(kwargs, *, context="AutoRound"):
     return buckets
 
 
-def _config_fields(config):
-    fields = set(_SCHEME_FIELDS)
-    name = type(config).__name__.lower()
-    if "awq" in name:
-        fields.update(_AWQ_FIELDS)
-    elif "rtn" in name:
-        fields.update(_RTN_FIELDS)
-    elif "signround" in name or "adamround" in name:
-        fields.update(_SIGNROUND_FIELDS)
-    elif "rotation" in name:
-        fields.update(_ROTATION_FIELDS)
-    return fields
-
-
 def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
-    from auto_round.algorithms.transforms import normalize_rotation_config
     from auto_round.algorithms.transforms.base import BaseRotationConfig
 
     direct_kwargs = dict(direct_kwargs or {})
-    legacy_algorithm = direct_kwargs.pop("algorithm", None)
-    if legacy_algorithm is not None:
-        if alg_configs is not None:
-            raise ValueError("`algorithm` and `alg_configs` cannot be used together.")
-        alg_configs = legacy_algorithm
-        logger.warning_once("`algorithm` is deprecated; use `alg_configs` instead.")
+    if "rotation_config" in direct_kwargs:
+        raise TypeError(
+            "`rotation_config` is no longer accepted as a separate parameter; pass a rotation "
+            "config through `alg_configs` instead, e.g. alg_configs=['auto_round', 'quarot'] or "
+            "alg_configs=[SignRoundConfig(...), RotationConfig(...)]."
+        )
     if "backend" in direct_kwargs:
         raise ValueError(
-            "Rotation backend selection must be nested in `rotation_config`; "
-            "do not pass it as AutoRound(..., backend=...)."
+            "Rotation backend selection must be set on the rotation config instance passed via "
+            "`alg_configs` (e.g. RotationConfig(backend=...)); do not pass it as AutoRound(..., backend=...)."
         )
-    rotation_config = direct_kwargs.pop("rotation_config", None)
     config_kwargs = {key: value for key, value in direct_kwargs.items() if key not in _ENTRY_KWARG_OWNERS}
     if alg_configs is None:
         # Preserve the legacy entry semantics: zero iterations are RTN, while
@@ -486,9 +494,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
         configs.append(normalize_algorithm_config(config))
 
     # ``iters=0`` has always selected RTN in the public entry and CLI. Apply
-    # that rule after every input form has become a config so aliases, config
-    # objects, and the deprecated ``algorithm`` argument cannot choose
-    # different quantizer implementations.
+    # that rule after every input form has become a config so aliases and
+    # config objects cannot choose different quantizer implementations.
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
     direct_iters = config_kwargs.get("iters")
@@ -498,11 +505,6 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             rtn_config = RTNConfig(scheme=config.scheme.copy())
             rtn_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
             configs[index] = normalize_algorithm_config(rtn_config)
-
-    if rotation_config is not None:
-        normalized_rotation = normalize_rotation_config(rotation_config)
-        if normalized_rotation is not None:
-            configs.append(normalized_rotation)
 
     if not any(isinstance(config, QuantizationConfig) for config in configs):
         raise TypeError(
@@ -521,27 +523,37 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
         if key in _SCHEME_FIELDS:
             targets = block_configs
         else:
-            targets = [config for config in configs if key in _config_fields(config)]
+            targets = [config for config in configs if key in _discover_alg_config_fields(type(config))]
         if not targets:
             # ``iters`` is a legacy route selector.  RTN intentionally has no
             # iterative parameter, so ``iters=0`` must not be reported as an
-            # ignored algorithm-specific error after selecting RTN.
+            # error after selecting RTN.
             if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
                 continue
-            owner = "AWQ" if key in _AWQ_FIELDS else "the selected algorithm"
-            logger.error(
-                "%s-specific parameter '%s' was provided, but %s is not enabled by alg_configs. "
-                "The parameter is ignored.",
-                owner,
-                key,
-                owner,
-            )
+            owners = _owning_algorithm_names(key)
+            if owners:
+                logger.error(
+                    "Parameter '%s' belongs to %s, but the selected alg_configs does not include "
+                    "%s. Pass it through the matching config object instead, e.g. alg_configs=%s(%s=...). "
+                    "The parameter is ignored.",
+                    key,
+                    owners,
+                    "it" if len(owners) == 1 else "any of them",
+                    owners[0],
+                    key,
+                )
+            else:
+                logger.error(
+                    "Unknown parameter '%s' passed to AutoRound. The parameter is ignored.",
+                    key,
+                )
             continue
         if len(targets) > 1:
             logger.error(
-                "Parameter '%s' matches multiple algorithm configs. Pass it through the matching "
-                "config object in 'alg_configs'; the direct value is ignored.",
+                "Parameter '%s' matches multiple algorithm configs (%s). Pass it through the matching "
+                "config object in 'alg_configs' instead of as a direct keyword argument. The parameter is ignored.",
                 key,
+                [type(config).__name__ for config in targets],
             )
             continue
         target = targets[0]
@@ -566,76 +578,67 @@ def _prepare_entry_kwargs(alg_configs, direct_kwargs):
     return configs, runtime_kwargs
 
 
-class _CompressorBuilder(object):
-    """Algorithm-config-driven entry point (``scheme`` + ``alg_configs``).
+class AutoRound:
+    """Unified AutoRound entry point.
 
-    This is the internal pipeline entry: it resolves the algorithm config(s),
-    routes to the concrete :class:`BaseCompressor` subclass (ZeroShot / DataDriven
-    / ModelFree / …) wired with the right model-type Mixin, and returns that
-    compressor instance. It is distinct from the public dispatcher
-    :class:`auto_round.AutoRound` (in ``auto_round/autoround.py``).
+    alg_configs accepts an algorithm alias, one QuantizationConfig, or a
+    sequence of either. When omitted, SignRound is selected. AWQ-only
+    pipelines receive an RTN block quantizer by default.
     """
 
-    @classmethod
-    def _resolve_config(cls, config: Union[str, object, list]) -> Union[object, list[object]]:
-        """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
-        from auto_round.algorithms.registry import resolve_alg_config
-
-        if isinstance(config, str):
-            return resolve_alg_config(config)
-        if isinstance(config, list):
-            return [cls._resolve_config(c) for c in config]
-        return config
+    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")
 
     def __new__(
         cls,
         model: Union[torch.nn.Module, str],
-        scheme="W4A16",
-        alg_configs: Union[str, object, list[Union[str, object]]] = None,
         tokenizer=None,
-        platform="hf",
-        format=None,
-        dataset="NeelNanda/pile-10k",
+        platform: str = "hf",
+        scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
+        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
+        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
+        seqlen: int = 2048,
+        nsamples: int = 128,
+        batch_size: int = 8,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        iters: int = None,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        layer_config=None,
-        nsamples: int = None,
-        seqlen: int = None,
+        alg_configs=None,
         **kwargs,
     ) -> "BaseCompressor":
-        from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-        from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
-        from auto_round.compressors.utils import check_need_act_calibration
         from auto_round.utils.model import is_model_free_route
 
-        if alg_configs is None:
-            alg_configs = "signround"
-        # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override,
-        #  e.g. gradient_accumulate_step
+        direct_kwargs = dict(kwargs)
+        legacy_device = direct_kwargs.pop("device", None)
+        if legacy_device is not None:
+            logger.warning_once("`device` is deprecated, please use `device_map` instead")
+            if device_map in (None, 0):
+                device_map = legacy_device
+        if "algorithm" in direct_kwargs:
+            raise TypeError(
+                "`algorithm` is no longer supported; use `alg_configs` instead "
+                "(e.g. alg_configs='awq' or alg_configs=AWQConfig())."
+            )
+
+        configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs)
+        format = runtime_kwargs.pop("format", None)
         device_map = normalize_default_device_map(device_map)
-        split_kwargs = _split_entry_kwargs(kwargs)
+
+        split_kwargs = _split_entry_kwargs(runtime_kwargs)
         route_kwargs = dict(split_kwargs["route"])
         compressor_kwargs = dict(split_kwargs["compressor"])
         base_kwargs = dict(split_kwargs["base"])
+        base_kwargs["batch_size"] = batch_size
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
 
-        # Resolve string alias(es) to config instance(s) before routing.
-        alg_configs = cls._resolve_config(alg_configs)
-        if isinstance(alg_configs, list):
-            alg_configs = [normalize_algorithm_config(cfg) for cfg in alg_configs]
-        else:
-            alg_configs = normalize_algorithm_config(alg_configs)
-        configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
-        preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs)
 
-        # Model-free routing is now supported directly by the new entry path.
+        # Model-free routing is supported directly by the entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
         # Model-free eligibility also depends on base-level options such as
@@ -689,7 +692,7 @@ class _CompressorBuilder(object):
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
             device_map=device_map,
-            iters=iters,
+            iters=None,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -706,79 +709,10 @@ class _CompressorBuilder(object):
         # actually runs; the pipeline auto-appends RTN when no block_quantizer
         # is supplied. SignRound is itself data-driven and shares the same host.
         if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
-            return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
+            return _get_compressor_class(model_type, Compressor)(configs, **local_args, **ctor_kwargs)
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
-            return _get_compressor_class(model_type, base_cls)(alg_configs, **local_args, **ctor_kwargs)
-
-
-class AutoRound:
-    """Unified AutoRound entry point.
-
-    alg_configs accepts an algorithm alias, one QuantizationConfig, or a
-    sequence of either. When omitted, SignRound is selected. AWQ-only
-    pipelines receive an RTN block quantizer by default.
-    """
-
-    SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")
-
-    def __new__(
-        cls,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
-        iters: int | None = None,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int | None = None,
-        low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: Optional[bool] = None,
-        seed: int = 42,
-        low_cpu_mem_usage: bool = True,
-        alg_configs=None,
-        algorithm: str | None = None,
-        **kwargs,
-    ) -> "BaseCompressor":
-        direct_kwargs = dict(kwargs)
-        legacy_device = direct_kwargs.pop("device", None)
-        if legacy_device is not None:
-            logger.warning_once("`device` is deprecated, please use `device_map` instead")
-            if device_map in (None, 0):
-                device_map = legacy_device
-        if iters is not None:
-            direct_kwargs["iters"] = iters
-        if gradient_accumulate_steps is not None:
-            direct_kwargs["gradient_accumulate_steps"] = gradient_accumulate_steps
-        if algorithm is not None:
-            direct_kwargs["algorithm"] = algorithm
-
-        configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs)
-        runtime_kwargs["batch_size"] = batch_size
-
-        return _CompressorBuilder(
-            model,
-            scheme,
-            configs,
-            tokenizer=tokenizer,
-            platform=platform,
-            format=runtime_kwargs.pop("format", None),
-            dataset=dataset,
-            low_gpu_mem_usage=low_gpu_mem_usage,
-            device_map=normalize_default_device_map(device_map),
-            iters=None,
-            enable_torch_compile=enable_torch_compile,
-            seed=seed,
-            low_cpu_mem_usage=low_cpu_mem_usage,
-            layer_config=layer_config,
-            nsamples=nsamples,
-            seqlen=seqlen,
-            **runtime_kwargs,
-        )
+            return _get_compressor_class(model_type, base_cls)(configs, **local_args, **ctor_kwargs)
 
 
 # Keep legacy entry points available for downstream integrations such as
