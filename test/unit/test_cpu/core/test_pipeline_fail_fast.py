@@ -1,10 +1,12 @@
 """Fast unit tests for algorithm registry and bundle construction."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from auto_round import AutoRound as NewAutoRound
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward
+from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward, _has_nvfp4_layer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -68,6 +70,22 @@ def test_hadamard_disables_only_block_forward_compile():
     assert not _can_compile_block_forward(quantizer, [hadamard], user_enabled=True)
     assert _can_compile_block_forward(quantizer, [CompileCompatibleRotation()], user_enabled=True)
     assert not _can_compile_block_forward(quantizer, [], user_enabled=False)
+
+
+def test_detect_nvfp4_from_layer_config_scheme_override():
+    orchestrator = SimpleNamespace(
+        data_type="mx_fp",
+        layer_config={"mlp.experts": {"scheme": "NVFP4"}},
+    )
+    assert _has_nvfp4_layer(orchestrator)
+
+
+def test_detect_nvfp4_from_layer_config_data_type_override():
+    orchestrator = SimpleNamespace(
+        data_type="mx_fp",
+        layer_config={"mlp.experts": {"data_type": "nv_fp"}},
+    )
+    assert _has_nvfp4_layer(orchestrator)
 
 
 def test_registry_builtin_aliases_and_unknown():

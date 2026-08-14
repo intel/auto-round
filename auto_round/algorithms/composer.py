@@ -90,6 +90,33 @@ def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: 
     return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
 
 
+def _is_nvfp4_value(value: Any) -> bool:
+    """Return True when a raw config value indicates NVFP4."""
+    if not isinstance(value, str):
+        return False
+    value = value.lower()
+    return "nv_fp" in value or "nvfp4" in value
+
+
+def _has_nvfp4_layer(orchestrator: "BaseOrchestrator") -> bool:
+    """Whether global or per-layer config enables any NVFP4 quantization."""
+    if _is_nvfp4_value(getattr(orchestrator, "data_type", "")):
+        return True
+
+    layer_config = getattr(orchestrator, "layer_config", None)
+    if not isinstance(layer_config, dict):
+        return False
+
+    for config in layer_config.values():
+        if not isinstance(config, dict):
+            continue
+        if _is_nvfp4_value(config.get("data_type")) or _is_nvfp4_value(config.get("act_data_type")):
+            return True
+        if _is_nvfp4_value(config.get("scheme")):
+            return True
+    return False
+
+
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -202,8 +229,11 @@ class AlgorithmComposer:
             ):
                 logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
 
-            if "nv_fp" in orchestrator.data_type:
+            if _has_nvfp4_layer(orchestrator):
                 can_compile_block_forward = False
+                logger.info(
+                    "Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4."
+                )
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
