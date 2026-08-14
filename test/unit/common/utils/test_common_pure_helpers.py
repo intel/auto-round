@@ -378,6 +378,41 @@ class TestParseLayerConfigArg:
         with pytest.raises(Exception):
             parse_layer_config_arg("")
 
+    def test_multi_key_unquoted_dict(self):
+        from auto_round.utils.common import parse_layer_config_arg
+
+        result = parse_layer_config_arg("{mtp:{bits:8,data_type:int},mtp.fc:{bits:16,data_type:int}}")
+        assert result == {
+            "mtp": {"bits": 8, "data_type": "int"},
+            "mtp.fc": {"bits": 16, "data_type": "int"},
+        }
+
+    def test_quoted_regex_keys_preserved(self):
+        """Quoted JSON-like input with regex paths should remain usable from the CLI."""
+        from auto_round.utils.common import parse_layer_config_arg
+
+        result = parse_layer_config_arg(
+            r'{"model.language_model.layers.\\d+.self_attn..":{"bits":"8"},'
+            r'"model.language_model.layers.\\d+.router..*":{"bits":"8"}}'
+        )
+        assert result == {
+            r"model.language_model.layers.\d+.self_attn..": {"bits": 8},
+            r"model.language_model.layers.\d+.router..*": {"bits": 8},
+        }
+
+    def test_single_escaped_regex_keys_recovered(self):
+        """Shell-passed strings often contain single backslashes that are invalid JSON but still recoverable."""
+        from auto_round.utils.common import parse_layer_config_arg
+
+        result = parse_layer_config_arg(
+            r'{"model.language_model.layers.\d+.self_attn..":{"bits":"8"},'
+            r'"model.language_model.layers.\d+.mlp..":{"bits":"8"}}'
+        )
+        assert result == {
+            r"model.language_model.layers.\d+.self_attn..": {"bits": 8},
+            r"model.language_model.layers.\d+.mlp..": {"bits": 8},
+        }
+
 
 # ---------------------------------------------------------------------------
 # GlobalState

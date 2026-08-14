@@ -2,15 +2,54 @@ import inspect
 
 import pytest
 
+from auto_round import autoround
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig
-from auto_round.autoround import _normalize_alg_configs
+from auto_round.autoround import _normalize_alg_configs, _split_entry_kwargs
 
 
 def _types(configs):
     return [type(config).__name__ for config in configs]
+
+
+def test_split_entry_kwargs_partitions_owned_fields():
+    processor = object()
+
+    grouped = _split_entry_kwargs(
+        {"dataset": ["sample"], "scale_dtype": "fp32", "processor": processor, "model_free": False}
+    )
+
+    assert grouped["base"]["dataset"] == ["sample"]
+    assert grouped["compressor"]["scale_dtype"] == "fp32"
+    assert grouped["mllm"]["processor"] is processor
+    assert grouped["route"]["model_free"] is False
+
+
+def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(autoround.logger, "warning_once", lambda message, *args: warnings.append(message % args))
+
+    grouped = _split_entry_kwargs({"unknown_option": 1}, context="test entry")
+
+    assert all(not values for values in grouped.values())
+    assert "unknown_option" in warnings[0]
+
+
+def test_cli_explicit_auto_round_with_zero_iters_selects_rtn():
+    """The CLI's own algorithm-handling path (not _normalize_alg_configs) also
+    selects RTN when iters=0 -- a separate code path from the alg_configs
+    normalization below, so it's kept as a distinct case rather than folded in.
+    """
+    from argparse import Namespace
+
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    args = Namespace(algorithm="auto_round", iters=0)
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert type(configs[0]).__name__ == "RTNConfig"
 
 
 def test_default_alg_configs_is_signround():

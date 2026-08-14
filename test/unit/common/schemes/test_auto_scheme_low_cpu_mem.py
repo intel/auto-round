@@ -147,23 +147,12 @@ class TestOffloadManager:
 
 
 class TestClearModuleWeights:
-    """Tests for _clear_module_weights helper function."""
+    """Tests for _clear_module_weights interaction with AutoScheme's bit-size computation.
 
-    def test_clear_linear_weights(self):
-        """Test clearing weights from a Linear module."""
-        module = torch.nn.Linear(16, 8)
-        _clear_module_weights(module)
-
-        assert module.weight.numel() == 0
-        assert module.bias.numel() == 0
-
-    def test_clear_caches_numel(self):
-        """Test that clearing weights caches the original numel."""
-        module = torch.nn.Linear(32, 16)
-        expected = 32 * 16
-        _clear_module_weights(module, cache_numel=True)
-        assert hasattr(module, "_cached_weight_numel")
-        assert module._cached_weight_numel == expected
+    Basic behavior (clearing numel/shape caching, None/no-op handling) is covered
+    in test_offload_helpers.py; this file only keeps the scenario specific to
+    this module's compute_layer_bits interaction.
+    """
 
     def test_compute_layer_bits_with_empty_weight(self):
         """Test compute_layer_bits works after weight is cleared."""
@@ -179,10 +168,6 @@ class TestClearModuleWeights:
         _clear_module_weights(layer, cache_numel=True)
         bits_after, _ = compute_layer_bits(layer, False)
         assert bits_before == bits_after
-
-    def test_clear_module_none(self):
-        """Test clearing weights with None module doesn't crash."""
-        _clear_module_weights(None)  # Should not raise
 
     def test_clear_module_no_weights(self):
         """Test clearing module without weights doesn't crash."""

@@ -10,7 +10,7 @@
 import os
 import tempfile
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -19,8 +19,11 @@ import torch.nn as nn
 from auto_round.eval.evaluation import (
     _collect_model_floating_dtypes,
     _normalize_model_eval_dtype,
+    evaluate_diffusion_model,
     prepare_model_for_eval,
     select_gguf_eval_file,
+    simple_evaluate,
+    simple_evaluate_user_model,
 )
 
 
@@ -67,6 +70,16 @@ class TestCollectModelFloatingDtypes:
         assert torch.float16 in result
         assert torch.bfloat16 in result
 
+    def test_collects_from_submodule_parameters_and_buffers(self):
+        class M(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Linear(4, 4)
+                self.register_buffer("scale", torch.tensor(1.0))
+
+        dtypes = _collect_model_floating_dtypes(M())
+        assert torch.float32 in dtypes
+
 
 class TestNormalizeModelEvalDtype:
     """Test _normalize_model_eval_dtype."""
@@ -110,6 +123,30 @@ class TestNormalizeModelEvalDtype:
         # Check parameters are now float16
         for p in result.parameters():
             assert p.dtype == torch.float16
+
+    def test_no_floating_dtypes_returns_unchanged(self):
+        class M(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("int_buf", torch.tensor([1], dtype=torch.int32))
+
+        m = M()
+        result = _normalize_model_eval_dtype(m, "auto")
+        assert result is m
+
+
+class TestEvaluateDiffusionModel:
+    """Test evaluate_diffusion_model function."""
+
+    def test_raises_when_no_pipe_no_autoround(self):
+        args = SimpleNamespace()
+        with pytest.raises(ValueError, match="must be provided"):
+            evaluate_diffusion_model(args)
+
+    def test_raises_when_only_autoround(self):
+        args = SimpleNamespace()
+        with pytest.raises(ValueError, match="must be provided"):
+            evaluate_diffusion_model(args, autoround=MagicMock())
 
 
 class TestSelectGgufEvalFile:
@@ -170,6 +207,13 @@ class TestSelectGgufEvalFile:
         result, candidates = select_gguf_eval_file(str(tmp_path), ["gguf"])
         assert result == "model.gguf"
 
+    def test_no_match_returns_full_candidate_list(self, tmp_path):
+        (tmp_path / "model-Q8_0.gguf").touch()
+        (tmp_path / "model-f32.gguf").touch()
+        result, candidates = select_gguf_eval_file(str(tmp_path), ["gguf:Q4_0"])
+        assert result is None
+        assert len(candidates) == 2
+
 
 class TestPrepareModelForEval:
     """Test prepare_model_for_eval."""
@@ -186,11 +230,60 @@ class TestPrepareModelForEval:
         model.hf_device_map = {"p1": 0}
         with patch("auto_round.utils.dispatch_model_block_wise") as mock_dispatch:
             mock_dispatch.side_effect = ImportError("no accelerate")
-            result = prepare_model_for_eval(model, device_map="auto", eval_model_dtype="auto")
+            prepare_model_for_eval(model, device_map="auto", eval_model_dtype="auto")
 
     def test_falls_back_to_dispatch_block_wise(self):
         model = nn.Module()
         model.p1 = nn.Linear(4, 4)
         with patch("auto_round.eval.evaluation.dispatch_model_block_wise") as mock_dispatch:
-            result = prepare_model_for_eval(model, device_map="auto", eval_model_dtype="auto")
+            prepare_model_for_eval(model, device_map="auto", eval_model_dtype="auto")
             mock_dispatch.assert_called_once_with(model, "auto")
+
+    def test_raises_when_meta_device(self):
+        m = nn.Linear(4, 4)
+        m.dtype = torch.bfloat16
+        with patch("auto_round.eval.evaluation._normalize_model_eval_dtype", return_value=m):
+            with patch("auto_round.eval.evaluation.dispatch_model_block_wise") as mock_dispatch:
+                result = prepare_model_for_eval(m, "cpu", "auto")
+                assert result is m
+                mock_dispatch.assert_called_once()
+
+    def test_multi_device_dispatch(self):
+        m = nn.Linear(4, 4)
+        m.hf_device_map = {"linear": "cpu", "linear2": "cpu"}
+        with patch("auto_round.eval.evaluation._normalize_model_eval_dtype", return_value=m):
+            with patch("accelerate.big_modeling.dispatch_model") as mock_dispatch:
+                result = prepare_model_for_eval(m, "cpu", "auto")
+                assert result is m
+                mock_dispatch.assert_called_once()
+
+
+class TestSimpleEvaluate:
+    """Test simple_evaluate wrapper."""
+
+    def test_calls_lm_eval(self):
+        with patch("lm_eval.simple_evaluate") as mock_eval:
+            mock_eval.return_value = {"results": {}}
+            result = simple_evaluate(model="hf", model_args="test")
+            assert result == {"results": {}}
+            mock_eval.assert_called_once()
+
+
+class TestSimpleEvaluateUserModel:
+    """Test simple_evaluate_user_model wrapper."""
+
+    def test_creates_hflm(self):
+        mock_hflm = MagicMock()
+        with patch.dict(
+            "sys.modules",
+            {
+                "lm_eval": MagicMock(),
+                "lm_eval.models": MagicMock(),
+                "lm_eval.models.huggingface": MagicMock(HFLM=mock_hflm),
+            },
+        ):
+            with patch("lm_eval.simple_evaluate", return_value={"results": {}}) as mock_eval:
+                model = MagicMock()
+                tokenizer = MagicMock()
+                result = simple_evaluate_user_model(model, tokenizer, batch_size=4)
+                assert "results" in result or mock_hflm.called

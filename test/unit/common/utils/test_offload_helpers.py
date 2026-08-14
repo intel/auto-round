@@ -161,6 +161,7 @@ class TestClearModuleWeights:
         assert layer.weight.numel() == 16
         _clear_module_weights(layer)
         assert layer.weight.numel() == 0
+        assert layer.bias.numel() == 0
 
     def test_clear_caches_numel_and_shape(self):
         from auto_round.utils.offload import _clear_module_weights

@@ -593,6 +593,40 @@ class TestConvertModuleToHpIfNecessary:
 
         assert isinstance(result, torch.nn.Linear)
 
+    def test_real_fp8_module_with_large_dims_and_no_bias(self):
+        """Regression: a per-tensor FP8 module (no block_size attr, no bias) with
+        large-model-scale dimensions must convert cleanly without an AttributeError
+        for the missing ``block_size`` attribute (this previously broke on models
+        like Devstral-2-123B, which use per-tensor FP8 with no block quantization).
+        """
+        from auto_round.utils.weight_handler import check_and_mark_quantized_module, convert_module_to_hp_if_necessary
+
+        in_features, out_features = 12288, 2048  # large-model-scale dims, kept modest for test speed
+
+        class FP8Linear(torch.nn.Module):
+            def __init__(self, in_f, out_f):
+                super().__init__()
+                self.in_features = in_f
+                self.out_features = out_f
+                self.weight = torch.nn.Parameter(torch.randn(out_f, in_f).to(torch.float8_e4m3fn))
+                self.weight_scale = torch.nn.Parameter(torch.tensor(0.001953125))  # per-tensor, no block_size
+                self.bias = None
+                self.data_type = "fp8"
+
+        mock_layer = FP8Linear(in_features, out_features)
+        orig_weight = mock_layer.weight.clone()
+        orig_weight_scale = mock_layer.weight_scale.clone()
+
+        check_and_mark_quantized_module(mock_layer)  # must not raise for missing block_size
+        new_layer = convert_module_to_hp_if_necessary(mock_layer, dtype=torch.bfloat16)
+
+        assert isinstance(new_layer, torch.nn.Linear)
+        assert new_layer.in_features == in_features
+        assert new_layer.out_features == out_features
+        assert new_layer.weight.dtype == torch.bfloat16
+        expected = orig_weight.to(torch.bfloat16) * orig_weight_scale.to(torch.bfloat16)
+        torch.testing.assert_close(new_layer.weight, expected)
+
 
 # ==============================================================================
 # Test Classes for _pad_block_fp8_weight_naive
@@ -737,6 +771,47 @@ class TestDequantFp8LinearWeight:
 
         assert result.dtype == torch.bfloat16
         assert result.shape == weight.shape
+
+    def test_per_tensor_float8_weight_matches_manual_multiply(self):
+        """Dequantizing a real float8_e4m3fn weight with a scalar scale should equal weight * scale."""
+        from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+        weight = torch.randn(64, 128).to(torch.float8_e4m3fn)
+        weight_scale = torch.tensor(0.5)
+
+        orig_weight = weight.clone()
+        dq_weight = _dequant_fp8_linear_weight(weight, weight_scale, block_size=None)
+
+        assert dq_weight.shape == (64, 128)
+        assert dq_weight.dtype == torch.bfloat16
+        expected = orig_weight.to(torch.bfloat16) * weight_scale.to(torch.bfloat16)
+        torch.testing.assert_close(dq_weight, expected)
+
+    def test_per_channel_float8_weight_out_features_scale(self):
+        """Per-channel scale broadcast along out_features (column vector)."""
+        from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+        out_features, in_features = 64, 128
+        weight = torch.randn(out_features, in_features).to(torch.float8_e4m3fn)
+        scale = torch.randn(out_features)
+
+        orig_weight = weight.clone()
+        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
+        expected = orig_weight.to(torch.bfloat16) * scale.view(-1, 1).to(torch.bfloat16)
+        torch.testing.assert_close(dq_weight, expected)
+
+    def test_per_channel_float8_weight_in_features_scale(self):
+        """Per-channel scale broadcast along in_features (row vector)."""
+        from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+        out_features, in_features = 64, 128
+        weight = torch.randn(out_features, in_features).to(torch.float8_e4m3fn)
+        scale = torch.randn(in_features)
+
+        orig_weight = weight.clone()
+        dq_weight = _dequant_fp8_linear_weight(weight, scale, block_size=None)
+        expected = orig_weight.to(torch.bfloat16) * scale.view(1, -1).to(torch.bfloat16)
+        torch.testing.assert_close(dq_weight, expected)
 
 
 # ==============================================================================

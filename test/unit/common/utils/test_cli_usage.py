@@ -5,7 +5,6 @@ from test.helpers import get_model_path
 import pytest
 
 from auto_round.cli.main import run, run_light
-from auto_round.utils import parse_layer_config_arg
 
 
 def _assert_cli_ok(monkeypatch, argv, entry=run):
@@ -182,39 +181,6 @@ class TestAutoRoundCmd:
                 self.save_dir,
             ],
         )
-
-
-def test_parse_layer_config():
-    """Unit test for parse_layer_config_arg parsing logic."""
-    result = parse_layer_config_arg("{mtp:{bits:8,data_type:int},mtp.fc:{bits:16,data_type:int}}")
-    assert result == {
-        "mtp": {"bits": 8, "data_type": "int"},
-        "mtp.fc": {"bits": 16, "data_type": "int"},
-    }
-
-
-def test_parse_layer_config_with_quoted_regex_keys():
-    """Quoted JSON-like input with regex paths should remain usable from the CLI."""
-    result = parse_layer_config_arg(
-        r'{"model.language_model.layers.\\d+.self_attn..":{"bits":"8"},'
-        r'"model.language_model.layers.\\d+.router..*":{"bits":"8"}}'
-    )
-    assert result == {
-        r"model.language_model.layers.\d+.self_attn..": {"bits": 8},
-        r"model.language_model.layers.\d+.router..*": {"bits": 8},
-    }
-
-
-def test_parse_layer_config_with_single_escaped_regex_keys():
-    """Shell-passed strings often contain single backslashes that are invalid JSON but still recoverable."""
-    result = parse_layer_config_arg(
-        r'{"model.language_model.layers.\d+.self_attn..":{"bits":"8"},'
-        r'"model.language_model.layers.\d+.mlp..":{"bits":"8"}}'
-    )
-    assert result == {
-        r"model.language_model.layers.\d+.self_attn..": {"bits": 8},
-        r"model.language_model.layers.\d+.mlp..": {"bits": 8},
-    }
 
 
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):

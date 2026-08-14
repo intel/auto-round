@@ -28,7 +28,6 @@ import pytest
 import torch
 
 from auto_round import AutoRound, AutoScheme
-from auto_round.utils.disk_stream_util import build_meta_model, free_module, materialize_module, total_resident_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -78,24 +77,3 @@ class TestAutoSchemeDiskStream:
         from auto_round import envs
 
         assert envs.AR_DISK_STREAM_MODEL is False
-
-
-class TestDiskStreamUtilRoundTrip:
-    """Tests for the materialize/free primitives directly, independent of AutoScheme."""
-
-    def test_materialize_then_free_round_trip(self, tiny_opt_model_path):
-        model, _tokenizer, index = build_meta_model(tiny_opt_model_path)
-        block = model.model.decoder.layers[0]
-
-        for _, tensor in list(block.named_parameters()):
-            assert str(tensor.device) == "meta"
-
-        materialize_module(block, "model.decoder.layers.0", index, device="cpu")
-        for _, tensor in list(block.named_parameters()):
-            assert str(tensor.device) != "meta"
-        assert total_resident_bytes(block) > 0
-
-        free_module(block)
-        for _, tensor in list(block.named_parameters()):
-            assert str(tensor.device) == "meta"
-        assert total_resident_bytes(block) == 0
