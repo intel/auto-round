@@ -443,7 +443,19 @@ def _prefill_batches(all_shapes: bool) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0, need_reference=True, need_dequant=True):
+def _build_case(
+    N,
+    K,
+    E,
+    total_tokens,
+    group_size,
+    dtype,
+    device="xpu",
+    seed=0,
+    need_reference=True,
+    need_dequant=True,
+    topk=None,
+):
     """Build one W4A8 MoE test case.
 
     Returns a dict with the packed int4 weights + scales, the activations,
@@ -459,6 +471,13 @@ def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0, 
     the accuracy sweep. Skipping them is what keeps the compute-bound batches
     -- the only ones where a prefill TOPS target is physically reachable --
     inside a sane memory and time budget.
+
+    ``topk`` adds the side tables the fused top-k reduction needs: a
+    ``row -> model token`` map and a per-row routing weight. Row ``r`` is given
+    to token ``r % batch``, which puts each token on exactly ``top_k`` rows and
+    -- because an expert's block of rows is shorter than ``batch`` at every
+    shipped ``E`` -- never twice on the same expert, i.e. the same structure a
+    real router produces after the rows are sorted by expert.
     """
     generator = torch.Generator(device="cpu").manual_seed(seed)
     w_float = torch.randn(E, N, K, generator=generator, dtype=torch.float32) * 0.05
@@ -469,10 +488,21 @@ def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0, 
     tpe = _spread_tokens(total_tokens, E)
     ntpe = torch.tensor(tpe, dtype=torch.int32)
 
+    row_to_token = None
+    routing_weights = None
+    batch = None
+    if topk:
+        batch = total_tokens // topk
+        row_to_token = (torch.arange(total_tokens, dtype=torch.int32) % max(batch, 1)).contiguous()
+        routing_weights = (torch.rand(total_tokens, generator=generator, dtype=torch.float32) + 0.5) / topk
+
     packed = packed.to(device)
     scales = scales.to(device)
     activations = activations.to(device)
     ntpe = ntpe.to(device)
+    if topk:
+        row_to_token = row_to_token.to(device)
+        routing_weights = routing_weights.to(device)
 
     dequant = _dequant_int4_sym(packed, scales, group_size) if (need_dequant or need_reference) else None
 
@@ -504,6 +534,10 @@ def _build_case(N, K, E, total_tokens, group_size, dtype, device="xpu", seed=0, 
         "total_tokens": total_tokens,
         "group_size": group_size,
         "dtype": dtype,
+        "topk": topk,
+        "batch": batch,
+        "row_to_token": row_to_token,
+        "routing_weights": routing_weights,
     }
 
 
@@ -544,14 +578,69 @@ def _w4a16(case, phase):
     )
 
 
-def _w4a8(case, weights_s8, wscales, block, phase):
+def _quantize_rows(activations):
+    """Per-row absmax int8 quantization -- the reference for what the kernel does.
+
+    Reproduces ``launch_act_dynamic_quant`` element for element: the absmax is
+    an exact reduction, ``inv = 127 / absmax`` and ``scale = absmax / 127`` are
+    the same two fp32 operations, and ``rint`` is round-half-to-even, which is
+    what ``torch.round`` does as well. So handing the result back through the
+    pre-quantized entry point must reproduce the internally-quantized call
+    bit-for-bit, not merely closely.
+    """
+    a = activations.to(torch.float32)
+    absmax = a.abs().amax(dim=1)
+    scale = absmax / 127.0
+    inv = torch.where(absmax > 0, 127.0 / absmax, torch.zeros_like(absmax))
+    q = torch.clamp(torch.round(a * inv.unsqueeze(1)), -127.0, 127.0).to(torch.int8)
+    return q.contiguous(), scale.contiguous()
+
+
+def _prequantized(case):
+    """Cached ``(int8 activations, fp32 row scales)`` for ``case``."""
+    if case.get("qact") is None:
+        qact, ascale = _quantize_rows(case["activations"])
+        case["qact"], case["ascale"] = qact, ascale
+    return case["qact"], case["ascale"]
+
+
+def _reduce_topk(case, out):
+    """Reduce an unfused ``[T, N]`` output the way a caller would.
+
+    ``index_add_`` on an fp32 accumulator, i.e. exactly the reduction the fused
+    epilogue replaces -- so this is what a fused result is compared against.
+    """
+    reduced = torch.zeros((case["batch"], case["N"]), device=out.device, dtype=torch.float32)
+    reduced.index_add_(0, case["row_to_token"].to(torch.long), out.to(torch.float32) * case["routing_weights"][:, None])
+    return reduced
+
+
+def _w4a8(case, weights_s8, wscales, block, phase, prequant=False, fused=False):
+    """One ``moe_gemm_w4a8`` call under the requested call contract.
+
+    ``prequant`` hands the kernel int8 activations and their per-row scales so
+    it skips its own quantization pass; ``fused`` asks the epilogue to apply
+    the routing weights and scatter-add into a ``[batch, N]`` fp32 accumulator
+    instead of writing the unreduced ``[T, N]``.
+    """
+    kwargs = {}
+    activations = case["activations"]
+    if prequant:
+        activations, ascale = _prequantized(case)
+        kwargs["activation_scale"] = ascale
+        kwargs["out_dtype"] = case["dtype"]
+    if fused:
+        kwargs["row_to_token"] = case["row_to_token"]
+        kwargs["routing_weights"] = case["routing_weights"]
+        kwargs["output_rows"] = case["batch"]
     return ark.moe_gemm_w4a8(
-        case["activations"],
+        activations,
         weights_s8,
         wscales,
         case["ntpe"],
         rescale_block_size=block,
         phase=phase,
+        **kwargs,
     )
 
 
@@ -612,35 +701,64 @@ def _rows_per_expert(total_tokens, active_experts) -> float:
     return float(total_tokens) / float(active_experts) if active_experts else 0.0
 
 
-def _traffic_bytes(total_tokens, active_experts, N, K, act_bytes=2, out_bytes=2) -> float:
+def _traffic_bytes(total_tokens, active_experts, N, K, act_bytes=2, out_bytes=2, prequantized=False, fused_rows=None):
     """Compulsory DRAM traffic of one ``moe_gemm_w4a8`` call, in bytes.
 
     Counts each byte once: re-reads of A across the N tiles are L2 hits at any
     launch this kernel produces (~20 concurrent work-groups against 8 MB of
     L2), so they are not DRAM traffic. This is a lower bound, which keeps the
     derived ceiling optimistic and therefore never excuses a slow kernel.
+
+    The two optional call contracts remove whole streams, so the model has to
+    know which one is in force or every derived number (``BW@100T``, the
+    ceiling, the PASS/FAIL verdict) is computed against traffic the call no
+    longer moves:
+
+    * ``prequantized``: the caller hands over int8 activations, so the 16-bit
+      read and the int8 write are gone and only the GEMM's read-back remains.
+    * ``fused_rows``: the epilogue reduces into a ``[batch, N]`` fp32
+      accumulator, so instead of writing ``T * N`` elements it reads *and*
+      writes ``batch * N`` fp32 ones.
     """
-    act_read = float(total_tokens) * K * act_bytes
-    qact_write_read = 2.0 * float(total_tokens) * K
+    act_read = 0.0 if prequantized else float(total_tokens) * K * act_bytes
+    qact_write_read = (1.0 if prequantized else 2.0) * float(total_tokens) * K
     weights = float(active_experts) * N * K
-    out_write = float(total_tokens) * N * out_bytes
+    if fused_rows:
+        out_write = 2.0 * float(fused_rows) * N * 4
+    else:
+        out_write = float(total_tokens) * N * out_bytes
     return act_read + qact_write_read + weights + out_write
 
 
 def _bw_needed_for_tflops(
-    total_tokens, active_experts, N, K, act_bytes=2, out_bytes=2, tflops_target=_TARGET_PREFILL_TFLOPS
+    total_tokens,
+    active_experts,
+    N,
+    K,
+    act_bytes=2,
+    out_bytes=2,
+    tflops_target=_TARGET_PREFILL_TFLOPS,
+    prequantized=False,
+    fused_rows=None,
 ) -> float:
     """GB/s of DRAM traffic a shape needs to hit ``tflops_target``."""
     flops = _flops(total_tokens, N, K)
     if flops <= 0.0:
         return float("inf")
     seconds_at_target = flops / (tflops_target * 1e12)
-    return _traffic_bytes(total_tokens, active_experts, N, K, act_bytes, out_bytes) / seconds_at_target / 1e9
+    traffic = _traffic_bytes(
+        total_tokens, active_experts, N, K, act_bytes, out_bytes, prequantized=prequantized, fused_rows=fused_rows
+    )
+    return traffic / seconds_at_target / 1e9
 
 
-def _tflops_ceiling(total_tokens, active_experts, N, K, gbps, act_bytes=2, out_bytes=2) -> float:
+def _tflops_ceiling(
+    total_tokens, active_experts, N, K, gbps, act_bytes=2, out_bytes=2, prequantized=False, fused_rows=None
+) -> float:
     """Best TFLOPS this shape can reach at ``gbps`` of DRAM bandwidth."""
-    traffic = _traffic_bytes(total_tokens, active_experts, N, K, act_bytes, out_bytes)
+    traffic = _traffic_bytes(
+        total_tokens, active_experts, N, K, act_bytes, out_bytes, prequantized=prequantized, fused_rows=fused_rows
+    )
     if traffic <= 0.0:
         return float("inf")
     return _flops(total_tokens, N, K) / (traffic / (gbps * 1e9)) / 1e12
@@ -920,6 +1038,8 @@ def run_perf(
     torch_baseline=True,
     models=None,
     compute_bound=False,
+    prequantized=False,
+    fused_reduce=False,
 ):
     """Run the W4A8 perf sweep. Returns a list of per-row metric dicts.
 
@@ -930,16 +1050,27 @@ def run_perf(
     or a list); ``compute_bound=True`` ignores ``batches`` and derives, per
     model, the batch that puts ``_PREFILL_TARGET_ROWS_PER_EXPERT`` rows on every
     expert -- the only regime where the prefill TOPS target is reachable.
+
+    ``prequantized`` / ``fused_reduce`` select the traffic-cutting call
+    contracts (see :func:`_w4a8`). They change what the call moves, so they are
+    also fed to the traffic model: the printed ``DRAM GB/s``, ``BW@100T`` and
+    the ceiling that decides the verdict all follow the contract in force.
     """
     rows = []
     # Probed before anything large is allocated (and cached across sweeps).
     device_bw = _device_bandwidth_gbps()
     resolved = _models(models)
+    contract = "".join(
+        [
+            ", A=int8-in" if prequantized else "",
+            ", fused top-k reduce" if fused_reduce else "",
+        ]
+    )
     if verbose:
         _print_perf_header(
             f"W4A8 perf [{phase}] (models={'+'.join(n for n, _ in resolved)}, "
             f"group_size={_QWEN3_GROUP_SIZE}, "
-            f"act={str(dtype).split('.')[-1]}, rescale_group_size={rescale_group_size}) "
+            f"act={str(dtype).split('.')[-1]}, rescale_group_size={rescale_group_size}{contract}) "
             f"-- ark.moe_gemm_w4a8 vs W4A16 vs torch"
         )
     shapes = [
@@ -960,6 +1091,7 @@ def run_perf(
             dtype,
             need_reference=False,
             need_dequant=torch_baseline,
+            topk=topk if fused_reduce else None,
         )
 
         # One-shot int4 -> int8 AUTO_S8 conversion. Timed separately: it
@@ -981,7 +1113,9 @@ def run_perf(
             rescale_group_size=rescale_group_size,
         )
 
-        w4a8_ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase))
+        w4a8_ms = _xpu_time_ms(
+            lambda: _w4a8(case, weights_s8, wscales, block, phase, prequant=prequantized, fused=fused_reduce)
+        )
         torch_ms = _xpu_time_ms(lambda: _torch_baseline(case)) if torch_baseline else None
         try:
             w4a16_ms = _xpu_time_ms(lambda: _w4a16(case, phase))
@@ -998,10 +1132,29 @@ def run_perf(
         # of A, the int8 copy it writes, the GEMM's read of that copy and the
         # output. On the small-K shapes the weights are under half of it.
         act_bytes = _dtype_bytes(dtype)
-        traffic = _traffic_bytes(total_tokens, active_experts, N, K, act_bytes, act_bytes)
+        fused_rows = case["batch"] if fused_reduce else None
+        traffic = _traffic_bytes(
+            total_tokens,
+            active_experts,
+            N,
+            K,
+            act_bytes,
+            act_bytes,
+            prequantized=prequantized,
+            fused_rows=fused_rows,
+        )
         dram_gbps = traffic / (w4a8_ms * 1e-3) / 1e9
         rows_per_expert = _rows_per_expert(total_tokens, active_experts)
-        bw_at_100t = _bw_needed_for_tflops(total_tokens, active_experts, N, K, act_bytes, act_bytes)
+        bw_at_100t = _bw_needed_for_tflops(
+            total_tokens,
+            active_experts,
+            N,
+            K,
+            act_bytes,
+            act_bytes,
+            prequantized=prequantized,
+            fused_rows=fused_rows,
+        )
 
         row = {
             "label": nk_label,
@@ -1025,9 +1178,21 @@ def run_perf(
             "tflops_ceiling": (
                 None
                 if device_bw is None
-                else _tflops_ceiling(total_tokens, active_experts, N, K, device_bw, act_bytes, act_bytes)
+                else _tflops_ceiling(
+                    total_tokens,
+                    active_experts,
+                    N,
+                    K,
+                    device_bw,
+                    act_bytes,
+                    act_bytes,
+                    prequantized=prequantized,
+                    fused_rows=fused_rows,
+                )
             ),
             "device_bw_gbps": device_bw,
+            "prequantized": prequantized,
+            "fused_reduce": fused_reduce,
         }
         rows.append(row)
         if verbose:
@@ -1157,6 +1322,41 @@ _PREFILL_STORE_CONFIGS = [
     ("store block2d", {"ARK_MOE_W4A8_PREFILL_STORE_2D": "1"}),
 ]
 
+# Prefill: how many k-tiles the mainloop keeps prefetched ahead of the tile it
+# is computing. The prologue issues this many A/B prefetch pairs before the
+# first DPAS and the loop then issues one pair per tile, so it is the depth of
+# the memory pipeline the DPAS chain runs against. 3 is what the kernel was
+# written with; the shipped shapes are short in K (12 k-tiles at K = 768, where
+# a prologue of 3 is a quarter of the whole mainloop), which is exactly the
+# regime where the depth is worth re-measuring in both directions.
+_PREFILL_PREFETCH_CONFIGS = [
+    (f"prefetch {dist}", {"ARK_MOE_W4A8_PREFILL_PREFETCH": str(dist)}) for dist in (2, 3, 4, 6)
+]
+
+# Prefill: the two call contracts that cut traffic instead of cycles.
+#
+# Neither changes the GEMM. They change what crosses the call boundary, which
+# is where the remaining traffic is: on the qwen3 down-projection at 384
+# rows/expert the call moves 528 MB, of which only 36% is weights -- 27% is the
+# activation quantization round-trip (read fp16, write int8, read the int8
+# back) and 36% is a `[T, N]` output that the caller immediately reduces to
+# `[batch, N]`. Both are redundancies of the *interface*: the producer of the
+# activations already writes `[T, K]` once and could write int8, and the
+# reduction the caller performs can be done in the epilogue while the values
+# are still in registers.
+#
+# The fused row is not bit-identical to the others -- fp32 atomics do not
+# commit in a fixed order, and the unfused baseline additionally rounds each
+# row to the activation dtype before the caller's reduction sees it -- so this
+# is the one sweep whose SNR column is a quality gate rather than an identity
+# check.
+_PREFILL_CONTRACT_CONFIGS = [
+    ("A quant in-call", {}, {}),
+    ("A int8 in", {}, {"prequant": True}),
+    ("fused reduce", {}, {"fused": True}),
+    ("A int8 + fused", {}, {"prequant": True, "fused": True}),
+]
+
 _SWEEP_MIN_SNR_DB = 40.0
 
 
@@ -1180,6 +1380,13 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
     an explicit list of model-token batches instead -- what the long-prompt
     sweeps use, since a fixed prompt length is exactly what the compute-bound
     derivation replaces. Returns one dict per (shape, batch, configuration).
+
+    A configuration is ``(label, env_overrides)`` or, for the sweeps that
+    compare *call contracts* rather than dispatch knobs,
+    ``(label, env_overrides, call_kwargs)`` -- the extra dict is forwarded to
+    :func:`_w4a8`. A contract that reduces inside the kernel returns a
+    ``[batch, N]`` tensor where the others return ``[T, N]``, so outputs are
+    put in the same frame (:func:`_reduce_topk`) before they are compared.
     """
     is_prefill = phase == "prefill"
     # An explicit batch list opts out of the compute-bound derivation, which
@@ -1189,6 +1396,9 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
     metric_name = "TFLOPS" if is_prefill else "W GB/s"
     device_bw = _device_bandwidth_gbps()
     resolved = _models(models)
+    configs = [(cfg[0], cfg[1], cfg[2] if len(cfg) > 2 else {}) for cfg in configs]
+    # Only build the routing side tables when some configuration asks for them.
+    need_routing = any(kwargs.get("fused") for _, _, kwargs in configs)
     if verbose:
         _print_sweep_header(
             f"W4A8 config sweep [{phase}] (models={'+'.join(n for n, _ in resolved)}, "
@@ -1203,7 +1413,17 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
         for nk_label, N, K in spec["nk"]:
             for batch in _compute_bound_batches(spec) if compute_bound else batches:
                 total_tokens = batch * topk
-                case = _build_case(N, K, E, total_tokens, group_size, dtype, need_reference=False, need_dequant=False)
+                case = _build_case(
+                    N,
+                    K,
+                    E,
+                    total_tokens,
+                    group_size,
+                    dtype,
+                    need_reference=False,
+                    need_dequant=False,
+                    topk=topk if need_routing else None,
+                )
                 weights_s8, wscales, block = ark.moe_w4a8_prepack(
                     case["packed"], case["scales"], group_size=group_size, rescale_group_size=-1
                 )
@@ -1212,10 +1432,12 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
 
                 baseline_out = None
                 baseline_ms = None
-                for label, overrides in configs:
+                for label, overrides, call_kwargs in configs:
                     with _env_override(**overrides):
-                        out = _w4a8(case, weights_s8, wscales, block, phase)
-                        ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase))
+                        out = _w4a8(case, weights_s8, wscales, block, phase, **call_kwargs)
+                        ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase, **call_kwargs))
+                    if need_routing and not call_kwargs.get("fused"):
+                        out = _reduce_topk(case, out)
                     if baseline_out is None:
                         # Cloned: the kernel may hand back a reused scratch
                         # buffer, which would make every later comparison
@@ -1230,6 +1452,7 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                         "phase": phase,
                         "config": label,
                         "overrides": overrides,
+                        "call_kwargs": call_kwargs,
                         "E": E,
                         "N": N,
                         "K": K,
@@ -1292,7 +1515,9 @@ def _print_sweep_best(phase, rows) -> None:
                 continue
             best = min(candidates, key=lambda r: r["w4a8_ms"])
             metric = f"{best['tflops']:.2f} TFLOPS" if is_prefill else f"{best['gbps']:.1f} GB/s"
-            env = " ".join(f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None) or "(defaults)"
+            parts = [f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None]
+            parts += [f"{k}={v}" for k, v in sorted(best.get("call_kwargs", {}).items()) if v]
+            env = " ".join(parts) or "(defaults)"
             print(f"  {name:<14} {best['config']:<22} {best['w4a8_ms']:.3f} ms  {metric:<16} {env}")
 
 
@@ -1572,6 +1797,217 @@ if pytest is not None:
                 assert (
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"epilogue config {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_prefetch_sweep(self, request):
+            """Time the mainloop's prefetch depth at the compute-bound batch.
+
+            The mainloop is otherwise identical in every row: only how far
+            ahead of the computing tile the A/B block prefetches run changes.
+            The shipped shapes are short in K -- the qwen3 down-projection has
+            12 k-tiles at a 64-element k-tile -- so the default depth of 3 is a
+            quarter of the whole mainloop, which is the regime where both
+            directions are plausible: deeper hides more latency but spends more
+            of the tile in a prologue that computes nothing, and the prefetched
+            lines have to survive in L2 until the tile that wants them runs.
+
+            Nothing about the arithmetic changes, so every row must be
+            bit-identical to the first; only the timing is a measurement.
+            """
+            rows = run_config_sweep("prefill", _PREFILL_PREFETCH_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"prefetch depth {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_contract_sweep(self, request):
+            """Time the two traffic-cutting call contracts at the compute-bound batch.
+
+            This is the sweep that decides whether the qwen3 shapes can reach
+            the 100 TFLOPS target at all. Every kernel configuration above
+            moves the same bytes and competes for the same ~60-75% of the
+            device's bandwidth; the target on the down-projection needs 358
+            GB/s of a ~390 GB/s part, which no scheduling change reaches. The
+            contracts are the only levers that change the numerator: handing
+            the kernel int8 activations removes 27% of the call's traffic and
+            reducing in the epilogue removes another 27%.
+
+            Both rows are also a correctness check on the harness's own model:
+            the ``TFLOPS`` column here is directly comparable to
+            ``test_perf_prefill_compute_bound`` because the workload, the
+            weights and the routing are the same objects.
+            """
+            rows = run_config_sweep("prefill", _PREFILL_CONTRACT_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"call contract {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_contracts_long_seq(self, request):
+            """Prefill throughput for one 8K prompt with both contracts enabled.
+
+            ``test_perf_prefill_long_seq`` measures the shipped contract, where
+            the qwen3 shapes are bandwidth-bound below the target. This runs
+            the same prompt with the activation round-trip and the unreduced
+            output removed, which is the configuration the target is reachable
+            in; the ceiling printed next to it is computed from the same
+            reduced traffic model, so the verdict is against the right roof.
+            """
+            rows = run_perf(
+                "prefill",
+                _long_seq_batches(),
+                torch_baseline=False,
+                models=_models_option(request),
+                prequantized=True,
+                fused_reduce=True,
+            )
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            _assert_targets(request, "prefill", rows)
+
+        def test_prequantized_activations_match_internal(self):
+            """Handing the kernel int8 activations must reproduce the in-call quantization.
+
+            The pre-quantized entry point does not change any arithmetic: it
+            removes the pass that computes the int8 copy and takes the caller's
+            instead. :func:`_quantize_rows` is that pass, expression for
+            expression -- an exact absmax, the same ``127 / absmax``
+            reciprocal, the same round-half-to-even and the same clamp -- so
+            the GEMM sees the same bytes and the results must be bit-identical.
+            Any difference is a contract bug: a transposed scale, an off-by-one
+            row, or the scale being interpreted as its reciprocal.
+
+            Both K are covered because the internal quantizer picks its lane
+            mapping from K, and only one of the two rungs would be exercised by
+            a single shape.
+            """
+            for nk_label, N, K in _QWEN3_NK:
+                case = _build_case(
+                    N,
+                    K,
+                    _QWEN3_E,
+                    _PREFILL_BATCHES[0] * _QWEN3_TOPK,
+                    _QWEN3_GROUP_SIZE,
+                    torch.bfloat16,
+                    need_reference=False,
+                    need_dequant=False,
+                )
+                weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                    case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+                )
+                internal = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+                external = _w4a8(case, weights_s8, wscales, block, "prefill", prequant=True).clone()
+                assert torch.equal(internal, external), (
+                    f"{nk_label.strip()} (K={K}): pre-quantized activations disagree with the in-call "
+                    f"quantizer: max |diff| {(internal.float() - external.float()).abs().max().item():.6g}"
+                )
+                case = weights_s8 = wscales = internal = external = None
+                ark.clear_moe_w4a8_prepack_cache()
+                ark.moe_w4a8_release_scratch()
+                _release_xpu_memory()
+
+        def test_prequantized_activations_match_internal_decode(self):
+            """The same, on the decode GEMV, where the expert map comes from elsewhere.
+
+            Decode needs a ``token -> expert`` map, and the shipped path gets
+            it for free: the activation-quant kernel already runs one sub-group
+            per token, so it fills the map on the way past. Pre-quantized
+            activations delete that kernel, so the map has to come from the
+            standalone scan instead -- a different code path producing a value
+            the GEMV indexes its weights with. If it were wrong every token
+            would read another expert's weights, which this test sees as a
+            gross mismatch rather than a rounding difference.
+            """
+            case = _build_case(
+                _QWEN3_NK[0][1],
+                _QWEN3_NK[0][2],
+                _QWEN3_E,
+                _DECODE_BATCHES[0] * _QWEN3_TOPK,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            internal = _w4a8(case, weights_s8, wscales, block, "decode").clone()
+            external = _w4a8(case, weights_s8, wscales, block, "decode", prequant=True).clone()
+            assert torch.equal(internal, external), (
+                "pre-quantized activations disagree with the in-call quantizer on decode: "
+                f"max |diff| {(internal.float() - external.float()).abs().max().item():.6g}"
+            )
+
+        def test_fused_reduce_matches_unfused(self):
+            """The fused epilogue must agree with reducing the unfused output.
+
+            Unlike every other prefill A/B in this file, this one is *not* a
+            bit-identity check and cannot be. The fused epilogue combines a
+            token's ``top_k`` contributions with device-scope fp32 atomics,
+            which commit in whatever order the work-groups finish, and fp32
+            addition is not associative; the unfused path additionally rounds
+            each row to the activation dtype before the caller's reduction ever
+            sees it. So the two differ by rounding on both sides, and the gate
+            is the accuracy gate the rest of the suite uses against the fp32
+            reference (20 dB / 0.99 cosine) -- generous enough to survive
+            reassociation, far too tight to survive a wrong token index, a
+            missing routing weight or an expert-offset slip, all of which
+            misplace whole rows.
+
+            The batch is the ragged one: 300 rows per expert against the
+            ladder's 128-row tile gives every expert two interior tiles and one
+            partial tile, so both the fast and the guarded scatter run, and the
+            partial tile is where a scatter can do damage a predicated store
+            cannot -- an out-of-range row would land on a *valid* token.
+            """
+            rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
+            case = _build_case(
+                _QWEN3_NK[1][1],
+                _QWEN3_NK[1][2],
+                _QWEN3_E,
+                rows_per_expert * _QWEN3_E,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+                topk=_QWEN3_TOPK,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            unfused = _reduce_topk(case, _w4a8(case, weights_s8, wscales, block, "prefill"))
+            fused = _w4a8(case, weights_s8, wscales, block, "prefill", fused=True)
+            assert fused.shape == unfused.shape, f"fused output shape {tuple(fused.shape)} != {tuple(unfused.shape)}"
+            snr = _snr_db(unfused, fused)
+            cos = _cosine(unfused, fused)
+            assert snr >= _MIN_SNR_DB, f"the fused top-k reduction disagrees with the unfused one: SNR {snr:.2f} dB"
+            assert cos >= _MIN_COSINE, f"the fused top-k reduction disagrees with the unfused one: cosine {cos:.6f}"
+
+        def test_fused_reduce_rejects_decode(self):
+            """The fused reduction must refuse the decode phase rather than mis-reduce.
+
+            The scatter lives in the grouped GEMM's epilogue; the decode GEMV
+            has no such epilogue, so a decode call with routing tables would
+            silently return the unreduced output under a shape that claims to
+            be reduced. Both the Python guard and the kernel's own check exist
+            for this; the Python one is what a caller hits.
+            """
+            case = _build_case(
+                _QWEN3_NK[1][1],
+                _QWEN3_NK[1][2],
+                _QWEN3_E,
+                _DECODE_BATCHES[0] * _QWEN3_TOPK,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+                topk=_QWEN3_TOPK,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            with pytest.raises(ValueError):
+                _w4a8(case, weights_s8, wscales, block, "decode", fused=True)
 
         def test_act_quant_vec_matches_scalar(self):
             """The vectorized activation quantizer must be bit-identical to the scalar one.
@@ -1917,6 +2353,15 @@ def _parse_args(argv):
             "prefill tile sweep is repeated there."
         ),
     )
+    parser.add_argument(
+        "--contracts",
+        action="store_true",
+        help=(
+            "Also run the prefill points with the traffic-cutting call contracts (caller-supplied int8 "
+            "activations + the fused top-k reduction), and with --sweep-configs the contract A/B sweep. "
+            "These change what the call moves, so the printed ceiling and BW@100T follow the contract."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     return parser.parse_args(argv)
@@ -1970,11 +2415,25 @@ def main(argv=None) -> int:
                     torch_baseline=False,
                     models=models,
                 )
+            if phase == "prefill" and args.contracts:
+                run_perf(
+                    phase,
+                    _long_seq_batches() if args.long_seq else None,
+                    dtype=dtype,
+                    rescale_group_size=args.rescale_group_size,
+                    torch_baseline=False,
+                    compute_bound=not args.long_seq,
+                    models=models,
+                    prequantized=True,
+                    fused_reduce=True,
+                )
             if args.sweep_configs:
                 configs = _PREFILL_TILE_CONFIGS if phase == "prefill" else _DECODE_CONFIGS
                 run_config_sweep(phase, configs, dtype=dtype, models=models)
                 if phase == "prefill" and args.long_seq:
                     run_config_sweep(phase, configs, dtype=dtype, models=models, batches=_long_seq_batches())
+                if phase == "prefill" and args.contracts:
+                    run_config_sweep(phase, _PREFILL_CONTRACT_CONFIGS, dtype=dtype, models=models)
 
     if failures:
         print()

@@ -2532,6 +2532,11 @@ def moe_gemm_w4a8(
     *,
     rescale_block_size: Optional[int] = None,
     phase: str = "auto",
+    activation_scale: Optional[torch.Tensor] = None,
+    out_dtype: Optional[torch.dtype] = None,
+    row_to_token: Optional[torch.Tensor] = None,
+    routing_weights: Optional[torch.Tensor] = None,
+    output_rows: Optional[int] = None,
 ) -> torch.Tensor:
     """W4A8 MoE GEMM: int4 weights (pre-converted to int8), int8 compute.
 
@@ -2540,8 +2545,31 @@ def moe_gemm_w4a8(
     the ``s8 x s8 -> s32`` DPAS atom. The output is
     ``acc * act_scale[token] * weight_scale[n, block]``.
 
+    Two optional contracts cut DRAM traffic by moving work across the call
+    boundary; both default off and change nothing when unused.
+
+    *Pre-quantized activations.* Pass an ``int8`` ``activations`` together with
+    ``activation_scale`` and the in-call quantization pass is skipped: the
+    kernel then never reads the 16-bit activations, never writes the int8 copy
+    and never reads it back (``4 * T * K`` bytes, 27% of the qwen3
+    down-projection's traffic). The producer of the activations -- typically
+    the SiLU/gate elementwise kernel, which already writes ``[T, K]`` once --
+    can emit that int8 and its per-row scale directly.
+
+    *Fused top-k reduction.* Pass ``row_to_token``, ``routing_weights`` and
+    ``output_rows`` and the epilogue scales each routed row by its routing
+    weight and accumulates it into ``out[row_to_token[row]]`` of a
+    ``[output_rows, N]`` fp32 tensor, instead of writing the ``[T, N]``
+    unreduced result for the caller to reduce afterwards. That replaces
+    ``T * N`` written + ``T * N`` read + ``batch * N`` written with a
+    ``batch * N`` read-modify-write, and removes the caller's reduction kernel.
+    The combiner is a device-scope fp32 atomic add, so the summation order is
+    not deterministic and the result is *not* bit-identical to reducing the
+    unfused output. Prefill only.
+
     Args:
-        activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert.
+        activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert, or
+            ``[total_tokens, K]`` int8 when ``activation_scale`` is given.
         weights_s8: ``[E, N, K]`` ``torch.int8`` from :func:`moe_w4a8_prepack`.
         wscales: ``[E, N, K // rescale_block_size]`` fp32 from
             :func:`moe_w4a8_prepack`.
@@ -2550,16 +2578,42 @@ def moe_gemm_w4a8(
             ``K // wscales.shape[2]``.
         phase: ``"auto"`` (GEMV for small batches, grouped GEMM otherwise),
             ``"decode"`` (force GEMV) or ``"prefill"`` (force grouped GEMM).
+        activation_scale: ``[total_tokens]`` fp32 per-row scales
+            (``absmax / 127``) for pre-quantized int8 activations.
+        out_dtype: output dtype for pre-quantized activations, which carry no
+            floating dtype of their own. Defaults to ``torch.bfloat16``.
+        row_to_token: ``[total_tokens]`` int32, routed row -> model token.
+        routing_weights: ``[total_tokens]`` fp32, the top-k weight of each row.
+        output_rows: number of model tokens, i.e. rows of the fused output.
 
     Returns:
-        ``[total_tokens, N]`` in the activations dtype.
+        ``[total_tokens, N]`` in the activations dtype, or ``[output_rows, N]``
+        fp32 when the fused reduction is used.
     """
     if phase not in _MOE_VALID_PHASES:
         raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
     if activations.device.type != "xpu":
         raise NotImplementedError("moe_gemm_w4a8 is only supported on XPU")
-    if activations.dtype not in (torch.float16, torch.bfloat16):
+
+    prequantized = activation_scale is not None or activations.dtype == torch.int8
+    if prequantized:
+        if activations.dtype != torch.int8:
+            raise ValueError(f"pre-quantized activations must be int8, got {activations.dtype}")
+        if activation_scale is None:
+            raise ValueError("int8 activations require activation_scale")
+        if activation_scale.dtype != torch.float32:
+            raise ValueError(f"activation_scale must be fp32, got {activation_scale.dtype}")
+        if activation_scale.numel() != activations.shape[0]:
+            raise ValueError(
+                f"activation_scale has {activation_scale.numel()} entries, expected {activations.shape[0]}"
+            )
+        act_dtype = torch.bfloat16 if out_dtype is None else out_dtype
+        if act_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"out_dtype must be fp16/bf16, got {act_dtype}")
+    elif activations.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+    else:
+        act_dtype = activations.dtype
     if activations.ndim != 2:
         raise ValueError("activations must be 2D [total_tokens, K]")
     if weights_s8.ndim != 3 or weights_s8.dtype != torch.int8:
@@ -2570,6 +2624,8 @@ def moe_gemm_w4a8(
     activations = activations.contiguous()
     weights_s8 = weights_s8.contiguous()
     wscales = wscales.contiguous()
+    if prequantized:
+        activation_scale = activation_scale.contiguous()
 
     total_tokens, K = activations.shape
     num_experts, N, weight_K = weights_s8.shape
@@ -2597,7 +2653,30 @@ def moe_gemm_w4a8(
         raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
     _check_routing_total(num_tokens_per_expert, total_tokens)
 
-    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+    fused = row_to_token is not None or routing_weights is not None or output_rows is not None
+    if fused:
+        if row_to_token is None or routing_weights is None or output_rows is None:
+            raise ValueError("the fused top-k reduction needs row_to_token, routing_weights and output_rows")
+        if phase != "prefill":
+            raise ValueError("the fused top-k reduction is prefill-only; pass phase='prefill'")
+        if int(output_rows) <= 0:
+            raise ValueError(f"output_rows must be positive (got {output_rows})")
+        if row_to_token.dtype != torch.int32:
+            row_to_token = row_to_token.to(torch.int32)
+        if routing_weights.dtype != torch.float32:
+            routing_weights = routing_weights.to(torch.float32)
+        row_to_token = row_to_token.contiguous()
+        routing_weights = routing_weights.contiguous()
+        if row_to_token.numel() != total_tokens or routing_weights.numel() != total_tokens:
+            raise ValueError(
+                f"row_to_token / routing_weights must have {total_tokens} entries, got "
+                f"{row_to_token.numel()} / {routing_weights.numel()}"
+            )
+        # The epilogue accumulates into this buffer with atomics, so it starts
+        # at zero and is fp32 regardless of the activation dtype.
+        outputs = torch.zeros((int(output_rows), N), device=activations.device, dtype=torch.float32)
+    else:
+        outputs = torch.empty((total_tokens, N), device=activations.device, dtype=act_dtype)
     if total_tokens == 0:
         return outputs
 
@@ -2605,11 +2684,11 @@ def moe_gemm_w4a8(
     stream = get_stream(activations)
     lib.moe_gemm_w4a8(
         stream,
-        activations.data_ptr(),
+        0 if prequantized else activations.data_ptr(),
         weights_s8.data_ptr(),
         wscales.data_ptr(),
-        outputs.data_ptr(),
-        cvt_dtype(activations.dtype),
+        0 if fused else outputs.data_ptr(),
+        cvt_dtype(act_dtype),
         N,
         K,
         block,
@@ -2617,6 +2696,12 @@ def moe_gemm_w4a8(
         num_experts,
         total_tokens,
         _MOE_VALID_PHASES.index(phase),
+        activations.data_ptr() if prequantized else 0,
+        activation_scale.data_ptr() if prequantized else 0,
+        row_to_token.data_ptr() if fused else 0,
+        routing_weights.data_ptr() if fused else 0,
+        outputs.data_ptr() if fused else 0,
+        int(output_rows) if fused else 0,
     )
     return outputs
 

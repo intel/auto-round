@@ -562,6 +562,29 @@ inline int moe_w4a8_act_quant_unroll() {
   return kActQuantUnrollDefault;
 }
 
+// How many k-tiles of A and B the prefill mainloop keeps prefetched ahead of
+// the tile it is computing. The prologue issues `prefetch_dist` pairs before
+// the first DPAS and the loop then issues one pair per tile, so this is the
+// depth of the memory pipeline the mainloop runs against -- too shallow and
+// the DPAS waits on L2, too deep and the prefetched lines are evicted before
+// use (and the prologue itself becomes a serial stall on short K).
+//
+// 3 is the value the mainloop was written with and the sibling prefill kernels
+// use. The shapes here are short in K (12 k-tiles at K = 768), which is exactly
+// where the depth is worth re-measuring, so it is a runtime knob rather than a
+// constant; `test_perf_prefill_prefetch_sweep` walks it.
+inline constexpr int kPrefillPrefetchDefault = 3;
+
+inline int moe_w4a8_prefill_prefetch_dist() {
+  const char* env = std::getenv("ARK_MOE_W4A8_PREFILL_PREFETCH");
+  if (env != nullptr) {
+    char* end = nullptr;
+    const long long v = std::strtoll(env, &end, 10);
+    if (end != env && v >= 1 && v <= 8) return static_cast<int>(v);
+  }
+  return kPrefillPrefetchDefault;
+}
+
 // Runtime unroll depth -> compile-time bridge.
 template <typename ScalarT, int VEC>
 void launch_act_dynamic_quant_vec_unroll(int unroll, sycl::queue* q, const ScalarT* activations, int8_t* qact,
@@ -846,6 +869,49 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 };
 
 // ---------------------------------------------------------------------------
+// Optional fused top-k reduction (prefill only).
+//
+// The grouped GEMM's natural output is `[T, N]`, one row per *routed* row, and
+// every caller immediately reduces it: a token's `top_k` rows are scaled by
+// their routing weights and summed into one `[batch, N]` row. That reduction
+// reads `T*N` and writes `batch*N`, and the GEMM wrote `T*N` for it to read --
+// so the unfused contract moves `2*T*N + batch*N` elements where the fused one
+// moves `2*batch*N` (a read-modify-write of the accumulator).
+//
+// It is the largest lever on the down-projection shapes, where D is a third of
+// the call's traffic: at qwen3's routing (`top_k = 8`) it takes D from
+// `T*N*sizeof(ElementD)` to `batch*N*4*2`, i.e. 192 MB -> 48 MB at 384
+// rows/expert, and deletes the caller's reduction kernel outright.
+//
+// The accumulator is fp32 and the caller must zero it: rows of the same token
+// land on different experts, hence on different work-groups, so the only
+// portable combiner is a device-scope atomic add. That makes the result
+// **order-dependent** and therefore not bit-identical to the unfused path --
+// the equivalence test for this contract is an SNR/cosine gate, not
+// `torch.equal`. Scaling is applied before the atomic (one multiply per
+// element), so the atomic itself stays a plain `fetch_add`.
+//
+// `out == nullptr` selects the unfused path and compiles to the same code as
+// before; the branch is uniform across the work-group (it is a kernel
+// argument).
+// ---------------------------------------------------------------------------
+struct MoEFusedReduce {
+  const int* row_to_token = nullptr;  // routed row -> model token (expert-local base)
+  const float* row_weight = nullptr;  // routed row -> routing weight (expert-local base)
+  float* out = nullptr;               // [batch, N] fp32 accumulator, zeroed by the caller
+  int batch = 0;                      // rows of `out`; bounds the scatter
+
+  CUTE_HOST_DEVICE bool enabled() const { return out != nullptr; }
+};
+
+CUTE_DEVICE inline void atomic_add_f32(float* addr, float value) {
+  sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                   sycl::access::address_space::global_space>
+      ref(*addr);
+  ref.fetch_add(value);
+}
+
+// ---------------------------------------------------------------------------
 // Single-tile int8 x int8 -> int32 mainloop with a per-block weight scale and
 // a per-row activation scale.
 //
@@ -979,16 +1045,23 @@ class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
 template <class GmemTiledCopyA, class GmemTiledCopyB, class TiledMMA, typename ElementD>
 CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, const float* scale_a,
                               const float* scale_b, int m, int n, int k, int blocksize, int blks, int m_coord,
-                              int n_coord, bool allow_full_tile, bool allow_block_2d_store, TiledMMA const& mma) {
+                              int n_coord, bool allow_full_tile, bool allow_block_2d_store, int prefetch_dist,
+                              MoEFusedReduce const& reduce, TiledMMA const& mma) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   const int local_id = static_cast<int>(item.get_local_linear_id());
 
   auto wg_tile = mma.tile_mnk();
   auto wg_coord = make_coord(m_coord, n_coord, 0);
 
+  // The fused path never writes through `c` (it scatters into `reduce.out`
+  // instead) and its caller has no `[T, N]` buffer to hand over, so `c` is
+  // null there. D and its 2D copy atom are still built -- they are ordinary
+  // objects, not lazily constructed -- so give them a valid base to describe.
+  ElementD* d_base = c != nullptr ? c : reinterpret_cast<ElementD*>(reduce.out);
+
   auto A = make_tensor(make_gmem_ptr(const_cast<int8_t*>(a)), make_shape(m, k), make_stride(k, _1{}));
   auto B = make_tensor(make_gmem_ptr(const_cast<int8_t*>(b)), make_shape(n, k), make_stride(k, _1{}));
-  auto D = make_tensor(make_gmem_ptr(c), make_shape(m, n), make_stride(n, _1{}));
+  auto D = make_tensor(make_gmem_ptr(d_base), make_shape(m, n), make_stride(n, _1{}));
 
   Tensor cA = make_identity_tensor(A.shape());
   Tensor cB = make_identity_tensor(B.shape());
@@ -1025,7 +1098,6 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
   auto pBgB = prefetch_b.get_slice(local_id).partition_S(gB);
 
   constexpr auto barrier_scope = ScopeWorkgroup;
-  constexpr int prefetch_dist = 3;
 
   const int k_tile_size = static_cast<int>(get<2>(wg_tile));
   const int k_tiles_per_block = blocksize / k_tile_size;
@@ -1053,7 +1125,9 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
     barrier_wait(barrier_scope);
   };
 
-  CUTE_UNROLL
+  // Runtime bound (`ARK_MOE_W4A8_PREFILL_PREFETCH`), so no unroll pragma: the
+  // prologue runs once per tile, ahead of a mainloop of `k_tile_count`
+  // iterations, and its trip count is uniform across the work-group.
   for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; ++k_tile_prefetch) {
     prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
     prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
@@ -1124,7 +1198,39 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
       copy(copy_d, tCrD, tCgC);
     };
 
-    if (allow_block_2d_store) {
+    // Fused top-k reduction: scale the row by its routing weight and
+    // accumulate it into the token's row of the `[batch, n]` fp32 output.
+    // Out-of-range rows are dropped rather than clamped -- a clamped scatter
+    // would corrupt a *valid* token's accumulator, which the guarded store
+    // above cannot do -- but the loads stay unconditional so they still
+    // collapse across the fragment. `row_to_token` is caller data, so its
+    // value is range-checked as well: a bad index drops the contribution
+    // instead of writing outside the accumulator.
+    auto store_fused = [&](auto full) {
+      CUTE_UNROLL
+      for (int i = 0; i < size(tCrC); ++i) {
+        auto coord = tCgC(i);
+        const int row = static_cast<int>(get<0>(coord));
+        const int col = static_cast<int>(get<1>(coord));
+        const int row_in = decltype(full)::value ? row : (row < m ? row : m - 1);
+        const int col_in = decltype(full)::value ? col : (col < n ? col : n - 1);
+        const float value = static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in)] *
+                            scale_a[row_in] * reduce.row_weight[row_in];
+        const int token = reduce.row_to_token[row_in];
+        const bool in_tile = decltype(full)::value || (row < m && col < n);
+        if (in_tile && token >= 0 && token < reduce.batch) {
+          atomic_add_f32(&reduce.out[static_cast<size_t>(token) * n + col], value);
+        }
+      }
+    };
+
+    if (reduce.enabled()) {
+      if (full_tile) {
+        store_fused(std::true_type{});
+      } else {
+        store_fused(std::false_type{});
+      }
+    } else if (allow_block_2d_store) {
       if (full_tile) {
         store_scaled_2d(std::true_type{});
       } else {
@@ -1166,6 +1272,23 @@ CUTE_DEVICE void xe_gemm_w4a8(const int8_t* a, const int8_t* b, ElementD* c, con
         tFrC(i) += static_cast<float>(tCrC(i)) * scale_b[static_cast<size_t>(col_in) * blks + ib];
       }
     }
+  }
+
+  if (reduce.enabled()) {
+    CUTE_UNROLL
+    for (int i = 0; i < size(tFrC); ++i) {
+      auto coord = tCgC(i);
+      const int row = static_cast<int>(get<0>(coord));
+      const int col = static_cast<int>(get<1>(coord));
+      const int row_in = full_tile ? row : (row < m ? row : m - 1);
+      const float value = tFrC(i) * scale_a[row_in] * reduce.row_weight[row_in];
+      const int token = reduce.row_to_token[row_in];
+      const bool in_tile = full_tile || (row < m && col < n);
+      if (in_tile && token >= 0 && token < reduce.batch) {
+        atomic_add_f32(&reduce.out[static_cast<size_t>(token) * n + col], value);
+      }
+    }
+    return;
   }
 
   if (allow_block_2d_store) {
@@ -1228,7 +1351,8 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
                               const float* ScaleB, ElementD* Outputs, TiledMMA const& mma,
                               const int* rows_per_expert, const int32_t num_experts, const int32_t gemm_n,
                               const int32_t gemm_k, const int32_t blocksize, const int32_t blks,
-                              const bool allow_full_tile, const bool allow_block_2d_store, int32_t* atomic_buffer,
+                              const bool allow_full_tile, const bool allow_block_2d_store,
+                              const int32_t prefetch_dist, MoEFusedReduce reduce, int32_t* atomic_buffer,
                               const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   auto wg_tile = mma.tile_mnk();
@@ -1274,7 +1398,16 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
     const int8_t* ptr_B_curr_batch = Weights + B_offset;
     const float* ptr_SA_curr_batch = ScaleA + pre_rows;
     const float* ptr_SB_curr_batch = ScaleB + SB_offset;
-    ElementD* ptr_D_curr_batch = Outputs + static_cast<int64_t>(pre_rows) * gemm_n;
+    ElementD* ptr_D_curr_batch = Outputs == nullptr ? nullptr : Outputs + static_cast<int64_t>(pre_rows) * gemm_n;
+
+    // The scatter targets a `[batch, N]` accumulator shared by every expert,
+    // so only the per-row side tables advance with the expert; `reduce.out`
+    // stays put.
+    MoEFusedReduce expert_reduce = reduce;
+    if (reduce.enabled()) {
+      expert_reduce.row_to_token = reduce.row_to_token + pre_rows;
+      expert_reduce.row_weight = reduce.row_weight + pre_rows;
+    }
 
     while (group_m_id < cumsum_tiles_for_experts) {
       const int n_coord = (group_id * wg_tile_n) % gemm_n_pad / wg_tile_n;
@@ -1283,7 +1416,7 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
       xe_gemm_w4a8<GmemTiledCopyA, GmemTiledCopyB>(ptr_A_curr_batch, ptr_B_curr_batch, ptr_D_curr_batch,
                                                    ptr_SA_curr_batch, ptr_SB_curr_batch, gemm_m, gemm_n, gemm_k,
                                                    blocksize, blks, m_coord, n_coord, allow_full_tile,
-                                                   allow_block_2d_store, mma);
+                                                   allow_block_2d_store, prefetch_dist, expert_reduce, mma);
 
       if (local_id == 0) {
         slm_mem[0] = cutlass::atomicAdd(atomic_buffer, 1);
@@ -1306,7 +1439,7 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
                           const float* scale_a, const float* scale_b, ElementD* outputs, const int gemm_n,
                           const int gemm_k, const int* rows_per_expert, const int num_experts, const int blocksize,
                           const int blks, const bool allow_full_tile, const bool allow_block_2d_store,
-                          int32_t* atomic_buffer) {
+                          const int prefetch_dist, MoEFusedReduce reduce, int32_t* atomic_buffer) {
   using Op = XE_DPAS_TT<8, int32_t, int8_t, int8_t>;
   using WGTile = typename Policy::WGTile;
   using SGLayout = typename Policy::SGLayout;
@@ -1338,8 +1471,8 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
         sycl::nd_range<3>{global * local, local}, kernel_props, [=](auto) {
           MoEGEMM_w4a8<GmemTiledCopyA, GmemTiledCopyB>(activations, weights, scale_a, scale_b, outputs, mma,
                                                        rows_per_expert, num_experts, gemm_n, gemm_k, blocksize,
-                                                       blks, allow_full_tile, allow_block_2d_store, atomic_buffer,
-                                                       local_mem);
+                                                       blks, allow_full_tile, allow_block_2d_store, prefetch_dist,
+                                                       reduce, atomic_buffer, local_mem);
         });
   });
 
@@ -1406,7 +1539,8 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 template <typename ElementD>
 void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* ascale, const int8_t* weights,
                                const float* wscale, ElementD* outputs, const int* num_tokens_per_expert, int E,
-                               int N, int K, int blocksize, int blks, int total_tokens) {
+                               int N, int K, int blocksize, int blks, int total_tokens,
+                               MoEFusedReduce reduce = MoEFusedReduce{}) {
   if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
 
   compat::set_default_queue(*q);
@@ -1414,10 +1548,11 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
   const int A_avg_M = total_tokens / E;
   const bool tile_n_256 = (N % 256) == 0;
   const bool allow_full_tile = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_FULL_TILE", true);
-  const bool store_2d_aligned = (static_cast<size_t>(N) * sizeof(ElementD)) % 64 == 0 &&
+  const bool store_2d_aligned = !reduce.enabled() && (static_cast<size_t>(N) * sizeof(ElementD)) % 64 == 0 &&
                                 reinterpret_cast<uintptr_t>(outputs) % 64 == 0;
   const bool allow_block_2d_store =
       store_2d_aligned && moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_STORE_2D", true);
+  const int prefetch_dist = moe_w4a8_prefill_prefetch_dist();
   int32_t* atomic_buffer = moe_dpas_fp8::get_persistent_atomic_buffer(q);
 
 #define ARK_MOE_W4A8_LAUNCH(policy)                                                                        \
@@ -1940,10 +2075,34 @@ inline void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, voi
 // `phase`: 0 = auto (decode when `total_tokens <=
 // ARK_MOE_W4A8_DECODE_MAX_TOKENS`), 1 = force decode GEMV, 2 = force prefill
 // grouped GEMM.
+//
+// Two optional call contracts trade interface work for DRAM traffic. Both are
+// opt-in and the defaults are unchanged.
+//
+// Pre-quantized activations (`qact_in` + `ascale_in`)
+// ---------------------------------------------------
+// By default the call quantizes `[T, K]` itself: it reads the 16-bit
+// activations, writes an int8 copy and the GEMM reads that copy back, i.e.
+// `4 * T * K` bytes on top of the GEMM's own operands. On the down-projection
+// that is 27% of everything the call moves -- and it is redundant, because the
+// producer of those activations (the SiLU/gate elementwise kernel) already
+// writes `[T, K]` once and could write int8 plus a per-row scale instead: the
+// absmax it needs is a reduction over the row it is already holding. When both
+// pointers are supplied all three streams disappear, along with a kernel
+// launch. `ascale_in` is `[T]` fp32, `scale = absmax / 127`, matching what
+// `launch_act_dynamic_quant` writes.
+//
+// Fused top-k reduction (`row_to_token` + `routing_weights` + `fused_out`)
+// -----------------------------------------------------------------------
+// See `MoEFusedReduce`. Prefill only, and the accumulator must be zeroed by
+// the caller; `outputs` is then unused and may be null.
 // ---------------------------------------------------------------------------
 inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, void* wscales, void* outputs,
                           BTLA_DTYPE act_dtype, int N, int K, int rescale_block_size,
-                          int* num_tokens_per_expert, int num_experts, int total_tokens, int phase) {
+                          int* num_tokens_per_expert, int num_experts, int total_tokens, int phase,
+                          const void* qact_in = nullptr, const float* ascale_in = nullptr,
+                          const int* row_to_token = nullptr, const float* routing_weights = nullptr,
+                          float* fused_out = nullptr, int fused_batch = 0) {
   if (total_tokens == 0 || num_experts <= 0) return;
   if (N % moe_w4a8::N_TILE != 0) {
     throw std::invalid_argument("moe_gemm_w4a8: N must be a multiple of 16");
@@ -1961,41 +2120,79 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
     throw std::invalid_argument("moe_gemm_w4a8: act_dtype must be F16 or BF16");
   }
 
+  const bool prequantized = qact_in != nullptr || ascale_in != nullptr;
+  if (prequantized && (qact_in == nullptr || ascale_in == nullptr)) {
+    throw std::invalid_argument("moe_gemm_w4a8: pre-quantized activations need both qact and ascale");
+  }
+  if (!prequantized && activations == nullptr) {
+    throw std::invalid_argument("moe_gemm_w4a8: null activations");
+  }
+
+  const bool fused_reduce = row_to_token != nullptr || routing_weights != nullptr || fused_out != nullptr;
+  if (fused_reduce && (row_to_token == nullptr || routing_weights == nullptr || fused_out == nullptr ||
+                       fused_batch <= 0)) {
+    throw std::invalid_argument(
+        "moe_gemm_w4a8: the fused top-k reduction needs row_to_token, routing_weights, a zeroed [batch, N] "
+        "fp32 output and batch > 0");
+  }
+  if (!fused_reduce && outputs == nullptr) {
+    throw std::invalid_argument("moe_gemm_w4a8: null outputs");
+  }
+
   const int blocksize = rescale_block_size;
   const int blks = K / blocksize;
 
   const bool use_decode =
       phase == 1 || (phase != 2 && total_tokens <= moe_w4a8::moe_w4a8_decode_max_tokens());
 
-  // Quantized activations + per-token scales share one slab: `[T, K]` int8
-  // followed by `[T]` fp32 (the int8 region is already 4-byte aligned because
-  // K is a multiple of 64).
-  const size_t qact_bytes = static_cast<size_t>(total_tokens) * static_cast<size_t>(K);
-  const size_t scale_offset = (qact_bytes + sizeof(float) - 1) / sizeof(float) * sizeof(float);
-  const size_t slab_bytes = scale_offset + static_cast<size_t>(total_tokens) * sizeof(float);
-  uint8_t* slab = moe_w4a8::qact_pool().acquire(q, slab_bytes);
-  int8_t* qact = reinterpret_cast<int8_t*>(slab);
-  float* ascale = reinterpret_cast<float*>(slab + scale_offset);
+  if (fused_reduce && use_decode) {
+    throw std::invalid_argument("moe_gemm_w4a8: the fused top-k reduction is prefill-only");
+  }
+
+  const int8_t* qact = static_cast<const int8_t*>(qact_in);
+  const float* ascale = ascale_in;
+  int8_t* qact_scratch = nullptr;
+  float* ascale_scratch = nullptr;
+
+  if (!prequantized) {
+    // Quantized activations + per-token scales share one slab: `[T, K]` int8
+    // followed by `[T]` fp32 (the int8 region is already 4-byte aligned because
+    // K is a multiple of 64).
+    const size_t qact_bytes = static_cast<size_t>(total_tokens) * static_cast<size_t>(K);
+    const size_t scale_offset = (qact_bytes + sizeof(float) - 1) / sizeof(float) * sizeof(float);
+    const size_t slab_bytes = scale_offset + static_cast<size_t>(total_tokens) * sizeof(float);
+    uint8_t* slab = moe_w4a8::qact_pool().acquire(q, slab_bytes);
+    qact_scratch = reinterpret_cast<int8_t*>(slab);
+    ascale_scratch = reinterpret_cast<float*>(slab + scale_offset);
+    qact = qact_scratch;
+    ascale = ascale_scratch;
+  }
 
   // Decode consumes `expert_id_per_token`; the activation-quant kernel already
   // runs one sub-group per token, so it derives the map as well instead of
   // paying for a second launch (`fill_expert_id_per_token`) on a timeline where
   // one call is issued per generated token. Prefill passes nullptr and the scan
-  // is not compiled into the work.
+  // is not compiled into the work. With pre-quantized activations that kernel
+  // does not run at all, so decode falls back to the standalone scan.
   int* expert_map = nullptr;
   if (use_decode) {
     expert_map = reinterpret_cast<int*>(
         moe_w4a8::expert_map_pool().acquire(q, static_cast<size_t>(total_tokens) * sizeof(int)));
   }
 
-  if (act_dtype == BTLA_DTYPE::F16) {
-    moe_w4a8::launch_act_dynamic_quant<sycl::half>(q, static_cast<const sycl::half*>(activations), qact, ascale,
-                                                   total_tokens, K, expert_map, num_tokens_per_expert,
-                                                   num_experts);
+  if (prequantized) {
+    if (use_decode) {
+      moe_decode_detail::fill_expert_id_per_token(q, expert_map, num_tokens_per_expert, num_experts,
+                                                  total_tokens);
+    }
+  } else if (act_dtype == BTLA_DTYPE::F16) {
+    moe_w4a8::launch_act_dynamic_quant<sycl::half>(q, static_cast<const sycl::half*>(activations), qact_scratch,
+                                                   ascale_scratch, total_tokens, K, expert_map,
+                                                   num_tokens_per_expert, num_experts);
   } else {
     using BF = sycl::ext::oneapi::bfloat16;
-    moe_w4a8::launch_act_dynamic_quant<BF>(q, static_cast<const BF*>(activations), qact, ascale, total_tokens, K,
-                                           expert_map, num_tokens_per_expert, num_experts);
+    moe_w4a8::launch_act_dynamic_quant<BF>(q, static_cast<const BF*>(activations), qact_scratch, ascale_scratch,
+                                           total_tokens, K, expert_map, num_tokens_per_expert, num_experts);
   }
 
   const auto* weights = static_cast<const int8_t*>(weights_s8);
@@ -2014,15 +2211,23 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
     return;
   }
 
+  moe_w4a8::MoEFusedReduce reduce{};
+  if (fused_reduce) {
+    reduce.row_to_token = row_to_token;
+    reduce.row_weight = routing_weights;
+    reduce.out = fused_out;
+    reduce.batch = fused_batch;
+  }
+
   if (act_dtype == BTLA_DTYPE::F16) {
     moe_w4a8::moe_w4a8_prefill_dispatch<sycl::half>(q, qact, ascale, weights, wscale,
                                                     static_cast<sycl::half*>(outputs), num_tokens_per_expert,
-                                                    num_experts, N, K, blocksize, blks, total_tokens);
+                                                    num_experts, N, K, blocksize, blks, total_tokens, reduce);
   } else {
     using BF = sycl::ext::oneapi::bfloat16;
     moe_w4a8::moe_w4a8_prefill_dispatch<BF>(q, qact, ascale, weights, wscale, static_cast<BF*>(outputs),
                                             num_tokens_per_expert, num_experts, N, K, blocksize, blks,
-                                            total_tokens);
+                                            total_tokens, reduce);
   }
 }
 

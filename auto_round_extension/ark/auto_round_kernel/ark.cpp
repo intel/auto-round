@@ -544,13 +544,19 @@ static void moe_w4a8_prepack_wrapper(torch_ptr stream, torch_ptr weights_s4, tor
                         rescale_group_size);
 }
 
+// `qact`/`ascale` are optional pre-quantized activations (0 = quantize in the
+// call); `row_to_token`/`routing_weights`/`fused_out` are the optional fused
+// top-k reduction (0 = write the unreduced `[T, N]` output).
 static void moe_gemm_w4a8_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights_s8,
                                   torch_ptr wscales, torch_ptr outputs, int act_dtype, int N, int K,
                                   int rescale_block_size, torch_ptr num_tokens_per_expert, int num_experts,
-                                  int total_tokens, int phase) {
+                                  int total_tokens, int phase, torch_ptr qact, torch_ptr ascale,
+                                  torch_ptr row_to_token, torch_ptr routing_weights, torch_ptr fused_out,
+                                  int fused_batch) {
   ark::moe_gemm_w4a8((sycl::queue*)stream, (void*)activations, (void*)weights_s8, (void*)wscales, (void*)outputs,
                      (BTLA_DTYPE)(act_dtype), N, K, rescale_block_size, (int*)num_tokens_per_expert, num_experts,
-                     total_tokens, phase);
+                     total_tokens, phase, (const void*)qact, (const float*)ascale, (const int*)row_to_token,
+                     (const float*)routing_weights, (float*)fused_out, fused_batch);
 }
 
 static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output,
