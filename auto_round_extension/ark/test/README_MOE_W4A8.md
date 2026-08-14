@@ -208,6 +208,117 @@ prefill are far below it, so readings of 0.55–0.71× are expected there: W4A8 
 a large-batch prefill optimization, and at decode it can only help by improving
 the *memory* path.
 
+## Cutting the prefill traffic: two optional call contracts
+
+Read the roofline the other way round. At the compute-bound batch the four
+shapes run at 61–76% of their ceilings, so perfect kernel work is worth at most
+1.3–1.6× — but `qwen3 down`'s ceiling is itself only 109 TFLOPS at 384 rows per
+expert and **105 TFLOPS as the rows per expert go to infinity**, because at that
+point the weight stream has amortized away and what is left (`2 × K` bytes of
+activation traffic and `N × 2` bytes of output per row) does not amortize at
+all. No batch size and no amount of mainloop tuning reaches 100 TFLOPS on that
+shape. Its traffic has to go down. Where the 554 MB it moves at 384 rows per
+expert actually goes:
+
+| Stream | Bytes | Share |
+|---|---|---|
+| weights (the only one that does not grow with the token count) | 201 MB | 36% |
+| the output `[T, N]` fp16 | 201 MB | 36% |
+| the activation quantization round trip (read fp16, write int8, read int8 back) | 151 MB | 27% |
+
+The weight third is irreducible. The other two thirds are not kernel
+inefficiency — they are **interface** redundancy, and both are visible only from
+outside the call:
+
+* the fp16 activations were written by the *previous* kernel (the SiLU/gate
+  elementwise pass for the down projection), which could have written int8
+  directly;
+* every row of `D` is consumed immediately afterwards by the top-k weighted
+  reduction, which collapses `top_k` rows into one.
+
+So `moe_gemm_w4a8` takes two optional contracts that let a caller who owns both
+sides delete those streams. Both are opt-in, both default off, and the existing
+call is unchanged.
+
+### Contract 1 — caller-supplied int8 activations
+
+```python
+out = ark.moe_gemm_w4a8(
+    qact,                    # [T, K] int8, rows sorted by expert
+    weights_s8, wscales, num_tokens_per_expert,
+    activation_scale=ascale,  # [T] fp32, dequant scale per row
+    out_dtype=torch.bfloat16, # what the fp16/bf16 output should be
+)
+```
+
+`qact[r, k] × ascale[r]` must reproduce the fp16 row, which is exactly what the
+kernel's own quantizer produces (`round(x × 127 / absmax)`, `absmax / 127`). The
+producer computes that absmax in the same registers it already holds the row in,
+so upstream this is free; here it deletes three of the five streams — the fp16
+read, the int8 write and the int8 read-back — plus one kernel launch. The GEMM
+itself is untouched, so results are **bit-identical** to passing fp16 and letting
+the kernel quantize (`test_prequantized_activations_match_internal`, and the
+decode equivalent, assert exactly that).
+
+### Contract 2 — the top-k reduction fused into the epilogue
+
+```python
+out = ark.moe_gemm_w4a8(
+    activations, weights_s8, wscales, num_tokens_per_expert,
+    row_to_token=row_to_token,        # [T] int32, routed row -> model token
+    routing_weights=routing_weights,  # [T] fp32, that row's gate weight
+    output_rows=batch,                # -> [batch, N] fp32, pre-zeroed
+)
+```
+
+Instead of writing `[T, N]` and having the caller reduce it, the epilogue scales
+each element by its row's routing weight and `atomic_add`s it into
+`out[row_to_token[r]]`. The `T × N × 2` write becomes a read-modify-write of
+`batch × N × 4` — a quarter of the bytes at `top_k = 8`, counted here as both
+directions — and the separate reduction kernel (another `T × N` read and
+`batch × N` write, which this document's model never counted because it is a
+different call) disappears entirely.
+
+This applies to the **second** projection only: an up/gate projection's output
+feeds SiLU per routed row and must stay unreduced. Two consequences worth
+knowing before enabling it:
+
+* fp32 atomics accumulate in a nondeterministic order, so the result is **not
+  bit-identical** — run to run either. It is validated against the unfused path
+  with the harness's SNR/cosine gates rather than an equality assertion
+  (`test_fused_reduce_matches_unfused`).
+* the output buffer must be zeroed by the caller; the Python wrapper allocates a
+  zeroed one when it owns the allocation.
+
+### What the two are worth
+
+Holding each shape's *measured* effective bandwidth fixed — i.e. assuming the
+kernel gets no better, only that it moves less — and using the harness's own
+traffic model:
+
+| Shape | Routing | Measured | + int8 in | + fused reduce | Both |
+|---|---|---|---|---|---|
+| qwen3 up (N=1536, K=2048) | 384 rows/E | 93.8 | **137** | n/a | n/a |
+| qwen3 down (N=2048, K=768) | 384 rows/E | 66.8 | 84.0 | 81.6 | **109** |
+| minimax up (N=1536, K=3072) | 384 rows/E | 101.0 | **152** | n/a | n/a |
+| minimax down (N=3072, K=1536) | 384 rows/E | 104.8 | 129 | 120 | **152** |
+| qwen3 up | 8K prompt | 98.2 | **152** | n/a | n/a |
+| qwen3 down | 8K prompt | 70.5 | 91.0 | 88.1 | **123** |
+| minimax up | 8K prompt | 93.5 | **137** | n/a | n/a |
+| minimax down | 8K prompt | 95.4 | 116 | 108 | **135** |
+
+(`n/a` = the fused reduction does not apply to an up/gate projection, so the
+reachable number for those shapes is the `+ int8 in` column.)
+
+Both qwen3 shapes clear 100 TFLOPS: the up projection on contract 1 alone, the
+down projection on **both together** — neither is sufficient by itself, at either
+routing. `qwen3 down`'s asymptotic ceiling moves from 105 TFLOPS to 155 (int8
+in), 147 (fused) or 267 (both), which is the real statement: with the contracts
+the shape stops being routing-limited.
+
+These are projections from a traffic model, not measurements — see
+[Status](#status).
+
 ## Decode: coalesced K-split mapping
 
 The decode GEMV originally assigned **one work-item per output element**: lane
@@ -533,7 +644,20 @@ pytest -v -s test_moe_w4a8_perf.py -k perf --models minimax
 
 # Sweep the kernel dispatch configurations and print the fastest equivalent one
 pytest -v -s test_moe_w4a8_perf.py -k sweep
+
+# The traffic-cutting call contracts: A/B sweep, 8K-prompt run, equivalence tests
+pytest -v -s test_moe_w4a8_perf.py -k contract
+pytest -v -s test_moe_w4a8_perf.py -k "prequantized or fused_reduce"
 ```
+
+`test_perf_prefill_contract_sweep` and `test_perf_prefill_contracts_long_seq`
+time the four combinations of the two [call
+contracts](#cutting-the-prefill-traffic-two-optional-call-contracts) at the two
+prefill routings. Because each contract changes what the call moves, every row's
+`DRAM GB/s`, `BW@100T` and ceiling are computed from *that row's* traffic model,
+so the columns stay comparable across contracts. The fused rows are compared
+against a canonicalized baseline (the unfused output reduced by the harness)
+under an SNR gate instead of the bit-identity the other sweeps use.
 
 `test_perf_decode_config_sweep`, `test_perf_prefill_tile_sweep`,
 `test_perf_prefill_act_quant_sweep`, `test_perf_prefill_act_quant_unroll_sweep`
@@ -563,13 +687,14 @@ python test_moe_w4a8_perf.py --phase decode        # decode only
 python test_moe_w4a8_perf.py --skip-accuracy       # perf only
 python test_moe_w4a8_perf.py --compute-bound       # add the 6144-token prefill case
 python test_moe_w4a8_perf.py --long-seq            # add the 8K-prompt prefill case
+python test_moe_w4a8_perf.py --contracts           # add the int8-in + fused-reduce prefill run
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 activations
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
 ```
 
 `--long-seq` also repeats the prefill tile sweep at the 8K prompt when combined
-with `--sweep-configs`.
+with `--sweep-configs`; `--contracts` adds the contract A/B sweep the same way.
 
 The script exits non-zero if any accuracy gate fails.
 
@@ -591,6 +716,36 @@ out = ark.moe_gemm_w4a8(
     num_tokens_per_expert,  # [E] int32
     rescale_block_size=block,
     phase="auto",  # "auto" | "decode" | "prefill"
+)
+```
+
+Two optional prefill contracts cut the traffic the call moves (see [Cutting the
+prefill traffic](#cutting-the-prefill-traffic-two-optional-call-contracts));
+both default off:
+
+```python
+# Caller already has int8 activations + one dequant scale per row.
+out = ark.moe_gemm_w4a8(
+    qact,  # [total_tokens, K] int8
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    activation_scale=ascale,  # [total_tokens] fp32
+    out_dtype=torch.bfloat16,  # dtype of the returned fp16/bf16 output
+    rescale_block_size=block,
+)
+
+# Second projection only: fold the top-k weighted reduction into the epilogue.
+out = ark.moe_gemm_w4a8(  # -> [batch, N] fp32
+    activations,
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    row_to_token=row_to_token,  # [total_tokens] int32
+    routing_weights=routing_weights,  # [total_tokens] fp32
+    output_rows=batch,
+    rescale_block_size=block,
+    phase="prefill",
 )
 ```
 
@@ -858,7 +1013,8 @@ nothing else, so the remaining gap is message efficiency, not arithmetic.
 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | Vectors the activation quantizer loads before it consumes any of them: `1`, `2` or `4` (default, measured fastest). Higher values raise the bytes a work-item keeps in flight — the pass is latency-bound, not bandwidth-bound, at one outstanding load per thread — at the cost of GRF. `1` is the kernel as it was before the batching, so it is the A/B baseline; every value is bit-identical. Values outside `{1, 2, 4}` fall back to the default. Only applies to the vectorized *two-pass* mapping: the single-pass kernel below issues the whole row at once and ignores this. |
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | Keep the activation row in registers between the absmax and the quantize pass instead of reading `[T, K]` twice; **on by default** where the row fits (`K ≤ 2048` at `VEC = 8`, 64 of the 128 dwords a lane gets), worth 1.00–1.05× on the shapes that qualify. Set to `0` to force the two-pass kernel, which is also what runs for longer rows. Bit-identical to it. |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth up to 1.08× on the swept shapes (and never more than 0.9% behind). The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
-| `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. |
+| `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Automatically off when the fused top-k reduction is used, which scatters and therefore cannot use a block store. |
+| `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` times `2 / 3 / 4 / 6`. Values outside `1`–`8` fall back to the default. |
 
 ## Shape constraints
 
@@ -930,10 +1086,32 @@ kernel deficiency (see [the roofline](#the-weights-are-not-the-only-stream)).
 With every stream counted, the four compute-bound shapes were running at 60–74%
 of their true ceilings, and the compute-bound batch moved from 256 to 384 rows
 per expert so that 100 TFLOPS is reachable on all of them. The remaining gap is
-traffic, not arithmetic: the largest single win still on the table is fusing the
-activation quantization into the GEMM's A-tile load, which would delete the int8
-copy's write *and* read — 2 of the 5 streams, 14–22% of the traffic depending on
-K — but that is a mainloop change and wants a device to develop against.
+traffic, not arithmetic — but the traffic worth deleting turned out to be at the
+call boundary rather than in the mainloop, which is the subject of the two
+[call contracts](#cutting-the-prefill-traffic-two-optional-call-contracts).
+
+Those contracts, and the `ARK_MOE_W4A8_PREFILL_PREFETCH` sweep point, are the
+current `NEEDS-HARDWARE-VALIDATION` items: they are reasoned through and
+lint-clean but have not been compiled or timed, because the authoring
+environment has no XPU and no SYCL compiler. What needs to be checked on device,
+in order:
+
+1. `test_prequantized_activations_match_internal` and its decode counterpart —
+   bit-identity of the int8-in path against the kernel's own quantizer. A
+   mismatch means the harness's reference quantizer and
+   `launch_act_dynamic_quant` disagree on rounding, not that the contract is
+   wrong.
+2. `test_fused_reduce_matches_unfused` — SNR/cosine against the unfused path.
+   Expected around 54 dB (bf16 rounding of the unfused rows dominates the fp32
+   atomic's reassociation), against a 20 dB / 0.99 gate.
+3. `test_perf_prefill_contract_sweep` and `test_perf_prefill_contracts_long_seq`
+   — whether the measured speedups follow the traffic model. If the int8-in path
+   gains materially *more* than the model predicts, the fp16 A reads were missing
+   L2 and there is mainloop blocking still to do; materially less, and the
+   quantization pass was overlapping with the GEMM better than a byte count
+   suggests.
+4. `test_perf_prefill_prefetch_sweep` — a pure-kernel A/B, worth 3–8% on the
+   short-mainloop shapes if anything.
 
 ### Where the remaining prefill headroom is
 
@@ -943,17 +1121,54 @@ traffic the call still moves and ceiling the routing sets:
 
 | Lead | What it would change | Where it shows |
 |---|---|---|
-| Fusing the activation quantization into the GEMM's A-tile load | Deletes 2 of the 5 streams (the int8 copy written, then read back) — 14% of the traffic at `K = 768`, 21% at `K = 2048`, 22% at `K = 3072` | Every shape; it is the largest single item left |
-| Routing more rows per expert | Nothing in the kernel — it *raises* the ceiling, because the weight stream is the only one that does not grow with the token count | The 8K prompt is exactly this experiment for Qwen3-MoE: 512 rows/expert lifts the ceilings from 129 / 112 to 145 / 123 TFLOPS, and the measured 98.2 / 70.5 TFLOPS follow |
-| A single-pass activation quantizer for `K = 3072` | The second read of `[T, K]`, ~450 MB at the compute-bound batch | minimax up only; its row is 96 dwords per lane, past the 16-vector rung |
+| Caller-supplied int8 activations ([contract 1](#contract-1--caller-supplied-int8-activations)) | Deletes 3 of the 5 streams — 27% of the traffic at `K = 768`, 37% at `K = 2048`, 44% at `K = 3072` | Every shape; it is the largest single item, and the only one that gets `qwen3 up` past 100 on its own |
+| The fused top-k reduction ([contract 2](#contract-2--the-top-k-reduction-fused-into-the-epilogue)) | Turns a `T × N` fp16 write into a `batch × N` fp32 read-modify-write, and deletes the separate reduction kernel | Second projections only; combined with contract 1 it is what gets `qwen3 down` past 100 |
+| Routing more rows per expert | Nothing in the kernel — it *raises* the ceiling, because the weight stream is the only one that does not grow with the token count | Real but bounded: `qwen3 down`'s ceiling converges to 105 TFLOPS as rows/expert → ∞, so this lead alone can never reach the target on that shape |
+| Prefetch depth, scheduler tile order, non-temporal D stores | Pure mainloop/epilogue work against the 239–296 GB/s the four shapes currently stream | `qwen3 down` is the lowest of the four (239 GB/s): its D is a *write*, and 12 k-tiles is the shortest mainloop, so its prologue/epilogue amortize worst |
+| A single-pass activation quantizer for `K = 3072` | The second read of `[T, K]`, ~450 MB at the compute-bound batch | minimax up only; its row is 96 dwords per lane, past the 16-vector rung — and moot under contract 1, which deletes the pass entirely |
 
-A fourth lead has been closed: a 256-row tile halves how often B is re-read per
-M tile, but the 8K-prompt sweep timed it at the only routing where it pads no
-more than a 128-row tile and it came out level at best (see
-[Prefill tile](#prefill-tile)), so the ladder no longer reaches for it.
+Two leads have been closed by analysis rather than measurement:
+
+**A 256-row tile** halves how often B is re-read per M tile, but the 8K-prompt
+sweep timed it at the only routing where it pads no more than a 128-row tile and
+it came out level at best (see [Prefill tile](#prefill-tile)), so the ladder no
+longer reaches for it.
+
+**De-duplicating A for the up/gate projection.** Its `[T, K]` input repeats each
+token `top_k = 8` times, so taking `[batch, K]` plus `sorted_token_ids` and
+gathering rows would cut the activation streams 8× — this is what vLLM's
+`fused_moe` does. It does not port here: the A tile is loaded through the Xe **2D
+block descriptor**, which describes a rectangle of a regular surface (base,
+pitch, height) and cannot gather, so a gathered A degenerates into one one-row
+block load per row of the tile. Gathering only inside the *quantizer* saves
+nothing either, because a token's 8 copies are spread across the whole
+sorted-by-expert range and miss L2. Contract 1 removes the same bytes for the
+same shape without touching the load path, which is why it was implemented
+instead.
+
+**Fusing the activation quantization into the GEMM's A-tile load** — listed in
+earlier revisions of this document as the single largest remaining win, at
+14–22% of the traffic — does not survive arithmetic either, and the claim was
+wrong. It only pays if the quantized A panel stays resident in SLM *and* the
+per-row absmax is still available:
+
+* a per-row absmax needs the whole row before any element can be quantized, so a
+  mainloop that quantizes during the A-tile load must read A as **fp16** (2
+  bytes/element) — which costs exactly what the deleted int8 write + read-back
+  saved (1 + 1 bytes/element). Net zero.
+* keeping the int8 panel resident instead would need `128 × 768` int8 = 96 KB in
+  one work-group's SLM budget; even `TileM = 64` is 48 KB, over what the tile
+  configuration allows.
+* switching to a per-k-block activation scale sidesteps the absmax, but requires
+  the fp32 shadow accumulator back — precisely the register cost that was
+  removed to make the `128x256` tile fit.
+
+The stream that is genuinely deletable is the one the *producer* writes, not the
+one the GEMM reads, which is contract 1.
 
 `qwen3 down` (`N = 2048, K = 768`) stays the outlier at ~64–70 TFLOPS: 12
 k-tiles per tile is the shortest mainloop of the four, its output is as large as
 its weights, and its ceiling is the lowest of the set at every routing. It is
-also the shape the traffic-side leads above would help most.
+also the shape the two contracts help most, and the only one that needs both of
+them.
 

@@ -187,6 +187,100 @@ padding 上被测量；512 是 256 的整数倍，是套件里唯一满足
 0.55–0.71× 是预期结果：W4A8 是面向大 batch prefill 的优化，在 decode 阶段只能通过
 改善**访存**路径来获益。
 
+## 削减 prefill 流量：两个可选的调用契约
+
+把 roofline 反过来读。计算受限 batch 下四个形状跑在各自天花板的 61–76%，也就是说
+把 kernel 做到完美最多也只有 1.3–1.6× — 但 `qwen3 down` 在每专家 384 行时的天花板
+本身只有 109 TFLOPS，而且**当每专家行数趋于无穷时也只有 105 TFLOPS**：那时权重流
+已经被摊薄掉，剩下的每行 `2 × K` 字节激活流量和 `N × 2` 字节输出完全不会被摊薄。
+所以无论 batch 多大、mainloop 怎么调，这个形状都到不了 100 TFLOPS。必须减它的流
+量。每专家 384 行时它搬运的那 554 MB 具体去了哪里：
+
+| 数据流 | 字节 | 占比 |
+|---|---|---|
+| 权重 (唯一不随 token 数增长的一条) | 201 MB | 36% |
+| 输出 `[T, N]` fp16 | 201 MB | 36% |
+| 激活量化的来回 (读 fp16、写 int8、再读回 int8) | 151 MB | 27% |
+
+权重那三分之一动不了。另外三分之二并不是 kernel 写得不好 — 它们是**接口层面**的
+冗余，而且只有站在调用之外才看得见：
+
+* fp16 激活是**上一个** kernel 写出来的 (down-proj 对应的是 SiLU/gate 的 elementwise
+  pass)，它本来就可以直接写 int8；
+* `D` 的每一行紧接着就会被 top-k 加权规约吃掉，`top_k` 行合成 1 行。
+
+因此 `moe_gemm_w4a8` 增加了两个可选契约，让同时掌握两端的调用方把这些流删掉。两者
+都是 opt-in、默认关闭，原有调用方式完全不变。
+
+### 契约 1 — 调用方直接提供 int8 激活
+
+```python
+out = ark.moe_gemm_w4a8(
+    qact,                    # [T, K] int8，按专家排序的行
+    weights_s8, wscales, num_tokens_per_expert,
+    activation_scale=ascale,  # [T] fp32，每行一个反量化 scale
+    out_dtype=torch.bfloat16, # 期望的 fp16/bf16 输出类型
+)
+```
+
+`qact[r, k] × ascale[r]` 必须能还原出原来的 fp16 行，这正是 kernel 自带量化器产生
+的结果 (`round(x × 127 / absmax)`、`absmax / 127`)。生产者在它本来就持有整行的那批
+寄存器里就能算出 absmax，所以上游是零成本；在本次调用里则删掉了五条流中的三条 —
+fp16 读、int8 写、int8 读回 — 外加一次 kernel launch。GEMM 本身没有任何改动，因此
+结果与传 fp16 让 kernel 自己量化**逐位相同**
+(`test_prequantized_activations_match_internal` 及其 decode 版本断言的就是这一点)。
+
+### 契约 2 — 把 top-k 规约折进 epilogue
+
+```python
+out = ark.moe_gemm_w4a8(
+    activations, weights_s8, wscales, num_tokens_per_expert,
+    row_to_token=row_to_token,        # [T] int32，路由行 -> 模型 token
+    routing_weights=routing_weights,  # [T] fp32，该行的门控权重
+    output_rows=batch,                # -> [batch, N] fp32，需预先清零
+)
+```
+
+epilogue 不再写出 `[T, N]` 让调用方自己规约，而是把每个元素乘上该行的 routing
+weight 之后 `atomic_add` 到 `out[row_to_token[r]]`。`T × N × 2` 的写变成
+`batch × N × 4` 的读改写 — 在 `top_k = 8` 时即使按双向计费也只有原来的四分之一 —
+而且那个独立的规约 kernel (又一次 `T × N` 读加 `batch × N` 写，本文的流量模型从来
+没算过它，因为那是另一次调用) 整个消失。
+
+它只适用于**第二个**投影：up/gate 投影的输出要按路由行进入 SiLU，必须保持未规约状
+态。启用前还有两点需要知道：
+
+* fp32 atomic 的累加顺序不确定，因此结果**不是逐位相同**的 — 两次运行之间也不是。
+  它是用 harness 的 SNR/余弦门槛而不是相等断言来对照无融合路径验证的
+  (`test_fused_reduce_matches_unfused`)。
+* 输出缓冲区必须由调用方清零；当分配由 Python 包装层负责时，它会分配一个已清零的。
+
+### 这两项值多少
+
+保持每个形状**实测**的有效带宽不变 — 即假设 kernel 一点没变好，只是搬得更少 — 并
+使用 harness 自己的流量模型：
+
+| 形状 | 路由 | 实测 | + int8 输入 | + 融合规约 | 两者 |
+|---|---|---|---|---|---|
+| qwen3 up (N=1536, K=2048) | 384 行/专家 | 93.8 | **137** | 不适用 | 不适用 |
+| qwen3 down (N=2048, K=768) | 384 行/专家 | 66.8 | 84.0 | 81.6 | **109** |
+| minimax up (N=1536, K=3072) | 384 行/专家 | 101.0 | **152** | 不适用 | 不适用 |
+| minimax down (N=3072, K=1536) | 384 行/专家 | 104.8 | 129 | 120 | **152** |
+| qwen3 up | 8K 提示词 | 98.2 | **152** | 不适用 | 不适用 |
+| qwen3 down | 8K 提示词 | 70.5 | 91.0 | 88.1 | **123** |
+| minimax up | 8K 提示词 | 93.5 | **137** | 不适用 | 不适用 |
+| minimax down | 8K 提示词 | 95.4 | 116 | 108 | **135** |
+
+(「不适用」= 融合规约不适用于 up/gate 投影，所以这些形状能达到的数字看
+`+ int8 输入` 那一列。)
+
+两个 qwen3 形状都能越过 100 TFLOPS：up 投影只靠契约 1 就够，down 投影需要**两者一
+起** — 在两种路由下，单独任何一项都不够。`qwen3 down` 的渐近天花板从 105 TFLOPS 变
+为 155 (int8 输入)、147 (融合规约) 或 267 (两者)，这才是真正的结论：有了这两个契
+约，这个形状不再受路由限制。
+
+以上是流量模型的推算，不是实测 — 见[状态](#状态)。
+
 ## Decode：合并访存的 K-split 映射
 
 decode GEMV 最初为**每个输出元素分配一个 work-item**：sub-group 中的第 `l` 号 lane
@@ -475,7 +569,18 @@ pytest -v -s test_moe_w4a8_perf.py -k perf --models minimax
 
 # 扫描 kernel 的各种 dispatch 配置，并打印最快且数值等价的一个
 pytest -v -s test_moe_w4a8_perf.py -k sweep
+
+# 削减流量的调用契约：A/B 扫描、8K 提示词、等价性测试
+pytest -v -s test_moe_w4a8_perf.py -k contract
+pytest -v -s test_moe_w4a8_perf.py -k "prequantized or fused_reduce"
 ```
+
+`test_perf_prefill_contract_sweep` 和 `test_perf_prefill_contracts_long_seq` 会在
+两种 prefill 路由下，对两个[调用契约](#削减-prefill-流量两个可选的调用契约)的四种
+组合分别计时。由于每个契约都会改变这次调用搬运的内容，每一行的 `DRAM GB/s`、
+`BW@100T` 和天花板都按**该行自己的**流量模型计算，因此各列在不同契约之间仍然可比。
+融合规约的行是与规范化后的基线 (由 harness 对无融合输出做规约) 在 SNR 门槛下比较
+的，而不是其它扫描使用的逐位相同。
 
 `test_perf_decode_config_sweep`、`test_perf_prefill_tile_sweep`、
 `test_perf_prefill_act_quant_sweep`、`test_perf_prefill_act_quant_unroll_sweep`
@@ -503,13 +608,14 @@ python test_moe_w4a8_perf.py --phase decode        # 仅 decode
 python test_moe_w4a8_perf.py --skip-accuracy       # 仅性能
 python test_moe_w4a8_perf.py --compute-bound       # 追加 6144 token 的 prefill 用例
 python test_moe_w4a8_perf.py --long-seq            # 追加 8K 提示词的 prefill 用例
+python test_moe_w4a8_perf.py --contracts           # 追加 int8 输入 + 融合规约的 prefill 用例
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 激活
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
 ```
 
 `--long-seq` 与 `--sweep-configs` 一起使用时，还会在 8K 提示词下重跑一遍 prefill 的
-tile 扫描。
+tile 扫描；`--contracts` 以同样方式追加契约的 A/B 扫描。
 
 任何精度门限未通过时，脚本以非 0 状态码退出。
 
@@ -531,6 +637,35 @@ out = ark.moe_gemm_w4a8(
     num_tokens_per_expert,  # [E] int32
     rescale_block_size=block,
     phase="auto",  # "auto" | "decode" | "prefill"
+)
+```
+
+两个可选的 prefill 契约可以削减本次调用搬运的流量 (见
+[削减 prefill 流量](#削减-prefill-流量两个可选的调用契约))，两者默认关闭：
+
+```python
+# 调用方已经持有 int8 激活以及每行一个的反量化 scale。
+out = ark.moe_gemm_w4a8(
+    qact,  # [total_tokens, K] int8
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    activation_scale=ascale,  # [total_tokens] fp32
+    out_dtype=torch.bfloat16,  # 返回的 fp16/bf16 输出类型
+    rescale_block_size=block,
+)
+
+# 仅第二个投影：把 top-k 加权规约折进 epilogue。
+out = ark.moe_gemm_w4a8(  # -> [batch, N] fp32
+    activations,
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    row_to_token=row_to_token,  # [total_tokens] int32
+    routing_weights=routing_weights,  # [total_tokens] fp32
+    output_rows=batch,
+    rescale_block_size=block,
+    phase="prefill",
 )
 ```
 
@@ -760,7 +895,8 @@ legacy GEMV 的收益为 1.09–1.93×。
 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | 激活量化 kernel 在开始消费之前先加载的向量个数：`1`、`2` 或 `4` (默认，实测最快)。取值越大，一个 work-item 保持在途的字节越多——这一遍在每线程仅一条在途 load 时受限于延迟而非带宽——代价是 GRF 占用。`1` 即批量化之前的 kernel，可作为 A/B 基线；所有取值逐位相同。不在 `{1, 2, 4}` 中的取值会回退到默认值。只对向量化的**两遍**映射生效：下面的单遍 kernel 一次性发出整行，会忽略这个开关。 |
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | 在 absmax 与量化两步之间把激活行留在寄存器里，而不是把 `[T, K]` 读两遍；在行放得下时**默认开启** (`VEC = 8` 下 `K ≤ 2048`，占每 lane 128 个 dword 中的 64 个)，在满足条件的形状上带来 1.00–1.05× 的收益。设为 `0` 可强制走两遍 kernel——更长的行本来也走它。两者逐位相同。 |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上最多带来 1.08× 的收益 (落后时也不超过 0.9%)。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
-| `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。 |
+| `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。使用融合 top-k 规约时会自动关闭，因为那是 scatter，用不了 block store。 |
+| `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` 会对 `2 / 3 / 4 / 6` 计时。超出 `1`–`8` 的取值回退到默认值。 |
 
 ## 形状约束
 
@@ -822,9 +958,25 @@ int32 累加器做 2D 写出的。事实证明那个参考对象选错了：`reo
 起来像是 kernel 的缺陷 (参见 [roofline](#权重并不是唯一的数据流))。把所有数据流都计入
 之后，四个受算力约束的形状实际上跑在各自真实天花板的 60–74%，而受算力约束的 batch 也
 从每专家 256 行提高到 384 行，好让 100 TFLOPS 在所有形状上都是可达的。剩下的差距在访
-存而不是算术：目前仍摆在桌面上的最大一项收益，是把激活量化融合进 GEMM 的 A-tile 加载
-中，这将同时消掉 int8 副本的写与读——5 条数据流中的 2 条，视 K 而定约占 14–22% 的流
-量——但那是主循环的改动，需要在有设备的环境里开发。
+存而不是算术 — 但真正值得删掉的流量原来在调用边界上，而不在主循环里，这正是那两个
+[调用契约](#削减-prefill-流量两个可选的调用契约)所做的事。
+
+这两个契约以及 `ARK_MOE_W4A8_PREFILL_PREFETCH` 这个扫描点，是当前的
+`NEEDS-HARDWARE-VALIDATION` 项：它们经过了推导、通过了 lint，但既没有编译过也没有计
+过时，因为撰写环境既没有 XPU 也没有 SYCL 编译器。需要在设备上按顺序验证的是：
+
+1. `test_prequantized_activations_match_internal` 及其 decode 版本 — int8 输入路径与
+   kernel 自带量化器逐位相同。不一致说明 harness 的参考量化器与
+   `launch_act_dynamic_quant` 在舍入上有分歧，而不是契约本身有问题。
+2. `test_fused_reduce_matches_unfused` — 与无融合路径的 SNR/余弦对比。预期约 54 dB
+   (无融合那一侧的 bf16 舍入误差主导，超过 fp32 atomic 的重结合误差)，门槛是
+   20 dB / 0.99。
+3. `test_perf_prefill_contract_sweep` 与 `test_perf_prefill_contracts_long_seq` — 实测
+   加速比是否跟得上流量模型。如果 int8 输入路径的收益明显**超过**模型预测，说明原来
+   fp16 的 A 读没有命中 L2，主循环侧还有 blocking 可做；明显低于预测，则说明量化那一
+   遍原本与 GEMM 的重叠程度好于按字节数的估计。
+4. `test_perf_prefill_prefetch_sweep` — 纯 kernel 侧的 A/B，若有收益，在短主循环的形状
+   上约为 3–8%。
 
 ### prefill 还剩下多少空间
 
@@ -833,14 +985,40 @@ int32 累加器做 2D 写出的。事实证明那个参考对象选错了：`reo
 
 | 方向 | 会改变什么 | 体现在哪里 |
 |---|---|---|
-| 把激活量化融合进 GEMM 的 A-tile 加载 | 消掉 5 条数据流中的 2 条 (int8 副本的写、以及随后的读回) — `K = 768` 时占 14%、`K = 2048` 时 21%、`K = 3072` 时 22% | 所有形状；这是仍未做的最大一项 |
-| 让每个专家分到更多行 | kernel 里什么都不用改 — 它*抬高*的是天花板，因为只有权重这一条流不随 token 数增长 | 8K 提示词对 Qwen3-MoE 正是这个实验：每专家 512 行把天花板从 129 / 112 抬到 145 / 123 TFLOPS，实测的 98.2 / 70.5 TFLOPS 也随之上移 |
-| `K = 3072` 的单遍激活量化 | 省掉对 `[T, K]` 的第二次读，在受算力约束的 batch 下约 450 MB | 仅 minimax up；它的一行是每 lane 96 个 dword，超过了 16 向量那一档 |
+| 调用方直接提供 int8 激活 ([契约 1](#契约-1--调用方直接提供-int8-激活)) | 消掉 5 条数据流中的 3 条 — `K = 768` 时占 27%、`K = 2048` 时 37%、`K = 3072` 时 44% | 所有形状；这是最大的一项，也是唯一能单独把 `qwen3 up` 送过 100 的一项 |
+| 融合 top-k 规约 ([契约 2](#契约-2--把-top-k-规约折进-epilogue)) | 把 `T × N` 的 fp16 写变成 `batch × N` 的 fp32 读改写，并删掉独立的规约 kernel | 仅第二个投影；与契约 1 合起来才是把 `qwen3 down` 送过 100 的那一步 |
+| 让每个专家分到更多行 | kernel 里什么都不用改 — 它*抬高*的是天花板，因为只有权重这一条流不随 token 数增长 | 有效但有上限：每专家行数趋于无穷时 `qwen3 down` 的天花板收敛到 105 TFLOPS，因此单靠这一项在该形状上永远到不了目标 |
+| 预取深度、调度器 tile 顺序、非临时 (non-temporal) 的 D store | 纯主循环/epilogue 侧的工作，对手是四个形状当前 239–296 GB/s 的实际带宽 | `qwen3 down` 是四者中最低的 (239 GB/s)：它的 D 是**写**，而 12 个 k-tile 是最短的主循环，因此 prologue/epilogue 摊得最差 |
+| `K = 3072` 的单遍激活量化 | 省掉对 `[T, K]` 的第二次读，在受算力约束的 batch 下约 450 MB | 仅 minimax up；它的一行是每 lane 96 个 dword，超过了 16 向量那一档 — 而且在契约 1 之下已无意义，因为那一遍整个被删掉了 |
 
-还有第四个方向已经收敛：256 行的 tile 能把每个 M tile 重复读 B 的次数减半，但 8K 提示词
-的扫描已经在唯一一种它不比 128 行 tile 多 padding 的路由上测过它，结果最好也只是持平
-(参见 [Prefill tile](#prefill-tile))，因此阶梯不再选用它。
+有两个方向是靠分析而不是靠实测收敛的：
+
+**256 行的 tile** 能把每个 M tile 重复读 B 的次数减半，但 8K 提示词的扫描已经在唯一一种
+它不比 128 行 tile 多 padding 的路由上测过它，结果最好也只是持平 (参见
+[Prefill tile](#prefill-tile))，因此阶梯不再选用它。
+
+**为 up/gate 投影去重 A。** 它的 `[T, K]` 输入把每个 token 重复了 `top_k = 8` 次，所以
+改成接收 `[batch, K]` 加 `sorted_token_ids` 再按索引取行，可以把激活相关的数据流减少
+8× — vLLM 的 `fused_moe` 就是这么做的。但它搬不过来：A tile 是通过 Xe 的 **2D block
+描述符**加载的，那个描述符描述的是一块规则表面 (基址、pitch、高度) 上的矩形，无法做
+gather，因此 gather 版的 A 会退化成 tile 每行一条单行 block load。只在**量化器**里做
+gather 同样省不到：一个 token 的 8 份拷贝散布在整个按专家排序的区间里，命不中 L2。契约
+1 在不动加载路径的前提下，为同样的形状删掉了同样的字节，所以最后实现的是它。
+
+**把激活量化融合进 GEMM 的 A-tile 加载** — 本文档早先版本把它列为仍未做的最大一项收益、
+占流量的 14–22% — 在算术上同样站不住，那个判断是错的。它只有在量化后的 A panel 能常驻
+SLM **且**每行的 absmax 仍然可得时才划算：
+
+* 每行一个 absmax 意味着必须先看完整行才能量化其中任何一个元素，所以在 A-tile 加载时做
+  量化的主循环只能按 **fp16** (每元素 2 字节) 读 A — 这恰好抵消掉省下来的 int8 写 + 读
+  回 (1 + 1 字节/元素)。净收益为零。
+* 若改为让 int8 panel 常驻，`128 × 768` 的 int8 panel 是 96 KB，塞不进一个 work-group 的
+  SLM 预算；即使 `TileM = 64` 也要 48 KB，超出了该 tile 配置允许的范围。
+* 改用按 k-block 的激活 scale 可以绕开 absmax，但需要把 fp32 shadow accumulator 加回来 —
+  那正是当初为了让 `128x256` tile 放得下而删掉的寄存器开销。
+
+真正可删的那条流是**生产者写出的**那条，而不是 GEMM 读进来的那条，也就是契约 1。
 
 `qwen3 down` (`N = 2048, K = 768`) 仍是那个异常值，只有约 64–70 TFLOPS：每个 tile 只有
 12 个 k-tile，是四者中最短的主循环，其输出与权重一样大，而它在任何路由下的天花板也都是
-四者中最低的。它同时也是上面这些访存侧改动收益最大的形状。
+四者中最低的。它同时也是这两个契约收益最大的形状，也是唯一两个契约都需要的形状。
