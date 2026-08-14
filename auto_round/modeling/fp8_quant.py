@@ -107,6 +107,7 @@ def _patch_fp8_dequantize_for_ragged_tiles():
 
     try:
         import transformers.integrations.finegrained_fp8 as transformers_fp8
+
         from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
     except ImportError:
         return

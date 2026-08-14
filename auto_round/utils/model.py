@@ -409,9 +409,7 @@ def llm_load_model(
             from transformers import FineGrainedFP8Config
 
             load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
-            logger.info(
-                "Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading."
-            )
+            logger.info("Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading.")
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
