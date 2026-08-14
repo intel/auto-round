@@ -747,15 +747,17 @@ def _collect_kimi_k25_int4_source_entries(
     """Collect kimi_k25 INT4 source tensors.
 
     Expected source layout per layer:
-      * ``<layer>.weight_packed``: uint8/int8 packed 2x int4 values per byte
+      * ``<layer>.weight_packed``: uint8/int8 packed 2x int4 values per byte,
+        **or** int32 packed 8x int4 values per element (Kimi-K2.6 format)
       * ``<layer>.weight_scale``: floating-point per-group scales
       * optional ``<layer>.weight_zero_point`` or ``<layer>.zero_point``
+      * optional ``<layer>.weight_shape``: int32 tensor storing original shape
     """
     entries: list[tuple[str, str, str, str | None]] = []
     for name, packed in raw_tensors.items():
         if not name.endswith(".weight_packed"):
             continue
-        if packed.dtype not in (torch.uint8, torch.int8):
+        if packed.dtype not in (torch.uint8, torch.int8, torch.int32):
             continue
 
         layer_name = name[: -len(".weight_packed")]
@@ -781,7 +783,23 @@ def _collect_kimi_k25_int4_source_entries(
 
 
 def _unpack_int4_weight_packed(packed: torch.Tensor) -> torch.Tensor:
-    """Unpack uint8/int8 ``[out, in/2]`` bytes into int16 ``[out, in]`` nibbles."""
+    """Unpack packed int4 bytes/ints into int16 ``[out, in]`` nibbles.
+
+    Supports two packing formats:
+      * ``uint8`` / ``int8``: 2 nibbles per byte — ``[out, in/2]`` → ``[out, in]``
+      * ``int32``: 8 nibbles per element (Kimi-K2.6) — ``[out, in/8]`` → ``[out, in]``
+        Nibbles are stored LSB-first: bits 0-3 → nibble 0, bits 4-7 → nibble 1, …
+    """
+    if packed.dtype == torch.int32:
+        # Each int32 packs 8 nibbles (4-bit values), LSB-first.
+        packed_i32 = packed.view(torch.int32)
+        rows, cols = packed_i32.shape
+        # Extract all 8 nibbles per int32 element.
+        nibble_list = [(packed_i32 >> (4 * i)) & 0xF for i in range(8)]
+        # Stack into [rows, cols, 8] then reshape to [rows, cols*8].
+        out = torch.stack(nibble_list, dim=-1).reshape(rows, cols * 8).to(torch.int16)
+        return out
+
     packed_u8 = packed.view(torch.uint8)
     lo = packed_u8 & 0x0F
     hi = (packed_u8 >> 4) & 0x0F
@@ -822,8 +840,12 @@ def _dequant_kimi_k25_int4_tensors(
         packed = raw_tensors.pop(packed_key)
         scale = raw_tensors.pop(scale_key)
         zero = raw_tensors.pop(zp_key) if zp_key is not None else None
+        # Remove auxiliary weight_shape tensor if present (Kimi-K2.6 format).
+        raw_tensors.pop(f"{layer_name}.weight_shape", None)
 
-        in_features = packed.shape[1] * 2
+        # int32 packs 8 nibbles per element; uint8/int8 packs 2 nibbles per byte.
+        nibbles_per_element = 8 if packed.dtype == torch.int32 else 2
+        in_features = packed.shape[1] * nibbles_per_element
         groups = scale.shape[1]
         inferred_group_size = (in_features // groups) if groups > 0 and in_features % groups == 0 else None
         group_size = inferred_group_size or default_group_size
