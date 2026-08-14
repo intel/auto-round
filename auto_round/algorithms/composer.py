@@ -231,9 +231,7 @@ class AlgorithmComposer:
 
             if _has_nvfp4_layer(orchestrator):
                 can_compile_block_forward = False
-                logger.info(
-                    "Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4."
-                )
+                logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
