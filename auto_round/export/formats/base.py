@@ -152,6 +152,14 @@ class OutputFormat(ABC):
         else:
             return self.backend.get_backend_name()
 
+    def is_supported_immediate_packing(self) -> bool:
+        """Whether this format can pack each block before full-model export."""
+        return self.backend.is_supported_immediate_packing() if self.backend is not None else True
+
+    def is_supported_immediate_saving(self) -> bool:
+        """Whether this format can serialize each block during quantization."""
+        return self.backend.is_supported_immediate_saving() if self.backend is not None else True
+
     @classmethod
     def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:
         if isinstance(scheme, str) and scheme.upper() in cls.support_schemes:

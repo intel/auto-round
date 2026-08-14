@@ -130,8 +130,8 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
         Reproduces the layout the quant func sees at tuning time: the (optionally
         transposed) FP weight grouped to ``[-1, group_size]``. When AWQ ran in
-        ``clip_as_init`` mode and stored a per-group ``awq_clip_max`` on the layer,
-        the weight is clamped to that range first so the searched ``init_scale``
+        ``clip_as_init`` mode and stored a per-group clip range on the layer, the
+        weight is clamped to that range first so the searched ``init_scale``
         already reflects the AWQ clip (``max_scale`` then tunes a coefficient on
         top of it).
         """
@@ -141,15 +141,22 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
             weight = weight.t()
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight.data, layer.group_size)
 
+        clip_min = getattr(layer, "awq_clip_min", None)
         clip_max = getattr(layer, "awq_clip_max", None)
         if clip_max is not None:
             clip_max = clip_max.reshape(-1, 1).to(weight_reshape.device, weight_reshape.dtype)
-            if clip_max.shape[0] == weight_reshape.shape[0]:
-                weight_reshape = torch.clamp(weight_reshape, -clip_max, clip_max)
+            clip_min = (
+                -clip_max
+                if clip_min is None
+                else clip_min.reshape(-1, 1).to(weight_reshape.device, weight_reshape.dtype)
+            )
+            if clip_max.shape[0] == weight_reshape.shape[0] and clip_min.shape[0] == weight_reshape.shape[0]:
+                weight_reshape = torch.clamp(weight_reshape, clip_min, clip_max)
             else:
                 logger.warning_once(
-                    "SignRoundV2: ignoring awq_clip_max with shape %s incompatible with "
-                    "grouped weight shape %s." % (tuple(clip_max.shape), tuple(weight_reshape.shape))
+                    "SignRoundV2: ignoring AWQ clip range with shapes %s/%s incompatible with "
+                    "grouped weight shape %s."
+                    % (tuple(clip_min.shape), tuple(clip_max.shape), tuple(weight_reshape.shape))
                 )
         return weight_reshape
 

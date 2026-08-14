@@ -20,6 +20,7 @@ from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
 from auto_round.export.formats.backends.auto_gptq import AutoGPTQFormat
 from auto_round.export.formats.backends.llm_compressor import LLMCompressorFormat
 from auto_round.export.formats.backends.mlx import MLXFormat
+from auto_round.export.formats.backends.svdquant_nunchaku import SVDQuantNunchakuFormat
 
 __all__ = [
     "AutoAWQFormat",
@@ -30,4 +31,5 @@ __all__ = [
     "GGUFFormat",
     "LLMCompressorFormat",
     "MLXFormat",
+    "SVDQuantNunchakuFormat",
 ]

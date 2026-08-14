@@ -1542,10 +1542,20 @@ class BaseOrchestrator(object):
             return
 
         formats = getattr(self, "formats", [])
+        if any(not format.is_supported_immediate_packing() for format in formats):
+            self.compress_context.is_immediate_packing = False
+        if any(not format.is_supported_immediate_saving() for format in formats):
+            self.compress_context.is_immediate_saving = False
+
         has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
         # GGUF supports per-block / per-layer immediate packing even when
         # full-model in-place rewriting is disabled by outside-block layers.
-        if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
+        if (
+            len(formats) == 1
+            and not formats[0].is_fake()
+            and formats[0].is_supported_immediate_packing()
+            and (self.inplace or has_single_gguf_format)
+        ):
             self.compress_context.is_immediate_packing = True
 
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:

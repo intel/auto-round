@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 import auto_round.utils.device as auto_round_utils
 from auto_round.utils.common import (
@@ -9,7 +10,19 @@ from auto_round.utils.common import (
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
-from auto_round.utils.model import is_code_model
+from auto_round.utils.model import is_code_model, map_nested_tensors
+
+
+def test_map_nested_tensors_preserves_structure_without_mutating_input():
+    original = {"args": (torch.tensor([1.0]),), "metadata": ["unchanged"]}
+
+    mapped = map_nested_tensors(original, lambda tensor: tensor + 1)
+
+    assert mapped is not original
+    assert mapped["args"] is not original["args"]
+    torch.testing.assert_close(mapped["args"][0], torch.tensor([2.0]))
+    torch.testing.assert_close(original["args"][0], torch.tensor([1.0]))
+    assert mapped["metadata"] == ["unchanged"]
 
 
 @pytest.mark.parametrize(

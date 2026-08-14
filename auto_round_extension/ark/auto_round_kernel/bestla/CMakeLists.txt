@@ -208,12 +208,16 @@ if(BTLA_UT_BENCHMARK)
     endforeach()
 
     # AOT compile target for Intel GPUs
-    # Use intel_gpu_pvc for Data Center GPU Max series, or intel_gpu_bmg_g21 for Battlemage
-    set(DPCPP_SYCL_TARGET "intel_gpu_bmg_g21" CACHE STRING "SYCL target (intel_gpu_pvc, intel_gpu_bmg_g21)")
-    
+    # Use intel_gpu_pvc for Data Center GPU Max series, or intel_gpu_bmg_g31 for Battlemage
+    set(DPCPP_SYCL_TARGET "intel_gpu_bmg_g21" CACHE STRING "SYCL target (intel_gpu_pvc, intel_gpu_bmg_g31, intel_gpu_bmg_g21)")
+
     # Map target to device name for -Xs flag
-    if(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g21" OR DPCPP_SYCL_TARGET STREQUAL "bmg")
-      set(SYCL_DEVICE_NAME "bmg_g21")
+    if(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g21")
+      set(SYCL_DEVICE_NAME "bmg-g21")
+    elseif(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g31")
+      set(SYCL_DEVICE_NAME "bmg-g31")
+    elseif(DPCPP_SYCL_TARGET STREQUAL "bmg")
+      set(SYCL_DEVICE_NAME "bmg-g21,bmg-g31")
     elseif(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_pvc" OR DPCPP_SYCL_TARGET STREQUAL "pvc")
       set(SYCL_DEVICE_NAME "pvc")
     else()

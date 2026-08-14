@@ -495,6 +495,7 @@ def _quantize_weight_mxfp(
     group_size: int,
     data_type: str,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Quantize a 2D weight tensor to MXFP4 / MXFP8 and return packed outputs.
 
@@ -508,11 +509,11 @@ def _quantize_weight_mxfp(
     """
     import torch.nn as nn
 
-    from auto_round.data_type.mxfp import quant_mx
+    from auto_round.data_type.utils import get_quant_func
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     if not is_mx_fp(data_type):
-        data_type = "mx_fp"
+        data_type = "mx_fp4" if bits == 4 else "mx_fp8"
 
     out_features, in_features = weight.shape
     if in_features % group_size != 0:
@@ -522,10 +523,11 @@ def _quantize_weight_mxfp(
         )
 
     weight_dev = weight.to(device)
-    # quant_mx returns (qdq_tensor, shared_exp, None).  We only need shared_exp
-    # (the per-block log2 scale).  The element-wise rounding to the FP4/FP8 grid
-    # is performed inside QuantLinear.pack via dtype casts / pack_fp4_to_uint8.
-    weight_dev, shared_exp, _ = quant_mx(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
+    # Use get_quant_func (same as WrapperLinear) so that all registered MXFP
+    # variants automatically get opt_rtn support via the QUANT_FUNC_WITH_DTYPE
+    # registry (e.g. "opt_rtn_mx_fp4" -> quant_mx_opt_rtn, "mx_fp4" -> quant_mx).
+    quant_func, _ = get_quant_func(data_type, bits, sym=True, disable_opt_rtn=disable_opt_rtn, iters=0)
+    weight_dev, shared_exp, _ = quant_func(weight_dev, bits=bits, group_size=group_size, data_type=data_type)
     # Reshape to (out_features, n_groups) so the on-disk weight_scale matches
     # the llm-compressor convention (and QuantLinear's registered buffer shape).
     shared_exp = shared_exp.reshape(out_features, in_features // group_size)
@@ -571,6 +573,7 @@ def _quantize_single_tensor(
     matcher: "_PatternMatcher",
     device: str = "cpu",
     quantize_func: Callable = quantize_weight_rtn,
+    disable_opt_rtn: bool = False,
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
@@ -614,6 +617,7 @@ def _quantize_single_tensor(
                 group_size=group_size,
                 data_type=data_type,
                 device=device,
+                disable_opt_rtn=disable_opt_rtn,
             )
             logger.debug(f"Quantized (MXFP): {layer_name} (bits={bits}, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -622,6 +626,8 @@ def _quantize_single_tensor(
             return layer_name, {tensor_name: tensor}, None, layer_name
 
     # ---- Integer WOQ path ----
+    # opt_rtn is always disabled for integer WOQ in model-free mode because
+    # the scale search does not improve accuracy for INT quantization here.
     try:
         qweight, qzeros, scales = quantize_func(
             weight=tensor,
@@ -629,6 +635,7 @@ def _quantize_single_tensor(
             group_size=group_size,
             sym=sym,
             device=device,
+            disable_opt_rtn=True,
         )
 
         out: dict[str, torch.Tensor] = {
@@ -923,6 +930,7 @@ def _process_shard(
     fp8_block_size: list | None = None,
     model_type: str | None = None,
     enable_torch_compile: bool = False,
+    disable_opt_rtn: bool = False,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -1025,6 +1033,7 @@ def _process_shard(
             matcher,
             device,
             quantize_func,
+            disable_opt_rtn,
         )
         output_tensors.update(out_dict)
         if q_layer:
@@ -1552,6 +1561,7 @@ def _process_single_shard_task(
     quant_output_dir: str,
     total_shards: int,
     enable_torch_compile: bool = False,
+    disable_opt_rtn: bool = False,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Process one shard in an isolated subprocess task.
 
@@ -1578,6 +1588,7 @@ def _process_single_shard_task(
         fp8_block_size=fp8_block_size,
         model_type=model_type,
         enable_torch_compile=enable_torch_compile,
+        disable_opt_rtn=disable_opt_rtn,
     )
 
     out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
@@ -1980,6 +1991,7 @@ class _ModelFreeCompressorCore:
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
         enable_torch_compile: Optional[bool] = None,
+        disable_opt_rtn: bool = False,
     ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
@@ -1996,6 +2008,7 @@ class _ModelFreeCompressorCore:
             if enable_torch_compile is None
             else enable_torch_compile
         )
+        self.disable_opt_rtn = disable_opt_rtn
 
         # --- derived state populated during run() ---
         self.scheme_obj: QuantizationScheme | None = None
@@ -2285,6 +2298,7 @@ class _ModelFreeCompressorCore:
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
                         enable_torch_compile=self.enable_torch_compile,
+                        disable_opt_rtn=self.disable_opt_rtn,
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
                     )
@@ -2478,6 +2492,18 @@ class _ModelFreeCompressorCore:
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         else:
             packing_format = "auto_round:auto_gptq"
+        if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
+            if not self.disable_opt_rtn:
+                logger.info(
+                    "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
+                    "2x scale, and 0.5x scale independently for each group. "
+                    "Pass --disable_opt_rtn to use plain RTN."
+                )
+        else:
+            logger.info(
+                "Integer WOQ model-free quantization uses plain RTN "
+                "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
+            )
 
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
@@ -2564,6 +2590,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         device_map: Any = None,
         low_cpu_mem_usage: bool = True,
         enable_torch_compile: Optional[bool] = None,
+        disable_opt_rtn: bool = False,
         **kwargs,
     ) -> None:
         import copy
@@ -2598,6 +2625,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             quant_lm_head=quant_lm_head,
             quant_nontext_module=quant_nontext_module,
             enable_torch_compile=enable_torch_compile,
+            disable_opt_rtn=disable_opt_rtn,
         )
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
@@ -2608,7 +2636,6 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self.model_free = True
         self.model_free_path = model_name_or_path
         self.iters = 0
-        self.disable_opt_rtn = True
         self.formats = None
         self.quantized = False
         self._fallback_compressor = None
@@ -2623,7 +2650,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         fallback_init.update(
             model=model_name_or_path,
             iters=0,
-            disable_opt_rtn=True,
+            disable_opt_rtn=disable_opt_rtn,
             tokenizer=tokenizer,
             scheme=copy.deepcopy(scheme),
             layer_config=copy.deepcopy(layer_config),
