@@ -263,21 +263,31 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
     int subgroup_q_row_in_tile = get_sub_group_id() / sg_rows_per_sparse_q_block;
     subgroup_q_row_in_tile = cute::min(subgroup_q_row_in_tile, q_blocks_per_wg_tile - 1);
 
-    auto prefetch_sparse_k_block = [&](int logical_block) {
-      if (logical_block < 0 || logical_block >= total_blk) return;
-      for (int D = 0; D < size<4>(pKgK); D++) {
-        if constexpr (CachedKV) {
-          if (logical_block < kblocks_cache) {
-            int physical_block = logical_block;
-            if constexpr (PagedKV) {
-              physical_block = get_physical_k_tile(logical_block, l_coord, seq_len_kv_cache);
+    int sparse_route_blocks = params.num_k_blocks > 0 ? params.num_k_blocks : total_blk;
+    int k_tiles_per_sparse_route_block = cute::max(1, ceil_div(total_blk, sparse_route_blocks));
+    auto route_block_to_k_tile = [&](int route_block, int micro_tile) {
+      return route_block * k_tiles_per_sparse_route_block + micro_tile;
+    };
+
+    auto prefetch_sparse_k_block = [&](int route_block) {
+      if (route_block < 0 || route_block >= sparse_route_blocks) return;
+      for (int micro_tile = 0; micro_tile < k_tiles_per_sparse_route_block; ++micro_tile) {
+        int logical_block = route_block_to_k_tile(route_block, micro_tile);
+        if (logical_block >= total_blk) break;
+        for (int D = 0; D < size<4>(pKgK); D++) {
+          if constexpr (CachedKV) {
+            if (logical_block < kblocks_cache) {
+              int physical_block = logical_block;
+              if constexpr (PagedKV) {
+                physical_block = get_physical_k_tile(logical_block, l_coord, seq_len_kv_cache);
+              }
+              prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_block, D));
+            } else {
+              prefetch(prefetch_k, pKgK(_, _, _, logical_block - kblocks_cache, D));
             }
-            prefetch(prefetch_k_cache, pKgK_cache(_, _, _, physical_block, D));
           } else {
             prefetch(prefetch_k, pKgK(_, _, _, logical_block - kblocks_cache, D));
           }
-        } else {
-          prefetch(prefetch_k, pKgK(_, _, _, logical_block - kblocks_cache, D));
         }
       }
     };
@@ -408,11 +418,39 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
             prefetch(prefetch_k, pKgK(_, _, _, K_next - kblocks_cache, D));
           }
         }
-      } else if (sparse_prefetch_block < total_blk) {
+      } else if (sparse_prefetch_block < sparse_route_blocks) {
         prefetch_sparse_k_block(sparse_prefetch_block);
       }
 
       barrier_wait(ScopeWorkgroup);
+    };
+
+    auto run_sparse_route_block = [&](int route_block, bool subgroup_selected, auto& subgroup_started,
+                                      int sparse_prefetch_block) {
+      if (route_block < 0 || route_block >= sparse_route_blocks) return;
+      for (int micro_tile = 0; micro_tile < k_tiles_per_sparse_route_block; ++micro_tile) {
+        int K = route_block_to_k_tile(route_block, micro_tile);
+        if (K >= total_blk) break;
+        bool first_selected_block = subgroup_selected ? !subgroup_started : false;
+        if constexpr (CachedKV) {
+          if (K < kblocks_cache) {
+            if (K >= blk_k0 && K < blk_k1) {
+              mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
+                            sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
+                            tVgV_cache, pVgV_cache);
+              if (subgroup_selected) subgroup_started = true;
+            }
+          } else if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
+            mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
+                          sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
+            if (subgroup_selected) subgroup_started = true;
+          }
+        } else if (K >= blk_k0 && K < blk_k1) {
+          mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected, sparse_prefetch_block,
+                        copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
+          if (subgroup_selected) subgroup_started = true;
+        }
+      }
     };
 
     if (lut_rows_base != nullptr && valid_blocks_base != nullptr) {
@@ -421,17 +459,17 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
         int const* row_ptr = lut_rows_base;
         int row_valid = valid_blocks_base[0];
         int row_pos = 0;
-        int row_cur_block = row_valid > 0 ? logical_block_from_delta_row(row_ptr, row_valid, 0) : total_blk;
+        int row_cur_block = row_valid > 0 ? logical_block_from_delta_row(row_ptr, row_valid, 0) : sparse_route_blocks;
         int prefetch_pos = row_pos;
         int prefetch_cur_block = row_cur_block;
 
         auto advance_single_sparse_block = [&](int& frontier_pos, int& frontier_cur_block) {
-          if (frontier_cur_block >= total_blk) return;
+          if (frontier_cur_block >= sparse_route_blocks) return;
           frontier_pos += 1;
           if (frontier_pos < row_valid) {
             frontier_cur_block += row_ptr[frontier_pos];
           } else {
-            frontier_cur_block = total_blk;
+            frontier_cur_block = sparse_route_blocks;
           }
         };
 
@@ -443,37 +481,15 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
 
         for (int stage = 0; stage < Stages; ++stage) {
           int sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
-          if (sparse_prefetch_block >= total_blk) break;
+          if (sparse_prefetch_block >= sparse_route_blocks) break;
           prefetch_sparse_k_block(sparse_prefetch_block);
         }
 
-        while (row_cur_block < total_blk) {
+        while (row_cur_block < sparse_route_blocks) {
           int next_block = row_cur_block;
           bool subgroup_selected = (subgroup_q_row_in_tile == 0);
-          bool first_selected_block = !subgroup_started;
           int sparse_prefetch_block = pop_single_sparse_block(prefetch_pos, prefetch_cur_block);
-          int K = next_block;
-          if constexpr (CachedKV) {
-            if (K < kblocks_cache) {
-              if (K >= blk_k0 && K < blk_k1) {
-                mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                              sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
-                              tVgV_cache, pVgV_cache);
-                subgroup_started = true;
-              }
-            } else {
-              K += kblocks_cache;
-              if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
-                mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                              sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-                subgroup_started = true;
-              }
-            }
-          } else if (K >= blk_k0 && K < blk_k1) {
-            mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected, sparse_prefetch_block,
-                          copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-            subgroup_started = true;
-          }
+          run_sparse_route_block(next_block, subgroup_selected, subgroup_started, sparse_prefetch_block);
           advance_single_sparse_block(row_pos, row_cur_block);
         }
       } else {
@@ -493,19 +509,19 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
             row_valid[row] = valid_blocks_base[row];
             row_pos[row] = 0;
             row_cur_block[row] =
-                row_valid[row] > 0 ? logical_block_from_delta_row(row_ptrs[row], row_valid[row], 0) : total_blk;
+                row_valid[row] > 0 ? logical_block_from_delta_row(row_ptrs[row], row_valid[row], 0) : sparse_route_blocks;
             if (row_valid[row] > 0) {
               active_rows[active_row_count++] = row;
             }
           } else {
             row_valid[row] = 0;
             row_pos[row] = 0;
-            row_cur_block[row] = total_blk;
+            row_cur_block[row] = sparse_route_blocks;
           }
         }
 
         auto find_sparse_block = [&](int* frontier_pos, int* frontier_cur_block) {
-          int block = total_blk;
+          int block = sparse_route_blocks;
           for (int active = 0; active < active_row_count; ++active) {
             int row = active_rows[active];
             if (frontier_pos[row] < row_valid[row]) {
@@ -516,7 +532,7 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
         };
 
         auto advance_sparse_block = [&](int block, int* frontier_pos, int* frontier_cur_block) {
-          if (block >= total_blk) return;
+          if (block >= sparse_route_blocks) return;
           for (int active = 0; active < active_row_count; ++active) {
             int row = active_rows[active];
             if (frontier_pos[row] < row_valid[row] && frontier_cur_block[row] == block) {
@@ -524,7 +540,7 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
               if (frontier_pos[row] < row_valid[row]) {
                 frontier_cur_block[row] += row_ptrs[row][frontier_pos[row]];
               } else {
-                frontier_cur_block[row] = total_blk;
+                frontier_cur_block[row] = sparse_route_blocks;
               }
             }
           }
@@ -545,40 +561,19 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
 
         for (int stage = 0; stage < Stages; ++stage) {
           int sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
-          if (sparse_prefetch_block >= total_blk) break;
+          if (sparse_prefetch_block >= sparse_route_blocks) break;
           prefetch_sparse_k_block(sparse_prefetch_block);
         }
 
         int next_block = find_sparse_block(row_pos, row_cur_block);
-        while (next_block < total_blk) {
+        while (next_block < sparse_route_blocks) {
           int selected_row = subgroup_q_row_in_tile;
           bool subgroup_selected = subgroup_q_row_in_tile < sparse_q_rows_in_tile &&
                                    row_pos[selected_row] < row_valid[selected_row] &&
                                    row_cur_block[selected_row] == next_block;
-          bool first_selected_block = subgroup_selected ? !subgroup_started_rows[selected_row] : false;
           int sparse_prefetch_block = pop_sparse_block(prefetch_pos, prefetch_cur_block);
-          int K = next_block;
-          if constexpr (CachedKV) {
-            if (K < kblocks_cache) {
-              if (K >= blk_k0 && K < blk_k1) {
-                mainloop_body(std::bool_constant<true>{}, K, first_selected_block, subgroup_selected,
-                              sparse_prefetch_block, copy_k_cache, copy_v_cache, prefetch_v_cache, tKgK_cache,
-                              tVgV_cache, pVgV_cache);
-                if (subgroup_selected) subgroup_started_rows[selected_row] = true;
-              }
-            } else {
-              K += kblocks_cache;
-              if (K >= (blk_k0 > kblocks_cache ? blk_k0 : kblocks_cache) && K < blk_k1) {
-                mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected,
-                              sparse_prefetch_block, copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-                if (subgroup_selected) subgroup_started_rows[selected_row] = true;
-              }
-            }
-          } else if (K >= blk_k0 && K < blk_k1) {
-            mainloop_body(std::bool_constant<false>{}, K, first_selected_block, subgroup_selected, sparse_prefetch_block,
-                          copy_k, copy_v, prefetch_v, tKgK, tVgV, pVgV);
-            if (subgroup_selected) subgroup_started_rows[selected_row] = true;
-          }
+          run_sparse_route_block(next_block, subgroup_selected, subgroup_started_rows[selected_row],
+                                 sparse_prefetch_block);
 
           advance_sparse_block(next_block, row_pos, row_cur_block);
           next_block = find_sparse_block(row_pos, row_cur_block);

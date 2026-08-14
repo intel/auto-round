@@ -1171,12 +1171,12 @@ template <typename ElementQ, typename ElementK, typename ElementV, bool persiste
 inline int launch_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
   constexpr int PipelineStages1 = 2;
-  using ShapeQK = Shape<_256, _32, _32>;
-  using ShapePV = Shape<_256, _32, _32>;
+  using ShapeQK = Shape<_256, _64, _32>;
+  using ShapePV = Shape<_256, _32, _64>;
   using ShapeOut = Shape<_256, _128>;
   using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
-  using ShapeQK1 = Shape<_256, _32, _32>;
-  using ShapePV1 = Shape<_256, _32, _32>;
+  using ShapeQK1 = Shape<_256, _64, _32>;
+  using ShapePV1 = Shape<_256, _32, _64>;
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
   return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
@@ -1304,12 +1304,12 @@ inline int launch_sparse_sage_prefill_kernel_64(Options const& options) {
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV>
 inline int launch_sparse_sdpa_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
-  using ShapeQK = Shape<_256, _64, _32>;
-  using ShapePV = Shape<_256, _32, _64>;
+  using ShapeQK = Shape<_256, _32, _32>;
+  using ShapePV = Shape<_256, _32, _32>;
   using ShapeOut = Shape<_256, _128>;
   using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
-  using ShapeQK1 = Shape<_256, _64, _32>;
-  using ShapePV1 = Shape<_256, _32, _64>;
+  using ShapeQK1 = Shape<_256, _32, _32>;
+  using ShapePV1 = Shape<_256, _32, _32>;
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
   return options.is_causal ? SparseSDPAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
