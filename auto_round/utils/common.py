@@ -657,6 +657,7 @@ class SupportedFormats:
             "auto_round:fp8",
             "mlx",
             "auto_round:mlx",
+            "svdquant_nunchaku",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format

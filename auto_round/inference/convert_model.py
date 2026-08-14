@@ -477,6 +477,13 @@ def _replace_by_quant_layers(
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format)
         set_module(module, layer_name, new_layer)
 
+        # Transformers may run model-specific initialization after loading. Mark both the
+        # replacement and its direct parent so parent initializers do not access attributes
+        # such as ``c_proj.weight`` that packed quantized layers intentionally do not expose.
+        new_layer._is_hf_initialized = True
+        parent_name, _, _ = layer_name.rpartition(".")
+        parent_module = get_module(module, parent_name) if parent_name else module
+        parent_module._is_hf_initialized = True
     return used_backends
 
 

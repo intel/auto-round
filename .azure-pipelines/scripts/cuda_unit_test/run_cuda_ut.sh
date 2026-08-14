@@ -19,10 +19,17 @@ for i in "$@"; do
 done
 
 source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/change_color.sh
+# Change-based test selection helpers. REPO_DIR points the detector at the
+# agent checkout instead of the container default (/auto-round).
+REPO_DIR="${BUILD_SOURCESDIRECTORY}"
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 LOG_DIR="${BUILD_SOURCESDIRECTORY}/log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+# print_summary reads this file unconditionally; a matrix part that selects no
+# test never writes it, so make sure it always exists.
+touch "${SUMMARY_LOG}"
 
 function setup_environment() {
     export TZ='Asia/Shanghai'
@@ -32,20 +39,8 @@ function setup_environment() {
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function check_storage_usage() {
@@ -76,7 +71,7 @@ function run_unit_test() {
     echo "##[endgroup]"
 
     uv pip list
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
@@ -94,15 +89,21 @@ function run_unit_test() {
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+    selected_files=$(filter_changed_tests "test" "${selected_files}")
+
+    if [ -z "${selected_files}" ]; then
+        echo "No changed CUDA unit test file in part ${test_part}, skip."
+        return 0
+    fi
 
     for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
+        pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
-            -vs --disable-warnings --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+            -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -128,15 +129,15 @@ function run_unit_test_llmc() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -162,15 +163,15 @@ function run_unit_test_sglang() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
              ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -196,15 +197,15 @@ function run_unit_test_vllm() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        COVERAGE_CORE=sysmon pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs --disable-warnings \
-            --durations=0 --durations-min=1 --junitxml="${ut_log_name%.log}.xml" \
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -215,11 +216,15 @@ function run_unit_test_vllm() {
 
 function main() {
     setup_environment
+    init_changed_tests
     if [ "${test_case}" == "nightly" ]; then
         run_unit_test_sglang
         run_unit_test_llmc
         run_unit_test_vllm
     elif [ "${test_case}" == "ci" ]; then
+        # Mirror the selection below: tests excluded from the ci run (vlms,
+        # llmc, sglang, vllm, multiple_card) must not enable filtering.
+        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
         run_unit_test
     else
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."

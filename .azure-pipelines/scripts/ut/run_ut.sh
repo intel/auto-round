@@ -1,13 +1,17 @@
 #!/bin/bash
 set -e
 
-test_part=$1
+test_part=${UT_MODE}
 
 source /auto-round/.azure-pipelines/scripts/change_color.sh
+source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 LOG_DIR=/auto-round/log_dir
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+
+TIMEOUT=30
+SESSION_TIMEOUT=600
 
 function setup_environment() {
     echo "##[group]set up UT env..."
@@ -31,27 +35,15 @@ function setup_environment() {
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
     echo "##[endgroup]"
 
     uv pip list
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python /auto-round/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function check_storage_usage() {
@@ -84,41 +76,62 @@ function run_unit_test() {
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+    selected_files=$(filter_changed_tests "test" "${selected_files}")
+
+    if [ -z "${selected_files}" ]; then
+        echo "No changed unit test file in part ${test_part}, skip."
+        return 0
+    fi
 
     for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov=auto_round --cov-report= --cov-append \
-                -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+                -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
 
 function run_inc_unit_test() {
+    local selected_files
+    selected_files=$(filter_changed_tests "test/integration" \
+        "$(cd /auto-round/test/integration && find ./test_cpu -name "test_inc*.py" | sort)")
+    if [ -z "${selected_files}" ]; then
+        echo "No changed INC test file, skip."
+        return 0
+    fi
+
     echo "##[group]set up INC UT env..."
     INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     echo "##[endgroup]"
 
     cd /auto-round/test/integration || exit 1
 
-    for test_file in $(find ./test_cpu -name "test_inc*.py" | sort); do
+    for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
-                --cov=auto_round --cov-report= --cov-append \
-                -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov=auto_round --cov-report= --cov-append \
+                -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
 
 function run_llmc_unit_test() {
+    local selected_files
+    selected_files=$(filter_changed_tests "test/integration" \
+        "$(cd /auto-round/test/integration && find ./test_cpu -name "test_llmc*.py" | sort)")
+    if [ -z "${selected_files}" ]; then
+        echo "No changed LLMC test file, skip."
+        return 0
+    fi
+
     echo "##[group]set up LLMC UT env..."
     BUILD_TYPE="nightly" uv pip install -r /auto-round/test/integration/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     uv pip uninstall auto-round
@@ -127,36 +140,42 @@ function run_llmc_unit_test() {
 
     cd /auto-round/test/integration || exit 1
 
-    for test_file in $(find ./test_cpu -name "test_llmc*.py" | sort); do
+    for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
-        COVERAGE_CORE=sysmon numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=30 --session-timeout=600 --durations=0 --durations-min=1 \
-                --cov=auto_round --cov-report= --cov-append \
-                -vs --disable-warnings --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
+            pytest --cov=auto_round --cov-report= --cov-append \
+                -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
 
 function collect_log() {
+    touch "${SUMMARY_LOG}"
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 
-    cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+    fi
 }
 
 function main() {
     setup_environment
-    run_unit_test
-    if [ "$test_part" -eq 5 ] && [ "$NIGHTLY_TEST" = 1 ]; then
+    init_changed_tests
+    scope_changed_tests "$(cd /auto-round && find test/unit/test_cpu test/integration/test_cpu -name "test_*.py" 2>/dev/null)"
+    if [ "$test_part" = "inc" ]; then
         run_inc_unit_test
+    elif [ "$test_part" = "llmc" ]; then
         run_llmc_unit_test
+    else
+        run_unit_test
     fi
     collect_log
     check_storage_usage
     print_summary
 }
 
-main
+main "$@"
