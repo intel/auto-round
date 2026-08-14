@@ -71,6 +71,8 @@ For diffusion models, currently we validate quantization on the following models
 | Wan-AI/Wan2.2-I2V-A14B-Diffusers | COCO2014   | - |
 | Wan-AI/Wan2.2-TI2V-5B-Diffusers  | COCO2014   | - |
 | Wan-AI/Wan2.2-T2V-A14B-Diffusers | COCO2014   | - |
+| nvidia/Cosmos3-Nano              | COCO2014   | - |
+| nvidia/Cosmos3-Super             | COCO2014   | - |
 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
