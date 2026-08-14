@@ -2,6 +2,7 @@
 set -e
 
 source /auto-round/.azure-pipelines/scripts/change_color.sh
+source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 TIMEOUT=30
 SESSION_TIMEOUT=600
@@ -36,7 +37,11 @@ function setup_environment() {
 function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./unit/test_ark -name "test*.py" | sort); do
+    local ark_tests xpu_tests
+    ark_tests=$(filter_changed_tests "test" "$(find ./unit/test_ark -name "test*.py" | sort)")
+    xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
+
+    for test_file in ${ark_tests}; do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running ark ${test_file}..."
@@ -48,7 +53,7 @@ function run_unit_test() {
         echo "##[endgroup]"
     done
 
-    for test_file in $(find ./unit/test_xpu -name "test*.py" | sort); do
+    for test_file in ${xpu_tests}; do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu ${test_file}..."
@@ -62,6 +67,13 @@ function run_unit_test() {
 }
 
 function run_unit_test_llmc() {
+    local llmc_tests
+    llmc_tests=$(filter_changed_tests "test" "$(find ./integration/test_xpu -name "test_llmc_integration.py" | sort)")
+    if [ -z "${llmc_tests}" ]; then
+        echo "No changed XPU LLMC test file, skip."
+        return 0
+    fi
+
     echo "##[group]set up llmc UT env..."
     BUILD_TYPE="nightly" uv pip install -r ./unit/test_xpu/requirements_llmc.txt
     uv pip list
@@ -69,7 +81,7 @@ function run_unit_test_llmc() {
 
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./integration/test_xpu -name "test_llmc_integration.py" | sort); do
+    for test_file in ${llmc_tests}; do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu llmc ${test_file}..."
@@ -88,21 +100,29 @@ function print_summary() {
 }
 
 function collect_log() {
+    touch "${SUMMARY_LOG}"
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
-    cp .coverage "${LOG_DIR}/.coverage"
-    python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-    python -m coverage html -d "${LOG_DIR}/htmlcov"
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage"
+        python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+        python -m coverage html -d "${LOG_DIR}/htmlcov"
+    else
+        echo "No coverage data (no test selected), skip coverage report."
+        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
+    fi
 }
 
 function print_coverage() {
     echo "##[group]overall code coverage..."
-    python -m coverage report
+    [ -f .coverage ] && python -m coverage report || echo "No coverage data."
     echo "##[endgroup]"
 }
 
 function main() {
     setup_environment
+    init_changed_tests
+    scope_changed_tests "$(cd /auto-round && find test/unit/test_ark test/unit/test_xpu test/integration/test_xpu -name "test_*.py" 2>/dev/null)"
     if [[ "${UT_MODE}" == "llmc" ]]; then
         run_unit_test_llmc
     else

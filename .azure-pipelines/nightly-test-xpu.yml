@@ -13,6 +13,7 @@ pr:
     include:
       - test/integration/test_xpu
       - .azure-pipelines/nightly-test-xpu.yml
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 parameters:
   - name: xpuTestParts
@@ -72,6 +73,7 @@ stages:
               dockerFileName: $(DOCKERFILE_NAME)
               utContainerName: "AutoRoundNightlyXPU$(NODE_LABEL)"
               buildARKWheel: "false"
+              filterChangedTests: true
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'
@@ -79,6 +81,6 @@ stages:
               version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
-            condition: succeededOrFailed()
+            condition: and(succeededOrFailed(), ne(variables['HAS_COVERAGE'], 'false'))
             inputs:
               summaryFileLocation: $(UPLOAD_PATH)/coverage.xml

@@ -13,6 +13,7 @@ pr:
     include:
       - test/integration/test_cpu
       - .azure-pipelines/nightly-test-cpu.yml
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 parameters:
   - name: unitTestParts
@@ -73,6 +74,7 @@ stages:
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
+              filterChangedTests: true
 
   - stage: Coverage
     displayName: "Collect Coverage"

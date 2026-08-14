@@ -32,6 +32,11 @@ parameters:
   - name: buildARKWheel
     type: string
     default: "false"
+  # Opt-in: on PR builds only run the test files touched by the PR. Off by
+  # default so the fast PR unit-test pipeline keeps running the full suite.
+  - name: filterChangedTests
+    type: boolean
+    default: false
 
 
 steps:
@@ -104,6 +109,9 @@ steps:
         -e NUMA_CPUSET=${NUMA_CPUSET} \
         -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} \
         -e UT_MODE=${{ parameters.utTestMode }} \
+        -e BUILD_REASON=${BUILD_REASON} \
+        -e SYSTEM_PULLREQUEST_TARGETBRANCH=${SYSTEM_PULLREQUEST_TARGETBRANCH} \
+        -e FILTER_CHANGED_TESTS=${{ lower(parameters.filterChangedTests) }} \
         ${{ parameters.utContainerName }} \
         bash -c "cd /auto-round/.azure-pipelines/scripts && bash ut/${{ parameters.utScriptFileName }}.sh"
     displayName: "Run UT"
