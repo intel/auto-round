@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import psutil
 import torch
@@ -1759,6 +1759,19 @@ def unsupported_meta_device(model):
         else:
             return True
     return False
+
+
+def map_nested_tensors(value: Any, transform: Callable[[torch.Tensor], torch.Tensor]) -> Any:
+    """Apply ``transform`` to tensors in nested tuples, lists, and mappings."""
+    if torch.is_tensor(value):
+        return transform(value)
+    if isinstance(value, tuple):
+        return tuple(map_nested_tensors(item, transform) for item in value)
+    if isinstance(value, list):
+        return [map_nested_tensors(item, transform) for item in value]
+    if isinstance(value, (dict, UserDict)):
+        return type(value)({key: map_nested_tensors(item, transform) for key, item in value.items()})
+    return value
 
 
 def to_device(input, device=torch.device("cpu")):
