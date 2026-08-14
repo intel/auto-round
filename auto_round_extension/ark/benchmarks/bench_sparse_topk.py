@@ -494,18 +494,22 @@ def hnd_to_nhd(x: torch.Tensor) -> torch.Tensor:
 def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     torch_row = next((row for row in rows if row["mode"] == "dense_torch_sdpa" and row["status"] == "ok"), None)
     sage_row = next((row for row in rows if row["mode"] == "dense_sagev1" and row["status"] == "ok"), None)
+    ark_row = next((row for row in rows if row["mode"] == "dense_ark_sdpa" and row["status"] == "ok"), None)
     torch_ms = None if torch_row is None else float(torch_row["latency_ms"])
     sage_ms = None if sage_row is None else float(sage_row["latency_ms"])
+    ark_ms = None if ark_row is None else float(ark_row["latency_ms"])
     for row in rows:
         latency_ms = row["latency_ms"]
         if latency_ms is None:
             row["speedup_vs_torch"] = None
             row["speedup_vs_sagev1"] = None
+            row["speedup_vs_ark"] = None
             row["baseline_tflops"] = None
             row["effective_tflops"] = None
             continue
         row["speedup_vs_torch"] = (torch_ms / latency_ms) if torch_ms is not None else None
         row["speedup_vs_sagev1"] = (sage_ms / latency_ms) if sage_ms is not None else None
+        row["speedup_vs_ark"] = (ark_ms / latency_ms) if ark_ms is not None else None
         batch = int(row["batch"])
         num_heads_q = int(row["num_heads_q"])
         seq_len = int(row["seq_len"])
@@ -517,6 +521,7 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
         if mode in {
             "dense_torch_sdpa",
             "dense_sagev1",
+            "dense_ark_sdpa",
             "sparse_kernel_only",
             "sparse_e2e",
             "sparse_qtile256_row64k_kernel_only",
@@ -536,9 +541,9 @@ def summarize_speedups(rows: list[dict[str, object]]) -> list[dict[str, object]]
 
 def print_summary(rows: list[dict[str, object]]) -> None:
     print(
-        "| layout | seq_len | mode | pattern | gqa_group | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 |"
+        "| layout | seq_len | mode | pattern | gqa_group | topk | selected_ratio | blocks/row | latency (ms) | baseline_tflops | effective_tflops | status | speedup_vs_torch | speedup_vs_sagev1 | speedup_vs_ark |"
     )
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in rows:
         topk = "-" if row["requested_topk"] is None else f"{float(row['requested_topk']):.3f}"
         ratio = "-" if row["selected_ratio"] is None else f"{float(row['selected_ratio']):.6f}"
@@ -548,10 +553,11 @@ def print_summary(rows: list[dict[str, object]]) -> None:
         effective_tflops = "-" if row.get("effective_tflops") is None else f"{float(row['effective_tflops']):.3f}"
         sp_torch = "-" if row.get("speedup_vs_torch") is None else f"{float(row['speedup_vs_torch']):.3f}"
         sp_sage = "-" if row.get("speedup_vs_sagev1") is None else f"{float(row['speedup_vs_sagev1']):.3f}"
+        sp_ark = "-" if row.get("speedup_vs_ark") is None else f"{float(row['speedup_vs_ark']):.3f}"
         print(
             f"| {row['tensor_layout']} | {row['seq_len']} | {row['mode']} | {row['attention_pattern']} | {row['gqa_group_size']} | {topk} | {ratio} | "
             f"{blocks} | {latency} | {baseline_tflops} | {effective_tflops} | {row['status']} | {sp_torch} | "
-            f"{sp_sage} |"
+            f"{sp_sage} | {sp_ark} |"
         )
         if row["note"]:
             print(f"note[{row['mode']}]: {row['note']}")
@@ -650,6 +656,29 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                     quant_block_size=args.quant_block_size,
                     tensor_layout=tensor_layout,
                 )
+            ),
+            batch=args.batch,
+            num_heads_q=args.num_heads_q,
+            num_heads_kv=args.num_heads_kv,
+            seq_len=seq_len,
+            tensor_layout=tensor_layout,
+            head_dim=args.head_dim,
+            dtype=dtype,
+            is_causal=args.causal,
+            warmup=args.warmup,
+            iters=args.iters,
+        )
+    )
+    rows.append(
+        try_benchmark(
+            "dense_ark_sdpa",
+            lambda: ark.sdpa(
+                q,
+                k,
+                v,
+                is_causal=args.causal,
+                scale=scale,
+                tensor_layout=tensor_layout,
             ),
             batch=args.batch,
             num_heads_q=args.num_heads_q,
