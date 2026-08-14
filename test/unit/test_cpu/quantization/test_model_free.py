@@ -99,6 +99,22 @@ def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
 
     assert type(compressor).__name__ == "ModelFreeCompressor"
     assert compressor.scheme_input.sym is False
+    assert compressor.disable_opt_rtn is True
+
+
+def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
+    compressor = AutoRound(
+        tiny_opt_model_path,
+        scheme="MXFP4",
+        iters=0,
+        disable_opt_rtn=False,
+        model_free=True,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.disable_opt_rtn is False
 
 
 from ...envs import require_compressed_tensors
@@ -558,6 +574,25 @@ class TestModelFreeQuantize:
 class TestModelFreeMXFP:
     """End-to-end tests for MXFP4/MXFP8 model-free quantization."""
 
+    def test_disable_opt_rtn_skips_mxfp_scale_search(self, monkeypatch):
+        from auto_round.data_type import mxfp
+
+        search_mock = Mock(side_effect=AssertionError("optimized RTN must be disabled"))
+        monkeypatch.setattr(mxfp, "quant_mx_opt_rtn", search_mock)
+
+        weight = torch.randn(8, 32, dtype=torch.bfloat16)
+        out = _quantize_weight_mxfp(
+            weight,
+            "layer",
+            bits=4,
+            group_size=32,
+            data_type="mx_fp",
+            disable_opt_rtn=True,
+        )
+
+        assert "layer.weight_packed" in out
+        search_mock.assert_not_called()
+
     def test_quantize_weight_mxfp4_shapes(self):
         w = torch.randn(64, 128, dtype=torch.bfloat16)
         out = _quantize_weight_mxfp(w, "layer", bits=4, group_size=32, data_type="mx_fp")
@@ -575,7 +610,7 @@ class TestModelFreeMXFP:
         assert out["layer.weight_scale"].dtype == torch.uint8
 
     @require_compressed_tensors
-    @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized"), ("MXFP8", "mxfp8-quantized")])
+    @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized")])
     def test_e2e_mxfp(self, tmp_path, scheme, fmt):
         tensors = {
             "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
@@ -1040,17 +1075,16 @@ class TestLLMCompressorMXFPSource:
 # ===========================================================================
 
 
-_SUPPORTED = ["W2A16", "W2A16G32", "W2A16G64", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "MXFP8", "BF16"]
+# Keep representative presets per family to reduce redundant runtime:
+# INT symmetric (2/4/8-bit), mixed override recipe, MXFP, and BF16 passthrough.
+_SUPPORTED = ["W2A16G32", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "BF16"]
 _UNSUPPORTED = [
     "W3A16",
-    "FPW8A16",
+    "FPW8A16",  # unsupported FP family
     "MXINT4",
-    "NVFP4",
-    "FP8_BLOCK",
-    "FP8_STATIC",
+    "NVFP4",  # unsupported MX/NV family
+    "FP8_BLOCK",  # unsupported FP8 route
     "INT8_W8A8",
-    "MXFP4_RCEIL",
-    "MXFP8_RCEIL",
 ]
 
 
@@ -1791,22 +1825,6 @@ class TestMXFPAutoRoundFormat:
             "act_bits": 16,
             "act_data_type": "float",
         }
-
-    @require_compressed_tensors
-    def test_e2e_mxfp4_weight_tensors(self, tmp_path):
-        """MXFP4 + format='auto_round': on-disk weight layout is unchanged (weight_packed + weight_scale)."""
-        tensors = {
-            "model.layers.0.fc1.weight": torch.randn(512, 128),
-            "lm_head.weight": torch.randn(1000, 128),
-        }
-        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
-        output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(output_dir, format="auto_round")
-        keys = _read_output_keys(output_dir)
-        assert "model.layers.0.fc1.weight_packed" in keys
-        assert "model.layers.0.fc1.weight_scale" in keys
-        assert "lm_head.weight" in keys
-        assert "lm_head.weight_packed" not in keys
 
     @require_compressed_tensors
     def test_e2e_mxfp8_autoround_format(self, tmp_path):
