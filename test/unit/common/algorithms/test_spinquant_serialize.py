@@ -29,6 +29,7 @@ from auto_round.algorithms.transforms.spinquant.serialize import (
     _get_intermediate_size,
     _get_online_r1_target_names,
     _get_r4_target_names,
+    _get_stored_rotation,
     _has_spinquant_buffers,
     _inject_rotation_buffers,
     _is_quantlinear,
@@ -65,6 +66,46 @@ class TestIsQuantLinear:
 
     def test_other_modules_false(self):
         assert _is_quantlinear(nn.Conv2d(3, 8, 3)) is False
+
+    def test_class_name_ending_in_quantlinear(self):
+        class QuantLinear(nn.Linear):
+            pass
+
+        assert _is_quantlinear(QuantLinear(4, 4)) is True
+
+    def test_qmodule_base_subclass(self):
+        class QModuleBase(nn.Module):
+            pass
+
+        class _MyQ(QModuleBase):
+            pass
+
+        assert _is_quantlinear(_MyQ()) is True
+
+
+# ==============================================================================
+# _get_stored_rotation
+# ==============================================================================
+
+
+class TestGetStoredRotation:
+    """Read a previously-stored rotation tensor off a module, if any."""
+
+    def test_returns_none_when_missing(self):
+        model = nn.Linear(4, 4)
+        assert _get_stored_rotation(model, "spinquant_R1") is None
+
+    def test_returns_tensor_when_present(self):
+        model = nn.Linear(4, 4)
+        model.spinquant_R1 = nn.Parameter(torch.eye(4))
+        result = _get_stored_rotation(model, "spinquant_R1")
+        assert result is not None
+        assert torch.equal(result, torch.eye(4))
+
+    def test_ignores_non_tensor_attribute(self):
+        model = nn.Linear(4, 4)
+        model.spinquant_R1 = "not_a_tensor"
+        assert _get_stored_rotation(model, "spinquant_R1") is None
 
 
 # ==============================================================================
@@ -382,6 +423,18 @@ class TestApplyRotationFromBuffer:
 
         x = torch.randn(4, 8)
         result = _apply_rotation_from_buffer(module, x, "spinquant_r4")
+        assert result.shape == x.shape
+
+    def test_apply_trained_rotation(self):
+        """A "trained" rotation stores a full float32 matrix rather than a sign/Hadamard buffer."""
+        module = nn.Module()
+        trained_matrix = torch.linalg.qr(torch.randn(8, 8))[0].float()
+        module.register_buffer("spinquant_r1_type", torch.tensor(ROTATION_TYPE_TRAINED))
+        module.register_buffer("spinquant_r1_size", torch.tensor(8))
+        module.register_buffer("spinquant_r1_matrix", trained_matrix)
+
+        x = torch.randn(2, 8)
+        result = _apply_rotation_from_buffer(module, x, "spinquant_r1")
         assert result.shape == x.shape
 
     def test_apply_block_rotation_butterfly(self):

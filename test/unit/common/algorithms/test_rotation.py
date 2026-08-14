@@ -21,9 +21,6 @@ Tests cover the entire public API surface across both backends:
 - Block-diagonal matrix multiplication (multihead_matmul)
 - HadamardTransform and RandomHadamardTransform nn.Module classes
 - Transform registry and build factory
-- Backend dispatcher logic (auto / inplace / transform)
-- apply_hadamard_rotation and apply_rotation_transform
-- HadamardRotation BaseRotation subclass
 - Inplace rotation primitives (layer fusion, weight rotation)
 - Online Hadamard hooks (Full, CrossHead, Group variants)
 - RotationMapping registry and model-config inference
@@ -31,6 +28,10 @@ Tests cover the entire public API surface across both backends:
 - Random Hadamard global cache management
 - matmul_hadU butterfly transform
 - Non-power-of-2 Hadamard construction via safetensors fallback
+
+Backend dispatcher logic, HadamardRotation, and apply_rotation_transform have
+their own dedicated coverage in transforms/hadamard/test_dispatcher.py and
+transforms/hadamard/test_hadamard_apply.py -- not duplicated here.
 """
 
 from __future__ import annotations
@@ -42,18 +43,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.algorithms.transforms.hadamard.apply import (
-    HadamardRotation,
-)
 from auto_round.algorithms.transforms.hadamard.config import (
     RotationConfig,
     dump_group_size_to_rotation_config,
     normalize_rotation_config,
     to_dict_rotation_config,
-)
-from auto_round.algorithms.transforms.hadamard.dispatcher import (
-    apply_hadamard_rotation,
-    resolve_hadamard_backend,
 )
 from auto_round.algorithms.transforms.hadamard.inplace.hooks import (
     CrossHeadOnlineHadamardHook,
@@ -85,10 +79,6 @@ from auto_round.algorithms.transforms.hadamard.inplace.model_config import (
     get_mapping,
     infer_mapping_from_model,
     register_mapping,
-)
-from auto_round.algorithms.transforms.hadamard.patch import (
-    patch_wrapperlinear_to_apply_transform,
-    patch_wrapperwalayer_forward_to_apply_transform,
 )
 from auto_round.algorithms.transforms.hadamard.transforms import (
     HADAMARDS,
@@ -649,129 +639,6 @@ class TestHADAMARDSRegistry:
 
 
 # =============================================================================
-# Test Dispatcher
-# =============================================================================
-
-
-class TestResolveHadamardBackend:
-    """resolve_hadamard_backend routes to correct backend string."""
-
-    def test_explicit_inplace(self):
-        cfg = RotationConfig(backend="inplace")
-        assert resolve_hadamard_backend(cfg, "int") == "inplace"
-
-    def test_auto_with_fuse_returns_inplace(self):
-        cfg = RotationConfig(backend="auto", fuse_online_to_weight=True)
-        assert resolve_hadamard_backend(cfg, "int") == "inplace"
-
-    def test_auto_mx_fp_returns_transform(self):
-        cfg = RotationConfig(backend="auto")
-        assert resolve_hadamard_backend(cfg, "mx_fp") == "transform"
-
-    def test_auto_nv_fp_returns_transform(self):
-        cfg = RotationConfig(backend="auto")
-        assert resolve_hadamard_backend(cfg, "nv_fp4") == "transform"
-        assert resolve_hadamard_backend(cfg, "nv_fp8") == "transform"
-
-    def test_auto_other_dtype_returns_inplace(self):
-        cfg = RotationConfig(backend="auto")
-        assert resolve_hadamard_backend(cfg, "int") == "inplace"
-        assert resolve_hadamard_backend(cfg, "fp8") == "inplace"
-        assert resolve_hadamard_backend(cfg, "gptq") == "inplace"
-
-    def test_transform_backend_requires_mx_or_nv_fp(self):
-        cfg = RotationConfig(backend="transform", allow_online_rotation=True)
-        assert resolve_hadamard_backend(cfg, "mx_fp") == "transform"
-        assert resolve_hadamard_backend(cfg, "nv_fp4") == "transform"
-
-    def test_transform_backend_rejects_non_mx_nv_fp(self):
-        cfg = RotationConfig(backend="transform", allow_online_rotation=True)
-        with pytest.raises(ValueError, match="only supports MXFP4 / NVFP4"):
-            resolve_hadamard_backend(cfg, "int")
-
-    def test_transform_backend_rejects_fuse(self):
-        cfg = RotationConfig(
-            backend="transform",
-            fuse_online_to_weight=True,
-            allow_online_rotation=True,
-        )
-        with pytest.raises(ValueError, match="does not support fuse_online_to_weight"):
-            resolve_hadamard_backend(cfg, "mx_fp")
-
-    def test_transform_backend_requires_online_rotation(self):
-        cfg = RotationConfig(backend="transform", allow_online_rotation=False)
-        with pytest.raises(ValueError, match="allow_online_rotation"):
-            resolve_hadamard_backend(cfg, "mx_fp")
-
-
-class TestApplyHadamardRotation:
-    """apply_hadamard_rotation unified entry point."""
-
-    def test_none_config_normalizes_to_defaults(self):
-        result = normalize_rotation_config(None, data_type="int")
-        assert result == {}
-
-    def test_inplace_backend_sets_rotation_config(self):
-        cfg = RotationConfig(backend="inplace")
-        resolved = resolve_hadamard_backend(cfg, "int")
-        assert resolved == "inplace"
-
-    def test_auto_with_int_uses_inplace(self):
-        cfg = RotationConfig(backend="auto")
-        backend = resolve_hadamard_backend(cfg, "int")
-        assert backend == "inplace"
-
-    def test_auto_with_mx_fp_uses_transform(self):
-        cfg = RotationConfig(backend="auto")
-        backend = resolve_hadamard_backend(cfg, "mx_fp")
-        assert backend == "transform"
-
-
-# =============================================================================
-# Test HadamardRotation BaseRotation Subclass
-# =============================================================================
-
-
-class TestHadamardRotationClass:
-    """HadamardRotation — the BaseRotation implementation."""
-
-    def test_from_config_dict(self):
-        rot = HadamardRotation.from_config({"hadamard_type": "hadamard", "backend": "auto"})
-        assert rot.config.hadamard_type == "hadamard"
-        assert rot.config.backend == "auto"
-
-    def test_from_config_rotation_config(self):
-        cfg = RotationConfig(backend="auto", hadamard_type="random_hadamard")
-        rot = HadamardRotation.from_config(cfg)
-        assert rot.config.backend == "auto"
-        assert rot.config.hadamard_type == "random_hadamard"
-
-    def test_apply_to_model_resolves_inplace_backend(self):
-        cfg = RotationConfig(backend="auto")
-        resolved = resolve_hadamard_backend(cfg, "int")
-        assert resolved == "inplace"
-
-
-class TestApplyRotationTransformOneShot:
-    """apply_rotation_transform — one-shot convenience wrapper."""
-
-    def test_none_config_is_noop(self):
-        cfg = normalize_rotation_config(None, data_type="int")
-        assert cfg == {}
-
-    def test_dict_config_normalizes(self):
-        cfg = normalize_rotation_config({"backend": "inplace", "hadamard_type": "hadamard"}, data_type="int")
-        assert cfg["backend"] == "inplace"
-        assert cfg["hadamard_type"] == "hadamard"
-
-    def test_rotation_config_object_normalizes(self):
-        cfg = RotationConfig(backend="inplace", hadamard_type="random_hadamard")
-        normalized = normalize_rotation_config(cfg, data_type="int")
-        assert normalized["backend"] == "inplace"
-        assert normalized["hadamard_type"] == "random_hadamard"
-
-
-# =============================================================================
 # Test Inplace Rotation — matmul_hadU
 # =============================================================================
 
@@ -1120,47 +987,6 @@ class TestRotationMappingRegistry:
 # =============================================================================
 
 
-class TestWrapperLinearPatch:
-    """patch_wrapperlinear_to_apply_transform is idempotent."""
-
-    def test_patch_is_idempotent(self):
-        clear_random_hadamard_cache()
-        w_transform = RandomHadamardTransform(block_size=8, seed=42)
-        inp_transform = RandomHadamardTransform(block_size=8, seed=42, inverse=True)
-
-        patch_wrapperlinear_to_apply_transform(w_transform, inp_transform)
-        flag_after_first = getattr(
-            __import__("auto_round.wrapper", fromlist=["WrapperLinear"]).WrapperLinear,
-            "_hadamard_patched",
-            False,
-        )
-
-        patch_wrapperlinear_to_apply_transform(w_transform, inp_transform)
-        flag_after_second = getattr(
-            __import__("auto_round.wrapper", fromlist=["WrapperLinear"]).WrapperLinear,
-            "_hadamard_patched",
-            False,
-        )
-
-        assert flag_after_first is True
-        assert flag_after_second is True
-
-
-class TestWrapperWALayerPatch:
-    """patch_wrapperwalayer_forward_to_apply_transform is idempotent."""
-
-    def test_patch_is_idempotent(self):
-        inp_transform = RandomHadamardTransform(block_size=8, seed=42, inverse=True)
-        patch_wrapperwalayer_forward_to_apply_transform(inp_transform)
-
-        flag = getattr(
-            __import__("auto_round.wrapper", fromlist=["WrapperWALayer"]).WrapperWALayer,
-            "_hadamard_forward_patched",
-            False,
-        )
-        assert flag is True
-
-
 # =============================================================================
 # Test Resolved Compute Device
 # =============================================================================
@@ -1176,27 +1002,6 @@ class TestResolveComputeDevice:
     def test_none_detects_available_accelerator(self):
         result = _resolve_compute_device(None)
         assert result.type in ("cuda", "cpu")
-
-
-# =============================================================================
-# Test Inplace Apply — Full Integration (CPU-safe subset)
-# =============================================================================
-
-
-class TestInplaceApplyRotationFuseLn:
-    """LayerNorm fusion is a core step before weight rotation."""
-
-    def test_fuse_ln_linear_fuses_weight(self):
-        ln = nn.LayerNorm(16, elementwise_affine=True)
-        nn.init.ones_(ln.weight)
-        linear = nn.Linear(16, 8)
-        orig_linear_weight = linear.weight.data.clone()
-        dtype = linear.weight.dtype
-        dev = linear.weight.device
-        W_ = linear.weight.data.double()
-        ln_weight = ln.weight.double().to(dev)
-        fused_weight = (W_ * ln_weight).to(dtype)
-        assert torch.equal(fused_weight, orig_linear_weight.to(dtype))
 
 
 # =============================================================================
