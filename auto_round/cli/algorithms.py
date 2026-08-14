@@ -191,7 +191,7 @@ class AWQ(AlgorithmHandler):
 
     def register(self, group) -> None:
         group.add_argument(
-            "--awq-duo-scaling",
+            "--awq_duo_scaling",
             dest="duo_scaling",
             default=True,
             type=_parse_bool_or_mode,
@@ -199,36 +199,56 @@ class AWQ(AlgorithmHandler):
             help="Use activation+weight duo scaling (true/false/both).",
         )
         group.add_argument(
-            "--awq-n-grid",
+            "--awq_n_grid",
             dest="n_grid",
             default=20,
             type=int,
             help="Number of grid-search points for AWQ scaling ratio.",
         )
         group.add_argument(
-            "--awq-apply-clip",
+            "--awq_seqlen",
+            dest="awq_seqlen",
+            default=None,
+            type=int,
+            help=(
+                "Maximum sequence length used by AWQ calibration. "
+                "This is distinct from the global calibration --seqlen."
+            ),
+        )
+        group.add_argument(
+            "--awq_smooth_batch_size",
+            dest="awq_smooth_batch_size",
+            default=None,
+            type=int,
+            help="Microbatch size for AWQ parent replay during scale search; <=0 disables microbatching.",
+        )
+        group.add_argument(
+            "--awq_apply_clip",
             dest="awq_apply_clip",
             action="store_true",
             help="Search and hard-clamp per-group AWQ weight clipping after smoothing.",
         )
         group.add_argument(
-            "--awq-clip-as-init",
+            "--awq_clip_as_init",
             dest="awq_clip_as_init",
             action="store_true",
             help=(
                 "Use the searched AWQ clip to initialize the block quantizer's "
-                "weight range instead of hard-clamping (requires --awq-apply-clip)."
+                "weight range instead of hard-clamping (requires --awq_apply_clip)."
             ),
         )
 
     def build(self, args, common_kwargs: dict[str, Any]):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
+        awq_seqlen = getattr(args, "awq_seqlen", None)
         return AWQConfig(
             duo_scaling=getattr(args, "duo_scaling", True),
             n_grid=getattr(args, "n_grid", 20),
             apply_clip=getattr(args, "awq_apply_clip", False),
             clip_as_init=getattr(args, "awq_clip_as_init", False),
+            awq_seqlen=512 if awq_seqlen is None else awq_seqlen,
+            smooth_batch_size=getattr(args, "awq_smooth_batch_size", None),
             **common_kwargs,
         )
 

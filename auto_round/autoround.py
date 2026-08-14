@@ -381,6 +381,9 @@ _AWQ_FIELDS = {
     "clip_n_grid",
     "clip_max_shrink",
     "clip_n_sample_token",
+    "awq_seqlen",
+    "smooth_batch_size",
+    "skip_moe",
     "mappings",
 }
 _ROTATION_FIELDS = {
@@ -659,7 +662,12 @@ class _CompressorBuilder(object):
                 tokenizer,
                 device_map,
                 announced_via_flag=bool(route_kwargs.get("model_free", False)),
+                dataset=dataset,
+                nsamples=nsamples,
+                seqlen=seqlen,
+                seed=seed,
                 enable_torch_compile=enable_torch_compile,
+                disable_opt_rtn=model_free_disable_opt_rtn,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,

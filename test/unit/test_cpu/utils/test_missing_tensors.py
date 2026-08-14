@@ -102,10 +102,27 @@ class TestSplitFusedExpertTensors:
 
     def test_normalize_tensor_name_for_warning(self):
         name = "model.layers.12.mlp.experts.3.down_proj.weight"
-        assert _normalize_tensor_name_for_warning(name) == "model.layers.0.mlp.experts.0.down_proj.weight"
+        assert _normalize_tensor_name_for_warning(name) == "model.layers.<idx>.mlp.experts.<idx>.down_proj.weight"
 
         bracket_name = "model.layers[12].mlp.experts[3].down_proj.weight"
-        assert _normalize_tensor_name_for_warning(bracket_name) == "model.layers[0].mlp.experts[0].down_proj.weight"
+        assert (
+            _normalize_tensor_name_for_warning(bracket_name)
+            == "model.layers[<idx>].mlp.experts[<idx>].down_proj.weight"
+        )
+
+    def test_stacked_expert_warning_is_logged_once_across_layer_indices(self, caplog, _autoround_log_propagate):
+        logging.Logger.warning_once.cache_clear()
+        tensors = {
+            "model.language_model.layers.0.mlp.experts.down_proj": torch.randn(4, 8, 16),
+            "model.language_model.layers.1.mlp.experts.down_proj": torch.randn(4, 8, 16),
+        }
+
+        with caplog.at_level("WARNING"):
+            split_fused_expert_tensors(tensors)
+
+        messages = [rec.message for rec in caplog.records if "Splitting stacked expert tensor" in rec.message]
+        assert len(messages) == 1
+        assert ".<idx>." in messages[0]
 
     def test_2d_and_non_expert_pass_through(self):
         """2-D tensors and 3-D non-expert tensors are returned unchanged."""
