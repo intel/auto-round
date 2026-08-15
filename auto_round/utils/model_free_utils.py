@@ -352,7 +352,6 @@ def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
     return tensor_name.endswith(".weight") and tensor.dim() == 2
 
 
-
 def _quantize_weight_mxfp(
     weight: torch.Tensor,
     layer_name: str,

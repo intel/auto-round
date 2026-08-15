@@ -120,7 +120,6 @@ from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_laye
 from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
-    _PatternMatcher,
     _apply_scheme_overrides,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
@@ -135,6 +134,7 @@ from auto_round.utils.model_free_utils import (
     _load_config,
     _looks_like_auto_scheme,
     _normalize_scheme,
+    _PatternMatcher,
     _process_shard,
     _resolve_source_dir,
     _validate_auto_scheme_options,
@@ -636,9 +636,7 @@ class _ModelFreeCompressorCore:
             if os.path.isdir(self.model_name_or_path):
                 logger.info("Path selected: local directory mode. Reading shards from local path.")
             else:
-                logger.info(
-                    "Path selected: snapshot/local-cache mode. Resolving source dir via snapshot_download."
-                )
+                logger.info("Path selected: snapshot/local-cache mode. Resolving source dir via snapshot_download.")
             self.source_dir = _resolve_source_dir(self.model_name_or_path)
             transformer_source_dir = os.path.join(self.source_dir, "transformer")
             if (
