@@ -537,7 +537,57 @@ class BaseOrchestrator(object):
         ):
             return True
 
+        # Layer-level scheme overrides can request static-activation paths
+        # (e.g., global MXFP8 + local NVFP4 experts). Those still need
+        # calibration data even when top-level scheme looks dynamic.
+        if self._layer_config_needs_act_calibration(check_need_act_calibration):
+            return True
+
         return False
+
+    def _layer_config_needs_act_calibration(self, check_need_act_calibration) -> bool:
+        """Return True if any raw layer_config entry implies activation calibration."""
+        layer_cfg = self.layer_config
+        if not isinstance(layer_cfg, dict) or not layer_cfg:
+            return False
+
+        def _entry_needs_calibration(entry) -> bool:
+            if entry is None:
+                return False
+
+            candidates = []
+            if isinstance(entry, (str, QuantizationScheme)):
+                candidates.append(entry)
+            elif isinstance(entry, dict):
+                if "scheme" in entry:
+                    candidates.append(entry.get("scheme"))
+                candidates.append(entry)
+            else:
+                return False
+
+            for candidate in candidates:
+                if candidate is None:
+                    continue
+                try:
+                    _, _, attrs = parse_scheme(candidate, {})
+                except Exception:  # noqa: BLE001
+                    continue
+
+                cand_act_bits = attrs.get("act_bits")
+                cand_act_data_type = attrs.get("act_data_type")
+                cand_act_dynamic = attrs.get("act_dynamic")
+                is_cand_act_quant = cand_act_bits is not None and cand_act_bits <= 8
+                if is_cand_act_quant and check_need_act_calibration(
+                    cand_act_dynamic,
+                    cand_act_data_type,
+                    cand_act_bits if cand_act_bits is not None else 16,
+                    static_kv_dtype=self.static_kv_dtype,
+                    static_attention_dtype=self.static_attention_dtype,
+                ):
+                    return True
+            return False
+
+        return any(_entry_needs_calibration(v) for v in layer_cfg.values())
 
     # ── Convenience properties ────────────────────────────────────────────────
 

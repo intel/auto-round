@@ -88,6 +88,21 @@ def test_detect_nvfp4_from_layer_config_data_type_override():
     assert _has_nvfp4_layer(orchestrator)
 
 
+def test_needs_calibration_data_when_layer_config_overrides_to_nvfp4():
+    class _DummyCompressor:
+        _needs_calibration_data = Compressor._needs_calibration_data
+        _layer_config_needs_act_calibration = Compressor._layer_config_needs_act_calibration
+
+    compressor = _DummyCompressor()
+    compressor._alg_configs = []
+    compressor.scheme = "MXFP8"
+    compressor.layer_config = {"mlp.experts": {"scheme": "NVFP4"}}
+    compressor.static_kv_dtype = None
+    compressor.static_attention_dtype = None
+
+    assert compressor._needs_calibration_data() is True
+
+
 def test_registry_builtin_aliases_and_unknown():
     assert isinstance(_r.resolve_alg_config("RTN"), RTNConfig)
     assert isinstance(_r.resolve_alg_config("awq"), AWQConfig)

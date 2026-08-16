@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
     AR_DISK_STREAM_MODEL: bool = False
     AR_RESUME_DIR: Optional[str] = None
+    AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -111,6 +112,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # instead of restarting the whole tuning pass from block 0 after a
     # crash/kill. See auto_round/utils/resume.py.
     "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
+    # When enabled, MoE routing can be overridden in selected model wrappers
+    # to rotate token assignments across all experts for calibration coverage.
+    "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
+    in ("1", "true", "yes"),
 }
 
 

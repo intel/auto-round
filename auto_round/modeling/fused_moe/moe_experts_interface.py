@@ -35,6 +35,7 @@ import torch
 from torch import nn
 
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
+from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
 
@@ -217,73 +218,81 @@ def linear_loop_experts_forward(
     num_tokens = hidden_states.size(0)
     num_experts = self.num_experts
 
-    # Reshape for easier indexing
-    # S is the number of selected token-expert pairs (S = num_tokens * num_top_k)
-    token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, num_top_k).reshape(-1)  # (S,)
-    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
-    expert_ids = top_k_index.reshape(-1)  # (S,)
+    def _run_experts_with_routes(route_indices: torch.Tensor, route_weights: torch.Tensor) -> torch.Tensor:
+        # Reshape for easier indexing
+        # S is the number of selected token-expert pairs (S = num_tokens * num_top_k)
+        token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, num_top_k).reshape(-1)  # (S,)
+        sample_weights = route_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
+        expert_ids = route_indices.reshape(-1)  # (S,)
 
-    # Get current hidden states for selected samples
-    selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
+        # Get current hidden states for selected samples
+        selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
 
-    # Group token-expert pairs by expert using a single sort, then run each
-    # expert on a contiguous *static* slice, instead of doing a per-expert
-    # nonzero()/boolean-mask lookup inside the Python loop.
-    #
-    # Why: repeatedly issuing dynamic-shape gather kernels (nonzero(),
-    # index_select() or boolean-mask indexing) once per expert in a loop
-    # reliably triggers a driver-level bug on some XPU builds - either a
-    # "vectorized gather kernel index out of bounds" device-side assertion or
-    # a hard UR_RESULT_ERROR_DEVICE_LOST - even when every index is valid.
-    # This was confirmed with minimal PyTorch-only reproductions unrelated to
-    # this model/library, so working around it in application code is the
-    # practical fix. Sorting once needs only two dynamic gather/scatter calls
-    # in total (regardless of num_experts): one index_select to group tokens
-    # by expert, and one index_copy_ to scatter results back to their
-    # original positions. Each expert's slice `permuted[start:end]` is a
-    # plain view (no gather kernel involved), so this is also efficient.
-    sort_order = torch.argsort(expert_ids)
-    permuted_hidden_states = selected_hidden_states.index_select(0, sort_order)  # (S, hidden_dim)
+        # Group token-expert pairs by expert using a single sort, then run each
+        # expert on a contiguous *static* slice, instead of doing a per-expert
+        # nonzero()/boolean-mask lookup inside the Python loop.
+        sort_order = torch.argsort(expert_ids)
+        permuted_hidden_states = selected_hidden_states.index_select(0, sort_order)  # (S, hidden_dim)
 
-    # Per-expert token counts, computed once on host to drive static slicing.
-    counts = torch.bincount(expert_ids, minlength=num_experts).tolist()
+        # Per-expert token counts, computed once on host to drive static slicing.
+        counts = torch.bincount(expert_ids, minlength=num_experts).tolist()
 
-    out_permuted = torch.zeros_like(permuted_hidden_states)
-    start = 0
-    for expert_idx, count in enumerate(counts):
-        if count == 0:
-            continue
-        end = start + count
-        expert_input = permuted_hidden_states[start:end]  # static slice/view, no gather kernel
+        out_permuted = torch.zeros_like(permuted_hidden_states)
+        start = 0
+        for expert_idx, count in enumerate(counts):
+            if count == 0:
+                continue
+            end = start + count
+            expert_input = permuted_hidden_states[start:end]  # static slice/view, no gather kernel
 
-        # Get this expert's container with its projection layers
-        expert = getattr(self, str(expert_idx))
-        gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
-        up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
+            # Get this expert's container with its projection layers
+            expert = getattr(self, str(expert_idx))
+            gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
+            up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
 
-        # Apply gating
-        if hasattr(self, "_apply_gate"):
-            gate_up_out = torch.cat([gate_out, up_out], dim=-1)
-            gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
-        else:
-            gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
+            # Apply gating
+            if hasattr(self, "_apply_gate"):
+                gate_up_out = torch.cat([gate_out, up_out], dim=-1)
+                gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
+            else:
+                gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
 
-        # Down projection
-        expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
+            # Down projection
+            expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
 
-        out_permuted[start:end] = expert_out.to(out_permuted.dtype)
-        start = end
+            out_permuted[start:end] = expert_out.to(out_permuted.dtype)
+            start = end
 
-    # Scatter results back to their original (pre-sort) token-expert order.
-    out_per_sample = torch.empty_like(out_permuted)
-    out_per_sample.index_copy_(0, sort_order, out_permuted)
+        # Scatter results back to their original (pre-sort) token-expert order.
+        out_per_sample = torch.empty_like(out_permuted)
+        out_per_sample.index_copy_(0, sort_order, out_permuted)
 
-    # Apply routing weights
-    out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
+        # Apply routing weights
+        out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
 
-    # Accumulate results using deterministic reshape+sum instead of index_add_
-    # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
-    final_hidden_states = out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+        # Accumulate results using deterministic reshape+sum instead of index_add_
+        # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
+        return out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+
+    # Main output path: always preserve original router selection.
+    final_hidden_states = _run_experts_with_routes(top_k_index, top_k_weights)
+
+    # Auxiliary coverage path: when enabled, run forced-routing once to trigger
+    # expert hooks/stat collection, but discard this output to avoid changing
+    # model semantics.
+    if force_all_experts_routing_enabled():
+        forced_indices, forced_weights = build_forced_routing(
+            module=self,
+            routing_scores=None,
+            top_k=num_top_k,
+            num_experts=num_experts,
+            dtype=hidden_states.dtype,
+            num_tokens=num_tokens,
+            device=device,
+            normalize=True,
+        )
+        with torch.no_grad():
+            _ = _run_experts_with_routes(forced_indices, forced_weights)
 
     # Reshape back to original format if input was [batch_size, seq_len, hidden_dim]
     if batch_size is not None:
