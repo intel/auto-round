@@ -78,6 +78,12 @@ class GraniteMoeModel(GraniteModel):
     """Conversion for IBM's GraniteMoeForCausalLM"""
     model_arch = gguf.MODEL_ARCH.GRANITE_MOE
 
+    _AGGREGATED_EXPERT_TENSORS = {
+        "down_proj": gguf.MODEL_TENSOR.FFN_DOWN_EXP,
+        "gate_proj": gguf.MODEL_TENSOR.FFN_GATE_EXP,
+        "up_proj": gguf.MODEL_TENSOR.FFN_UP_EXP,
+    }
+
     def set_gguf_parameters(self):
         """GraniteMoeShared uses GraniteMoe parameters plus the following:
         - shared_intermediate_size
@@ -94,7 +100,30 @@ class GraniteMoeModel(GraniteModel):
         with existing mixtral support, we pull them apart here.
         """
 
-        if name.endswith("block_sparse_moe.input_linear.weight"):
+        expert_projection = next(
+            (
+                projection
+                for projection in self._AGGREGATED_EXPERT_TENSORS
+                if name.endswith(f"block_sparse_moe.experts.{projection}")
+                or name.endswith(f"block_sparse_moe.experts.{projection}.weight")
+            ),
+            None,
+        )
+        if expert_projection is not None:
+            if data_torch.ndim != 3:
+                raise ValueError(
+                    f"Aggregated Granite expert tensor {name!r} must be three-dimensional, "
+                    f"got shape {tuple(data_torch.shape)}"
+                )
+            new_name = self.format_tensor_name(self._AGGREGATED_EXPERT_TENSORS[expert_projection], bid)
+            yield from ModelBase.modify_tensors(self, data_torch, new_name, bid)
+            return
+
+        if (
+            name.endswith("block_sparse_moe.input_linear.weight")
+            or name.endswith("block_sparse_moe.experts.gate_up_proj")
+            or name.endswith("block_sparse_moe.experts.gate_up_proj.weight")
+        ):
             ffn_dim = self.hparams["intermediate_size"]
             assert data_torch.shape[-2] == 2 * ffn_dim, "Merged FFN tensor size must be 2 * intermediate_size"
             gate, up = data_torch.split(ffn_dim, dim=-2)
@@ -203,6 +232,7 @@ class GraniteHybridModel(Mamba2Model, GraniteMoeModel):
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
         if (
             name.endswith("block_sparse_moe.input_linear.weight")
+            or "block_sparse_moe.experts" in name
             or "shared_mlp" in name
         ):
             yield from GraniteMoeModel.modify_tensors(self, data_torch, name, bid)

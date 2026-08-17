@@ -114,6 +114,78 @@ def _make_mock_model(cls, hparams=None):
 
 
 # ==============================================================================
+# granite.py tests
+# ==============================================================================
+
+
+class TestGraniteMoeConversion:
+    """Tests for aggregated expert tensors restored from linearized Granite MoE modules."""
+
+    @pytest.mark.parametrize(
+        ("projection", "tensor_type"),
+        [
+            ("down_proj", "FFN_DOWN_EXP"),
+            ("gate_proj", "FFN_GATE_EXP"),
+            ("up_proj", "FFN_UP_EXP"),
+        ],
+    )
+    @pytest.mark.parametrize("suffix", ["", ".weight"])
+    def test_modify_tensors_maps_aggregated_expert_projection(self, projection, tensor_type, suffix):
+        from auto_round.export.export_to_gguf.conversion.base import ModelBase
+        from auto_round.export.export_to_gguf.conversion.granite import GraniteMoeModel
+
+        obj = _make_mock_model(GraniteMoeModel, {"num_local_experts": 4})
+        data = torch.randn(4, 8, 16)
+        captured = []
+
+        def capture_name(self, tensor, name, bid):
+            captured.append((name, tensor, bid))
+            yield name, tensor
+
+        name = f"model.layers.0.block_sparse_moe.experts.{projection}{suffix}"
+        with patch.object(ModelBase, "modify_tensors", capture_name):
+            result = list(obj.modify_tensors(data, name, bid=0))
+
+        assert captured == [(f"{tensor_type}.weight", data, 0)]
+        assert result == [(f"{tensor_type}.weight", data)]
+
+    def test_modify_tensors_rejects_non_aggregated_expert_projection(self):
+        from auto_round.export.export_to_gguf.conversion.granite import GraniteMoeModel
+
+        obj = _make_mock_model(GraniteMoeModel, {"num_local_experts": 4})
+
+        with pytest.raises(ValueError, match="three-dimensional"):
+            list(
+                obj.modify_tensors(
+                    torch.randn(8, 16),
+                    "model.layers.0.block_sparse_moe.experts.down_proj",
+                    bid=0,
+                )
+            )
+
+    @pytest.mark.parametrize("suffix", ["", ".weight"])
+    def test_modify_tensors_splits_aggregated_gate_up_projection(self, suffix):
+        from auto_round.export.export_to_gguf.conversion.base import ModelBase
+        from auto_round.export.export_to_gguf.conversion.granite import GraniteMoeModel
+
+        obj = _make_mock_model(GraniteMoeModel, {"num_local_experts": 4, "intermediate_size": 8})
+        data = torch.randn(4, 16, 32)
+        captured = []
+
+        def capture_name(self, tensor, name, bid):
+            captured.append((name, tensor, bid))
+            yield name, tensor
+
+        name = f"model.layers.0.block_sparse_moe.experts.gate_up_proj{suffix}"
+        with patch.object(ModelBase, "modify_tensors", capture_name):
+            list(obj.modify_tensors(data, name, bid=0))
+
+        assert [item[0] for item in captured] == ["FFN_GATE_EXP.weight", "FFN_UP_EXP.weight"]
+        assert [item[1].shape for item in captured] == [(4, 8, 32), (4, 8, 32)]
+        assert [item[2] for item in captured] == [0, 0]
+
+
+# ==============================================================================
 # mimo.py tests
 # ==============================================================================
 
