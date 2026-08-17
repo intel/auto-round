@@ -2545,8 +2545,8 @@ def preprocess_model_type_source_tensors(
             if scale.dtype == torch.float32:
                 sanitized_scale_name = ".".join("<idx>" if part.isdigit() else part for part in scale_name.split("."))
                 logger.warning_once(
-                    f"[{model_type}] Scale tensor pattern '{sanitized_scale_name}' has dtype float32 with UE8M0 encoding "
-                    f"(only the 8-bit exponent is significant). "
+                    f"[{model_type}] Scale tensor pattern '{sanitized_scale_name}' has dtype float32 "
+                    f"with UE8M0 encoding (only the 8-bit exponent is significant). "
                     f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
                 )
                 scale = ((scale.view(torch.int32) >> 23) & 0xFF).to(torch.uint8)
