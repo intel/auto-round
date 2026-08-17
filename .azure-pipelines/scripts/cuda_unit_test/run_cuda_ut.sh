@@ -19,10 +19,17 @@ for i in "$@"; do
 done
 
 source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/change_color.sh
+# Change-based test selection helpers. REPO_DIR points the detector at the
+# agent checkout instead of the container default (/auto-round).
+REPO_DIR="${BUILD_SOURCESDIRECTORY}"
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 LOG_DIR="${BUILD_SOURCESDIRECTORY}/log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+# print_summary reads this file unconditionally; a matrix part that selects no
+# test never writes it, so make sure it always exists.
+touch "${SUMMARY_LOG}"
 
 function setup_environment() {
     export TZ='Asia/Shanghai'
@@ -82,6 +89,12 @@ function run_unit_test() {
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+    selected_files=$(filter_changed_tests "test" "${selected_files}")
+
+    if [ -z "${selected_files}" ]; then
+        echo "No changed CUDA unit test file in part ${test_part}, skip."
+        return 0
+    fi
 
     for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
@@ -203,11 +216,15 @@ function run_unit_test_vllm() {
 
 function main() {
     setup_environment
+    init_changed_tests
     if [ "${test_case}" == "nightly" ]; then
         run_unit_test_sglang
         run_unit_test_llmc
         run_unit_test_vllm
     elif [ "${test_case}" == "ci" ]; then
+        # Mirror the selection below: tests excluded from the ci run (vlms,
+        # llmc, sglang, vllm, multiple_card) must not enable filtering.
+        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
         run_unit_test
     else
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."

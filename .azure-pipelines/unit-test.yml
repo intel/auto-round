@@ -84,6 +84,7 @@ stages:
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
+              filterChangedTests: true
 
   - stage: Coverage
     displayName: "Collect Coverage"
