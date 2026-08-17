@@ -84,6 +84,10 @@ class SignRoundConfig(QuantizationConfig):
         # (e.g. only `scheme=` was given) -- finalize_scheme() fills them in.
         self.lr = lr
         self.minmax_lr = minmax_lr
+        # Whether lr/minmax_lr are auto-derived; set properly in finalize_scheme().
+        # Used to enable per-layer (mixed-bit) lr selection during tuning.
+        self.lr_is_auto = lr is None
+        self.minmax_lr_is_auto = minmax_lr is None
         self.lr_scheduler = lr_scheduler
 
         self.nblocks = nblocks
@@ -103,15 +107,53 @@ class SignRoundConfig(QuantizationConfig):
         if self.enable_lfq:
             logger.warning("the `enable_lfq` feature is experimental and currently has limited model support.")
 
+    def _lr_for_bits(self, bits: int | None) -> float | None:
+        """Return the auto lr heuristic for a given bit-width.
+
+        Low-bit schemes (<=3 bits) use a higher lr for better accuracy.
+        Returns None when lr cannot be derived (e.g. ``iters == 0``).
+        """
+        if self.iters <= 0:
+            return None
+        # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+        if self.iters >= 1000 and bits is not None and bits <= 3:
+            return 2.0 / self.iters
+        return 1.0 / self.iters
+
+    def compute_lr(self, bits: int | None) -> float | None:
+        """Resolve the rounding lr for a specific layer bit-width.
+
+        When the user supplied an explicit ``lr`` it is used for every layer;
+        otherwise the auto heuristic is applied per-layer so that mixed-bit
+        configs (e.g. a 4-bit model with a few 2-bit layers) get an
+        appropriate lr for each layer.
+        """
+        if not self.lr_is_auto:
+            return self.lr
+        return self._lr_for_bits(bits)
+
+    def compute_minmax_lr(self, bits: int | None) -> float | None:
+        """Resolve the min-max tuning lr for a specific layer bit-width."""
+        if not self.minmax_lr_is_auto:
+            return self.minmax_lr
+        # minmax_lr falls back to lr when not explicitly set
+        return self.compute_lr(bits)
+
     def finalize_scheme(self) -> None:
-        """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr)."""
-        if self.lr is None and self.iters > 0:
-            # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
+        """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr).
+
+        The scalar ``lr``/``minmax_lr`` values resolved here are derived from the
+        global ``bits`` and serve as defaults/fallbacks. For mixed-bit configs the
+        per-layer values are computed later via ``compute_lr``/``compute_minmax_lr``.
+        """
+        # Track whether the values are auto-derived so per-layer bit widths can
+        # be honored during optimization (see compute_lr/compute_minmax_lr).
+        self.lr_is_auto = self.lr is None and self.iters > 0
+        self.minmax_lr_is_auto = self.minmax_lr is None
+        if self.lr_is_auto:
+            self.lr = self._lr_for_bits(self.bits)
             if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
-                self.lr = 2.0 / self.iters
-                logger.info("set the lr to 2.0/iters for better accuracy")
-            else:
-                self.lr = 1.0 / self.iters
+                logger.info("see lr of layers with 2/3 bits to 2.0/iters for better accuracy")
         self.minmax_lr = self.minmax_lr or self.lr
 
     def check_configs(self) -> None:
