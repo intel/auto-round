@@ -152,8 +152,6 @@ class SignRoundConfig(QuantizationConfig):
         self.minmax_lr_is_auto = self.minmax_lr is None
         if self.lr_is_auto:
             self.lr = self._lr_for_bits(self.bits)
-            if self.iters >= 1000 and self.bits is not None and self.bits <= 3:
-                logger.info("see lr of layers with 2/3 bits to 2.0/iters for better accuracy")
         self.minmax_lr = self.minmax_lr or self.lr
 
     def check_configs(self) -> None:

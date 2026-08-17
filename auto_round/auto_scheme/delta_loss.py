@@ -2187,6 +2187,32 @@ def _gen_layer_config(
     else:
         seqlen = 128 if is_moe_model else 256
 
+    # 2-bit options benefit from more/longer calibration data. Warn when 2-bit
+    # (non-GGUF) schemes are present but nsamples/seqlen are below the recommended settings.
+    def _scheme_has_2bit(scheme):
+        if isinstance(scheme, str):
+            try:
+                scheme = asdict(preset_name_to_scheme(scheme))
+            except Exception:
+                return False
+        if isinstance(scheme, QuantizationScheme):
+            scheme = asdict(scheme)
+        if isinstance(scheme, dict):
+            # GGUF (super_bits set) uses its own (double) quantization and does
+            # not follow this nsamples/seqlen recommendation, so skip it.
+            if scheme.get("super_bits") is not None:
+                return False
+            return scheme.get("bits", 16) == 2
+        return False
+
+    if any(_scheme_has_2bit(s) for s in schemes) and (nsamples < 128 or seqlen < 1024):
+        logger.warning(
+            "AutoScheme: detected 2-bit option(s); nsamples=128 and seqlen=1024 usually give "
+            "better results, but current nsamples=%d and seqlen=%d do not meet this recommendation.",
+            nsamples,
+            seqlen,
+        )
+
     if auto_scheme.batch_size is not None:
         batch_size = auto_scheme.batch_size
     else:

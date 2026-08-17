@@ -68,6 +68,16 @@ class SignRoundQuantizer(BaseQuantizer):
         self._config = config
         self.lr_is_auto = getattr(config, "lr_is_auto", False)
         self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
+        # Emit the low-bit lr notice at most once across all blocks/layers.
+        self._logged_low_bit_lr = False
+
+    def _maybe_log_low_bit_lr(self, bits) -> None:
+        """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
+        if self._logged_low_bit_lr or not self.lr_is_auto:
+            return
+        if self.iters >= 1000 and bits is not None and bits <= 3:
+            logger.info("using higher lr (2.0/iters) for <=3 bit layers to improve accuracy")
+            self._logged_low_bit_lr = True
 
     def dispatch_block(self, block, input_ids, input_others):
         """Multi-GPU aware block dispatch for SignRound tuning.
@@ -374,6 +384,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 layer_lr = self._config.compute_lr(layer_bits)
                 if layer_lr is None:
                     layer_lr = self.lr
+                self._maybe_log_low_bit_lr(layer_bits)
                 layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
                 if layer_minmax_lr is None:
                     layer_minmax_lr = self.minmax_lr
@@ -625,6 +636,7 @@ class SignRoundQuantizer(BaseQuantizer):
         layer_lr = self._config.compute_lr(layer_bits)
         if layer_lr is not None:
             lr = torch.tensor(layer_lr)
+        self._maybe_log_low_bit_lr(layer_bits)
         layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
         if layer_minmax_lr is not None:
             minmax_lr = torch.tensor(layer_minmax_lr)

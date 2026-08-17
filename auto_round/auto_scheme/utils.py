@@ -570,8 +570,6 @@ def _log_score_summary_by_block_and_nonblock(
         non_block_items.sort(key=lambda x: x[0])
         for layer_name, layer_loss in non_block_items:
             logger.info("AutoScheme non_block=%s loss=%.6f", layer_name, layer_loss)
-    else:
-        logger.info("AutoScheme non_block loss: none")
 
 
 def _collect_current_scores(model):
