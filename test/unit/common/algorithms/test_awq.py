@@ -32,6 +32,8 @@ from auto_round import AutoRound, AWQConfig, SignRoundConfig
 from auto_round.utils.device_manager import get_available_device_types
 
 _AVAILABLE_DEVICES = ["cpu"] + [d for d in get_available_device_types() if d != "cpu"]
+_CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
+requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
 
 
 class TestAWQNormalLLM:
@@ -50,9 +52,13 @@ class TestAWQNormalLLM:
         assert cfg.awq_seqlen == 128
 
     @pytest.mark.timeout(90)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path, device):
-        """W4A16 AWQ quantization produces valid layer_config and the model can generate."""
+    def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
+        """W4A16 AWQ quantization produces valid layer_config and the model can generate.
+
+        Algorithm-correctness check (smoothing search + bit-width assignment), not a
+        backend/device-dispatch test -- runs once on cpu, the cheapest device.
+        """
+        device = "cpu"
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
@@ -74,8 +80,7 @@ class TestAWQNormalLLM:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Model should produce non-empty output"
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_w4a16_export_default_scheme(self, tiny_opt_model_path, device):
+    def test_awq_w4a16_export_default_scheme(self, tiny_opt_model_path):
         """Default W4A16 scheme export: quantization_config has bits=4, group_size=128."""
         ar = AutoRound(
             tiny_opt_model_path,
@@ -85,7 +90,7 @@ class TestAWQNormalLLM:
             nsamples=2,
             seqlen=8,
             batch_size=2,
-            device_map=device,
+            device_map="cpu",
         )
         _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -96,9 +101,11 @@ class TestAWQNormalLLM:
         assert qconfig["group_size"] == 128
         assert "auto-round" in qconfig["quant_method"]
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_w4a16_export_args_check(self, tiny_opt_model_path, device):
-        """Saved quantization_config (bits/group_size/sym/quant_method) matches the input parameters."""
+    def test_awq_w4a16_export_args_check(self, tiny_opt_model_path):
+        """Saved quantization_config (bits/group_size/sym/quant_method) matches the input parameters.
+
+        Pure export/config correctness -- runs once on cpu.
+        """
         bits, group_size, sym = 8, 64, True
         ar = AutoRound(
             tiny_opt_model_path,
@@ -110,7 +117,7 @@ class TestAWQNormalLLM:
             nsamples=2,
             seqlen=8,
             batch_size=2,
-            device_map=device,
+            device_map="cpu",
         )
         _, save_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -125,7 +132,11 @@ class TestAWQNormalLLM:
     @pytest.mark.timeout(120)
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     def test_awq_w4a16_round_trip(self, tiny_opt_model_path, device):
-        """Quantize, save, reload on `device`, and generate -- exercises the full save/load round trip."""
+        """Quantize, save, reload on `device`, and generate -- exercises the full save/load round trip.
+
+        This is a genuine backend/device-dispatch check (real reload + inference on `device`),
+        unlike the other AWQ tests in this class which only check algorithm/config correctness.
+        """
         from test.helpers import eval_generated_prompt
 
         ar = AutoRound(
@@ -150,9 +161,15 @@ class TestAWQNonIntegerSchemes:
     """
 
     @pytest.mark.timeout(60)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
-    def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme, device):
+    def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme):
+        """Algorithm/config correctness (bits/act_bits assignment) -- runs once on cpu.
+
+        The underlying mx/nv-fp pack/dequant kernels (auto_round/data_type/{mxfp,nvfp}.py)
+        have no real device branching (just `.to(tensor.device)`), so cpu vs cuda would
+        exercise the identical code path.
+        """
+        device = "cpu"
         ar = AutoRound(
             tiny_opt_model_path,
             scheme=scheme,
@@ -182,9 +199,12 @@ class TestAWQW8A8LLMCompressor:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_w8a8_llmc_export(self, tiny_opt_model_path, device):
-        """W8A8 AWQ -> llm_compressor: verify compressed-tensors metadata and int8 saved weights."""
+    def test_awq_w8a8_llmc_export(self, tiny_opt_model_path):
+        """W8A8 AWQ -> llm_compressor: verify compressed-tensors metadata and int8 saved weights.
+
+        Pure export/config correctness -- runs once on cpu.
+        """
+        device = "cpu"
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="INT8",
@@ -230,9 +250,12 @@ class TestAWQMoE:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path, device):
-        """AWQ dynamic smoothing should resolve mappings on a MoE model without error."""
+    def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
+        """AWQ dynamic smoothing should resolve mappings on a MoE model without error.
+
+        Pure mapping-resolution logic, no inference -- runs once on cpu.
+        """
+        device = "cpu"
         from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
 
         model = AutoModelForCausalLM.from_pretrained(
@@ -710,10 +733,16 @@ class TestAWQMoE:
         assert kwargs["position_embeddings"][0].shape == (1, 4, 8)
         assert kwargs["position_embeddings"][1].shape == (1, 4, 8)
 
+    @requires_cuda
     @pytest.mark.timeout(420)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path, device):
-        """AWQ on MoE: expert layers should be quantized, gates/routers stay FP."""
+    def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
+        """AWQ on MoE: expert layers should be quantized, gates/routers stay FP.
+
+        Algorithm/config correctness, but MoE quantization is slow enough (real tuning over
+        multiple experts) that it's cheaper in wall-clock time to run once on cuda than cpu
+        (hence the large timeout historically needed here) -- so this runs on cuda only.
+        """
+        device = "cuda"
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
@@ -748,10 +777,15 @@ class TestAWQMoE:
             assert name.endswith("gate"), f"Unexpected FP layer: {name}"
 
     # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
+    @requires_cuda
     @pytest.mark.timeout(400)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path, device):
-        """AWQ MoE: saved quantization_config should be consistent and loadable."""
+    def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
+        """AWQ MoE: saved quantization_config should be consistent and loadable.
+
+        Same rationale as test_awq_moe_quantized_layers_check: config correctness, but MoE
+        quantization is slow enough that cuda-only is cheaper in wall-clock time than cpu.
+        """
+        device = "cuda"
         ar = AutoRound(
             tiny_qwen_moe_model_path,
             scheme="W4A16",
@@ -830,9 +864,12 @@ class TestAWQWeightClip:
         assert torch.all(clipped >= min_val)
         assert torch.all(clipped <= max_val)
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_clip_then_rtn(self, tiny_opt_model_path, device):
-        """AWQ smooth+clip -> RTN: produces a valid W4 model that can generate."""
+    def test_awq_clip_then_rtn(self, tiny_opt_model_path):
+        """AWQ smooth+clip -> RTN: produces a valid W4 model that can generate.
+
+        Algorithm correctness (clip search + RTN) -- runs once on cpu.
+        """
+        device = "cpu"
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
@@ -860,9 +897,12 @@ class TestAWQWeightClip:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Clipped model should produce non-empty output"
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_awq_clip_as_init_signround(self, tiny_opt_model_path, device):
-        """clip_as_init: clip is kept on the model context and initializes SignRound's range."""
+    def test_awq_clip_as_init_signround(self, tiny_opt_model_path):
+        """clip_as_init: clip is kept on the model context and initializes SignRound's range.
+
+        Algorithm correctness -- runs once on cpu.
+        """
+        device = "cpu"
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 

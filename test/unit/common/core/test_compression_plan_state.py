@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import inspect
-
-from auto_round import AutoRound, RTNConfig
-from auto_round.compressors.base import BaseCompressor
+from auto_round import AutoRound, RTNConfig, SignRoundConfig
 
 
 def test_post_init_builds_authoritative_compression_plan(tiny_opt_model_path):
@@ -69,27 +66,21 @@ def test_legacy_state_views_cannot_mutate_authoritative_plan(tiny_opt_model_path
     }
 
 
-def test_quantizer_sync_reads_authoritative_plan_instead_of_parallel_state():
-    source = inspect.getsource(BaseCompressor._build_layer_config)
+def test_direct_and_algorithm_config_entries_build_equivalent_plans(tiny_opt_model_path):
+    common = {
+        "model": tiny_opt_model_path,
+        "scheme": "W4A16",
+        "iters": 0,
+        "nsamples": 1,
+        "seqlen": 8,
+        "dataset": ["local calibration sample"],
+        "low_cpu_mem_usage": False,
+    }
+    direct = AutoRound(bits=4, group_size=128, **common)
+    configured = AutoRound(alg_configs=SignRoundConfig(bits=4, group_size=128, iters=0), **common)
 
-    assert "self.quantizer.layer_config = self.layer_config" not in source
-    assert "self.quantizer.regex_config = self.regex_config" not in source
-    assert "self.quantizer.scale_dtype = self.scale_dtype" not in source
+    direct.post_init()
+    configured.post_init()
 
-
-def test_format_resolution_does_not_copy_scheme_fields_one_by_one():
-    source = inspect.getsource(BaseCompressor._resolve_format_string)
-
-    assert "fields(QuantizationScheme)" not in source
-
-
-def test_final_layer_config_path_does_not_call_legacy_mutating_adapter():
-    source = inspect.getsource(BaseCompressor.configure_layer_config)
-
-    assert "set_layer_config(" not in source
-
-
-def test_auto_scheme_layer_discovery_uses_pure_resolver():
-    source = inspect.getsource(BaseCompressor._gen_auto_scheme)
-
-    assert "set_layer_config(" not in source
+    assert direct.compression_plan.scheme.value == configured.compression_plan.scheme.value
+    assert direct.compression_plan.layer_config == configured.compression_plan.layer_config

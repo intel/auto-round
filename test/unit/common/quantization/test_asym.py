@@ -25,6 +25,8 @@ from auto_round.utils.device_manager import get_available_device_types
 
 # "cpu" is always available; extend with whatever accelerators AutoRound detects (cuda/xpu/hpu/...).
 _AVAILABLE_DEVICES = ["cpu"] + [d for d in get_available_device_types() if d != "cpu"]
+_CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
+requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
 
 # (bits, group_size) combinations exercised by the quant-param sweep below.
 _QUANT_PARAMS = [(4, 32), (4, 64), (4, 128), (2, 128), (8, 128)]
@@ -82,14 +84,16 @@ class TestAutoRoundAsym:
 
     # ------------------------------------------------------------------
     # Tuning path (iters=1): exercises the real sign-gradient tuning loop.
-    # The group_size sweep is the "core" case and runs in CI; bits/format
-    # sweeps are heavier and stay skip_ci (manual/nightly coverage only).
+    # This is genuinely slow (real gradient tuning), so it's cheaper in wall-clock
+    # time to run once on cuda than on every device (bits/format sweeps below are
+    # heavier still and stay skip_ci -- manual/nightly coverage only).
     # ------------------------------------------------------------------
+    @requires_cuda
     @pytest.mark.timeout(120)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     @pytest.mark.parametrize("group_size", [32, 64, 128])
-    def test_asym_group_size_tuning(self, tiny_opt_model_path, group_size, device):
+    def test_asym_group_size_tuning(self, tiny_opt_model_path, group_size):
         """Tuned (iters=1) asym quantization works across group sizes."""
+        device = "cuda"
         ar = AutoRound(tiny_opt_model_path, bits=4, group_size=group_size, sym=False, iters=1, seqlen=2, nsamples=1)
         _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 

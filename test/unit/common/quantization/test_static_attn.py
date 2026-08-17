@@ -3,43 +3,19 @@ from test.helpers import get_model_path
 
 import pytest
 import torch
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 
-deepseekv2_model_name = get_model_path("deepseek-ai/DeepSeek-V2-Lite-Chat")
 deepseekv3_model_name = get_model_path("tflsxyy/DeepSeek-V3-bf16-4layers")
 
 
-@pytest.fixture
-def setup_deepseekv2():
-    """Fixture to set up model and tokenizer."""
-    model_name = deepseekv2_model_name
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
-    config.num_hidden_layers = 1  # Reduce layers for testing
-    model = AutoModelForCausalLM.from_config(config)
-    model.config.name_or_path = None
-    output_dir = "./tmp/test_quantized_deepseekv2"
-    return model, tokenizer, output_dir, config
-
-
-@pytest.fixture
-def setup_deepseekv3():
-    """Fixture to set up model and tokenizer."""
-    model_name = deepseekv3_model_name
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
-    config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
-    config.num_hidden_layers = 1  # Reduce layers for testing
-    model = AutoModelForCausalLM.from_config(config)
-    model.config.name_or_path = None
-    output_dir = "./tmp/test_quantized_deepseekv3"
-    return model, tokenizer, output_dir, config
-
-
 @pytest.mark.timeout(180)
-def test_deepseek_v2(setup_deepseekv2):
-    model, tokenizer, output_dir, config = setup_deepseekv2
+def test_deepseek_v2(tiny_deepseek_v2_model_path):
+    model_name = tiny_deepseek_v2_model_path
+    model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=False)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
+    output_dir = "./tmp/test_quantized_deepseekv2"
     autoround = AutoRound(
         model,
         tokenizer,
@@ -58,6 +34,21 @@ def test_deepseek_v2(setup_deepseekv2):
 
     # clean the output directory after test
     shutil.rmtree(output_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def setup_deepseekv3():
+    """Fixture to set up model and tokenizer."""
+    from transformers import AutoConfig
+
+    model_name = deepseekv3_model_name
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=False)
+    config = AutoConfig.from_pretrained(model_name, trust_remote_code=False)
+    config.num_hidden_layers = 1  # Reduce layers for testing
+    model = AutoModelForCausalLM.from_config(config)
+    model.config.name_or_path = None
+    output_dir = "./tmp/test_quantized_deepseekv3"
+    return model, tokenizer, output_dir, config
 
 
 @pytest.mark.timeout(90)

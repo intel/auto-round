@@ -36,9 +36,6 @@ from auto_round.special_model_handler import (
     mllms_with_limited_bs,
     resolve_model_type,
 )
-from auto_round.utils.device_manager import get_available_device_types
-
-_AVAILABLE_DEVICES = ["cpu"] + [d for d in get_available_device_types() if d != "cpu"]
 
 
 def _make_mock_config(model_type, architectures=None):
@@ -177,9 +174,12 @@ class TestMiMoAudioForwardPatching:
 
 
 class TestMiMoAudioQuantization:
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_quantize_rtn(self, tiny_mimo_audio_model_path, tmp_path, device):
-        """RTN-quantizing a tiny MiMo-Audio model produces QuantLinear layers, on every device."""
+    def test_quantize_rtn(self, tiny_mimo_audio_model_path, tmp_path):
+        """RTN-quantizing a tiny MiMo-Audio model produces QuantLinear layers.
+
+        Algorithm correctness -- runs once on cpu.
+        """
+        device = "cpu"
         import transformers
 
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -206,9 +206,13 @@ class TestMiMoAudioQuantization:
         assert has_quantlinear, "Quantized model should contain QuantLinear layers"
 
     @pytest.mark.timeout(90)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_quantize_with_tuning(self, tiny_mimo_audio_model_path, tmp_path, device):
-        """Tuned (iters=1) quantization of a tiny MiMo-Audio model also produces QuantLinear layers."""
+    def test_quantize_with_tuning(self, tiny_mimo_audio_model_path, tmp_path):
+        """Tuned (iters=1) quantization of a tiny MiMo-Audio model also produces QuantLinear layers.
+
+        Algorithm correctness -- runs once on cpu (measured cpu ~21s vs cuda ~18s here,
+        not different enough to justify pinning to cuda).
+        """
+        device = "cpu"
         import transformers
 
         model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -335,9 +339,12 @@ class TestStableAudioPipelineFunction:
 
 
 class TestStableAudioQuantization:
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
-    def test_quantize_rtn(self, tiny_stable_audio_pipe, tmp_path, device):
-        """RTN-quantizing a tiny StableAudio pipeline saves both quantized and non-quantized components."""
+    def test_quantize_rtn(self, tiny_stable_audio_pipe, tmp_path):
+        """RTN-quantizing a tiny StableAudio pipeline saves both quantized and non-quantized components.
+
+        Algorithm/export correctness -- runs once on cpu.
+        """
+        device = "cpu"
         from diffusers import StableAudioPipeline
 
         pipe = StableAudioPipeline.from_pretrained(tiny_stable_audio_pipe)
