@@ -807,6 +807,21 @@ def mllm_load_model(
 def _attach_diffusion_pipeline_fn(pipe):
     """Attach a custom pipeline function for diffusion models that need special API calls."""
     pipe_class_name = type(pipe).__name__
+    if pipe_class_name == "MiniMaxH3ModularPipeline":
+
+        def _minimax_h3_pipeline_fn(
+            pipe, prompts, guidance_scale=7.0, num_inference_steps=50, generator=None, **kwargs
+        ):
+            del guidance_scale
+            return pipe(
+                prompt=prompts,
+                num_inference_steps=num_inference_steps,
+                generator=generator,
+                **kwargs,
+            )
+
+        pipe._autoround_pipeline_fn = _minimax_h3_pipeline_fn
+
     if pipe_class_name == "StableAudioPipeline":
 
         def _stable_audio_pipeline_fn(
@@ -867,7 +882,36 @@ def diffusion_load_model(
         return pipe, pipe.model
 
     pipelines = LazyImport("diffusers.pipelines")
-    if isinstance(pretrained_model_name_or_path, str):
+    is_modular_diffusion = (
+        isinstance(pretrained_model_name_or_path, str)
+        and os.path.exists(os.path.join(pretrained_model_name_or_path, "modular_model_index.json"))
+    )
+    if is_modular_diffusion:
+        check_diffusers_installed()
+        from diffusers import ModularPipeline
+
+        pipe = ModularPipeline.from_pretrained(
+            pretrained_model_name_or_path,
+            workflow="t2va",
+            local_files_only=True,
+            trust_remote_code=trust_remote_code,
+        )
+        component_dtype = {
+            "bf16": torch.bfloat16,
+            "bfloat16": torch.bfloat16,
+            "fp16": torch.float16,
+            "float16": torch.float16,
+            "f16": torch.float16,
+            "fp32": torch.float32,
+            "float32": torch.float32,
+            "f32": torch.float32,
+        }.get(str(model_dtype).lower(), None)
+        load_kwargs = {"local_files_only": True}
+        if component_dtype is not None:
+            load_kwargs["dtype"] = component_dtype
+        pipe.load_components(**load_kwargs)
+        pipe_config = pipe.config
+    elif isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
         with open(model_index, "r", encoding="utf-8") as file:
             config = json.load(file)
@@ -1265,6 +1309,9 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
         elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
             check_diffusers_installed()
             index_file = os.path.join(model_or_path, "model_index.json")
+        elif os.path.exists(os.path.join(model_or_path, "modular_model_index.json")):
+            check_diffusers_installed()
+            index_file = os.path.join(model_or_path, "modular_model_index.json")
         return index_file is not None
     elif not isinstance(model_or_path, torch.nn.Module):
         check_diffusers_installed()
