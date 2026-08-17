@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -38,6 +39,48 @@ OUTPUT = Path(
     os.environ.get("MINIMAX_H3_W4A16_OUTPUT", ROOT / "artifacts/minimax_h3_w4a16_packed_pretrained")
 )
 OFFICIAL_FL2VA = os.environ.get("MINIMAX_H3_OFFICIAL_FL2VA")
+
+
+def _native_block_name(name: str) -> str:
+    """Map Diffusers H3 block selectors to Omni's native module names."""
+    replacements = (
+        ("transformer_blocks", "blocks"),
+        ("token_refiner.refiner_blocks", "token_refiner.blocks"),
+    )
+    for source, target in replacements:
+        if name == source or name.startswith(source + "."):
+            return target + name[len(source) :]
+    return name
+
+
+def _rewrite_omni_quant_metadata(output: Path) -> None:
+    """Write runtime-native block selectors into the Omni transformer metadata.
+
+    AutoRound quantizes the Diffusers module names, while the native Omni
+    transformer is built with ``blocks`` and ``token_refiner.blocks``. The
+    packed tensors remain Diffusers-named and are translated by Omni's
+    checkpoint adapter; only the quantization selectors need native names.
+    """
+    transformer_dir = output / "transformer"
+    config_paths = (transformer_dir / "quantization_config.json", transformer_dir / "config.json")
+    for path in config_paths:
+        if not path.is_file():
+            continue
+        config = json.loads(path.read_text())
+        quant_config = config if "quant_method" in config else config.get("quantization_config")
+        if not isinstance(quant_config, dict) or quant_config.get("quant_method") != "auto-round":
+            continue
+        names = quant_config.get("block_name_to_quantize")
+        if isinstance(names, str):
+            names = [item.strip() for item in names.split(",") if item.strip()]
+        if isinstance(names, list):
+            quant_config["block_name_to_quantize"] = [_native_block_name(item) for item in names]
+        extra_config = quant_config.get("extra_config")
+        if isinstance(extra_config, dict):
+            quant_config["extra_config"] = {
+                _native_block_name(key): value for key, value in extra_config.items()
+            }
+        path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
 
 
 def main() -> None:
@@ -75,6 +118,7 @@ def main() -> None:
         disable_model_free=True,
     )
     autoround.quantize_and_save(str(OUTPUT), format="auto_round:auto_gptq", inplace=True)
+    _rewrite_omni_quant_metadata(OUTPUT)
     partition = repack_native_vae(OUTPUT, OFFICIAL_FL2VA)
     print(f"Wrote packed W4A16 checkpoint to {OUTPUT}; Omni partition: {partition}")
 
