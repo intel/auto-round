@@ -14,6 +14,7 @@ pr:
       - setup.py
       - requirements-hpu.txt
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
       - .azure-pipelines/template/docker-template.yml
       - .azure-pipelines/template/ut-template.yml
     exclude:
@@ -46,6 +47,7 @@ stages:
               utScriptFileName: "run_ut_hpu"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut"
+              filterChangedTests: true
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'
@@ -53,5 +55,6 @@ stages:
               version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
+            condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
               summaryFileLocation: $(UPLOAD_PATH)/coverage.xml

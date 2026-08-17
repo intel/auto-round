@@ -16,6 +16,7 @@ pr:
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/unit-test-xpu.yml
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
       - .azure-pipelines/docker/Dockerfile_xpu.devel
       - .azure-pipelines/build-auto-round-lib.yml
       - .azure-pipelines/template/lib-build-template.yml
@@ -61,6 +62,7 @@ stages:
               dockerFileName: $(DOCKERFILE_NAME)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
+              filterChangedTests: true
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'
@@ -68,5 +70,6 @@ stages:
               version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
+            condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
               summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
