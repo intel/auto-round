@@ -1,6 +1,5 @@
 import copy
 import shutil
-from test.helpers import opt_name_or_path
 
 import pytest
 import torch
@@ -16,14 +15,12 @@ class TestAutoRoundFormatGeneration:
         yield
         shutil.rmtree(self.save_folder, ignore_errors=True)
 
-    @classmethod
-    def setup_class(self):
-        self.model_name = opt_name_or_path
+    @pytest.fixture(autouse=True)
+    def setup_model(self, tiny_opt_model_path):
+        self.model_name = tiny_opt_model_path
         self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-
-    @classmethod
-    def teardown_class(self):
+        yield
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_4bits_sym(self, dataloader):

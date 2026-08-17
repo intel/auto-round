@@ -1,7 +1,6 @@
 import shutil
 import subprocess
 from math import ceil
-from test.helpers import get_model_path
 
 import pytest
 import torch

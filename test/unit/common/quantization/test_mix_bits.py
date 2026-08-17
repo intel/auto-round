@@ -2,7 +2,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from test.helpers import evaluate_accuracy, opt_name_or_path
+from test.helpers import evaluate_accuracy
 
 import pytest
 import torch
@@ -31,14 +31,12 @@ class TestAutoRound:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @classmethod
-    def setup_class(cls):
-        cls.model_name = opt_name_or_path
-        cls.model = AutoModelForCausalLM.from_pretrained(cls.model_name, torch_dtype="auto", trust_remote_code=True)
-        cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name, trust_remote_code=True)
-
-    @classmethod
-    def teardown_class(cls):
+    @pytest.fixture(autouse=True)
+    def setup_model(self, tiny_opt_model_path):
+        self.model_name = tiny_opt_model_path
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        yield
         shutil.rmtree("runs", ignore_errors=True)
 
     def test_mixed_gptqmodel_convert_to_ar(self, dataloader):
