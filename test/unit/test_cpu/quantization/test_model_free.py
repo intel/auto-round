@@ -52,6 +52,13 @@ from safetensors.torch import save_file
 
 from auto_round import AutoRound
 from auto_round.compressors.model_free import (
+    _ModelFreeCompressorCore,
+    _process_single_shard_task,
+    get_predefined_ignore_layers_from_config,
+)
+from auto_round.schemes import QuantizationScheme
+from auto_round.utils.model import is_model_free_route
+from auto_round.utils.model_free_utils import (
     _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
@@ -59,22 +66,23 @@ from auto_round.compressors.model_free import (
     _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
-    _handle_model_type_low_precision_source_tensors,
     _handle_mxfp_source_tensors,
     _looks_like_auto_scheme,
-    _ModelFreeCompressorCore,
     _PatternMatcher,
-    _preprocess_model_type_source_tensors,
     _process_shard,
-    _process_single_shard_task,
     _quantize_weight_mxfp,
     _quantize_weight_nvfp4_e5m3,
     _validate_auto_scheme_options,
-    get_predefined_ignore_layers_from_config,
+)
+from auto_round.utils.model_free_utils import (
+    handle_model_type_low_precision_source_tensors as _handle_model_type_low_precision_source_tensors,
+)
+from auto_round.utils.model_free_utils import (
     is_model_free_supported_scheme,
 )
-from auto_round.schemes import QuantizationScheme
-from auto_round.utils.model import is_model_free_route
+from auto_round.utils.model_free_utils import (
+    preprocess_model_type_source_tensors as _preprocess_model_type_source_tensors,
+)
 
 
 def test_model_free_preserves_explicit_scheme_overrides():
@@ -311,7 +319,7 @@ class TestProcessShard:
         shard_path = str(tmp_path / "shard.safetensors")
         save_file({"layer.fc1.weight": torch.randn(64, 128)}, shard_path)
         compile_mock = Mock(side_effect=lambda func, _device: func)
-        monkeypatch.setattr("auto_round.compressors.model_free.compile_func", compile_mock)
+        monkeypatch.setattr("auto_round.utils.model_free_utils.compile_func", compile_mock)
 
         _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], enable_torch_compile=enabled)
 

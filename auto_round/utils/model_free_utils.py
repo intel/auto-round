@@ -2578,6 +2578,9 @@ def handle_model_type_low_precision_source_tensors(
     dequantize_with_device_fallback: Callable[..., torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Handle model-type-specific low-precision source tensors."""
+    if dequantize_with_device_fallback is None:
+        dequantize_with_device_fallback = _dequantize_with_device_fallback
+
     if (model_type or "").lower() == "kimi_k25":
         return _dequant_kimi_k25_int4_tensors(
             raw_tensors,
