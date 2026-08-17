@@ -264,7 +264,13 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
     subgroup_q_row_in_tile = cute::min(subgroup_q_row_in_tile, q_blocks_per_wg_tile - 1);
 
     int sparse_route_blocks = params.num_k_blocks > 0 ? params.num_k_blocks : total_blk;
-    int k_tiles_per_sparse_route_block = cute::max(1, ceil_div(total_blk, sparse_route_blocks));
+    // The causal scheduler shortens total_blk for each Q subgroup.  Deriving
+    // this ratio from total_blk would then collapse a 64-token route block to
+    // one K32 tile near the beginning of the sequence and drop half its keys.
+    // Keep the route-to-physical-tile mapping tied to the full K shape instead.
+    int k_route_block_tokens = cute::ceil_div(int(size<0>(K_2D)), sparse_route_blocks);
+    int k_tiles_per_sparse_route_block =
+        cute::max(1, ceil_div(k_route_block_tokens, get<1>(TileShapeQK{})));
     auto route_block_to_k_tile = [&](int route_block, int micro_tile) {
       return route_block * k_tiles_per_sparse_route_block + micro_tile;
     };
@@ -325,17 +331,18 @@ struct SPARSESDPAFwdMainloop<cutlass::sdpa::XeDefault<Stages>, CausalMask_, Full
 
       if (subgroup_selected) {
         if constexpr (!is_cache && CausalMask) {
-          if (K == total_blk - 1) {
-            Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
-            Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
-            auto cS_thread = thr_mma_qk.partition_C(gP);
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tSrS.size(); ++i) {
-              int row_idx = get<0>(cS_thread(i));
-              int col_idx = get<1>(cS_thread(i));
-              if (col_idx - seq_len_kv_cache - full_tile_offset > row_idx - discard_seq_coord) {
-                tSrS(i) = ElementS(-INFINITY);
-              }
+          // K32 splits each logical 64-token sparse route block into two
+          // physical K tiles.  The diagonal can therefore occur in any
+          // physical tile, rather than only in the final K tile.
+          Tensor cPgP = make_identity_tensor(make_shape(seq_len, seq_len));
+          Tensor gP = local_tile(cPgP, take<0, 2>(TileShapeQK{}), make_coord(get<0>(blk_qv), K));
+          auto cS_thread = thr_mma_qk.partition_C(gP);
+          CUTLASS_PRAGMA_UNROLL
+          for (int i = 0; i < tSrS.size(); ++i) {
+            int row_idx = get<0>(cS_thread(i));
+            int col_idx = get<1>(cS_thread(i));
+            if (col_idx - seq_len_kv_cache - full_tile_offset > row_idx - discard_seq_coord) {
+              tSrS(i) = ElementS(-INFINITY);
             }
           }
         } else if constexpr (FullMask_) {

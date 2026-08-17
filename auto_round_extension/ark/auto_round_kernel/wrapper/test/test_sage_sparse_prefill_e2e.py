@@ -553,6 +553,19 @@ def main() -> None:
             sparse_k_block_tokens=64,
         )
         run_case_sdpa(dtype, 128, is_causal=True, q_tile_override=64)
+        # Regression coverage for causal masking across K32 qtile256 microtiles.
+        run_case_sdpa(
+            dtype,
+            128,
+            seq_len_q=512,
+            seq_len_kv=512,
+            num_heads_q=8,
+            num_heads_kv=8,
+            is_causal=True,
+            q_tile_override=256,
+            sparse_q_block_tokens=256,
+            sparse_k_block_tokens=64,
+        )
         run_case_sdpa_full(dtype, 64)
         run_case_sdpa_full(dtype, 128, q_tile_override=64)
 
