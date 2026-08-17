@@ -52,6 +52,7 @@ class TestLayerConfigGpu:
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=16,
+            enable_torch_compile=False,
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -79,6 +80,7 @@ class TestLayerConfigGpu:
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=16,
+            enable_torch_compile=False,
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -99,6 +101,7 @@ class TestLayerConfigGpu:
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=16,
+            enable_torch_compile=False,
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -125,6 +128,7 @@ class TestLayerConfigGpu:
             disable_opt_rtn=True,
             nsamples=1,
             seqlen=16,
+            enable_torch_compile=False,
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 

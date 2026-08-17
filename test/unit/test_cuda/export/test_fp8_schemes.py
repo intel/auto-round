@@ -16,7 +16,7 @@ import shutil
 
 import pytest
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from auto_round import AutoRound
 
@@ -61,7 +61,14 @@ class TestFp8SchemesGpu:
         autoround = AutoRound(tiny_qwen_model_path, scheme="FP8_BLOCK", iters=0, disable_opt_rtn=True, seqlen=2)
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        config = AutoConfig.from_pretrained(quantized_model_path, trust_remote_code=True)
+        config.quantization_config = None
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            config=config,
+            device_map="cuda:0",
+            trust_remote_code=True,
+        )
         input_ids = torch.randint(0, 1000, (1, 8), device="cuda:0")
         with torch.no_grad():
             out = model(input_ids)
