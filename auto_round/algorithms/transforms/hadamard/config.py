@@ -106,6 +106,10 @@ class RotationConfig(BaseModel, BaseRotationConfig):
         """
         super().__init__(**data)
 
+    def can_compile_block_forward(self) -> bool:
+        """Hadamard may install online hooks that are not Dynamo compatible."""
+        return False
+
     @field_validator("backend")
     @classmethod
     def _validate_backend(cls, v: str) -> str:

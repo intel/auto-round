@@ -15,6 +15,7 @@
 import torch
 
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
+from auto_round.data_type.gguf import _imatrix_handle_zero
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.logger import logger
@@ -58,7 +59,7 @@ def calculate_gparam(tensor, group_size=16, device="cpu"):
     if isinstance(tensor, (float, int)):
         tensor_amax = torch.tensor(tensor, device=device, dtype=torch.float32).abs()
     elif isinstance(tensor, torch.Tensor):
-        tensor_amax = tensor.abs().max().to(torch.float32)
+        tensor_amax = tensor.to(torch.float32).abs().max()
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
     return global_scale
 
@@ -79,31 +80,13 @@ def ref_nvfp4_quant(x, global_scale, block_size=16, v=0, scale_coeff=1.0):
     return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
 
 
-def search_nvfp4_scale(tensor, bits=4, qw=None):
-    tensor = tensor.to(torch.float32)
-    qdq_t, dummy_scale, _ = nv_fp4(tensor, bits=bits, group_size=16, v=0, max_scale=1.0)
-    best_loss = torch.sum((qdq_t - tensor) ** 2 * qw, dim=-1)
-    scales = torch.ones_like(dummy_scale)
-    for scale_value in range(50, 152):
-        tmp_scale = scale_value / 100.0
-        if tmp_scale == 1.0:
-            continue
-        scales_new = torch.ones_like(dummy_scale) * tmp_scale
-        tmp_qdq_t, _, _ = nv_fp4(tensor, bits=bits, group_size=16, v=0, max_scale=scales_new)
-        loss = torch.sum((tmp_qdq_t - tensor) ** 2 * qw, dim=-1)
-        replace_id = loss < best_loss
-        scales[replace_id] = scales_new[replace_id]
-        best_loss[replace_id] = loss[replace_id]
-    return scales
-
-
 @register_dtype("nv_fp4")
 def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, init_scale=1.0, **kwargs):
     orig_dtype = tensor.dtype
     init_scale = 1.0 if init_scale is None else init_scale
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if global_scale is None:
-        tensor_max = tensor.abs().max().to(torch.float32)
+        tensor_max = tensor.to(torch.float32).abs().max()
         global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     if isinstance(max_scale, torch.Tensor):
@@ -122,14 +105,14 @@ def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, *
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
-        tensor_max = tensor.abs().max().to(torch.float32)
+        tensor_max = tensor.to(torch.float32).abs().max()
     else:
         if not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         else:
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
-            tensor_max = tensor_max.abs().max()
+            tensor_max = tensor_max.to(torch.float32).abs().max()
 
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     global_scale = global_scale.to(tensor.device)
@@ -235,12 +218,12 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
-        tensor_max = tensor.abs().max().to(torch.float32)
+        tensor_max = tensor.to(torch.float32).abs().max()
     elif tensor_max is not None:
         if not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
-            tensor_max = tensor.abs().max().to(torch.float32)
+            tensor_max = tensor.to(torch.float32).abs().max()
     global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
@@ -254,6 +237,196 @@ def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     global_scale = 1.0
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
+@register_dtype("nv_fp4_rtn")
+def nv_fp4_rtn(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, init_scale=1.0, **kwargs):
+    orig_dtype = tensor.dtype
+    init_scale = 1.0 if init_scale is None else init_scale
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if global_scale is None:
+        tensor_max = tensor.abs().max().to(torch.float32)
+        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.view(-1).to(tensor.device)
+    if isinstance(init_scale, torch.Tensor):
+        init_scale = init_scale.view(-1).to(tensor.device)
+    qdq_res, scale = ref_nvfp4_quant_inplace(tensor, global_scale, group_size, v, scale_coeff=max_scale * init_scale)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
+@torch._dynamo.disable()
+def to_float8_e4m3fn(tensor):
+    return tensor.to(torch.float8_e4m3fn).to(torch.float32)
+
+
+def ref_nvfp4_quant_inplace(
+    x,
+    global_scale,
+    block_size=16,
+    v=0,
+    scale_coeff=1.0,
+    out=None,
+):
+    assert global_scale.dtype == torch.float32
+    assert x.ndim == 2
+
+    m, n = x.shape
+
+    if isinstance(scale_coeff, torch.Tensor):
+        scale_coeff = scale_coeff.view(-1, 1).to(x.device)
+
+    # vec_max: [m, 1]
+    vec_max = torch.amax(torch.abs(x), dim=-1, keepdim=True).float()
+
+    if isinstance(scale_coeff, torch.Tensor):
+        vec_max.mul_(scale_coeff)
+    else:
+        vec_max.mul_(scale_coeff)
+
+    # scale: [m,1]
+    scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
+
+    scale.clamp_(
+        min=FLOAT8_E4M3_MIN,
+        max=FLOAT8_E4M3_MAX,
+    )
+
+    scale = to_float8_e4m3fn(scale)
+
+    # output_scale reuse scale buffer
+    output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
+
+    # allocate once
+    if out is None:
+        out = torch.empty_like(x, dtype=torch.float32)
+
+    # out = x * output_scale
+    out.copy_(x)
+    out.mul_(output_scale)
+
+    if v != 0:
+        out.add_(v)
+
+    # clamp inplace
+    out.clamp_(-6.0, 6.0)
+
+    # fp4 cast
+    out = cast_to_fp4(out) * get_reciprocal(output_scale)
+
+    return out.reshape(m, n), scale
+
+
+def search_nvfp4_scale(tensor, bits=4, qw=None):
+    tensor_fp32 = tensor.float()
+
+    qdq_t, scale, _ = nv_fp4(
+        tensor_fp32,
+        bits=bits,
+        group_size=16,
+        v=0,
+        max_scale=1.0,
+    )
+
+    # loss buffer
+    diff = torch.empty_like(tensor_fp32)
+    loss = torch.empty_like(tensor_fp32[..., 0])
+
+    diff.copy_(qdq_t)
+    diff.sub_(tensor_fp32)
+    diff.mul_(diff)
+    diff.mul_(qw)
+    loss.copy_(diff.sum(dim=-1))
+
+    best_loss = loss.clone()
+
+    # scale buffer reuse
+    best_scale = torch.ones_like(scale)
+
+    # inplace modify
+    test_scale = torch.empty_like(scale)
+
+    for scale_value in range(50, 152):
+        tmp_scale = scale_value / 100.0
+
+        if tmp_scale == 1.0:
+            continue
+
+        test_scale.fill_(tmp_scale)
+
+        tmp_qdq, _, _ = nv_fp4_rtn(
+            tensor_fp32,
+            bits=bits,
+            group_size=16,
+            v=0,
+            max_scale=test_scale,
+        )
+
+        diff.copy_(tmp_qdq)
+        diff.sub_(tensor_fp32)
+        diff.mul_(diff)
+        diff.mul_(qw)
+
+        loss.copy_(diff.sum(dim=-1))
+
+        mask = loss < best_loss
+
+        best_loss[mask] = loss[mask]
+        best_scale[mask] = test_scale[mask]
+
+    return best_scale
+
+
+@register_dtype("opt_rtn_nv_fp4")
+def opt_rtn_fast_nvfp4(
+    tensor,
+    bits=4,
+    group_size=16,
+    v=0,
+    global_scale=None,
+    max_scale=1.0,
+    imatrix=1.0,
+    **kwargs,
+):
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if not isinstance(imatrix, torch.Tensor):
+        qw = 1.0
+    else:
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
+        imatrix = imatrix.reshape(tensor.shape)
+        imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
+        qw = imatrix
+
+    init_scale = search_nvfp4_scale(tensor, 4, qw)
+    tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
+    return nv_fp4_rtn(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
+
+
+@register_dtype("rtn_nv_fp4_with_static_gs")
+def rtn_nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, **kwargs):
+    if tensor is None or tensor.numel() == 0:
+        return tensor, None, None
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if tensor_max is None:
+        tensor_max = tensor.abs().max().to(torch.float32)
+    else:
+        if not isinstance(tensor_max, torch.Tensor):
+            tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
+        else:
+            tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
+        if tensor_max.numel() != 1:
+            tensor_max = tensor_max.abs().max()
+
+    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    global_scale = global_scale.to(tensor.device)
+    qdq_res, scale = ref_nvfp4_quant_inplace(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
 

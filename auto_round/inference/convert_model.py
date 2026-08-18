@@ -21,7 +21,7 @@ from packaging.version import Version
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.formats import AutoRoundExportFormat
+from auto_round.export.formats import BackendDataType
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
@@ -476,6 +476,13 @@ def _replace_by_quant_layers(
         new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format)
         set_module(module, layer_name, new_layer)
 
+        # Transformers may run model-specific initialization after loading. Mark both the
+        # replacement and its direct parent so parent initializers do not access attributes
+        # such as ``c_proj.weight`` that packed quantized layers intentionally do not expose.
+        new_layer._is_hf_initialized = True
+        parent_name, _, _ = layer_name.rpartition(".")
+        parent_module = get_module(module, parent_name) if parent_name else module
+        parent_module._is_hf_initialized = True
     return used_backends
 
 
@@ -559,11 +566,11 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
         )
     elif (
-        AutoRoundExportFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundExportFormat.MXFP8.value in layer_backend
-        or AutoRoundExportFormat.MXFP4.value in layer_backend
-        or AutoRoundExportFormat.NVFP4.value in layer_backend
-        or AutoRoundExportFormat.MXINT4.value in layer_backend
+        BackendDataType.FP8_STATIC.value in layer_backend
+        or BackendDataType.MXFP8.value in layer_backend
+        or BackendDataType.MXFP4.value in layer_backend
+        or BackendDataType.NVFP4.value in layer_backend
+        or BackendDataType.MXINT4.value in layer_backend
     ):
         return QuantLinear.from_original(config, layer)
 

@@ -82,7 +82,7 @@ class WrapperLinear(torch.nn.Module):
         enable_norm_bias_tuning=False,
         device="cpu",
         enable_round_tuning=True,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
         disable_opt_rtn=True,
         **kwargs,
     ):
@@ -166,16 +166,21 @@ class WrapperLinear(torch.nn.Module):
             self.weight_min = None
             self.weight_max = None
         # AWQ clip-as-init: cap the tunable weight range to the per-group clip
-        # magnitude searched by AWQ (``apply_clip`` with ``clip_as_init=True``).
+        # range searched by AWQ (``apply_clip`` with ``clip_as_init=True``).
         # This initializes the range used by quant_tensor_sym/asym, leaving
         # min_scale/max_scale to tune a coefficient on top. Only the standard
         # (non-tuple) group layout maps onto weight_min/weight_max here.
+        awq_clip_min = getattr(orig_layer, "awq_clip_min", None)
         awq_clip_max = getattr(orig_layer, "awq_clip_max", None)
         if awq_clip_max is not None and self.weight_min is not None and not isinstance(orig_layer.group_size, tuple):
-            clip_flat = awq_clip_max.reshape(-1).to(self.weight_max.device, self.weight_max.dtype)
-            if clip_flat.numel() == self.weight_max.numel():
-                self.weight_max = torch.minimum(self.weight_max, clip_flat)
-                self.weight_min = torch.maximum(self.weight_min, -clip_flat)
+            clip_max_flat = awq_clip_max.reshape(-1).to(self.weight_max.device, self.weight_max.dtype)
+            if awq_clip_min is None:
+                clip_min_flat = -clip_max_flat
+            else:
+                clip_min_flat = awq_clip_min.reshape(-1).to(self.weight_min.device, self.weight_min.dtype)
+            if clip_max_flat.numel() == self.weight_max.numel() and clip_min_flat.numel() == self.weight_min.numel():
+                self.weight_max = torch.minimum(self.weight_max, clip_max_flat)
+                self.weight_min = torch.maximum(self.weight_min, clip_min_flat)
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
@@ -562,7 +567,7 @@ class WrapperLinear(torch.nn.Module):
 
 class WrapperWALayer(torch.nn.Module):
 
-    def __init__(self, orig_layer, enable_torch_compile=False, device="cpu"):
+    def __init__(self, orig_layer, enable_torch_compile=True, device="cpu"):
         super(WrapperWALayer, self).__init__()
         self.orig_layer = orig_layer
         self.enable_torch_compile = enable_torch_compile
@@ -770,7 +775,7 @@ def wrapper_block(
     block,
     enable_minmax_tuning,
     enable_norm_bias_tuning,
-    enable_torch_compile=False,
+    enable_torch_compile=True,
     device="cpu",
     wrapper_cls=WrapperLinear,
     **kwargs,

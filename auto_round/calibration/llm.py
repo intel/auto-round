@@ -337,6 +337,28 @@ class LLMCalibrator(Calibrator):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
+            # Cache raw token IDs for quantize_block.  Positions that should be
+            # excluded from the loss are marked with -100 (PyTorch's standard
+            # ignore index):
+            #   • actual pad tokens (matched via pad_token_id when available, or
+            #     detected as trailing repeated tokens otherwise)
+            #   • the last token of every sample (no next-token target)
+            if "input_ids" not in self.inputs:
+                self.inputs["input_ids"] = []
+            ids_to_cache = input_ids.clone()
+            if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
+                ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
+            else:
+                # Heuristic: trailing repeated tokens are treated as padding.
+                for b in range(ids_to_cache.shape[0]):
+                    last_token = ids_to_cache[b, -1]
+                    j = ids_to_cache.shape[1] - 2
+                    while j >= 0 and ids_to_cache[b, j] == last_token:
+                        ids_to_cache[b, j] = -100
+                        j -= 1
+            # Always exclude the last position (no supervision target).
+            ids_to_cache[:, -1] = -100
+            self.inputs["input_ids"].extend(list(torch.split(ids_to_cache.to("cpu"), 1, dim=0)))
             if need_attention_mask:
                 if (
                     isinstance(data_new, dict)
@@ -374,9 +396,6 @@ class LLMCalibrator(Calibrator):
                 # Force the last token in each sequence to be masked out so the mask is
                 # never "all ones".
                 new_attention_mask[:, -1] = 0
-                if "valid_token_mask" not in self.inputs:
-                    self.inputs["valid_token_mask"] = []
-                self.inputs["valid_token_mask"].extend(list(torch.split(new_attention_mask, 1, dim=0)))
 
             else:
                 new_attention_mask = None

@@ -24,6 +24,8 @@ from auto_round.cli.parser import (
     build_quantize_parser,
     build_root_parser,
 )
+from auto_round.compressors.config_resolution import ConfigResolutionError
+from auto_round.logger import logger
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -64,6 +66,10 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
         "trust_remote_code": not args.disable_trust_remote_code,
+        "static_kv_dtype": args.static_kv_dtype,
+        "static_kv_granularity": args.static_kv_granularity,
+        "static_attention_dtype": args.static_attention_dtype,
+        "static_attention_granularity": args.static_attention_granularity,
     }
 
 
@@ -142,7 +148,7 @@ RECIPES = {
 def list_item(argv=None):
     args = build_list_parser().parse_args(argv)
     if args.item in {"format", "formats"}:
-        from auto_round.formats import OutputFormat
+        from auto_round.export.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")
         print(OutputFormat.get_support_matrix())
@@ -280,19 +286,16 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
-    if args.enable_torch_compile:
-        logger.info(
-            "`torch.compile` is enabled to reduce tuning costs. "
-            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
-        )
+    if args.enable_torch_compile is False:
+        logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
+    from auto_round import AutoRound
     from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -305,7 +308,7 @@ def tune(args):
                     f"{fmt} is not supported for lm-head quantization, please change to {auto_round_formats}"
                 )
 
-    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
+    enable_torch_compile = args.enable_torch_compile
     scheme = args.scheme.upper()
 
     from auto_round.schemes import PRESET_SCHEMES
@@ -367,10 +370,10 @@ def tune(args):
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
-        if enable_torch_compile:
+        if enable_torch_compile is False:
             logger.warning(
-                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
-                "on some models. If so, try removing `--enable_torch_compile`."
+                "`torch.compile` is disabled with AutoScheme. "
+                "Enabling it (the default) is strongly recommended to save VRAM."
             )
         scheme = AutoScheme(
             options=args.options,
@@ -386,10 +389,10 @@ def tune(args):
 
     from auto_round.utils import clear_memory
 
-    autoround: BaseCompressor = PipelineAutoRound(
+    autoround: BaseCompressor = AutoRound(
         model_name,
-        scheme,
-        alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        scheme=scheme,
+        alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -445,6 +448,9 @@ def run_eval(argv=None):
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
             add_bos_token=args.add_bos_token,
+            num_fewshot=args.num_fewshot,
+            gen_kwargs=args.eval_gen_kwargs,
+            fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
     else:
         eval(args)
@@ -484,20 +490,24 @@ def _print_help(topic=None):
 
 
 def run():
-    argv = list(sys.argv[1:])
-    command, command_argv = _normalize_cli_invocation(argv)
+    try:
+        argv = list(sys.argv[1:])
+        command, command_argv = _normalize_cli_invocation(argv)
 
-    if command == "help":
-        root_args = build_root_parser().parse_args(argv)
-        _print_help(root_args.topic)
-        return
-    if command == "list":
-        list_item(command_argv)
-        return
-    if command == "eval":
-        run_eval(command_argv)
-        return
-    start(argv=command_argv)
+        if command == "help":
+            root_args = build_root_parser().parse_args(argv)
+            _print_help(root_args.topic)
+            return
+        if command == "list":
+            list_item(command_argv)
+            return
+        if command == "eval":
+            run_eval(command_argv)
+            return
+        start(argv=command_argv)
+    except ConfigResolutionError as error:
+        logger.error(str(error))
+        raise SystemExit(2) from error
 
 
 def run_best():

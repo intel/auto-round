@@ -15,7 +15,7 @@ import copy
 import gc
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Any, Optional, Union
 
 import torch
@@ -27,11 +27,23 @@ from auto_round.algorithms.transforms import (
     apply_rotation,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.compressors.config_resolution import (
+    FormatResolution,
+    ResolvedScheme,
+    resolve_quantization_config,
+    thaw_mapping,
+)
+from auto_round.compressors.layer_config import (
+    apply_plan_to_model,
+    extract_regex_config,
+    has_quantized_layer_outside_blocks,
+    resolve_layer_config,
+)
 from auto_round.compressors.shard_writer import ShardWriter
-from auto_round.compressors.utils import _get_save_folder_name, is_act_static, is_mx_fp, is_nv_fp, set_layer_config
+from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp
 from auto_round.context.compress import CompressContext
 from auto_round.context.model import ModelContext
-from auto_round.formats import OutputFormat, get_formats
+from auto_round.export.formats import OutputFormat, resolve_formats
 from auto_round.logger import logger
 from auto_round.schemes import (
     QuantizationScheme,
@@ -65,7 +77,7 @@ from auto_round.utils.device import (
     patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
-from auto_round.utils.device_manager import device_manager
+from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
 from auto_round.utils.offload import OffloadManager
 
 
@@ -98,6 +110,8 @@ class SerializedCompressorConfig:
     supported_types: Optional[list[str]] = SUPPORTED_LAYER_TYPES
     static_attention_dtype: Optional[str] = None
     static_kv_dtype: Optional[str] = None
+    static_attention_granularity: Optional[str] = "tensor"
+    static_kv_granularity: Optional[str] = "tensor"
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
@@ -160,11 +174,6 @@ class BaseOrchestrator(object):
     is_auto_scheme: bool = False
     orig_scheme = None
     scheme = None
-    scale_dtype = None
-    layer_config = None
-    has_qlayer_outside_block: bool = False
-    regex_config: dict = None
-    quant_block_list: list = None
     to_quant_block_names = None
     ignore_layers: str = ""
     quant_lm_head: bool = False
@@ -200,7 +209,7 @@ class BaseOrchestrator(object):
         scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
+        enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         layer_config: Optional[dict] = None,
@@ -210,7 +219,7 @@ class BaseOrchestrator(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
+        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -220,9 +229,8 @@ class BaseOrchestrator(object):
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
 
-        self.dataset = dataset
-        if self.dataset is None:
-            self.dataset = "NeelNanda/pile-10k"
+        dataset_was_explicitly_set = dataset is not None
+        self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
         batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
@@ -308,12 +316,18 @@ class BaseOrchestrator(object):
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
+        from auto_round.experimental.utils import normalize_fp8_granularity
+
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
+        self.static_attention_granularity = normalize_fp8_granularity(
+            kwargs.pop("static_attention_granularity", "tensor")
+        )
         # Attention static dtype
         if self.static_attention_dtype is not None:
             logger.warning("The static attention dtype is experimental and currently has limited support.")
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_granularity = normalize_fp8_granularity(kwargs.pop("static_kv_granularity", "tensor"))
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
 
@@ -347,6 +361,25 @@ class BaseOrchestrator(object):
 
         self.nblocks = nblocks
 
+        if enable_torch_compile is None:
+            enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
+            if not enable_torch_compile:
+                if self.device == "xpu":
+                    logger.warning_once(
+                        "`torch.compile` is disabled by default on XPU for compatibility. "
+                        "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
+                    )
+                else:
+                    logger.warning_once(
+                        "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                        "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                        "`--enable_torch_compile` to force enable it."
+                    )
+        elif enable_torch_compile and sys.platform == "win32":
+            logger.warning_once(
+                "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
+                "is not installed or not available on PATH."
+            )
         self.enable_torch_compile = enable_torch_compile
 
         # Whether to pack the layer immediately after tuning
@@ -393,6 +426,12 @@ class BaseOrchestrator(object):
         # second AutoRound(...) call reuses the previous instance and silently keeps
         # stale values (e.g. low_cpu_mem_usage=True from a prior run).
         CompressContext.reset_context()
+        # When the model was built as a meta skeleton (AR_DISK_STREAM_MODEL=1),
+        # give the offloader the original checkpoint path so it can materialize
+        # each block on first touch directly from disk instead of assuming
+        # blocks already hold real weights (see OffloadManager._reload).
+        if self.model_context.disk_stream_model_dir is not None:
+            self._offloader.model_dir = self.model_context.disk_stream_model_dir
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -401,8 +440,15 @@ class BaseOrchestrator(object):
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,
+            static_kv_granularity=self.static_kv_granularity,
+            static_attention_granularity=self.static_attention_granularity,
         )
         self.shard_writer = None
+        # Resumability state deferred from Orchestrator._quantize_data_driven() until
+        # quantize_and_save()'s save_quantized() call actually succeeds; see the
+        # comment in quantize() near "is_immediate_saving" for why clearing is
+        # deferred.
+        self._resume_states = None
 
         # Flag for post_init idempotency.  Set to False here so post_init() can be called
         # either via quantize_and_save() (preferred, outside inference_mode) or directly
@@ -424,6 +470,20 @@ class BaseOrchestrator(object):
             setattr(self, key, value)
 
         self.need_calib = self._check_need_calib()
+        calibrator_kind = self._get_calibrator_kind()
+        # The default pile dataset is model-adaptive for pure-text LLMs. Any
+        # non-default dataset remains untouched.
+        if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
+            from auto_round.calib_dataset import get_code_calibration_dataset
+            from auto_round.utils.model import is_code_model
+
+            detection_config = model_config or getattr(self.model_context.model, "config", None)
+            if is_code_model(model, detection_config):
+                self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
+                logger.info("Automatically selected code calibration dataset: %s", self.dataset)
+            else:
+                logger.info("Using default calibration dataset %s.", self.dataset)
+            self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
         """Whether this compressor instance actually needs calibration data.
@@ -483,6 +543,100 @@ class BaseOrchestrator(object):
         """Convenience accessor for the tokenizer stored in ``model_context``."""
         return self.model_context.tokenizer
 
+    def _replace_compression_plan(self, **changes) -> None:
+        """Atomically update compatibility state once the immutable plan exists."""
+        plan = self.__dict__.get("compression_plan")
+        if plan is not None:
+            self.__dict__["compression_plan"] = replace(plan, **changes)
+
+    @property
+    def scheme_context(self) -> Optional[QuantizationScheme]:
+        plan = self.__dict__.get("compression_plan")
+        return plan.scheme.value if plan is not None else self.__dict__.get("_scheme_context")
+
+    @scheme_context.setter
+    def scheme_context(self, value: Optional[QuantizationScheme]) -> None:
+        self.__dict__["_scheme_context"] = value
+        plan = self.__dict__.get("compression_plan")
+        if plan is not None and value is not None:
+            self._replace_compression_plan(
+                scheme=ResolvedScheme.from_scheme(value, preset_name=plan.scheme.preset_name)
+            )
+
+    @property
+    def formats(self):
+        raw_value = self.__dict__.get("_formats")
+        plan = self.__dict__.get("compression_plan")
+        if plan is None or isinstance(raw_value, str) or (not plan.formats and raw_value is None):
+            return raw_value
+        return list(plan.formats)
+
+    @formats.setter
+    def formats(self, value) -> None:
+        self.__dict__["_formats"] = value
+        if value is not None and not isinstance(value, str):
+            self._replace_compression_plan(formats=tuple(value))
+
+    @property
+    def layer_config(self) -> Optional[dict]:
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_layer_config")
+        return {name: dict(config) for name, config in plan.layer_config.items()}
+
+    @layer_config.setter
+    def layer_config(self, value) -> None:
+        self.__dict__["_layer_config"] = value
+        if value is not None:
+            self._replace_compression_plan(layer_config=value)
+
+    @property
+    def regex_config(self) -> Optional[dict]:
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_regex_config")
+        return {name: dict(config) for name, config in plan.regex_config.items()}
+
+    @regex_config.setter
+    def regex_config(self, value) -> None:
+        self.__dict__["_regex_config"] = value
+        if value is not None:
+            self._replace_compression_plan(regex_config=value)
+
+    @property
+    def has_qlayer_outside_block(self) -> bool:
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_has_qlayer_outside_block", False)
+        return plan.has_qlayer_outside_block
+
+    @has_qlayer_outside_block.setter
+    def has_qlayer_outside_block(self, value: bool) -> None:
+        self.__dict__["_has_qlayer_outside_block"] = value
+        self._replace_compression_plan(has_qlayer_outside_block=value)
+
+    @property
+    def scale_dtype(self):
+        plan = self.__dict__.get("compression_plan")
+        return plan.scale_dtype if plan is not None else self.__dict__.get("_scale_dtype")
+
+    @scale_dtype.setter
+    def scale_dtype(self, value) -> None:
+        self.__dict__["_scale_dtype"] = value
+        self._replace_compression_plan(scale_dtype=value)
+
+    @property
+    def quant_block_list(self):
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_quant_block_list")
+        return [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
+
+    @quant_block_list.setter
+    def quant_block_list(self, value) -> None:
+        self.__dict__["_quant_block_list"] = value
+        self._replace_compression_plan(quant_block_list=value)
+
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
     def resolve_scheme(
@@ -492,7 +646,7 @@ class BaseOrchestrator(object):
     ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
-        Must be called BEFORE ``get_formats()`` and BEFORE ``_scheme_post_init()``.
+        Must be called BEFORE ``_resolve_formats()`` and BEFORE ``_scheme_post_init()``.
         Idempotent: safe to call multiple times.
         """
         if self._scheme_resolved:
@@ -592,19 +746,53 @@ class BaseOrchestrator(object):
                 "Please save the model using the `fake` format for now."
             )
 
-        layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-            self.model_context.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.ignore_layers,
-            self.quant_lm_head,
+        preset_name = self.scheme if isinstance(self.scheme, str) else None
+        format_resolution = getattr(
+            self,
+            "_format_resolution",
+            FormatResolution(
+                formats=tuple(self.formats or ()),
+                scheme=ResolvedScheme.from_scheme(self.scheme_context, preset_name=preset_name),
+                scale_dtype=self.scale_dtype,
+                quant_block_list=self.quant_block_list,
+            ),
+        )
+        resolved_layer_config = resolve_layer_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=self.layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=self.supported_types,
+            inner_supported_types=self.inner_supported_types,
+            quant_block_list=self.quant_block_list,
+            ignore_layers=self.ignore_layers,
+            quant_lm_head=self.quant_lm_head,
             enable_gguf_official_mixed=False,
             is_mllm=self.model_context.is_mllm,
         )
+        regex_config = extract_regex_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=self.layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=self.supported_types,
+            inner_supported_types=self.inner_supported_types,
+            ignore_layers=self.ignore_layers,
+        )
+        discovery_plan = resolve_quantization_config(
+            (
+                replace(format_resolution, layer_config_patch={})
+                if format_resolution.layer_config_patch
+                else format_resolution
+            ),
+            resolved_layer_config,
+            regex_config=regex_config,
+            has_qlayer_outside_block=has_quantized_layer_outside_blocks(resolved_layer_config),
+        )
+        apply_plan_to_model(self.model_context.model, discovery_plan)
+        layer_config = {name: dict(config) for name, config in discovery_plan.layer_config.items()}
+        self.has_qlayer_outside_block = discovery_plan.has_qlayer_outside_block
+        self.regex_config = {name: dict(config) for name, config in discovery_plan.regex_config.items()}
         quant_layer_names = layer_config.keys()
 
         # ---- VLM: peel non-text sub-trees AutoScheme should not score ---- #
@@ -691,6 +879,13 @@ class BaseOrchestrator(object):
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
         """Build ``self.layer_config`` from the resolved scheme on the patched model."""
+        # External callers (e.g. llm-compressor's AutoRoundModifier) may invoke this
+        # method directly without going through the normal post_init()/_scheme_post_init()
+        # sequence. Make sure the scheme is resolved first so `self.scheme_context` (and
+        # everything derived from it below) is never None -- resolve_scheme() is a no-op
+        # if it already ran.
+        if not self._scheme_resolved and hasattr(self, "_alg_configs"):
+            self.resolve_scheme()
         _formats = getattr(self.compress_context, "formats", None)
         is_gguf_format = _formats is not None and any(
             "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats
@@ -733,34 +928,64 @@ class BaseOrchestrator(object):
                 quant_lm_head=self.quant_lm_head,
                 mllm=self.model_context.is_mllm,
             )
-            _gguf_orig_fmt = getattr(self, "_gguf_original_format_name", None)
-            if _gguf_orig_fmt and "_MIXED" in _gguf_orig_fmt.upper():
-                self.layer_config = _handle_special_schemes(
-                    _gguf_orig_fmt.lower(),
-                    self.layer_config,
-                    self.model_context.model,
-                    supported_types=SUPPORTED_LAYER_TYPES,
-                    inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
-                    quant_lm_head=self.quant_lm_head,
-                    mllm=self.model_context.is_mllm,
-                )
 
         fill_default_value = not self.is_auto_scheme
-        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-            self.model_context.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            SUPPORTED_LAYER_TYPES,
-            INNER_SUPPORTED_LAYER_TYPES,
-            self.quant_block_list,
-            self.ignore_layers,
-            self.quant_lm_head,
+        source_layer_config = self.layer_config
+        format_resolution = getattr(
+            self,
+            "_format_resolution",
+            FormatResolution(
+                formats=tuple(self.formats or ()),
+                scheme=ResolvedScheme.from_scheme(
+                    self.scheme_context,
+                    preset_name=self._resolve_gguf_preset_string(self.formats or []),
+                ),
+                scale_dtype=self.scale_dtype,
+                quant_block_list=self.quant_block_list,
+            ),
+        )
+        resolved_layer_config = resolve_layer_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=source_layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=SUPPORTED_LAYER_TYPES,
+            inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
+            quant_block_list=self.quant_block_list,
+            ignore_layers=self.ignore_layers,
+            quant_lm_head=self.quant_lm_head,
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.model_context.is_mllm,
             fill_default_value=fill_default_value,
-            gguf_format_name=getattr(self, "_gguf_format_name", None),
         )
+        regex_config = extract_regex_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=source_layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=SUPPORTED_LAYER_TYPES,
+            inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
+            ignore_layers=self.ignore_layers,
+            fill_default_value=fill_default_value,
+        )
+        # ``resolved_layer_config`` already descends from (and fully subsumes)
+        # ``format_resolution.layer_config_patch`` -- ``source_layer_config`` above was
+        # seeded from that same patch before ``resolve_layer_config()`` expanded any
+        # regex/partial keys (e.g. "self_attn") into concrete layer names. Re-merging the
+        # patch here would reintroduce those now-stale, unexpanded keys into the final
+        # plan, so drop it and rely solely on the fully-resolved layer configuration.
+        if format_resolution.layer_config_patch:
+            format_resolution = replace(format_resolution, layer_config_patch={})
+        self.compression_plan = resolve_quantization_config(
+            format_resolution,
+            resolved_layer_config,
+            regex_config=regex_config,
+            has_qlayer_outside_block=has_quantized_layer_outside_blocks(resolved_layer_config),
+        )
+        self.layer_config = {name: dict(config) for name, config in self.compression_plan.layer_config.items()}
+        self.regex_config = {name: dict(config) for name, config in self.compression_plan.regex_config.items()}
+        self.has_qlayer_outside_block = self.compression_plan.has_qlayer_outside_block
+        apply_plan_to_model(self.model_context.model, self.compression_plan)
         if self.is_auto_scheme:
             from auto_round.auto_scheme.utils import compute_avg_bits_for_model
 
@@ -786,7 +1011,7 @@ class BaseOrchestrator(object):
     def diffusion(self) -> bool:
         return self.model_context.is_diffusion
 
-    def _get_torch_compile_guard_state(self) -> tuple[bool, bool, int]:
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool]:
         """Return raw dtype state used by torch.compile guard rules."""
         # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
         cfg = self.quantize_config
@@ -796,7 +1021,10 @@ class BaseOrchestrator(object):
         raw_scheme_upper = raw_scheme.upper()
 
         is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
-        is_valid_act_static = cfg.act_dynamic is False and (getattr(cfg, "act_bits", 16) or 16) <= 8
+        has_static_global_scale = "static_gs" in raw_adt or "NVFP4" in raw_scheme_upper
+        is_valid_act_static = (cfg.act_dynamic is False or has_static_global_scale) and (
+            getattr(cfg, "act_bits", 16) or 16
+        ) <= 8
 
         return is_raw_nv_fp, is_valid_act_static
 
@@ -814,23 +1042,18 @@ class BaseOrchestrator(object):
         ):
             logger.info(
                 "%s",
-                "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
+                "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
-        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+        _, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
-        # TODO: fix https://github.com/intel/auto-round/issues/1109
-        if self.enable_torch_compile and is_raw_nv_fp:
-            self.enable_torch_compile = False
-            logger.warning_once("reset enable_torch_compile to `False` as nvfp4 is enabled")
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
@@ -954,148 +1177,164 @@ class BaseOrchestrator(object):
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
             ``CalibrationContext`` from this compressor.  ``quantizer.model``
             is a property that reads ``model_context.model``.
-          - Exposes ``self.quantizer`` as a ``@property`` (see below) that
-            transparently delegates to ``self.pipeline.block_quantizer`` so all
-            existing call-sites continue to work without modification.
+          - Exposes ``self.alg_composer.block_quantizer`` so all quantization
+            call-sites can reach the block quantizer directly.
 
         Postconditions:
-          - ``self.pipeline`` is an ``AlgorithmComposer`` wrapping the block quantizer.
-          - ``self.quantizer`` (via property) is ready and shares ``CalibrationContext``
+          - ``self.alg_composer`` is an ``AlgorithmComposer`` wrapping the block quantizer.
+          - ``self.alg_composer.block_quantizer`` is ready and shares ``CalibrationContext``
             with the compressor.
         """
         from auto_round.algorithms.composer import AlgorithmComposer
 
         self._alg_composer = AlgorithmComposer(self._alg_configs, orchestrator=self)
 
+        # Sync the fully-resolved scheme state (built by _build_layer_config(), which
+        # always runs before _build_composer() in post_init()) onto the block quantizer
+        # so quantization methods (quantize_block, quantize_layer, etc.) have access to
+        # layer_config, quant_block_list, etc. ``scale_dtype``/``scheme`` are NOT set here:
+        # they are read-only properties backed by ``BaseAlgorithm.bind()``, which already
+        # picked up the final ``self.scale_dtype``/``self.scheme_context`` above.
+        plan = getattr(self, "compression_plan", None)
+        if plan is not None:
+            block_quantizer = self._alg_composer.block_quantizer
+            block_quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
+            block_quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
+            block_quantizer.regex_config = {name: dict(config) for name, config in plan.regex_config.items()}
+            block_quantizer.quant_block_list = (
+                [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
+            )
+            block_quantizer.to_quant_block_names = self.to_quant_block_names
+            block_quantizer.ignore_layers = self.ignore_layers
+
+            from auto_round.algorithms.config_resolver import sync_shared_config_from
+
+            sync_shared_config_from(block_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
+
+            # Also sync runtime-only state to all preprocessors so they have access to
+            # per-layer quant config during pre-processing (e.g. AWQ grid search uses
+            # layer_config to look up bits/group_size for each layer).
+            for pre in self._alg_composer.preprocessors:
+                pre.layer_config = block_quantizer.layer_config
+
     @property
     def alg_composer(self) -> Any:
         """The active :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`."""
         return self._alg_composer
 
+    @staticmethod
+    def _resolve_gguf_preset_string(formats: list["OutputFormat"]) -> Optional[str]:
+        """Return the precise GGUF preset string (e.g. ``"gguf:q4_k_m"``) for the
+        single resolved GGUF format, or ``None`` if no GGUF format is present.
+
+        Used by :meth:`_resolve_format_string` so ``self.scheme`` stays a string
+        that :func:`auto_round.schemes.get_gguf_scheme` can short-circuit on,
+        preserving alias disambiguation (Q4_K_S vs Q4_K_M, Q*_0/Q*_1, ...).
+        ``_check_compatibility`` guarantees at most one GGUF format.
+        """
+        for fmt in formats or []:
+            if not fmt.is_gguf():
+                continue
+            # The outer GGUFFormat reports output_format == "gguf"; the precise,
+            # alias-correct, post-rewrite preset lives on backend.output_format
+            # (e.g. "gguf:q4_k_m"). A standalone/inner GGUFFormat already carries
+            # the precise string on output_format itself.
+            backend = getattr(fmt, "backend", None)
+            backend_fmt = getattr(backend, "output_format", None) if backend is not None else None
+            precise = backend_fmt if backend_fmt and backend_fmt != "gguf" else fmt.output_format
+            if precise and precise != "gguf":
+                return precise
+        return None
+
+    def _resolve_format_string(self, format_str: str) -> list["OutputFormat"]:
+        """Resolve one format string via resolve_formats(), then propagate any
+        scheme/layer_config/scale_dtype/quant_block_list correction it makes
+        (e.g. GGUF's gguf_args_check) back onto self.
+
+        `scheme` may or may not be the object passed in — GGUF's "_mixed -> _s"
+        rewrite can rebuild it wholesale — so this always re-pins self.scheme_context
+        explicitly rather than relying on in-place mutation.
+        """
+        preset_name = self.scheme if isinstance(self.scheme, str) else None
+        self._format_resolution = resolve_formats(
+            ResolvedScheme.from_scheme(self.scheme_context, preset_name=preset_name),
+            format=format_str,
+            layer_config=self.layer_config or {},
+            scale_dtype=self.scale_dtype,
+            mllm=self.model_context.is_mllm,
+            iters=getattr(self, "iters", 0),
+            enable_alg_ext=getattr(self, "enable_alg_ext", False),
+            quant_nontext_module=self.quant_nontext_module,
+            quant_block_list=self.quant_block_list,
+            platform=self.platform,
+            is_auto_scheme=self.is_auto_scheme,
+            model=self.model_context.model,
+        )
+        formats = list(self._format_resolution.formats)
+        scheme = self._format_resolution.scheme.value
+        self.layer_config = thaw_mapping(self._format_resolution.layer_config_patch)
+        self.scale_dtype = self._format_resolution.scale_dtype
+        self.quant_block_list = (
+            [list(group) for group in self._format_resolution.quant_block_list]
+            if self._format_resolution.quant_block_list is not None
+            else None
+        )
+        self.scheme_context = scheme
+        for config in self._alg_configs:
+            if hasattr(config, "scheme"):
+                config.scheme = self.scheme_context
+        # self.scheme must stay an independent object from self.scheme_context
+        # (the existing invariant from resolve_scheme(), Phase 1) — never assign
+        # the same reference here even though it would often "work".
+        #
+        # Special-case GGUF: get_gguf_scheme() can only disambiguate presets that
+        # share identical QuantizationScheme fields (e.g. GGUF:Q4_K_S vs GGUF:Q4_K_M,
+        # or any GGUF:Q*_0 / GGUF:Q*_1 that its field-matching loop deliberately
+        # skips) via its string short-circuit. If we hand it the resolved object
+        # form, downstream resolve_layer_config() derives the WRONG (or empty) gguf
+        # preset name, corrupting per-tensor qtype/embedding selection. So when the
+        # resolved format is GGUF, pin self.scheme to the precise resolved preset
+        # string (the outer GGUFFormat keeps it on .backend.output_format, already
+        # past any "_mixed"->"_s" rewrite); _validate_format_combination guarantees at most
+        # one GGUF format here.
+        gguf_preset = self._format_resolution.scheme.preset_name
+        if gguf_preset is not None and not gguf_preset.startswith("gguf:"):
+            gguf_preset = None
+        if gguf_preset is not None:
+            self.scheme = gguf_preset
+        else:
+            self.scheme = copy.deepcopy(scheme)
+        return formats
+
     def _resolve_formats(self) -> None:
-        """Phase 2 – Format resolution and config attr sync.
+        """Phase 2 - Format resolution and scheme/config sync.
 
         Preconditions:
-                    - Phase 1 complete: the scheme is resolved (``data_type``, ``bits``,
-                        ``sym`` etc. are set on both ``self`` and ``self.quantize_config``).
+            - Phase 1 complete: ``self.scheme`` / ``self.scheme_context`` are resolved.
 
         Work performed:
           - Converts a string ``self.formats`` to a list of
-            :class:`~auto_round.formats.OutputFormat` objects via
-            :func:`~auto_round.formats.get_formats`.
+            :class:`~auto_round.export.formats.OutputFormat` objects via
+            :meth:`_resolve_format_string`, which also propagates any scheme
+            correction (e.g. GGUF's ``gguf_args_check``) onto ``self.scheme``,
+            ``self.scheme_context``, the algorithm configs that share it, and
+            ``self.quantize_config``.
           - Initialises :class:`~auto_round.compressors.shard_writer.ShardWriter`
             when formats are present.
-                    - **(2b)** Detects format-driven attribute mutations (``bits``, ``sym``,
-            ``data_type``, ``group_size``, etc.) that ``gguf_args_check`` may
-                        have written onto ``self`` inside ``get_formats``, syncs them back
-                        to ``self.quantize_config``, and rebuilds ``self.scheme`` accordingly.
-                    - Merges any format-injected entries into ``self.layer_config``.
 
         Postconditions:
           - ``self.formats`` is a list (or ``None``).
           - ``self.compress_context.formats`` mirrors ``self.formats``.
-                    - ``self.quantize_config`` and ``self.scheme`` reflect the final attrs.
+          - ``self.scheme``, ``self.scheme_context`` and ``self.quantize_config``
+            all reflect any format-driven corrections (e.g. GGUF).
         """
-        # get_formats() inspects data_type / bits etc. that were just resolved.
         if isinstance(self.formats, str):
-            self.formats = get_formats(self.formats, self)
+            self.formats = self._resolve_format_string(self.formats)
         if self.formats is not None:
             self.compress_context.formats = self.formats
             ShardWriter.reset()
             # Defer ShardWriter construction to _ensure_shard_writer() to avoid
             # heap fragmentation during post_init (parameter iteration).
-
-        # Snapshot the user-specified layer_config before format processing may
-        # inject extra per-layer entries (e.g. GGUF embedding / lm_head).
-        _pre_gguf_layer_config = copy.copy(self.layer_config) or {}
-
-        # ── 2b: propagate format-adjusted attrs back to quantize_config ─────
-        # gguf_args_check (called inside get_formats) may have overridden
-        # bits / sym / data_type / super_bits / super_group_size / group_size
-        # on *this* BaseCompressor object via setattr(self, ...).  Sync those
-        # changes to self.quantize_config before creating the quantizer so it is
-        # constructed with the definitive final values.
-        _gguf_forwarded_attrs = (
-            "bits",
-            "sym",
-            "data_type",
-            "super_bits",
-            "super_group_size",
-            "group_size",
-            "act_bits",
-            "scale_dtype",
-        )
-        # Skip this for AutoScheme — the format is for export only, and the
-        # per-layer quantization is already determined by orig_scheme.options.
-        # Restore scheme attrs from quantize_config for AutoScheme —
-        # gguf_args_check may have set __dict__ entries that shadow the proxy.
-        if self.is_auto_scheme:
-            for _attr in _gguf_forwarded_attrs:
-                if _attr in self.__dict__:
-                    del self.__dict__[_attr]
-
-        if not self.is_auto_scheme:
-            _any_gguf_attr_changed = False
-            for _attr in _gguf_forwarded_attrs:
-                if _attr not in self.__dict__:
-                    continue
-                config_val = getattr(self.quantize_config, _attr, None)
-                self_val = self.__dict__[_attr]
-                if _attr not in ("scale_dtype", "act_bits") and config_val != self_val:
-                    _any_gguf_attr_changed = True
-                if config_val != self_val:
-                    setattr(self.quantize_config, _attr, self_val)
-            # If format resolution changed scheme attrs, rebuild self.scheme so that
-            # configure_layer_config() / set_layer_config() see the correct values.
-            if _any_gguf_attr_changed:
-                from auto_round.schemes import PRESET_SCHEMES
-                from auto_round.schemes import QuantizationScheme as _QS
-
-                # Prefer to derive the scheme directly from the gguf format name to
-                # avoid ambiguity (e.g. Q4_K_S and Q4_K_M share identical weight attrs).
-                _gguf_preset_scheme = None
-                _gguf_fmt_name = None
-                _gguf_original_fmt_name = None
-                for _fmt in self.formats or []:
-                    # GGUFFormat (outer) has output_format="gguf" but backend.output_format="gguf:q4_k_m"
-                    # GGUFFormat (inner/standalone) has output_format="gguf:q4_k_m"
-                    _of = getattr(_fmt, "output_format", "")
-                    if "gguf" in str(_of):
-                        if str(_of) == "gguf":
-                            # outer GGUFFormat: full format in _original_format (e.g. "gguf:q2_k_mixed")
-                            # or backend.output_format (e.g. "gguf:q2_k_s" after _mixed → _s conversion)
-                            _orig = getattr(_fmt, "_original_format", None)
-                            if _orig:
-                                _gguf_original_fmt_name = str(_orig).upper()
-                            _backend = getattr(_fmt, "backend", None)
-                            _of = getattr(_backend, "output_format", _of) if _backend is not None else _of
-                        _preset_key = str(_of).upper()
-                        if _preset_key in PRESET_SCHEMES:
-                            _gguf_preset_scheme = PRESET_SCHEMES[_preset_key]
-                            _gguf_fmt_name = _preset_key
-                            break
-                if _gguf_preset_scheme is not None:
-                    # Update scheme on both compressor and quantizer.
-                    self.scheme = _gguf_preset_scheme
-                    # Store the exact gguf format name so configure_layer_config /
-                    # set_layer_config can use it directly, avoiding Q4_K_S / Q4_K_M ambiguity.
-                    self._gguf_format_name = _gguf_fmt_name
-                    # Store original format name (may include _mixed) for _handle_special_schemes
-                    if _gguf_original_fmt_name:
-                        self._gguf_original_format_name = _gguf_original_fmt_name
-                else:
-                    _new_scheme_dict = {f.name: getattr(self, f.name, None) for f in fields(_QS)}
-                    _new_scheme = _QS.from_dict({k: v for k, v in _new_scheme_dict.items() if v is not None})
-                    self.scheme = _new_scheme
-
-        _gguf_layer_cfg = {
-            k: v for k, v in (self.__dict__.get("layer_config") or {}).items() if k not in (_pre_gguf_layer_config)
-        }
-        if _gguf_layer_cfg:
-            if self.layer_config is None:
-                self.layer_config = {}
-            for _lname, _lval in _gguf_layer_cfg.items():
-                self.layer_config.setdefault(_lname, _lval)
 
     def _apply_rotations(self) -> None:
         """Phase 4.5 – Apply Hadamard / rotation transforms to the model.
@@ -1151,7 +1390,7 @@ class BaseOrchestrator(object):
         self.model_context.apply_patches(self.formats)
 
     def _build_layer_config(self) -> None:
-        """Phase 4 – Layer-config construction and quantizer sync.
+        """Phase 4 – Layer-config construction.
 
         Preconditions:
           - Phase 3 complete: model topology is final.
@@ -1160,17 +1399,12 @@ class BaseOrchestrator(object):
 
         Work performed:
           - Calls :meth:`_scheme_post_init` which walks the patched model to
-            build ``self.layer_config``, ``self.quant_block_list``, etc.
-            On the AutoScheme path this also runs delta-loss forward/backward
-            passes to select per-layer schemes.
-          - Syncs the fully-resolved ``layer_config`` and related attrs to
-            ``self.quantizer`` so quantization methods have the complete view.
+            build ``self.layer_config``, ``self.quant_block_list``,
+            ``self.compression_plan``, etc. On the AutoScheme path this also
+            runs delta-loss forward/backward passes to select per-layer schemes.
 
         Postconditions:
-          - ``self.layer_config`` is fully populated.
-          - ``self.quantizer`` mirrors ``layer_config``, ``has_qlayer_outside_block``,
-            ``regex_config``, ``quant_block_list``, ``to_quant_block_names``,
-            ``scale_dtype``, and ``ignore_layers``.
+          - ``self.layer_config`` and ``self.compression_plan`` are fully populated.
         """
         # configure_layer_config() walks the patched model; _gen_auto_scheme()
         # (AutoScheme path) runs delta-loss forward+backward passes.
@@ -1235,14 +1469,14 @@ class BaseOrchestrator(object):
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-        # Delegate to block_quantizer: access _pipeline directly from __dict__ to
-        # avoid recursion (quantizer is now a @property backed by _pipeline; going
-        # through the property inside __getattr__ would re-trigger __getattr__
-        # if _pipeline itself isn't ready yet).
-        _pipeline = self.__dict__.get("_pipeline")
-        if _pipeline is not None:
+        # Delegate to block_quantizer: access _alg_composer directly from __dict__
+        # to avoid recursion (quantizer attribute access forwards through
+        # _alg_composer.block_quantizer; going through a property inside
+        # __getattr__ would re-trigger __getattr__ if _alg_composer isn't ready yet).
+        _alg_composer = self.__dict__.get("_alg_composer")
+        if _alg_composer is not None:
             try:
-                return object.__getattribute__(_pipeline.block_quantizer, name)
+                return object.__getattribute__(_alg_composer.block_quantizer, name)
             except AttributeError:
                 pass
 
@@ -1305,10 +1539,20 @@ class BaseOrchestrator(object):
             return
 
         formats = getattr(self, "formats", [])
+        if any(not format.is_supported_immediate_packing() for format in formats):
+            self.compress_context.is_immediate_packing = False
+        if any(not format.is_supported_immediate_saving() for format in formats):
+            self.compress_context.is_immediate_saving = False
+
         has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
         # GGUF supports per-block / per-layer immediate packing even when
         # full-model in-place rewriting is disabled by outside-block layers.
-        if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
+        if (
+            len(formats) == 1
+            and not formats[0].is_fake()
+            and formats[0].is_supported_immediate_packing()
+            and (self.inplace or has_single_gguf_format)
+        ):
             self.compress_context.is_immediate_packing = True
 
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
@@ -1411,7 +1655,7 @@ class BaseOrchestrator(object):
             self.compress_context.output_dir = output_dir
         if format is not None:
             if isinstance(format, str) and getattr(self, "formats", None) is None:
-                self.formats = get_formats(format, self)
+                self.formats = self._resolve_format_string(format)
                 self.compress_context.formats = self.formats
 
         if not self.model_context.quantized:
@@ -1422,7 +1666,7 @@ class BaseOrchestrator(object):
             logger.info("format is not set, using default auto_round format.")
             self.formats = "auto_round"
         if isinstance(self.formats, str):
-            self.formats = get_formats(self.formats, self)
+            self.formats = self._resolve_format_string(self.formats)
             self.compress_context.formats = self.formats
         for format in self.formats:
             save_folder = _get_save_folder_name(format)
@@ -1595,7 +1839,7 @@ class BaseOrchestrator(object):
         # self.formats to a default string above, resolve it into OutputFormat objects so that
         # quantize() and save_quantized() receive proper objects, not a raw string.
         if isinstance(self.formats, str):
-            self.formats = get_formats(self.formats, self)
+            self.formats = self._resolve_format_string(self.formats)
             self.compress_context.formats = self.formats
         # Derive descriptive export dir after post_init so scheme-resolved attrs are available.
         _fmt_str = format or (self.formats if isinstance(self.formats, str) else "")
@@ -1605,13 +1849,21 @@ class BaseOrchestrator(object):
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 
-            with attention_quant_ctx(self.model_context.model, static_attention_dtype=self.static_attention_dtype):
+            with attention_quant_ctx(
+                self.model_context.model,
+                static_attention_dtype=self.static_attention_dtype,
+                static_attention_granularity=self.static_attention_granularity,
+            ):
                 self.quantize()
                 self.model_context.quantized = True
         elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
 
-            with kvcache_quant_context(self.model_context.model, static_kv_dtype=self.static_kv_dtype):
+            with kvcache_quant_context(
+                self.model_context.model,
+                static_kv_dtype=self.static_kv_dtype,
+                static_kv_granularity=self.static_kv_granularity,
+            ):
                 self.quantize()
                 self.model_context.quantized = True
         else:
@@ -1624,6 +1876,14 @@ class BaseOrchestrator(object):
         # Save the quantized model in the specified format_list
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
         memory_monitor.log_summary()
+
+        # Only now -- after the full export (packing pass, config/tokenizer
+        # writes) has actually succeeded -- is it safe to drop the resume
+        # manifest. See the deferral comment in Orchestrator._quantize_data_driven().
+        if self._resume_states:
+            for rs in self._resume_states:
+                rs.clear()
+            self._resume_states = None
 
         return model, folders
 
