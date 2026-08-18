@@ -255,7 +255,7 @@ def run_case_sdpa(
 ) -> None:
     """Validate the independent native-precision sparse-SDPA path (bf16/fp16)
     against a dense reference built from the same block selection."""
-    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_sdpa"))
+    ensure_sparse_binding(required_symbols=("sage_sparse", "block_sparse_sdpa"))
     device = torch.device("xpu")
     batch = 1
     num_heads_kv = num_heads_q if num_heads_kv is None else num_heads_kv
@@ -303,7 +303,7 @@ def run_case_sdpa(
         scale=scale,
         enable_gqa=num_heads_q != num_heads_kv,
     )
-    sparse_out = ark.sage_sparse_sdpa(
+    sparse_out = ark.block_sparse_sdpa(
         query,
         key,
         value,
@@ -322,12 +322,12 @@ def run_case_sdpa(
     max_diff = float(diff.max().cpu())
     mean_diff = float(diff.mean().cpu())
     print(
-        f"[sage_sparse_sdpa][{case_name}] D={head_dim} Hq={num_heads_q} Hkv={num_heads_kv} "
+        f"[block_sparse_sdpa][{case_name}] D={head_dim} Hq={num_heads_q} Hkv={num_heads_kv} "
         f"Sq={seq_len_q} Skv={seq_len_kv} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}"
     )
     if max_diff > 2e-2 or mean_diff > 2e-3:
         raise RuntimeError(
-            f"sage_sparse_sdpa mismatch for dtype={dtype}, D={head_dim}, Hq={num_heads_q}, Hkv={num_heads_kv}, "
+            f"block_sparse_sdpa mismatch for dtype={dtype}, D={head_dim}, Hq={num_heads_q}, Hkv={num_heads_kv}, "
             f"Sq={seq_len_q}, Skv={seq_len_kv}, causal={is_causal}"
         )
 
@@ -344,7 +344,7 @@ def run_case_sdpa_full(
     sparse_k_block_tokens: int | None = None,
 ) -> None:
     """Dense gate: selecting every KV block must make sparse-SDPA match the dense reference."""
-    ensure_sparse_binding(required_symbols=("sage_sparse", "sage_sparse_sdpa"))
+    ensure_sparse_binding(required_symbols=("sage_sparse", "block_sparse_sdpa"))
     device = torch.device("xpu")
     batch = 1
     scale = 1.0 / math.sqrt(head_dim)
@@ -374,7 +374,7 @@ def run_case_sdpa_full(
     )
 
     dense_out = bf16_sparse_reference(query, key, value, dense_mask, scale=scale, enable_gqa=False)
-    sparse_out = ark.sage_sparse_sdpa(
+    sparse_out = ark.block_sparse_sdpa(
         query,
         key,
         value,
@@ -392,9 +392,9 @@ def run_case_sdpa_full(
     diff = (dense_out.float() - sparse_out.float()).abs()
     max_diff = float(diff.max().cpu())
     mean_diff = float(diff.mean().cpu())
-    print(f"[sage_sparse_sdpa][{dtype}_all_selected] D={head_dim} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}")
+    print(f"[block_sparse_sdpa][{dtype}_all_selected] D={head_dim} max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}")
     if max_diff > 2e-2 or mean_diff > 2e-3:
-        raise RuntimeError(f"sage_sparse_sdpa all-selected mismatch for dtype={dtype}, D={head_dim}")
+        raise RuntimeError(f"block_sparse_sdpa all-selected mismatch for dtype={dtype}, D={head_dim}")
 
 
 def run_multi_row_tile_case() -> None:

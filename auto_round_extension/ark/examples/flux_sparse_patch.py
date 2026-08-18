@@ -307,7 +307,7 @@ def patch_flux_sparse_attention(
 ):
     ensure_ark_sparse_binding(
         required_symbols=(
-            ("sage_sparse_sdpa", "sage_dynamic_quant_layout")
+            ("block_sparse_sdpa", "sage_dynamic_quant_layout")
             if sparse_kernel == "bf16"
             else ("sage_sparse", "sage_dynamic_quant_layout")
         )

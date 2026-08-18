@@ -199,7 +199,7 @@ def sage_sparse(
     return O
 
 
-def sage_sparse_sdpa(
+def block_sparse_sdpa(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -223,7 +223,7 @@ def sage_sparse_sdpa(
     """
     del dropout_p, enable_gqa
     if query.device.type != "xpu":
-        raise NotImplementedError("sage_sparse_sdpa is only supported on XPU")
+        raise NotImplementedError("block_sparse_sdpa is only supported on XPU")
     if query.dtype not in (torch.bfloat16, torch.float16):
         raise ValueError(f"Q/K/V must be bfloat16 or float16, got {query.dtype}")
     if key.dtype != query.dtype or value.dtype != query.dtype:
@@ -243,7 +243,7 @@ def sage_sparse_sdpa(
         raise ValueError("K/V shape mismatch")
     if Dk != D:
         raise ValueError("Head dim mismatch between Q and K/V")
-    _validate_gqa_head_config(Hq, Hkv, op_name="sage_sparse_sdpa")
+    _validate_gqa_head_config(Hq, Hkv, op_name="block_sparse_sdpa")
     if D not in (64, 128):
         raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
     effective_sparse_q_block_tokens = 64 if sparse_q_block_tokens is None else int(sparse_q_block_tokens)
@@ -269,12 +269,12 @@ def sage_sparse_sdpa(
 
     if D == 64 and q_tile_override not in (0, 64, 128):
         raise ValueError(
-            f"q_tile_override must be one of {{0, 64, 128}} for sage_sparse_sdpa with head_dim=64, got {q_tile_override}"
+            f"q_tile_override must be one of {{0, 64, 128}} for block_sparse_sdpa with head_dim=64, got {q_tile_override}"
         )
 
     lib = get_lib(query)
-    if not hasattr(lib, "sage_sparse_sdpa"):
-        raise RuntimeError("Loaded XPU extension does not expose sage_sparse_sdpa")
+    if not hasattr(lib, "block_sparse_sdpa"):
+        raise RuntimeError("Loaded XPU extension does not expose block_sparse_sdpa")
     effective_q_tile_override = _resolve_sparse_prefill_q_tile_override(
         head_dim=D,
         quant_block_size=64,
@@ -286,7 +286,7 @@ def sage_sparse_sdpa(
     stream = get_stream(query)
     O = _empty_attention_output(B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout)
     q_dtype = 1 if query.dtype == torch.bfloat16 else 0  # FlashAttnDtype: 0=FP16, 1=BF16
-    lib.sage_sparse_sdpa(
+    lib.block_sparse_sdpa(
         stream,
         query.data_ptr(),
         key.data_ptr(),
@@ -1688,7 +1688,7 @@ def sparge_sage2_attn_meansim_topk_xpu_sdpa(
         sparse_k_block_tokens=sparse_k_block_tokens,
     )
     _get_xpu_sparse_kernel_backend()
-    out = sage_sparse_sdpa(
+    out = block_sparse_sdpa(
         query,
         key,
         value,

@@ -62,7 +62,7 @@ def _resolve_sparse_binding(args: argparse.Namespace, *, required_symbols: tuple
 
 
 def ensure_sparse_binding(args: argparse.Namespace) -> None:
-    required_symbols = ("sage_sparse", "sage_sparse_sdpa")
+    required_symbols = ("sage_sparse", "block_sparse_sdpa")
     ext_path = _resolve_sparse_binding(args, required_symbols=required_symbols)
     if ext_path is not None:
         _load_sparse_binding(ext_path, required_symbols=required_symbols)
@@ -947,7 +947,7 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                 "sparse_sdpa_fp16_kernel_only" if dtype == torch.float16 else "sparse_sdpa_bf16_kernel_only",
                 lambda preprocess=preprocess: (
                     hnd_to_nhd(
-                        ark.sage_sparse_sdpa(
+                        ark.block_sparse_sdpa(
                             nhd_to_hnd(q_nhd_src),
                             nhd_to_hnd(k_nhd_src),
                             nhd_to_hnd(v_nhd_src),
@@ -962,7 +962,7 @@ def run_single_benchmark(args: argparse.Namespace, *, seq_len: int, tensor_layou
                         )
                     )
                     if tensor_layout == "HND"
-                    else ark.sage_sparse_sdpa(
+                    else ark.block_sparse_sdpa(
                         q,
                         k,
                         v,
