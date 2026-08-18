@@ -62,7 +62,7 @@ def _get_scheme_type(data_type):
     raise NotImplementedError("only support `int` and `fp` data type")
 
 
-def construct_ct_scheme(layer):
+def construct_ct_scheme(layer, targets=None):
     from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme  # pylint: disable=E0401
 
     weights_args = QuantizationArgs(
@@ -87,7 +87,7 @@ def construct_ct_scheme(layer):
             strategy=_get_act_scheme_strategy(layer.act_group_size),
         )
     scheme = QuantizationScheme(
-        targets=[layer.__class__.__name__],
+        targets=targets or [layer.__class__.__name__],
         weights=weights_args,
         input_activations=activations_args,
     )
@@ -147,7 +147,10 @@ def pack_layer(name, model, device=None):
     # explicitly obtain the underlying device to prevent RuntimeError mismatched tensors
     weight_device = layer.weight.device
 
-    scheme = construct_ct_scheme(layer)
+    # Keep packed layers addressable by their actual module names. Using only
+    # the class name ("Linear") makes mixed-bit config groups overlap; the
+    # loader can then apply the wrong unpacking scheme to a packed weight.
+    scheme = construct_ct_scheme(layer, targets=[name])
     setattr(layer, "quantization_scheme", scheme)
     setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(weight_device)))
     if not isinstance(layer.zp, torch.Tensor):
