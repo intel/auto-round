@@ -41,6 +41,7 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device_manager import device_manager
@@ -88,33 +89,6 @@ def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: 
     if not user_enabled or not block_quantizer.can_compile_block_forward():
         return False
     return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
-
-
-def _is_nvfp4_value(value: Any) -> bool:
-    """Return True when a raw config value indicates NVFP4."""
-    if not isinstance(value, str):
-        return False
-    value = value.lower()
-    return "nv_fp" in value or "nvfp4" in value
-
-
-def _has_nvfp4_layer(orchestrator: "BaseOrchestrator") -> bool:
-    """Whether global or per-layer config enables any NVFP4 quantization."""
-    if _is_nvfp4_value(getattr(orchestrator, "data_type", "")):
-        return True
-
-    layer_config = getattr(orchestrator, "layer_config", None)
-    if not isinstance(layer_config, dict):
-        return False
-
-    for config in layer_config.values():
-        if not isinstance(config, dict):
-            continue
-        if _is_nvfp4_value(config.get("data_type")) or _is_nvfp4_value(config.get("act_data_type")):
-            return True
-        if _is_nvfp4_value(config.get("scheme")):
-            return True
-    return False
 
 
 class AlgorithmComposer:

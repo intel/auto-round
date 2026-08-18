@@ -540,12 +540,12 @@ class BaseOrchestrator(object):
         # Layer-level scheme overrides can request static-activation paths
         # (e.g., global MXFP8 + local NVFP4 experts). Those still need
         # calibration data even when top-level scheme looks dynamic.
-        if self._layer_config_needs_act_calibration(check_need_act_calibration):
+        if self._layer_config_needs_calibration(check_need_act_calibration):
             return True
 
         return False
 
-    def _layer_config_needs_act_calibration(self, check_need_act_calibration) -> bool:
+    def _layer_config_needs_calibration(self, check_need_act_calibration) -> bool:
         """Return True if any raw layer_config entry implies activation calibration."""
         layer_cfg = self.layer_config
         if not isinstance(layer_cfg, dict) or not layer_cfg:

@@ -327,11 +327,14 @@ def _is_fp8_model(model_path, trust_remote_code=True):
     Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
     adding zero overhead to non-FP8 model loading.
     """
+    if version.parse(transformers.__version__) < version.parse("4.56.0"):
+        return False
+
     from transformers import AutoConfig
 
     try:  # in case of config loading failure for new models
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-    except:
+    except Exception:
         return False
 
     model_type = getattr(config, "model_type", "")
@@ -405,7 +408,7 @@ def llm_load_model(
 
     if version.parse(transformers.__version__) >= version.parse("4.56.0"):
         is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
-        if is_fp8:
+        if is_fp8 and "quantization_config" not in load_kwargs:
             from transformers import FineGrainedFP8Config
 
             load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)

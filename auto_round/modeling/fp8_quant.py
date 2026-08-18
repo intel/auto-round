@@ -157,6 +157,11 @@ def oot_validate_environment(self, *args, **kwargs):
 
 
 def apply_fp8_expert_replacement_patch():
+    # Apply the ragged-tile dequantization fallback unconditionally so that
+    # dequantize-on-load (FineGrainedFP8Config(dequantize=True)) works on
+    # CPU and HPU as well as CUDA.
+    _patch_fp8_dequantize_for_ragged_tiles()
+
     if is_transformers_version_greater_or_equal_5() and torch.cuda.is_available():
         try:
             import transformers.integrations.finegrained_fp8 as transformers_fp8
@@ -170,7 +175,6 @@ def apply_fp8_expert_replacement_patch():
                     "capability check for loading FP8 models on unsupported GPUs."
                 )
             )
-            _patch_fp8_dequantize_for_ragged_tiles()
         except ImportError as e:
             auto_round_logger.warning(f"Could not apply FP8 expert replacement patch as {e}.")
 
