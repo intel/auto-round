@@ -10,17 +10,17 @@ import torch
 import triton
 import triton.language as tl
 
-from ._xpu_triton_compat import apply_xpu_triton_workarounds
-
-apply_xpu_triton_workarounds()
-
 logger = logging.getLogger(__name__)
 
 _APPLIED_TRITON_PREDICATED_CHECK = False
 
 
 def _apply_xpu_triton_workarounds() -> None:
-    """Patch triton's Intel compiler so JIT kernels avoid the rejected SPIR-V extension."""
+    """Patch triton's Intel compiler so JIT kernels avoid the rejected SPIR-V extension.
+
+    Triton 3.7.x can emit SPV_INTEL_predicated_io for non-LTS Intel GPU drivers,
+    but some level-zero loaders reject that extension at kernel-load time.
+    """
     global _APPLIED_TRITON_PREDICATED_CHECK
     if _APPLIED_TRITON_PREDICATED_CHECK:
         return

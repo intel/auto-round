@@ -38,8 +38,8 @@
 #   The default preprocess backend is triton-xpu (via "auto"), which is faster
 #   than torch. On some level-zero drivers triton's JIT emitted SPIR-V that the
 #   runtime rejected ("InvalidModule: ... unknown extension
-#   'SPV_INTEL_predicated_io'); that is fixed by auto_round_kernel/_xpu_triton_compat.py
-#   (forces has_predicated_io off), applied when the triton preprocess loads.
+#   'SPV_INTEL_predicated_io'); that is fixed by _apply_xpu_triton_workarounds()
+#   in auto_round_kernel/sparge_preprocess_triton.py when the triton preprocess loads.
 #   If you still hit the SPIR-V error, force the torch backend:
 #     export SAGE_ATTN_SPARSE_PREPROCESS_BACKEND=torch
 #
