@@ -168,8 +168,11 @@ def main():
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write("| tag | topk | wall_s | sparsity | calls | sparse_calls | runtime_fallbacks | png |\n")
         fh.write("|---|---|---|---|---|---|---|---|\n")
-        fh.writelines(f"| {r['tag']} | {r['topk']} | {r['wall_s']} | {r['sparsity']} | {r['calls']} "
-                f"| {r['sparse_calls']} | {r['runtime_fallbacks']} | `{r['png']}` |\n" for r in rows)
+        fh.writelines(
+            f"| {r['tag']} | {r['topk']} | {r['wall_s']} | {r['sparsity']} | {r['calls']} "
+            f"| {r['sparse_calls']} | {r['runtime_fallbacks']} | `{r['png']}` |\n"
+            for r in rows
+        )
 
     print(f"[flux_sweep] summary: {csv_path}", flush=True)
     print(f"[flux_sweep] summary: {md_path}", flush=True)
