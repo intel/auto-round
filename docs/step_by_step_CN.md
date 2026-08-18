@@ -457,7 +457,7 @@ Smooth 搜索、residual iterations、导出和推理说明请参阅 [SVDQuant �
 
 AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案。精度测试结果请参考 [AutoScheme 精度报告](./auto_scheme_acc.md)。
 
-为了更好地在vllm中部署，目前推荐导出到llm_compressor格式
+为了更好地在 vLLM 中部署，目前推荐导出到 llm_compressor 格式。
 
 **说明：** 混合数据类型支持调优，但目前无法将其导出成实际模型。
 
