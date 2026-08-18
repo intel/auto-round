@@ -36,6 +36,7 @@ class LLMCompressorFormat(OutputFormat):
         "FP8_BLOCK",
         "W4A16",
         "W8A16",
+        "W2A16G32",
         "W2A16G64",
         "W2A16",
         "W3A16",
