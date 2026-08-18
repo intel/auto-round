@@ -217,7 +217,7 @@ class DiffusionMixin:
                 dataset=dataset,
                 bs=self.batch_size,
                 seed=self.seed,
-                nsamples=self.nsamples,
+                nsamples=self.calibration_context.nsamples,
             )
         else:
             self.dataloader = self.dataset
@@ -414,7 +414,7 @@ class DiffusionMixin:
         logger.info("start to cache block inputs for primary transformer")
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
-            self.nsamples,
+            self.calibration_context.nsamples,
             layer_names=[],
         )
         self.inputs = all_inputs
@@ -463,7 +463,7 @@ class DiffusionMixin:
             logger.info(f"start to cache block inputs for {comp_name}")
             all_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names,
-                self.nsamples,
+                self.calibration_context.nsamples,
                 layer_names=[],
             )
             self.inputs = all_inputs
