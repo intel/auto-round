@@ -541,7 +541,7 @@ ar.quantize_and_save()
 
 We tested it on Nvidia A100 80G using torch v2.8.
 
-The ram usage has been optimized in version>0.14.2
+RAM usage has been optimized since v0.14.2.
 
 | Models        | Scheme                | VRAM Cost | Time Cost             |
 | ------------- | --------------------- | --------- | --------------------- |
