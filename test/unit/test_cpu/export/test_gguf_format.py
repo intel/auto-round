@@ -422,6 +422,48 @@ class TestGGUF:
         assert model_instance.ftype is ftypes["q4_0"]
         assert model_instance.fname_out == tmp_path
 
+    def test_autoround_export_disables_mtp_for_supported_conversion(self, tmp_path):
+        from auto_round.export.export_to_gguf import export
+
+        class FakeMtpModel:
+            supports_mtp_export = True
+            no_mtp = False
+
+            def __init__(self, hparams, **kwargs):
+                assert type(self).no_mtp
+                self.hparams = hparams
+                self.__dict__.update(kwargs)
+
+        instance = export._create_conversion_model(
+            FakeMtpModel,
+            {"num_hidden_layers": 4},
+            dir_model=tmp_path,
+        )
+
+        assert instance.no_mtp
+        assert isinstance(instance, FakeMtpModel)
+        assert FakeMtpModel.no_mtp is False
+
+    def test_autoround_export_keeps_non_mtp_conversion_unchanged(self, tmp_path):
+        from auto_round.export.export_to_gguf import export
+
+        class FakeModel:
+            supports_mtp_export = False
+            no_mtp = False
+
+            def __init__(self, hparams, **kwargs):
+                assert not type(self).no_mtp
+                self.hparams = hparams
+                self.__dict__.update(kwargs)
+
+        instance = export._create_conversion_model(
+            FakeModel,
+            {"num_hidden_layers": 4},
+            dir_model=tmp_path,
+        )
+
+        assert instance.no_mtp is False
+
     def test_qtype_setting(self, tiny_qwen_vl_model_path):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
         # Qwen3-0.6B output q6_k, token_embed q4_0  448M

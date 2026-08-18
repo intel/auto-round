@@ -92,6 +92,17 @@ def _set_mmproj_output_path(model_instance):
     return model_instance
 
 
+def _create_conversion_model(model_class, hparams, **kwargs):
+    if not getattr(model_class, "supports_mtp_export", False):
+        return model_class(hparams=hparams, **kwargs)
+
+    # AutoRound exports the target model only; unlike llama.cpp's CLI, it does not
+    # provide a separate MTP export mode. A scoped subclass keeps classmethod-based
+    # tensor filtering from mutating the shared conversion class.
+    no_mtp_model_class = type(f"AutoRoundNoMtp{model_class.__name__}", (model_class,), {"no_mtp": True})
+    return no_mtp_model_class(hparams=hparams, **kwargs)
+
+
 def create_model_class(
     output_dir,
     model,
@@ -130,12 +141,13 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         hparams.pop("quantization_config", None)
-        model_instance = model_class(
+        model_instance = _create_conversion_model(
+            model_class,
+            hparams,
             dir_model=Path(tmp_work_dir),
             ftype=output_type,
             fname_out=Path(output_dir),
             is_big_endian=False,
-            hparams=hparams,
             model_name=model_name,
             split_max_tensors=False,
             split_max_size=0,
