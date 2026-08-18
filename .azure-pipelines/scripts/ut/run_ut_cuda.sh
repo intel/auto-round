@@ -12,16 +12,17 @@ touch ${SUMMARY_LOG}
 [[ -z "$CUDA_VISIBLE_DEVICES" ]] && export CUDA_VISIBLE_DEVICES=0
 
 function create_conda_env() {
-    echo "-----[VAL INFO] create conda env -----"
+    local env_name=${1:-$CONDA_ENV_NAME}
+    echo "-----[VAL INFO] create conda env: ${env_name} -----"
     [[ -d ${HOME}/anaconda3/bin ]] && export PATH=${HOME}/anaconda3/bin/:$PATH
     [[ -d ${HOME}/miniforge3/bin ]] && export PATH=${HOME}/miniforge3/bin/:$PATH
     [[ -d ${HOME}/miniconda3/bin ]] && export PATH=${HOME}/miniconda3/bin/:$PATH
 
     # create conda env
     source activate base > /dev/null 2>&1 
-    if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
-    conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
-    source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
+    if conda info --envs | grep -q "^${env_name}\s"; then conda remove -n ${env_name} --all -y; fi
+    conda create --quiet -n ${env_name} python=${PYTHON_VERSION} setuptools -y
+    source activate ${env_name} > /dev/null 2>&1
     conda install --quiet -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
@@ -87,7 +88,7 @@ function print_test_results_table() {
 
 function run_unit_test() {
     # install unit test dependencies
-    create_conda_env
+    create_conda_env "${CONDA_ENV_NAME}"
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
@@ -124,7 +125,7 @@ function run_unit_test() {
 
 function run_unit_test_vlm() {
     # install unit test dependencies
-    create_conda_env
+    create_conda_env "${CONDA_ENV_NAME}_vlm"
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
@@ -159,7 +160,7 @@ function run_unit_test_vlm() {
 
 function run_unit_test_llmc() {
     # install unit test dependencies
-    create_conda_env
+    create_conda_env "${CONDA_ENV_NAME}_llmc"
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
@@ -191,7 +192,7 @@ function run_unit_test_llmc() {
 
 function run_unit_test_sglang() {
     # install unit test dependencies
-    create_conda_env
+    create_conda_env "${CONDA_ENV_NAME}_sglang"
 
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
@@ -225,7 +226,7 @@ function run_unit_test_sglang() {
 
 function run_unit_test_vllm() {
     # install unit test dependencies
-    create_conda_env
+    create_conda_env "${CONDA_ENV_NAME}_vllm"
     unset LD_LIBRARY_PATH
 
     cd ${REPO_PATH}/test
