@@ -47,12 +47,17 @@ def main():
     dev_suffix = f"_dev{device_id}" if device_id else ""
 
     print(f"[flux_sweep] model={model_id}", flush=True)
-    print(f"[flux_sweep] topks={topks} run_dense={run_dense} size={height}x{width} steps={steps} seed={seed}", flush=True)
+    print(
+        f"[flux_sweep] topks={topks} run_dense={run_dense} size={height}x{width} steps={steps} seed={seed}", flush=True
+    )
     print(f"[flux_sweep] out_dir={out_dir}", flush=True)
-    print(f"[flux_sweep] kernel={os.getenv('FLUX_SPARSE_KERNEL', '?')} "
-          f"q_tile={os.getenv('FLUX_SPARSE_Q_TILE_OVERRIDE', '0')} "
-          f"q_block={os.getenv('FLUX_SPARSE_Q_BLOCK_TOKENS', 'default')} "
-          f"k_block={os.getenv('FLUX_SPARSE_K_BLOCK_TOKENS', 'default')}", flush=True)
+    print(
+        f"[flux_sweep] kernel={os.getenv('FLUX_SPARSE_KERNEL', '?')} "
+        f"q_tile={os.getenv('FLUX_SPARSE_Q_TILE_OVERRIDE', '0')} "
+        f"q_block={os.getenv('FLUX_SPARSE_Q_BLOCK_TOKENS', 'default')} "
+        f"k_block={os.getenv('FLUX_SPARSE_K_BLOCK_TOKENS', 'default')}",
+        flush=True,
+    )
 
     pipe = FluxPipeline.from_pretrained(model_id, torch_dtype=dtype)
     # Offload-only: pipe.to(device) would load the whole ~54 GB model onto the
@@ -126,7 +131,8 @@ def main():
             print(
                 f"[flux_sweep] DONE tag={tag} topk={topk} wall={wall_s:.3f}s "
                 f"sparsity={stats.avg_sparsity:.4f} sparse_calls={stats.sparse_calls} "
-                f"runtime_fallbacks={stats.runtime_fallbacks}", flush=True
+                f"runtime_fallbacks={stats.runtime_fallbacks}",
+                flush=True,
             )
         else:
             print(f"[flux_sweep] DONE tag={tag} wall={wall_s:.3f}s", flush=True)
@@ -142,8 +148,17 @@ def main():
     # CSV + markdown summary (device-suffixed so parallel instances sharing
     # FLUX_OUTPUT_DIR do not clobber each other).
     csv_path = out_dir / f"sweep_summary{dev_suffix}.csv"
-    fieldnames = ["tag", "topk", "wall_s", "sparsity", "calls", "sparse_calls",
-                  "runtime_fallbacks", "unsupported_fallbacks", "png"]
+    fieldnames = [
+        "tag",
+        "topk",
+        "wall_s",
+        "sparsity",
+        "calls",
+        "sparse_calls",
+        "runtime_fallbacks",
+        "unsupported_fallbacks",
+        "png",
+    ]
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
@@ -153,11 +168,8 @@ def main():
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write("| tag | topk | wall_s | sparsity | calls | sparse_calls | runtime_fallbacks | png |\n")
         fh.write("|---|---|---|---|---|---|---|---|\n")
-        for r in rows:
-            fh.write(
-                f"| {r['tag']} | {r['topk']} | {r['wall_s']} | {r['sparsity']} | {r['calls']} "
-                f"| {r['sparse_calls']} | {r['runtime_fallbacks']} | `{r['png']}` |\n"
-            )
+        fh.writelines(f"| {r['tag']} | {r['topk']} | {r['wall_s']} | {r['sparsity']} | {r['calls']} "
+                f"| {r['sparse_calls']} | {r['runtime_fallbacks']} | `{r['png']}` |\n" for r in rows)
 
     print(f"[flux_sweep] summary: {csv_path}", flush=True)
     print(f"[flux_sweep] summary: {md_path}", flush=True)
