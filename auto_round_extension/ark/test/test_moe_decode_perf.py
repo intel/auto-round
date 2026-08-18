@@ -37,6 +37,8 @@ stays short. Pass ``--all-shapes`` to also include ``bs32``::
         --all-shapes
 """
 
+import math
+
 import auto_round_kernel
 import pytest
 import torch
@@ -148,6 +150,67 @@ def _xpu_time_ms(fn, warmup: int = WARMUP, iters: int = ITERS) -> float:
         timings.append(start.elapsed_time(end))
     timings.sort()
     return timings[len(timings) // 2]
+
+
+def _estimate_bandwidth_gbps(total_bytes: int, elapsed_ms: float) -> float:
+    if elapsed_ms <= 0:
+        return float("nan")
+    return total_bytes / (elapsed_ms * 1e-3) / 1e9
+
+
+def _estimate_moe_decode_bytes(
+    activations,
+    weights=None,
+    scales=None,
+    zeros=None,
+    num_tokens_per_expert=None,
+    output_numel: int | None = None,
+) -> int:
+    """Estimate bytes touched by the active-expert decode work.
+
+    The fused decode kernel only processes experts that receive at least one
+    routed token. Counting the full weight tensor for every call overstates the
+    amount of data moved and produces unrealistically high bandwidth numbers.
+    """
+    if num_tokens_per_expert is None:
+        total_bytes = activations.numel() * activations.element_size()
+        if weights is not None:
+            total_bytes += weights.numel() * weights.element_size()
+        if scales is not None:
+            total_bytes += scales.numel() * scales.element_size()
+        if zeros is not None:
+            total_bytes += zeros.numel() * zeros.element_size()
+        if output_numel is not None:
+            total_bytes += output_numel * activations.element_size()
+        return total_bytes
+
+    if hasattr(num_tokens_per_expert, "tolist"):
+        num_tokens_per_expert = num_tokens_per_expert.tolist()
+    else:
+        num_tokens_per_expert = list(num_tokens_per_expert)
+
+    total_bytes = 0
+    activation_bytes_per_elem = activations.element_size()
+    output_bytes_per_elem = activations.element_size()
+    activation_cols = activations.shape[1]
+    output_cols = weights.shape[1] if weights is not None else None
+    if output_numel is not None and output_cols is None:
+        output_cols = output_numel // max(sum(num_tokens_per_expert), 1)
+
+    for num_tokens in num_tokens_per_expert:
+        if num_tokens <= 0:
+            continue
+        total_bytes += num_tokens * activation_cols * activation_bytes_per_elem
+        if weights is not None:
+            total_bytes += math.prod(weights.shape[1:]) * weights.element_size()
+        if scales is not None:
+            total_bytes += math.prod(scales.shape[1:]) * scales.element_size()
+        if zeros is not None:
+            total_bytes += math.prod(zeros.shape[1:]) * zeros.element_size()
+        if output_cols is not None:
+            total_bytes += num_tokens * output_cols * output_bytes_per_elem
+
+    return total_bytes
 
 
 def _default_moe_decode(activations, dequant_weights, num_tokens_per_expert):
@@ -282,21 +345,29 @@ def _xpu_cleanup_between_tests():
 
 def _print_header(title: str) -> None:
     print()
-    print("=" * 110)
+    print("=" * 130)
     print(title)
-    print(f"{'shape':<18}{'N':>7}{'K':>7}{'tokens':>8}" f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}")
-    print("-" * 110)
+    print(
+        f"{'shape':<18}{'N':>7}{'K':>7}{'tokens':>8}"
+        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'ark BW GB/s':>15}{'speedup':>12}"
+    )
+    print("-" * 130)
 
 
-def _print_row(label, N, K, total_tokens, base_ms, ark_ms):
+def _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=None):
     """Print a benchmark row.
 
     ``speedup`` is ``baseline / ark`` -- a pure matmul-vs-matmul comparison
     against the per-expert ``A @ W.T`` baseline running on already-dequantized
-    weights.
+    weights. ``ark_bw`` estimates the effective bandwidth of the active-expert
+    slices touched by the fused kernel in GB/s.
     """
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
-    print(f"{label:<18}{N:>7}{K:>7}{total_tokens:>8}" f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x")
+    if ark_bw is None:
+        ark_bw_col = f"{'--':>15}"
+    else:
+        ark_bw_col = f"{ark_bw:>14.2f} "
+    print(f"{label:<18}{N:>7}{K:>7}{total_tokens:>8}" f"{base_ms:>16.4f}{ark_ms:>14.4f}{ark_bw_col}{speedup:>11.2f}x")
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +397,16 @@ class TestMoEGemmDecodePerf:
 
             base_ms = _xpu_time_ms(lambda: _default_moe_decode(activations, weights, ntpe))
             ark_ms = _xpu_time_ms(lambda: ark.moe_gemm_decode(activations, weights, ntpe, weight_bits=16))
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            ark_bw = _estimate_bandwidth_gbps(
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=weights,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
+                ark_ms,
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -367,7 +447,18 @@ class TestMoEGemmDecodePerf:
                     asym=asym,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            ark_bw = _estimate_bandwidth_gbps(
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=packed,
+                    scales=scales,
+                    zeros=zeros,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
+                ark_ms,
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -408,7 +499,18 @@ class TestMoEGemmDecodePerf:
                     asym=asym,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            ark_bw = _estimate_bandwidth_gbps(
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=packed,
+                    scales=scales,
+                    zeros=zeros,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
+                ark_ms,
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("asym", [False, True])
@@ -449,7 +551,18 @@ class TestMoEGemmDecodePerf:
                     asym=asym,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            ark_bw = _estimate_bandwidth_gbps(
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=packed,
+                    scales=scales,
+                    zeros=zeros,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
+                ark_ms,
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
@@ -481,7 +594,17 @@ class TestMoEGemmDecodePerf:
                     asym=False,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            ark_bw = _estimate_bandwidth_gbps(
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=packed,
+                    scales=scales,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
+                ark_ms,
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
@@ -552,7 +675,17 @@ class TestMoEGemmDecodePerf:
                     asym=False,
                 )
             )
-            _print_row(label, N, K, total_tokens, base_ms, ark_ms)
+            ark_bw = _estimate_bandwidth_gbps(
+                _estimate_moe_decode_bytes(
+                    activations,
+                    weights=packed,
+                    scales=scales,
+                    num_tokens_per_expert=ntpe,
+                    output_numel=total_tokens * N,
+                ),
+                ark_ms,
+            )
+            _print_row(label, N, K, total_tokens, base_ms, ark_ms, ark_bw=ark_bw)
 
 
 if __name__ == "__main__":

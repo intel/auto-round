@@ -197,6 +197,66 @@ def _xpu_time_ms(fn, warmup: int = WARMUP, iters: int = ITERS) -> float:
     return timings[len(timings) // 2]
 
 
+def _estimate_bandwidth_gbps(total_bytes: int, elapsed_ms: float) -> float:
+    if elapsed_ms <= 0:
+        return float("nan")
+    return total_bytes / (elapsed_ms * 1e-3) / 1e9
+
+
+def _estimate_dequant_bytes(packed, scales, zeros, dequant) -> int:
+    total_bytes = packed.numel() * packed.element_size()
+    total_bytes += scales.numel() * scales.element_size()
+    if zeros is not None:
+        total_bytes += zeros.numel() * zeros.element_size()
+    total_bytes += dequant.numel() * dequant.element_size()
+    return total_bytes
+
+
+def _internal_dequant_ms_bw(
+    activations,
+    packed,
+    num_tokens_per_expert,
+    *,
+    scales,
+    zeros,
+    weight_bits,
+    group_size,
+    asym,
+):
+    """Time the weight-dequant stage *inside* ``ark.moe_gemm_prefill``.
+
+    ``moe_gemm_prefill`` fuses an on-device weight-dequant step
+    (``[E, N, K_packed]`` quantized weights -> ``[E, K, N]`` act-dtype
+    workspace) with the subsequent Grouped GEMM, so the dequant cost cannot
+    be read off the fused call. This helper launches *only* that dequant
+    kernel via the dedicated ``ark.moe_gemm_prefill_dequant`` entry point
+    (which runs the same ``dequant_to_KN`` kernel the generic prefill path
+    uses, excluding the GEMM) and returns ``(deq_ms, deq_bw)`` where
+    ``deq_bw`` is the estimated dequant bandwidth in GB/s.
+
+    A destination ``[E, K, N]`` buffer is pre-allocated once and reused across
+    timing iterations so the measured time excludes allocation overhead.
+    """
+    E, N = packed.shape[0], packed.shape[1]
+    K = activations.shape[1]
+    out = torch.empty((E, K, N), device=activations.device, dtype=activations.dtype)
+    deq_ms = _xpu_time_ms(
+        lambda: ark.moe_gemm_prefill_dequant(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+            out=out,
+        )
+    )
+    deq_bw = _estimate_bandwidth_gbps(_estimate_dequant_bytes(packed, scales, zeros, out), deq_ms)
+    return deq_ms, deq_bw
+
+
 def _build_bmm_pad_layout(activations, num_tokens_per_expert, num_experts):
     """Pack ``[total_tokens, K]`` activations into a ``[E, M_max, K]`` buffer.
 
@@ -501,6 +561,15 @@ def _print_header(title: str) -> None:
     * ``ark(ms)``: default ARK path (dequant workspace + grouped GEMM,
       or fused-dequant if ``ARK_MOE_PREFILL_FUSED_FP8=1`` is set in the
       env for FP8 rows).
+    * ``deq BW GB/s``: estimated bandwidth of the weight-dequant stage
+      *inside* ``moe_gemm_prefill`` -- the on-device
+      ``[E, N, K_packed] -> [E, K, N]`` dequant kernel it runs before the
+      Grouped GEMM, measured in isolation via ``ark.moe_gemm_prefill_dequant``
+      (per-group quantized rows: INT4/INT8/INT2/FP8). This is the internal
+      dequant throughput being optimized, *not* the PyTorch reference dequant
+      that feeds the ``baseline`` column. For the per-tensor DPAS schemes
+      (which fuse dequant into the GEMM and have no separable dequant stage)
+      the column reflects the reference-dequant estimate instead.
     * ``native(ms)`` / ``native TFLOPS``: FP8 rows only. ARK path with
       ``ARK_MOE_PREFILL_NATIVE_FP8=1`` — the fused scalar native-FP8 GEMM
       that skips the ``[E, K, N]`` bf16/fp16 workspace and folds the
@@ -515,12 +584,12 @@ def _print_header(title: str) -> None:
       ``speedup``. Prints ``--`` when no ``dpas(ms)`` was measured.
     """
     print()
-    width = 200
+    width = 225
     print("=" * width)
     print(title)
     print(
         f"{'shape':<22}{'E':>4}{'N':>7}{'K':>7}{'tokens':>8}"
-        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'speedup':>12}{'TFLOPS':>10}"
+        f"{'baseline(ms)':>16}{'ark(ms)':>14}{'deq BW GB/s':>20}{'speedup':>12}{'TFLOPS':>10}"
         f"{'native(ms)':>14}{'native TFLOPS':>16}"
         f"{'dpas(ms)':>14}{'dpas TFLOPS':>16}{'dpas speedup':>14}"
     )
@@ -537,6 +606,7 @@ def _print_row(
     deq_ms,
     ark_ms,
     tflops,
+    dpas_deq_bw=None,
     native_ms=None,
     native_tflops=None,
     dpas_ms=None,
@@ -547,7 +617,9 @@ def _print_row(
     ``speedup`` is ``baseline / ark`` -- the fused kernel's speedup over
     the matmul-only baseline (weights pre-dequantized). ``deq_ms`` is
     accepted for signature compatibility with existing callers but is
-    no longer displayed.
+    no longer displayed. ``dpas_deq_bw`` is printed in the dedicated
+    ``deq BW GB/s`` column and, for the per-group quantized rows, holds the
+    bandwidth of the internal ``moe_gemm_prefill`` weight-dequant stage.
 
     ``native_ms`` / ``native_tflops`` are printed for FP8 rows where the
     native fused kernel was benchmarked, and left blank otherwise.
@@ -558,6 +630,10 @@ def _print_row(
     """
     del deq_ms  # no longer displayed; kept in signature for caller compatibility
     speedup = base_ms / ark_ms if ark_ms > 0 else float("nan")
+    if dpas_deq_bw is None:
+        dpas_deq_bw_col = f"{'--':>20}"
+    else:
+        dpas_deq_bw_col = f"{dpas_deq_bw:>19.2f} "
     if native_ms is None:
         native_col = f"{'--':>14}"
         native_tflops_col = f"{'--':>16}"
@@ -575,7 +651,7 @@ def _print_row(
         dpas_speedup_col = f"{dpas_speedup:>13.2f}x"
     print(
         f"{label:<22}{E:>4}{N:>7}{K:>7}{total_tokens:>8}"
-        f"{base_ms:>16.4f}{ark_ms:>14.4f}{speedup:>11.2f}x{tflops:>9.1f}"
+        f"{base_ms:>16.4f}{ark_ms:>14.4f}{dpas_deq_bw_col}{speedup:>11.2f}x{tflops:>9.1f}"
         f"{native_col}{native_tflops_col}"
         f"{dpas_col}{dpas_tflops_col}{dpas_speedup_col}"
     )
@@ -660,12 +736,19 @@ class TestMoEGemmPrefillPerf:
                 dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
 
             # ``dequant`` is already [E, N, K] -- matches the baseline contract.
-            # We still time dequant separately (measured but no longer reported)
-            # so callers of ``_print_row`` keep their existing signature.
-            if asym:
-                deq_ms = _xpu_time_ms(lambda: _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype))
-            else:
-                deq_ms = _xpu_time_ms(lambda: _dequant_int4_sym(packed, scales, group_size).to(dtype))
+            # ``deq_ms`` / ``deq_bw`` measure the weight-dequant stage *inside*
+            # ``moe_gemm_prefill`` (its internal ``[E, N, K_packed] -> [E, K, N]``
+            # kernel), not the PyTorch reference dequant used for the baseline.
+            deq_ms, deq_bw = _internal_dequant_ms_bw(
+                activations,
+                packed,
+                ntpe,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
             # Default ARK path (dequant + GEMM). INT4-sym is DPAS-accelerated
@@ -735,7 +818,18 @@ class TestMoEGemmPrefillPerf:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas_int8
 
             _print_row(
-                label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_ms=dpas_ms, dpas_tflops=dpas_tflops
+                label,
+                E,
+                N,
+                K,
+                total_tokens,
+                base_ms,
+                deq_ms,
+                ark_ms,
+                tflops,
+                dpas_deq_bw=deq_bw,
+                dpas_ms=dpas_ms,
+                dpas_tflops=dpas_tflops,
             )
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
@@ -769,10 +863,18 @@ class TestMoEGemmPrefillPerf:
                 packed = _pack_int8_sym(w_float, scales, group_size)
                 dequant = _dequant_int8_sym(packed, scales, group_size).to(dtype)
 
-            if asym:
-                deq_ms = _xpu_time_ms(lambda: _dequant_int8_asym(packed, scales, zeros, group_size).to(dtype))
-            else:
-                deq_ms = _xpu_time_ms(lambda: _dequant_int8_sym(packed, scales, group_size).to(dtype))
+            # Internal ``moe_gemm_prefill`` weight-dequant stage (not the
+            # PyTorch reference dequant, which only feeds the bmm baseline).
+            deq_ms, deq_bw = _internal_dequant_ms_bw(
+                activations,
+                packed,
+                ntpe,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=8,
+                group_size=group_size,
+                asym=asym,
+            )
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
             # Default ARK path (dequant + GEMM). Force
@@ -829,7 +931,18 @@ class TestMoEGemmPrefillPerf:
                 os.environ["ARK_MOE_PREFILL_DPAS_INT8"] = prev_dpas
 
             _print_row(
-                label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_ms=dpas_ms, dpas_tflops=dpas_tflops
+                label,
+                E,
+                N,
+                K,
+                total_tokens,
+                base_ms,
+                deq_ms,
+                ark_ms,
+                tflops,
+                dpas_deq_bw=deq_bw,
+                dpas_ms=dpas_ms,
+                dpas_tflops=dpas_tflops,
             )
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
@@ -863,10 +976,18 @@ class TestMoEGemmPrefillPerf:
                 packed = _pack_int2_sym(w_float, scales, group_size)
                 dequant = _dequant_int2_sym(packed, scales, group_size).to(dtype)
 
-            if asym:
-                deq_ms = _xpu_time_ms(lambda: _dequant_int2_asym(packed, scales, zeros, group_size).to(dtype))
-            else:
-                deq_ms = _xpu_time_ms(lambda: _dequant_int2_sym(packed, scales, group_size).to(dtype))
+            # Internal ``moe_gemm_prefill`` weight-dequant stage (not the
+            # PyTorch reference dequant, which only feeds the bmm baseline).
+            deq_ms, deq_bw = _internal_dequant_ms_bw(
+                activations,
+                packed,
+                ntpe,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=2,
+                group_size=group_size,
+                asym=asym,
+            )
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
             ark_ms = _xpu_time_ms(
                 lambda: ark.moe_gemm_prefill(
@@ -884,7 +1005,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_deq_bw=deq_bw)
 
             activations = ntpe = act_padded = w_float = scales = zeros = packed = dequant = None
             _release_xpu_memory()
@@ -911,7 +1032,19 @@ class TestMoEGemmPrefillPerf:
             packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
             dequant = _dequant_fp8(packed, scales, group_size, dtype)
 
-            deq_ms = _xpu_time_ms(lambda: _dequant_fp8(packed, scales, group_size, dtype))
+            # Internal ``moe_gemm_prefill`` FP8 weight-dequant stage (its
+            # ``[E, N, K] -> [E, K, N]`` dequant kernel), not the PyTorch
+            # reference dequant which only feeds the bmm baseline.
+            deq_ms, deq_bw = _internal_dequant_ms_bw(
+                activations,
+                packed,
+                ntpe,
+                scales=scales,
+                zeros=None,
+                weight_bits=8,
+                group_size=group_size,
+                asym=False,
+            )
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant))
 
             # Default ARK path (respects the caller's env, i.e. dequant or
@@ -1003,10 +1136,11 @@ class TestMoEGemmPrefillPerf:
                 deq_ms,
                 ark_ms,
                 tflops,
-                native_ms,
-                native_tflops,
-                dpas_ms,
-                dpas_tflops,
+                dpas_deq_bw=deq_bw,
+                native_ms=native_ms,
+                native_tflops=native_tflops,
+                dpas_ms=dpas_ms,
+                dpas_tflops=dpas_tflops,
             )
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant = None
@@ -1066,6 +1200,10 @@ class TestMoEGemmPrefillPerf:
 
             dequant_NK = _do_dequant()
             deq_ms = _xpu_time_ms(_do_dequant)
+            deq_bw = _estimate_bandwidth_gbps(
+                _estimate_dequant_bytes(packed, scales, None, dequant_NK),
+                deq_ms,
+            )
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant_NK))
 
             ark_ms = _xpu_time_ms(
@@ -1081,7 +1219,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_deq_bw=deq_bw)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant_NK = None
             _release_xpu_memory()
@@ -1134,6 +1272,10 @@ class TestMoEGemmPrefillPerf:
 
             dequant_NK = _do_dequant()
             deq_ms = _xpu_time_ms(_do_dequant)
+            deq_bw = _estimate_bandwidth_gbps(
+                _estimate_dequant_bytes(packed, scales, None, dequant_NK),
+                deq_ms,
+            )
             base_ms = _xpu_time_ms(lambda: _default_moe_prefill(act_padded, dequant_NK))
 
             ark_ms = _xpu_time_ms(
@@ -1149,7 +1291,7 @@ class TestMoEGemmPrefillPerf:
             flops = _compute_moe_flops(total_tokens, K, N, E)
             tflops = flops / (ark_ms * 1e-3) / 1e12
 
-            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops)
+            _print_row(label, E, N, K, total_tokens, base_ms, deq_ms, ark_ms, tflops, dpas_deq_bw=deq_bw)
 
             activations = ntpe = act_padded = w_float = scales = packed = dequant_NK = None
             _release_xpu_memory()

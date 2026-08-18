@@ -35,7 +35,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
+#include <string>
 
 #include "bestla/bestla.h"
 #include "sycl_tla_moe_dequant.hpp"
@@ -86,9 +88,46 @@ class MoEDecodeKernelInt8;
 template <typename ScalarT, bool Asym>
 class MoEDecodeKernelInt2;
 
+// Multi-token (2 tokens per sub-group) variants for the packed low-bit
+// paths. See `launch_int4_multitoken` / `launch_int2_multitoken` and the
+// `ARK_MOE_DECODE_MULTI_TOKEN` env gate for the weight-reuse rationale.
+template <typename ScalarT, bool Asym>
+class MoEDecodeKernelInt4MT;
+
+template <typename ScalarT, bool Asym>
+class MoEDecodeKernelInt2MT;
+
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDecodeKernelFP8;
 
+// ----------------------------------------------------------------------------
+// Env gate: `ARK_MOE_DECODE_MULTI_TOKEN` (default OFF).
+//
+// When enabled AND `total_tokens >= 2`, the packed INT4 / INT2 decode
+// paths use a 2-tokens-per-sub-group kernel: each sub-group lane owns one
+// output N-column for a PAIR of tokens and streams the (BW-dominant)
+// packed weight row once per iteration for both tokens. When the two
+// tokens map to the SAME expert the second token's weight loads hit L1
+// (same address) -- roughly halving real weight traffic vs. the
+// one-token-per-sub-group kernel; when they map to different experts the
+// result is still correct (the second load is a real fetch of that
+// expert's row). Decode (dequant) is recomputed per token but is cheap.
+//
+// OFF by default: the win depends on decode batch shape / routing, so it
+// is opt-in and A/B-measurable in-process (re-read on every call).
+// Truthy (case-insensitive): "1", "true", "on", "yes".
+// ----------------------------------------------------------------------------
+inline bool moe_decode_multi_token_enabled() {
+  const char* env = std::getenv("ARK_MOE_DECODE_MULTI_TOKEN");
+  if (env == nullptr) return false;
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
+}
+
+template <typename ScalarT, bool IsE4M3, bool UseLut>
+class MoEDecodeKernelFP8;
 // ----------------------------------------------------------------------------
 // FP8 weight dequantization primitives + host-side env-var reader live in
 // `sycl_tla_moe_dequant.hpp` so the prefill (mixed-input Grouped GEMM) and
@@ -540,6 +579,284 @@ void launch_int2(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 }
 
 // ----------------------------------------------------------------------------
+// INT4 (S4_CLIP) GEMV, 2 tokens per sub-group (weight-reuse variant).
+//
+// Numerically identical to `launch_int4` -- same `decode_int4_pair` bit
+// ops, same fp32 accumulation order per token. The only difference is the
+// work decomposition: dim0 of the launch grid is `ceil(total_tokens / 2)`
+// and each sub-group lane processes a PAIR of tokens (t0 = 2*p, t1 =
+// 2*p+1) for the same output N-column. The packed weight row for each
+// token is streamed inside one loop iteration; when both tokens route to
+// the same expert the two loads share an address so the second is an L1
+// hit, halving real weight traffic. When the pair straddles an expert
+// boundary the second load is a real fetch of that expert's row, keeping
+// the result correct. The odd tail token (when total_tokens is odd) is
+// handled by clamping t1 to t0 and suppressing its store.
+// ----------------------------------------------------------------------------
+template <typename ScalarT, bool Asym>
+void launch_int4_multitoken(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
+                           const ScalarT* scales, const ScalarT* zeros, ScalarT* outputs,
+                           const int* expert_id_per_token, int total_tokens, int N, int K, int group_size) {
+  if (N % N_TILE != 0) {
+    throw std::invalid_argument("moe_gemm_decode(int4): N must be a multiple of 16");
+  }
+  if (K % group_size != 0 || (group_size & 1) != 0) {
+    throw std::invalid_argument("moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
+  }
+  if (Asym && zeros == nullptr) {
+    throw std::invalid_argument("moe_gemm_decode(int4): zeros pointer required when asym=true");
+  }
+  if (total_tokens == 0) return;
+
+  const int n_tiles = N / N_TILE;
+  const int num_groups_k = K / group_size;
+  const int k_packed = K / 2;
+  const int token_pairs = (total_tokens + 1) / 2;
+
+  sycl::range<2> global{static_cast<size_t>(token_pairs), static_cast<size_t>(n_tiles * SG_SIZE)};
+  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
+
+  q->parallel_for<MoEDecodeKernelInt4MT<ScalarT, Asym>>(
+       sycl::nd_range<2>(global, local),
+       [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+        const int pair = static_cast<int>(it.get_global_id(0));
+        const int n_tile = static_cast<int>(it.get_group(1));
+        const int lane = static_cast<int>(it.get_local_id(1));
+        const int n_global = n_tile * N_TILE + lane;
+
+        const int t0 = 2 * pair;
+        const int t1_raw = t0 + 1;
+        const bool has_t1 = t1_raw < total_tokens;
+        const int t1 = has_t1 ? t1_raw : t0;  // clamp tail; store suppressed
+
+        const int e0 = expert_id_per_token[t0];
+        const int e1 = expert_id_per_token[t1];
+
+        const ScalarT* act0 = activations + static_cast<size_t>(t0) * K;
+        const ScalarT* act1 = activations + static_cast<size_t>(t1) * K;
+        const uint8_t* w0 = weights + (static_cast<size_t>(e0) * N + static_cast<size_t>(n_global)) * k_packed;
+        const uint8_t* w1 = weights + (static_cast<size_t>(e1) * N + static_cast<size_t>(n_global)) * k_packed;
+        const ScalarT* s0 = scales + (static_cast<size_t>(e0) * N + static_cast<size_t>(n_global)) * num_groups_k;
+        const ScalarT* s1 = scales + (static_cast<size_t>(e1) * N + static_cast<size_t>(n_global)) * num_groups_k;
+        const ScalarT* z0 = Asym ? zeros + (static_cast<size_t>(e0) * N + static_cast<size_t>(n_global)) * num_groups_k
+                                 : nullptr;
+        const ScalarT* z1 = Asym ? zeros + (static_cast<size_t>(e1) * N + static_cast<size_t>(n_global)) * num_groups_k
+                                 : nullptr;
+
+        float acc0 = 0.0f;
+        float acc1 = 0.0f;
+        for (int g = 0; g < num_groups_k; ++g) {
+          const float scale0 = static_cast<float>(s0[g]);
+          const float scale1 = static_cast<float>(s1[g]);
+          float zero0 = 0.0f, zero1 = 0.0f;
+          if constexpr (Asym) {
+            zero0 = static_cast<float>(z0[g]);
+            zero1 = static_cast<float>(z1[g]);
+          }
+          const int k_base = g * group_size;
+          constexpr int CHUNK = 16;
+          using ActVec = sycl::vec<uint16_t, CHUNK>;
+          using PackVec = sycl::vec<uint8_t, CHUNK / 2>;
+          static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+          const int chunk_end = (group_size / CHUNK) * CHUNK;
+          int kk = 0;
+          for (; kk < chunk_end; kk += CHUNK) {
+            const ActVec av0 = *reinterpret_cast<const ActVec*>(act0 + k_base + kk);
+            const ActVec av1 = *reinterpret_cast<const ActVec*>(act1 + k_base + kk);
+            const PackVec pv0 = *reinterpret_cast<const PackVec*>(w0 + (k_base + kk) / 2);
+            const PackVec pv1 = *reinterpret_cast<const PackVec*>(w1 + (k_base + kk) / 2);
+#pragma unroll
+            for (int b = 0; b < CHUNK / 2; ++b) {
+              int q0a, q1a, q0b, q1b;
+              decode_int4_pair<Asym>(pv0[b], q0a, q1a);
+              decode_int4_pair<Asym>(pv1[b], q0b, q1b);
+              float w0a, w1a, w0b, w1b;
+              if constexpr (Asym) {
+                w0a = (static_cast<float>(q0a) - zero0) * scale0;
+                w1a = (static_cast<float>(q1a) - zero0) * scale0;
+                w0b = (static_cast<float>(q0b) - zero1) * scale1;
+                w1b = (static_cast<float>(q1b) - zero1) * scale1;
+              } else {
+                w0a = static_cast<float>(q0a) * scale0;
+                w1a = static_cast<float>(q1a) * scale0;
+                w0b = static_cast<float>(q0b) * scale1;
+                w1b = static_cast<float>(q1b) * scale1;
+              }
+              const float a0_0 = static_cast<float>(sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av0[2 * b])));
+              const float a0_1 = static_cast<float>(sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av0[2 * b + 1])));
+              const float a1_0 = static_cast<float>(sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av1[2 * b])));
+              const float a1_1 = static_cast<float>(sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av1[2 * b + 1])));
+              acc0 += a0_0 * w0a;
+              acc0 += a0_1 * w1a;
+              acc1 += a1_0 * w0b;
+              acc1 += a1_1 * w1b;
+            }
+          }
+          for (; kk < group_size; kk += 2) {
+            const uint8_t p0 = w0[(k_base + kk) / 2];
+            const uint8_t p1 = w1[(k_base + kk) / 2];
+            int q0a, q1a, q0b, q1b;
+            decode_int4_pair<Asym>(p0, q0a, q1a);
+            decode_int4_pair<Asym>(p1, q0b, q1b);
+            float w0a, w1a, w0b, w1b;
+            if constexpr (Asym) {
+              w0a = (static_cast<float>(q0a) - zero0) * scale0;
+              w1a = (static_cast<float>(q1a) - zero0) * scale0;
+              w0b = (static_cast<float>(q0b) - zero1) * scale1;
+              w1b = (static_cast<float>(q1b) - zero1) * scale1;
+            } else {
+              w0a = static_cast<float>(q0a) * scale0;
+              w1a = static_cast<float>(q1a) * scale0;
+              w0b = static_cast<float>(q0b) * scale1;
+              w1b = static_cast<float>(q1b) * scale1;
+            }
+            acc0 += static_cast<float>(act0[k_base + kk]) * w0a;
+            acc0 += static_cast<float>(act0[k_base + kk + 1]) * w1a;
+            acc1 += static_cast<float>(act1[k_base + kk]) * w0b;
+            acc1 += static_cast<float>(act1[k_base + kk + 1]) * w1b;
+          }
+        }
+
+        outputs[static_cast<size_t>(t0) * N + n_global] = static_cast<ScalarT>(acc0);
+        if (has_t1) {
+          outputs[static_cast<size_t>(t1) * N + n_global] = static_cast<ScalarT>(acc1);
+        }
+       });
+}
+
+// ----------------------------------------------------------------------------
+// INT2 (S2_CLIP) GEMV, 2 tokens per sub-group (weight-reuse variant).
+// Numerically identical to `launch_int2`; work decomposition mirrors
+// `launch_int4_multitoken` (see its comment for the weight-reuse rationale).
+// ----------------------------------------------------------------------------
+template <typename ScalarT, bool Asym>
+void launch_int2_multitoken(sycl::queue* q, const ScalarT* activations, const uint8_t* weights,
+                           const ScalarT* scales, const ScalarT* zeros, ScalarT* outputs,
+                           const int* expert_id_per_token, int total_tokens, int N, int K, int group_size) {
+  if (N % N_TILE != 0) {
+    throw std::invalid_argument("moe_gemm_decode(int2): N must be a multiple of 16");
+  }
+  if ((K & 0x3) != 0) {
+    throw std::invalid_argument("moe_gemm_decode(int2): K must be a multiple of 4");
+  }
+  if (K % group_size != 0 || (group_size & 0x3) != 0) {
+    throw std::invalid_argument(
+       "moe_gemm_decode(int2): K must be a multiple of group_size and group_size must be a multiple of 4");
+  }
+  if (Asym && zeros == nullptr) {
+    throw std::invalid_argument("moe_gemm_decode(int2): zeros pointer required when asym=true");
+  }
+  if (total_tokens == 0) return;
+
+  const int n_tiles = N / N_TILE;
+  const int num_groups_k = K / group_size;
+  const int k_packed = K / 4;
+  const int token_pairs = (total_tokens + 1) / 2;
+
+  sycl::range<2> global{static_cast<size_t>(token_pairs), static_cast<size_t>(n_tiles * SG_SIZE)};
+  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
+
+  q->parallel_for<MoEDecodeKernelInt2MT<ScalarT, Asym>>(
+       sycl::nd_range<2>(global, local),
+       [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+        const int pair = static_cast<int>(it.get_global_id(0));
+        const int n_tile = static_cast<int>(it.get_group(1));
+        const int lane = static_cast<int>(it.get_local_id(1));
+        const int n_global = n_tile * N_TILE + lane;
+
+        const int t0 = 2 * pair;
+        const int t1_raw = t0 + 1;
+        const bool has_t1 = t1_raw < total_tokens;
+        const int t1 = has_t1 ? t1_raw : t0;
+
+        const int e0 = expert_id_per_token[t0];
+        const int e1 = expert_id_per_token[t1];
+
+        const ScalarT* act0 = activations + static_cast<size_t>(t0) * K;
+        const ScalarT* act1 = activations + static_cast<size_t>(t1) * K;
+        const uint8_t* w0 = weights + (static_cast<size_t>(e0) * N + static_cast<size_t>(n_global)) * k_packed;
+        const uint8_t* w1 = weights + (static_cast<size_t>(e1) * N + static_cast<size_t>(n_global)) * k_packed;
+        const ScalarT* s0 = scales + (static_cast<size_t>(e0) * N + static_cast<size_t>(n_global)) * num_groups_k;
+        const ScalarT* s1 = scales + (static_cast<size_t>(e1) * N + static_cast<size_t>(n_global)) * num_groups_k;
+        const ScalarT* z0 = Asym ? zeros + (static_cast<size_t>(e0) * N + static_cast<size_t>(n_global)) * num_groups_k
+                                 : nullptr;
+        const ScalarT* z1 = Asym ? zeros + (static_cast<size_t>(e1) * N + static_cast<size_t>(n_global)) * num_groups_k
+                                 : nullptr;
+
+        float acc0 = 0.0f;
+        float acc1 = 0.0f;
+        for (int g = 0; g < num_groups_k; ++g) {
+          const float scale0 = static_cast<float>(s0[g]);
+          const float scale1 = static_cast<float>(s1[g]);
+          float zero0 = 0.0f, zero1 = 0.0f;
+          if constexpr (Asym) {
+            zero0 = static_cast<float>(z0[g]);
+            zero1 = static_cast<float>(z1[g]);
+          }
+          const int k_base = g * group_size;
+          constexpr int CHUNK = 16;
+          using ActVec = sycl::vec<uint16_t, CHUNK>;
+          using PackVec = sycl::vec<uint8_t, CHUNK / 4>;
+          static_assert(sizeof(ScalarT) == sizeof(uint16_t), "ScalarT must be a 16-bit floating type");
+          const int chunk_end = (group_size / CHUNK) * CHUNK;
+          int kk = 0;
+          for (; kk < chunk_end; kk += CHUNK) {
+            const ActVec av0 = *reinterpret_cast<const ActVec*>(act0 + k_base + kk);
+            const ActVec av1 = *reinterpret_cast<const ActVec*>(act1 + k_base + kk);
+            const PackVec pv0 = *reinterpret_cast<const PackVec*>(w0 + (k_base + kk) / 4);
+            const PackVec pv1 = *reinterpret_cast<const PackVec*>(w1 + (k_base + kk) / 4);
+#pragma unroll
+            for (int b = 0; b < CHUNK / 4; ++b) {
+              int qa[4], qb[4];
+              decode_int2_quad<Asym>(pv0[b], qa);
+              decode_int2_quad<Asym>(pv1[b], qb);
+#pragma unroll
+              for (int j = 0; j < 4; ++j) {
+                float wa, wb;
+                if constexpr (Asym) {
+                  wa = (static_cast<float>(qa[j]) - zero0) * scale0;
+                  wb = (static_cast<float>(qb[j]) - zero1) * scale1;
+                } else {
+                  wa = static_cast<float>(qa[j]) * scale0;
+                  wb = static_cast<float>(qb[j]) * scale1;
+                }
+                const float a0 = static_cast<float>(sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av0[4 * b + j])));
+                const float a1 = static_cast<float>(sycl::bit_cast<ScalarT>(static_cast<uint16_t>(av1[4 * b + j])));
+                acc0 += a0 * wa;
+                acc1 += a1 * wb;
+              }
+            }
+          }
+          for (; kk < group_size; kk += 4) {
+            const uint8_t p0 = w0[(k_base + kk) / 4];
+            const uint8_t p1 = w1[(k_base + kk) / 4];
+            int qa[4], qb[4];
+            decode_int2_quad<Asym>(p0, qa);
+            decode_int2_quad<Asym>(p1, qb);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+              float wa, wb;
+              if constexpr (Asym) {
+                wa = (static_cast<float>(qa[j]) - zero0) * scale0;
+                wb = (static_cast<float>(qb[j]) - zero1) * scale1;
+              } else {
+                wa = static_cast<float>(qa[j]) * scale0;
+                wb = static_cast<float>(qb[j]) * scale1;
+              }
+              acc0 += static_cast<float>(act0[k_base + kk + j]) * wa;
+              acc1 += static_cast<float>(act1[k_base + kk + j]) * wb;
+            }
+          }
+        }
+
+        outputs[static_cast<size_t>(t0) * N + n_global] = static_cast<ScalarT>(acc0);
+        if (has_t1) {
+          outputs[static_cast<size_t>(t1) * N + n_global] = static_cast<ScalarT>(acc1);
+        }
+       });
+}
+
+// ----------------------------------------------------------------------------
 // FP8 (E4M3 / E5M2) GEMV with group-wise scale (no zero-point).
 //
 // Weights are 1 FP8 byte per element [E, N, K]. The byte is decoded via the
@@ -663,6 +980,40 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
   }
 
   if (weight_dtype == BTLA_DTYPE::S4_CLIP) {
+    // Opt-in 2-tokens-per-sub-group weight-reuse path. Numerically
+    // identical to the one-token kernel; halves real weight traffic for
+    // same-expert token pairs. Gated by `ARK_MOE_DECODE_MULTI_TOKEN`.
+    if (moe_decode_detail::moe_decode_multi_token_enabled() && total_tokens >= 2) {
+      if (act_dtype == BTLA_DTYPE::F16) {
+        if (asym) {
+          moe_decode_detail::launch_int4_multitoken<sycl::half, true>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        } else {
+          moe_decode_detail::launch_int4_multitoken<sycl::half, false>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
+        return;
+      } else if (act_dtype == BTLA_DTYPE::BF16) {
+        using BF = sycl::ext::oneapi::bfloat16;
+        if (asym) {
+          moe_decode_detail::launch_int4_multitoken<BF, true>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size);
+        } else {
+          moe_decode_detail::launch_int4_multitoken<BF, false>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
+        return;
+      }
+      // Unsupported act_dtype falls through to the one-token path below.
+    }
     if (act_dtype == BTLA_DTYPE::F16) {
       if (asym) {
         moe_decode_detail::launch_int4<sycl::half, true>(
@@ -727,6 +1078,39 @@ inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, vo
   }
 
   if (weight_dtype == BTLA_DTYPE::S2_CLIP) {
+    // Opt-in 2-tokens-per-sub-group weight-reuse path (see the S4_CLIP
+    // block above). Gated by `ARK_MOE_DECODE_MULTI_TOKEN`.
+    if (moe_decode_detail::moe_decode_multi_token_enabled() && total_tokens >= 2) {
+      if (act_dtype == BTLA_DTYPE::F16) {
+        if (asym) {
+          moe_decode_detail::launch_int2_multitoken<sycl::half, true>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        } else {
+          moe_decode_detail::launch_int2_multitoken<sycl::half, false>(
+              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
+              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
+        return;
+      } else if (act_dtype == BTLA_DTYPE::BF16) {
+        using BF = sycl::ext::oneapi::bfloat16;
+        if (asym) {
+          moe_decode_detail::launch_int2_multitoken<BF, true>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size);
+        } else {
+          moe_decode_detail::launch_int2_multitoken<BF, false>(
+              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
+              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
+              expert_id_per_token_buf, total_tokens, N, K, group_size);
+        }
+        return;
+      }
+      // Unsupported act_dtype falls through to the one-token path below.
+    }
     if (act_dtype == BTLA_DTYPE::F16) {
       if (asym) {
         moe_decode_detail::launch_int2<sycl::half, true>(
