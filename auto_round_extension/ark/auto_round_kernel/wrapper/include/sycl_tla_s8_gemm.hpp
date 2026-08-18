@@ -153,7 +153,7 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
       tFrC(i) += static_cast<float>(tCrC(i)) * sb;
     }
   }
-
+  
 
   CUTE_UNROLL
   for (int i = 0; i < size(tFrC); ++i) {

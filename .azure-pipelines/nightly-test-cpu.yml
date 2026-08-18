@@ -89,7 +89,7 @@ stages:
               artifact:
               patterns: '*_coverage/.coverage.*'
               path: $(DOWNLOAD_PATH)
-
+          
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '3.12'
