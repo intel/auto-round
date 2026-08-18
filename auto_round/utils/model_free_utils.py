@@ -670,7 +670,7 @@ def _hydrate_missing_fp8_scales_from_index(
             continue
         if tensor.dtype != torch.float8_e4m3fn:
             continue
-        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        scale_inv_name = f"{name[: -len('.weight')]}.weight_scale_inv"
         if scale_inv_name not in raw_tensors:
             weight_to_scale[name] = scale_inv_name
 
@@ -930,7 +930,7 @@ def _dequant_fp8_tensors(
         if tensor.dtype != torch.float8_e4m3fn:
             continue
         # DeepSeek-V3 style: .weight_scale_inv (per-block float32 scales).
-        scale_inv_name = name.replace(".weight", ".weight_scale_inv")
+        scale_inv_name = f"{name[: -len('.weight')]}.weight_scale_inv"
         if scale_inv_name in raw_tensors:
             quant_entries.append((name, scale_inv_name))
 
@@ -2660,10 +2660,9 @@ def preprocess_model_type_source_tensors(
             n_fp8 += 1
 
             if scale.dtype == torch.float32:
-                sanitized_scale_name = ".".join("<idx>" if part.isdigit() else part for part in scale_name.split("."))
                 shard_prefix = f"[{shard_name}] " if shard_name else ""
                 logger.warning_once(
-                    f"{shard_prefix}[{model_type}] Scale tensor pattern '{sanitized_scale_name}' has dtype float32 "
+                    f"[{model_type}] Scale tensor pattern has dtype float32 "
                     f"with UE8M0 encoding (only the 8-bit exponent is significant). "
                     f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
                 )
