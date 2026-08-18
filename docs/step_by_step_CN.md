@@ -457,7 +457,7 @@ Smooth 搜索、residual iterations、导出和推理说明请参阅 [SVDQuant �
 
 AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案。精度测试结果请参考 [AutoScheme 精度报告](./auto_scheme_acc.md)。
 
-为了更好地在vllm中部署，目前推荐导出到llm_compressor格式
+为了更好地在 vLLM 中部署，目前推荐导出到 llm_compressor 格式。
 
 **说明：** 混合数据类型支持调优，但目前无法将其导出成实际模型。
 
@@ -536,6 +536,7 @@ ar.quantize_and_save()
 #### AutoScheme 耗时与显存成本
 测试基于 Nvidia A100 80G、PyTorch 2.8。
 
+从 v0.14.2 起，RAM 占用已得到优化。
 | 模型            | 量化方案                | 显存占用 | 耗时                  |
 |---------------| ----------------------- | -------- | --------------------- |
 | Qwen3-8B      | W2A16 / W4A16 / W8A16   | 14G      | 60秒 × 可选方案数量   |
