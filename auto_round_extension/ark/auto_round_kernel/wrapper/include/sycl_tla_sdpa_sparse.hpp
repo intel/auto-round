@@ -938,8 +938,6 @@ template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV,
           typename GmemTiledCopyK = void, typename GmemTiledCopyV = void, typename GmemTiledCopyO = void>
 struct SparseSageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
-  static_assert(cute::is_same_v<ElementQ, int8_t>,
-                "SparseSageConfig is INT8-only; use SparseSDPAConfig for native-precision BF16/FP16");
   using MMAOperation =
       cute::conditional_t<is_void_v<MMAOperation_>, XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
   using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
