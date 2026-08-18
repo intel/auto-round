@@ -97,10 +97,16 @@ def _create_conversion_model(model_class, hparams, **kwargs):
         return model_class(hparams=hparams, **kwargs)
 
     # AutoRound exports the target model only; unlike llama.cpp's CLI, it does not
-    # provide a separate MTP export mode. A scoped subclass keeps classmethod-based
-    # tensor filtering from mutating the shared conversion class.
-    no_mtp_model_class = type(f"AutoRoundNoMtp{model_class.__name__}", (model_class,), {"no_mtp": True})
-    return no_mtp_model_class(hparams=hparams, **kwargs)
+    # provide a separate MTP export mode. Conversion filters read this flag from
+    # the concrete class, so restore it immediately after constructing the instance.
+    original_no_mtp = model_class.no_mtp
+    try:
+        model_class.no_mtp = True
+        model_instance = model_class(hparams=hparams, **kwargs)
+        model_instance.no_mtp = True
+        return model_instance
+    finally:
+        model_class.no_mtp = original_no_mtp
 
 
 def create_model_class(
