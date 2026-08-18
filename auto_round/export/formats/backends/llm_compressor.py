@@ -98,7 +98,7 @@ class LLMCompressorFormat(OutputFormat):
             error_logs.append(f"data_type={scheme.data_type}")
         if scheme.data_type == "fp" and scheme.bits != 8:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
-        if scheme.data_type == "int" and scheme.bits not in [2,3, 4, 8]:
+        if scheme.data_type == "int" and scheme.bits not in [2, 3, 4, 8]:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
