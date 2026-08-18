@@ -63,6 +63,7 @@ function run_unit_test() {
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
     # run in the nightly/weekly pipelines (see nightly-test.yml / weekly-test.yml).
     find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
+    find ./unit/common -name "test*.py" | sort >> all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=5
     q=$(( total_lines / NUM_CHUNKS ))
@@ -165,7 +166,7 @@ function collect_log() {
 function main() {
     setup_environment
     init_changed_tests
-    scope_changed_tests "$(cd /auto-round && find test/unit/test_cpu test/integration/test_cpu -name "test_*.py" 2>/dev/null)"
+    scope_changed_tests "$(cd /auto-round && find test/unit/common test/unit/test_cpu test/integration/test_cpu -name "test_*.py" 2>/dev/null)"
     if [ "$test_part" = "inc" ]; then
         run_inc_unit_test
     elif [ "$test_part" = "llmc" ]; then

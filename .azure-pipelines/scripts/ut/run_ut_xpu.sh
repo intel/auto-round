@@ -37,15 +37,16 @@ function setup_environment() {
 function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    local ark_tests xpu_tests
+    local ark_tests xpu_tests common_tests
     ark_tests=$(filter_changed_tests "test" "$(find ./unit/test_ark -name "test*.py" | sort)")
     xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
+    common_tests=$(filter_changed_tests "test" "$(find ./unit/common -name "test*.py" | sort)")
 
-    for test_file in ${ark_tests}; do
+    for test_file in ${common_tests}; do
         local test_basename=$(basename ${test_file} .py)
 
-        echo "##[group]Running ark ${test_file}..."
-        local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
+        echo "##[group]Running common ${test_file}..."
+        local ut_log_name="${LOG_DIR}/unittest_common_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
@@ -64,6 +65,19 @@ function run_unit_test() {
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
+
+    for test_file in ${ark_tests}; do
+        local test_basename=$(basename ${test_file} .py)
+
+        echo "##[group]Running ark ${test_file}..."
+        local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+                --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+
 }
 
 function run_unit_test_llmc() {
@@ -122,7 +136,7 @@ function print_coverage() {
 function main() {
     setup_environment
     init_changed_tests
-    scope_changed_tests "$(cd /auto-round && find test/unit/test_ark test/unit/test_xpu test/integration/test_xpu -name "test_*.py" 2>/dev/null)"
+    scope_changed_tests "$(cd /auto-round && find test/unit/common test/unit/test_ark test/unit/test_xpu test/integration/test_xpu -name "test_*.py" 2>/dev/null)"
     if [[ "${UT_MODE}" == "llmc" ]]; then
         run_unit_test_llmc
     else

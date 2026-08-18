@@ -76,6 +76,7 @@ function run_unit_test() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
+    find ./unit/common -type f -name "test_*.py" | sort >> all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
@@ -224,7 +225,7 @@ function main() {
     elif [ "${test_case}" == "ci" ]; then
         # Mirror the selection below: tests excluded from the ci run (vlms,
         # llmc, sglang, vllm, multiple_card) must not enable filtering.
-        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
+        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/common test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
         run_unit_test
     else
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."
