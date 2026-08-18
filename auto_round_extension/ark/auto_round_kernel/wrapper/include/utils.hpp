@@ -45,7 +45,7 @@ namespace ark {
 
 struct env_params {
   int verbose = 2;  // trace 0/ debug 1/ info 2/ warn 3/ error 4/ critical 5/ off 6
-  int auto_s8 = 0;
+  int auto_s8 = -1;
   int sage_use_mean_bias = 1;
   int sage_print_kbias = 0;
   int sage_disable_packed_hnd_fast = 0;
@@ -181,7 +181,7 @@ static inline constexpr dnnl::memory::data_type to_dt() {
   } else if constexpr (std::is_same_v<T, bestla::utils::bf16>) {
     return dnnl::memory::data_type::bf16;
   } else {
-    static_assert(always_false<T>::value, "unsupported dnnl dtype");
+    static_assert(sizeof(T) == 0, "unsupported data type for to_dt<T>()");
   }
 }
 

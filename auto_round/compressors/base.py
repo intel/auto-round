@@ -110,6 +110,8 @@ class SerializedCompressorConfig:
     supported_types: Optional[list[str]] = SUPPORTED_LAYER_TYPES
     static_attention_dtype: Optional[str] = None
     static_kv_dtype: Optional[str] = None
+    static_attention_granularity: Optional[str] = "tensor"
+    static_kv_granularity: Optional[str] = "tensor"
     super_bits: Optional[int] = None
     super_group_size: Optional[int] = None
     to_quant_block_names: Optional[list[str]] = None
@@ -314,12 +316,18 @@ class BaseOrchestrator(object):
         if device is not None:
             logger.warning("`device` is deprecated, please use `device_map` instead")
 
+        from auto_round.experimental.utils import normalize_fp8_granularity
+
         self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
+        self.static_attention_granularity = normalize_fp8_granularity(
+            kwargs.pop("static_attention_granularity", "tensor")
+        )
         # Attention static dtype
         if self.static_attention_dtype is not None:
             logger.warning("The static attention dtype is experimental and currently has limited support.")
         # KV cache, this one does not affect tuning but will collect some infos during tuning
         self.static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_granularity = normalize_fp8_granularity(kwargs.pop("static_kv_granularity", "tensor"))
         if self.static_kv_dtype is not None:
             logger.warning("The static kv is experimental and currently has limited support.")
 
@@ -432,6 +440,8 @@ class BaseOrchestrator(object):
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,
+            static_kv_granularity=self.static_kv_granularity,
+            static_attention_granularity=self.static_attention_granularity,
         )
         self.shard_writer = None
         # Resumability state deferred from Orchestrator._quantize_data_driven() until
@@ -472,10 +482,7 @@ class BaseOrchestrator(object):
                 self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
                 logger.info("Automatically selected code calibration dataset: %s", self.dataset)
             else:
-                logger.info(
-                    "No explicit code-specialization signal was found; using default calibration dataset %s.",
-                    self.dataset,
-                )
+                logger.info("Using default calibration dataset %s.", self.dataset)
             self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
@@ -1532,10 +1539,20 @@ class BaseOrchestrator(object):
             return
 
         formats = getattr(self, "formats", [])
+        if any(not format.is_supported_immediate_packing() for format in formats):
+            self.compress_context.is_immediate_packing = False
+        if any(not format.is_supported_immediate_saving() for format in formats):
+            self.compress_context.is_immediate_saving = False
+
         has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
         # GGUF supports per-block / per-layer immediate packing even when
         # full-model in-place rewriting is disabled by outside-block layers.
-        if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
+        if (
+            len(formats) == 1
+            and not formats[0].is_fake()
+            and formats[0].is_supported_immediate_packing()
+            and (self.inplace or has_single_gguf_format)
+        ):
             self.compress_context.is_immediate_packing = True
 
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
@@ -1832,13 +1849,21 @@ class BaseOrchestrator(object):
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 
-            with attention_quant_ctx(self.model_context.model, static_attention_dtype=self.static_attention_dtype):
+            with attention_quant_ctx(
+                self.model_context.model,
+                static_attention_dtype=self.static_attention_dtype,
+                static_attention_granularity=self.static_attention_granularity,
+            ):
                 self.quantize()
                 self.model_context.quantized = True
         elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
 
-            with kvcache_quant_context(self.model_context.model, static_kv_dtype=self.static_kv_dtype):
+            with kvcache_quant_context(
+                self.model_context.model,
+                static_kv_dtype=self.static_kv_dtype,
+                static_kv_granularity=self.static_kv_granularity,
+            ):
                 self.quantize()
                 self.model_context.quantized = True
         else:

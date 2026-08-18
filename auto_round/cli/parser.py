@@ -185,11 +185,25 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Static KV-cache quantization data type.",
     )
     rt.add_argument(
+        "--static_kv_granularity",
+        default="tensor",
+        type=str,
+        choices=["tensor", "head"],
+        help="Static KV-cache FP8 calibration granularity.",
+    )
+    rt.add_argument(
         "--static_attention_dtype",
         default=None,
         type=str,
         choices=["fp8", "float8_e4m3fn"],
         help="Static attention quantization data type.",
+    )
+    rt.add_argument(
+        "--static_attention_granularity",
+        default="tensor",
+        type=str,
+        choices=["tensor", "head"],
+        help="Static attention FP8 calibration granularity.",
     )
 
     # ---- Evaluation ----
@@ -206,6 +220,16 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     ev.add_argument("--eval_bs", default=None, type=int, help="Batch size for evaluation.")
     ev.add_argument(
         "--limit", type=float, default=None, metavar="N|0<N<1", help="Evaluation example limit as a count or fraction."
+    )
+    ev.add_argument("--num_fewshot", "--num-fewshot", default=None, type=int, help="Number of few-shot examples.")
+    ev.add_argument(
+        "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
+    )
+    ev.add_argument(
+        "--fewshot_as_multiturn",
+        "--fewshot-as-multiturn",
+        action="store_true",
+        help="Use multi-turn format for few-shot examples in LM-Eval.",
     )
     ev.add_argument("--eval_task_by_task", action="store_true", help="Evaluate tasks sequentially instead of batching.")
     ev.add_argument(

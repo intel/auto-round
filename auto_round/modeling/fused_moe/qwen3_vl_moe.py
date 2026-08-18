@@ -23,7 +23,7 @@ from auto_round.utils import clear_memory, unsupported_meta_device
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
@@ -105,15 +105,9 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
                     weighted_output = expert_out * routing_weights[token_idx, idx, None]
                     next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         else:
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-            for expert_idx in expert_hit:
-                expert_idx = expert_idx[0]
-                if expert_idx == self.num_experts:
-                    continue
-                idx, token_idx = torch.where(expert_mask[expert_idx])
-                expert_out = self.experts[expert_idx](hidden_states[token_idx])
-                weighted_output = expert_out * routing_weights[token_idx, idx, None]
-                next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
+            next_states = sequential_moe_forward(
+                hidden_states, router_indices, routing_weights, self.experts, self.num_experts
+            )
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
 
         if transformers_version < version.parse("5.0"):
