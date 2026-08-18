@@ -599,11 +599,47 @@ def _load_weight_map_from_index(index_path: str) -> dict[str, str]:
     return weight_map if isinstance(weight_map, dict) else {}
 
 
+def _build_cross_shard_pairs_from_weight_map(
+    weight_map: dict[str, str],
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, set[str]]]:
+    """Identify cross-shard FP8 (weight, weight_scale_inv) pairs from weight_map.
+
+    A *cross-shard pair* exists when ``<layer>.weight`` and
+    ``<layer>.weight_scale_inv`` reside in **different** shards.  The shard
+    that holds ``weight_scale_inv`` is the *donor*; the shard that holds
+    ``weight`` is the *recipient*.
+
+    Returns:
+        recipient_to_donors:
+            ``{recipient_shard: {donor_shard: [scale_inv_tensor_names]}}``
+        donor_shard_tensors:
+            ``{donor_shard: set(scale_inv tensor names it donates to other shards)}``
+    """
+    recipient_to_donors: dict[str, dict[str, list[str]]] = {}
+    donor_shard_tensors: dict[str, set[str]] = {}
+
+    for tensor_name, shard in weight_map.items():
+        if not tensor_name.endswith(".weight_scale_inv"):
+            continue
+        # "layer.weight_scale_inv" -> "layer.weight"
+        weight_name = tensor_name[: -len("_scale_inv")]
+        weight_shard = weight_map.get(weight_name)
+        if not weight_shard or weight_shard == shard:
+            continue
+        # `shard` (donor) donates `tensor_name` to `weight_shard` (recipient)
+        recipient_to_donors.setdefault(weight_shard, {}).setdefault(shard, []).append(tensor_name)
+        donor_shard_tensors.setdefault(shard, set()).add(tensor_name)
+
+    return recipient_to_donors, donor_shard_tensors
+
+
 def _hydrate_missing_fp8_scales_from_index(
     raw_tensors: dict[str, torch.Tensor],
     shard_path: str,
     *,
     shard_name: str | None = None,
+    index_dir: str | None = None,
+    donor_shard_dir: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Populate missing ``.weight_scale_inv`` tensors from sibling shards.
 
@@ -612,6 +648,18 @@ def _hydrate_missing_fp8_scales_from_index(
     this helper hydrates missing ``<layer>.weight_scale_inv`` tensors by looking
     up ``weight_map`` in ``*.safetensors.index.json`` and loading only the
     needed tensors from referenced shards.
+
+    Args:
+        index_dir: Directory that contains ``*.safetensors.index.json``.  When
+            ``None`` (default) the directory of *shard_path* is used, which is
+            correct for non-streaming mode.  Streaming mode should pass
+            ``work_dir`` here because downloaded shards live in a
+            ``.cache/model_free_source_shards/`` sub-directory that does not
+            contain the index file.
+        donor_shard_dir: Directory where donor shard files can be found.  When
+            ``None`` (default) the same directory as *index_dir* is used.
+            Streaming mode should pass the local shard cache directory so that
+            already-downloaded donor shards are resolved correctly.
     """
     if not shard_path.endswith(".safetensors"):
         return raw_tensors
@@ -630,10 +678,17 @@ def _hydrate_missing_fp8_scales_from_index(
         return raw_tensors
 
     shard_dir = os.path.dirname(shard_path)
-    index_path = os.path.join(shard_dir, "model.safetensors.index.json")
+    # Resolve the directory where index.json lives.  In streaming mode the
+    # shard lives in a .cache/ sub-directory that has no index file; callers
+    # pass index_dir=work_dir to point at the correct location.
+    idx_dir = index_dir if index_dir is not None else shard_dir
+    # Donor shards are looked up in donor_shard_dir (defaults to idx_dir).
+    donor_dir = donor_shard_dir if donor_shard_dir is not None else idx_dir
+
+    index_path = os.path.join(idx_dir, "model.safetensors.index.json")
     if not os.path.exists(index_path):
         candidates = sorted(
-            os.path.join(shard_dir, f) for f in os.listdir(shard_dir) if f.endswith(".safetensors.index.json")
+            os.path.join(idx_dir, f) for f in os.listdir(idx_dir) if f.endswith(".safetensors.index.json")
         )
         if not candidates:
             return raw_tensors
@@ -659,7 +714,7 @@ def _hydrate_missing_fp8_scales_from_index(
 
     hydrated = 0
     for target_shard, scale_names in scales_by_shard.items():
-        target_path = os.path.join(shard_dir, target_shard)
+        target_path = os.path.join(donor_dir, target_shard)
         if not os.path.exists(target_path):
             continue
         try:
@@ -837,6 +892,9 @@ def _dequant_fp8_tensors(
     device: str = "cpu",
     shard_name: str | None = None,
     shard_path: str | None = None,
+    *,
+    index_dir: str | None = None,
+    donor_shard_dir: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Dequantize DeepSeek-V3-style FP8 weight tensors to bfloat16.
 
@@ -851,7 +909,13 @@ def _dequant_fp8_tensors(
     from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
     if shard_path:
-        raw_tensors = _hydrate_missing_fp8_scales_from_index(raw_tensors, shard_path, shard_name=shard_name)
+        raw_tensors = _hydrate_missing_fp8_scales_from_index(
+            raw_tensors,
+            shard_path,
+            shard_name=shard_name,
+            index_dir=index_dir,
+            donor_shard_dir=donor_shard_dir,
+        )
 
     quant_entries: list[tuple[str, str]] = []
     for name, tensor in raw_tensors.items():
@@ -911,6 +975,9 @@ def _process_shard(
     source_quantization_config: dict | None = None,
     enable_torch_compile: bool = False,
     disable_opt_rtn: bool = False,
+    index_dir: str | None = None,
+    donor_shard_dir: str | None = None,
+    donor_tensors_to_exclude: set[str] | None = None,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -923,6 +990,17 @@ def _process_shard(
     but was NOT quantized is reported as ignored — this correctly captures
     user-ignored layers, predefined-skipped layers, non-eligible weights, and
     any other pass-through case without separate per-tensor tracking.
+
+    Args:
+        index_dir: Directory containing the model's ``*.safetensors.index.json``.
+            Used to resolve cross-shard FP8 scale_inv tensors.  Defaults to the
+            directory of *shard_path* (correct for non-streaming mode).
+        donor_shard_dir: Directory where donor shards are cached.  Defaults to
+            *index_dir*.  In streaming mode pass the local shard cache directory.
+        donor_tensors_to_exclude: If provided, these ``weight_scale_inv`` tensor
+            names are removed from the final output tensors.  Used when this
+            shard is a donor: its scale_inv tensors have already been consumed
+            by the recipient shard and must not appear in the quantized output.
     """
     if matcher is None:
         matcher = _PatternMatcher(
@@ -1028,6 +1106,8 @@ def _process_shard(
         device=device,
         shard_name=shard_name,
         shard_path=shard_path,
+        index_dir=index_dir,
+        donor_shard_dir=donor_shard_dir,
     )
     raw_tensors.update(preserved_tensors)
 
@@ -1044,6 +1124,20 @@ def _process_shard(
         output_tensors.update(out_dict)
         if q_layer:
             quantized_layers.append(q_layer)
+
+    # Remove scale_inv tensors that this shard donates to other shards.
+    # These tensors have no corresponding weight in this shard; keeping them
+    # would pollute the quantized output with raw FP8 scale metadata.
+    if donor_tensors_to_exclude:
+        removed = {t for t in donor_tensors_to_exclude if t in output_tensors}
+        for t in removed:
+            del output_tensors[t]
+        if removed:
+            shard_prefix = f"[{shard_name}] " if shard_name else ""
+            logger.debug(
+                f"{shard_prefix}Excluded {len(removed)} donated cross-shard scale_inv "
+                f"tensor(s) from quantized shard output."
+            )
 
     # Derive ignored layers by comparing input weight layers with quantized set.
     quantized_set = set(quantized_layers)
