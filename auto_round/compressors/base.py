@@ -990,18 +990,102 @@ class BaseOrchestrator(object):
         self.has_qlayer_outside_block = self.compression_plan.has_qlayer_outside_block
         apply_plan_to_model(self.model_context.model, self.compression_plan)
         if self.is_auto_scheme:
-            from auto_round.auto_scheme.utils import compute_avg_bits_for_model
+            self._log_auto_scheme_avg_bits()
 
-            ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
-            avg_bits, total_bits = compute_avg_bits_for_model(
-                self.model_context.model,
-                ignore_scale_zp_bits=ignore_scale_zp_bits,
+    def _log_auto_scheme_avg_bits(self) -> None:
+        """Report AutoScheme bit usage under two denominators.
+
+        ``avg_bits`` targets **only** the layers AutoScheme quantizes -- the set it was
+        given as ``quant_layer_names``, which is exactly what the bit-allocation DP
+        budgets. Layers outside that set (most notably a VLM's vision/audio tower, which
+        is peeled off and kept at 16 bit, or layers pinned via ``layer_config`` /
+        ``ignore_layers``) are not part of the target and are never compensated by the DP.
+
+        Two numbers are therefore reported:
+
+        * ``quant layers``: average over the quantized (budgeted) layers. This is the
+          metric the target constrains and it must be <= target.
+        * ``whole model``: average over every layer carrying quantization metadata, i.e.
+          the end-to-end footprint. Informational only -- it can legitimately sit above
+          the target when non-quantized towers are kept at high precision.
+        """
+        from auto_round.auto_scheme.utils import compute_layer_bits
+
+        model = self.model_context.model
+        ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
+        target_avg_bits = getattr(self.orig_scheme, "avg_bits", None)
+
+        scheme_generator = getattr(self, "scheme_generator", None)
+        quant_layer_names = set(getattr(scheme_generator, "quant_layer_names", None) or [])
+
+        quant_params = quant_bits = quant_count = 0
+        model_params = model_bits = model_count = 0
+        outside = []
+        for name, module in model.named_modules():
+            if not hasattr(module, "bits") or not hasattr(module, "weight"):
+                continue
+            n_param = module.weight.numel()
+            if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+                n_param = module._cached_weight_numel
+            if n_param == 0:
+                continue
+            layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
+
+            model_params += n_param
+            model_bits += layer_bits
+            model_count += 1
+
+            # Without a scheme generator (e.g. a reloaded plan) fall back to
+            # "actually quantized" as the definition of the quantized set.
+            in_quant_set = name in quant_layer_names if quant_layer_names else getattr(module, "bits", 16) < 16
+            if in_quant_set:
+                quant_params += n_param
+                quant_bits += layer_bits
+                quant_count += 1
+            else:
+                outside.append((name, getattr(module, "bits", 16), n_param, layer_bits))
+
+        quant_avg = quant_bits / quant_params if quant_params else float("nan")
+        model_avg = model_bits / model_params if model_params else float("nan")
+        has_target = isinstance(target_avg_bits, (int, float))
+
+        logger.info(
+            "AutoScheme final avg_bits: quant layers=%.4f (target=%.4f, %d layers, %d params, total_bits=%d); "
+            "whole model=%.4f (%d layers, %d params, total_bits=%d, informational only)",
+            quant_avg,
+            float(target_avg_bits) if has_target else float("nan"),
+            quant_count,
+            quant_params,
+            quant_bits,
+            model_avg,
+            model_count,
+            model_params,
+            model_bits,
+        )
+
+        # Only the quantized-layer average is bound by the target.
+        if has_target and quant_avg > float(target_avg_bits) + 1e-3:
+            logger.warning(
+                "AutoScheme quantized-layer avg_bits=%.4f exceeds target avg_bits=%.4f. "
+                "The bit-allocation budget was not met; please report this together with the "
+                "AutoScheme option/range logs above.",
+                quant_avg,
+                float(target_avg_bits),
             )
+
+        if outside:
+            outside_params = sum(item[2] for item in outside)
+            outside_bits = sum(item[3] for item in outside)
             logger.info(
-                "AutoScheme final effective avg_bits=%.4f, target avg_bits=%.4f, total_bits=%d",
-                avg_bits,
-                self.orig_scheme.avg_bits,
-                total_bits,
+                "AutoScheme: %d layer(s) (%d params, %d bits, avg=%.4f) are not AutoScheme quantization targets, "
+                "so they are excluded from the avg_bits target and only affect the whole-model number "
+                "(typically a VLM vision/audio tower kept at 16 bit, or layers pinned via "
+                "`layer_config`/`ignore_layers`): %s",
+                len(outside),
+                outside_params,
+                outside_bits,
+                outside_bits / outside_params if outside_params else float("nan"),
+                ", ".join(f"{n}(bits={b})" for n, b, _, _ in outside[:8]) + (" ..." if len(outside) > 8 else ""),
             )
 
     # ─────────────────────────────────────────────────────────────────────────
