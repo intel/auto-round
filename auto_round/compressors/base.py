@@ -482,10 +482,7 @@ class BaseOrchestrator(object):
                 self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
                 logger.info("Automatically selected code calibration dataset: %s", self.dataset)
             else:
-                logger.info(
-                    "No explicit code-specialization signal was found; using default calibration dataset %s.",
-                    self.dataset,
-                )
+                logger.info("Using default calibration dataset %s.", self.dataset)
             self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
