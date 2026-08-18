@@ -605,7 +605,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 免模型架构量化模式（Model-Free Mode）可以**无需将完整模型加载到内存中**即可执行无标定数据的 WOQ 量化。它直接下载 safetensors 文件，逐分片地对每个 Linear 权重张量进行量化并保存打包结果。当您需要快速、无标定数据的量化且资源有限时，该模式非常实用。
 
-> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ 或 MXFP scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。
+> **默认自动启用。** 自 v0.13 起，当您同时传入 `--iters 0 --disable_opt_rtn` 与一个受支持的 INT WOQ 或 MXFP scheme 时，CLI 会自动走免模型路径。该路径与原始 `--iters 0 --disable_opt_rtn` 流程**位级（bit-exact）等价**，但内存占用大幅降低。如需关闭自动路由、强制使用原始流程，可加 `--disable_model_free`。  
 > 显式传入 `--model_free` 时，INT WOQ 始终使用**原始 RTN**（opt_rtn 对 INT WOQ 已禁用以保持精度）；MXFP scheme 默认启用**优化版 RTN（opt_rtn）**，如需原始 RTN，加上 `--disable_opt_rtn` 即可。
 **主要特性：**
 - **无需模型对象** — 仅需 `config.json` 和 safetensors 文件

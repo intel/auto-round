@@ -611,7 +611,7 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 Model-free mode performs calibration-free WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
 
-> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ or MXFP scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.
+> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ or MXFP scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.  
 > When using `--model_free` explicitly, INT WOQ always uses **plain RTN** (opt_rtn is disabled for INT WOQ to preserve accuracy); MXFP schemes use **optimized RTN (opt_rtn) by default** — pass `--disable_opt_rtn` to use plain RTN for MXFP.
 
 **Key features:**
