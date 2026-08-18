@@ -59,10 +59,10 @@ function print_test_results_table() {
             test_name=${test_name#unittest_cuda_vlm_}
 
             local result="UNKNOWN"
-            local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || echo 0)
-            local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || echo 0)
-            local killed_count=$(grep -c 'Killed' "${log_file}" 2>/dev/null || echo 0)
-            local passed_count=$(grep -c ' passed' "${log_file}" 2>/dev/null || echo 0)
+            local failure_count=$(grep -c '== FAILURES ==' "${log_file}" 2>/dev/null || true)
+            local error_count=$(grep -c '== ERRORS ==' "${log_file}" 2>/dev/null || true)
+            local killed_count=$(grep -c 'Killed' "${log_file}" 2>/dev/null || true)
+            local passed_count=$(grep -c ' passed' "${log_file}" 2>/dev/null || true)
 
             if [ ${failure_count} -gt 0 ] || [ ${error_count} -gt 0 ] || [ ${killed_count} -gt 0 ]; then
                 result="FAILED"
