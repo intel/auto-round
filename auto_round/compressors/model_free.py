@@ -2385,9 +2385,12 @@ class _ModelFreeCompressorCore:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
             ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
-        if not self.quant_lm_head and "lm_head" not in ignore_patterns:
-            ignore_patterns.append("lm_head")
-            ignore_patterns.append("head")  # for deepseek v4
+        lm_head_in_layer_config = any("lm_head" in key for key in (self.layer_config or {}))
+        if not self.quant_lm_head and not lm_head_in_layer_config:
+            if "lm_head" not in ignore_patterns:
+                ignore_patterns.append("lm_head")
+            if "head" not in ignore_patterns:
+                ignore_patterns.append("head")  # for deepseek v4
 
         if not self.quant_nontext_module:
             for kw in _NONTEXT_KEYWORDS:

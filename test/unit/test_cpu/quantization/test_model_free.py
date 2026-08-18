@@ -504,6 +504,30 @@ class TestModelFreeQuantize:
         AutoRound(model=model_dir, scheme="W4A16", model_free=True, quant_lm_head=True).quantize_and_save(output_dir)
         assert "lm_head.qweight" in _read_output_keys(output_dir)
 
+    def test_layer_config_lm_head_bits_takes_effect(self, tmp_path):
+        """layer_config for lm_head should quantize lm_head even without quant_lm_head=True."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme="W2A16G64",
+            model_free=True,
+            layer_config={"lm_head": {"bits": 4}},
+        ).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
+    def test_layer_config_lm_head_scheme_takes_effect(self, tmp_path):
+        """layer_config with scheme override for lm_head should quantize lm_head even without quant_lm_head=True."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme="W2A16G64",
+            model_free=True,
+            layer_config={"lm_head": {"scheme": "W4A16"}},
+        ).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
     def test_asym(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         output_dir = str(tmp_path / "output")
