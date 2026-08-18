@@ -713,9 +713,16 @@ def _hydrate_missing_fp8_scales_from_index(
     from safetensors import safe_open
 
     hydrated = 0
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
     for target_shard, scale_names in scales_by_shard.items():
         target_path = os.path.join(donor_dir, target_shard)
         if not os.path.exists(target_path):
+            logger.warning(
+                f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
+                f"{len(scale_names)} FP8 scale_inv tensor(s); the affected weight(s) will remain in "
+                f"float8_e4m3fn and may fail downstream quantization. This usually indicates a shard "
+                f"scheduling/ordering issue (donor shard processed/downloaded after its recipient)."
+            )
             continue
         try:
             with safe_open(target_path, framework="pt", device="cpu") as sf:
@@ -732,7 +739,6 @@ def _hydrate_missing_fp8_scales_from_index(
             continue
 
     if hydrated:
-        shard_prefix = f"[{shard_name}] " if shard_name else ""
         logger.info(f"{shard_prefix}Hydrated {hydrated} FP8 scale tensor(s) from sibling shard(s) using index mapping.")
 
     return raw_tensors
@@ -1031,6 +1037,21 @@ def _process_shard(
 
     raw_tensors = split_fused_expert_tensors(raw_tensors)
 
+    # Hydrate cross-shard FP8 weight_scale_inv tensors *before* any
+    # preprocessing below. Otherwise a weight whose scale lives in a sibling
+    # shard would miss the model_type-specific "expand-scale" passthrough
+    # handling (step 1) simply because its scale wasn't loaded yet, and would
+    # incorrectly fall through to the generic dequant-to-bf16 + RTN-requantize
+    # path instead of being treated identically to same-shard weights.
+    if shard_path:
+        raw_tensors = _hydrate_missing_fp8_scales_from_index(
+            raw_tensors,
+            shard_path,
+            shard_name=shard_name,
+            index_dir=index_dir,
+            donor_shard_dir=donor_shard_dir,
+        )
+
     # Snapshot candidate weight layer names *before* any preprocessing. 1D
     # weights (for example LayerNorm) are not quantization targets, while 3D
     # weights remain tracked so unsupported layouts are visible as ignored.
@@ -1066,6 +1087,7 @@ def _process_shard(
         raw_tensors,
         model_type=model_type,
         quantization_config=source_quantization_config,
+        shard_name=shard_name,
     )
 
     # 1.5) normalize legacy NVFP4 names to llm-compressor naming.
@@ -2589,6 +2611,7 @@ def preprocess_model_type_source_tensors(
     model_type: str | None,
     group_size: int = 32,
     quantization_config: dict | None = None,
+    shard_name: str | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
     """Apply model-type-specific source tensor normalization."""
     model_type = (model_type or "").lower()
@@ -2638,8 +2661,9 @@ def preprocess_model_type_source_tensors(
 
             if scale.dtype == torch.float32:
                 sanitized_scale_name = ".".join("<idx>" if part.isdigit() else part for part in scale_name.split("."))
+                shard_prefix = f"[{shard_name}] " if shard_name else ""
                 logger.warning_once(
-                    f"[{model_type}] Scale tensor pattern '{sanitized_scale_name}' has dtype float32 "
+                    f"{shard_prefix}[{model_type}] Scale tensor pattern '{sanitized_scale_name}' has dtype float32 "
                     f"with UE8M0 encoding (only the 8-bit exponent is significant). "
                     f"Extracting uint8 E8M0 exponent bytes from fp32 representation."
                 )
@@ -2656,8 +2680,9 @@ def preprocess_model_type_source_tensors(
         raw_tensors[weight_key] = weight
         raw_tensors[f"{layer_name}.weight_scale"] = weight_scale
 
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
     logger.info(
-        f"Applied model_type preprocessing for {model_type}: "
+        f"{shard_prefix}Applied model_type preprocessing for {model_type}: "
         f"{n_fp8} MXFP8 layer(s), {n_fp4} MXFP4 layer(s) converted to llm-compressor naming."
     )
     return raw_tensors, source_state

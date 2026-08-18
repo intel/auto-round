@@ -520,6 +520,14 @@ class _ModelFreeCompressorCore:
         # donor_shard_tensors: {donor_shard: set(scale_inv names it donates)}
         self.cross_shard_deps: dict[str, dict[str, list[str]]] = {}
         self.donor_shard_tensors: dict[str, set[str]] = {}
+        # Reference-counting state so donor shard cache files can be deleted as
+        # soon as they are no longer needed, instead of waiting until the end
+        # of the whole run. A donor file is safe to delete once (a) its own
+        # quantization task has read it, and (b) every recipient shard that
+        # depends on it has finished (and thus finished hydrating from it).
+        self._donor_remaining_recipients: dict[str, int] = {}
+        self._donor_self_consumed: dict[str, bool] = {}
+        self._donor_shard_paths: dict[str, str] = {}
 
     # -------------------------------------------------------------------
     # Validation / parsing
@@ -778,27 +786,91 @@ class _ModelFreeCompressorCore:
                 f"{len(self.donor_shard_tensors)} donor shard(s)."
             )
 
-    def _reorder_shards_by_dependency(self) -> None:
-        """Reorder shard_names so independent/donor shards come before recipients.
+        # Build reverse mapping (donor -> distinct recipient shards) so donor
+        # cache files can be reference-counted and deleted as soon as every
+        # dependent recipient has finished, instead of only at the very end.
+        donor_recipients: dict[str, set[str]] = {}
+        for recipient, donors in self.cross_shard_deps.items():
+            for donor in donors:
+                donor_recipients.setdefault(donor, set()).add(recipient)
+        self._donor_remaining_recipients = {donor: len(recipients) for donor, recipients in donor_recipients.items()}
+        self._donor_self_consumed = {donor: False for donor in self.donor_shard_tensors}
 
-        Recipient shards (those that need scale_inv from another shard) are moved
-        to the end of the list.  Original order is preserved within each group.
-        This ensures:
+    def _reorder_shards_by_dependency(self) -> None:
+        """Reorder shard_names via topological sort so donors precede recipients.
+
+        A single-pass "donors first, recipients last" partition is not enough:
+        a shard can simultaneously be a *recipient* (it needs a scale_inv from
+        another shard) and a *donor* (it donates a scale_inv to a third shard).
+        Such transitive chains (X donates to Y, Y donates to Z) must be
+        resolved with a proper topological sort, otherwise Y could still be
+        scheduled after Z, i.e. after one of its own dependents.
+
+        Ties are broken by original shard order (stable) so scheduling stays
+        as close as possible to the natural shard sequence. This ensures:
         - Non-streaming: workers start on shards that need no cross-shard data.
         - Streaming: donor shards are downloaded before recipient shards, so the
           donor cache files are available when recipient workers run hydration.
         """
         if not self.cross_shard_deps:
             return
-        recipient_set = set(self.cross_shard_deps.keys())
-        independent_first = [s for s in self.shard_names if s not in recipient_set]
-        recipients_last = [s for s in self.shard_names if s in recipient_set]
-        if recipients_last:
-            logger.info(
-                f"Shard scheduling: {len(independent_first)} independent/donor shard(s) first, "
-                f"{len(recipients_last)} recipient shard(s) last."
+
+        original_index = {name: i for i, name in enumerate(self.shard_names)}
+        # recipient -> set(donors it depends on)
+        depends_on: dict[str, set[str]] = {
+            recipient: set(donors) for recipient, donors in self.cross_shard_deps.items()
+        }
+        # in-degree = number of unresolved donor dependencies for each shard.
+        in_degree: dict[str, int] = {name: len(depends_on.get(name, ())) for name in self.shard_names}
+        # donor -> shards that depend on it (only counting donors that are
+        # themselves known shards; unknown donors can't be waited on anyway).
+        dependents: dict[str, list[str]] = {}
+        for recipient, donors in depends_on.items():
+            for donor in donors:
+                if donor in original_index:
+                    dependents.setdefault(donor, []).append(recipient)
+                elif recipient in in_degree:
+                    # Donor shard is unknown/missing from discovery; it can
+                    # never be satisfied here, so don't block scheduling on it.
+                    in_degree[recipient] -= 1
+
+        import heapq
+
+        ready = [original_index[name] for name, deg in in_degree.items() if deg == 0]
+        heapq.heapify(ready)
+        ordered: list[str] = []
+        visited: set[str] = set()
+        index_to_name = {i: name for name, i in original_index.items()}
+
+        while ready:
+            idx = heapq.heappop(ready)
+            name = index_to_name[idx]
+            if name in visited:
+                continue
+            visited.add(name)
+            ordered.append(name)
+            for dependent in dependents.get(name, ()):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    heapq.heappush(ready, original_index[dependent])
+
+        if len(ordered) != len(self.shard_names):
+            # Cycle detected (shouldn't happen with well-formed indices) —
+            # fall back to appending any unresolved shards in original order.
+            remaining = [name for name in self.shard_names if name not in visited]
+            logger.warning(
+                f"Shard dependency graph has a cycle or unresolved node(s) "
+                f"({len(remaining)} shard(s)); appending them in original order."
             )
-        self.shard_names = independent_first + recipients_last
+            ordered.extend(remaining)
+
+        n_recipients = len(self.cross_shard_deps)
+        if n_recipients:
+            logger.info(
+                f"Shard scheduling: topologically sorted {len(self.shard_names)} shard(s) "
+                f"({n_recipients} recipient shard(s) with cross-shard dependencies)."
+            )
+        self.shard_names = ordered
 
     def _resolve_shard_parallelism(self) -> tuple[int, str]:
         shard_count = len(self.shard_names)
@@ -930,6 +1002,45 @@ class _ModelFreeCompressorCore:
         for tensor_name in tensor_names:
             self.output_weight_map[tensor_name] = out_shard_name
 
+        if self.is_streaming:
+            self._release_donor_dependency(shard_name)
+
+    def _release_donor_dependency(self, completed_shard_name: str) -> None:
+        """Update donor reference counts after *completed_shard_name* finishes.
+
+        Donor shard cache files are kept alive only as long as needed: once a
+        donor's own quantization task has read it AND every recipient shard
+        that depends on it has finished (and thus hydrated from it), the
+        cached file is deleted immediately rather than waiting for the whole
+        run to finish via :meth:`_cleanup_streaming_shard_cache`.
+        """
+        if completed_shard_name in self._donor_self_consumed:
+            self._donor_self_consumed[completed_shard_name] = True
+            self._maybe_cleanup_donor_shard(completed_shard_name)
+
+        for donor in self.cross_shard_deps.get(completed_shard_name, {}):
+            if donor in self._donor_remaining_recipients:
+                self._donor_remaining_recipients[donor] = max(0, self._donor_remaining_recipients[donor] - 1)
+                self._maybe_cleanup_donor_shard(donor)
+
+    def _maybe_cleanup_donor_shard(self, donor_name: str) -> None:
+        """Delete *donor_name*'s cached shard file once it is no longer needed."""
+        if not self._donor_self_consumed.get(donor_name, False):
+            return
+        if self._donor_remaining_recipients.get(donor_name, 0) > 0:
+            return
+        shard_path = self._donor_shard_paths.pop(donor_name, None)
+        # Remove tracking regardless of whether the file still exists so we
+        # never attempt to clean this donor up twice.
+        self._donor_self_consumed.pop(donor_name, None)
+        self._donor_remaining_recipients.pop(donor_name, None)
+        if shard_path and os.path.exists(shard_path):
+            try:
+                os.remove(shard_path)
+                logger.debug(f"Removed donor shard cache file (no longer needed): {donor_name}")
+            except OSError as e:
+                logger.warning(f"Failed to remove donor shard cache file {donor_name}: {e}")
+
     def _process_all_shards_streaming_pipeline(self) -> None:
         """Streaming-mode shard pipeline with dedicated downloader and quant workers.
 
@@ -1002,13 +1113,19 @@ class _ModelFreeCompressorCore:
                             if progress is not None:
                                 progress.update(1)
                         else:
-                            # In streaming mode, donor shards must NOT be deleted
-                            # immediately after quantization: recipient shards may
-                            # still need to read scale_inv tensors from them via
-                            # _hydrate_missing_fp8_scales_from_index.  Donor shards
-                            # are cleaned up at the end by _cleanup_streaming_shard_cache.
+                            # Donor shards must stay on disk until every recipient
+                            # that depends on them has been processed (tracked via
+                            # _donor_remaining_recipients / _release_donor_dependency),
+                            # so that recipient shards can still read scale_inv
+                            # tensors from them via
+                            # _hydrate_missing_fp8_scales_from_index. They are
+                            # deleted as soon as that's no longer needed; any
+                            # stragglers are swept up at the end by
+                            # _cleanup_streaming_shard_cache.
                             shard_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
                             is_donor = shard_name in self.donor_shard_tensors
+                            if is_donor:
+                                self._donor_shard_paths[shard_name] = shard_path
                             donor_tensors = list(self.donor_shard_tensors.get(shard_name, ())) or None
                             qf = quant_pool.submit(
                                 _quantize_local_shard_task,
