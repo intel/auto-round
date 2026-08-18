@@ -245,8 +245,7 @@ class XeSparseSageFwdKernel {
       auto dcV = const_cast<ElementV*>(p.V + offset_v);
       auto dcK_cache = const_cast<ElementK*>(p.K_cache + offset_k_cache);
       auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
-      int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) /
-params.mainloop.scale_block_size;
+      int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       int seq_kv_total = seq_len_kv + seq_len_kv_cache;
       int seq_kv_pad = (seq_kv_total + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       auto scaleQ = params.mainloop.scale_block_size
