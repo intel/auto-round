@@ -85,15 +85,17 @@ class FakeFormat(OutputFormat):
                         delattr(orig_layer, attr_name)
                 set_module(model, name, orig_layer.to("cpu"))
 
-        quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
-        quantization_config["quant_method"] = "auto-round"
-        quantization_config["packing_format"] = "auto_round:fake"
-        quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-        from auto_round.export.utils import filter_quantization_config
+        is_nvfp4_v2 = (serialization_dict or {}).get("data_type") == "nvfp4_v2"
+        if is_nvfp4_v2:
+            quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
+            quantization_config["quant_method"] = "auto-round"
+            quantization_config["packing_format"] = "auto_round:fake"
+            quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+            from auto_round.export.utils import filter_quantization_config
 
-        filter_quantization_config(quantization_config)
-        if hasattr(model, "config") and model.config is not None:
-            model.config.quantization_config = quantization_config
+            filter_quantization_config(quantization_config)
+            if hasattr(model, "config") and model.config is not None:
+                model.config.quantization_config = quantization_config
 
         if not has_meta_device:
             model = model.to("cpu")
