@@ -423,14 +423,6 @@ CUTE_DEVICE void MoEGEMM_s4(const ElementA* Activations,
   int group_range = item.get_group_range(1);
   int local_id = item.get_local_linear_id();
 
-  if (group_id == 0 && local_id == 0) {
-    auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
-        atomic_buffer[0]);
-    atm.store(0);
-  }
-
   int pre_rows = 0;
   int pre_tiles = 0;
 
@@ -642,6 +634,10 @@ void moe_prefill_s4_dpas_per_group_dispatch(
     throw std::runtime_error(
         "moe_prefill_s4_dpas(per-group): failed to allocate atomic buffer");
   }
+  // Initialize the persistent scheduler counter on the host before launch.
+  // Doing this in-kernel without a grid-wide barrier can race with early
+  // work-groups that already execute atomicAdd on the same counter.
+  q->memset(atomic_buffer, 0, sizeof(int32_t)).wait();
 
 #define ARK_DPAS_S4_PG_LAUNCH_SYM(policy)                                      \
   MoEGEMMLauncher_s4<'R', 'C', policy>(                                        \

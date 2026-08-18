@@ -733,14 +733,6 @@ CUTE_DEVICE void MoEGEMM(const ElementA* Activations, const ElementB* Weights,
   int group_range = item.get_group_range(1);
   int local_id = item.get_local_linear_id();
 
-  if (group_id == 0 && local_id == 0) {
-    auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(
-        atomic_buffer[0]);
-    atm.store(0);
-  }
-
   int pre_rows = 0;
   int pre_tiles = 0;
 
@@ -935,6 +927,8 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch(
     throw std::runtime_error(
         "moe_prefill_fp8_dpas(per-tensor): failed to allocate atomic buffer");
   }
+  // Initialize the persistent scheduler counter before kernel launch.
+  q->memset(atomic_buffer, 0, sizeof(int32_t)).wait();
 
 #define ARK_DPAS_PT_LAUNCH(policy)                                             \
   MoEGEMMLauncher<'R', 'R', policy, ScaleMode::kPerTensor>(                    \
@@ -993,6 +987,8 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
     throw std::runtime_error(
         "moe_prefill_fp8_dpas(per-group): failed to allocate atomic buffer");
   }
+  // Initialize the persistent scheduler counter before kernel launch.
+  q->memset(atomic_buffer, 0, sizeof(int32_t)).wait();
 
 #define ARK_DPAS_PG_LAUNCH(policy)                                             \
   MoEGEMMLauncher<'R', 'C', policy, ScaleMode::kPerGroup>(                     \
