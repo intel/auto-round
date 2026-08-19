@@ -915,7 +915,10 @@ def diffusion_load_model(
             pipe.config[k] = v
 
     pipe = _to_model_dtype(pipe, model_dtype)
-    model = pipe.transformer
+    if hasattr(pipe, "unet"):
+        model = pipe.unet
+    else:
+        model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls
     _attach_diffusion_pipeline_fn(pipe)
