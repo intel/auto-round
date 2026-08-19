@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_SEQLEN
+- **Description**: Controls the default calibration sequence length used by AutoScheme scoring when `AutoScheme.seqlen` is not explicitly set.
+- **Default**: unset → built-in heuristic applies (128 for MoE models, 256 otherwise)
+- **Valid Values**: any positive integer, e.g. `256`, `512`, `1024`
+- **Usage**: Set this to override the default sequence length for AutoScheme (2-bit schemes usually benefit from `1024`)
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **Description**: Stores persistent per-scheme AutoScheme scoring JSON files. This directory is independent of `AR_WORK_SPACE`, which is reserved for temporary working data.
 - **Default**: `~/.cache/auto_round`
