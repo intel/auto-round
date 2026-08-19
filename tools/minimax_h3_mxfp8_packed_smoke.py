@@ -31,13 +31,11 @@ try:
 except RuntimeError:
     pass
 
+import minimax_h3_diffusers_smoke as smoke
 from diffusers import ComponentsManager, ModularPipeline
 
 from auto_round.experimental.qmodules import MXFP4QuantLinear, MXFP8QuantLinear
 from auto_round.schemes import preset_name_to_scheme
-
-import minimax_h3_diffusers_smoke as smoke
-
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = Path(os.environ.get("MINIMAX_H3_MODEL", ROOT / "artifacts/minimax_h3_real_pretrained"))
@@ -138,11 +136,7 @@ def main() -> None:
     )
     pipe.load_components(local_files_only=True, dtype=torch.bfloat16)
     index = json.loads(index_path.read_text())
-    layer_names = sorted(
-        key[: -len(".weight_scale")]
-        for key in index["weight_map"]
-        if key.endswith(".weight_scale")
-    )
+    layer_names = sorted(key[: -len(".weight_scale")] for key in index["weight_map"] if key.endswith(".weight_scale"))
     modules = _replace_linears(pipe.transformer, layer_names)
     _load_packed_weights(pipe.transformer, modules)
     print(f"Installed {len(modules)} packed {SCHEME} linear modules", flush=True)

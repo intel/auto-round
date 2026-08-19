@@ -15,8 +15,8 @@ import collections
 import inspect
 import json
 import os
-import shutil
 import re
+import shutil
 from collections import UserDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
@@ -946,9 +946,7 @@ def _build_random_init_diffusion_pipeline(model_dir: str, trust_remote_code: boo
             components[name] = _SourceCopyComponentProxy(component_dir)
 
     if "transformer" not in components:
-        raise ValueError(
-            "init_mode='random' currently requires a primary transformer/ component in model_index.json."
-        )
+        raise ValueError("init_mode='random' currently requires a primary transformer/ component in model_index.json.")
 
     pipe = _ConfigOnlyDiffusionPipeline(model_dir, model_index, components)
     return pipe, pipe.transformer
@@ -1065,7 +1063,9 @@ def diffusion_load_model(
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
-    elif init_mode == "pretrained" and isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+    elif init_mode == "pretrained" and isinstance(
+        pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline
+    ):
         pipe = pretrained_model_name_or_path
         pipe_config = pipe.load_config(pipe.config["_name_or_path"])
 
