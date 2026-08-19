@@ -537,18 +537,13 @@ class BaseOrchestrator(object):
         # Layer-level scheme overrides can request static-activation paths
         # (e.g., global MXFP8 + local NVFP4 experts). Those still need
         # calibration data even when top-level scheme looks dynamic.
-        legacy_calibration_check = getattr(self, "_layer_config_needs_act_calibration", None)
-        if callable(legacy_calibration_check) and legacy_calibration_check(check_need_act_calibration):
-            return True
-
-        new_calibration_check = getattr(self, "_layer_config_needs_calibration", None)
-        if callable(new_calibration_check) and new_calibration_check(check_need_act_calibration):
+        if self._layer_config_needs_calibration(check_need_act_calibration):
             return True
 
         return False
 
-    def _layer_config_needs_act_calibration(self, check_need_act_calibration) -> bool:
-        """Backward-compatible implementation for layer-level activation calibration checks."""
+    def _layer_config_needs_calibration(self, check_need_act_calibration) -> bool:
+        """Return True if any raw layer_config entry implies activation calibration."""
         layer_cfg = self.layer_config
         if not isinstance(layer_cfg, dict) or not layer_cfg:
             return False
@@ -590,10 +585,6 @@ class BaseOrchestrator(object):
             return False
 
         return any(_entry_needs_calibration(v) for v in layer_cfg.values())
-
-    def _layer_config_needs_calibration(self, check_need_act_calibration) -> bool:
-        """Return True if any raw layer_config entry implies activation calibration."""
-        return self._layer_config_needs_act_calibration(check_need_act_calibration)
 
     # ── Convenience properties ────────────────────────────────────────────────
 
