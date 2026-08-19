@@ -94,6 +94,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Controls the default calibration sequence length used by AutoScheme scoring
+    # when ``AutoScheme.seqlen`` is not explicitly set.
+    # When unset, AutoScheme uses its built-in heuristic (128 for MoE models, 256 otherwise).
+    "AR_AUTO_SCHEME_SEQLEN": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_SEQLEN"),
     # Stores persistent AutoScheme scoring results independently from AR_WORK_SPACE,
     # whose contents are temporary working data and may be cleaned after a run.
     "AR_AUTO_SCHEME_CACHE": lambda: os.getenv("AR_AUTO_SCHEME_CACHE", None),
