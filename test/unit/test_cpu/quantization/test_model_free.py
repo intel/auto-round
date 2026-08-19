@@ -300,6 +300,61 @@ class TestParseLayerConfig:
 
 
 # ===========================================================================
+#  _build_ignore_patterns
+# ===========================================================================
+
+
+class TestBuildIgnorePatterns:
+    @staticmethod
+    def _make_core(layer_config=None, quant_lm_head=False, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme=scheme,
+            quant_lm_head=quant_lm_head,
+        )
+        core._parse_scheme()
+        core._parse_layer_config()
+        if layer_config:
+            # Merge any explicit layer_config entries on top of the parsed defaults.
+            for k, v in layer_config.items():
+                core.layer_config[k] = v
+        return core
+
+    def test_lm_head_ignored_by_default(self):
+        """Without quant_lm_head or an explicit layer_config entry, lm_head is skipped."""
+        core = self._make_core()
+        core._build_ignore_patterns()
+        assert "lm_head" in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_quant_lm_head_true(self):
+        """quant_lm_head=True removes lm_head from ignore list."""
+        core = self._make_core(quant_lm_head=True)
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_in_layer_config(self):
+        """Explicit lm_head entry in layer_config removes it from the ignore list."""
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    def test_head_not_ignored_when_in_layer_config(self):
+        """DeepSeek v4 uses 'head' as the lm_head layer name; explicit entry in layer_config removes it from ignore."""
+        core = self._make_core(layer_config={"head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "head" not in core.ignore_patterns
+
+    def test_head_still_ignored_when_lm_head_in_layer_config_but_not_head(self):
+        """Specifying 'lm_head' in layer_config should not unblock the separate 'head' pattern."""
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        # 'lm_head' itself is unblocked, but 'head' (deepseek v4) remains ignored
+        assert "lm_head" not in core.ignore_patterns
+        assert "head" in core.ignore_patterns
+
+
+# ===========================================================================
 #  _process_shard
 # ===========================================================================
 

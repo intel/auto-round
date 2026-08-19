@@ -2385,12 +2385,15 @@ class _ModelFreeCompressorCore:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
             ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
-        lm_head_in_layer_config = any("lm_head" in key for key in (self.layer_config or {}))
-        if not self.quant_lm_head and not lm_head_in_layer_config:
-            if "lm_head" not in ignore_patterns:
-                ignore_patterns.append("lm_head")
-            if "head" not in ignore_patterns:
-                ignore_patterns.append("head")  # for deepseek v4
+        if not self.quant_lm_head:
+            layer_config_keys = set(self.layer_config or {})
+            # Only skip a pattern if the user has not explicitly listed it (or a key containing it) in layer_config.
+            # This handles models whose lm_head is not literally named "lm_head" (e.g. "head" for DeepSeek v4):
+            # each candidate pattern is checked independently so a user-specified key takes priority.
+            for lm_head_pattern in ("lm_head", "head"):  # "head" covers deepseek v4
+                pattern_in_config = any(lm_head_pattern in key for key in layer_config_keys)
+                if not pattern_in_config and lm_head_pattern not in ignore_patterns:
+                    ignore_patterns.append(lm_head_pattern)
 
         if not self.quant_nontext_module:
             for kw in _NONTEXT_KEYWORDS:
