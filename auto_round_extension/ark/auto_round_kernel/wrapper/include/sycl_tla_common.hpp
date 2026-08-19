@@ -139,6 +139,76 @@ void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights,
                                BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                                int* num_tokens_per_expert, int num_experts, int total_tokens);
 
+/**
+ * @brief W4A8 MoE -- one-shot AUTO_S8 weight prepack.
+ *
+ * Converts auto-round's packed int4-sym MoE weights `[E, N, K/2]` (uint8, two
+ * nibbles per byte) plus per-group scales `[E, N, K/group_size]` (act dtype)
+ * into int8 weights `[E, N, K]` and FP32 block scales
+ * `[E, N, K/rescale_block]`, using ARK's `AUTO_S8` re-scale formula
+ * (`xpu_wrapper.hpp`): `sxt = max|s| * 8 / 127`, `w8 = round(w4 * s / sxt)`.
+ *
+ * `rescale_group_size <= 0` (the `group=-1` spelling) selects one scale per
+ * output channel, which lets the GEMM run a single full-K int32 accumulation.
+ * Use `moe_w4a8_rescale_block_size` to resolve the effective block size (and
+ * therefore the `wscales` shape) before allocating.
+ *
+ * STATUS: NEEDS-HARDWARE-VALIDATION. Implementation is header-only in
+ * `sycl_tla_moe_w4a8.hpp`.
+ */
+void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weights_s8, void* wscales,
+                      BTLA_DTYPE act_dtype, int num_experts, int N, int K, int group_size,
+                      int rescale_group_size);
+
+/**
+ * @brief W4A8 MoE GEMM -- int4 weights, int8 compute, dynamically quantized
+ * int8 activations. Covers both the prefill (grouped GEMM, `s8 x s8 -> s32`
+ * DPAS) and decode (GEMV) phases.
+ *
+ * Activations `[total_tokens, K]` in `act_dtype` are quantized per token to
+ * int8 on entry; `weights_s8` / `wscales` come from `moe_w4a8_prepack`.
+ *
+ *   - activations : [total_tokens, K]           act dtype (sorted by expert)
+ *   - weights_s8  : [num_experts, N, K]         int8
+ *   - wscales     : [num_experts, N, K/rescale_block] float
+ *   - outputs     : [total_tokens, N]           act dtype
+ *
+ * @param rescale_block_size Effective AUTO_S8 block size (see
+ *        `moe_w4a8_rescale_block_size`); must be a multiple of 64 dividing K.
+ * @param phase 0 = auto (decode when the batch is small), 1 = force decode,
+ *        2 = force prefill.
+ * @param qact_in Optional `[total_tokens, K]` int8 activations already
+ *        quantized by the caller, with `ascale_in` their `[total_tokens]` fp32
+ *        per-row scales (`absmax / 127`). Supplying both skips the internal
+ *        quantization pass and `activations` is then unused; neither may be
+ *        given without the other.
+ * @param row_to_token / routing_weights / fused_out / fused_batch Optional
+ *        fused top-k reduction: the epilogue scales each row and scatter-adds
+ *        it into the zeroed `[fused_batch, N]` fp32 `fused_out` instead of
+ *        writing the unreduced `[total_tokens, N]` to `outputs`. Prefill only,
+ *        and all four must be given together.
+ *
+ * STATUS: NEEDS-HARDWARE-VALIDATION. Implementation is header-only in
+ * `sycl_tla_moe_w4a8.hpp`, which is also where the trailing optional
+ * parameters get their defaults.
+ */
+void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, void* wscales, void* outputs,
+                   BTLA_DTYPE act_dtype, int N, int K, int rescale_block_size, int* num_tokens_per_expert,
+                   int num_experts, int total_tokens, int phase, const void* qact_in, const float* ascale_in,
+                   const int* row_to_token, const float* routing_weights, float* fused_out, int fused_batch);
+
+/**
+ * @brief Resolve the effective W4A8 AUTO_S8 re-scale block size for a given
+ * K / group_size, honouring `ARK_MOE_W4A8_AUTO_S8`. Returns K (one scale per
+ * output channel) for `rescale_group_size <= 0` or any unusable value.
+ */
+int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_size);
+
+/**
+ * @brief Release the W4A8 activation-quantization / expert-map scratch slabs.
+ */
+void moe_w4a8_release_scratch();
+
 // ========================================================================
 // Public API
 // ========================================================================

@@ -56,6 +56,9 @@ pytest -v -s test_moe_prefill_perf.py
 ```bash
 # 仅 FP16 测试
 pytest -v -s test_moe_prefill_perf.py::TestMoEGemmPrefillPerf::test_perf_fp
+
+# 仅 INT4-sym 的 Qwen3-MoE 形状 (hidden=2048、inter=768、E=128、top_k=8)
+pytest -v -s test_moe_prefill_perf.py -k test_perf_int4_sym_qwen3_moe --run-moe-prefill-perf
 ```
 
 ## 代码结构
@@ -70,9 +73,12 @@ test_moe_prefill_perf.py
 │   └── 单个 `torch.bmm`,输入 [E, M_max, K] padding 后的激活
 ├── 测试形状 (PREFILL_SHAPES)
 │   └── 多种真实 MoE 配置
+├── Qwen3-MoE 形状 (_QWEN3_NK / _QWEN3_BATCHES)
+│   └── hidden=2048、inter=768、E=128、top_k=8、group_size=32 (issue 复现)
 └── 测试用例 (TestMoEGemmPrefillPerf)
     ├── test_perf_fp (FP16/BF16)
     ├── test_perf_int4 (INT4 sym/asym)
+    ├── test_perf_int4_sym_qwen3_moe (INT4 sym, Qwen3-MoE 形状)
     ├── test_perf_int8 (INT8 sym/asym)
     ├── test_perf_int2 (INT2 sym/asym)
     └── test_perf_fp8 (FP8 e4m3fn/e5m2)
@@ -204,6 +210,46 @@ INT4 sym prefill 性能测试(`test_perf_int4`,`asym=False`)带一个
 `dpas(ms)` 列启用 `ARK_MOE_PREFILL_DPAS_S4=1`(单遍 packed-nibble
 mainloop)。
 
+**Qwen3-MoE 形状(issue 复现)。** `test_perf_int4_sym_qwen3_moe`
+测试另一组独立的形状,来自一个 fused-MoE 层的实测:小 batch 下 ARK
+慢于 native 后端(`native_over_ark=0.604x`)。配置为
+`hidden_size=2048`、`intermediate_size=768`、`num_local_experts=128`、
+`num_experts_per_tok=8`、`group_size=32`,即
+`w13 [128, 1536, 1024]`(gemm1 `N=1536`、`K=2048`)与
+`w2 [128, 2048, 384]`(gemm2 `N=2048`、`K=768`);最后一维是 packed
+nibble 数 `K/2`,scale 张量 `[128, 1536, 64]` / `[128, 2048, 24]` 确定
+`group_size` 为 32。与 `test_perf_int4`(MiniMax-M2 形状,
+`group_size=128`)不同,它在同一份 packed 权重上填满**全部三列**
+ARK 结果,便于把分发器的默认选择与实测对照:
+
+| 列           | 路径                                                    | Env                        |
+| ------------ | ------------------------------------------------------- | -------------------------- |
+| `ark(ms)`    | 传统 dequant 到 `[E, K, N]` + 标准 grouped GEMM         | `DPAS_S4=0`、`DPAS_INT8=0` |
+| `native(ms)` | 两遍 S4→S8 上转 + 共享 INT8 DPAS mainloop               | `DPAS_S4=0`、`DPAS_INT8=1` |
+| `dpas(ms)`   | 单遍 S4 DPAS(直接读 packed nibble)—— 出厂默认路径      | `DPAS_S4=1`                |
+
+路由行数为 `batch * top_k`,按 round-robin 分布到 128 个专家上,因此
+报告中的 2 个 token 的 batch 正好复现 issue 里的
+`rows_per_expert_sum=16`。默认只跑该 batch;`--all-shapes` 会把扫描
+扩展到 32/128/512/2048 个 token,从两侧覆盖「每专家 8 行」的 DPAS
+tile 占用临界点(`batch >= 128`)。
+
+```bash
+pytest -v -s test_moe_prefill_perf.py -k test_perf_int4_sym_qwen3_moe \
+    --run-moe-prefill-perf
+```
+
+对应的 decode 性能测试位于 `test_moe_decode_perf.py`:
+`test_perf_int4_sym_qwen3_moe`(默认分发 vs. dequant + 逐专家
+`A @ W.T` 基线)与 `test_perf_int4_sym_qwen3_moe_dpas_vs_scalar`
+(标量 GEMV vs. S4 DPAS,设置 `ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0`,
+用于单独观察占用率门控的路由决策 —— batch=2 时该形状仅有每专家
+0.125 个 token,远低于「每专家 8 个 token」的门控阈值)。
+
+```bash
+pytest -v -s test_moe_decode_perf.py -k qwen3_moe
+```
+
 S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 
 | 优先级       | Env 开关                                                                        | Kernel                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -222,11 +268,345 @@ S4-sym 有两条独立的 DPAS 路径;asym S4 始终回退到 dequant 路径。
 - `group_size ∈ {32, 64, 128, 256}`
 - `asym == false`(asym S4 不在两条 DPAS 路径的支持范围内)
 
+**S4 DPAS tile 策略** — 单遍 mainloop(优先级 1)现在按每专家平均
+token 数(`A_avg_M = total_tokens / E`)选择专用的 4-bit tile 策略,
+与参考实现 `vllm-project/vllm-xpu-kernels`
+(`grouped_gemm_xe2_interface.hpp`)的 `w4a16` 分派一致。由于 packed-
+nibble 的 B 流字节量是 INT8 路径的一半,大 M tile 加宽到 `128×256×32`
+(相比 INT8 的 `128×128×16`),以更充分利用 DPAS 累加器与减半的 B 侧
+带宽:
+
+| `A_avg_M` 分档 | WG tile (M×N×K) | 策略(`sycl_tla_moe_prefill_fp8_dpas.hpp`) |
+| -------------- | --------------- | ------------------------------------------ |
+| `≤ 4`          | `8×64×32`       | `dpas_w4a16_policy_m_8`                     |
+| `≤ 8`          | `16×64×32`      | `dpas_w4a16_policy_m_16`(= `w8a16_m_16`)   |
+| `≤ 128`        | `32×64×32`      | `dpas_w4a16_policy_m_32`(= `w8a16_m_32`)   |
+| `> 128`        | `128×256×32`    | `dpas_w4a16_policy`                         |
+
+中等大小的 `32×64` tile 现在覆盖 `A_avg_M` 至 128(此前在 33 就跳到大
+tile),避免了常见 chunked-prefill batch 大小下的 padding 浪费。
+
+**S4 DPAS decode 路径** — decode(生成)阶段(`sycl_tla_moe_decode.hpp`,
+int4-sym / `S4_CLIP`,`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)拥有
+独立的 dispatch `moe_decode_s4_dpas_per_group_dispatch`,对齐
+vLLM-xpu-kernels 的 `w4a16` decode dispatch。它与 prefill 使用相同的
+`A_avg_M` 阶梯选择 DPAS tile(`_m_8` → `_m_16` → `_m_32` → 大 tile):
+仅在极小 batch 尾部(`A_avg_M ≤ 4`)使用 8 行 tile,一旦平均每个专家
+路由超过 4 个 token,M tile 就随之增大。早先的版本直接钉死 8 行的
+`dpas_w4a16_policy_m_8` tile,假设 decode 阶段每个专家只见到少量 token,
+但在较大的 decode batch(序列多、top-k 高或专家少)下,这会导致 M
+维度欠填充,并把(受带宽约束的)打包权重重复流式加载 2–4 次,使吞吐
+大约只有参考实现的一半。它复用共享的 per-group mainloop 的 2D VNNI 块
+加载(`get_block_2d_copy_A/B` + `make_block_2d_prefetch`)与寄存器驻留
+的 per-N scale(`sg_scale[]`,每个 K-group 折叠一次),读取相同的
+`[E, N, K/2]` 打包权重 + `[E, N, K/group]` scale,无需重新打包。
+`ARK_MOE_DECODE_S4_DPAS_M8=1` 会强制使用旧的钉死 8 行 tile 以便 A/B
+对比(数值完全相同,仅 tile 形状不同)。**状态:NEEDS-HARDWARE-VALIDATION**
+(未经测试的移植)。
+
+**占用率门控 — decode 规模的 batch 直接复用 int4-asym 的实现。** 即使是
+最小的 DPAS tile 也要处理每个专家 8 行 token,因此平均每个专家不足 8 个
+token 的 batch 会为几乎全是 padding 的行付出完整的权重流式加载代价。
+decode 正好处于这一区间:MiniMax-M2(192 个专家)bs1 只有 8 个 token,
+bs32 只有 256 个 token,即平均每个专家 0.04–1.3 个 token;实测同样形状下
+int4-sym(DPAS)为 0.31–0.34 ms / 1.55 ms,而 int4-asym(标量 GEMV)为
+0.12 ms / 1.45 ms。因此除非 batch 平均每个专家至少有 8 个 token,int4-sym
+的 decode 会被路由到与 int4-asym *完全相同* 的标量 GEMV kernel
+(`launch_int4` 及其 coalesced 变体,`Asym=false`)。`ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 可覆盖该
+"每专家 token 数" 阈值;设为 `0` 则关闭门控(只要形状门控通过就走 DPAS),
+精度测试与 DPAS/标量 对比性能测试即使用该设置。
+
+**基于 32 位字的 nibble 解码；sym 恢复真正的有符号 nibble。** 在两者都走
+标量 GEMV 之后，int4-sym 在 *同一个* kernel 里仍比 int4-asym 慢，尽管 sym
+的浮点运算严格更少。差异在于 nibble 解码，而第一次尝试的修复（符号翻转
+恒等式 `signed == (unsigned ^ 8) - 8`，即 `^ 0x88`）并没有弥合差距：它让
+sym 仍然停留在 8 位类型的运算上 —— 一次 `sycl::vec<uint8_t,N>` 的 XOR 加上
+逐字节的 掩码/移位 —— 而 Xe 会把这类窄类型运算展开，无法直接跑在原生
+32 位数据通路上；同时它还迫使 sym 携带一个恒为 8 的 zero-point（见下面的
+"激活求和"）。
+
+现在两种模式都通过共享的 `decode_int4_octet` 原语解码：它接收一个打包的
+*32 位字* 中的 8 个 nibble，每个 nibble 只用一对 DWORD 移位/掩码（asym）
+或一对 DWORD 左移 + 算术右移（sym）即可取出。没有 8 位类型的向量，没有
+XOR，没有窄化转换，并且每 8 个 K 元素只需一次 32 位加载而不是一次字节
+向量加载。在两种模式下，对全部 2^32 种输入字，逐 nibble 的结果都与
+`decode_int4_pair` 逐位相同（已穷举验证），因此这纯粹是指令选择层面的改动。
+它应用于 `launch_int4`、`launch_int4_coalesced`，并且由于该原语是共享的，
+prefill 的混合精度路径同样受益。
+
+由于 sym 重新恢复了 *真正的有符号* nibble，它的每组折叠退化为
+`acc += scale * Σ a·q`，完全没有 zero-point 项；asym 则仍是
+`acc += scale * (Σ a·q − zero · Σ a)`。
+
+**按 4 字节分块的 coalesced repack。** coalesced 回退路径
+(`launch_int4_coalesced`，`ARK_MOE_DECODE_COALESCE_INT4` 默认开启)会在设备端把
+`[E, N, K/2]` 权重重排，使 sub-group 的加载连续。原先的重排布局
+`[E, N/16, K/2, 16]` 每个 lane 每步只放一个字节，因此虽然 16 个 lane 合起来覆盖
+一条 cache line，每个 lane 仍然发出的是*字节*加载。现在布局改为
+`[E, N/16, ceil(K/8), 16, 4]`：一个 chunk 为
+tile 内 16 列中的每一列存放 4 个连续的打包字节，按 lane 主序排列，因此 lane `l`
+在 chunk 偏移 `l*4` 处读取自己的 4 个字节，sub-group 整体仍然覆盖 64 个连续字节。
+一个 lane 的这 4 个字节是连续的，因此恰好构成一个小端 32 位字：lane 只需发出
+一次 DWORD 加载(权重加载指令数降为 1/4)，并直接交给 `decode_int4_octet`，
+两种模式下 8 个 nibble 都用原生 32 位运算取出。group_size 为 8 的倍数时
+(16/32/64/128/256，即全部已发布的量化配置)每个 K 组都从 chunk 边界开始，向量
+阶段覆盖整个组；其他偶数 group_size 则通过标量前导/收尾循环在同一布局上处理。
+对外的 `[E, N, K/2]` 权重约定保持不变。
+
+**提取激活求和(仅 asym)。** asym 的 int4 GEMV 按
+`scale * (Σ a·q − zero · Σ a)` 折叠每组的 scale/zero。`Σ a` 只依赖激活行与 K 组，
+与输出列无关，但此前它是在内层循环里重复计算的 —— 每个 sub-group lane 算一遍
+(16 倍冗余)，每个 N-tile work-group 再算一遍 —— 每个 K 元素多付出一次浮点加法。
+现在它被预先计算成一张 `[total_tokens, K/group_size]` 的 fp32 表
+(`launch_act_group_sums`)，GEMV 内层循环只累加 `Σ a·q`，每组读取一个 float。
+求和顺序的变化仅带来几个 fp32 ULP 的差异，远在 kernel 现有的量化容差之内。
+
+**sym 完全跳过这一前置 pass。** `launch_act_group_sums` 是一个独立的
+`parallel_for`，在 in-order queue 上会完全串行地排在 GEMV 之前。对 decode
+规模而言这笔交易并不划算：它在一个本就受访存带宽限制的循环里省下每个 K
+元素一次浮点加法，却给一次 GEMV 仅几十微秒(bs1)的调用额外增加了一整次
+kernel 派发 —— 这正是让 sym 走"有偏置无符号解码"反而变*慢*的原因。现在
+sym 解码出真正的有符号 nibble，不含 zero-point 项，因此只有在 `Asym` 为真
+时才会计算该表(并派发该 kernel)。
+
+**用 scratch 池替代每次调用的 `malloc_device`。** repack 缓冲区原本是临时的 USM
+分配，每次 decode 调用都必须在一次阻塞的 `queue::wait()` 之后释放 —— 而 decode
+每生成一个 token 就调用一次，因此这次分配加同步的开销已经与 GEMV 本身同量级。
+现在 repack 缓冲区与激活求和表都取自按 queue 持有、按需增长的常驻 slab
+(`DeviceScratchPool`)，稳态 decode 不再有任何分配，也不引入主机侧同步；生产者
+kernel 与 GEMV 之间的顺序由 in-order queue 保证。
+`ark.moe_decode_release_scratch()`(pybind `moe_decode_release_scratch`)可将内存
+归还。
+
+repack *kernel* 默认仍每次调用都执行。设置
+`ARK_MOE_DECODE_INT4_REPACK_CACHE=1` 可在权重缓冲区地址与形状不变时复用上一次的
+repack 结果 —— 这对权重固定的真实推理循环是成立的。它**默认关闭**，因为其 tag
+是指针身份：被释放后重新分配的权重张量可能落在同一地址(torch 的缓存分配器在
+测试循环中很容易出现这种情况)，此时陈旧的 repack 会静默产生错误结果。启用它的
+调用方必须在丢弃权重张量之前调用 `ark.moe_decode_release_scratch()`。
+
+| 环境变量 | 默认值 | 作用 |
+| -------- | ------ | ---- |
+| `ARK_MOE_DECODE_COALESCE_INT4` | 开启 | int4 标量回退使用按 4 字节分块的 coalesced repack GEMV；设为 `0` 则强制使用按 lane 跨步的旧版 `launch_int4`。 |
+| `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` | `num_experts * TOKEN_BLOCK` | coalesced kernel 值回其 repack 开销所需的最小总 token 数；设为 `0` 关闭该门控(一致性/A-B 测试即如此设置)。 |
+| `ARK_MOE_DECODE_INT4_REPACK_CACHE` | 关闭 | 在同一权重缓冲区上跨调用复用 repack 结果。仅当调用方掌握权重生命周期时才安全。 |
+
+coalesced 路径的性能 A/B 见
+`test_moe_decode_perf.py::test_perf_int4_coalesced_vs_strided`(在相同形状上切换
+`ARK_MOE_DECODE_COALESCE_INT4` 0/1)。正确性由
+`test_moe.py::test_decode_int4_coalesced_matches_scalar`、
+`::test_decode_int4_coalesced_token_blocking`、
+`::test_decode_int4_coalesced_unaligned_group_size`(非 8 的倍数的 group_size，
+覆盖标量前导/收尾路径)以及 `::test_decode_int4_repack_cache` 覆盖。
+
+**占用率门控阈值扫描。** `ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 的默认值 8 来自
+`dpas_w4a16_policy_m_8` 的 tile 行数，而非实测结果。定位真实交叉点的扫描用例是
+`test_moe_decode_perf.py::test_perf_int4_sym_dpas_vs_scalar_threshold`；它默认的
+token 数(16–128)都远低于该门控(8 × 192 个专家 == 1536 个 token)，因此需要传入
+`--all-shapes` 把扫描扩展到 256/512/1024/1536/3072 个 token，从两侧夹住门控。
+在拿到硬件数据之前，默认值仍保持为 8。
+
 精度对齐由
 `test_moe_prefill_accuracy.py::test_accuracy_int4_dpas_per_group`
 覆盖,该用例强制 `ARK_MOE_PREFILL_DPAS_S4=1` +
 `ARK_MOE_PREFILL_DPAS_INT8=0`,专门验证单遍 mainloop 路径,形状矩阵与
 `test_accuracy_int4` 一致,容差 `rtol=atol=1e-1`。
+
+## FP8 Decode 路径 (`sycl_tla_moe_decode.hpp`)
+
+int4-sym decode 的性能已经达标,把它推到达标的两个手段同样适用于 FP8:
+让 dequant 离开按字节的数据通路,以及不要在每次 decode 调用里重复付出
+启动开销。在此之上,还把 vllm-xpu-kernels 的 FP8 MoE dispatch 镜像成一个
+decode 专用入口。这两个手段现已全部落地,**FP8 decode 的性能同样达标** ——
+word-native dequant、带 N 分块的 K-split lane 映射,以及去掉每次调用的路由表
+同步。正因如此,统一入口 `ark.moe(phase="auto")` 的分发阈值才从 32 提高到
+128 个 token(见下文*自动分发阈值*)。
+
+**Word-native FP8 解码 (`ARK_FP8_DECODE_MODE`, 默认 `word`)。** decode
+GEMV 每读一个权重字节大约只做一次乘加,所以 dequant *就是* kernel 本身。
+两条旧解码路径每个字节都要付出真实开销:`lut` 每个权重元素都要向 128 项
+幅值表发一次访存再做一次符号选择,`bits` 则要跑一串带分支的 `ldexp`。
+两者还都索引了 8-bit 类型的 `sycl::vec<uint8_t, 16>`,而 Xe 的 ALU 通道是
+32-bit 的、无法直接寻址它,于是 IGC 只能展开成窄类型 regioning ——
+正是 `decode_int4_octet` 为 nibble 解决过的那个问题。
+
+这些工作其实都不必要:FP8 字节本身就是一个 IEEE 风格的浮点数,而 fp16 是
+两种 FP8 格式的*超集*,整个转换就是一次位域搬移。
+
+| 格式 | fp16 位模式 | 精确性 |
+| ---- | ----------- | ------ |
+| E5M2 | `byte << 8` | 对全部 256 种编码逐位精确 —— 符号位位置相同、5 位指数相同、bias 同为 15。次正规数仍是次正规数,`exp==31` 仍是 Inf/NaN。 |
+| E4M3 | `(byte + (byte & 0x80)) << 7` | 对全部 254 种有限编码(正规数、次正规数、两个零)逐位精确,得到真值 × `2^-8`。 |
+
+E4M3 的 4 位指数 bias 为 7,而 fp16 的 bias 是 15,所以位域搬移会留下一个
+常数因子 `2^-8`;`fp8_word_scale_bias<IsE4M3>()`(`256.0f`)被折叠进
+per-K-group 的 scale,是一个精确的 2 的幂、每组只乘一次,因此对单个元素而言
+零开销。把符号位加到它自身上,恰好会把它再进位一格,这就是符号搬移与幅值
+搬移能合并成一次加法加一次移位的原因。
+
+kernel 以 `sycl::vec<uint32_t, 4>` 读取权重 —— 与它替换掉的字节向量是同一次
+16 字节访存、同样的 16 字节对齐要求 —— 再由 `decode_fp8_quad_half_bits` 用
+少量原生 DWORD 运算把每个 32 位字变成四个 fp16 位模式(SWAR,不会跨 lane
+进位)。两个部分累加器打断 fp32 依赖链,与 `int4_decode_chunk` 的做法一致。
+两个原语都放在 `sycl_tla_moe_dequant.hpp`,并已对两种格式的全部 256 个字节
+值做过穷举验证。
+
+**E4M3 NaN 注意事项。** E4M3 的两个 NaN 编码(`0x7F` / `0xFF`;
+`torch.float8_e4m3fn` 没有 Inf)会解码成 ±480 而不是 NaN,因为纯位域搬移
+到不了 fp16 的任何 NaN 模式。auto-round 的 FP8 checkpoint 是按
+`finfo(float8_e4m3fn).max == 448` 缩放并 clamp 得到的,所以这两个编码不可能
+出现。需要 NaN 传播的调用方可以选择 `ARK_FP8_DECODE_MODE=lut` 或 `=bits`。
+
+**K-split lane 映射(`ARK_MOE_DECODE_FP8_KSPLIT`,默认 ON)。** 当 dequant
+只剩几条 DWORD 运算之后,scalar GEMV 就是一个纯粹的带宽问题:每个权重字节
+大约只做一次乘加,所以它最快只能跑到专家 tile 的搬运速度。原来的映射把一个
+输出元素交给一个 *work-item*,于是一个 lane 要独自走完整条 `[n, K]` 权重行。
+由此带来两笔开销:
+
+* **权重访存不合并。** 同一 sub-group 中 lane `l` 与 lane `l+1` 读到的字节
+  相距 `K`,因此每条 16 字节的 load 指令都会被拆成 16 个 cache line 请求。
+  DRAM 字节并没有浪费(每个 lane 会沿着自己的行把这些 line 用完),但内存
+  控制器看到的是每个 sub-group 16 条互相独立的数据流 —— 这正是 DRAM row
+  buffer 最不擅长的访问模式。
+* **线程太少。** grid 只有 `total_tokens × N / 16` 个 sub-group ——
+  MiniMax-M2 batch-1 一步(8 个 token,N=1536)只有 768 个 SIMD16 线程,
+  低于 BMG 级 GPU 的线程槽数量,飞行中的 load 永远不足以掩盖 DRAM 延迟。
+
+`launch_fp8_ksplit` 把映射转置过来:一个 *sub-group* 负责一个输出元素,由它
+的 16 个 lane 切分 K。lane `l` 在每个 256 元素的步长内拥有起点为 `l*16` 的
+16 个连续 K 元素,于是一条指令覆盖 256 字节**连续**权重(四条完整 cache
+line)和 512 字节连续激活,每个线程只走一条顺序数据流,线程数则提升 16×
+(上述 batch-1 场景为 12288 个 sub-group)。代价是每个输出元素一次
+`reduce_over_group` —— 相对 `K` 次乘加只是几条 shuffle —— 以及 16× 的 L1
+激活流量,而在这样的计算密度下 L1 有充足余量。
+
+int4 的回退路径解决的是同一个问题,办法是把权重 repack 成 N-tiled 布局
+(`ARK_MOE_DECODE_COALESCE_INT4`),那需要额外完整扫一遍权重张量并占用
+scratch 显存。FP8 权重每元素一个字节、本来就是 K 连续的,所以只切分 lane
+映射就能拿到同样的合并访存,无需 repack、无需 scratch、也不多一次 kernel
+启动。
+
+该 kernel 用移位来索引 scale 数组,因此形状门控要求 `group_size` 是 ≥ 16 的
+2 的幂(已发布的 FP8 配置 —— 32 / 64 / 128 / 256 —— 全部满足),另外还要
+`N%16==0`、`K%group_size==0` 以及 `K ≥ 256`(保证 sub-group 的每个 lane 至少
+分到一个 chunk);其余情况继续走老的 GEMV,它支持任意 group size。三种 `ARK_FP8_DECODE_MODE` 解码器在两种映射下都能运行,所以
+decode mode 的 A/B 依然是同口径对比。
+**状态:已通过硬件验证** —— 正是这个映射把 FP8 decode 推到达标。
+
+**K-split kernel 内的 N 分块(`ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`,默认 2)。**
+当一个 sub-group 只负责一个输出列时,热循环中每读一个 16 字节权重 chunk,
+既要发一条权重访存,又要发一条 32 字节的激活访存 —— 线程请求的数据里有一半
+是激活行,而该 token 的每一列都会重复读它 —— 并且飞行中的权重 load 始终只
+有两条。让一个 sub-group 负责 `NCOLS` 个连续列,激活 chunk 只需读一次就能
+被所有列复用:
+
+| | `NCOLS=1` | `NCOLS=n` |
+| --- | --- | --- |
+| 每个权重 chunk 的激活访存条数 | 1 | 1/n |
+| 飞行中的独立权重 load | 2 | 2n |
+
+前者降低请求队列压力,后者提升 memory-level parallelism —— 对于一个远低于
+DRAM 峰值带宽的流式 GEMV,后者才是真正的瓶颈。代价是活跃的权重向量与
+累加器变成 `n` 倍,超过某个点 kernel 就会 spill,所以只提供 1、2、4 这个
+很短的阶梯,并且默认值取得保守。
+
+一个 work-group 仍然是 16 个 sub-group,因此它现在覆盖 `16 * NCOLS` 列;
+若 `N` 无法按所请求的因子切分,host 侧会回退到最大的、合法的更小 2 的幂
+(`N=1536` 与 `N=3072` 在所有因子下都能整除)。lane → K chunk 的映射、
+每个 chunk 的 scale 折叠以及最后的 `reduce_over_group` 都没有改动,因此
+单个输出元素的算术完全不变,`NCOLS=1` 与改动前的 kernel 完全一致。
+`test_perf_fp8_ksplit_ncols_sweep` 会逐形状打印全部三个因子的耗时,便于用
+实测数据确定默认值。
+**状态:已在发布默认值(`NCOLS=2`)下通过硬件验证。**
+
+**路由表校验(`ARK_MOE_VALIDATE_ROUTING`,默认 OFF)。** Python 入口原先
+在每次调用时都会检查 `sum(num_tokens_per_expert) == total_tokens`。当路由表
+本身就在设备上时,这个求和意味着一次 reduction kernel 外加一次**阻塞式**的
+device-to-host 拷贝,也就是一次完整的流水线 flush —— 而 decode 一步的 kernel
+本身只有约 150 µs,并且每生成一个 token 就要付一次。它同样落在 decode
+benchmark 的计时区间内,因为记录计时 event 时队列正好是空的。
+现在这个求和关系是调用方契约(C++ 侧本来就不需要 host 上的值:它直接使用
+设备指针,并在设备上推导 `expert_id_per_token`,且会 clamp 到
+`num_experts - 1`);调试 router 时可设置 `ARK_MOE_VALIDATE_ROUTING=1` 恢复
+即时校验。位于 host(CPU)上的路由表仍然始终校验,因为对它们求和是免费的。
+
+**FP8 DPAS decode dispatch。** `moe_decode_fp8_dpas_per_group_dispatch`
+(`sycl_tla_moe_prefill_fp8_dpas.hpp`,`ARK_MOE_DECODE_DPAS_FP8` 默认 ON)
+是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的 `[E, N, K]`
+FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch 有
+两点 decode 专属的差异。
+
+*更细的 small-M 阶梯。* vllm-xpu-kernels 的参考 `w8a16` dispatch 最小只到
+16 行 tile,而它的 `w4a16` dispatch 多一个 8 行档位。decode 的 `A_avg_M`
+远低于 16,缺这一档意味着每个 M tile 有一半是 padding,而受带宽约束的 FP8
+权重要为这些毫无贡献的行反复搬运。`dpas_w4a16_policy_m_8` 不含任何 4-bit
+专用类型 —— 它纯粹是一个 `8×64×32` 的 `WGTile` / `SGLayout` 形状 ——
+所以 FP8 mainloop 可以原样复用它,补上这一档:
+
+| `A_avg_M` 档位 | WG tile (M×N×K) | Policy |
+| -------------- | --------------- | ------ |
+| `≤ 4`          | `8×64×32`       | `dpas_w4a16_policy_m_8` |
+| `≤ 8`          | `16×64×32`      | `dpas_w8a16_policy_m_16` |
+| `≤ 128`        | `32×64×32`      | `dpas_w8a16_policy_m_32` |
+| `> 128`        | `128×128×16`    | `dpas_w8a16_policy` |
+
+上面几档对齐的是 S4 的 *decode* 阶梯,而不是 FP8 prefill 的那条 ——
+后者的 `≤ 512 → m_32` 档是按 prefill 规模的 batch 调过的。
+
+*常驻 atomic 计数器。* prefill dispatch 每次调用都用 `sycl::malloc_device`
+分配 work-group 计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列
+同步。在 prefill 规模下这只是噪声,但在 decode 规模下 —— GEMM 本身只有几十
+微秒、且每生成一个 token 就要发一次调用 —— 它占总时间的比例相当可观。
+decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffer`,
+现已与 S4 头文件共享,两条路径共用一份 cache)。走上这条快路径时还会跳过
+`fill_expert_id_per_token` 前置 pass,因为 DPAS dispatch 直接消费
+`num_tokens_per_expert` —— decode 时间线上少一次 kernel 启动。
+**状态:NEEDS-HARDWARE-VALIDATION**(该头文件是未经硬件验证的移植)。
+
+**占用率门控 —— 真实 decode batch 仍走 scalar GEMV。** 理由与 int4-sym
+相同:decode 阶梯能选到的最小 tile 每个专家处理 8 行 token,所以平均每专家
+不足 8 个 token 时,tile 大部分是 padding。这正是 decode 的场景(MiniMax-M2,
+192 个专家:每专家 0.04–1.3 个 token),因此除非 batch 平均每专家至少提供
+8 个 token,FP8 decode 一律走 scalar GEMV。
+`ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` 可覆盖该阈值;`0` 关闭门控,这也是对齐
+用例与 A/B 性能用例所设置的值。未通过 per-group 形状门控
+(`N%64==0`、`K%32==0`、`K%group_size==0`、
+`group_size ∈ {32,64,128,256}`)的形状始终回退到 scalar GEMV。
+
+**自动分发阈值(`ARK_MOE_AUTO_DECODE_MAX_TOKENS`,默认 128)。**
+`ark.moe(phase="auto")` 在 `activations.shape[0] <= 阈值` 时分发到
+`moe_gemm_decode`,否则分发到 `moe_gemm_prefill`。该阈值原先是 32 —— 那时
+decode GEMV 仍是瓶颈,只有极小的单流/少流场景才值得不走 prefill grouped
+GEMM。如今 FP8 decode GEMV 也已达标(int4-sym 此前就已达标),GEMV 在整个
+小 batch 区间都保持领先,而不再只是在 bs1 这一极端上占优,因此阈值提高到
+128 个 token;超过之后每个专家分到的行数足以填满 DPAS 的 M tile,那正是
+grouped GEMM 占优的区间。`decode_threshold=` 关键字可按调用覆盖该阈值,
+优先级高于环境变量;`phase="decode"` / `phase="prefill"` 则完全跳过该启发式。
+分发行为由 `test_moe_unified.py::TestMoeUnifiedDispatch` 覆盖,其中同时锁定了
+阈值边界(128 个 token 仍走 decode)与两种覆盖方式。
+
+| Env 变量 | 默认值 | 作用 |
+| -------- | ------ | ---- |
+| `ARK_FP8_DECODE_MODE` | `word` | scalar GEMV 的 FP8 解码实现:`word`(位域搬移 + 折叠 scale bias)、`lut`(128 项幅值表)、`bits`(内联位运算)。 |
+| `ARK_FP8_DECODE_USE_LUT` | 未设置 | 旧的选择开关;当它被显式设置、且 `ARK_FP8_DECODE_MODE` 未设置或取值无法识别时仍然生效:truthy → `lut`,falsy → `bits`。它同时仍然驱动 mixed-input prefill 路径。 |
+| `ARK_MOE_AUTO_DECODE_MAX_TOKENS` | `128` | `ark.moe(phase="auto")` 使用的总 token 阈值:小于等于它走 `moe_gemm_decode`,大于它走 `moe_gemm_prefill`。非正数或无法解析的取值会回退到默认值;`decode_threshold=` 关键字优先级高于两者。 |
+| `ARK_MOE_DECODE_DPAS_FP8` | ON | 形状与占用率门控都通过时,把 FP8 decode 路由到 per-group DPAS grouped GEMM;`0` 强制走 scalar GEMV。 |
+| `ARK_MOE_DECODE_DPAS_FP8_MIN_TPE` | `8` | 走 DPAS 路径所需的最小每专家 token 数;`0` 关闭门控(对齐/A-B 用例所设)。 |
+| `ARK_MOE_DECODE_FP8_KSPLIT` | ON | scalar GEMV 的 lane 映射:一个 sub-group 负责一个输出元素、由 lane 切分 K(访存合并,线程数 ×16);`0` 强制走老的「一个 work-item 一个输出元素」GEMV。未通过门控(`group_size` 为 ≥ 16 的 2 的幂、`N%16==0`、`K%group_size==0`、`K ≥ 256`)的形状始终使用老映射。 |
+| `ARK_MOE_DECODE_FP8_KSPLIT_NCOLS` | `2` | K-split GEMV 中一个 sub-group 负责的输出列数(1、2 或 4)。取值越大,一次激活 load 被复用的列越多、飞行中的权重 load 越多,代价是活跃寄存器更多。若 `16 * NCOLS` 无法整除 `N`,会回退到最大的、合法的更小 2 的幂。 |
+| `ARK_MOE_VALIDATE_ROUTING` | OFF | 即时校验 `sum(num_tokens_per_expert) == activations.shape[0]`(针对位于设备上的路由表)。该校验每次调用都要付一次阻塞式 device-to-host 同步,因此改为按需开启;位于 CPU 上的路由表始终校验。 |
+
+性能 A/B 行是 `test_moe_decode_perf.py::test_perf_fp8_word_vs_lut`
+(`speedup` 为 `lut / word`)、`::test_perf_fp8_ksplit_vs_strided`
+(`speedup` 为 `strided / ksplit`)、`::test_perf_fp8_ksplit_ncols_sweep`
+(`speedup` 为 `NCOLS=1 / 最优 NCOLS`,并打印全部因子)与
+`::test_perf_fp8_dpas_vs_scalar`(`speedup` 为 `scalar / dpas`)。正确性由
+`test_moe.py::test_decode_fp8_modes_match`(三种解码器互相一致,且各自都
+对齐 dequant 参考)、`::test_decode_fp8_ksplit_matches_strided`(两种 lane
+映射一致,并覆盖非 2 的幂 `group_size` 的回退)、
+`::test_decode_fp8_ksplit_ncols_match`(各分块因子结果一致,并覆盖 `N`
+无法整除时的回退)与
+`::test_decode_fp8_dpas_matches_scalar` 覆盖。
 
 ## FP8 per-expert (per-tensor) 性能测试
 

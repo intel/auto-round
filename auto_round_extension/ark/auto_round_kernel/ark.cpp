@@ -33,6 +33,7 @@ typedef uintptr_t torch_ptr;
 #include "sycl_tla_moe.hpp"
 #include "sycl_tla_moe_decode.hpp"
 #include "sycl_tla_moe_mixed.hpp"
+#include "sycl_tla_moe_w4a8.hpp"
 #include "sycl_tla_sdpa.hpp"
 #include "sycl_tla_dense_gemm.hpp"
 #endif
@@ -560,8 +561,35 @@ static void moe_gemm_prefill_int_dpas_wrapper(torch_ptr stream, torch_ptr activa
                                  (int*)num_tokens_per_expert, num_experts, total_tokens);
 }
 
-static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
-                               int num_rows, int head_dim, int block_size) {
+// W4A8 MoE: int4 weights re-scaled to int8 (AUTO_S8), int8 DPAS compute,
+// per-token dynamically quantized int8 activations. `weights_s8` is
+// [E, N, K] int8 and `wscales` is [E, N, K/rescale_block] FP32, both produced
+// by `moe_w4a8_prepack`. STATUS: NEEDS-HARDWARE-VALIDATION.
+static void moe_w4a8_prepack_wrapper(torch_ptr stream, torch_ptr weights_s4, torch_ptr scales,
+                                     torch_ptr weights_s8, torch_ptr wscales, int act_dtype, int num_experts,
+                                     int N, int K, int group_size, int rescale_group_size) {
+  ark::moe_w4a8_prepack((sycl::queue*)stream, (void*)weights_s4, (void*)scales, (void*)weights_s8,
+                        (void*)wscales, (BTLA_DTYPE)(act_dtype), num_experts, N, K, group_size,
+                        rescale_group_size);
+}
+
+// `qact`/`ascale` are optional pre-quantized activations (0 = quantize in the
+// call); `row_to_token`/`routing_weights`/`fused_out` are the optional fused
+// top-k reduction (0 = write the unreduced `[T, N]` output).
+static void moe_gemm_w4a8_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights_s8,
+                                  torch_ptr wscales, torch_ptr outputs, int act_dtype, int N, int K,
+                                  int rescale_block_size, torch_ptr num_tokens_per_expert, int num_experts,
+                                  int total_tokens, int phase, torch_ptr qact, torch_ptr ascale,
+                                  torch_ptr row_to_token, torch_ptr routing_weights, torch_ptr fused_out,
+                                  int fused_batch) {
+  ark::moe_gemm_w4a8((sycl::queue*)stream, (void*)activations, (void*)weights_s8, (void*)wscales, (void*)outputs,
+                     (BTLA_DTYPE)(act_dtype), N, K, rescale_block_size, (int*)num_tokens_per_expert, num_experts,
+                     total_tokens, phase, (const void*)qact, (const float*)ascale, (const int*)row_to_token,
+                     (const float*)routing_weights, (float*)fused_out, fused_batch);
+}
+
+static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output,
+                               torch_ptr scale_out, int num_rows, int head_dim, int block_size) {
   auto* q = (sycl::queue*)stream;
   auto* in_ptr = (sycl::half*)input;
   auto* bias_ptr = bias ? (sycl::half*)bias : nullptr;
@@ -1395,9 +1423,14 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
+  m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
   m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
+  m.def("moe_w4a8_prepack", &ark::moe_w4a8_prepack_wrapper);
+  m.def("moe_gemm_w4a8", &ark::moe_gemm_w4a8_wrapper);
+  m.def("moe_w4a8_rescale_block_size", &ark::moe_w4a8_rescale_block_size);
+  m.def("moe_w4a8_release_scratch", &ark::moe_w4a8_release_scratch);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif  // ARK_SYCL_TLA
 #if !defined(ARK_XPU)

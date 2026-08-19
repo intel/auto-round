@@ -34,6 +34,12 @@ Registers CLI flags used by the MoE perf tests:
   expensive for a routine ``pytest`` invocation and is therefore
   **skipped by default**. Pass this flag (or select the file / its
   ``moe_prefill_perf`` marker explicitly) to run it.
+
+* ``--enforce-targets`` -- turn the W4A8 MoE performance goals into hard
+  assertions instead of a printed verdict.
+
+* ``--models`` -- shape groups for the W4A8 MoE perf tests (``qwen3``,
+  ``minimax``, a comma-separated list, or ``all``).
 """
 
 
@@ -68,6 +74,28 @@ def pytest_addoption(parser):
             "Run test_moe_prefill_perf.py. The MoE prefill perf sweep is "
             "too expensive to run on every pytest invocation, so it is "
             "skipped by default. Pass this flag to opt in."
+        ),
+    )
+    parser.addoption(
+        "--models",
+        action="store",
+        default=None,
+        help=(
+            "Shape groups for the W4A8 MoE perf tests: 'qwen3', 'minimax', a "
+            "comma-separated list, or 'all'. Default (flag absent): qwen3 only, "
+            "so the default run stays short."
+        ),
+    )
+    parser.addoption(
+        "--enforce-targets",
+        action="store_true",
+        default=False,
+        help=(
+            "Turn the performance goals printed by the W4A8 MoE perf tests "
+            "(prefill > 100 TFLOPS, decode > 300 GB/s of weight bandwidth) "
+            "into hard assertions. Default (flag absent): the verdict is "
+            "printed but never fails the run, since the achievable numbers "
+            "depend on the device the suite happens to run on."
         ),
     )
 

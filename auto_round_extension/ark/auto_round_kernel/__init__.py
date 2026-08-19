@@ -2451,7 +2451,10 @@ def moe_gemm_decode(
               ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
               be ``False`` (no zero-points for FP8).
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
-            ``activations.shape[0]``.
+            ``activations.shape[0]``; this is a caller contract. It is checked
+            eagerly only when the tensor lives on the host, or when
+            ``ARK_MOE_VALIDATE_ROUTING`` is set -- summing a device tensor
+            costs a blocking device-to-host sync on the decode hot path.
         scales: ``[E, N, K // group_size]`` in activations dtype. Required
             for all quantized paths (int8/int4/int2/fp8); must be ``None``
             for unquantized weights.
@@ -2511,6 +2514,59 @@ def moe_gemm_decode(
     return outputs
 
 
+def moe_decode_release_scratch() -> None:
+    """Release the device scratch buffers held by the int4 decode fallbacks.
+
+    :func:`moe_gemm_decode` serves its int4 weight-repack and activation-sum
+    buffers from grow-on-demand per-queue slabs that are kept for the lifetime
+    of the process so the decode hot path never allocates. Call this to hand
+    that memory back, or to drop a repack cached via
+    ``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` before the underlying weight tensor
+    is freed. A no-op when the XPU extension is not loaded.
+    """
+    lib = xpu_lib
+    if lib is None or not hasattr(lib, "moe_decode_release_scratch"):
+        return
+    lib.moe_decode_release_scratch()
+
+
+def moe_routing_validation_enabled() -> bool:
+    """Whether ``num_tokens_per_expert`` is checked against ``total_tokens``.
+
+    The check needs the *sum* of the routing table, which for a table that
+    already lives on the device costs a reduction kernel plus a blocking
+    device-to-host copy -- a full pipeline flush on every call. Decode issues
+    one call per generated token, so that sync lands directly in the
+    token-latency path (and inside the timed region of the decode benchmarks),
+    where it is worth tens of microseconds against kernels that take ~150us.
+
+    So the check runs unconditionally for host-side (CPU) routing tables, where
+    it is free, and is skipped for device tables unless
+    ``ARK_MOE_VALIDATE_ROUTING`` is set to a truthy value. The C++ side does not
+    need the host value: it consumes the device pointer directly and derives
+    ``expert_id_per_token`` on-device, clamped to ``num_experts - 1``.
+
+    Truthy values (case-insensitive): anything other than "0", "false", "off",
+    "no". Unset means disabled (no sync).
+    """
+    env = os.environ.get("ARK_MOE_VALIDATE_ROUTING")
+    if env is None:
+        return False
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _check_routing_total(num_tokens_per_expert: torch.Tensor, total_tokens: int) -> None:
+    """Check ``sum(num_tokens_per_expert) == total_tokens`` without a device sync.
+
+    See :func:`moe_routing_validation_enabled` for when the check is skipped.
+    """
+    if num_tokens_per_expert.device.type != "cpu" and not moe_routing_validation_enabled():
+        return
+    expected_total = int(num_tokens_per_expert.sum().item())
+    if expected_total != total_tokens:
+        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+
+
 def _validate_moe_quant_args(
     activations: torch.Tensor,
     weights: torch.Tensor,
@@ -2529,6 +2585,10 @@ def _validate_moe_quant_args(
     kernel-call site:
         ``(activations, weights, scales, zeros, num_tokens_per_expert,
            weight_dtype, total_tokens, N, K, num_experts)``.
+
+    The caller owns the contract that ``num_tokens_per_expert`` sums to
+    ``activations.shape[0]``; see :func:`moe_routing_validation_enabled` for how
+    that is (or is not) enforced.
     """
     if activations.device.type != "xpu":
         raise NotImplementedError(f"{api_name} is only supported on XPU")
@@ -2642,9 +2702,7 @@ def _validate_moe_quant_args(
     if N % 16 != 0:
         raise ValueError(f"N must be a multiple of 16 (got {N})")
 
-    expected_total = int(num_tokens_per_expert.sum().item())
-    if expected_total != total_tokens:
-        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
 
     return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
 
@@ -2700,9 +2758,7 @@ def moe_gemm(
         raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
 
     # Validate total tokens
-    expected_total = int(num_tokens_per_expert.sum().item())
-    if expected_total != total_tokens:
-        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
 
     lib = get_lib(activations)
     stream = get_stream(activations)
@@ -2935,7 +2991,7 @@ def moe_gemm_prefill(
             ``[E, N, K]`` -- callers providing already-``[E, K, N]`` weights
             (as ``moe_gemm`` requires) should call ``moe_gemm`` directly.
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
-            ``activations.shape[0]``.
+            ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
         scales: ``[E, N, K // group_size]`` in activations dtype. Required for
             quantized paths; ignored (must be ``None``) for unquantized.
         zeros: ``[E, N, K // group_size]`` in activations dtype, required when
@@ -3139,6 +3195,444 @@ def clear_moe_prefill_workspace_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
+# W4A8 MoE: int4 weights, int8 DPAS compute, dynamically quantized int8
+# activations.
+#
+# The int4 weights are converted ONCE into int8 using ARK's `AUTO_S8` re-scale
+# rule (see `sycl_tla_moe_w4a8.hpp`):
+#
+#     sxt[e][n][j] = max_{g in block j} |s[e][n][g]| * 8 / 127
+#     w8[e][n][k]  = round(w4[e][n][k] * s[e][n][k // group_size] / sxt[...])
+#
+# With the default block (`rescale_group_size=-1`, one scale per output
+# channel) the GEMM runs a single full-K `s8 x s8 -> s32` accumulation with one
+# scalar multiply in the epilogue -- the shape the DPAS pipeline is happiest
+# with. Coarser-than-group blocks are what makes this profitable: an int4
+# group=32 checkpoint would otherwise force an accumulator fold every 32 K
+# elements.
+#
+# `moe_w4a8` keeps the conversion result in a module-level cache keyed on the
+# weight/scale tensor identity so repeated forward passes over the same expert
+# weights pay for it only once. Callers that manage their own storage should
+# use `moe_w4a8_prepack` + `moe_gemm_w4a8` directly.
+#
+# Cache entries are `(weights_s8, wscales, block, weights, scales)`: the source
+# tensors are pinned in the entry because the address half of the key is
+# pointer identity, and a freed-then-reallocated buffer can otherwise land on
+# the same address. Every MoE layer's expert weights share shape / dtype /
+# group_size, so no other key component would catch such a collision.
+# ---------------------------------------------------------------------------
+
+_MOE_W4A8_PREPACK_CACHE: "dict[tuple, tuple]" = {}
+
+
+def moe_w4a8_rescale_block_size(K: int, group_size: int, rescale_group_size: int = -1) -> int:
+    """Return the effective AUTO_S8 re-scale block size used by the W4A8 path.
+
+    ``rescale_group_size <= 0`` (the ``group=-1`` spelling) selects one scale
+    per output channel, i.e. a block spanning the whole K axis. Any value that
+    is not a multiple of both ``group_size`` and 64, or that does not divide
+    ``K``, also falls back to ``K``. ``ARK_MOE_W4A8_AUTO_S8`` overrides the
+    argument.
+
+    The result is the divisor of the ``wscales`` last dimension
+    (``K // block``), so callers must use it to size that tensor.
+    """
+    lib = xpu_lib
+    if lib is not None and hasattr(lib, "moe_w4a8_rescale_block_size"):
+        return int(lib.moe_w4a8_rescale_block_size(int(K), int(group_size), int(rescale_group_size)))
+    # Pure-Python mirror of `ark::moe_w4a8::moe_w4a8_rescale_block_size` so the
+    # shape math is available without a loaded extension (tests, docs, CPU).
+    env = os.environ.get("ARK_MOE_W4A8_AUTO_S8")
+    value = int(rescale_group_size)
+    if env is not None:
+        try:
+            value = int(env.strip())
+        except ValueError:
+            pass
+    if K <= 0:
+        return K
+    if value <= 0 or value >= K:
+        return K
+    if group_size > 0 and (value < group_size or value % group_size != 0):
+        return K
+    if K % value != 0 or value % 64 != 0:
+        return K
+    return value
+
+
+def moe_w4a8_release_scratch() -> None:
+    """Release the device scratch slabs held by the W4A8 MoE path.
+
+    :func:`moe_gemm_w4a8` serves its quantized-activation and expert-map
+    buffers from grow-on-demand per-queue slabs kept for the lifetime of the
+    process. A no-op when the XPU extension is not loaded.
+    """
+    lib = xpu_lib
+    if lib is None or not hasattr(lib, "moe_w4a8_release_scratch"):
+        return
+    lib.moe_w4a8_release_scratch()
+
+
+def clear_moe_w4a8_prepack_cache() -> None:
+    """Release every int8 weight/scale pair cached by :func:`moe_w4a8`."""
+    _MOE_W4A8_PREPACK_CACHE.clear()
+
+
+def _validate_moe_w4a8_shape(N: int, K: int, group_size: int, api_name: str) -> None:
+    if N % 16 != 0:
+        raise ValueError(f"{api_name}: N must be a multiple of 16 (got {N})")
+    if K % 64 != 0:
+        raise ValueError(f"{api_name}: K must be a multiple of 64 (got {K})")
+    if group_size <= 0 or group_size % 8 != 0:
+        raise ValueError(f"{api_name}: group_size must be a positive multiple of 8 (got {group_size})")
+    if K % group_size != 0:
+        raise ValueError(f"{api_name}: K must be a multiple of group_size")
+
+
+def moe_w4a8_prepack(
+    weights: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    group_size: int = 128,
+    rescale_group_size: int = -1,
+) -> "tuple[torch.Tensor, torch.Tensor, int]":
+    """Convert packed int4-sym MoE weights into the W4A8 int8 representation.
+
+    Applies ARK's ``AUTO_S8`` re-scale on device, producing weights the int8
+    DPAS grouped GEMM / GEMV can consume without any per-K-group fold.
+
+    Args:
+        weights: ``[E, N, K // 2]`` ``torch.uint8``, two signed nibbles per
+            byte (auto-round's int4-sym packing: K index ``2i`` in the low
+            nibble, ``2i + 1`` in the high nibble).
+        scales: ``[E, N, K // group_size]`` in fp16 or bf16.
+        group_size: quantization group along K of the int4 weights.
+        rescale_group_size: AUTO_S8 block size; ``-1`` (default) means one
+            scale per output channel -- the fastest configuration.
+
+    Returns:
+        ``(weights_s8, wscales, rescale_block_size)`` where ``weights_s8`` is
+        ``[E, N, K]`` ``torch.int8``, ``wscales`` is
+        ``[E, N, K // rescale_block_size]`` ``torch.float32``, and
+        ``rescale_block_size`` is the resolved block size (pass it to
+        :func:`moe_gemm_w4a8`).
+    """
+    if weights.device.type != "xpu":
+        raise NotImplementedError("moe_w4a8_prepack is only supported on XPU")
+    if weights.dtype != torch.uint8:
+        raise ValueError(f"moe_w4a8_prepack: weights must be torch.uint8, got {weights.dtype}")
+    if weights.ndim != 3:
+        raise ValueError("moe_w4a8_prepack: weights must be 3D [E, N, K // 2]")
+    if scales.ndim != 3:
+        raise ValueError("moe_w4a8_prepack: scales must be 3D [E, N, K // group_size]")
+    if scales.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"moe_w4a8_prepack: scales must be fp16/bf16, got {scales.dtype}")
+    if scales.device != weights.device:
+        raise ValueError("moe_w4a8_prepack: weights and scales must be on the same device")
+
+    E, N, k_packed = weights.shape
+    K = k_packed * 2
+    _validate_moe_w4a8_shape(N, K, group_size, "moe_w4a8_prepack")
+    expected_scale_shape = (E, N, K // group_size)
+    if tuple(scales.shape) != expected_scale_shape:
+        raise ValueError(f"moe_w4a8_prepack: scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+
+    weights = weights.contiguous()
+    scales = scales.contiguous()
+
+    block = moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)
+    nblk = K // block
+
+    weights_s8 = torch.empty((E, N, K), device=weights.device, dtype=torch.int8)
+    wscales = torch.empty((E, N, nblk), device=weights.device, dtype=torch.float32)
+
+    lib = get_lib(weights)
+    stream = get_stream(weights)
+    lib.moe_w4a8_prepack(
+        stream,
+        weights.data_ptr(),
+        scales.data_ptr(),
+        weights_s8.data_ptr(),
+        wscales.data_ptr(),
+        cvt_dtype(scales.dtype),
+        E,
+        N,
+        K,
+        group_size,
+        rescale_group_size,
+    )
+    return weights_s8, wscales, block
+
+
+def moe_gemm_w4a8(
+    activations: torch.Tensor,
+    weights_s8: torch.Tensor,
+    wscales: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    rescale_block_size: Optional[int] = None,
+    phase: str = "auto",
+    activation_scale: Optional[torch.Tensor] = None,
+    out_dtype: Optional[torch.dtype] = None,
+    row_to_token: Optional[torch.Tensor] = None,
+    routing_weights: Optional[torch.Tensor] = None,
+    output_rows: Optional[int] = None,
+) -> torch.Tensor:
+    """W4A8 MoE GEMM: int4 weights (pre-converted to int8), int8 compute.
+
+    Activations are dynamically quantized to int8 per token inside the kernel
+    (per-row absmax), then multiplied against the ``AUTO_S8`` int8 weights with
+    the ``s8 x s8 -> s32`` DPAS atom. The output is
+    ``acc * act_scale[token] * weight_scale[n, block]``.
+
+    Two optional contracts cut DRAM traffic by moving work across the call
+    boundary; both default off and change nothing when unused.
+
+    *Pre-quantized activations.* Pass an ``int8`` ``activations`` together with
+    ``activation_scale`` and the in-call quantization pass is skipped: the
+    kernel then never reads the 16-bit activations, never writes the int8 copy
+    and never reads it back (``4 * T * K`` bytes, 27% of the qwen3
+    down-projection's traffic). The producer of the activations -- typically
+    the SiLU/gate elementwise kernel, which already writes ``[T, K]`` once --
+    can emit that int8 and its per-row scale directly.
+
+    *Fused top-k reduction.* Pass ``row_to_token``, ``routing_weights`` and
+    ``output_rows`` and the epilogue scales each routed row by its routing
+    weight and accumulates it into ``out[row_to_token[row]]`` of a
+    ``[output_rows, N]`` fp32 tensor, instead of writing the ``[T, N]``
+    unreduced result for the caller to reduce afterwards. That replaces
+    ``T * N`` written + ``T * N`` read + ``batch * N`` written with a
+    ``batch * N`` read-modify-write, and removes the caller's reduction kernel.
+    The combiner is a device-scope fp32 atomic add, so the summation order is
+    not deterministic and the result is *not* bit-identical to reducing the
+    unfused output. Prefill only.
+
+    Args:
+        activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert, or
+            ``[total_tokens, K]`` int8 when ``activation_scale`` is given.
+        weights_s8: ``[E, N, K]`` ``torch.int8`` from :func:`moe_w4a8_prepack`.
+        wscales: ``[E, N, K // rescale_block_size]`` fp32 from
+            :func:`moe_w4a8_prepack`.
+        num_tokens_per_expert: ``[E]`` int32; sum must equal ``total_tokens``.
+        rescale_block_size: block size the scales were built with. Defaults to
+            ``K // wscales.shape[2]``.
+        phase: ``"auto"`` (GEMV for small batches, grouped GEMM otherwise),
+            ``"decode"`` (force GEMV) or ``"prefill"`` (force grouped GEMM).
+        activation_scale: ``[total_tokens]`` fp32 per-row scales
+            (``absmax / 127``) for pre-quantized int8 activations.
+        out_dtype: output dtype for pre-quantized activations, which carry no
+            floating dtype of their own. Defaults to ``torch.bfloat16``.
+        row_to_token: ``[total_tokens]`` int32, routed row -> model token.
+        routing_weights: ``[total_tokens]`` fp32, the top-k weight of each row.
+        output_rows: number of model tokens, i.e. rows of the fused output.
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype, or ``[output_rows, N]``
+        fp32 when the fused reduction is used.
+    """
+    if phase not in _MOE_VALID_PHASES:
+        raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_gemm_w4a8 is only supported on XPU")
+
+    prequantized = activation_scale is not None or activations.dtype == torch.int8
+    if prequantized:
+        if activations.dtype != torch.int8:
+            raise ValueError(f"pre-quantized activations must be int8, got {activations.dtype}")
+        if activation_scale is None:
+            raise ValueError("int8 activations require activation_scale")
+        if activation_scale.dtype != torch.float32:
+            raise ValueError(f"activation_scale must be fp32, got {activation_scale.dtype}")
+        if activation_scale.numel() != activations.shape[0]:
+            raise ValueError(
+                f"activation_scale has {activation_scale.numel()} entries, expected {activations.shape[0]}"
+            )
+        act_dtype = torch.bfloat16 if out_dtype is None else out_dtype
+        if act_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"out_dtype must be fp16/bf16, got {act_dtype}")
+    elif activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+    else:
+        act_dtype = activations.dtype
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights_s8.ndim != 3 or weights_s8.dtype != torch.int8:
+        raise ValueError("weights_s8 must be a 3D torch.int8 tensor [E, N, K]")
+    if wscales.ndim != 3 or wscales.dtype != torch.float32:
+        raise ValueError("wscales must be a 3D torch.float32 tensor [E, N, K // block]")
+
+    activations = activations.contiguous()
+    weights_s8 = weights_s8.contiguous()
+    wscales = wscales.contiguous()
+    if prequantized:
+        activation_scale = activation_scale.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts, N, weight_K = weights_s8.shape
+    if weight_K != K:
+        raise ValueError(f"weights_s8 K dim {weight_K} != activations K {K}")
+    if wscales.shape[0] != num_experts or wscales.shape[1] != N:
+        raise ValueError(f"wscales shape {tuple(wscales.shape)} incompatible with weights {tuple(weights_s8.shape)}")
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+    if K % 64 != 0:
+        raise ValueError(f"K must be a multiple of 64 (got {K})")
+
+    nblk = wscales.shape[2]
+    if nblk <= 0 or K % nblk != 0:
+        raise ValueError(f"wscales last dim {nblk} must divide K ({K})")
+    block = K // nblk if rescale_block_size is None else int(rescale_block_size)
+    if block * nblk != K:
+        raise ValueError(f"rescale_block_size {block} is inconsistent with wscales last dim {nblk} and K {K}")
+
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
+
+    fused = row_to_token is not None or routing_weights is not None or output_rows is not None
+    if fused:
+        if row_to_token is None or routing_weights is None or output_rows is None:
+            raise ValueError("the fused top-k reduction needs row_to_token, routing_weights and output_rows")
+        if phase != "prefill":
+            raise ValueError("the fused top-k reduction is prefill-only; pass phase='prefill'")
+        if int(output_rows) <= 0:
+            raise ValueError(f"output_rows must be positive (got {output_rows})")
+        if row_to_token.dtype != torch.int32:
+            row_to_token = row_to_token.to(torch.int32)
+        if routing_weights.dtype != torch.float32:
+            routing_weights = routing_weights.to(torch.float32)
+        row_to_token = row_to_token.contiguous()
+        routing_weights = routing_weights.contiguous()
+        if row_to_token.numel() != total_tokens or routing_weights.numel() != total_tokens:
+            raise ValueError(
+                f"row_to_token / routing_weights must have {total_tokens} entries, got "
+                f"{row_to_token.numel()} / {routing_weights.numel()}"
+            )
+        # The epilogue accumulates into this buffer with atomics, so it starts
+        # at zero and is fp32 regardless of the activation dtype.
+        outputs = torch.zeros((int(output_rows), N), device=activations.device, dtype=torch.float32)
+    else:
+        outputs = torch.empty((total_tokens, N), device=activations.device, dtype=act_dtype)
+    if total_tokens == 0:
+        return outputs
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    lib.moe_gemm_w4a8(
+        stream,
+        0 if prequantized else activations.data_ptr(),
+        weights_s8.data_ptr(),
+        wscales.data_ptr(),
+        0 if fused else outputs.data_ptr(),
+        cvt_dtype(act_dtype),
+        N,
+        K,
+        block,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        _MOE_VALID_PHASES.index(phase),
+        activations.data_ptr() if prequantized else 0,
+        activation_scale.data_ptr() if prequantized else 0,
+        row_to_token.data_ptr() if fused else 0,
+        routing_weights.data_ptr() if fused else 0,
+        outputs.data_ptr() if fused else 0,
+        int(output_rows) if fused else 0,
+    )
+    return outputs
+
+
+def moe_w4a8(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: Optional[torch.Tensor] = None,
+    group_size: int = 128,
+    rescale_group_size: int = -1,
+    phase: str = "auto",
+    cache_prepack: bool = True,
+) -> torch.Tensor:
+    """W4A8 MoE from auto-round's packed int4-sym weights (prefill + decode).
+
+    Convenience wrapper that runs :func:`moe_w4a8_prepack` (cached on the
+    weight/scale tensor identity) and then :func:`moe_gemm_w4a8`. It is a
+    drop-in replacement for :func:`moe` on int4-sym weights, trading a small
+    amount of extra quantization error on the activations for the int8 DPAS
+    throughput.
+
+    Args:
+        activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert.
+        weights: ``[E, N, K // 2]`` ``torch.uint8`` packed int4-sym weights.
+        num_tokens_per_expert: ``[E]`` int32.
+        scales: ``[E, N, K // group_size]`` in the activations dtype.
+        group_size: quantization group along K (default 128).
+        rescale_group_size: AUTO_S8 block size, ``-1`` = per output channel.
+        phase: ``"auto"``, ``"decode"`` or ``"prefill"``.
+        cache_prepack: keep the converted int8 weights in a module-level cache
+            keyed on ``(weights, scales)`` identity. The cache entry holds
+            strong references to ``weights`` / ``scales`` so their addresses
+            cannot be recycled by another tensor while the entry lives (see
+            :data:`_MOE_W4A8_PREPACK_CACHE`). Set to ``False`` for one-shot use
+            so the (large) int8 copy is released immediately.
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype.
+    """
+    if scales is None:
+        raise ValueError("moe_w4a8: scales is required for int4 weights")
+    if scales.dtype != activations.dtype:
+        raise ValueError("moe_w4a8: scales dtype must match activations dtype")
+
+    key = None
+    entry = None
+    if cache_prepack:
+        device = weights.device
+        key = (
+            device.type,
+            device.index,
+            weights.data_ptr(),
+            scales.data_ptr(),
+            tuple(weights.shape),
+            int(group_size),
+            int(rescale_group_size),
+            str(scales.dtype),
+        )
+        entry = _MOE_W4A8_PREPACK_CACHE.get(key)
+    if entry is None:
+        weights_s8, wscales, block = moe_w4a8_prepack(
+            weights,
+            scales,
+            group_size=group_size,
+            rescale_group_size=rescale_group_size,
+        )
+        # Pin the source tensors in the entry: the address half of the key is
+        # pointer identity, and a freed-then-reallocated buffer can land on the
+        # same address (every MoE layer's expert weights share shape/dtype/
+        # group_size, so nothing else in the key would discriminate). Holding a
+        # reference keeps the allocator from handing the address to a different
+        # tensor for as long as the entry is cached.
+        entry = (weights_s8, wscales, block, weights, scales)
+        if cache_prepack:
+            _MOE_W4A8_PREPACK_CACHE[key] = entry
+
+    weights_s8, wscales, block = entry[0], entry[1], entry[2]
+    return moe_gemm_w4a8(
+        activations,
+        weights_s8,
+        wscales,
+        num_tokens_per_expert,
+        rescale_block_size=block,
+        phase=phase,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Native FP8 prefill opt-in.
 #
 # When `ARK_MOE_PREFILL_NATIVE_FP8` is truthy, `moe_gemm_prefill` skips the
@@ -3172,8 +3666,9 @@ def _native_fp8_prefill_enabled() -> bool:
 #
 # `moe_gemm_decode` and `moe_gemm_prefill` accept identical argument shapes
 # and dtypes -- the only difference is which underlying SYCL kernel is
-# launched (a GEMV variant tuned for 1-2 tokens/expert vs. a Grouped GEMM
-# variant tuned for many tokens/expert). Model code that runs through both
+# launched (a GEMV variant tuned for smaller total-token workloads vs. a
+# Grouped GEMM variant tuned for larger total-token workloads). Model code
+# that runs through both
 # regimes (prefill of a prompt, then autoregressive decode) traditionally
 # has to keep two call sites and branch on phase. `moe(...)` collapses that
 # into a single API and auto-selects the right kernel from the token
@@ -3181,19 +3676,50 @@ def _native_fp8_prefill_enabled() -> bool:
 #
 # Callers that already know the phase (e.g., a model's generation loop knows
 # whether it's in prefill or decode) should pass it via the `phase` argument
-# to avoid the small host-device sync that `phase="auto"` needs to inspect
-# `num_tokens_per_expert.max()`.
+# to bypass the auto-dispatch heuristic entirely.
 # ---------------------------------------------------------------------------
 
-# Default tokens-per-expert threshold used by `phase="auto"`. The decode
-# GEMV kernel is faster when every expert sees only a handful of tokens
-# (TopK >= 1 with batch size 1-4); above that the GEMM-tuned prefill kernel
-# wins. The crossover is hardware-dependent but `4` is a conservative default
-# that matches the regime `moe_gemm_decode`'s docstring describes
-# ("typically only 1-2 tokens", up to top-k * small batch).
-_MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT = 4
+# Default total-token threshold used by `phase="auto"`: dispatch to decode
+# when `activations.shape[0] <= threshold`, otherwise prefill. This threshold
+# is hardware-dependent and can be overridden via
+# `ARK_MOE_AUTO_DECODE_MAX_TOKENS`.
+#
+# The cutoff used to be 32, a deliberately conservative value picked while the
+# decode GEMV was still the bottleneck: back then only the tiny single-/few-
+# stream case (every expert well under one DPAS tile row) was worth keeping off
+# the prefill grouped-GEMM. The decode GEMV has since reached its bandwidth
+# target for FP8 as well as int4-sym (K-split lane mapping + N-blocking inside
+# the K-split kernel, and no per-call routing sync), so it now stays ahead of
+# the grouped-GEMM over the whole small-batch range rather than only at the
+# bs1 extreme, and the cutoff moves up to 128 total tokens accordingly.
+# Batches above that still hand enough rows to each expert to fill the DPAS M
+# tile, which is where the prefill path wins. Mirrors vLLM-xpu-kernels' `w4a16`
+# dispatch, which likewise keeps the GEMV for the low tokens-per-expert regime.
+_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 128
 
 _MOE_VALID_PHASES = ("auto", "decode", "prefill")
+
+
+def _moe_auto_decode_max_total_tokens() -> int:
+    """Return auto decode threshold from env or the module default.
+
+    ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` is accepted when it is a positive
+    integer. Unset/empty/invalid values fall back to
+    ``_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS``.
+    """
+    env = os.environ.get("ARK_MOE_AUTO_DECODE_MAX_TOKENS")
+    if env is None:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    env = env.strip()
+    if not env:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    try:
+        value = int(env)
+    except ValueError:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    if value <= 0:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    return value
 
 
 def moe(
@@ -3207,7 +3733,7 @@ def moe(
     group_size: int = 128,
     asym: bool = False,
     phase: str = "auto",
-    decode_threshold: int = _MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT,
+    decode_threshold: Optional[int] = None,
 ) -> torch.Tensor:
     """Unified MoE GEMM entry point that dispatches to decode or prefill.
 
@@ -3223,23 +3749,23 @@ def moe(
         weights: ``[E, N, K_packed]`` -- see :func:`moe_gemm_decode` for the
             quant-specific layout/dtype contract.
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
-            ``activations.shape[0]``.
+            ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
         scales, zeros, weight_bits, group_size, asym: forwarded to the
             underlying kernel; see :func:`moe_gemm_decode`.
         phase: dispatch mode.
 
-            * ``"auto"`` (default): inspect ``num_tokens_per_expert.max()``
-              and pick decode if every expert sees ``<= decode_threshold``
-              tokens, otherwise prefill. This incurs one small host-device
-              sync per call.
+            * ``"auto"`` (default): dispatch to decode when
+              ``activations.shape[0] <= decode_threshold`` (total tokens),
+              otherwise prefill.
             * ``"decode"``: always dispatch to :func:`moe_gemm_decode`. Use
               when the model's generation loop already knows it is in the
-              decode phase; avoids the sync.
+              decode phase.
             * ``"prefill"``: always dispatch to :func:`moe_gemm_prefill`.
               Use when the model knows it is in the prefill phase.
-        decode_threshold: ``"auto"`` mode dispatches to decode when
-            ``num_tokens_per_expert.max() <= decode_threshold``. Defaults to
-            4 (the regime the decode GEMV kernel is tuned for).
+        decode_threshold: Total-token threshold for ``"auto"`` mode. If not
+            provided, uses ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` when set to a
+            valid positive integer, otherwise defaults to 128. Explicit
+            argument values take precedence over the environment variable.
 
     Returns:
         ``[total_tokens, N]`` in the activations dtype. Bit-identical to the
@@ -3249,14 +3775,11 @@ def moe(
         raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
 
     if phase == "auto":
-        # `.max().item()` triggers a host-device sync; callers in tight
-        # decode loops should pass `phase="decode"` explicitly to skip this.
-        # We tolerate a non-int32 / non-contiguous tensor here because the
-        # downstream kernel wrappers will normalise it anyway.
+        threshold = _moe_auto_decode_max_total_tokens() if decode_threshold is None else int(decode_threshold)
         if num_tokens_per_expert.numel() == 0:
             raise ValueError("num_tokens_per_expert must be non-empty")
-        max_tpe = int(num_tokens_per_expert.max().item())
-        phase = "decode" if max_tpe <= int(decode_threshold) else "prefill"
+        total_tokens = int(activations.shape[0])
+        phase = "decode" if total_tokens <= threshold else "prefill"
 
     if phase == "decode":
         return moe_gemm_decode(
