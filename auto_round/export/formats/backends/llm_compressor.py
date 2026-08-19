@@ -29,6 +29,7 @@ class LLMCompressorFormat(OutputFormat):
         "MXFP4",
         "MXFP8",
         "NVFP4",
+        "NVFP4_E5M3",
         "FPW8A16",
         "FP8_STATIC",
         "INT8",
@@ -53,7 +54,12 @@ class LLMCompressorFormat(OutputFormat):
         if re.search("^(auto_round:)?llm_compressor", format):
             self.output_format = format
             self.backend = None
-            if scheme.is_nv_fp() or scheme.is_mx_fp():
+            if scheme.data_type == "nvfp4_v2":
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+                check_compressed_tensors_supported(raise_error=True)
+                self.output_format = "llm_compressor:nvfp4_v2"
+            elif scheme.is_nv_fp() or scheme.is_mx_fp():
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported(raise_error=True)
@@ -139,6 +145,8 @@ class LLMCompressorFormat(OutputFormat):
             )
 
         if scheme.act_bits <= 8 and (not scheme.is_act_standard_fp() or scheme.act_dynamic):
+            if scheme.act_data_type == "nvfp4_v2":
+                return None, scheme, layer_config, quant_block_list
             if (scheme.is_act_nv_fp() and "static_gs" in scheme.act_data_type) or scheme.is_act_mx_fp():
                 return None, scheme, layer_config, quant_block_list
             elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
@@ -163,7 +171,7 @@ class LLMCompressorFormat(OutputFormat):
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.backend is not None:
             return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
-        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", self.output_format):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}|nvfp4_v2", self.output_format):
             from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
             return pack_layer(layer_name, model, device=device)
@@ -199,7 +207,7 @@ class LLMCompressorFormat(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         backend = self.get_backend_name()
-        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", backend):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}|nvfp4_v2", backend):
             from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
 
             export_func = save_quantized_as_fp
