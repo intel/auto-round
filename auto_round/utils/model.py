@@ -916,8 +916,10 @@ def diffusion_load_model(
 
     pipe = _to_model_dtype(pipe, model_dtype)
     if hasattr(pipe, "unet"):
+        # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
         model = pipe.unet
     else:
+        # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
         model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls
