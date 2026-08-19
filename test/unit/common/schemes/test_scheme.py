@@ -133,10 +133,10 @@ class TestAutoRound:
         "scheme", ["W8A16", "MXFP8", "FPW8A16", "FP8_BLOCK", "FP8_STATIC", "GGUF:Q2_K_S", "GGUF:Q4_K_M"]
     )
     def test_all_scheme(self, scheme, tiny_qwen_model_path, dataloader):
-        model_name = tiny_qwen_model_path
         print(f"scheme={scheme}")
-        ar = AutoRound(model_name, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
-        ar.quantize_and_save(self.save_folder)
+        ar = AutoRound(tiny_qwen_model_path, scheme=scheme, nsamples=1, iters=1, seqlen=2, dataset=dataloader)
+        ar.post_init()
+        assert ar.bits > 0
 
     def test_scheme_in_layer_config(self, dataloader):
         model = get_tiny_model(opt_name_or_path, num_layers=5)

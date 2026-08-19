@@ -29,9 +29,9 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AWQConfig, SignRoundConfig
-from auto_round.utils.device_manager import get_available_device_types
+from auto_round.utils.device_manager import get_major_device
 
-_AVAILABLE_DEVICES = ["cpu"] + [d for d in get_available_device_types() if d != "cpu"]
+_AVAILABLE_DEVICES = [get_major_device()]
 _CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
 

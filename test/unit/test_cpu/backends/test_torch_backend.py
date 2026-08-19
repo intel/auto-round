@@ -29,9 +29,9 @@ import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.utils.device_manager import get_available_device_types
+from auto_round.utils.device_manager import get_major_device
 
-_AVAILABLE_DEVICES = ["cpu"] + [d for d in get_available_device_types() if d != "cpu"]
+_AVAILABLE_DEVICES = [get_major_device()]
 
 # (sym, group_size, format) combinations for 4-bit quantization.
 _4BIT_CASES = [

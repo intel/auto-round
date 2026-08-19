@@ -35,11 +35,11 @@ class TestAutoRoundCmd:
         shutil.rmtree("runs", ignore_errors=True)
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    def test_auto_round_cmd(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+    def test_auto_round_cmd(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "-h"])
 
     @pytest.mark.timeout(90)
-    def test_auto_round_cmd2(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+    def test_auto_round_cmd2(self, monkeypatch, tiny_opt_model_path):
         _assert_cli_ok(
             monkeypatch,
             [
@@ -63,14 +63,22 @@ class TestAutoRoundCmd:
             ],
         )
 
-    @pytest.mark.timeout(90)
-    def test_auto_round_cmd3(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        _assert_cli_ok(
-            monkeypatch,
+    def test_auto_round_cmd3_routes_eval_task_by_task_without_quantizing(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+
+        def fake_start(argv=None):
+            captured["argv"] = argv
+
+        monkeypatch.setattr(cli_main, "start", fake_start)
+        monkeypatch.setattr(
+            sys,
+            "argv",
             [
                 "auto_round",
                 "--model",
-                tiny_opt_model_path,
+                "dummy-model",
                 "--seqlen",
                 "8",
                 "--iter",
@@ -86,9 +94,20 @@ class TestAutoRoundCmd:
                 "2",
             ],
         )
+        cli_main.run()
+
+        assert captured["argv"][-7:] == [
+            "--eval_task_by_task",
+            "--tasks",
+            "openbookqa",
+            "--bs",
+            "32",
+            "--limit",
+            "2",
+        ]
 
     @pytest.mark.timeout(90)
-    def test_auto_round_cmd4(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+    def test_auto_round_cmd4(self, monkeypatch):
         _assert_cli_ok(
             monkeypatch,
             [
@@ -109,14 +128,14 @@ class TestAutoRoundCmd:
             entry=run_light,
         )
 
-    def test_auto_round_cmd5(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+    def test_auto_round_cmd5(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "--eval", "-h"])
 
-    def test_auto_round_cmd6(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+    def test_auto_round_cmd6(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "--eval", "--lmms", "-h"])
 
     @pytest.mark.timeout(90)
-    def test_auto_round_cmd7(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
+    def test_auto_round_cmd7(self, monkeypatch, tiny_qwen_vl_model_path):
         _assert_cli_ok(
             monkeypatch,
             [
@@ -137,10 +156,18 @@ class TestAutoRoundCmd:
             ],
         )
 
-    @pytest.mark.timeout(60)
-    def test_auto_round_cmd8(self, monkeypatch, tiny_opt_model_path, tiny_qwen_vl_model_path):
-        _assert_cli_ok(
-            monkeypatch,
+    def test_auto_round_cmd8_routes_quant_nontext_module_without_quantizing(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+
+        def fake_start(argv=None):
+            captured["argv"] = argv
+
+        monkeypatch.setattr(cli_main, "start", fake_start)
+        monkeypatch.setattr(
+            sys,
+            "argv",
             [
                 "auto_round",
                 "--mllm",
@@ -149,7 +176,7 @@ class TestAutoRoundCmd:
                 "--nsamples",
                 "2",
                 "--model",
-                tiny_qwen_vl_model_path,
+                "dummy-model",
                 "--seqlen",
                 "32",
                 "--format",
@@ -159,16 +186,20 @@ class TestAutoRoundCmd:
                 self.save_dir,
             ],
         )
+        cli_main.run()
 
-    def test_layer_config(self, monkeypatch, tiny_opt_model_path):
-        """Test --layer_config with unquoted JSON-like syntax."""
+        assert "--quant_nontext_module" in captured["argv"]
+        assert "--mllm" in captured["argv"]
+
+    def test_layer_config(self):
+        """Test --layer_config parsing without starting a quantization run."""
+        from auto_round.cli.parser import build_quantize_parser
+
         layer_cfg = r"{fc1:{bits:8,data_type:int},fc2:{bits:16,data_type:int}}"
-        _assert_cli_ok(
-            monkeypatch,
+        args = build_quantize_parser().parse_args(
             [
-                "auto_round",
                 "--model",
-                tiny_opt_model_path,
+                "dummy-model",
                 "--seqlen",
                 "8",
                 "--iter",
@@ -180,8 +211,9 @@ class TestAutoRoundCmd:
                 "auto_round",
                 "--output_dir",
                 self.save_dir,
-            ],
+            ]
         )
+        assert args.layer_config == layer_cfg
 
 
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):

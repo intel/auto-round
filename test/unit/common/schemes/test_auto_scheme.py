@@ -8,6 +8,19 @@ from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
 
 
+def _make_local_calibration_dataset(tmp_path):
+    dataset_path = tmp_path / "calibration.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                "auto round calibration sample with enough text for autoscheme scoring. " * 64,
+                "another local sample keeps scheme tests independent of network datasets. " * 64,
+            ]
+        )
+    )
+    return str(dataset_path)
+
+
 @pytest.mark.parametrize(
     "model_type, expected",
     [
@@ -424,7 +437,14 @@ class TestAutoScheme:
             nsamples=1,
             ignore_scale_zp_bits=True,
         )
-        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, nsamples=1)
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            dataset=_make_local_calibration_dataset(tmp_path),
+        )
         _, layer_config = ar.quantize()
 
         # Cache files must exist — one per scheme (2 schemes here)
@@ -488,18 +508,8 @@ class TestAutoScheme:
             f"got low={low_avg:.2f} high={high_avg:.2f}"
         )
 
-    def test_shared_layers_assigns_same_bits(self, tiny_opt_model_path):
+    def test_shared_layers_assigns_same_bits(self, tiny_opt_model_path, tmp_path):
         """With shared_layers=[q_proj,k_proj,v_proj], all three must get the same bits per block."""
-        scheme = AutoScheme(
-            avg_bits=5,
-            options=("MXFP4", "MXFP8"),
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-            shared_layers=[["fc1", "fc2"]],
-        )
-        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, nsamples=1)
-        _, layer_config = ar.quantize()
-
         scheme = AutoScheme(
             avg_bits=5,
             options=("MXFP4", "MXFP8"),
@@ -507,7 +517,14 @@ class TestAutoScheme:
             ignore_scale_zp_bits=True,
             shared_layers=[["q_proj", "k_proj", "v_proj"]],
         )
-        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, nsamples=1)
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            dataset=_make_local_calibration_dataset(tmp_path),
+        )
         _, layer_config = ar.quantize()
 
         # Collect per-block q/k/v bits

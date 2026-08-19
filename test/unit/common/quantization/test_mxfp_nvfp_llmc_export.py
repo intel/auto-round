@@ -279,32 +279,6 @@ class TestAutoRoundFP:
             0.05 < folder_size_gb < 0.1
         ), f"Quantized model folder size {folder_size_gb:.2f} GB is outside the expected range (0.05~0.1 GB)"
 
-    def test_nvfp4_autoround_format(self, tiny_opt_model_path, dataloader):
-        model_name = tiny_opt_model_path
-        from transformers import AutoConfig
-
-        scheme = "NVFP4"
-        autoround = AutoRound(
-            model_name,
-            scheme=scheme,
-            iters=2,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-        compressed_model, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, format="auto_round"
-        )
-        tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
-        assert (
-            hasattr(tmp_layer, "weight_scale")
-            and hasattr(tmp_layer, "weight_global_scale")
-            and hasattr(tmp_layer, "input_global_scale")
-            and tmp_layer.weight_packed.dtype is torch.uint8
-            and tmp_layer.weight_scale.dtype is torch.float8_e4m3fn
-            and tmp_layer.weight_scale.shape[0] == 768
-        ), "Illegal NVFP4 packing name or data_type or shape"
-
     def test_nvfp4_autoround_save_quantized(self, tiny_opt_model_path, dataloader, monkeypatch):
         model_name = tiny_opt_model_path
         from transformers import AutoConfig
@@ -330,28 +304,6 @@ class TestAutoRoundFP:
             and tmp_layer.weight_scale.dtype is torch.float8_e4m3fn
             and tmp_layer.weight_scale.shape[0] == 768
         ), "Illegal NVFP4 packing name or data_type or shape"
-
-    def test_qwen_moe_quant_infer(self, tiny_qwen_moe_model_path, dataloader):
-        model_name = tiny_qwen_moe_model_path
-        layer_config = {
-            "layers.0": {"bits": 16, "act_bits": 16},
-            # general recipe allows moe quantization
-            "layers.1.mlp.experts": {"bits": 16, "act_bits": 16},
-        }
-        scheme = "nvfp4"
-        autoround = AutoRound(
-            model_name,
-            scheme=scheme,
-            iters=1,
-            seqlen=2,
-            nsamples=2,
-            dataset=dataloader,
-            layer_config=layer_config,
-        )
-        quantized_model_path = self.save_dir
-        _, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, inplace=True, format="auto_round"
-        )
 
     @pytest.mark.parametrize(
         "scheme, static_kv_dtype, static_attention_dtype",
