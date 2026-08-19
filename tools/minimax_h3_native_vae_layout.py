@@ -19,7 +19,6 @@ import json
 import shutil
 from pathlib import Path
 
-
 _SHARED_COMPONENTS = ("transformer", "tokenizer", "processor", "text_encoder", "scheduler", "audio_scheduler")
 
 

@@ -615,12 +615,16 @@ class _CompressorBuilder(object):
         act_bits = resolved_attrs.get("act_bits")
         act_data_type = resolved_attrs.get("act_data_type")
         act_dynamic = resolved_attrs.get("act_dynamic")
-        needs_act_calib = act_bits is not None and act_bits <= 8 and check_need_act_calibration(
-            act_dynamic,
-            act_data_type,
-            act_bits,
-            static_kv_dtype=base_kwargs.get("static_kv_dtype"),
-            static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+        needs_act_calib = (
+            act_bits is not None
+            and act_bits <= 8
+            and check_need_act_calibration(
+                act_dynamic,
+                act_data_type,
+                act_bits,
+                static_kv_dtype=base_kwargs.get("static_kv_dtype"),
+                static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+            )
         )
         if needs_act_calib:
             raise ValueError(

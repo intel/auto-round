@@ -26,17 +26,14 @@ try:
 except RuntimeError:
     pass
 
-from auto_round import AutoRound
-
 from minimax_h3_native_vae_layout import repack_native_vae
 
+from auto_round import AutoRound
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = Path(os.environ.get("MINIMAX_H3_MODEL", ROOT / "artifacts/minimax_h3_real_pretrained"))
 PROMPT_TSV = Path(os.environ.get("MINIMAX_H3_PROMPT_TSV", ROOT / "tools/minimax_h3_fp8_prompt.tsv"))
-OUTPUT = Path(
-    os.environ.get("MINIMAX_H3_W4A16_OUTPUT", ROOT / "artifacts/minimax_h3_w4a16_packed_pretrained")
-)
+OUTPUT = Path(os.environ.get("MINIMAX_H3_W4A16_OUTPUT", ROOT / "artifacts/minimax_h3_w4a16_packed_pretrained"))
 OFFICIAL_FL2VA = os.environ.get("MINIMAX_H3_OFFICIAL_FL2VA")
 
 
