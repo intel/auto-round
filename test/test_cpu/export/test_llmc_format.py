@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -75,6 +76,34 @@ class TestLLMC:
 
         f = safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt")
         assert len(f.get_tensor("model.decoder.layers.0.fc1.weight_scale").shape) == 2
+
+    def test_llmcompressor_mixed_woq_uses_layer_targets(self):
+        from auto_round.export.export_to_llmcompressor.export import construct_ct_scheme
+
+        w2_layer = SimpleNamespace(
+            bits=2,
+            data_type="int",
+            sym=True,
+            group_size=64,
+            act_bits=16,
+            act_data_type=None,
+        )
+        w4_layer = SimpleNamespace(
+            bits=4,
+            data_type="int",
+            sym=True,
+            group_size=128,
+            act_bits=16,
+            act_data_type=None,
+        )
+
+        w2_scheme = construct_ct_scheme(w2_layer, targets=["model.layers.0.self_attn.q_proj"])
+        w4_scheme = construct_ct_scheme(w4_layer, targets=["lm_head"])
+
+        assert w2_scheme.targets == ["model.layers.0.self_attn.q_proj"]
+        assert w4_scheme.targets == ["lm_head"]
+        assert w2_scheme.weights.num_bits == 2
+        assert w4_scheme.weights.num_bits == 4
 
     def test_autoround_llmcompressor_fp8(self, tmp_path):
         ## quantize the model
