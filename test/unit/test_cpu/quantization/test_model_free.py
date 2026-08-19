@@ -353,6 +353,18 @@ class TestBuildIgnorePatterns:
         assert "lm_head" not in core.ignore_patterns
         assert "head" in core.ignore_patterns
 
+    def test_embed_out_not_ignored_when_in_layer_config(self):
+        """Pythia/Dolly models use 'embed_out' as the lm_head layer name."""
+        core = self._make_core(layer_config={"embed_out": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "embed_out" not in core.ignore_patterns
+
+    def test_output_not_ignored_when_in_layer_config(self):
+        """Some InternLM variants use 'output' as the lm_head layer name."""
+        core = self._make_core(layer_config={"output": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "output" not in core.ignore_patterns
+
 
 # ===========================================================================
 #  _process_shard

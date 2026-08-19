@@ -151,6 +151,13 @@ _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
 
+# Known lm_head layer name variants across model families:
+#   "lm_head"  – most models (LLaMA, Mistral, Qwen, …)
+#   "head"     – DeepSeek v4
+#   "embed_out" – Pythia / Dolly
+#   "output"   – some InternLM variants
+_LM_HEAD_PATTERNS: tuple[str, ...] = ("lm_head", "head", "embed_out", "output")
+
 
 # ---------------------------------------------------------------------------
 # Predefined ignore-layer rules
@@ -2387,10 +2394,11 @@ class _ModelFreeCompressorCore:
 
         if not self.quant_lm_head:
             layer_config_keys = set(self.layer_config or {})
-            # Only skip a pattern if the user has not explicitly listed it (or a key containing it) in layer_config.
-            # This handles models whose lm_head is not literally named "lm_head" (e.g. "head" for DeepSeek v4):
-            # each candidate pattern is checked independently so a user-specified key takes priority.
-            for lm_head_pattern in ("lm_head", "head"):  # "head" covers deepseek v4
+            # Skip each known lm_head name variant unless the user has explicitly listed it in layer_config.
+            # Each pattern is checked independently so a user-specified key takes priority over the default.
+            # Known variants: "lm_head" (most models), "head" (DeepSeek v4),
+            #                 "embed_out" (Pythia/Dolly), "output" (some InternLM variants).
+            for lm_head_pattern in _LM_HEAD_PATTERNS:
                 pattern_in_config = any(key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys)
                 if not pattern_in_config and lm_head_pattern not in ignore_patterns:
                     ignore_patterns.append(lm_head_pattern)
