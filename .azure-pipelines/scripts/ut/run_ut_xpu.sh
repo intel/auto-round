@@ -10,6 +10,7 @@ SESSION_TIMEOUT=600
 function setup_environment() {
     echo "##[group]set up UT env..."
     uv pip install pytest-cov pytest-timeout
+    uv pip install -U chardet
     uv pip list
     echo "##[endgroup]"
 
@@ -42,17 +43,15 @@ function run_unit_test() {
     xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
     common_tests=$(filter_changed_tests "test" "$(find ./unit/common -name "test*.py" | sort)")
 
-    for test_file in ${common_tests}; do
-        local test_basename=$(basename ${test_file} .py)
-
-        echo "##[group]Running common ${test_file}..."
-        local ut_log_name="${LOG_DIR}/unittest_common_${test_basename}.log"
+    if [ -n "${common_tests}" ]; then
+        echo "##[group]Running common tests..."
+        local ut_log_name="${LOG_DIR}/unittest_common.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+                --junitxml="${ut_log_name%.log}.xml" ${common_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
-    done
+    fi
 
     for test_file in ${xpu_tests}; do
         local test_basename=$(basename ${test_file} .py)
