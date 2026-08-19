@@ -20,6 +20,7 @@ from typing import List, Union
 import torch
 from torch.nn import Linear, Module
 
+from auto_round import envs
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
@@ -442,9 +443,12 @@ def update_fused_layer_global_scales(
     For MLP layers:
       - gate_proj and up_proj share a single global scale.
 
-    This behavior is currently required by vLLM and may become optional
-    in the future.
+    Set ``AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0`` to retain per-projection
+    global scales. The default keeps scales compatible with vLLM fused kernels.
     """
+    if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE:
+        return
+
     global_scale_name = f"{base_name}_global_scale"
 
     def _collect_scales(mods: List[Module]) -> List[torch.Tensor]:
@@ -459,14 +463,10 @@ def update_fused_layer_global_scales(
         return scales
 
     def _is_attention_module(module: Module):
-        return "attention" in module.__class__.__name__.lower() and (
-            hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
-        )
+        return all(hasattr(module, projection) for projection in ("q_proj", "k_proj", "v_proj"))
 
     def _is_mlp_module(module: Module):
-        return "mlp" in module.__class__.__name__.lower() and (
-            hasattr(module, "gate_proj") and hasattr(module, "up_proj")
-        )
+        return all(hasattr(module, projection) for projection in ("gate_proj", "up_proj"))
 
     def _update_global_scales(modules: List[Module]):
         """Update global scales for a list of modules."""
@@ -487,9 +487,6 @@ def update_fused_layer_global_scales(
 
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
-        # Already fused
-        if hasattr(submodule, "qkv_proj"):
-            return
         _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
         return
 

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     AR_DISK_STREAM_MODEL: bool = False
     AR_RESUME_DIR: Optional[str] = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
+    AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -116,6 +117,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # to rotate token assignments across all experts for calibration coverage.
     "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
     in ("1", "true", "yes"),
+    # vLLM fused kernels require q/k/v and gate/up projections to use one
+    # weight global scale. Disable only for runtimes without that requirement.
+    "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
+    not in ("0", "false", "no", "off"),
 }
 
 

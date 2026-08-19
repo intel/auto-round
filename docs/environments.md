@@ -30,6 +30,16 @@ export AR_LOG_LEVEL=DEBUG
 export AR_ENABLE_COMPILE_PACKING=1
 ```
 
+### AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE
+- **Description**: Makes fused NVFP4 weight projections use one shared weight global scale. This applies to `q_proj`/`k_proj`/`v_proj` and `gate_proj`/`up_proj`, as required by vLLM fused kernels.
+- **Default**: `True` (equivalent to `"1"`)
+- **Valid Values**: `"0"`, `"false"`, `"no"`, or `"off"` (case-insensitive) disable sharing; any other value enables it.
+- **Usage**: Disable only when exporting for a runtime that does not require fused projections to share a global scale.
+
+```bash
+export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
+```
+
 ### AR_USE_MODELSCOPE
 - **Description**: Controls whether to use ModelScope for model downloads
 - **Default**: `False`
