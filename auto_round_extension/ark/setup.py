@@ -210,10 +210,20 @@ def get_system_memory_gb():
 
 
 def get_sycl_tla_job_count(cpu_job_count):
+    override = os.environ.get("ARK_SYCL_TLA_JOBS")
+    if override is not None:
+        try:
+            jobs = int(override)
+        except ValueError as error:
+            raise ValueError("ARK_SYCL_TLA_JOBS must be a positive integer") from error
+        if jobs < 1:
+            raise ValueError("ARK_SYCL_TLA_JOBS must be a positive integer")
+        return min(cpu_job_count, jobs)
+
     memory_gb = get_system_memory_gb()
     memory_based_jobs = max(
-        1, int(memory_gb // 16)
-    )  # about 5GB/job for SYCL TLA build, use at most 5/16 of total memory to avoid OOM
+        1, int(memory_gb // 3)
+    )  # reserve about 3GB per SYCL TLA compiler job
     return min(cpu_job_count, memory_based_jobs)
 
 
@@ -237,8 +247,8 @@ class CMakeBuild(build_ext):
             cmake_cmd.append("-GNinja")
         subprocess.check_call(cmake_cmd)
 
-        n_job = os.cpu_count() or 2
-        n_job = n_job // 2
+        cpu_count = os.cpu_count() or 2
+        n_job = max(1, cpu_count // 2)
         subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
 
         ext = "pyd" if sys.platform == "win32" else "so"

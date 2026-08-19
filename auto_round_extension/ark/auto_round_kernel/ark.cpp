@@ -28,13 +28,7 @@ typedef uintptr_t torch_ptr;
 #include "xpu_wrapper.hpp"
 #include "sycl_s8_wrapper.hpp"
 #if ARK_SYCL_TLA
-// Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
-#include "sycl_tla_moe.hpp"
-#include "sycl_tla_moe_decode.hpp"
-#include "sycl_tla_moe_mixed.hpp"
-#include "sycl_tla_sdpa.hpp"
-#include "sycl_tla_dense_gemm.hpp"
 #endif
 #else
 #include "ark/cpu/sdpa.h"
