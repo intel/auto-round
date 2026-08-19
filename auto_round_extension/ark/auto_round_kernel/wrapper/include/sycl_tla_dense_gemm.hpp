@@ -115,7 +115,7 @@ void gemm_device_impl(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA c
 
     reorder(tArA, tCrA);
     reorder(tBrB, tCrB);
-    gemm(mma, tCrA, tCrB, tCrC);
+    cute::gemm(mma, tCrA, tCrB, tCrC);
 
     barrier_wait(barrier_scope);
   }

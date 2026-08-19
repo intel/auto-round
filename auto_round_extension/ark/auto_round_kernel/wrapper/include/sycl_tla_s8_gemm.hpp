@@ -134,7 +134,7 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
 
       reorder(tArA, tCrA);
       reorder(tBrB, tCrB);
-      gemm(mma, tCrA, tCrB, tCrC);
+      cute::gemm(mma, tCrA, tCrB, tCrC);
 
       barrier_wait(barrier_scope);
     }
@@ -245,7 +245,7 @@ void igemm_device_impl(ATensor const& A, BTensor const& B, TiledMMA const& mma, 
 
     reorder(tArA, tCrA);
     reorder(tBrB, tCrB);
-    gemm(mma, tCrA, tCrB, tCrC);
+    cute::gemm(mma, tCrA, tCrB, tCrC);
 
     barrier_wait(barrier_scope);
     }
