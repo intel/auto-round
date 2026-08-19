@@ -114,6 +114,64 @@ def _make_mock_model(cls, hparams=None):
 
 
 # ==============================================================================
+# granite.py tests
+# ==============================================================================
+
+
+class TestGraniteMoeConversion:
+    """Tests for aggregated expert tensors restored from linearized Granite MoE modules."""
+
+    @staticmethod
+    def _make_model(hparams, architecture="GraniteMoeHybridForCausalLM"):
+        from auto_round.export.export_to_gguf.conversion.granite import GraniteMoeModel
+        from auto_round.export.export_to_gguf.special_handle import handle_special_model
+
+        obj = _make_mock_model(GraniteMoeModel, hparams)
+        return handle_special_model(obj, architecture)
+
+    @pytest.mark.parametrize(
+        ("projection", "tensor_type"),
+        [
+            ("down_proj", "FFN_DOWN_EXP"),
+            ("gate_proj", "FFN_GATE_EXP"),
+            ("up_proj", "FFN_UP_EXP"),
+        ],
+    )
+    @pytest.mark.parametrize("suffix", ["", ".weight"])
+    def test_modify_tensors_maps_aggregated_expert_projection(self, projection, tensor_type, suffix):
+        obj = self._make_model({"num_local_experts": 4})
+        data = torch.randn(4, 8, 16)
+
+        name = f"model.layers.0.block_sparse_moe.experts.{projection}{suffix}"
+        result = list(obj.modify_tensors(data, name, bid=0))
+
+        assert result == [(f"{tensor_type}.weight", data)]
+
+    def test_modify_tensors_rejects_non_aggregated_expert_projection(self):
+        obj = self._make_model({"num_local_experts": 4})
+
+        with pytest.raises(ValueError, match="three-dimensional"):
+            list(
+                obj.modify_tensors(
+                    torch.randn(8, 16),
+                    "model.layers.0.block_sparse_moe.experts.down_proj",
+                    bid=0,
+                )
+            )
+
+    @pytest.mark.parametrize("suffix", ["", ".weight"])
+    def test_modify_tensors_splits_aggregated_gate_up_projection(self, suffix):
+        obj = self._make_model({"num_local_experts": 4, "intermediate_size": 8})
+        data = torch.randn(4, 16, 32)
+
+        name = f"model.layers.0.block_sparse_moe.experts.gate_up_proj{suffix}"
+        result = list(obj.modify_tensors(data, name, bid=0))
+
+        assert [item[0] for item in result] == ["FFN_GATE_EXP.weight", "FFN_UP_EXP.weight"]
+        assert [item[1].shape for item in result] == [(4, 8, 32), (4, 8, 32)]
+
+
+# ==============================================================================
 # mimo.py tests
 # ==============================================================================
 

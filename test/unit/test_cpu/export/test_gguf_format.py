@@ -1,7 +1,10 @@
 import os
 import shutil
 import sys
+from importlib import import_module
 from test.helpers import eval_generated_prompt, get_model_path, get_tiny_model, save_tiny_model
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -10,6 +13,54 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
+
+
+def test_pack_gguf_layer_clears_global_state_on_error(monkeypatch, tmp_path):
+    export_module = import_module("auto_round.export.export_to_gguf.export")
+    failure = RuntimeError("packing failed")
+    gguf_model = SimpleNamespace(
+        model_arch=object(),
+        prepare_tensors=MagicMock(side_effect=failure),
+    )
+    block = MagicMock()
+    block.named_modules.return_value = []
+    model = SimpleNamespace(last_layer_name_to_block_name={"layer.weight": "model.layers.0"})
+
+    monkeypatch.setattr(export_module, "get_module", lambda *_: block)
+    export_module.gguf_model_instance_global = [gguf_model]
+
+    try:
+        with pytest.raises(RuntimeError, match="packing failed"):
+            export_module.pack_gguf_layer(
+                "layer.weight",
+                model,
+                "gguf:q4_0",
+                str(tmp_path),
+                {},
+                tokenizer=None,
+            )
+
+        assert not hasattr(export_module, "gguf_model_instance_global")
+    finally:
+        export_module._clear_gguf_model_instances()
+
+
+def test_save_gguf_clears_global_state_on_writer_error():
+    export_module = import_module("auto_round.export.export_to_gguf.export")
+    gguf_model = SimpleNamespace(
+        model_arch=object(),
+        fname_out="broken.gguf",
+        write=MagicMock(side_effect=RuntimeError("writer failed")),
+    )
+    export_module.gguf_model_instance_global = [gguf_model]
+
+    try:
+        with pytest.raises(RuntimeError, match="writer failed"):
+            export_module.save_quantized_as_gguf("unused", model=object())
+
+        assert not hasattr(export_module, "gguf_model_instance_global")
+    finally:
+        export_module._clear_gguf_model_instances()
 
 
 def _run_auto_round_cli(monkeypatch, cmd):
@@ -370,6 +421,48 @@ class TestGGUF:
         assert isinstance(model_instance.model, FakeModel)
         assert model_instance.ftype is ftypes["q4_0"]
         assert model_instance.fname_out == tmp_path
+
+    def test_autoround_export_disables_mtp_for_supported_conversion(self, tmp_path):
+        from auto_round.export.export_to_gguf import export
+
+        class FakeMtpModel:
+            supports_mtp_export = True
+            no_mtp = False
+
+            def __init__(self, hparams, **kwargs):
+                assert type(self).no_mtp
+                self.hparams = hparams
+                self.__dict__.update(kwargs)
+
+        instance = export._create_conversion_model(
+            FakeMtpModel,
+            {"num_hidden_layers": 4},
+            dir_model=tmp_path,
+        )
+
+        assert instance.no_mtp
+        assert isinstance(instance, FakeMtpModel)
+        assert FakeMtpModel.no_mtp is False
+
+    def test_autoround_export_keeps_non_mtp_conversion_unchanged(self, tmp_path):
+        from auto_round.export.export_to_gguf import export
+
+        class FakeModel:
+            supports_mtp_export = False
+            no_mtp = False
+
+            def __init__(self, hparams, **kwargs):
+                assert not type(self).no_mtp
+                self.hparams = hparams
+                self.__dict__.update(kwargs)
+
+        instance = export._create_conversion_model(
+            FakeModel,
+            {"num_hidden_layers": 4},
+            dir_model=tmp_path,
+        )
+
+        assert instance.no_mtp is False
 
     def test_qtype_setting(self, tiny_qwen_vl_model_path):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
