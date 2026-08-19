@@ -89,7 +89,7 @@ function run_unit_test_llmc() {
     fi
 
     echo "##[group]set up llmc UT env..."
-    BUILD_TYPE="nightly" uv pip install -r ./unit/test_xpu/requirements_llmc.txt
+    BUILD_TYPE="nightly" uv pip install -r ./integration/test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
 
