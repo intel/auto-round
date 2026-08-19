@@ -2391,7 +2391,7 @@ class _ModelFreeCompressorCore:
             # This handles models whose lm_head is not literally named "lm_head" (e.g. "head" for DeepSeek v4):
             # each candidate pattern is checked independently so a user-specified key takes priority.
             for lm_head_pattern in ("lm_head", "head"):  # "head" covers deepseek v4
-                pattern_in_config = any(lm_head_pattern in key for key in layer_config_keys)
+                pattern_in_config = any(key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys)
                 if not pattern_in_config and lm_head_pattern not in ignore_patterns:
                     ignore_patterns.append(lm_head_pattern)
 
