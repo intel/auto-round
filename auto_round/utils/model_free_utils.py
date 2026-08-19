@@ -867,10 +867,11 @@ def _handle_mxfp_source_tensors(
 
     for layer_name, weight_key, scale_key, bits in entries:
         scheme = matcher.resolve_scheme(f"{layer_name}.weight")
+        is_ignored = matcher.should_ignore(f"{layer_name}.weight")
         target_is_same_mxfp = (
             scheme is not None and is_mx_fp((scheme.get("data_type") or "").lower()) and scheme.get("bits") == bits
         )
-        if target_is_same_mxfp:
+        if target_is_same_mxfp and not is_ignored:
             passthrough_tensors[weight_key] = raw_tensors.pop(weight_key).to("cpu")
             passthrough_tensors[scale_key] = raw_tensors.pop(scale_key).to("cpu")
             passthrough_layers.append(layer_name)
@@ -1063,16 +1064,15 @@ def _process_shard(
         )
     )
 
-    # Preserve original tensors for ignored/skipped layers so that already-
+    # Preserve original tensors for predefined skipped layers so that already-
     # quantized weights (FP8, FP4-packed, etc.) are NOT dequantized.
-    # Check both ".weight" and ".weight_packed" so that layers whose primary
-    # tensor uses non-standard naming (e.g. already-quantized FP4-packed layers
-    # stored as ".weight_packed") are correctly captured.
+    # User-specified ignore layers should still flow through the dequant path
+    # so the saved model exports them in full precision.
     preserved_prefixes: set[str] = set()
     for tname in raw_tensors:
-        if (tname.endswith(".weight") or tname.endswith(".weight_packed") or tname.endswith(".qweight")) and (
-            matcher.should_ignore(tname) or matcher.should_skip(tname)
-        ):
+        if (
+            tname.endswith(".weight") or tname.endswith(".weight_packed") or tname.endswith(".qweight")
+        ) and matcher.should_skip(tname):
             preserved_prefixes.add(tname.rsplit(".", 1)[0])
 
     preserved_tensors: dict[str, torch.Tensor] = {}
