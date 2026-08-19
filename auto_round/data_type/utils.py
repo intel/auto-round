@@ -468,6 +468,10 @@ def update_fused_layer_global_scales(
     def _is_mlp_module(module: Module):
         return all(hasattr(module, projection) for projection in ("gate_proj", "up_proj"))
 
+    def _is_moe_expert_module(module: Module):
+        """Check for MoE expert naming: w1 (gate) and w3 (up)."""
+        return all(hasattr(module, projection) for projection in ("w1", "w3"))
+
     def _update_global_scales(modules: List[Module]):
         """Update global scales for a list of modules."""
         scales = _collect_scales(modules)
@@ -493,6 +497,11 @@ def update_fused_layer_global_scales(
     # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
         _update_global_scales([submodule.gate_proj, submodule.up_proj])
+        return
+
+    # ---------------- MoE Expert (w1/w3) ----------------
+    if _is_moe_expert_module(submodule):
+        _update_global_scales([submodule.w1, submodule.w3])
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
