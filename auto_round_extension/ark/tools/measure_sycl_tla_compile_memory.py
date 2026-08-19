@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import argparse
 import json
 import re
@@ -7,7 +10,6 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
-
 
 RSS_PATTERN = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
 
@@ -104,7 +106,9 @@ def main():
         result.update(analysis_by_source.get(str(command["source"]), {}))
         direct_dispatches = sum(result.get("direct_dispatch_calls", {}).values())
         result["rss_per_direct_dispatch_mib"] = (
-            result["max_rss_mib"] / direct_dispatches if result["max_rss_mib"] is not None and direct_dispatches else None
+            result["max_rss_mib"] / direct_dispatches
+            if result["max_rss_mib"] is not None and direct_dispatches
+            else None
         )
         results.append(result)
         rss = result["max_rss_mib"]
@@ -124,7 +128,9 @@ def main():
             f"{result['returncode']:11d} | {direct:15d} | {result.get('template_declarations', 'n/a'):11}"
         )
     if measured:
-        print(f"\npeak compiler RSS: {measured[0]['max_rss_mib']:.1f} MiB ({measured[0].get('label', measured[0]['source'])})")
+        print(
+            f"\npeak compiler RSS: {measured[0]['max_rss_mib']:.1f} MiB ({measured[0].get('label', measured[0]['source'])})"
+        )
     else:
         print("\nNo GNU time RSS measurements were parsed.")
 

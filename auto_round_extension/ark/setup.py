@@ -221,9 +221,7 @@ def get_sycl_tla_job_count(cpu_job_count):
         return min(cpu_job_count, jobs)
 
     memory_gb = get_system_memory_gb()
-    memory_based_jobs = max(
-        1, int(memory_gb // 3)
-    )  # reserve about 3GB per SYCL TLA compiler job
+    memory_based_jobs = max(1, int(memory_gb // 3))  # reserve about 3GB per SYCL TLA compiler job
     return min(cpu_job_count, memory_based_jobs)
 
 

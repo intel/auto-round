@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import argparse
 import json
 import re
 from collections import defaultdict, deque
 from pathlib import Path
 
-
 LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"')
-TEMPLATE_DECLARATION = re.compile(r'^\s*template\s*<')
+TEMPLATE_DECLARATION = re.compile(r"^\s*template\s*<")
 
 CALL_PATTERNS = {
     "dense_gemm": re.compile(r"\b(?:gemm_cute_store_tile\s*<|run_dense_gemm\s*\()"),
     "s8_gemm": re.compile(r"\b(?:launch_igemm\s*<|launch_igemm_kblock\s*<|run_typed\s*\()"),
     "moe_gemm": re.compile(r"\bmoe_gemm_launcher\s*<"),
     "moe_decode": re.compile(r"\blaunch_(?:fp|int4|int8|int2|fp8)\s*<"),
-    "moe_prefill": re.compile(
-        r"\b(?:moe_prefill_[a-z0-9_]+_dispatch|dequant_to_KN|launch_dequant_fp8_slm)\s*<"
-    ),
+    "moe_prefill": re.compile(r"\b(?:moe_prefill_[a-z0-9_]+_dispatch|dequant_to_KN|launch_dequant_fp8_slm)\s*<"),
     "sdpa": re.compile(r"\blaunch_(?:sage|prefill|sparse)[a-z0-9_]*\s*<"),
 }
 
@@ -182,7 +182,9 @@ def main():
             f"({sum(max_result['direct_dispatch_calls'].values())} call sites)"
         )
     print(f"translation units analyzed: {len(results)}")
-    print("\nReachable declarations include header definitions parsed by each translation unit; direct dispatch counts only calls written in the .cpp file.")
+    print(
+        "\nReachable declarations include header definitions parsed by each translation unit; direct dispatch counts only calls written in the .cpp file."
+    )
     if args.json:
         args.json.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
