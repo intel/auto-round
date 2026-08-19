@@ -1,9 +1,8 @@
 import json
 import os
 import shutil
-from types import SimpleNamespace
-
 from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -243,7 +242,9 @@ class TestLLMC:
         config_groups = quantization_config["config_groups"]
         # Packed layers are represented by their concrete module paths.
         for group_targets in (g["targets"] for g in config_groups.values()):
-            assert all("." in target for target in group_targets), f"Unexpected targets in config_groups: {group_targets}"
+            assert all(
+                "." in target for target in group_targets
+            ), f"Unexpected targets in config_groups: {group_targets}"
 
         assert quantization_config["kv_cache_scheme"] is not None
         assert getattr(compressed_model.model.decoder.layers[0].self_attn, "q_scale", None) is not None
