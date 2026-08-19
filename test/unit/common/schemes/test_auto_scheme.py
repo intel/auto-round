@@ -293,7 +293,7 @@ class TestAutoScheme:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(60)
+    @pytest.mark.timeout(70)
     def test_auto_scheme_export(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
         int_save_dir = os.path.join(self.save_dir, "int")

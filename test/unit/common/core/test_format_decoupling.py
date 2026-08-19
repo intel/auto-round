@@ -32,7 +32,9 @@ import torch.nn as nn
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.config_resolution import FormatResolution, ResolvedScheme
+from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.formats import resolve_formats
+from auto_round.inference.backend import BackendInfos, dynamic_import_inference_linear, get_layer_backend
 from auto_round.schemes import QuantizationScheme, parse_scheme
 
 
@@ -50,6 +52,7 @@ EXPECTED_FORMAT_SELECTION_BASELINE = {
     ("FP8_STATIC", "llm_compressor"): ["llm_compressor:fp8_static"],
     ("MXFP4", "auto_round"): ["auto_round:mx_fp"],
     ("NVFP4", "auto_round"): ["auto_round:nv_fp"],
+    ("NVFP4_E5M3", "auto_round"): ["auto_round:nvfp4_v2"],
 }
 
 
@@ -65,6 +68,30 @@ def test_format_selection_baseline():
         )
         results[(scheme_name, fmt)] = [f.get_backend_name() for f in resolution.formats]
     assert results == EXPECTED_FORMAT_SELECTION_BASELINE
+
+
+def test_nvfp4_e5m3_autoround_uses_llm_compressor_packing_and_torch_fallback():
+    scheme = _resolved_scheme("NVFP4_E5M3")
+    resolution = resolve_formats(
+        ResolvedScheme.from_scheme(scheme), format="auto_round", model=nn.Sequential(nn.Linear(16, 16))
+    )
+
+    assert resolution.formats[0].get_backend_name() == "auto_round:nvfp4_v2"
+    assert BackendInfos["auto_round:torch_nvfp4_e5m3"].packing_format == ["auto_round:llm_compressor_nvfp4_e5m3"]
+    assert BackendInfos["auto_round:cute_nvfp4_e5m3"].priority > BackendInfos["auto_round:torch_nvfp4_e5m3"].priority
+    assert dynamic_import_inference_linear("auto_round:torch_nvfp4_e5m3", scheme) is ar_qmodules.NVFP4E5M3QuantLinear
+    assert dynamic_import_inference_linear("auto_round:cute_nvfp4_e5m3", scheme) is ar_qmodules.CuteNVFP4E5M3QuantLinear
+    assert (
+        get_layer_backend(
+            "cpu",
+            "auto",
+            "auto_round:llm_compressor_nvfp4_e5m3",
+            scheme,
+            in_features=16,
+            out_features=16,
+        )
+        == "auto_round:torch_nvfp4_e5m3"
+    )
 
 
 def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
