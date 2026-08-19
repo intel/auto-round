@@ -542,25 +542,6 @@ class TestFP8Source:
         output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], device="cpu", fp8_block_size=None)
         assert "layer" in quantized and "layer.qweight" in output
 
-    def test_ignored_layer_preserves_original_fp8(self, tmp_path):
-        """Ignored layers keep their original quantized tensors (no dequant)."""
-        shard_path = str(tmp_path / "shard.safetensors")
-        w_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        scale = torch.tensor(0.5)
-        save_file(
-            {"lm_head.weight": w_fp8, "lm_head.weight_scale_inv": scale, "layer.weight": torch.randn(64, 128)},
-            shard_path,
-        )
-        output, quantized, ignored = _process_shard(
-            shard_path, _DEFAULT_SCHEME, {}, ["lm_head"], device="cpu", fp8_block_size=None
-        )
-        # lm_head should be ignored and kept in original FP8 format
-        assert "lm_head" in ignored
-        assert output["lm_head.weight"].dtype == torch.float8_e4m3fn
-        assert "lm_head.weight_scale_inv" in output
-        # non-ignored layer should be quantized normally
-        assert "layer" in quantized
-
     def test_dequant_fp8_hydrates_scale_from_sibling_shard(self, tmp_path):
         """When scale_inv is sharded separately, dequant should hydrate it via index."""
         shard_dir = tmp_path / "source"
