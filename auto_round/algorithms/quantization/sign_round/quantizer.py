@@ -64,6 +64,20 @@ class SignRoundQuantizer(BaseQuantizer):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
+        # Kept for per-layer (mixed-bit) lr resolution during tuning.
+        self._config = config
+        self.lr_is_auto = getattr(config, "lr_is_auto", False)
+        self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
+        # Emit the low-bit lr notice at most once across all blocks/layers.
+        self._logged_low_bit_lr = False
+
+    def _maybe_log_low_bit_lr(self, bits) -> None:
+        """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
+        if self._logged_low_bit_lr or not self.lr_is_auto:
+            return
+        if self.iters >= 1000 and bits is not None and bits <= 3:
+            logger.info("using higher lr (2.0/iters) for <=3 bit layers to improve accuracy")
+            self._logged_low_bit_lr = True
 
     def dispatch_block(self, block, input_ids, input_others):
         """Multi-GPU aware block dispatch for SignRound tuning.
@@ -359,33 +373,33 @@ class SignRoundQuantizer(BaseQuantizer):
 
         round_params = []
         minmax_params = []
+        # Group parameters by their effective lr so that mixed-bit configs
+        # (e.g. a 4-bit model with a few 2-bit layers) use a per-layer lr
+        # derived from each layer's own bit-width.
+        round_lr_groups: dict[float, list] = {}
+        minmax_lr_groups: dict[float, list] = {}
         for n, m in block.named_modules():
             if hasattr(m, "orig_layer"):
+                layer_bits = getattr(m.orig_layer, "bits", None)
+                layer_lr = self._config.compute_lr(layer_bits)
+                if layer_lr is None:
+                    layer_lr = self.lr
+                self._maybe_log_low_bit_lr(layer_bits)
+                layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+                if layer_minmax_lr is None:
+                    layer_minmax_lr = self.minmax_lr
                 for key in m.params.keys():
                     if "min" in key or "max" in key:
                         minmax_params.append(m.params[key])
+                        minmax_lr_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
                     else:
                         round_params.append(m.params[key])
+                        round_lr_groups.setdefault(float(layer_lr), []).append(m.params[key])
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
 
         extra_kwargs = {} if self.momentum is None else {"momentum": self.momentum}
-
-        if self.enable_minmax_tuning:
-            params = [
-                {"params": round_params},
-                {"params": minmax_params, "lr": minmax_lr},
-            ]
-        else:
-            params = round_params
-
-        optimizer = self.optimizer(
-            params,
-            lr=lr,
-            weight_decay=0,
-            **extra_kwargs,
-        )
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
@@ -395,6 +409,19 @@ class SignRoundQuantizer(BaseQuantizer):
             logger.info(dump_info)
             unwrapper_block(block, {})
             return {}
+
+        # Build optimizer param groups with a per-layer lr for the rounding
+        # parameters (and min-max parameters when enabled).
+        params = [{"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in round_lr_groups.items()]
+        if self.enable_minmax_tuning:
+            params += [{"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in minmax_lr_groups.items()]
+
+        optimizer = self.optimizer(
+            params,
+            lr=lr,
+            weight_decay=0,
+            **extra_kwargs,
+        )
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -603,6 +630,16 @@ class SignRoundQuantizer(BaseQuantizer):
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
+        # Use a lr derived from this layer's own bit-width so mixed-bit configs
+        # (e.g. a 4-bit model with a few 2-bit layers) tune each layer correctly.
+        layer_bits = getattr(layer, "bits", None)
+        layer_lr = self._config.compute_lr(layer_bits)
+        if layer_lr is not None:
+            lr = torch.tensor(layer_lr)
+        self._maybe_log_low_bit_lr(layer_bits)
+        layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+        if layer_minmax_lr is not None:
+            minmax_lr = torch.tensor(layer_minmax_lr)
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
