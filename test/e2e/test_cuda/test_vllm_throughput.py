@@ -55,6 +55,8 @@ from typing import List
 import pytest
 import torch
 
+pytestmark = pytest.mark.enable_torch_compile
+
 # ---------------------------------------------------------------------------
 # Output sink
 # ---------------------------------------------------------------------------
