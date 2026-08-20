@@ -119,6 +119,9 @@ def _patch_fp8_dequantize_for_ragged_tiles():
     if hasattr(cls, "_auto_round_orig_dequantize_one"):
         return
 
+    if not hasattr(cls, "_dequantize_one"):
+        return
+
     cls._auto_round_orig_dequantize_one = cls._dequantize_one
 
     def _dequantize_one_with_padding_fallback(self, quantized, scales, output_dtype=None):
