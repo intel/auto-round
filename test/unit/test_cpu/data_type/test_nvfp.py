@@ -29,11 +29,11 @@ from auto_round.data_type.nvfp import (
     cast_to_ue5m3_ste,
     e5m3_to_float_tensor,
     float_to_e5m3_frexp,
-    fp4_v2,
-    fp4_v2_with_global_scale,
     get_reciprocal,
     nv_fp4,
     nv_fp4_with_static_gs,
+    nvfp4_v2,
+    nvfp4_v2_with_global_scale,
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
@@ -538,106 +538,106 @@ class TestRefFp4Quant:
 
 
 # ---------------------------------------------------------------------------
-# fp4_v2_with_global_scale
+# nvfp4_v2_with_global_scale
 # ---------------------------------------------------------------------------
 
 
 class TestFp4V2WithGlobalScale:
-    """Test fp4_v2_with_global_scale."""
+    """Test nvfp4_v2_with_global_scale."""
 
     def test_group_size_16(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16)
         assert q.shape == t.shape
         assert z is None
 
     def test_group_size_32(self):
         t = torch.randn(4, 64, dtype=torch.bfloat16)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=32)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=32)
         assert q.shape == t.shape
 
     def test_invalid_group_size(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
         with pytest.raises(AssertionError):
-            fp4_v2_with_global_scale(t, group_size=64)
+            nvfp4_v2_with_global_scale(t, group_size=64)
 
     def test_tensor_max_as_float(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16, tensor_max=2.0)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, tensor_max=2.0)
         assert q.shape == t.shape
 
     def test_tensor_max_as_tensor(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
         tm = torch.tensor(1.0, dtype=torch.float32)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16, tensor_max=tm)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, tensor_max=tm)
         assert q.shape == t.shape
 
     def test_tensor_max_multi_element(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
         tm = torch.tensor([1.0, 2.0])
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16, tensor_max=tm)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, tensor_max=tm)
         assert q.shape == t.shape
 
     def test_with_max_scale(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16, max_scale=1.5)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, max_scale=1.5)
         assert q.shape == t.shape
 
     def test_float16_input(self):
         t = torch.randn(4, 32, dtype=torch.float16)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16)
         assert q.dtype == torch.float16
 
     def test_with_v(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2_with_global_scale(t, group_size=16, v=0.5)
+        q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, v=0.5)
         assert q.shape == t.shape
 
 
 # ---------------------------------------------------------------------------
-# fp4_v2
+# nvfp4_v2
 # ---------------------------------------------------------------------------
 
 
-class TestFp4V2:
-    """Test fp4_v2."""
+class TestNvfp4V2:
+    """Test nvfp4_v2."""
 
     def test_group_size_16(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2(t, group_size=16)
+        q, s, z = nvfp4_v2(t, group_size=16)
         assert q.shape == t.shape
         assert z is None
 
     def test_group_size_32(self):
         t = torch.randn(4, 64, dtype=torch.bfloat16)
-        q, s, z = fp4_v2(t, group_size=32)
+        q, s, z = nvfp4_v2(t, group_size=32)
         assert q.shape == t.shape
 
     def test_invalid_group_size(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
         with pytest.raises(AssertionError):
-            fp4_v2(t, group_size=128)
+            nvfp4_v2(t, group_size=128)
 
     def test_with_max_scale(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2(t, group_size=16, max_scale=1.5)
+        q, s, z = nvfp4_v2(t, group_size=16, max_scale=1.5)
         assert q.shape == t.shape
 
     def test_with_v(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
-        q, s, z = fp4_v2(t, group_size=16, v=0.5)
+        q, s, z = nvfp4_v2(t, group_size=16, v=0.5)
         assert q.shape == t.shape
 
     def test_float16_input(self):
         t = torch.randn(4, 32, dtype=torch.float16)
-        q, s, z = fp4_v2(t, group_size=16)
+        q, s, z = nvfp4_v2(t, group_size=16)
         assert q.dtype == torch.float16
 
     def test_non_divisible_dim(self):
         """Last dim not divisible by group_size -> padding path."""
         t = torch.randn(4, 50, dtype=torch.bfloat16)
         # group_size=32 divides 50 with padding to 64
-        q, s, z = fp4_v2(t, group_size=32)
+        q, s, z = nvfp4_v2(t, group_size=32)
         assert q.shape == t.shape
 
 
@@ -654,8 +654,8 @@ class TestQuantizationProperties:
         [
             lambda t: nv_fp4(t),
             lambda t: nv_fp4_with_static_gs(t),
-            lambda t: fp4_v2(t),
-            lambda t: fp4_v2_with_global_scale(t),
+            lambda t: nvfp4_v2(t),
+            lambda t: nvfp4_v2_with_global_scale(t),
         ],
     )
     def test_outputs_are_finite(self, fn):
@@ -670,8 +670,8 @@ class TestQuantizationProperties:
         [
             lambda t: nv_fp4(t),
             lambda t: nv_fp4_with_static_gs(t),
-            lambda t: fp4_v2(t),
-            lambda t: fp4_v2_with_global_scale(t),
+            lambda t: nvfp4_v2(t),
+            lambda t: nvfp4_v2_with_global_scale(t),
         ],
     )
     def test_dtype_preserved(self, fn):

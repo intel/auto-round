@@ -92,6 +92,8 @@ stages:
                     -e ARK_SYCL_TLA_JOBS="${ARK_SYCL_TLA_JOBS:-1}" \
                     --cpuset-cpus="${NUMA_CPUSET:-0-15}" \
                     --cpuset-mems="${NUMA_NODE:-0}" \
+                    --memory="128g" \
+                    --memory-swap="128g" \
                     -v $(Build.SourcesDirectory):/auto-round \
                     -v /opt/intel/oneapi:/opt/intel/oneapi \
                     -w /auto-round/auto_round_extension/ark \

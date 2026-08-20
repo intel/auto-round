@@ -36,7 +36,7 @@ import transformers
 import auto_round.envs as envs
 from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
-from auto_round.data_type.nvfp import cast_to_fp4, get_reciprocal
+from auto_round.data_type.nvfp import cast_to_fp4, float_to_e5m3_frexp, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 from auto_round.utils import get_packing_device, logger
 
@@ -73,6 +73,7 @@ class QuantLinear(nn.Module):
             raise NotImplementedError("Only 4,8 bits are supported.")
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
+        self.is_nvfp4_e5m3 = data_type == "nvfp4_v2"
         if self.is_mx:
             if group_size != 32:
                 raise NotImplementedError(f"Only group_size 32 are supported for {BackendDataType.MX_FP} data type.")
@@ -80,7 +81,7 @@ class QuantLinear(nn.Module):
                 raise NotImplementedError(
                     f"in_feature must be divisible by {group_size} for {BackendDataType.MX_FP} data type."
                 )
-        if self.is_nv:
+        if self.is_nv or self.is_nvfp4_e5m3:
             if group_size % 16 != 0:
                 raise NotImplementedError(f"Only group_size 16 are supported for {BackendDataType.NV_FP} data type.")
             if infeatures % group_size != 0:
@@ -159,11 +160,17 @@ class QuantLinear(nn.Module):
             )
             scaled_tensor.clamp_(-6.0, 6.0)
             scaled_tensor = cast_to_fp4(scaled_tensor)
+        elif self.is_nvfp4_e5m3:
+            scaled_tensor = tensor / scales.reshape(tensor.shape[0], -1)
+            scaled_tensor.clamp_(-6.0, 6.0)
+            scaled_tensor = cast_to_fp4(scaled_tensor)
         else:
             scaled_tensor = tensor / (2 ** scales.reshape(tensor.shape[0], -1))
         scaled_tensor = revert_tensor_by_pad(scaled_tensor, orig_shape=orig_shape, pad_len=pad_len)
         if self.is_mx:
             final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
+        elif self.is_nvfp4_e5m3:
+            final_scale = float_to_e5m3_frexp(scales.to(torch.float32))
         else:
             final_scale = scales.to(torch.float8_e4m3fn)
 
