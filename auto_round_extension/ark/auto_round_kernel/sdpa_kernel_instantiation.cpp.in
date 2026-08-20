@@ -9,7 +9,8 @@ namespace ark {
 namespace detail {
 
 int @SDPA_FUNCTION_NAME@(Options const& options) {
-  return @SDPA_TEMPLATE_NAME@<@SDPA_ELEMENT_TYPE@, @SDPA_ELEMENT_TYPE@, @SDPA_ELEMENT_TYPE@>(options);
+  return @SDPA_TEMPLATE_NAME@<@SDPA_CAUSAL@, @SDPA_HAS_MASK@, @SDPA_IS_VARLEN@, @SDPA_ELEMENT_TYPE@,
+                              @SDPA_ELEMENT_TYPE@, @SDPA_ELEMENT_TYPE@>(options);
 }
 
 }  // namespace detail
