@@ -14,6 +14,7 @@
 
 import copy
 import os
+from collections.abc import Mapping
 from typing import Callable, Union
 
 import torch
@@ -101,8 +102,23 @@ def _get_quant_format(model):
     return None
 
 
+def _canonicalize_quantization_value(value):
+    """Convert a serialized quantization value into a deterministic hashable form."""
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(key), _canonicalize_quantization_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonicalize_quantization_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted((_canonicalize_quantization_value(item) for item in value), key=repr))
+
+    value = getattr(value, "value", value)
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    return str(value)
+
+
 def _quant_args_signature(args):
-    """Hashable signature of a compressed_tensors QuantizationArgs (or None).
+    """Return a hashable signature of every serialized QuantizationArgs field.
 
     Two layers whose weight (and activation) args share this signature end up in
     the same config_group, so we use it to map real module names back onto the
@@ -111,25 +127,9 @@ def _quant_args_signature(args):
     if args is None:
         return None
 
-    def _val(x):
-        return getattr(x, "value", x)  # unwrap enums (type/strategy) to plain str
-
-    if isinstance(args, dict):
-        get = args.get
-        return (
-            int(get("num_bits")),
-            str(get("type")),
-            bool(get("symmetric")),
-            get("group_size"),
-            str(get("strategy")),
-        )
-    return (
-        int(args.num_bits),
-        str(_val(args.type)),
-        bool(args.symmetric),
-        args.group_size,
-        str(_val(args.strategy)),
-    )
+    if not isinstance(args, Mapping):
+        args = args.model_dump(mode="json")
+    return _canonicalize_quantization_value(args)
 
 
 def _rewrite_config_group_targets(model, quantization_config_dict):
