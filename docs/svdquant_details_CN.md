@@ -186,6 +186,14 @@ autoround.quantize_and_save(
 `svdquant_nunchaku` 当前要求 MXFP4 E2M1 W4A4、group size 32、weight 和
 activation 均为对称量化、dynamic activation quantization，并使用受支持的运行时
 adapter。量化过程不会导入 Nunchaku；只有推理时需要安装 Nunchaku。
+MXFP4 推理目前需要从源码编译安装
+[`changwangss/nunchaku` 的 `mxfp4` 分支](https://github.com/changwangss/nunchaku/tree/mxfp4)：
+
+```bash
+git clone --recurse-submodules --branch mxfp4 https://github.com/changwangss/nunchaku.git
+cd nunchaku
+pip install -e "."
+```
 
 可直接使用以下已量化的 FLUX.1-dev checkpoint：
 [smooth SVDQuant + SignRound](https://huggingface.co/changwangss/smooth_svdquant_signround)

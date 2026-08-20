@@ -192,7 +192,15 @@ autoround.quantize_and_save(
 The `svdquant_nunchaku` format currently requires MXFP4 E2M1 W4A4, group size
 32, symmetric weights/activations, dynamic activation quantization, and a
 supported runtime adapter. Nunchaku is not imported during quantization; it is
-required only for inference.
+required only for inference. MXFP4 inference currently requires the
+[`mxfp4` branch of `changwangss/nunchaku`](https://github.com/changwangss/nunchaku/tree/mxfp4),
+which must be built from source:
+
+```bash
+git clone --recurse-submodules --branch mxfp4 https://github.com/changwangss/nunchaku.git
+cd nunchaku
+pip install -e "."
+```
 
 Pre-quantized FLUX.1-dev checkpoints are available for
 [smooth SVDQuant + SignRound](https://huggingface.co/changwangss/smooth_svdquant_signround)
