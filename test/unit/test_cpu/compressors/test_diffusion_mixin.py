@@ -47,8 +47,13 @@ class TestDiffusionMixinProperties:
         comp.pipeline_call_kwargs = {"height": 512, "width": 512}
         assert comp.pipeline_call_kwargs.get("height") == 512
 
-    def test_init_does_not_cast_pipeline_dtype(self):
-        pipe = MagicMock()
+    def test_init_preserves_declared_fp32_modules(self):
+        protected = torch.nn.Linear(2, 2)
+        protected._keep_in_fp32_modules = ["weight"]
+        protected.dtype = torch.float32
+        ordinary = torch.nn.Linear(2, 2)
+        ordinary.dtype = torch.float32
+        pipe = SimpleNamespace(components=["protected", "ordinary"], protected=protected, ordinary=ordinary)
 
         class Parent:
             def __init__(self, *args, **kwargs):
@@ -59,7 +64,25 @@ class TestDiffusionMixinProperties:
 
         MockCompressor(iters=0)
 
-        pipe.to.assert_not_called()
+        assert protected.weight.dtype == torch.float32
+        assert ordinary.weight.dtype == torch.bfloat16
+
+    def test_init_does_not_align_nextstep_dtype(self):
+        component = torch.nn.Linear(2, 2)
+        component.dtype = torch.float32
+        pipe = SimpleNamespace(components=["transformer"], transformer=component)
+
+        class Parent:
+            def __init__(self, *args, **kwargs):
+                model = SimpleNamespace(dtype=torch.bfloat16, config=SimpleNamespace(model_type="nextstep"))
+                self.model_context = SimpleNamespace(pipe=pipe, model=model)
+
+        class MockCompressor(DiffusionMixin, Parent):
+            pass
+
+        MockCompressor(iters=0)
+
+        assert component.weight.dtype == torch.float32
 
 
 class TestFindAdditionalTransformers:
@@ -113,15 +136,18 @@ class TestAlignDeviceAndDtype:
         # Should not raise
         comp._align_device_and_dtype_for_secondary("transformer")
 
-    def test_does_not_cast_pipeline_dtype(self):
+    def test_preserves_declared_fp32_modules(self):
+        protected = torch.nn.Linear(2, 2)
+        protected._keep_in_fp32_modules = ["weight"]
+        protected.dtype = torch.float32
+
         class MockCompressor(DiffusionMixin):
             def __init__(self):
-                pipe = MagicMock()
-                pipe.components = []
+                pipe = SimpleNamespace(components=["transformer_2"], transformer_2=protected)
                 self.model_context = SimpleNamespace(pipe=pipe, model=SimpleNamespace(dtype=torch.bfloat16))
                 self.compress_context = SimpleNamespace(device_map=None, device_list=[])
 
         comp = MockCompressor()
         comp._align_device_and_dtype_for_secondary("transformer_2")
 
-        comp.model_context.pipe.to.assert_not_called()
+        assert protected.weight.dtype == torch.float32
