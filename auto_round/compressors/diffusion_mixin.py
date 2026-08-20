@@ -115,13 +115,6 @@ class DiffusionMixin:
         # Call parent class __init__ (will be Compressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
-        pipe = getattr(self.model_context, "pipe", None)
-        model = getattr(self.model_context, "model", None)
-        if pipe is not None and model is not None:
-            is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-            if not is_nextstep:
-                pipe.to(model.dtype)
-
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
 
@@ -150,16 +143,11 @@ class DiffusionMixin:
         return result
 
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
-        """Align dtype and dispatch secondary transformer for multi-transformer pipelines."""
+        """Dispatch a secondary transformer while preserving its loaded dtype."""
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is None or model is None:
             return
-
-        # Cast full pipeline to transformer's dtype
-        is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-        if not is_nextstep:
-            pipe.to(model.dtype)
 
         # Dispatch secondary transformer to GPU(s)
         device_map = getattr(self.compress_context, "device_map", None)
@@ -179,8 +167,6 @@ class DiffusionMixin:
                 )
                 is_other_component = not comp_name.startswith("transformer")
                 if is_other_transformer or is_other_component:
-                    if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") and comp.dtype != model.dtype:
-                        comp.to(dtype=model.dtype)
                     try:
                         comp.to(comp_device)
                     except (NotImplementedError, RuntimeError):
@@ -435,7 +421,7 @@ class DiffusionMixin:
             self.model_context.quantized = False
             self._post_init_done = False
 
-            # Re-align device/dtype and dispatch pipeline for secondary transformer
+            # Dispatch the pipeline for the secondary transformer without recasting it.
             self._align_device_and_dtype_for_secondary(comp_name)
 
             # Re-run post_init to set up quantizer for new model

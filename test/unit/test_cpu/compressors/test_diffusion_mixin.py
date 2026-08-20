@@ -47,6 +47,20 @@ class TestDiffusionMixinProperties:
         comp.pipeline_call_kwargs = {"height": 512, "width": 512}
         assert comp.pipeline_call_kwargs.get("height") == 512
 
+    def test_init_does_not_cast_pipeline_dtype(self):
+        pipe = MagicMock()
+
+        class Parent:
+            def __init__(self, *args, **kwargs):
+                self.model_context = SimpleNamespace(pipe=pipe, model=SimpleNamespace(dtype=torch.bfloat16))
+
+        class MockCompressor(DiffusionMixin, Parent):
+            pass
+
+        MockCompressor(iters=0)
+
+        pipe.to.assert_not_called()
+
 
 class TestFindAdditionalTransformers:
     """Test _find_additional_transformers logic."""
@@ -98,3 +112,16 @@ class TestAlignDeviceAndDtype:
         comp = MockCompressor()
         # Should not raise
         comp._align_device_and_dtype_for_secondary("transformer")
+
+    def test_does_not_cast_pipeline_dtype(self):
+        class MockCompressor(DiffusionMixin):
+            def __init__(self):
+                pipe = MagicMock()
+                pipe.components = []
+                self.model_context = SimpleNamespace(pipe=pipe, model=SimpleNamespace(dtype=torch.bfloat16))
+                self.compress_context = SimpleNamespace(device_map=None, device_list=[])
+
+        comp = MockCompressor()
+        comp._align_device_and_dtype_for_secondary("transformer_2")
+
+        comp.model_context.pipe.to.assert_not_called()
