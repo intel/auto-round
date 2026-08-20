@@ -190,7 +190,9 @@ def get_system_memory_gb():
         except ValueError:
             continue
         if 0 < memory_bytes < (1 << 60):
-            return memory_bytes / (1024**3)
+            memory_gb = memory_bytes / (1024**3)
+            print(f"System memory from {memory_path}: {memory_gb:.2f} GiB ({memory_bytes} bytes)")
+            return memory_gb
 
     if hasattr(os, "sysconf"):
         page_size_names = ("SC_PAGE_SIZE", "SC_PAGESIZE")
@@ -202,7 +204,9 @@ def get_system_memory_gb():
         if page_size is not None and "SC_PHYS_PAGES" in os.sysconf_names:
             phys_pages = os.sysconf("SC_PHYS_PAGES")
             if phys_pages > 0:
-                return (page_size * phys_pages) / (1024**3)
+                memory_gb = (page_size * phys_pages) / (1024**3)
+                print(f"System memory from sysconf: {memory_gb:.2f} GiB")
+                return memory_gb
 
     if sys.platform == "win32":
 
@@ -222,15 +226,23 @@ def get_system_memory_gb():
         memory_status = MEMORYSTATUSEX()
         memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status)):
-            return memory_status.ullTotalPhys / (1024**3)
+            memory_gb = memory_status.ullTotalPhys / (1024**3)
+            print(f"System memory from Windows: {memory_gb:.2f} GiB")
+            return memory_gb
 
+    print("System memory detection failed; using fallback: 64 GiB")
     return 64
 
 
 def get_cpu_count():
     if hasattr(os, "sched_getaffinity"):
-        return max(1, len(os.sched_getaffinity(0)))
-    return os.cpu_count() or 1
+        affinity = os.sched_getaffinity(0)
+        cpu_count = max(1, len(affinity))
+        print(f"CPU count from sched_getaffinity(0): {cpu_count}; allowed CPUs: {sorted(affinity)}")
+        return cpu_count
+    cpu_count = os.cpu_count() or 1
+    print(f"CPU count from os.cpu_count(): {cpu_count}")
+    return cpu_count
 
 
 def get_sycl_tla_job_count(cpu_job_count):
@@ -242,11 +254,18 @@ def get_sycl_tla_job_count(cpu_job_count):
             raise ValueError("ARK_SYCL_TLA_JOBS must be a positive integer") from error
         if jobs < 1:
             raise ValueError("ARK_SYCL_TLA_JOBS must be a positive integer")
-        return min(cpu_job_count, jobs)
+        final_jobs = min(cpu_job_count, jobs)
+        print(f"SYCL TLA jobs: min(cpu_job_count={cpu_job_count}, override={jobs}) = {final_jobs}")
+        return final_jobs
 
     memory_gb = get_system_memory_gb()
     memory_based_jobs = max(1, int(memory_gb // 3))  # reserve about 3GB per SYCL TLA compiler job
-    return min(cpu_job_count, memory_based_jobs)
+    final_jobs = min(cpu_job_count, memory_based_jobs)
+    print(
+        f"SYCL TLA jobs: memory={memory_gb:.2f} GiB, memory_based_jobs={memory_based_jobs}, "
+        f"cpu_job_count={cpu_job_count}, final={final_jobs}"
+    )
+    return final_jobs
 
 
 ROOT = Path(__file__).resolve().parent
@@ -271,6 +290,7 @@ class CMakeBuild(build_ext):
 
         cpu_count = get_cpu_count()
         n_job = max(1, cpu_count // 2)
+        print(f"CPU build jobs: max(1, {cpu_count} // 2) = {n_job}")
         subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
 
         ext = "pyd" if sys.platform == "win32" else "so"
