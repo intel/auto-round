@@ -91,6 +91,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -134,6 +135,70 @@ using ::ark::moe_dpas_fp8::cute_scalar;
 using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
 
+inline int _moe_prefill_s4_env_int(const char* name, int default_v,
+                                   int min_v, int max_v) {
+  const char* env = std::getenv(name);
+  if (env == nullptr) return default_v;
+  char* end = nullptr;
+  long v = std::strtol(env, &end, 10);
+  if (end == env || *end != '\0') return default_v;
+  if (v < static_cast<long>(min_v)) return min_v;
+  if (v > static_cast<long>(max_v)) return max_v;
+  return static_cast<int>(v);
+}
+
+inline int moe_prefill_dpas_s4_prefetch_dist() {
+  // Runtime-tunable A/B prefetch depth for S4 per-group mainloop.
+  // Default keeps current behavior.
+  return _moe_prefill_s4_env_int("ARK_MOE_PREFILL_DPAS_S4_PREFETCH_DIST",
+                                 3, 1, 16);
+}
+
+inline int moe_prefill_dpas_s4_prefetch_dist_scale() {
+  // Runtime-tunable scale prefetch lookahead (in groups).
+  // Default keeps current behavior.
+  return _moe_prefill_s4_env_int(
+      "ARK_MOE_PREFILL_DPAS_S4_PREFETCH_DIST_SCALE", 3, 1, 16);
+}
+
+enum class MoePrefillS4PolicyMode {
+  Auto,
+  W8A16,
+  W8A16M16,
+  W8A16M32,
+  W16A16,
+};
+
+inline bool moe_prefill_dpas_s4_force_direct() {
+  const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
+  if (env != nullptr) {
+    std::string s(env);
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (s == "1" || s == "true" || s == "on" || s == "yes" ||
+        s == "direct" || s == "force" || s == "packed") return true;
+  }
+
+  const char* policy = std::getenv("ARK_MOE_PREFILL_DPAS_S4_POLICY");
+  if (policy == nullptr) return false;
+  std::string p(policy);
+  for (auto& c : p) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return p == "w16a16" || p == "w16" || p == "w8a16" || p == "w8" ||
+         p == "w8a16_m16" || p == "w8_m16" || p == "m16" ||
+         p == "w8a16_m32" || p == "w8_m32" || p == "m32";
+}
+
+inline MoePrefillS4PolicyMode moe_prefill_dpas_s4_policy_mode() {
+  const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4_POLICY");
+  if (env == nullptr) return MoePrefillS4PolicyMode::Auto;
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "w16a16" || s == "w16") return MoePrefillS4PolicyMode::W16A16;
+  if (s == "w8a16_m16" || s == "w8_m16" || s == "m16") return MoePrefillS4PolicyMode::W8A16M16;
+  if (s == "w8a16_m32" || s == "w8_m32" || s == "m32") return MoePrefillS4PolicyMode::W8A16M32;
+  if (s == "w8a16" || s == "w8") return MoePrefillS4PolicyMode::W8A16;
+  return MoePrefillS4PolicyMode::Auto;
+}
+
 // ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
 //
@@ -172,8 +237,9 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
     const ElementBI* Bias,
     DTensor& C,         // (M,N)   -- ElementA
     Coord<int, int, cute::Underscore, int> blk_coord,
-    TiledMMA const& mma) {
-  using TA = typename ATensor::element_type;
+  TiledMMA const& mma,
+  int prefetch_dist,
+  int prefetch_dist_scale) {
   using TB = typename BTensor::element_type;
   static_assert(std::is_same_v<TB, cutlass::int4b_t>,
                 "xe_gemm_s4_pergroup: ElementB must be cutlass::int4b_t (sym only)");
@@ -204,8 +270,13 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
   auto thr_copy_b = copy_b.get_slice(local_id);
   auto thr_copy_c = copy_c.get_slice(local_id);
 
-  auto tCrA = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
-  auto tCrB = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
+  // Ping-pong SG fragments for software pipelining:
+  // while tile k computes on one fragment pair, tile k+1 is unpacked
+  // into the other pair.
+  auto tCrA0 = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
+  auto tCrB0 = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
+  auto tCrA1 = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
+  auto tCrB1 = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
 
   auto tArA = thr_copy_a.partition_sg_fragment_D(gA(_, _, 0));
   auto tBrB = thr_copy_b.partition_sg_fragment_D(gB(_, _, 0));
@@ -226,11 +297,8 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
   auto pAgA = thr_prefetch_A.partition_S(gA);
   auto pBgB = thr_prefetch_B.partition_S(gB);
 
-  // Prefetch distance mirrors `xe_gemm_int_pergroup<>` for now.
-  // On-hardware perf tuning may want to grow `prefetch_dist` on the
-  // packed path since the B stream is half the bandwidth.
-  const int prefetch_dist = 3;
-  const int prefetch_dist_scale = 3;
+  // Prefetch distances are host-selected and threaded into the device
+  // path so no env/stdlib calls are needed inside SYCL kernels.
   constexpr auto barrier_scope = ScopeWorkgroup;
   int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
   int k_tile_prefetch = 0;
@@ -249,11 +317,8 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
 
   auto n_tile_start = wg_n * tile_n;
   auto sg_local_n_coord = cutlass::get_sub_group_id() % ATOM_N;
-  auto sg_local_m_coord = cutlass::get_sub_group_id() / ATOM_N;
   int sg_local_id = cutlass::get_sub_group_local_id();
   int n_sg_start = sg_local_n_coord * SG_N;
-  int m_sg_start = sg_local_m_coord * SG_M;
-  int m_tile_start = wg_m * tile_m;
   int group_num = get<1>(A.shape()) / group_size;
 
   // Group-local accumulator: same fragment shape as `tCrC`, cleared at
@@ -267,6 +332,16 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
   // Per-SG per-N scale cache. Same layout / semantics as the INT8
   // per-group path.
   float sg_scale[sg_n_strides];
+  int sg_scale_base[sg_n_strides];
+
+  // Precompute per-lane base offsets into Scales so the hot loop only
+  // adds group_idx.
+  CUTLASS_PRAGMA_UNROLL
+  for (int sn = 0; sn < sg_n_strides; ++sn) {
+    int sg_local_n = sn * sg_local_range + sg_local_id;
+    sg_scale_base[sn] =
+        (n_tile_start + n_sg_start + sg_local_n) * group_num;
+  }
 
   CUTE_UNROLL
   for (; k_tile_prefetch < prefetch_dist; k_tile_prefetch++) {
@@ -290,27 +365,48 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
     }
   }
 
+  if (k_tile_count == 0) {
+    return;
+  }
+
+  // Prime the pipeline with tile 0.
+  barrier_arrive(barrier_scope);
+  copy(copy_a, tAgA(_, _, _, 0), tArA);
+  copy(copy_b, tBgB(_, _, _, 0), tBrB);
+  if (k_tile_prefetch < k_tile_count) {
+    prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+    prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+  }
+  reorder(tArA, tCrA0);
+  reorder(tBrB, tCrB0);
+  barrier_wait(barrier_scope);
+
+  int curr_buf = 0;
+  static constexpr int tiles_per_group = group_size / tile_k;
+  int group_tile_remaining = 0;
+  int group_idx = 0;
   for (int k_tile = 0; k_tile < k_tile_count; k_tile++, k_tile_prefetch++) {
-    barrier_arrive(barrier_scope);
+    const bool has_next = (k_tile + 1 < k_tile_count);
+    const int next_tile = k_tile + 1;
 
-    copy(copy_a, tAgA(_, _, _, k_tile), tArA);
-    copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+    if (has_next) {
+      barrier_arrive(barrier_scope);
+      copy(copy_a, tAgA(_, _, _, next_tile), tArA);
+      copy(copy_b, tBgB(_, _, _, next_tile), tBrB);
+    }
 
-    // Group-boundary scale reload. Same math as the INT8 per-group
-    // path: `tile_k` is expressed in element units (nibbles), not
-    // bytes, so `k_tile * tile_k` is the reduction position in
-    // *element* space and the modulo test against `group_size` matches
-    // the scale-tensor layout `[E, N, K/group_size]` unchanged.
-    if (k_tile * tile_k % group_size == 0) {
-      int group_idx = (k_tile * tile_k) / group_size;
+    // Group-boundary scale reload via a tile counter instead of per-tile
+    // modulo/div in the hot loop. For all supported S4 shapes in this
+    // file, `group_size` is a multiple of `tile_k`.
+    if (group_tile_remaining == 0) {
+      group_idx = k_tile / tiles_per_group;
       CUTLASS_PRAGMA_UNROLL
       for (int sn = 0; sn < sg_n_strides; ++sn) {
-        int sg_local_n = sn * sg_local_range + sg_local_id;
-        sg_scale[sn] = static_cast<float>(
-            Scales[(n_tile_start + n_sg_start + sg_local_n) * group_num + group_idx]);
+        sg_scale[sn] =
+            static_cast<float>(Scales[sg_scale_base[sn] + group_idx]);
       }
 
-      if ((group_idx + prefetch_dist_scale) * group_size < shape<1>(A)) {
+      if (group_idx + prefetch_dist_scale < group_num) {
         auto next_scales_tensor = make_tensor(
             make_gmem_ptr(reinterpret_cast<const ElementS*>(
                 Scales + (n_tile_start + n_sg_start) * group_num +
@@ -324,32 +420,41 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
             make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
         prefetch(prefetch_scales, pSgS(_, 0, 0));
       }
+      group_tile_remaining = tiles_per_group;
     }
 
-    if (k_tile_prefetch < k_tile_count) {
+    if (has_next && k_tile_prefetch < k_tile_count) {
       prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
       prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
     }
 
-    // `reorder` performs the in-register `int4b_t -> ElementA` unpack
-    // + sign-extend + cast via `cutlass::NumericArrayConverter<
-    // ElementA, cutlass::int4b_t, N>`. Once `tCrB` carries bf16/fp16
-    // values it is compatible with the same DPAS atom used by the FP8
-    // / INT8 per-group paths. See the header preamble open-question
-    // (1) -- if the pinned cutlass-sycl is missing this converter
-    // specialisation this line is where the build fails.
-    reorder(tArA, tCrA);
-    reorder(tBrB, tCrB);
+    if (has_next) {
+      // Pipeline stage: unpack tile k+1 while tile k compute is pending.
+      // `reorder` performs in-register `int4b_t -> ElementA` conversion via
+      // `NumericArrayConverter`.
+      if (curr_buf == 0) {
+        reorder(tArA, tCrA1);
+        reorder(tBrB, tCrB1);
+      } else {
+        reorder(tArA, tCrA0);
+        reorder(tBrB, tCrB0);
+      }
+    }
 
     // HOT MAINLOOP -- MMA accumulates into `tCrC_group`. Per-N scale
     // is applied ONCE at the end of the group in the fold block below.
-    cute::gemm(mma, tCrA, tCrB, tCrC_group);
+    if (curr_buf == 0) {
+      cute::gemm(mma, tCrA0, tCrB0, tCrC_group);
+    } else {
+      cute::gemm(mma, tCrA1, tCrB1, tCrC_group);
+    }
 
-    // Group-boundary fold. Fires when either (a) the NEXT k_tile would
-    // start a new scale group, or (b) we've reached the last k_tile of
-    // the K reduction (tail-group protection).
-    const bool is_group_end = (((k_tile + 1) * tile_k) % group_size == 0) ||
-                              (k_tile + 1 == k_tile_count);
+    group_tile_remaining -= 1;
+    // Group-boundary fold. Fires when either (a) we've consumed all
+    // tiles in the current group, or (b) this is the last reduction tile
+    // (tail-group protection).
+    const bool is_group_end = (group_tile_remaining == 0) ||
+                  (k_tile + 1 == k_tile_count);
     if (is_group_end) {
       CUTLASS_PRAGMA_UNROLL
       for (int sn = 0; sn < sg_n_strides; ++sn) {
@@ -363,7 +468,10 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
       }
     }
 
-    barrier_wait(barrier_scope);
+    if (has_next) {
+      barrier_wait(barrier_scope);
+      curr_buf ^= 1;
+    }
   }
 
   if (Bias != nullptr) {
@@ -408,7 +516,10 @@ CUTE_DEVICE void MoEGEMM_s4(const ElementA* Activations,
                             const int* rows_per_expert,
                             const int32_t num_experts,
                             const int32_t group_size, const int32_t gemm_n,
-                            const int32_t gemm_k, int32_t* atomic_buffer,
+                            const int32_t gemm_k,
+                            int prefetch_dist,
+                            int prefetch_dist_scale,
+                            int32_t* atomic_buffer,
                             const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
   constexpr char actual_layout_of_B = LayoutKindB ^ ('R' ^ 'C');
 
@@ -495,7 +606,7 @@ CUTE_DEVICE void MoEGEMM_s4(const ElementA* Activations,
 #define ARK_MOE_DPAS_S4_GROUP_CALLER(GS)                                      \
   xe_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD, GS>(    \
       A_tensor, B_tensor, ptr_Scales_curr_batch, ptr_Bias_curr_batch,         \
-      D_tensor, tile_coord, mma);
+  D_tensor, tile_coord, mma, prefetch_dist, prefetch_dist_scale);
       if (group_size == 32) {
         ARK_MOE_DPAS_S4_GROUP_CALLER(32)
       } else if (group_size == 64) {
@@ -534,7 +645,10 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                         const ElementBI* bias, ElementD* outputs,
                         const int gemm_n, const int gemm_k,
                         const int* rows_per_expert, const int num_experts,
-                        const int group_size, int32_t* atomic_buffer) {
+                        const int group_size,
+                        int prefetch_dist,
+                        int prefetch_dist_scale,
+                        int32_t* atomic_buffer) {
   using ElementA_non_CV = cutlass::platform::remove_cv_t<ElementA>;
   // DPAS atom keeps its bf16/fp16 x bf16/fp16 -> fp32 shape; the S4 B
   // tensor is upcast to ElementA in `reorder(tBrB, tCrB)` in the
@@ -581,7 +695,7 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                      layoutB, 'R'>(
               activations, weights, scales, bias, outputs, mma,
               rows_per_expert, num_experts, group_size, gemm_n, gemm_k,
-              atomic_buffer, local_mem);
+              prefetch_dist, prefetch_dist_scale, atomic_buffer, local_mem);
         });
   });
 
@@ -636,6 +750,9 @@ void moe_prefill_s4_dpas_per_group_dispatch(
       reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
 
   int A_avg_M = total_tokens / E;
+  const int prefetch_dist = moe_prefill_dpas_s4_prefetch_dist();
+  const int prefetch_dist_scale = moe_prefill_dpas_s4_prefetch_dist_scale();
+  const MoePrefillS4PolicyMode policy_mode = moe_prefill_dpas_s4_policy_mode();
 
   int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
   if (atomic_buffer == nullptr) {
@@ -647,14 +764,35 @@ void moe_prefill_s4_dpas_per_group_dispatch(
   MoEGEMMLauncher_s4<'R', 'C', policy>(                                        \
       *q, activations_ca, weights_i4, scales_ca,                               \
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
-      num_tokens_per_expert, E, group_size, atomic_buffer);
+  num_tokens_per_expert, E, group_size, prefetch_dist,                     \
+  prefetch_dist_scale, atomic_buffer);
 
-  if (A_avg_M <= 8) {
+  if (policy_mode == MoePrefillS4PolicyMode::W16A16) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w16a16_policy);
+  } else if (policy_mode == MoePrefillS4PolicyMode::W8A16M16) {
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
+  } else if (policy_mode == MoePrefillS4PolicyMode::W8A16M32) {
     ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+  } else if (policy_mode == MoePrefillS4PolicyMode::W8A16) {
+    if (A_avg_M <= 8) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
+    } else if (A_avg_M <= 32) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+    } else {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    }
   } else {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    // Auto policy for the direct path. On BMG MiniMax prefill shapes the
+    // small-M w8a16_m32 tile is much faster than larger tiles even up to
+    // 8K prompts (average M ~= 341), because per-expert token counts are
+    // highly skewed and many experts underfill larger M tiles.
+    if (A_avg_M <= 8) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
+    } else if (A_avg_M <= 512) {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+    } else {
+      ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    }
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
 
@@ -662,24 +800,33 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 }
 
 // ---------------------------------------------------------------------------
-// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4` (default ON, semantics
-// identical to `moe_prefill_dpas_int_enabled` / `moe_prefill_dpas_fp8
-// _enabled`). Decoupled from `ARK_MOE_PREFILL_DPAS_INT8` so this new
-// single-pass path can be disabled in isolation if it regresses --
-// switching S4 off falls back to the S4->S8 upcast + INT8 DPAS path
-// which is itself gated by `ARK_MOE_PREFILL_DPAS_INT8`.
+// Env-flag helper -- `ARK_MOE_PREFILL_DPAS_S4`. The packed-nibble direct
+// DPAS path is opt-in and uses the auto policy above by default. Current BMG
+// MiniMax measurements prefer the w8a16_m32 tile family for real prefill
+// distributions; callers can still force another policy for experiments via
+// `ARK_MOE_PREFILL_DPAS_S4_POLICY=w16a16|w8a16|w8a16_m16|w8a16_m32`.
 //
 // Truthy values (case-insensitive): "1", "true", "on", "yes".
 // Explicit "0" / "false" / "off" / "no" disable. Re-read on every
 // call so benchmarks / tests can toggle the path in-process.
+//
+// Additional runtime tuning knobs for the S4 per-group mainloop:
+//   - ARK_MOE_PREFILL_DPAS_S4_PREFETCH_DIST        (default 3, clamp [1, 16])
+//   - ARK_MOE_PREFILL_DPAS_S4_PREFETCH_DIST_SCALE  (default 3, clamp [1, 16])
+//   - ARK_MOE_PREFILL_DPAS_S4_POLICY               (auto|w8a16|w8a16_m16|
+//                                                   w8a16_m32|w16a16,
+//                                                   default auto)
+//
+// These tune A/B tile prefetch depth and per-group scale prefetch lookahead
+// respectively; `*_POLICY` selects the GEMM tile family.
 // ---------------------------------------------------------------------------
 inline bool moe_prefill_dpas_s4_enabled() {
   const char* env = std::getenv("ARK_MOE_PREFILL_DPAS_S4");
-  if (env == nullptr) return true;  // default ON
+  if (env == nullptr) return false;
   std::string s(env);
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   if (s == "0" || s == "false" || s == "off" || s == "no") return false;
-  return true;
+  return moe_prefill_dpas_s4_force_direct();
 }
 
 // ---------------------------------------------------------------------------
