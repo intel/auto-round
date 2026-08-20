@@ -60,12 +60,20 @@ class DiffusionMixin:
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         generator_seed: Optional[int] = None,
+        max_cached_calibration_inputs: Optional[int] = None,
         **kwargs,
     ) -> None:
         # Store diffusion-specific attributes
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
         self.generator_seed = generator_seed
+        if max_cached_calibration_inputs is not None and (
+            isinstance(max_cached_calibration_inputs, bool)
+            or not isinstance(max_cached_calibration_inputs, int)
+            or max_cached_calibration_inputs <= 0
+        ):
+            raise ValueError("max_cached_calibration_inputs must be a positive integer or None.")
+        self.max_cached_calibration_inputs = max_cached_calibration_inputs
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
         # Default dataset for diffusion models is "coco2014", not "NeelNanda/pile-10k"

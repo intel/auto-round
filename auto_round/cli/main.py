@@ -97,6 +97,7 @@ def _build_entry_model_type_kwargs(args) -> dict:
         "guidance_scale": args.guidance_scale,
         "num_inference_steps": args.num_inference_steps,
         "generator_seed": args.generator_seed,
+        "max_cached_calibration_inputs": args.max_cached_calibration_inputs,
     }
 
 

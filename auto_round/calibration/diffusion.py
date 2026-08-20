@@ -22,6 +22,7 @@ and customises:
 """
 
 import inspect
+import random
 from typing import Optional
 
 import torch
@@ -59,6 +60,30 @@ class DiffusionCalibrator(LLMCalibrator):
         self.guidance_scale = compressor.guidance_scale
         self.num_inference_steps = compressor.num_inference_steps
         self.generator_seed = compressor.generator_seed  # make sure pass
+        self.max_cached_calibration_inputs = compressor.max_cached_calibration_inputs
+        self._cache_input_seen = {}
+        self._cache_input_rng = {}
+
+    def _reset_cache_input_sampling(self) -> None:
+        self._cache_input_seen = {}
+        self._cache_input_rng = {}
+
+    def _cache_block_input_action(self, name: str) -> tuple[str, Optional[int]]:
+        """Bound retained timestep inputs with deterministic reservoir sampling."""
+        limit = self.max_cached_calibration_inputs
+        if limit is None:
+            return "append", None
+
+        seen = self._cache_input_seen.get(name, 0)
+        self._cache_input_seen[name] = seen + 1
+        if seen < limit:
+            return "append", None
+
+        rng = self._cache_input_rng.setdefault(name, random.Random(self.seed))
+        slot = rng.randrange(seen + 1)
+        if slot < limit:
+            return "replace", slot
+        return "skip", None
 
     def _wrap_block_forward(self, forward_fn):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
@@ -109,10 +134,20 @@ class DiffusionCalibrator(LLMCalibrator):
                 "Diffusion pipeline not found in model_context. " "Ensure the model was loaded as a diffusion model."
             )
 
-        logger.warning(
-            "Diffusion model will catch nsamples * num_inference_steps inputs, "
-            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
-        )
+        self._reset_cache_input_sampling()
+
+        total_candidate_inputs = nsamples * self.num_inference_steps
+        if self.max_cached_calibration_inputs is None:
+            logger.warning(
+                "Diffusion model will catch nsamples * num_inference_steps inputs, "
+                "you can reduce nsamples or num_inference_steps if OOM or take too much time."
+            )
+        else:
+            logger.info(
+                "Diffusion calibration will retain at most %d of approximately %d timestep inputs.",
+                self.max_cached_calibration_inputs,
+                total_candidate_inputs,
+            )
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size = get_diffusion_dataloader(

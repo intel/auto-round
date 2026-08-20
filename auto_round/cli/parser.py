@@ -286,6 +286,12 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--num_inference_steps", default=50, type=int, help="Number of denoising steps for diffusion evaluation."
     )
     diff.add_argument("--generator_seed", default=None, type=int, help="Random seed used for diffusion generation.")
+    diff.add_argument(
+        "--max_cached_calibration_inputs",
+        default=None,
+        type=int,
+        help="Maximum diffusion timestep inputs retained for calibration (default: unlimited).",
+    )
 
     # ---- Common Quantization Arguments ----
     quant_group = parser.add_argument_group("Common Quantization Arguments")
