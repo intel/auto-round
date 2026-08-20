@@ -318,8 +318,32 @@ def mxfp4_hadamard_quant_reference(
     return pack_codes(codes), e8m0.reshape(num_rows, k // GROUP_SIZE)
 
 
+_XMX_SUPPORTED: bool | None = None
+
+
+def _xmx_supported() -> bool:
+    """True when the current XPU build exposes the XMX fast path.
+
+    Probes once by forcing the XMX path on a tiny tensor; the C++ binding raises
+    ``RuntimeError`` when ARK_SYCL_TLA is not compiled in. The result is cached.
+    """
+    global _XMX_SUPPORTED
+    if _XMX_SUPPORTED is None:
+        try:
+            x = torch.zeros(1, GROUP_SIZE, dtype=torch.float16, device="xpu")
+            mxfp4_hadamard_quant(x, _force_xmx=True)
+            _XMX_SUPPORTED = True
+        except (RuntimeError, ValueError, NotImplementedError):
+            _XMX_SUPPORTED = False
+    return _XMX_SUPPORTED
+
+
 def mxfp4_hadamard_quant(
-    x: torch.Tensor, hadamard_matrix: torch.Tensor | None = None, *, check_finite: bool = False
+    x: torch.Tensor,
+    hadamard_matrix: torch.Tensor | None = None,
+    *,
+    check_finite: bool = False,
+    _force_xmx: bool | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fused 32-point Hadamard transform + MXFP4 quantization on XPU.
 
@@ -332,6 +356,14 @@ def mxfp4_hadamard_quant(
             several times the fused kernel itself. NaN/Inf are still outside the
             supported input domain -- the kernel simply does not police it on the
             hot path. :func:`mxfp4_hadamard_quant_reference` always checks.
+        _force_xmx: private override used by tests/benchmarks (None = auto).
+
+        Routing is automatic: the normalized Sylvester matrix always takes the
+        bit-exact FWHT path (first priority); any other Hadamard matrix falls
+        back to the XMX fast path when the build supports it (relaxed contract:
+        H stored in the activation dtype, DPAS accumulation, tolerance-based
+        acceptance -- see ``xpu_mxfp4_hadamard_design_revised.md``
+        §11.4/§11.10), otherwise to the bit-exact Path A.
 
     Returns:
         ``(out_codes, out_scale)`` where ``out_codes`` is ``uint8 [M, K // 2]``
@@ -356,6 +388,17 @@ def mxfp4_hadamard_quant(
         if not use_fwht:
             _validate_hadamard(hadamard_matrix)
 
+    # Path resolution (auto-router): FWHT has first priority for the Sylvester
+    # matrix; any other (custom) matrix falls back to the XMX fast path when the
+    # build supports it (relaxed contract), otherwise to Path A. ``_force_xmx``
+    # is a private override used by tests/benchmarks.
+    if _force_xmx is not None:
+        use_xmx = bool(_force_xmx)
+    elif use_fwht:
+        use_xmx = False
+    else:
+        use_xmx = _xmx_supported()
+
     lib = get_lib(x)
     if lib is None or not hasattr(lib, "mxfp4_hadamard_quant"):
         raise NotImplementedError("Current XPU build does not expose mxfp4_hadamard_quant")
@@ -375,5 +418,6 @@ def mxfp4_hadamard_quant(
         k,
         cvt_dtype(x_arg.dtype),
         use_fwht,
+        use_xmx,
     )
     return out_codes, out_scale

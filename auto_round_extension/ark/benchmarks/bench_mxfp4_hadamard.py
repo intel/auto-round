@@ -69,7 +69,9 @@ from auto_round_kernel.mxfp4_hadamard import (  # noqa: E402
 
 DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 
-DEFAULT_M = (1024, 4096, 16384)
+# Typical prefill shapes: token counts 2K/4K/8K/16K (M=2048 is the smallest
+# DRAM-bound prefill config; 1024 is too small to be representative).
+DEFAULT_M = (2048, 4096, 8192, 16384)
 DEFAULT_K = (2048, 4096, 8192)
 
 # Phase 3 performance gate.
@@ -143,17 +145,40 @@ def measure_sustained_dram_copy(dtype: torch.dtype, warmup: int, iters: int) -> 
     return gbps
 
 
-def verify_once(x: torch.Tensor, hadamard: torch.Tensor, rows: int) -> bool:
+def _dequantize(codes: torch.Tensor, scale: torch.Tensor, k: int) -> torch.Tensor:
+    """Unpack (codes, e8m0) back to FP32, for the tolerance check."""
+    levels = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32, device=codes.device)
+    flat = codes.reshape(-1, k // 2).to(torch.int32)
+    low = flat & 0x0F
+    high = (flat >> 4) & 0x0F
+    nibbles = torch.stack((low, high), dim=-1).reshape(-1, k)
+    values = levels[nibbles & 0x07] * torch.where((nibbles & 0x08) != 0, -1.0, 1.0)
+    exp = scale.reshape(-1, k // GROUP_SIZE).to(torch.int32) - 127
+    return torch.ldexp(values.reshape(-1, GROUP_SIZE), exp.reshape(-1, 1)).reshape(-1, k)
+
+
+def verify_once(x: torch.Tensor, hadamard: torch.Tensor, rows: int, *, use_xmx: bool = False) -> bool:
     """Spot-check the first ``rows`` rows against the CPU reference.
 
     A benchmark that measures an incorrect kernel is worthless, so every
     configuration is validated before it is timed. Only a slice is checked
     because the reference is a slow elementwise implementation.
+
+    The default (FWHT/Path A) path is bit-exact and requires byte equality. The
+    XMX path is a relaxed contract (bf16/bf16 H + DPAS), so it is checked with
+    tolerance instead: SQNR >= 15 dB between the dequantized outputs.
     """
     sub = x[:rows].contiguous()
-    codes, scale = mxfp4_hadamard_quant(sub, hadamard)
+    codes, scale = mxfp4_hadamard_quant(sub, hadamard, _force_xmx=use_xmx)
     ref_codes, ref_scale = mxfp4_hadamard_quant_reference(sub.cpu(), hadamard.cpu())
-    return torch.equal(codes.cpu(), ref_codes) and torch.equal(scale.cpu(), ref_scale)
+    if not use_xmx:
+        return torch.equal(codes.cpu(), ref_codes) and torch.equal(scale.cpu(), ref_scale)
+    k = sub.shape[-1]
+    deq = _dequantize(codes.cpu(), scale.cpu(), k).double()
+    ref = _dequantize(ref_codes, ref_scale, k).double()
+    err = deq - ref
+    sqnr = float(10.0 * torch.log10((ref * ref).sum() / (err * err).sum().clamp_min(1e-30)))
+    return sqnr >= 15.0
 
 
 def run_case(m: int, k: int, dtype: torch.dtype, args: argparse.Namespace, dram_gbps: float) -> dict:
@@ -161,9 +186,11 @@ def run_case(m: int, k: int, dtype: torch.dtype, args: argparse.Namespace, dram_
     x = torch.randn((m, k), dtype=dtype, device="xpu")
     hadamard = get_hadamard_matrix(HADAMARD_DIM, x.device)
 
-    correct = verify_once(x, hadamard, min(args.verify_rows, m)) if not args.no_verify else None
+    correct = (
+        verify_once(x, hadamard, min(args.verify_rows, m), use_xmx=args.xmx) if not args.no_verify else None
+    )
 
-    latency = bench(lambda: mxfp4_hadamard_quant(x, hadamard), args.warmup, args.iters)
+    latency = bench(lambda: mxfp4_hadamard_quant(x, hadamard, _force_xmx=args.xmx), args.warmup, args.iters)
     nbytes = fused_bytes(m, k, dtype)
     bw_fused = to_gbps(nbytes, latency)
 
@@ -211,6 +238,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--verify-rows", type=int, default=64, help="rows spot-checked against the CPU reference")
     p.add_argument("--no-verify", action="store_true", help="skip the correctness spot check")
     p.add_argument("--target-ratio", type=float, default=TARGET_RATIO)
+    p.add_argument("--xmx", action="store_true", help="force the XMX fast path (auto-routed otherwise)")
     return p.parse_args()
 
 
@@ -222,6 +250,7 @@ def main() -> int:
 
     print(f"device: {torch.xpu.get_device_name(0)}")
     print(f"warmup={args.warmup} iters={args.iters} target_ratio={args.target_ratio}")
+    print(f"path={'XMX (forced)' if args.xmx else 'default (FWHT/Path A or auto-XMX)'}")
     print(f"bytes = M*K*sizeof(input) + M*K/{2} + M*K/{GROUP_SIZE}")
 
     dram_gbps = {name: measure_sustained_dram_copy(DTYPES[name], args.warmup, args.iters) for name in args.dtype}
@@ -264,9 +293,7 @@ def main() -> int:
     print(f"mean ratio over DRAM-bound configurations = {mean_ratio:.3f}")
     print(f"min  ratio over DRAM-bound configurations = {worst:.3f} (target {args.target_ratio})")
     if below:
-        print(f"{len(below)} of {len(gated)} configuration(s) below target:")
-        for r in below:
-            print(f"  M={r['M']} K={r['K']} {r['dtype']}: ratio={r['ratio']:.3f}")
+        print(f"FAIL: {len(below)} of {len(gated)} DRAM-bound configuration(s) below target.")
         return 1
     print("PASS: all DRAM-bound configurations meet the bandwidth target.")
     return 0
