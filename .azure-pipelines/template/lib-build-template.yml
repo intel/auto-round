@@ -89,6 +89,7 @@ stages:
                   docker run --rm \
                     --user "$(id -u):$(id -g)" \
                     -e HOME=/tmp \
+                    -e ARK_SYCL_TLA_JOBS="${ARK_SYCL_TLA_JOBS:-1}" \
                     --cpuset-cpus="${NUMA_CPUSET:-0-15}" \
                     --cpuset-mems="${NUMA_NODE:-0}" \
                     -v $(Build.SourcesDirectory):/auto-round \

@@ -174,6 +174,24 @@ sycl_target = detect_sycl_target() if enable_sycl_tla else None
 
 
 def get_system_memory_gb():
+    cgroup_memory_paths = (
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    )
+    for memory_path in cgroup_memory_paths:
+        try:
+            memory_limit = Path(memory_path).read_text().strip()
+        except OSError:
+            continue
+        if memory_limit == "max":
+            continue
+        try:
+            memory_bytes = int(memory_limit)
+        except ValueError:
+            continue
+        if 0 < memory_bytes < (1 << 60):
+            return memory_bytes / (1024**3)
+
     if hasattr(os, "sysconf"):
         page_size_names = ("SC_PAGE_SIZE", "SC_PAGESIZE")
         page_size = None
@@ -207,6 +225,12 @@ def get_system_memory_gb():
             return memory_status.ullTotalPhys / (1024**3)
 
     return 64
+
+
+def get_cpu_count():
+    if hasattr(os, "sched_getaffinity"):
+        return max(1, len(os.sched_getaffinity(0)))
+    return os.cpu_count() or 1
 
 
 def get_sycl_tla_job_count(cpu_job_count):
@@ -245,7 +269,7 @@ class CMakeBuild(build_ext):
             cmake_cmd.append("-GNinja")
         subprocess.check_call(cmake_cmd)
 
-        cpu_count = os.cpu_count() or 2
+        cpu_count = get_cpu_count()
         n_job = max(1, cpu_count // 2)
         subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
 
@@ -279,6 +303,7 @@ class CMakeBuild(build_ext):
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")
         xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
+        print(f"Building XPU extension with {xpu_n_job} parallel job(s)")
         subprocess.check_call(cmake_cmd)
         subprocess.check_call(["cmake", "--build", str(XBUILD_DIR), "-j", str(xpu_n_job)])
 
