@@ -18,29 +18,20 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseOrchestrator, BaseCompressor
-    from auto_round.compressors.orchestrator import CompressionOrchestrator
-    from auto_round.compressors.entry import AutoRoundCompatible, AutoRound
     from auto_round.compressors.model_free import ModelFreeCompressor
+    from auto_round.compressors.orchestrator import CompressionOrchestrator
 
 __all__ = [
-    "AutoRound",
     "BaseOrchestrator",
     "BaseCompressor",  # backward-compat alias
     "CompressionOrchestrator",
-    "AutoRoundCompatible",
     "ModelFreeCompressor",
 ]
 
 
 def __getattr__(name):
     """Lazy import to avoid circular dependencies."""
-    if name in ("AutoRound", "AutoRoundCompatible"):
-        from auto_round.compressors.entry import AutoRound, AutoRoundCompatible
-
-        if name == "AutoRound":
-            return AutoRound
-        return AutoRoundCompatible
-    elif name in ("BaseOrchestrator", "BaseCompressor"):
+    if name in ("BaseOrchestrator", "BaseCompressor"):
         from auto_round.compressors.base import BaseOrchestrator
 
         return BaseOrchestrator
@@ -48,8 +39,9 @@ def __getattr__(name):
         from auto_round.compressors.orchestrator import CompressionOrchestrator
 
         return CompressionOrchestrator
-    elif name in ("Compressor", "ZeroShotCompressor"):
-        # Backward-compat aliases
+    elif name in ("Compressor", "ZeroShotCompressor", "DataDrivenCompressor", "CalibratedRTNCompressor"):
+        # Backward-compat aliases: these classes were consolidated into
+        # ``CompressionOrchestrator`` (main's #2039 compressor/quantizer refactor).
         from auto_round.compressors.orchestrator import CompressionOrchestrator
 
         return CompressionOrchestrator

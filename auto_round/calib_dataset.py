@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import json
 import logging
 import multiprocessing
@@ -1015,7 +1016,12 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if name in data_lens:
             dataset = select_dataset(dataset, range(data_lens[name]))
         if isinstance(dataset, IterableDataset):
-            dataset = Dataset.from_list(list(dataset))
+            # A single dataset source never contributes more than `nsamples` rows to the
+            # final combined dataset, so cap materialization here instead of fully consuming
+            # the (much larger) internal `.take(...)` pool used by streaming dataset loaders.
+            # This avoids needless downloads/shard resolution for large remote datasets
+            # (e.g. BAAI/CCI3-HQ) when only a small subset of samples is actually needed.
+            dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         new_features = {}
         for k, v in dataset.features.items():

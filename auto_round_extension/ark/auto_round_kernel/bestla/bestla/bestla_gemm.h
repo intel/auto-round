@@ -2025,6 +2025,7 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
   Xbyak::Reg64 reg_tmp2;
   Xbyak::Reg64 reg_tmp3;
   Xbyak::Reg64 reg_ret = rax;
+  Xbyak::Opmask msk_wr = k1;
 
   void assign_regs() {
     CTileCount = NRegs * MRegs;
@@ -2214,9 +2215,27 @@ class Amxbf16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     for (int i = 0; i < _mtile; i += zunroll) {
       int m_re = utils::remainsize(i, _mtile, zunroll);
       for (int im = 0; im < m_re; im++) {
+        mov(reg_tmp2, reg_nsize);
+        sub(reg_tmp2, reg_itern);
         for (int j = 0; j < NRegs; j++) {
+          Xbyak::Label skip_store, full_store, store_done;
+          cmp(reg_tmp2, j * 16);
+          jle(skip_store, T_NEAR);
           vmovups(vreg_t(TmpReg + im * NRegs + j), ptr[reg_tmp + j * 64 + (i + im) * NTILE * 4]);
+          cmp(reg_tmp2, (j + 1) * 16);
+          jae(full_store, T_NEAR);
+          mov(reg_tmp3, 1);
+          mov(reg_tmp1, reg_tmp2);
+          sub(reg_tmp1, j * 16);
+          shlx(reg_tmp3, reg_tmp3, reg_tmp1);
+          sub(reg_tmp3, 1);
+          kmovw(msk_wr, reg_tmp3.cvt32());
+          vmovups(ptr[reg_matCptr + j * VecBytes] | msk_wr, vreg_t(TmpReg + im * NRegs + j));
+          jmp(store_done, T_NEAR);
+          L(full_store);
           vmovups(ptr[reg_matCptr + j * VecBytes], vreg_t(TmpReg + im * NRegs + j));
+          L(store_done);
+          L(skip_store);
         }
         add(reg_matCptr, reg_cstride);
       }
@@ -2288,6 +2307,7 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
   Xbyak::Reg64 reg_tmp2;
   Xbyak::Reg64 reg_tmp3;
   Xbyak::Reg64 reg_ret = rax;
+  Xbyak::Opmask msk_wr = k1;
 
   void assign_regs() {
     CTileCount = NRegs * MRegs;
@@ -2477,9 +2497,27 @@ class Amxfp16N16P2 : protected bestla::xbyak::JitAmxbf16 {
     for (int i = 0; i < _mtile; i += zunroll) {
       int m_re = utils::remainsize(i, _mtile, zunroll);
       for (int im = 0; im < m_re; im++) {
+        mov(reg_tmp2, reg_nsize);
+        sub(reg_tmp2, reg_itern);
         for (int j = 0; j < NRegs; j++) {
+          Xbyak::Label skip_store, full_store, store_done;
+          cmp(reg_tmp2, j * 16);
+          jle(skip_store, T_NEAR);
           vmovups(vreg_t(TmpReg + im * NRegs + j), ptr[reg_tmp + j * 64 + (i + im) * NTILE * 4]);
+          cmp(reg_tmp2, (j + 1) * 16);
+          jae(full_store, T_NEAR);
+          mov(reg_tmp3, 1);
+          mov(reg_tmp1, reg_tmp2);
+          sub(reg_tmp1, j * 16);
+          shlx(reg_tmp3, reg_tmp3, reg_tmp1);
+          sub(reg_tmp3, 1);
+          kmovw(msk_wr, reg_tmp3.cvt32());
+          vmovups(ptr[reg_matCptr + j * VecBytes] | msk_wr, vreg_t(TmpReg + im * NRegs + j));
+          jmp(store_done, T_NEAR);
+          L(full_store);
           vmovups(ptr[reg_matCptr + j * VecBytes], vreg_t(TmpReg + im * NRegs + j));
+          L(store_done);
+          L(skip_store);
         }
         add(reg_matCptr, reg_cstride);
       }
@@ -2555,6 +2593,7 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
   Xbyak::Reg64 reg_tmp2;
   Xbyak::Reg64 reg_tmp3;
   Xbyak::Reg64 reg_ret = rax;
+  Xbyak::Opmask msk_wr = k1;
 
   void assign_regs() {
     CTileCount = NRegs * MRegs;
@@ -2745,9 +2784,27 @@ class Amxint8N16P4 : protected bestla::xbyak::JitAmxint8 {
     for (int i = 0; i < _mtile; i += zunroll) {
       int m_re = utils::remainsize(i, _mtile, zunroll);
       for (int im = 0; im < m_re; im++) {
+        mov(reg_tmp2, reg_nsize);
+        sub(reg_tmp2, reg_itern);
         for (int j = 0; j < NRegs; j++) {
+          Xbyak::Label skip_store, full_store, store_done;
+          cmp(reg_tmp2, j * 16);
+          jle(skip_store, T_NEAR);
           vmovups(vreg_t(TmpReg + im * NRegs + j), ptr[reg_tmp + j * 64 + (i + im) * NTILE * 4]);
+          cmp(reg_tmp2, (j + 1) * 16);
+          jae(full_store, T_NEAR);
+          mov(reg_tmp3, 1);
+          mov(reg_tmp1, reg_tmp2);
+          sub(reg_tmp1, j * 16);
+          shlx(reg_tmp3, reg_tmp3, reg_tmp1);
+          sub(reg_tmp3, 1);
+          kmovw(msk_wr, reg_tmp3.cvt32());
+          vmovups(ptr[reg_matCptr + j * VecBytes] | msk_wr, vreg_t(TmpReg + im * NRegs + j));
+          jmp(store_done, T_NEAR);
+          L(full_store);
           vmovups(ptr[reg_matCptr + j * VecBytes], vreg_t(TmpReg + im * NRegs + j));
+          L(store_done);
+          L(skip_store);
         }
         add(reg_matCptr, reg_cstride);
       }

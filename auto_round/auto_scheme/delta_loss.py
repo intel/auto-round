@@ -1184,7 +1184,7 @@ def get_score_for_scheme(
 
                 # Unified mllm-aware forward (casts pixel_values/images to
                 # model.dtype, handles dict-with-text/str/tuple paths the same
-                # way AutoRoundMLLM.calib does).
+                # way the multimodal compressor calibration does).
                 output, _prepared = model_forward(model, data_for_forward, labels=labels, use_cache=False)
                 output.loss.backward()
 
@@ -2181,11 +2181,41 @@ def _gen_layer_config(
     else:
         nsamples = 16
 
-    # seqlen: API explicit setting takes priority; otherwise use MoE-aware default
-    if auto_scheme.seqlen is not None:
+    # seqlen: env > API explicit setting > MoE-aware default
+    _env_seqlen = _envs.AR_AUTO_SCHEME_SEQLEN
+    if _env_seqlen is not None:
+        seqlen = _env_seqlen
+    elif auto_scheme.seqlen is not None:
         seqlen = auto_scheme.seqlen
     else:
         seqlen = 128 if is_moe_model else 256
+
+    # 2-bit options benefit from more/longer calibration data. Warn when 2-bit
+    # (non-GGUF) schemes are present but nsamples/seqlen are below the recommended settings.
+    def _scheme_has_2bit(scheme):
+        if isinstance(scheme, str):
+            try:
+                scheme = asdict(preset_name_to_scheme(scheme))
+            except Exception:
+                return False
+        if isinstance(scheme, QuantizationScheme):
+            scheme = asdict(scheme)
+        if isinstance(scheme, dict):
+            # GGUF (super_bits set) uses its own (double) quantization and does
+            # not follow this nsamples/seqlen recommendation, so skip it.
+            if scheme.get("super_bits") is not None:
+                return False
+            return scheme.get("bits", 16) == 2
+        return False
+
+    if any(_scheme_has_2bit(s) for s in schemes) and (nsamples < 128 or seqlen < 1024):
+        logger.warning(
+            "AutoScheme: 2-bit scheme(s) detected. For better results, consider nsamples>=128 and "
+            "seqlen>=1024 (current: nsamples=%d, seqlen=%d). "
+            "Override via env vars AR_AUTO_SCHEME_NSAMPLES / AR_AUTO_SCHEME_SEQLEN.",
+            nsamples,
+            seqlen,
+        )
 
     if auto_scheme.batch_size is not None:
         batch_size = auto_scheme.batch_size

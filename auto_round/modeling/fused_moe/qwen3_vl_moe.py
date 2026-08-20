@@ -16,13 +16,14 @@ import torch
 import transformers
 from packaging import version
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
@@ -37,6 +38,8 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
     Calibration version of Qwen3VLMoeTextSparseMoeBlock that sends all tokens to all
     experts.
     """
+
+    supports_gguf_fused_moe = True
 
     is_permanent = True
 
@@ -102,15 +105,9 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
                     weighted_output = expert_out * routing_weights[token_idx, idx, None]
                     next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         else:
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-            for expert_idx in expert_hit:
-                expert_idx = expert_idx[0]
-                if expert_idx == self.num_experts:
-                    continue
-                idx, token_idx = torch.where(expert_mask[expert_idx])
-                expert_out = self.experts[expert_idx](hidden_states[token_idx])
-                weighted_output = expert_out * routing_weights[token_idx, idx, None]
-                next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
+            next_states = sequential_moe_forward(
+                hidden_states, router_indices, routing_weights, self.experts, self.num_experts
+            )
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
 
         if transformers_version < version.parse("5.0"):
@@ -147,6 +144,18 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_up_proj": {"split_into": ["gate_proj", "up_proj"]},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=True,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         intermediate_size = original.down_proj.shape[1]

@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import psutil
 import torch
@@ -866,6 +866,20 @@ def diffusion_load_model(
         pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
+    # A special case for Cosmos3: model_index.json _class_name may not match
+    # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    _model_index = None
+    if isinstance(pretrained_model_name_or_path, str):
+        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(_mi_path):
+            with open(_mi_path, "r", encoding="utf-8") as f:
+                _model_index = json.load(f)
+    _pipe_class = (_model_index or {}).get("_class_name", "")
+    if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
+        from auto_round.special_model_handler import load_cosmos3_diffusion
+
+        return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
@@ -901,7 +915,12 @@ def diffusion_load_model(
             pipe.config[k] = v
 
     pipe = _to_model_dtype(pipe, model_dtype)
-    model = pipe.transformer
+    if hasattr(pipe, "unet"):
+        # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
+        model = pipe.unet
+    else:
+        # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
+        model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls
     _attach_diffusion_pipeline_fn(pipe)
@@ -1747,6 +1766,19 @@ def unsupported_meta_device(model):
     return False
 
 
+def map_nested_tensors(value: Any, transform: Callable[[torch.Tensor], torch.Tensor]) -> Any:
+    """Apply ``transform`` to tensors in nested tuples, lists, and mappings."""
+    if torch.is_tensor(value):
+        return transform(value)
+    if isinstance(value, tuple):
+        return tuple(map_nested_tensors(item, transform) for item in value)
+    if isinstance(value, list):
+        return [map_nested_tensors(item, transform) for item in value]
+    if isinstance(value, (dict, UserDict)):
+        return type(value)({key: map_nested_tensors(item, transform) for key, item in value.items()})
+    return value
+
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
@@ -1775,6 +1807,23 @@ def to_device(input, device=torch.device("cpu")):
             input_res = tuple(input_res)
         input = input_res
 
+    return input
+
+
+def move_to_device(input: Any, device=torch.device("cpu"), non_blocking: bool = False) -> Any:
+    """Return a nested tensor container moved to *device* without mutating it."""
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(device, non_blocking=non_blocking)
+    if isinstance(input, UserDict):
+        return type(input)({k: move_to_device(v, device, non_blocking) for k, v in input.items()})
+    if isinstance(input, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in input.items()}
+    if isinstance(input, tuple):
+        return tuple(move_to_device(v, device, non_blocking) for v in input)
+    if isinstance(input, list):
+        return [move_to_device(v, device, non_blocking) for v in input]
     return input
 
 
@@ -2540,6 +2589,16 @@ def is_model_free_route(
             return common_conditions and family == "mx_fp"
         return False
 
+    if fmt_first == "llm_compressor":
+        from auto_round.compressors.model_free import _apply_scheme_overrides
+        from auto_round.schemes import is_mx_fp as _is_mx_fp
+
+        try:
+            scheme_obj = _apply_scheme_overrides(scheme, kwargs)
+            scheme_is_mx_fp = _is_mx_fp(scheme_obj.data_type or "")
+        except Exception:
+            scheme_is_mx_fp = False
+        return common_conditions and scheme_is_mx_fp and is_model_free_supported_scheme(scheme, kwargs)
     if fmt_first != "auto_round":
         return False
     return common_conditions and is_model_free_supported_scheme(scheme, kwargs)

@@ -140,6 +140,8 @@ def _get_scheme(bits, data_type):
         return "MXFP4" if bits == 4 else "MXFP8"
     if is_nv_fp(data_type):
         return "NVFP4"
+    if data_type == "nvfp4_v2":
+        return "NVFP4_E5M3"
     return None
 
 
@@ -149,6 +151,8 @@ def _get_group_format(bits, data_type):
         return "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
     if is_nv_fp(data_type):
         return "nvfp4-pack-quantized"
+    if data_type == "nvfp4_v2":
+        return "nvfp4-e5m3-pack-quantized"
     return "float-quantized"
 
 
@@ -161,6 +165,8 @@ def _build_mixed_fp_quantization_config(
     model,
     static_kv_dtype=None,
     static_attention_dtype=None,
+    static_kv_granularity="tensor",
+    static_attention_granularity="tensor",
 ):
     """Build a quantization config dict for mixed-precision scenarios.
 
@@ -204,13 +210,16 @@ def _build_mixed_fp_quantization_config(
 
     use_fp8_attention = _use_fp8_attention(static_attention_dtype)
     if use_fp8_attention:
-        attention_config = _get_attention_config(model)
+        attention_config = _get_attention_config(model, static_attention_granularity)
     else:
         attention_config = None
+    kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
     quantization_config = initialize_quantization(
         scheme=None,
         config_groups=config_groups,
-        kv_cache_scheme=_construct_kv_scheme() if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention) else None,
+        kv_cache_scheme=(
+            _construct_kv_scheme(kv_granularity) if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention) else None
+        ),
         ignore=ignore,
     )
     quantization_config = quantization_config.to_dict()
@@ -322,8 +331,11 @@ def save_quantized_as_fp(
     is_mixed = len(scheme_groups) > 1
 
     use_fp8_attention = _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
+    static_attention_granularity = serialization_dict.get("static_attention_granularity", "tensor")
+    static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
+    kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
     kv_cache_scheme = (
-        _construct_kv_scheme()
+        _construct_kv_scheme(kv_granularity)
         if (_use_fp8_kv(serialization_dict.get("static_kv_dtype", None)) or use_fp8_attention)
         else None
     )
@@ -338,7 +350,14 @@ def save_quantized_as_fp(
             model,
             static_kv_dtype=serialization_dict.get("static_kv_dtype", None),
             static_attention_dtype=serialization_dict.get("static_attention_dtype", None),
+            static_kv_granularity=static_kv_granularity,
+            static_attention_granularity=static_attention_granularity,
         )
+    elif data_type == "nvfp4_v2":
+        from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+
+        quantization_config = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+        quantization_config["provider"] = "auto-round"
     else:
         scheme = _get_scheme(bits, data_type)
         if scheme is None:
@@ -351,7 +370,7 @@ def save_quantized_as_fp(
             ignore=ignore,
         )
         if use_fp8_attention:
-            attention_config = _get_attention_config(model)
+            attention_config = _get_attention_config(model, static_attention_granularity)
         else:
             attention_config = None
         setattr(quantization_config, "format", format)

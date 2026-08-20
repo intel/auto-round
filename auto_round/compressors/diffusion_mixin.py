@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import inspect
+import json
 import os
 from typing import Any, Optional, Union
 
@@ -216,7 +217,7 @@ class DiffusionMixin:
                 dataset=dataset,
                 bs=self.batch_size,
                 seed=self.seed,
-                nsamples=self.nsamples,
+                nsamples=self.calibration_context.nsamples,
             )
         else:
             self.dataloader = self.dataset
@@ -373,6 +374,10 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
+            if getattr(self.calibration, "_cpu_offload_mode", None) == "model":
+                from accelerate.hooks import remove_hook_from_submodules
+
+                remove_hook_from_submodules(self.model_context.model)
             clear_memory()
             self._inputs_cached = True
             return super().quantize()
@@ -409,7 +414,7 @@ class DiffusionMixin:
         logger.info("start to cache block inputs for primary transformer")
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
-            self.nsamples,
+            self.calibration_context.nsamples,
             layer_names=[],
         )
         self.inputs = all_inputs
@@ -458,7 +463,7 @@ class DiffusionMixin:
             logger.info(f"start to cache block inputs for {comp_name}")
             all_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names,
-                self.nsamples,
+                self.calibration_context.nsamples,
                 layer_names=[],
             )
             self.inputs = all_inputs
@@ -486,7 +491,7 @@ class DiffusionMixin:
     def save_quantized(
         self,
         output_dir: Optional[str] = None,
-        format: Union[str, list] = "auto_round",
+        format: Optional[Union[str, list]] = None,
         inplace: bool = True,
         return_folders: bool = False,
         **kwargs,
@@ -517,11 +522,9 @@ class DiffusionMixin:
         has_multiple_quantized_transformers = bool(quantized_transformers)
 
         # Handle multi-format (convert string to list if needed)
-        _format = format
+        _format = format if format is not None else getattr(self, "formats", None) or "auto_round"
         if isinstance(_format, str):
-            from auto_round.formats import get_formats
-
-            _format = get_formats(_format, self)
+            _format = self._resolve_format_string(_format)
 
         for name in pipe.components.keys():
             val = getattr(pipe, name)
@@ -589,8 +592,6 @@ class DiffusionMixin:
             pipe.config.save_pretrained(output_dir)
         else:
             # FrozenDict / plain dict — write model_index.json manually
-            import json
-
             model_index_path = os.path.join(output_dir, "model_index.json")
             with open(model_index_path, "w", encoding="utf-8") as f:
                 f.write(json.dumps(dict(pipe.config), indent=2, sort_keys=True) + "\n")

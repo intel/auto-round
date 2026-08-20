@@ -1,12 +1,18 @@
 #!/bin/bash
 set -e
 uv pip install coverage
-export COVERAGE_RCFILE=${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage
+export COVERAGE_RCFILE=${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc
 coverage_log="${BUILD_SOURCESDIRECTORY}/log_dir/coverage_log"
 cd "${BUILD_SOURCESDIRECTORY}/log_dir"
 
 echo "collect coverage for PR branch"
 mkdir -p coverage_PR
+# Every matrix part may legitimately select no test (change-based filtering),
+# in which case there is nothing to combine.
+if ! compgen -G "ut-*/.coverage.*" > /dev/null; then
+    echo "no coverage data found, skip coverage collection."
+    exit 0
+fi
 cp ut-*/.coverage.* ./coverage_PR/
 cd coverage_PR
 coverage combine --keep --rcfile=${COVERAGE_RCFILE}
