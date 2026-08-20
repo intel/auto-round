@@ -614,11 +614,9 @@ class _ModelFreeCompressorCore:
             layer_config_keys = set(self.layer_config or {})
             # Skip each known lm_head name variant unless the user has explicitly listed it in layer_config.
             # Each pattern is checked independently so a user-specified key takes priority over the default.
-            # Use substring containment (lm_head_pattern in key) to mirror the ".*pattern.*" regex used by
-            # _build_ignore_regex, so e.g. pattern "head" does not wrongly suppress user-specified "lm_head".
             for lm_head_pattern in _LM_HEAD_PATTERNS:
                 pattern_in_config = any(
-                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".") or lm_head_pattern in key
+                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".")
                     for key in layer_config_keys
                 )
                 if not pattern_in_config and lm_head_pattern not in ignore_patterns:

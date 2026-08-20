@@ -124,6 +124,10 @@ class _PatternMatcher:
         if cached is not None:
             return cached
         layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        # Explicit layer_config entries take priority: never ignore a layer the user has explicitly configured.
+        if layer_name in self._layer_config:
+            self._ignore_cache[tensor_name] = False
+            return False
         result = bool(self._ignore_re and self._ignore_re.search(layer_name))
         self._ignore_cache[tensor_name] = result
         return result
