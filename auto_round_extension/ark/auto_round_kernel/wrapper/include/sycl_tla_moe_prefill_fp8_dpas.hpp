@@ -80,9 +80,12 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -153,6 +156,39 @@ template <typename ScalarT>
 using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 
 // ---------------------------------------------------------------------------
+// Persistent per-queue atomic work-group counter.
+//
+// The grouped-GEMM launchers below need a single `int32_t` device slot as a
+// global work-group counter (`atomicAdd`). The kernel self-initialises it to 0
+// at launch (group 0 / lane 0 does `atm.store(0)`), so the host never has to
+// reset it between calls. Allocating it per dispatch with `sycl::malloc_device`
+// and releasing it with `sycl::free` costs two queue synchronizations, which is
+// pure overhead on the decode hot path where the GEMM itself is only tens of
+// microseconds.
+//
+// Instead, hand out one persistent buffer per queue and reuse it across calls.
+// This is safe because every launcher call is synchronous (`event.wait()` in
+// `MoEGEMMLauncher`), so two launches can never share the buffer concurrently.
+// Buffers live until process exit (one `int32_t` per queue), matching the
+// singleton lifetime already used by `EventManager`. The S4 header re-exports
+// this helper rather than defining its own, so both paths share one cache.
+// ---------------------------------------------------------------------------
+inline int32_t* get_persistent_atomic_buffer(sycl::queue* q) {
+  static std::mutex mtx;
+  static std::unordered_map<sycl::queue*, int32_t*> cache;
+  std::lock_guard<std::mutex> lock(mtx);
+  auto it = cache.find(q);
+  if (it != cache.end()) return it->second;
+  int32_t* buf = sycl::malloc_device<int32_t>(1, *q);
+  if (buf == nullptr) {
+    throw std::runtime_error(
+        "moe_dpas_fp8: failed to allocate persistent atomic buffer");
+  }
+  cache.emplace(q, buf);
+  return buf;
+}
+
+// ---------------------------------------------------------------------------
 // Policy classes (ported verbatim from vllm-xpu-kernels
 // `gemm_xe2_policy.hpp`, renamed to `dpas_*` to avoid collision with any
 // future upstream import into `namespace MoE`).
@@ -190,6 +226,35 @@ class dpas_w8a16_policy_m_16 : public dpas_policy_base {
 class dpas_w8a16_policy_m_32 : public dpas_policy_base {
  public:
   using WGTile = Shape<_32, _64, _32>;
+  using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
+};
+
+// ---------------------------------------------------------------------------
+// 4-bit (S4 / w4a16) tile policies.
+//
+// The S4 mixed-input prefill mainloop (`sycl_tla_moe_prefill_s4_dpas.hpp`)
+// reads a *halved* B-side byte stream (two nibbles per byte). With the same
+// M/N footprint the packed weight fits in half the L2/GRF traffic of the INT8
+// path, so a larger N tile pays off: the default large-M policy uses a
+// 128x256x32 WG tile (vs. the INT8 128x128x16), matching the reference
+// `w4a16_policy` in vllm-xpu-kernels `csrc/xpu/grouped_gemm/xe_2/
+// gemm_xe2_policy.hpp`. The small-M buckets (m_8/m_16/m_32) reuse the same
+// 64-wide N tiles as the INT8 path -- the reference uses identical shapes
+// there. Only the default (large-M) tile and the new m_8 bucket differ, so we
+// define those two here and alias m_16/m_32 to the shared shapes in the S4
+// header.
+// ---------------------------------------------------------------------------
+class dpas_w4a16_policy : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_128, _256, _32>;
+  using SGLayout = Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>;
+
+  using GmemTiledCopyD = XE_STORE_2D<16, 8, 32>;
+};
+
+class dpas_w4a16_policy_m_8 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_8, _64, _32>;
   using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
 };
 
@@ -1002,7 +1067,7 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 
   if (A_avg_M <= 8) {
     ARK_DPAS_PG_LAUNCH(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
+  } else if (A_avg_M <= 512) {
     ARK_DPAS_PG_LAUNCH(dpas_w8a16_policy_m_32);
   } else {
     ARK_DPAS_PG_LAUNCH(dpas_w8a16_policy);
@@ -1010,6 +1075,81 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 #undef ARK_DPAS_PG_LAUNCH
 
   sycl::free(atomic_buffer, *q);
+}
+
+// ---------------------------------------------------------------------------
+// Host-side driver: per-K-group FP8, *decode* phase.
+//
+// Same math, same mainloop and same weight/scale layout as
+// `moe_prefill_fp8_dpas_per_group_dispatch` above -- only the tile selection
+// and the atomic-buffer lifetime differ, for two reasons that are specific to
+// the decode regime (a handful of tokens spread over many experts):
+//
+//   1. Finer small-M ladder. The reference `w8a16` dispatch in
+//      vllm-xpu-kernels bottoms out at the 16-row tile (`m_16`), while its
+//      `w4a16` dispatch has an extra 8-row bucket. Decode `A_avg_M` is far
+//      below 16, so the missing rung means half of every M tile is padding and
+//      the (bandwidth-bound) FP8 weights are streamed for rows that contribute
+//      nothing. `dpas_w4a16_policy_m_8` carries no 4-bit-specific types -- it
+//      is purely a `WGTile`/`SGLayout` shape (8x64x32) -- so the FP8 mainloop
+//      reuses it verbatim, closing that gap. This mirrors what the S4 decode
+//      dispatch already does.
+//   2. Persistent atomic counter. The prefill dispatch allocates and frees the
+//      work-group counter per call; each of those forces a queue sync. At
+//      prefill sizes that is noise, at decode sizes it is a large fraction of
+//      the total. Use the per-queue persistent slot instead.
+//
+// The upper rungs are pulled in to match the S4 decode ladder
+// (`m_8` -> `m_16` -> `m_32` -> wide) rather than the prefill one, whose
+// `<= 512 -> m_32` rung is tuned for prefill-sized batches.
+//
+// Numerically identical to the prefill dispatch for every input; only the tile
+// geometry changes, so `test_moe_prefill_accuracy.py::test_accuracy_fp8`
+// tolerances apply unchanged. Inherits this header's
+// NEEDS-HARDWARE-VALIDATION status.
+// ---------------------------------------------------------------------------
+
+template <typename ScalarT, bool IsE4M3>
+void moe_decode_fp8_dpas_per_group_dispatch(
+    sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NK,
+    const ScalarT* scales, ScalarT* outputs, const int* num_tokens_per_expert,
+    int E, int N, int K, int group_size, int total_tokens) {
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+  if (K % group_size != 0) {
+    throw std::invalid_argument(
+        "moe_decode_fp8_dpas(per-group): K must be a multiple of group_size");
+  }
+
+  compat::set_default_queue(*q);
+
+  using ElementB = std::conditional_t<IsE4M3, cutlass::float_e4m3_t,
+                                      cutlass::float_e5m2_t>;
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+
+  const int A_avg_M = total_tokens / E;
+
+  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
+
+#define ARK_DPAS_DECODE_PG_LAUNCH(policy)                                      \
+  MoEGEMMLauncher<'R', 'C', policy, ScaleMode::kPerGroup>(                     \
+      *q, activations_ca, reinterpret_cast<const ElementB*>(weights_NK),       \
+      scales_ca, static_cast<const ElementA*>(nullptr), outputs_ca, N, K,      \
+      num_tokens_per_expert, E, group_size, atomic_buffer);
+
+  if (A_avg_M <= 4) {
+    ARK_DPAS_DECODE_PG_LAUNCH(dpas_w4a16_policy_m_8);
+  } else if (A_avg_M <= 8) {
+    ARK_DPAS_DECODE_PG_LAUNCH(dpas_w8a16_policy_m_16);
+  } else if (A_avg_M <= 128) {
+    ARK_DPAS_DECODE_PG_LAUNCH(dpas_w8a16_policy_m_32);
+  } else {
+    ARK_DPAS_DECODE_PG_LAUNCH(dpas_w8a16_policy);
+  }
+#undef ARK_DPAS_DECODE_PG_LAUNCH
 }
 
 // ---------------------------------------------------------------------------
