@@ -1001,7 +1001,9 @@ class TestResolveComputeDevice:
 
     def test_none_detects_available_accelerator(self):
         result = _resolve_compute_device(None)
-        assert result.type in ("cuda", "cpu")
+        # ``None`` resolves to whichever accelerator is active in the worker.
+        # XPU is a first-class PyTorch accelerator and must be accepted here.
+        assert result.type in ("cuda", "xpu", "hpu", "mps", "cpu")
 
 
 # =============================================================================

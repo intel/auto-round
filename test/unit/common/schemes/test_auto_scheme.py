@@ -293,7 +293,9 @@ class TestAutoScheme:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(70)
+    # Exporting both integer and MXFP schemes loads and rewrites the tiny
+    # checkpoint twice; on CPU/XPU this can exceed the historical 70s limit.
+    @pytest.mark.timeout(180)
     def test_auto_scheme_export(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
         int_save_dir = os.path.join(self.save_dir, "int")

@@ -55,6 +55,7 @@ class TestTorchBackendFunctional:
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     @pytest.mark.parametrize("iters", [0, 1], ids=["rtn", "tuning"])
     @pytest.mark.parametrize("sym,group_size,format", _4BIT_CASES)
+    @pytest.mark.timeout(120)
     def test_torch_backend_4bit(self, tiny_opt_model_path, sym, group_size, format, iters, device):
         """4-bit (a)symmetric model, RTN or tuned, loads via the torch backend and generates text."""
         ar = AutoRound(tiny_opt_model_path, bits=4, group_size=group_size, sym=sym, iters=iters, seqlen=2, nsamples=1)

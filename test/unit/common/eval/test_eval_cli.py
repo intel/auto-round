@@ -674,7 +674,9 @@ class TestLoadGgufModelIfNeeded:
 
     def test_gguf_file_detected_at_file_path(self, monkeypatch, tmp_path):
         gguf_path = tmp_path / "model.gguf"
-        gguf_path.write_text("fake")
+        # GGUF readers validate the four-byte magic even though the model
+        # loading calls below are mocked.  Keep the fixture structurally valid.
+        gguf_path.write_bytes(b"GGUF")
         fake_model = MagicMock()
 
         monkeypatch.setattr(eval_cli.os.path, "isfile", lambda value: value == str(gguf_path))
@@ -702,7 +704,7 @@ class TestLoadGgufModelIfNeeded:
     def test_gguf_file_detected_inside_model_dir(self, monkeypatch, tmp_path):
         model_dir = tmp_path / "model"
         model_dir.mkdir()
-        (model_dir / "model.gguf").write_text("fake")
+        (model_dir / "model.gguf").write_bytes(b"GGUF")
         fake_model = MagicMock()
 
         monkeypatch.setattr(eval_cli.os.path, "isfile", lambda value: value == str(model_dir))

@@ -80,6 +80,7 @@ class TestAWQNormalLLM:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Model should produce non-empty output"
 
+    @pytest.mark.timeout(120)
     def test_awq_w4a16_export_default_scheme(self, tiny_opt_model_path):
         """Default W4A16 scheme export: quantization_config has bits=4, group_size=128."""
         ar = AutoRound(

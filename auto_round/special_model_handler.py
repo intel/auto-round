@@ -1352,10 +1352,19 @@ def _get_cosmos3_multimodal_block(model, quant_vision=False):
 
 def _bypass_cosmos3_safety_checker():
     """Patch Cosmos3 safety checker so calibration does not require cosmos_guardrail."""
-    try:
-        import diffusers.pipelines.cosmos.pipeline_cosmos3_omni as pipeline_cosmos3_omni
-    except ImportError:
-        return
+    # Prefer an already-registered module.  Besides avoiding an unnecessary
+    # import, this makes the optional dependency easy to substitute in tests
+    # and in environments where diffusers lazily registers pipeline modules.
+    import importlib
+    import sys
+
+    module_name = "diffusers.pipelines.cosmos.pipeline_cosmos3_omni"
+    pipeline_cosmos3_omni = sys.modules.get(module_name)
+    if pipeline_cosmos3_omni is None:
+        try:
+            pipeline_cosmos3_omni = importlib.import_module(module_name)
+        except ImportError:
+            return
 
     safety_checker = getattr(pipeline_cosmos3_omni, "CosmosSafetyChecker", None)
     if safety_checker is None or getattr(safety_checker, "_autoround_patched", False):

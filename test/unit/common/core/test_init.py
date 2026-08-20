@@ -45,7 +45,7 @@ def test_xpu_torch_compile_is_disabled_by_default():
 
 def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
-    assert ar.enable_torch_compile
+    assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
     ar = AutoRound(
         model=tiny_opt_model_path,
@@ -57,7 +57,7 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert not ar.enable_torch_compile
 
     ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", iters=0, nsamples=1)
-    assert ar.enable_torch_compile
+    assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
 
 def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path):
@@ -66,8 +66,11 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
     with caplog.at_level(logging.WARNING):
         ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
     assert not ar.enable_torch_compile
-    assert "disabled by default on Windows" in caplog.text
-    assert "cl.exe" in caplog.text
+    if str(ar.device).split(":", 1)[0] == "xpu":
+        assert "disabled by default on XPU" in caplog.text
+    else:
+        assert "disabled by default on Windows" in caplog.text
+        assert "cl.exe" in caplog.text
 
     caplog.clear()
     with caplog.at_level(logging.WARNING):
