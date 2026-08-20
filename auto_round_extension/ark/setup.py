@@ -12,6 +12,11 @@ from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
+
+def _build_log(message):
+    print(f"[ARK setup] {message}", file=sys.stderr, flush=True)
+
+
 build_mode = os.environ.get("BUILD_MODE", "dev").lower()
 try:
     file_path = "./auto_round_kernel/version.py"
@@ -191,7 +196,7 @@ def get_system_memory_gb():
             continue
         if 0 < memory_bytes < (1 << 60):
             memory_gb = memory_bytes / (1024**3)
-            print(f"System memory from {memory_path}: {memory_gb:.2f} GiB ({memory_bytes} bytes)")
+            _build_log(f"System memory from {memory_path}: {memory_gb:.2f} GiB ({memory_bytes} bytes)")
             return memory_gb
 
     if hasattr(os, "sysconf"):
@@ -205,7 +210,7 @@ def get_system_memory_gb():
             phys_pages = os.sysconf("SC_PHYS_PAGES")
             if phys_pages > 0:
                 memory_gb = (page_size * phys_pages) / (1024**3)
-                print(f"System memory from sysconf: {memory_gb:.2f} GiB")
+                _build_log(f"System memory from sysconf: {memory_gb:.2f} GiB")
                 return memory_gb
 
     if sys.platform == "win32":
@@ -227,10 +232,10 @@ def get_system_memory_gb():
         memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status)):
             memory_gb = memory_status.ullTotalPhys / (1024**3)
-            print(f"System memory from Windows: {memory_gb:.2f} GiB")
+            _build_log(f"System memory from Windows: {memory_gb:.2f} GiB")
             return memory_gb
 
-    print("System memory detection failed; using fallback: 64 GiB")
+    _build_log("System memory detection failed; using fallback: 64 GiB")
     return 64
 
 
@@ -238,10 +243,10 @@ def get_cpu_count():
     if hasattr(os, "sched_getaffinity"):
         affinity = os.sched_getaffinity(0)
         cpu_count = max(1, len(affinity))
-        print(f"CPU count from sched_getaffinity(0): {cpu_count}; allowed CPUs: {sorted(affinity)}")
+        _build_log(f"CPU count from sched_getaffinity(0): {cpu_count}; allowed CPUs: {sorted(affinity)}")
         return cpu_count
     cpu_count = os.cpu_count() or 1
-    print(f"CPU count from os.cpu_count(): {cpu_count}")
+    _build_log(f"CPU count from os.cpu_count(): {cpu_count}")
     return cpu_count
 
 
@@ -255,13 +260,13 @@ def get_sycl_tla_job_count(cpu_job_count):
         if jobs < 1:
             raise ValueError("ARK_SYCL_TLA_JOBS must be a positive integer")
         final_jobs = min(cpu_job_count, jobs)
-        print(f"SYCL TLA jobs: min(cpu_job_count={cpu_job_count}, override={jobs}) = {final_jobs}")
+        _build_log(f"SYCL TLA jobs: min(cpu_job_count={cpu_job_count}, override={jobs}) = {final_jobs}")
         return final_jobs
 
     memory_gb = get_system_memory_gb()
     memory_based_jobs = max(1, int(memory_gb // 3))  # reserve about 3GB per SYCL TLA compiler job
     final_jobs = min(cpu_job_count, memory_based_jobs)
-    print(
+    _build_log(
         f"SYCL TLA jobs: memory={memory_gb:.2f} GiB, memory_based_jobs={memory_based_jobs}, "
         f"cpu_job_count={cpu_job_count}, final={final_jobs}"
     )
@@ -276,6 +281,7 @@ XBUILD_DIR = ROOT / "xbuild"
 
 class CMakeBuild(build_ext):
     def run(self):
+        _build_log(f"CMakeBuild.run using setup.py={Path(__file__).resolve()}, python={sys.executable}")
         cmake_cmd = [
             "cmake",
             "-S",
@@ -290,7 +296,7 @@ class CMakeBuild(build_ext):
 
         cpu_count = get_cpu_count()
         n_job = max(1, cpu_count // 2)
-        print(f"CPU build jobs: max(1, {cpu_count} // 2) = {n_job}")
+        _build_log(f"CPU build jobs: max(1, {cpu_count} // 2) = {n_job}")
         subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
 
         ext = "pyd" if sys.platform == "win32" else "so"
@@ -323,7 +329,7 @@ class CMakeBuild(build_ext):
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")
         xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
-        print(f"Building XPU extension with {xpu_n_job} parallel job(s)")
+        _build_log(f"Building XPU extension with {xpu_n_job} parallel job(s)")
         subprocess.check_call(cmake_cmd)
         subprocess.check_call(["cmake", "--build", str(XBUILD_DIR), "-j", str(xpu_n_job)])
 
