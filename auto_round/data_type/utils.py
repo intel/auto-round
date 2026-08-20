@@ -505,16 +505,25 @@ def update_fused_layer_global_scales(
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
-    if not is_nv_fp(data_type):
-        return
-
     from auto_round.data_type.nvfp import calculate_gparam
+
+    has_nvfp = is_nv_fp(data_type)
 
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
-        if check_to_quantized(m) and not hasattr(m, "weight_global_scale"):
-            weight_global_scale = calculate_gparam(m.weight, group_size)
-            setattr(m, "weight_global_scale", weight_global_scale)
+        if not check_to_quantized(m):
+            continue
+        # Check per-layer data_type for mixed-scheme scenarios
+        module_data_type = getattr(m, "data_type", data_type)
+        module_group_size = getattr(m, "group_size", group_size)
+        if is_nv_fp(module_data_type):
+            has_nvfp = True
+            if not hasattr(m, "weight_global_scale"):
+                weight_global_scale = calculate_gparam(m.weight, module_group_size)
+                setattr(m, "weight_global_scale", weight_global_scale)
+
+    if not has_nvfp:
+        return
 
     # Update fused layer global scales
     for module in block.modules():
