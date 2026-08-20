@@ -56,16 +56,33 @@ function check_storage_usage() {
     echo "##[endgroup]"
 }
 
+function run_common_unit_test() {
+    cd /auto-round/test || exit 1
+
+    # common test case for cpu/gpu/xpu
+    local common_tests
+    common_tests=$(filter_changed_tests "test" "$(find ./unit/common -name "test*.py" | sort)")
+
+    if [ -n "${common_tests}" ]; then
+        echo "##[group]Running common tests..."
+        local ut_log_name="${LOG_DIR}/unittest_test_common.log"
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest --timeout=${TIMEOUT} --session-timeout=1200 \
+                --cov=auto_round --cov-report= --cov-append -vs \
+                --junitxml="${ut_log_name%.log}.xml" ${common_tests} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    fi
+}
+
 function run_unit_test() {
     cd /auto-round/test || exit 1
 
-    # Split test files into 5 parts.
+    # Split cpu specific test files into 4 parts.
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
-    # run in the nightly/weekly pipelines (see nightly-test.yml / weekly-test.yml).
+    # run in the nightly pipelines (see nightly-test.yml).
     find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
-    find ./unit/common -name "test*.py" | sort >> all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
-    NUM_CHUNKS=5
+    NUM_CHUNKS=4
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
     if [ "$test_part" -le "$r" ]; then
@@ -171,6 +188,8 @@ function main() {
         run_inc_unit_test
     elif [ "$test_part" = "llmc" ]; then
         run_llmc_unit_test
+    elif [ "$test_part" = "0" ]; then
+        run_common_unit_test
     else
         run_unit_test
     fi

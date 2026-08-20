@@ -47,7 +47,7 @@ function run_unit_test() {
         echo "##[group]Running common tests..."
         local ut_log_name="${LOG_DIR}/unittest_common.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest --timeout=${TIMEOUT} --session-timeout=1200 \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${common_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
