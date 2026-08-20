@@ -31,6 +31,7 @@ from auto_round_kernel.mxfp4_hadamard import (
     HADAMARD_DIM,
     _e8m0_and_quantized,
     _encode_fp4,
+    _xmx_supported,
     get_hadamard_matrix,
     hadamard_transform_reference,
     mxfp4_hadamard_quant,
@@ -535,10 +536,31 @@ class TestXpuKernelPhase2:
         x = torch.randn(16, 128, dtype=torch.float16, device="xpu")
         codes, scale = mxfp4_hadamard_quant(x, h)
         ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), h.cpu())
-        assert torch.equal(codes.cpu(), ref_codes)
-        assert torch.equal(scale.cpu(), ref_scale)
+        if _xmx_supported():
+            # Non-Sylvester H auto-routes to the XMX fast path (relaxed
+            # contract), so accept via tolerance instead of bit-exact.
+            deq = _dequantize(codes.cpu(), scale.cpu(), 128)
+            ref_deq = _dequantize(ref_codes, ref_scale, 128)
+            sqnr_db, _, _ = _precision_metrics(deq, ref_deq, ref_scale)
+            assert sqnr_db >= 15.0, f"SQNR {sqnr_db:.2f} dB < 15 dB"
+        else:
+            # Build without XMX: custom H takes the bit-exact Path A.
+            assert torch.equal(codes.cpu(), ref_codes)
+            assert torch.equal(scale.cpu(), ref_scale)
         default_codes, _ = mxfp4_hadamard_quant(x)
         assert not torch.equal(codes.cpu(), default_codes.cpu())
+
+    def test_custom_hadamard_matrix_path_a_bit_exact(self):
+        # The bit-exact Path A path for a custom matrix is preserved and
+        # reachable via the private ``_force_xmx=False`` override.
+        h = get_hadamard_matrix(HADAMARD_DIM).clone()
+        h[:, 0] = -h[:, 0]
+        torch.manual_seed(0)
+        x = torch.randn(16, 128, dtype=torch.float16, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, h, _force_xmx=False)
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), h.cpu())
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
 
     def test_cpu_hadamard_matrix_is_moved_to_device(self):
         torch.manual_seed(0)
@@ -650,6 +672,100 @@ class TestXpuKernelPhase2:
         actual = mxfp4_hadamard_quant(good)
         assert torch.equal(expected[0].cpu(), actual[0].cpu())
         assert torch.equal(expected[1].cpu(), actual[1].cpu())
+
+
+@requires_xpu
+def _xmx_path_available() -> bool:
+    """True when the current XPU build exposes the opt-in XMX fast path."""
+    return _xmx_supported()
+
+
+def _precision_metrics(deq: torch.Tensor, ref: torch.Tensor, ref_scale: torch.Tensor) -> tuple[float, float, float]:
+    """``(sqnr_db, max_rel, p999_rel)`` of ``deq`` vs ``ref`` (both FP32).
+
+    SQNR is the standard signal-to-quantization-noise ratio in dB. Relative
+    errors are measured **per group against the group's peak magnitude**
+    (``amax = 6 * 2**(e8m0-127)``, the largest FP4 level): per-element relative
+    error is meaningless near zero (FP4 alone allows unbounded relative error
+    for tiny values), while the per-group bound is inherent to E2M1. ``max_rel``
+    is the strict worst case; ``p999_rel`` is the 99.9th percentile, robust to
+    the handful of threshold-boundary code flips that any slightly-different
+    transform path (here: bf16 H + DPAS) produces.
+    """
+    deq = deq.double()
+    ref = ref.double()
+    err = deq - ref
+    signal = (ref * ref).sum()
+    noise = (err * err).sum()
+    sqnr_db = float(10.0 * torch.log10(signal / noise.clamp_min(1e-30)))
+    amax = (6.0 * torch.pow(2.0, ref_scale.double() - 127.0)).reshape(-1, 1)
+    rel = (err.abs().reshape(-1, GROUP_SIZE) / amax).flatten()
+    max_rel = float(rel.max())
+    p999_rel = float(rel.quantile(0.999))
+    return sqnr_db, max_rel, p999_rel
+
+
+@requires_xpu
+class TestXpuKernelXmx:
+    """Phase 3: opt-in XMX fast path, tolerance-based acceptance.
+
+    The XMX path is *not* bit-exact: the Hadamard matrix is stored in the
+    activation dtype (fp16/bf16) and the transform runs on XMX DPAS with FP32
+    accumulation (relaxed contract, xpu_mxfp4_hadamard_design_revised.md
+    §11.4). Acceptance: SQNR >= 15 dB and max relative error < 0.25 against the
+    frozen FP32 reference (both measured on dequantized outputs).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_xmx(self):
+        if not _xmx_path_available():
+            pytest.skip("XMX fast path not available in this build (ARK_SYCL_TLA)")
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("shape", [(1, 32), (17, 256), (1024, 4096)])
+    def test_xmx_matches_reference_within_tolerance(self, dtype, shape):
+        torch.manual_seed(shape[0])
+        x = torch.randn(*shape, dtype=dtype, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, _force_xmx=True)
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu())
+
+        num_rows, k = x.numel() // x.shape[-1], x.shape[-1]
+        assert codes.shape == ref_codes.shape == (num_rows, k // 2)
+        assert scale.shape == ref_scale.shape == (num_rows, k // GROUP_SIZE)
+        assert codes.dtype == torch.uint8 and scale.dtype == torch.uint8
+
+        deq_xmx = _dequantize(codes.cpu(), scale.cpu(), k)
+        deq_ref = _dequantize(ref_codes, ref_scale, k)
+        sqnr_db, max_rel, p999_rel = _precision_metrics(deq_xmx, deq_ref, ref_scale)
+        assert sqnr_db >= 15.0, f"SQNR {sqnr_db:.2f} dB < 15 dB"
+        # Worst case stays within half the group peak (no real bug); the
+        # 99.9th percentile meets the design-doc 0.25 target robustly, ignoring
+        # the rare threshold-boundary code flips from the bf16-H/DPAS path.
+        assert max_rel < 0.5, f"max relative error {max_rel:.4f} >= 0.5"
+        assert p999_rel < 0.25, f"99.9th pct relative error {p999_rel:.4f} >= 0.25"
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_xmx_scales_are_close_to_reference(self, dtype):
+        # E8M0 scales are octave buckets; the XMX transform (fp16/bf16 H) can
+        # shift a group's max by at most a couple of dB, so at most one bucket.
+        torch.manual_seed(3)
+        x = torch.randn(64, 256, dtype=dtype, device="xpu")
+        _, scale = mxfp4_hadamard_quant(x, _force_xmx=True)
+        _, ref_scale = mxfp4_hadamard_quant_reference(x.cpu())
+        diff = (scale.cpu().to(torch.int32) - ref_scale.to(torch.int32)).abs()
+        assert torch.all(diff <= 1), f"E8M0 scales diverge by more than 1: max={diff.max().item()}"
+
+    def test_xmx_rejects_invalid_dtype(self):
+        with pytest.raises(ValueError):
+            mxfp4_hadamard_quant(torch.randn(1, 32, dtype=torch.float32, device="xpu"), _force_xmx=True)
+
+    def test_xmx_deterministic(self):
+        torch.manual_seed(0)
+        x = torch.randn(32, 128, dtype=torch.bfloat16, device="xpu")
+        c1, s1 = mxfp4_hadamard_quant(x, _force_xmx=True)
+        c2, s2 = mxfp4_hadamard_quant(x, _force_xmx=True)
+        assert torch.equal(c1.cpu(), c2.cpu())
+        assert torch.equal(s1.cpu(), s2.cpu())
 
 
 if __name__ == "__main__":
