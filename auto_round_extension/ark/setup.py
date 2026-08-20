@@ -295,8 +295,8 @@ class CMakeBuild(build_ext):
         subprocess.check_call(cmake_cmd)
 
         cpu_count = get_cpu_count()
-        n_job = max(1, cpu_count // 2)
-        _build_log(f"CPU build jobs: max(1, {cpu_count} // 2) = {n_job}")
+        n_job = max(1, cpu_count)
+        _build_log(f"CPU build jobs: max(1, {cpu_count}) = {n_job}")
         subprocess.check_call(["cmake", "--build", str(BUILD_DIR), "-j", str(n_job)])
 
         ext = "pyd" if sys.platform == "win32" else "so"
