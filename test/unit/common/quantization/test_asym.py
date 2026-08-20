@@ -34,6 +34,21 @@ _QUANT_PARAMS = [(4, 32), (4, 64), (4, 128), (2, 128), (8, 128)]
 _FORMATS = ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]
 
 
+def _device_params(devices):
+    """Skip only XPU parameterizations until the asymmetric XPU backend is available."""
+    return [
+        (
+            pytest.param(
+                device,
+                marks=pytest.mark.skip(reason="asymmetric quantization backend is not available on XPU"),
+            )
+            if device == "xpu"
+            else device
+        )
+        for device in devices
+    ]
+
+
 class TestAutoRoundAsym:
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
@@ -50,7 +65,7 @@ class TestAutoRoundAsym:
     # RTN path (iters=0): cheap, so runs unconditionally in CI on every device.
     # ------------------------------------------------------------------
     @pytest.mark.timeout(60)
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("format", _FORMATS)
     def test_asym_format_rtn(self, tiny_opt_model_path, format, device):
         """RTN-quantized asym model can be saved in each export format and reloaded for inference."""
@@ -71,7 +86,7 @@ class TestAutoRoundAsym:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("bits,group_size", _QUANT_PARAMS)
     def test_asym_quant_params_rtn(self, tiny_opt_model_path, bits, group_size, device):
         """RTN asym quantization works across bit-widths and group sizes, and the result is loadable."""
@@ -102,7 +117,7 @@ class TestAutoRoundAsym:
         model_infer(model, tokenizer)
 
     @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("bits", [2, 3, 8])
     def test_asym_bits_tuning(self, tiny_opt_model_path, bits, device):
         """Tuned (iters=1) asym quantization works across bit-widths."""
@@ -114,7 +129,7 @@ class TestAutoRoundAsym:
         model_infer(model, tokenizer)
 
     @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")
-    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("format", _FORMATS)
     def test_asym_format_tuning(self, tiny_opt_model_path, format, device):
         """Tuned (iters=1) asym model can be saved in each export format and reloaded for inference."""

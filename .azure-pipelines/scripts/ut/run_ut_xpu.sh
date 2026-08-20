@@ -14,8 +14,15 @@ function setup_environment() {
     uv pip list
     echo "##[endgroup]"
 
+    # Keep the GGUF conversion helpers in sync with the model conversion code.
+    # The common GGUF tests exercise MODEL_ARCH entries that are only available
+    # in the current llama.cpp master branch.
+    cd ~ || exit 1
+    git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git \
+        && cd llama.cpp/gguf-py \
+        && uv pip install .
+
     git config --global --add safe.directory /auto-round
-    rm -rf /auto-round/auto_round
     cd /auto-round/test || exit 1
 
     echo "##[group]check xpu env..."
@@ -47,7 +54,7 @@ function run_unit_test() {
         echo "##[group]Running common tests..."
         local ut_log_name="${LOG_DIR}/unittest_common.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${common_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -59,7 +66,7 @@ function run_unit_test() {
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -71,7 +78,7 @@ function run_unit_test() {
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -100,7 +107,7 @@ function run_unit_test_llmc() {
         echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
