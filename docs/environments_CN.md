@@ -141,6 +141,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_SEQLEN
+- **描述**：控制 AutoScheme 评分时使用的校准序列长度默认值，仅在 `AutoScheme.seqlen` 未显式设置时生效。
+- **默认值**：未设置 → 走内置启发式规则（MoE 模型为 128，其他为 256）
+- **有效值**：任意正整数，如 `256`、`512`、`1024`
+- **用途**：覆盖 AutoScheme 的默认序列长度（2-bit 方案通常在 `1024` 时效果更好）
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **描述**：存放可持久复用的 AutoScheme 单方案评分 JSON 文件。该目录独立于用于临时工作数据的 `AR_WORK_SPACE`。
 - **默认值**：`~/.cache/auto_round`
@@ -159,6 +169,16 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **描述**：控制 `NVFP4E5M3QuantLinear` 是否在首次前向后缓存解量化得到的高精度权重，而不是每次调用都从打包的 FP4 权重重新解量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`、`"on"`（不区分大小写）表示启用缓存；其他值表示禁用缓存
+- **用途**：当重复推理吞吐比内存占用更重要时可启用。当前实现会在缓存高精度权重后释放 `weight_packed` 和 `weight_scale`，因此稳态内存占用会增大，且之后无法再切回打包存储。
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 ```
 
 ### AR_DISK_STREAM_MODEL
