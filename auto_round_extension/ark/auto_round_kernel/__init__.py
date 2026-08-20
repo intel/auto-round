@@ -3522,6 +3522,14 @@ if torch.xpu.is_available():
     except ImportError as _e:
         print(f"ARK is unable to load XPU lib: {_e}")
 
+# Activation fused HMT + MXFP4 quantization (XPU). Imported last so the lib
+# handles above are already bound when the submodule looks them up.
+from .mxfp4_hadamard import (  # noqa: E402
+    get_hadamard_matrix,
+    mxfp4_hadamard_quant,
+    mxfp4_hadamard_quant_reference,
+)
+
 
 if __name__ == "__main__":
     print(cpu_lib is None, xpu_lib is None)

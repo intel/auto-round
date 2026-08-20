@@ -27,6 +27,7 @@ typedef uintptr_t torch_ptr;
 #include <sycl/sycl.hpp>
 #include "xpu_wrapper.hpp"
 #include "sycl_s8_wrapper.hpp"
+#include "xpu_mxfp4_hadamard.hpp"
 #if ARK_SYCL_TLA
 #include "sycl_tla_common.hpp"
 #endif
@@ -748,6 +749,44 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
   }
 }
 
+// Activation-only fused kernel: 32-point normalized Hadamard + MXFP4 quant.
+// x:         [num_rows, k]      FP16 or BF16
+// hadamard:  [32, 32]           FP32, row major, already normalized by 1/sqrt(32)
+// use_fwht:  true when hadamard is the normalized Sylvester matrix, which is the
+//            only matrix the butterfly network implements. The caller decides so
+//            that the hot path does not pay for a device-side comparison.
+// out_codes: [num_rows, k / 2]  uint8, two packed FP4 codes per byte
+// out_scale: [num_rows, k / 32] uint8, one E8M0 exponent per 32-element group
+static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadamard, torch_ptr out_codes,
+                                 torch_ptr out_scale, int64_t num_rows, int64_t k, int in_dtype, bool use_fwht) {
+  if (!stream) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: stream must not be null");
+  }
+  if (!x || !hadamard || !out_codes || !out_scale) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: input/output pointers must not be null");
+  }
+  if (num_rows <= 0 || k <= 0) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: num_rows and k must be positive");
+  }
+  if (k % ark::XpuMxfp4Hadamard::kGroupSize != 0) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: k must be a multiple of 32");
+  }
+  auto* q = (sycl::queue*)stream;
+  auto* h_ptr = (const float*)hadamard;
+  auto* codes_ptr = (uint8_t*)out_codes;
+  auto* scale_ptr = (uint8_t*)out_scale;
+  const auto dtype = (BTLA_DTYPE)in_dtype;
+  if (dtype == BTLA_DTYPE::F16) {
+    ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::half>(q, (const sycl::half*)x, h_ptr, codes_ptr, scale_ptr,
+                                                            num_rows, k, use_fwht);
+  } else if (dtype == BTLA_DTYPE::BF16) {
+    ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::ext::oneapi::bfloat16>(
+        q, (const sycl::ext::oneapi::bfloat16*)x, h_ptr, codes_ptr, scale_ptr, num_rows, k, use_fwht);
+  } else {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: only FP16 and BF16 activations are supported");
+  }
+}
+
 #elif !defined(ARK_XPU)
 
 enum class CpuSdpaRoute {
@@ -1387,6 +1426,9 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_compute_seq_mean_bias_layout", &ark::sage_compute_seq_mean_bias_layout);
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
+  m.def("mxfp4_hadamard_quant", &ark::mxfp4_hadamard_quant, pybind11::arg("stream"), pybind11::arg("x"),
+        pybind11::arg("hadamard"), pybind11::arg("out_codes"), pybind11::arg("out_scale"),
+        pybind11::arg("num_rows"), pybind11::arg("k"), pybind11::arg("in_dtype"), pybind11::arg("use_fwht") = true);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
