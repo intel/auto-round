@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
     AR_AUTO_SCHEME_CACHE: Optional[str] = None
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
+    AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
     AR_DISK_STREAM_MODEL: bool = False
     AR_RESUME_DIR: Optional[str] = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
@@ -96,6 +97,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Controls the default calibration sequence length used by AutoScheme scoring
+    # when ``AutoScheme.seqlen`` is not explicitly set.
+    # When unset, AutoScheme uses its built-in heuristic (128 for MoE models, 256 otherwise).
+    "AR_AUTO_SCHEME_SEQLEN": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_SEQLEN"),
     # Stores persistent AutoScheme scoring results independently from AR_WORK_SPACE,
     # whose contents are temporary working data and may be cleaned after a run.
     "AR_AUTO_SCHEME_CACHE": lambda: os.getenv("AR_AUTO_SCHEME_CACHE", None),
@@ -103,6 +108,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # set it to 0 when workers could exhaust host RAM or device memory.
     "AR_ENABLE_AUTO_SCHEME_PARALLEL": lambda: os.getenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "1").lower()
     in ("1", "true", "yes"),
+    # Controls whether NVFP4 E5M3 quant linear caches a dequantized high-
+    # precision weight after the first forward instead of dequantizing on
+    # every call. When enabled, the packed weight buffers are released after
+    # the cache is materialized, trading lower runtime overhead for higher
+    # steady-state memory usage.
+    "AR_NVFP4_E5M3_CACHE_HP_WEIGHT": lambda: os.getenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", "0").lower()
+    in ("1", "true", "yes", "on"),
     # When set, the model is built as a meta-device skeleton and streamed
     # block-by-block from disk during quantization instead of being fully
     # materialized on CPU RAM up front.

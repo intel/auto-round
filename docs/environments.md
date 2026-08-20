@@ -151,6 +151,16 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_SEQLEN
+- **Description**: Controls the default calibration sequence length used by AutoScheme scoring when `AutoScheme.seqlen` is not explicitly set.
+- **Default**: unset → built-in heuristic applies (128 for MoE models, 256 otherwise)
+- **Valid Values**: any positive integer, e.g. `256`, `512`, `1024`
+- **Usage**: Set this to override the default sequence length for AutoScheme (2-bit schemes usually benefit from `1024`)
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **Description**: Stores persistent per-scheme AutoScheme scoring JSON files. This directory is independent of `AR_WORK_SPACE`, which is reserved for temporary working data.
 - **Default**: `~/.cache/auto_round`
@@ -169,6 +179,16 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **Description**: Controls whether `NVFP4E5M3QuantLinear` caches a dequantized high-precision weight after the first forward pass, instead of dequantizing the packed FP4 weight on every call.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) enable caching; any other value disables caching
+- **Usage**: Enable this when repeated inference throughput matters more than memory footprint. The current implementation releases `weight_packed` and `weight_scale` after materializing the cached high-precision weight, so steady-state memory usage increases and the cache cannot be cleared back to packed storage.
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 ```
 
 ### AR_DISK_STREAM_MODEL
