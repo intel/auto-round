@@ -3172,8 +3172,9 @@ def _native_fp8_prefill_enabled() -> bool:
 #
 # `moe_gemm_decode` and `moe_gemm_prefill` accept identical argument shapes
 # and dtypes -- the only difference is which underlying SYCL kernel is
-# launched (a GEMV variant tuned for 1-2 tokens/expert vs. a Grouped GEMM
-# variant tuned for many tokens/expert). Model code that runs through both
+# launched (a GEMV variant tuned for smaller total-token workloads vs. a
+# Grouped GEMM variant tuned for larger total-token workloads). Model code
+# that runs through both
 # regimes (prefill of a prompt, then autoregressive decode) traditionally
 # has to keep two call sites and branch on phase. `moe(...)` collapses that
 # into a single API and auto-selects the right kernel from the token
@@ -3181,19 +3182,38 @@ def _native_fp8_prefill_enabled() -> bool:
 #
 # Callers that already know the phase (e.g., a model's generation loop knows
 # whether it's in prefill or decode) should pass it via the `phase` argument
-# to avoid the small host-device sync that `phase="auto"` needs to inspect
-# `num_tokens_per_expert.max()`.
+# to bypass the auto-dispatch heuristic entirely.
 # ---------------------------------------------------------------------------
 
-# Default tokens-per-expert threshold used by `phase="auto"`. The decode
-# GEMV kernel is faster when every expert sees only a handful of tokens
-# (TopK >= 1 with batch size 1-4); above that the GEMM-tuned prefill kernel
-# wins. The crossover is hardware-dependent but `4` is a conservative default
-# that matches the regime `moe_gemm_decode`'s docstring describes
-# ("typically only 1-2 tokens", up to top-k * small batch).
-_MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT = 4
+# Default total-token threshold used by `phase="auto"`: dispatch to decode
+# when `activations.shape[0] <= threshold`, otherwise prefill. This threshold
+# is hardware-dependent and can be overridden via
+# `ARK_MOE_AUTO_DECODE_MAX_TOKENS`.
+_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 256
 
 _MOE_VALID_PHASES = ("auto", "decode", "prefill")
+
+
+def _moe_auto_decode_max_total_tokens() -> int:
+    """Return auto decode threshold from env or the module default.
+
+    ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` is accepted when it is a positive
+    integer. Unset/empty/invalid values fall back to
+    ``_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS``.
+    """
+    env = os.environ.get("ARK_MOE_AUTO_DECODE_MAX_TOKENS")
+    if env is None:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    env = env.strip()
+    if not env:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    try:
+        value = int(env)
+    except ValueError:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    if value <= 0:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    return value
 
 
 def moe(
@@ -3207,7 +3227,7 @@ def moe(
     group_size: int = 128,
     asym: bool = False,
     phase: str = "auto",
-    decode_threshold: int = _MOE_AUTO_DECODE_MAX_TOKENS_PER_EXPERT,
+    decode_threshold: Optional[int] = None,
 ) -> torch.Tensor:
     """Unified MoE GEMM entry point that dispatches to decode or prefill.
 
@@ -3228,18 +3248,18 @@ def moe(
             underlying kernel; see :func:`moe_gemm_decode`.
         phase: dispatch mode.
 
-            * ``"auto"`` (default): inspect ``num_tokens_per_expert.max()``
-              and pick decode if every expert sees ``<= decode_threshold``
-              tokens, otherwise prefill. This incurs one small host-device
-              sync per call.
+            * ``"auto"`` (default): dispatch to decode when
+              ``activations.shape[0] <= decode_threshold`` (total tokens),
+              otherwise prefill.
             * ``"decode"``: always dispatch to :func:`moe_gemm_decode`. Use
               when the model's generation loop already knows it is in the
-              decode phase; avoids the sync.
+              decode phase.
             * ``"prefill"``: always dispatch to :func:`moe_gemm_prefill`.
               Use when the model knows it is in the prefill phase.
-        decode_threshold: ``"auto"`` mode dispatches to decode when
-            ``num_tokens_per_expert.max() <= decode_threshold``. Defaults to
-            4 (the regime the decode GEMV kernel is tuned for).
+        decode_threshold: Total-token threshold for ``"auto"`` mode. If not
+            provided, uses ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` when set to a
+            valid positive integer, otherwise defaults to 256. Explicit
+            argument values take precedence over the environment variable.
 
     Returns:
         ``[total_tokens, N]`` in the activations dtype. Bit-identical to the
@@ -3249,14 +3269,11 @@ def moe(
         raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
 
     if phase == "auto":
-        # `.max().item()` triggers a host-device sync; callers in tight
-        # decode loops should pass `phase="decode"` explicitly to skip this.
-        # We tolerate a non-int32 / non-contiguous tensor here because the
-        # downstream kernel wrappers will normalise it anyway.
+        threshold = _moe_auto_decode_max_total_tokens() if decode_threshold is None else int(decode_threshold)
         if num_tokens_per_expert.numel() == 0:
             raise ValueError("num_tokens_per_expert must be non-empty")
-        max_tpe = int(num_tokens_per_expert.max().item())
-        phase = "decode" if max_tpe <= int(decode_threshold) else "prefill"
+        total_tokens = int(activations.shape[0])
+        phase = "decode" if total_tokens <= threshold else "prefill"
 
     if phase == "decode":
         return moe_gemm_decode(
