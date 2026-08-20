@@ -86,6 +86,7 @@ struct Options {
   int k_stride_s = 0, k_stride_d = 1, k_stride_h = 0, k_stride_b = 0;
   int v_stride_d = 1, v_stride_s = 0, v_stride_h = 0, v_stride_b = 0;
   int o_stride_s = 0, o_stride_d = 1, o_stride_h = 0, o_stride_b = 0;
+  int vscale_stride_d = 1;
   float softmax_scale = 0.0f;
   float* lse = nullptr;  // LSE output buffer (null = skip)
   bool persistent = false;
@@ -124,6 +125,7 @@ struct Options {
       << "  k_stride: (" << k_stride_s << ", " << k_stride_d << ", " << k_stride_h << ", " << k_stride_b << ")\n"
       << "  v_stride: (" << v_stride_d << ", " << v_stride_s << ", " << v_stride_h << ", " << v_stride_b << ")\n"
       << "  o_stride: (" << o_stride_s << ", " << o_stride_d << ", " << o_stride_h << ", " << o_stride_b << ")\n"
+      << "  vscale_stride_d: " << vscale_stride_d << "\n"
        << "  softmax_scale: " << softmax_scale << "\n"
        << "  persistent: " << persistent << "\n"
        << "}\n";
@@ -675,7 +677,7 @@ struct SageKernelRunner {
         },
         {options.softmax_scale, static_cast<float*>(options.mask), options.scale_block_size,
          static_cast<const float*>(options.qscale), static_cast<const float*>(options.kscale),
-         static_cast<const float*>(options.vscale),
+         static_cast<const float*>(options.vscale), options.vscale_stride_d,
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
          options.use_paged_kv ? options.num_pages_per_seq : nullptr},
         {},
@@ -715,7 +717,8 @@ template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV,
 struct SageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
   using MMAOperation =
-      cute::conditional_t<is_void_v<MMAOperation_>, XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
+      cute::conditional_t<is_void_v<MMAOperation_>,
+                          XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, ElementQ, ElementK, int32_t>, MMAOperation_>;
   // The PV "float" tiled MMA operates on the output element type. For UseInt8PV the kernel also
   // constructs a separate int8 quantized PV MMA internally, while this float MMA only needs to
   // describe the tile shape used for the accumulator and dequantized path. For the non-int8-PV
@@ -898,6 +901,86 @@ inline int launch_sage_prefill_kernel_128(Options const& options) {
                                         /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = true,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
+inline int launch_sage_prefill_kernel_128_i4pv_long(Options const& options) {
+  constexpr int PipelineStages = 4;
+  using ShapeQK = Shape<_256, _64, _32>;
+  using ShapePV = Shape<_256, _64, _64>;
+  using ShapeOut = Shape<_256, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = true,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
+inline int launch_sage_prefill_kernel_128_int4qk(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_256, _64, _64>;
+  using ShapePV = Shape<_256, _64, _64>;
+  using ShapeOut = Shape<_256, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = true,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
+inline int launch_sage_prefill_kernel_128_int4qk_i8pv(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_256, _64, _64>;
+  using ShapePV = Shape<_256, _32, _64>;
+  using ShapeOut = Shape<_256, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = true,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
+inline int launch_sage_prefill_kernel_128_int4qk_long(Options const& options) {
+  constexpr int PipelineStages = 4;
+  using ShapeQK = Shape<_256, _64, _64>;
+  using ShapePV = Shape<_256, _64, _64>;
+  using ShapeOut = Shape<_256, _128>;
+  using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = true,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
+inline int launch_sage_prefill_kernel_64_int4qk_i8pv(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_128, _64, _64>;
+  using ShapePV = Shape<_128, _32, _64>;
+  using ShapeOut = Shape<_128, _64>;
+  using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
           bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
 inline int launch_sage_prefill_kernel_64(Options const& options) {
@@ -915,6 +998,22 @@ inline int launch_sage_prefill_kernel_64(Options const& options) {
              : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
                           SubgroupLayoutQK, SubgroupLayoutPV, PipelineStages1,
                           /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
+}
+
+template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = true,
+          bool WriteBackInt8PV = true, bool ExecuteInt8PV = true>
+inline int launch_sage_prefill_kernel_64_int4qk(Options const& options) {
+  constexpr int PipelineStages = 2;
+  using ShapeQK = Shape<_128, _64, _64>;
+  using ShapePV = Shape<_128, _64, _64>;
+  using ShapeOut = Shape<_128, _64>;
+  using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
+  return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options)
+                           : SageConfig<false, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
+                                        SubgroupLayoutQK, void, PipelineStages,
+                                        /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>

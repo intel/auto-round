@@ -1,6 +1,11 @@
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
 set(SDPA_DECLARATIONS_FILE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa/sdpa_kernel_declarations.hpp)
 
+if(ARK_SDPA_INT4_DEV_ONLY)
+  configure_file(${CMAKE_CURRENT_LIST_DIR}/sdpa_kernel_declarations.hpp.in ${SDPA_DECLARATIONS_FILE} @ONLY)
+  return()
+endif()
+
 function(generate_sdpa_instantiation mode dtype_name dtype_type head_dim template_name function_name)
   set(SDPA_FUNCTION_NAME ${function_name})
   set(SDPA_TEMPLATE_NAME ${template_name})

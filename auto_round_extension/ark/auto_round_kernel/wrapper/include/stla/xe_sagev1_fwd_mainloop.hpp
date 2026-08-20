@@ -41,6 +41,7 @@
 #include "cute/algorithm/subgroup_algorithms.hpp"
 #include "cute/atom/mma_atom.hpp"
 #include "flash_attention_v2/collective/fmha_fusion.hpp"
+#include <array>
 #include <cmath>
 #include <type_traits>
 #include <cute/util/xe_split_barrier.hpp>
@@ -92,6 +93,8 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
   using TileShapeQK = decltype(TiledMMAQK{}.tile_mnk());
   using TileShapePV = decltype(TiledMMAPV{}.tile_mnk());
   static constexpr int VTiles = VTiles_;
+  static constexpr int DTiles =
+      VTiles * decltype(get<1>(TileShapePV{}))::value / decltype(get<2>(TileShapeQK{}))::value;
   using SubgroupLayoutQK = decltype(TiledMMAQK{}.get_atom_layout_mnk());
   using SubgroupLayoutPV = decltype(TiledMMAPV{}.get_atom_layout_mnk());
   using SGPerWG = decltype(product(take<1, 4>(shape(typename TiledMMAQK::ThrLayoutVMNK{}))));
@@ -99,6 +102,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
   using TensorQ = TensorQ_;
   using TensorK = TensorK_;
   using TensorV = TensorV_;
+  using ElementV = typename TensorV::value_type;
 
   using TensorQ2D = decltype(TensorQ_{}(append<rank_v<TensorQ_>>(make_coord(_, _), 0)));
   using TensorK2D = decltype(TensorK_{}(append<rank_v<TensorK_>>(make_coord(_, _), 0)));
@@ -147,29 +151,31 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
 
   using FragPRow = decltype(reduce<1>(FragP{}, sycl::plus<void>{}));
   using FragPCol = decltype(reduce<0>(FragP{}, sycl::plus<void>{}));
-    using SingleFragPV = FragC<TiledMMAPV>;                      // (atom val,q',v')
-    using SingleFragAFloat = std::remove_reference_t<decltype(make_subgroup_tensor(
+  using SingleFragPV = FragC<TiledMMAPV>;  // (atom val,q',v')
+  using SingleFragAFloat = std::remove_reference_t<decltype(make_subgroup_tensor(
       make_fragment_like<float>(typename SingleFragPV::Base{}), decltype(SingleFragPV{}.tv_layout()){}))>;
-    using SingleFragA = conditional_t<UseInt8PV_, SingleFragAFloat, SingleFragPV>;
+  using SingleFragA = conditional_t<UseInt8PV_, SingleFragAFloat, SingleFragPV>;
   using FragA = expand_sg_fragment_t<SingleFragA, 1, VTiles>;  // (atom val,q',v',VV)
   using FragARow = decltype(reduce<1>(FragA{}, sycl::plus<void>{}));
-    using ElementA = typename SingleFragA::value_type;
+  using ElementA = typename SingleFragA::value_type;
 
-    static constexpr int SGTilePVQ = get<0>(shape_div(TileShapePV{}, shape(SubgroupLayoutPV{})))();
-    using QuantizedPVOperation = XE_DPAS_TT<cute::gcd(SGTilePVQ, 8), int32_t, int8_t, int8_t>;
-    using QuantizedTiledMMAPV =
+  static constexpr int SGTilePVQ = get<0>(shape_div(TileShapePV{}, shape(SubgroupLayoutPV{})))();
+  using QuantizedElementV = conditional_t<UseInt8PV_, ElementV, int8_t>;
+  using QuantizedPVOperation = XE_DPAS_TT<cute::gcd(SGTilePVQ, 8), int32_t, int8_t, QuantizedElementV, int32_t>;
+  using QuantizedTiledMMAPV =
       typename TiledMMAHelper<MMA_Atom<QuantizedPVOperation>, Layout<TileShapePV>, SubgroupLayoutPV>::TiledMMA;
-    using QuantizedSingleFragA = FragC<QuantizedTiledMMAPV>;
+  using QuantizedSingleFragA = FragC<QuantizedTiledMMAPV>;
 
-    static_assert(size(SingleFragA{}.shape()) == size(QuantizedSingleFragA{}.shape()),
-          "Quantized PV accumulator must match float PV tile size");
+  static_assert(size(SingleFragA{}.shape()) == size(QuantizedSingleFragA{}.shape()),
+                "Quantized PV accumulator must match float PV tile size");
 
   static constexpr bool CausalMask = CausalMask_;
   static constexpr bool CachedKV = CachedKV_;
   static constexpr bool PagedKV = PagedKV_;
-    static constexpr bool UseInt8PV = UseInt8PV_;
-    static constexpr bool WriteBackInt8PV = WriteBackInt8PV_;
-    static constexpr bool ExecuteInt8PV = ExecuteInt8PV_;
+  static constexpr bool UseInt8PV = UseInt8PV_;
+  static constexpr bool WriteBackInt8PV = WriteBackInt8PV_;
+  static constexpr bool ExecuteInt8PV = ExecuteInt8PV_;
+  static constexpr bool UseScalarVScale = cute::sizeof_bits_v<ElementV> < 8;
 
   // User-facing arguments
   struct Arguments {
@@ -179,6 +185,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     float const* qscale = nullptr;
     float const* kscale = nullptr;
     float const* vscale = nullptr;
+    int vscale_stride_d = 1;
     int const* ptr_page_table = nullptr;
     int page_size = 0;
     int const* num_pages_per_seq = nullptr;
@@ -201,7 +208,7 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
   static constexpr Params to_underlying_arguments(Arguments const& args, void* /* workspace */) {
     constexpr double kLog2e = 1.4426950408889634074;  // log_2(e)
     float val = args.scale * static_cast<float>(kLog2e);
-    return Params{val, args.mask, args.scale_block_size, args.qscale, args.kscale, args.vscale,
+    return Params{val, args.mask, args.scale_block_size, args.qscale, args.kscale, args.vscale, args.vscale_stride_d,
             args.ptr_page_table, args.page_size, args.num_pages_per_seq};
   }
 
@@ -324,6 +331,9 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
     /* Create register fragments for MMA and copies */
     auto tQrQ = thr_copy_q.partition_sg_fragment_D(gQ(_, _, 0));
     auto tSrQ = thr_mma_qk.partition_sg_fragment_A(gQ(_, _, 0));
+#if defined(ARK_SAGE_Q_HOIST)
+    std::array<decltype(tSrQ), DTiles> tSrQ_arr;
+#endif
 
     auto tKrK = thr_copy_k.partition_sg_fragment_D(gK(_, _, 0, 0));
     auto tSrK = thr_mma_qk.partition_sg_fragment_B(gK(_, _, 0, 0));
@@ -378,6 +388,13 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
         }
       }
     }
+#if defined(ARK_SAGE_Q_HOIST)
+    CUTLASS_PRAGMA_UNROLL
+    for (int D = 0; D < size<4>(tKgK); D++) {
+      copy(copy_q, tQgQ(_, _, _, D), tQrQ);
+      reorder(tQrQ, tSrQ_arr[D]);
+    }
+#endif
     if (blk_k0 == 0) {
       clear(tArA);
       fill(tA_max, cutlass::platform::numeric_limits<ElementA>::lowest());
@@ -414,12 +431,20 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
       clear(tSrS);
       CUTLASS_PRAGMA_UNROLL
       for (int D = 0; D < size<4>(tKgK); D++) {
+#if !defined(ARK_SAGE_Q_HOIST)
         copy(copy_q, tQgQ(_, _, _, D), tQrQ);
+#endif
         copy(copy_k_cur, tKgK_cur(_, _, _, k_idx, D), tKrK);
+#if !defined(ARK_SAGE_Q_HOIST)
         reorder(tQrQ, tSrQ);
+#endif
         reorder(tKrK, tSrK);
 
+#if defined(ARK_SAGE_Q_HOIST)
+        cute::gemm(mma_qk, tSrQ_arr[D], tSrK, tSrS);
+#else
         cute::gemm(mma_qk, tSrQ, tSrK, tSrS);
+#endif
       }
 
       /* V prefetch for GEMM 2 */
@@ -541,8 +566,8 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
           cute::gemm(mma_pv, tArP, tArV, tArA(_, _, _, VV));
         }
       } else {
-        constexpr ElementA kInvVQuantScale = ElementA(1.0f / 127.0f);
-        int scalev_head_dim = int(size<0>(V_2D));
+        constexpr ElementA kInvPQuantScale = ElementA(1.0f / 127.0f);
+        int scalev_head_dim = UseScalarVScale ? 1 : (params.vscale_stride_d ? int(size<0>(V_2D)) : 1);
         int v_block_base = int(get<1>(blk_qv)) * int(get<1>(TileShapePV{})) * VTiles;
         int scalev_block_base = scalek_idx * scalev_head_dim;
         CUTLASS_PRAGMA_UNROLL
@@ -565,11 +590,26 @@ struct SAGEV1FwdMainloop<sage::XeDefault<Stages>, CausalMask_, FullMask_, Cached
           }
 
           if constexpr (WriteBackInt8PV) {
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < tArAcc.size(); ++i) {
-              int local_v = int(get<1>(tCrA(i)));
-              int scalev_idx = scalev_block_base + v_block_base + VV * int(get<1>(TileShapePV{})) + local_v;
-              tArA_v(i) += ElementA(tArAcc(i)) * ElementA(scaleV[scalev_idx]) * kInvVQuantScale;
+            if constexpr (UseScalarVScale) {
+              ElementA scaled_v = ElementA(scaleV[scalev_block_base]) * kInvPQuantScale;
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tArAcc.size(); ++i) {
+                tArA_v(i) += ElementA(tArAcc(i)) * scaled_v;
+              }
+            } else {
+              int previous_local_v = -1;
+              ElementA scaled_v = ElementA(0);
+              CUTLASS_PRAGMA_UNROLL
+              for (int i = 0; i < tArAcc.size(); ++i) {
+                int local_v = int(get<1>(tCrA(i)));
+                if (local_v != previous_local_v) {
+                  int scalev_idx = scalev_block_base +
+                                   (v_block_base + VV * int(get<1>(TileShapePV{})) + local_v) * params.vscale_stride_d;
+                  scaled_v = ElementA(scaleV[scalev_idx]) * kInvPQuantScale;
+                  previous_local_v = local_v;
+                }
+                tArA_v(i) += ElementA(tArAcc(i)) * scaled_v;
+              }
             }
           }
         }

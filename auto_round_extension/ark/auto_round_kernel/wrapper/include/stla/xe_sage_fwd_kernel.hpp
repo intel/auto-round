@@ -184,6 +184,26 @@ class XeSageFwdKernel {
 
   static dim3 get_block_shape() { return dim3(SGPerWG::value * intel::sg_size, 1, 1); }
 
+  template <typename Element>
+  CUTLASS_DEVICE static Element const* add_logical_offset(Element const* ptr, int offset) {
+    if constexpr (cute::sizeof_bits_v<Element> < 8) {
+      return reinterpret_cast<Element const*>(reinterpret_cast<uint8_t const*>(ptr) +
+                                              (static_cast<int64_t>(offset) * cute::sizeof_bits_v<Element>) / 8);
+    } else {
+      return ptr + offset;
+    }
+  }
+
+  template <typename Element>
+  CUTLASS_DEVICE static Element* add_logical_offset(Element* ptr, int offset) {
+    if constexpr (cute::sizeof_bits_v<Element> < 8) {
+      return reinterpret_cast<Element*>(reinterpret_cast<uint8_t*>(ptr) +
+                                        (static_cast<int64_t>(offset) * cute::sizeof_bits_v<Element>) / 8);
+    } else {
+      return ptr + offset;
+    }
+  }
+
   CUTLASS_DEVICE
   Shape<int, int, int> get_sequence_length_shape(ProblemShape const& problem_shape, int const& batch) {
     if constexpr (is_var_len) {
@@ -266,19 +286,13 @@ class XeSageFwdKernel {
       }
 
       auto batch_dim = is_var_len ? 1 : s.batch;
-      auto shape_Q = make_shape(seq_len_qo, s.head_size_qk, s.num_heads_q, batch_dim);
-      auto shape_K = make_shape(seq_len_kv, s.head_size_qk, s.num_heads_kv, batch_dim);
-      auto shape_V = make_shape(s.head_size_vo, seq_len_kv, s.num_heads_kv, batch_dim);
       auto shape_O = make_shape(seq_len_qo, s.head_size_vo, s.num_heads_q, batch_dim);
 
-      auto shape_K_cache = make_shape(seq_len_kv_cache, s.head_size_qk, s.num_heads_kv, batch_dim);
-      auto shape_V_cache = make_shape(s.head_size_vo, seq_len_kv_cache, s.num_heads_kv, batch_dim);
-
-      auto dcQ = const_cast<ElementQ*>(p.Q + offset_q);
-      auto dcK = const_cast<ElementK*>(p.K + offset_k);
-      auto dcV = const_cast<ElementV*>(p.V + offset_v);
-      auto dcK_cache = const_cast<ElementK*>(p.K_cache + offset_k_cache);
-      auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
+      auto dcQ = const_cast<ElementQ*>(add_logical_offset(p.Q, offset_q));
+      auto dcK = const_cast<ElementK*>(add_logical_offset(p.K, offset_k));
+      auto dcV = const_cast<ElementV*>(add_logical_offset(p.V, offset_v));
+      auto dcK_cache = const_cast<ElementK*>(add_logical_offset(p.K_cache, offset_k_cache));
+      auto dcV_cache = const_cast<ElementV*>(add_logical_offset(p.V_cache, offset_v_cache));
       int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       int seq_kv_pad = (seq_len_kv + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       // Varlen: scales are laid out as flat [num_heads][total_seq_blocks] for the
@@ -301,15 +315,17 @@ class XeSageFwdKernel {
           scaleQ = (float*)params.mainloop.qscale + head_q * total_q_blocks + start_block_q;
           scaleK = (float*)params.mainloop.kscale + head * total_kv_blocks + start_block_k;
           if (params.mainloop.vscale) {
+            int vscale_head_dim = params.mainloop.vscale_stride_d ? s.head_size_vo : 1;
             scaleV = (float*)params.mainloop.vscale
-                     + (head * total_kv_blocks + start_block_k) * s.head_size_vo;
+                     + (head * total_kv_blocks + start_block_k) * vscale_head_dim;
           }
         } else {
           scaleQ = (float*)params.mainloop.qscale + (idx_b * s.num_heads_q * seq_q_pad + head_q * seq_q_pad);
           scaleK = (float*)params.mainloop.kscale + (idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad);
           if (params.mainloop.vscale) {
+            int vscale_head_dim = params.mainloop.vscale_stride_d ? s.head_size_vo : 1;
             scaleV = (float*)params.mainloop.vscale
-                     + ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * s.head_size_vo);
+                     + ((idx_b * s.num_heads_kv * seq_kv_pad + head * seq_kv_pad) * vscale_head_dim);
           }
         }
       }
@@ -323,11 +339,31 @@ class XeSageFwdKernel {
       auto stride_k_cache = p.dK_cache;
       auto stride_v_cache = p.dV_cache;
 
-      Tensor Q = make_tensor(make_gmem_ptr(dcQ), make_layout(shape_Q, stride_q));
-      Tensor K = make_tensor(make_gmem_ptr(dcK), make_layout(shape_K, stride_k));
-      Tensor V = make_tensor(make_gmem_ptr(dcV), make_layout(shape_V, stride_v));
-      Tensor K_cache = make_tensor(make_gmem_ptr(dcK_cache), make_layout(shape_K_cache, stride_k_cache));
-      Tensor V_cache = make_tensor(make_gmem_ptr(dcV_cache), make_layout(shape_V_cache, stride_v_cache));
+      int l_coord = is_var_len ? 0 : idx_b;
+      int q_head_offset = head_q * int(get<2>(stride_q)) + l_coord * int(get<3>(stride_q));
+      int k_head_offset = head * int(get<2>(stride_k)) + l_coord * int(get<3>(stride_k));
+      int v_head_offset = head * int(get<2>(stride_v)) + l_coord * int(get<3>(stride_v));
+      int k_cache_head_offset =
+          seq_len_kv_cache ? head * int(get<2>(stride_k_cache)) + l_coord * int(get<3>(stride_k_cache)) : 0;
+      int v_cache_head_offset =
+          seq_len_kv_cache ? head * int(get<2>(stride_v_cache)) + l_coord * int(get<3>(stride_v_cache)) : 0;
+
+      Tensor Q_head =
+          make_tensor(make_gmem_ptr(add_logical_offset(dcQ, q_head_offset)),
+                      make_layout(make_shape(seq_len_qo, s.head_size_qk), make_stride(get<0>(stride_q), get<1>(stride_q))));
+      Tensor K_head =
+          make_tensor(make_gmem_ptr(add_logical_offset(dcK, k_head_offset)),
+                      make_layout(make_shape(seq_len_kv, s.head_size_qk), make_stride(get<0>(stride_k), get<1>(stride_k))));
+      Tensor V_head =
+          make_tensor(make_gmem_ptr(add_logical_offset(dcV, v_head_offset)),
+                      make_layout(make_shape(s.head_size_vo, seq_len_kv), make_stride(get<0>(stride_v), get<1>(stride_v))));
+      Tensor K_cache_head = make_tensor(
+          make_gmem_ptr(add_logical_offset(dcK_cache, k_cache_head_offset)),
+          make_layout(make_shape(seq_len_kv_cache, s.head_size_qk), make_stride(get<0>(stride_k_cache), get<1>(stride_k_cache))));
+      Tensor V_cache_head = make_tensor(
+          make_gmem_ptr(add_logical_offset(dcV_cache, v_cache_head_offset)),
+          make_layout(make_shape(s.head_size_vo, seq_len_kv_cache), make_stride(get<0>(stride_v_cache), get<1>(stride_v_cache))));
+
       Tensor O = make_tensor(make_gmem_ptr(ptrO), make_layout(shape_O, stride_o));
 
       // O accumulator types
@@ -335,12 +371,10 @@ class XeSageFwdKernel {
       FragARow tA_max, tA_sum;
 
       // Main loop
-      int l_coord = is_var_len ? 0 : idx_b;
       CollectiveMainloop mainloop(params.mainloop, shared_storage.mainloop);
-      mainloop(Q(_, _, head_q, l_coord), K(_, _, head, l_coord), V(_, _, head, l_coord), tArA, tA_max, tA_sum, blk_qv,
-               0, k_blocks, k_blocks, thr_id, seq_len, seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV,
-               full_tile_offset,
-               discard_seq_coord, K_cache(_, _, head, l_coord), V_cache(_, _, head, l_coord));
+      mainloop(Q_head, K_head, V_head, tArA, tA_max, tA_sum, blk_qv, 0, k_blocks, k_blocks, thr_id, seq_len,
+               seq_len_kv_cache, idx_b, scaleQ, scaleK, scaleV, full_tile_offset, discard_seq_coord, K_cache_head,
+               V_cache_head);
 
       if constexpr (!is_empty_v<MainloopSharedStorage> && !is_empty_v<EpilogueSharedStorage>) {
         sycl::group_barrier(get_work_group<3>());

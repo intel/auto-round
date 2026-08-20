@@ -22,6 +22,12 @@ if(ARK_SYCL_TLA AND NOT ARK_XPU)
   message(FATAL_ERROR "ARK_SYCL_TLA requires ARK_XPU=ON")
 endif()
 
+option(ARK_SDPA_INT4_DEV_ONLY "Build only dense INT4 SAGE kernels for tuning" OFF)
+option(ARK_SAGE_Q_HOIST "Hoist SAGE Q load/reorder out of the K loop for experiments" OFF)
+if(ARK_SDPA_INT4_DEV_ONLY AND NOT (ARK_XPU AND ARK_SYCL_TLA))
+  message(FATAL_ERROR "ARK_SDPA_INT4_DEV_ONLY requires ARK_XPU=ON and ARK_SYCL_TLA=ON")
+endif()
+
 if(ARK_XPU AND NOT ARK_DNNL AND NOT ARK_SYCL_TLA)
   message(FATAL_ERROR "XPU build requires ARK_SYCL_TLA=ON or ARK_DNNL=ON")
 endif()
@@ -93,6 +99,18 @@ endif()
 list(APPEND libs bestla)
 
 file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(ARK_XPU AND ARK_SYCL_TLA)
+  if(ARK_SDPA_INT4_DEV_ONLY)
+    list(REMOVE_ITEM SRCS
+      ${CMAKE_CURRENT_SOURCE_DIR}/ark.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/sdpa.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/sdpa_sparse.cpp)
+  else()
+    list(REMOVE_ITEM SRCS
+      ${CMAKE_CURRENT_SOURCE_DIR}/ark_int4_dev.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/sdpa_int4_dev.cpp)
+  endif()
+endif()
 if(NOT ARK_XPU)
     list(APPEND SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
@@ -163,7 +181,11 @@ if(ARK_XPU AND ARK_SYCL_TLA)
   include(${CMAKE_CURRENT_LIST_DIR}/sdpa_generation.cmake)
 endif()
 
-pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS})
+if(ARK_SDPA_INT4_DEV_ONLY)
+  pybind11_add_module(${PY_NAME} NO_EXTRAS ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS})
+else()
+  pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS})
+endif()
 target_compile_features(${PY_NAME} PRIVATE cxx_std_17)
 target_compile_definitions(${PY_NAME} PRIVATE PY_NAME=${PY_NAME} ${ARK_TYPE}=1)
 if(ARK_DNNL)
@@ -180,6 +202,12 @@ endif()
 
 if(ARK_XPU AND ARK_SYCL_TLA)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
+  if(ARK_SDPA_INT4_DEV_ONLY)
+    target_compile_definitions(${PY_NAME} PRIVATE ARK_SDPA_INT4_DEV_ONLY=1)
+  endif()
+  if(ARK_SAGE_Q_HOIST)
+    target_compile_definitions(${PY_NAME} PRIVATE ARK_SAGE_Q_HOIST=1)
+  endif()
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
   # Use SYSTEM include directories for sycl-tla to suppress warnings/errors from third-party headers
@@ -190,7 +218,9 @@ if(ARK_XPU AND ARK_SYCL_TLA)
     endif()
   endforeach()
   target_compile_options(${PY_NAME} PRIVATE -fsycl -fno-sycl-instrument-device-code)
-  target_link_options(${PY_NAME} PRIVATE ${SYCL_TLA_LINK_FLAGS})
+  target_link_options(${PY_NAME} PRIVATE
+    ${SYCL_TLA_LINK_FLAGS}
+    -Xs "-options \"-igc_opts 'allowDecompose2DBlockFuncs=0'\"")
 endif()
 target_link_libraries(${PY_NAME} PRIVATE ${libs})
 
@@ -214,7 +244,9 @@ if(ARK_UT)
         endif()
       endforeach()
       target_compile_options(${TEST_NAME} PRIVATE -fsycl -fno-sycl-instrument-device-code)
-      target_link_options(${TEST_NAME} PRIVATE ${SYCL_TLA_LINK_FLAGS})
+      target_link_options(${TEST_NAME} PRIVATE
+        ${SYCL_TLA_LINK_FLAGS}
+        -Xs "-options \"-igc_opts 'allowDecompose2DBlockFuncs=0'\"")
     endif()
     if(ARK_DNNL)
       target_compile_definitions(${TEST_NAME} PRIVATE ARK_DNNL=1)

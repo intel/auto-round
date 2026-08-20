@@ -167,6 +167,51 @@ def _validate_canonical_strides(tensor: torch.Tensor, name: str, tensor_layout: 
         )
 
 
+def _validate_canonical_packed_int4_strides(
+    tensor: torch.Tensor,
+    name: str,
+    tensor_layout: str,
+    logical_head_dim: int,
+) -> None:
+    layout = _normalize_tensor_layout(tensor_layout)
+    packed_head_dim = logical_head_dim // 2
+    if layout == "HND":
+        B, H, S, Dp = tensor.shape
+        expected = (H * S * packed_head_dim, S * packed_head_dim, packed_head_dim, 1)
+    else:
+        B, S, H, Dp = tensor.shape
+        expected = (S * H * packed_head_dim, H * packed_head_dim, packed_head_dim, 1)
+    if Dp != packed_head_dim:
+        raise ValueError(f"{name} packed INT4 last dimension must be logical_head_dim / 2")
+    actual = tensor.stride()
+    if actual != expected:
+        raise ValueError(
+            f"{name} strides {actual} do not match canonical packed INT4 {layout} layout {expected}. "
+            f"Call .contiguous() first."
+        )
+
+
+def _validate_packed_int4_attention_tensor(
+    tensor: torch.Tensor,
+    name: str,
+    tensor_layout: str,
+) -> tuple[int, int, int, int]:
+    if tensor.ndim != 4:
+        raise ValueError(f"{name} must be a 4D tensor")
+    if tensor.dtype != torch.uint8:
+        raise ValueError(f"{name} must be packed INT4 stored as torch.uint8, got {tensor.dtype}")
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        batch, num_heads, seq_len, packed_head_dim = tensor.shape
+    else:
+        batch, seq_len, num_heads, packed_head_dim = tensor.shape
+    logical_head_dim = packed_head_dim * 2
+    if logical_head_dim not in (64, 128):
+        raise ValueError(f"Unsupported logical head_dim={logical_head_dim}; supported: 64, 128")
+    _validate_canonical_packed_int4_strides(tensor, name, layout, logical_head_dim)
+    return batch, num_heads, seq_len, logical_head_dim
+
+
 def _validate_attention_tensor(
     tensor: torch.Tensor,
     name: str,
@@ -1252,7 +1297,8 @@ def sage_pvi8(
     - value: [B, Hkv, Skv, D] int8
     - qscale: [B, Hq, ceil(Sq / quant_block_size), 1] float32
     - kscale: [B, Hkv, ceil(Skv / quant_block_size), 1] float32
-    - vscale: [B, Hkv, ceil(Skv / quant_block_size), D] float32
+    - vscale: [B, Hkv, ceil(Skv / quant_block_size), D] float32, or scalar
+      [B, Hkv, ceil(Skv / quant_block_size), 1] float32
 
     Returns:
     - O: [B, Hq, Sq, D] float16
@@ -1282,11 +1328,17 @@ def sage_pvi8(
         )
     if kscale.numel() != B * Hkv * kv_blocks:
         raise ValueError(
-            f"kscale must have {B * Hkv * kv_blocks} elements for shape [B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
         )
-    if vscale.numel() != B * Hkv * kv_blocks * D:
+    vscale_stride_d = 1
+    if vscale.numel() == B * Hkv * kv_blocks:
+        vscale_stride_d = 0
+    elif vscale.numel() != B * Hkv * kv_blocks * D:
         raise ValueError(
-            f"vscale must have {B * Hkv * kv_blocks * D} elements for shape [B, Hkv, ceil(Skv/block), D], got {vscale.numel()}"
+            f"vscale must have {B * Hkv * kv_blocks * D} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), D] or {B * Hkv * kv_blocks} elements for "
+            f"[B, Hkv, ceil(Skv/block), 1], got {vscale.numel()}"
         )
 
     lib = get_lib(query)
@@ -1317,6 +1369,7 @@ def sage_pvi8(
         qscale.data_ptr(),
         kscale.data_ptr(),
         vscale.data_ptr(),
+        vscale_stride_d,
         cvt_dtype(query.dtype),
         cvt_dtype(key.dtype),
         cvt_dtype(O.dtype),
@@ -1329,6 +1382,366 @@ def sage_pvi8(
         float(scale) if scale is not None else 1.0 / (D**0.5),
         bool(is_causal),
         layout_code,
+    )
+    return O
+
+
+def sage_pvi4(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    vscale: torch.Tensor = None,
+    out_dtype: torch.dtype = torch.float16,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Low-level SAGE attention with INT8 Q/K and packed signed INT4 V.
+
+    V uses one dequantization scale per [batch, head, sequence block].
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_pvi4 is only supported on XPU")
+    if query.dtype != torch.int8 or key.dtype != torch.int8:
+        raise ValueError(f"Q/K must be int8, got Q={query.dtype}, K={key.dtype}")
+    if value.dtype != torch.uint8:
+        raise ValueError(f"V must be packed INT4 stored as torch.uint8, got {value.dtype}")
+    if out_dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage_pvi4 output must be float16 or bfloat16, got {out_dtype}")
+    if qscale is None or kscale is None or vscale is None:
+        raise ValueError("qscale, kscale and vscale must be provided for sage_pvi4")
+
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout, expected_dtype=torch.int8)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=torch.int8)
+    Bv, Hvv, Svv, Dv = _validate_packed_int4_attention_tensor(value, "V", tensor_layout)
+    if (Bk, Bv) != (B, B) or (Hvv, Svv, Dv) != (Hkv, Skv, D) or Dk != D:
+        raise ValueError("Q/K/V geometry mismatch")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage_pvi4")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if qscale.numel() != B * Hq * q_blocks:
+        raise ValueError(
+            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+        )
+    if kscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+        )
+    if vscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"vscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {vscale.numel()}"
+        )
+    vscale_stride_d = 0
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=out_dtype, device=query.device, tensor_layout=tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sage_pvi4(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        vscale.data_ptr(),
+        vscale_stride_d,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+    )
+    return O
+
+
+def sage_int4(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    vscale: torch.Tensor = None,
+    out_dtype: torch.dtype = torch.float16,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Experimental low-level SAGE attention with packed signed INT4 Q/K/V.
+
+    V uses one dequantization scale per [batch, head, sequence block].
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_int4 is only supported on XPU")
+    if out_dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage_int4 output must be float16 or bfloat16, got {out_dtype}")
+    if qscale is None or kscale is None or vscale is None:
+        raise ValueError("qscale, kscale and vscale must be provided for sage_int4")
+
+    B, Hq, Sq, D = _validate_packed_int4_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_packed_int4_attention_tensor(key, "K", tensor_layout)
+    Bv, Hvv, Svv, Dv = _validate_packed_int4_attention_tensor(value, "V", tensor_layout)
+    if (Bk, Bv) != (B, B) or (Hvv, Svv, Dv) != (Hkv, Skv, D) or Dk != D:
+        raise ValueError("Q/K/V geometry mismatch")
+    _validate_no_dropout(dropout_p, "sage_int4")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if qscale.numel() != B * Hq * q_blocks:
+        raise ValueError(
+            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+        )
+    if kscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+        )
+    if vscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"vscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {vscale.numel()}"
+        )
+    vscale_stride_d = 0
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=out_dtype, device=query.device, tensor_layout=tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sage_int4(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        vscale.data_ptr(),
+        vscale_stride_d,
+        ARK_DT.int4,
+        ARK_DT.int4,
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+    )
+    return O
+
+
+def sage_int4_pvi8(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    vscale: torch.Tensor = None,
+    out_dtype: torch.dtype = torch.float16,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Experimental low-level SAGE attention with packed signed INT4 Q/K and INT8 V."""
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_int4_pvi8 is only supported on XPU")
+    if value.dtype != torch.int8:
+        raise ValueError(f"V must be int8, got {value.dtype}")
+    if out_dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage_int4_pvi8 output must be float16 or bfloat16, got {out_dtype}")
+    if qscale is None or kscale is None or vscale is None:
+        raise ValueError("qscale, kscale and vscale must be provided for sage_int4_pvi8")
+
+    B, Hq, Sq, D = _validate_packed_int4_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_packed_int4_attention_tensor(key, "K", tensor_layout)
+    Bv, Hvv, Svv, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=torch.int8)
+    if (Bk, Bv) != (B, B) or (Hvv, Svv, Dv) != (Hkv, Skv, D) or Dk != D:
+        raise ValueError("Q/K/V geometry mismatch")
+    _validate_no_dropout(dropout_p, "sage_int4_pvi8")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if qscale.numel() != B * Hq * q_blocks:
+        raise ValueError(
+            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+        )
+    if kscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+        )
+    vscale_stride_d = 1
+    if vscale.numel() == B * Hkv * kv_blocks:
+        vscale_stride_d = 0
+    elif vscale.numel() != B * Hkv * kv_blocks * D:
+        raise ValueError(
+            f"vscale must have {B * Hkv * kv_blocks * D} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), D] or {B * Hkv * kv_blocks} elements for "
+            f"[B, Hkv, ceil(Skv/block), 1], got {vscale.numel()}"
+        )
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    _validate_canonical_strides(value, "V", tensor_layout)
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=out_dtype, device=query.device, tensor_layout=tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sage_int4_pvi8(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        vscale.data_ptr(),
+        vscale_stride_d,
+        ARK_DT.int4,
+        ARK_DT.int4,
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+    )
+    return O
+
+
+def sage_int4_diag(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    diagnostic_mode: str,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    vscale: torch.Tensor = None,
+    out_dtype: torch.dtype = torch.float16,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Diagnostic-only packed INT4 SAGE variants.
+
+    diagnostic_mode:
+    - "pv_no_writeback": execute PV DPAS, skip dequant/writeback.
+    - "no_pv_execute": skip PV DPAS and skip dequant/writeback.
+    """
+    diag_modes = {"pv_no_writeback": 1, "no_pv_execute": 2}
+    if diagnostic_mode not in diag_modes:
+        raise ValueError(f"diagnostic_mode must be one of {sorted(diag_modes)}, got {diagnostic_mode!r}")
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_int4_diag is only supported on XPU")
+    if out_dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage_int4_diag output must be float16 or bfloat16, got {out_dtype}")
+    if qscale is None or kscale is None or vscale is None:
+        raise ValueError("qscale, kscale and vscale must be provided for sage_int4_diag")
+
+    B, Hq, Sq, D = _validate_packed_int4_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_packed_int4_attention_tensor(key, "K", tensor_layout)
+    Bv, Hvv, Svv, Dv = _validate_packed_int4_attention_tensor(value, "V", tensor_layout)
+    if (Bk, Bv) != (B, B) or (Hvv, Svv, Dv) != (Hkv, Skv, D) or Dk != D:
+        raise ValueError("Q/K/V geometry mismatch")
+    if D != 128:
+        raise ValueError("sage_int4_diag currently supports only head_dim=128")
+    _validate_no_dropout(dropout_p, "sage_int4_diag")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if qscale.numel() != B * Hq * q_blocks:
+        raise ValueError(
+            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+        )
+    if kscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+        )
+    if vscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"vscale must have {B * Hkv * kv_blocks} elements for shape "
+            f"[B, Hkv, ceil(Skv/block), 1], got {vscale.numel()}"
+        )
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=out_dtype, device=query.device, tensor_layout=tensor_layout)
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sage_int4_diag(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        vscale.data_ptr(),
+        0,
+        ARK_DT.int4,
+        ARK_DT.int4,
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+        diag_modes[diagnostic_mode],
     )
     return O
 

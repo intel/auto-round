@@ -417,9 +417,9 @@ static void sage(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
 
 static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
                       int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
-                      int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
-                      int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
-                 int tensor_layout, torch_ptr lse = 0) {
+                      int vscale_stride_d, int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q,
+                      int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                      bool is_causal, int tensor_layout, torch_ptr lse = 0) {
   if (mask && is_causal) {
     throw std::invalid_argument("ark::sage_pvi8: mask and is_causal cannot both be set");
   }
@@ -447,7 +447,156 @@ static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, t
                            q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
                            v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
                            batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
-                           is_causal, (BTLA_DTYPE)o_dtype, (float*)lse);
+                           is_causal, (BTLA_DTYPE)o_dtype, (float*)lse, vscale_stride_d);
+}
+
+static void sage_pvi4(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                      int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
+                      int vscale_stride_d, int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q,
+                      int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                      bool is_causal, int tensor_layout, torch_ptr lse = 0) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_pvi4: mask and is_causal cannot both be set");
+  }
+  if (q_dtype != (int)BTLA_DTYPE::S8 || k_dtype != (int)BTLA_DTYPE::S8) {
+    throw std::invalid_argument("ark::sage_pvi4: Q/K must be INT8");
+  }
+  int q_stride_s, q_stride_d, q_stride_h, q_stride_b;
+  int k_stride_s, k_stride_d, k_stride_h, k_stride_b;
+  int v_stride_d, v_stride_s, v_stride_h, v_stride_b;
+  int o_stride_s, o_stride_d, o_stride_h, o_stride_b;
+  if (tensor_layout == TENSOR_LAYOUT_HND) {
+    int q_sh = seq_len_q * head_dim;
+    int k_sh = seq_len_kv * head_dim;
+    q_stride_s = head_dim;        q_stride_d = 1;    q_stride_h = q_sh;    q_stride_b = num_heads_q * q_sh;
+    k_stride_s = head_dim;        k_stride_d = 1;    k_stride_h = k_sh;    k_stride_b = num_heads_kv * k_sh;
+    v_stride_d = 1;               v_stride_s = head_dim;  v_stride_h = k_sh;    v_stride_b = num_heads_kv * k_sh;
+    o_stride_s = head_dim;        o_stride_d = 1;    o_stride_h = q_sh;    o_stride_b = num_heads_q * q_sh;
+  } else {  // NHD
+    int q_hd = num_heads_q * head_dim;
+    int k_hd = num_heads_kv * head_dim;
+    v_stride_d = 1;               v_stride_s = num_heads_kv * head_dim; v_stride_h = head_dim;
+    q_stride_s = q_hd;            q_stride_d = 1;    q_stride_h = head_dim;  q_stride_b = seq_len_q * q_hd;
+    k_stride_s = k_hd;            k_stride_d = 1;    k_stride_h = head_dim;  k_stride_b = seq_len_kv * k_hd;
+    v_stride_b = seq_len_kv * num_heads_kv * head_dim;
+    o_stride_s = q_hd;            o_stride_d = 1;    o_stride_h = head_dim;  o_stride_b = seq_len_q * q_hd;
+  }
+  ark::sdpa_impl_qks8_pvi4((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                           scale_block_size, (void*)qscale, (void*)kscale, (void*)vscale, q_stride_s, q_stride_d,
+                           q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
+                           v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                           batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                           is_causal, (BTLA_DTYPE)o_dtype, (float*)lse, vscale_stride_d);
+}
+
+static void sage_int4_impl(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                           int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
+                           int vscale_stride_d, int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q,
+                           int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                           bool is_causal, int tensor_layout, int diagnostic_mode, torch_ptr lse = 0) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_int4: mask and is_causal cannot both be set");
+  }
+  if (q_dtype != (int)BTLA_DTYPE::S4 || k_dtype != (int)BTLA_DTYPE::S4) {
+    throw std::invalid_argument("ark::sage_int4: Q/K/V must use packed signed INT4 storage");
+  }
+  int q_stride_s, q_stride_d, q_stride_h, q_stride_b;
+  int k_stride_s, k_stride_d, k_stride_h, k_stride_b;
+  int v_stride_d, v_stride_s, v_stride_h, v_stride_b;
+  int o_stride_s, o_stride_d, o_stride_h, o_stride_b;
+  if (tensor_layout == TENSOR_LAYOUT_HND) {
+    int q_sh = seq_len_q * head_dim;
+    int k_sh = seq_len_kv * head_dim;
+    q_stride_s = head_dim;        q_stride_d = 1;    q_stride_h = q_sh;    q_stride_b = num_heads_q * q_sh;
+    k_stride_s = head_dim;        k_stride_d = 1;    k_stride_h = k_sh;    k_stride_b = num_heads_kv * k_sh;
+    v_stride_d = 1;               v_stride_s = head_dim;  v_stride_h = k_sh;    v_stride_b = num_heads_kv * k_sh;
+    o_stride_s = head_dim;        o_stride_d = 1;    o_stride_h = q_sh;    o_stride_b = num_heads_q * q_sh;
+  } else {  // NHD
+    int q_hd = num_heads_q * head_dim;
+    int k_hd = num_heads_kv * head_dim;
+    q_stride_s = q_hd;            q_stride_d = 1;    q_stride_h = head_dim;  q_stride_b = seq_len_q * q_hd;
+    k_stride_s = k_hd;            k_stride_d = 1;    k_stride_h = head_dim;  k_stride_b = seq_len_kv * k_hd;
+    v_stride_d = 1;               v_stride_s = k_hd; v_stride_h = head_dim;  v_stride_b = seq_len_kv * k_hd;
+    o_stride_s = q_hd;            o_stride_d = 1;    o_stride_h = head_dim;  o_stride_b = seq_len_q * q_hd;
+  }
+  if (diagnostic_mode == 0) {
+    ark::sdpa_impl_qks4_pvi4((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                             scale_block_size, (void*)qscale, (void*)kscale, (void*)vscale, q_stride_s, q_stride_d,
+                             q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
+                             v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                             batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                             is_causal, (BTLA_DTYPE)o_dtype, (float*)lse, vscale_stride_d);
+  } else {
+    bool execute_pv = diagnostic_mode == 1;
+    ark::sdpa_impl_qks4_pvi4_diag((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                                  scale_block_size, (void*)qscale, (void*)kscale, (void*)vscale, q_stride_s,
+                                  q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h,
+                                  k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s,
+                                  o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+                                  seq_len_kv, head_dim, softmax_scale, is_causal, (BTLA_DTYPE)o_dtype, (float*)lse,
+                                  vscale_stride_d, execute_pv);
+  }
+}
+
+static void sage_int4_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                           int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
+                           int vscale_stride_d, int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q,
+                           int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                           bool is_causal, int tensor_layout, torch_ptr lse = 0) {
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::sage_int4_pvi8: mask and is_causal cannot both be set");
+  }
+  if (q_dtype != (int)BTLA_DTYPE::S4 || k_dtype != (int)BTLA_DTYPE::S4) {
+    throw std::invalid_argument("ark::sage_int4_pvi8: Q/K must use packed signed INT4 storage");
+  }
+  int q_stride_s, q_stride_d, q_stride_h, q_stride_b;
+  int k_stride_s, k_stride_d, k_stride_h, k_stride_b;
+  int v_stride_d, v_stride_s, v_stride_h, v_stride_b;
+  int o_stride_s, o_stride_d, o_stride_h, o_stride_b;
+  if (tensor_layout == TENSOR_LAYOUT_HND) {
+    int q_sh = seq_len_q * head_dim;
+    int k_sh = seq_len_kv * head_dim;
+    q_stride_s = head_dim;        q_stride_d = 1;    q_stride_h = q_sh;    q_stride_b = num_heads_q * q_sh;
+    k_stride_s = head_dim;        k_stride_d = 1;    k_stride_h = k_sh;    k_stride_b = num_heads_kv * k_sh;
+    v_stride_d = 1;               v_stride_s = head_dim;  v_stride_h = k_sh;    v_stride_b = num_heads_kv * k_sh;
+    o_stride_s = head_dim;        o_stride_d = 1;    o_stride_h = q_sh;    o_stride_b = num_heads_q * q_sh;
+  } else {  // NHD
+    int q_hd = num_heads_q * head_dim;
+    int k_hd = num_heads_kv * head_dim;
+    q_stride_s = q_hd;            q_stride_d = 1;    q_stride_h = head_dim;  q_stride_b = seq_len_q * q_hd;
+    k_stride_s = k_hd;            k_stride_d = 1;    k_stride_h = head_dim;  k_stride_b = seq_len_kv * k_hd;
+    v_stride_d = 1;               v_stride_s = k_hd; v_stride_h = head_dim;  v_stride_b = seq_len_kv * k_hd;
+    o_stride_s = q_hd;            o_stride_d = 1;    o_stride_h = head_dim;  o_stride_b = seq_len_q * q_hd;
+  }
+  ark::sdpa_impl_qks4_pvi8((sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask,
+                           scale_block_size, (void*)qscale, (void*)kscale, (void*)vscale, q_stride_s, q_stride_d,
+                           q_stride_h, q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d,
+                           v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b,
+                           batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                           is_causal, (BTLA_DTYPE)o_dtype, (float*)lse, vscale_stride_d);
+}
+
+static void sage_int4(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                      int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
+                      int vscale_stride_d, int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q,
+                      int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                      bool is_causal, int tensor_layout, torch_ptr lse = 0) {
+  sage_int4_impl(stream, Q, K, V, O, mask, scale_block_size, qscale, kscale, vscale, vscale_stride_d, q_dtype,
+                 k_dtype, o_dtype, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                 is_causal, tensor_layout, 0, lse);
+}
+
+static void sage_int4_diag(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                           int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
+                           int vscale_stride_d, int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q,
+                           int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                           bool is_causal, int tensor_layout, int diagnostic_mode, torch_ptr lse = 0) {
+  if (diagnostic_mode != 1 && diagnostic_mode != 2) {
+    throw std::invalid_argument("ark::sage_int4_diag: diagnostic_mode must be 1 or 2");
+  }
+  sage_int4_impl(stream, Q, K, V, O, mask, scale_block_size, qscale, kscale, vscale, vscale_stride_d, q_dtype,
+                 k_dtype, o_dtype, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+                 is_causal, tensor_layout, diagnostic_mode, lse);
 }
 
 static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
@@ -1384,11 +1533,52 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
         pybind11::arg("scale_block_size"),
         pybind11::arg("qscale"), pybind11::arg("kscale"), pybind11::arg("vscale"),
+        pybind11::arg("vscale_stride_d"),
         pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
         pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
         pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
+  m.def("sage_pvi4", &ark::sage_pvi4, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("qscale"), pybind11::arg("kscale"), pybind11::arg("vscale"),
+        pybind11::arg("vscale_stride_d"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
+  m.def("sage_int4", &ark::sage_int4, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("qscale"), pybind11::arg("kscale"), pybind11::arg("vscale"),
+        pybind11::arg("vscale_stride_d"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
+  m.def("sage_int4_pvi8", &ark::sage_int4_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("qscale"), pybind11::arg("kscale"), pybind11::arg("vscale"),
+        pybind11::arg("vscale_stride_d"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
+  m.def("sage_int4_diag", &ark::sage_int4_diag, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+        pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+        pybind11::arg("scale_block_size"),
+        pybind11::arg("qscale"), pybind11::arg("kscale"), pybind11::arg("vscale"),
+        pybind11::arg("vscale_stride_d"),
+        pybind11::arg("q_dtype"), pybind11::arg("k_dtype"), pybind11::arg("o_dtype"),
+        pybind11::arg("batch"), pybind11::arg("num_heads_q"), pybind11::arg("num_heads_kv"),
+        pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+        pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+        pybind11::arg("tensor_layout"), pybind11::arg("diagnostic_mode"), pybind11::arg("lse") = 0);
   m.def("sage_dynamic_quant", &ark::sage_dynamic_quant);
   m.def("sage_compute_seq_mean_bias_layout", &ark::sage_compute_seq_mean_bias_layout);
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
