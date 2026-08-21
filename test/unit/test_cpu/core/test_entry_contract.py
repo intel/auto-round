@@ -20,13 +20,20 @@ def test_split_entry_kwargs_partitions_owned_fields():
     processor = object()
 
     grouped = _split_entry_kwargs(
-        {"dataset": ["sample"], "scale_dtype": "fp32", "processor": processor, "model_free": False}
+        {
+            "dataset": ["sample"],
+            "scale_dtype": "fp32",
+            "processor": processor,
+            "model_free": False,
+            "max_cached_calibration_inputs": 128,
+        }
     )
 
     assert grouped["base"]["dataset"] == ["sample"]
     assert grouped["compressor"]["scale_dtype"] == "fp32"
     assert grouped["mllm"]["processor"] is processor
     assert grouped["route"]["model_free"] is False
+    assert grouped["diffusion"]["max_cached_calibration_inputs"] == 128
 
 
 def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):

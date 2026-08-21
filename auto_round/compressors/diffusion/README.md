@@ -39,6 +39,8 @@ autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 - `num_inference_steps`: the reference number of denoising steps.
 - `guidance_scale`: controls how much the image generation process follows the text prompt.
 - `generator_seed`: a seed that controls the initial noise from which an image is generated.
+- `max_cached_calibration_inputs`: optionally bounds the number of retained timestep inputs with deterministic reservoir
+    sampling. The full diffusion forward still runs, but CPU cache memory no longer grows beyond this limit.
 
 For more hyperparameters, refer to [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration).
 

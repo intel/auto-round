@@ -11,6 +11,7 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 
 from auto_round.compressors.diffusion_mixin import DiffusionMixin
@@ -26,6 +27,7 @@ class TestDiffusionMixinProperties:
         assert params.get("guidance_scale") == 7.5
         assert params.get("num_inference_steps") == 50
         assert params.get("generator_seed") is None
+        assert params.get("max_cached_calibration_inputs") is None
 
     def test_get_calibrator_kind_returns_diffusion(self):
         # Create a minimal mock class
@@ -46,6 +48,19 @@ class TestDiffusionMixinProperties:
         # Set the attribute directly since we're not calling super().__init__
         comp.pipeline_call_kwargs = {"height": 512, "width": 512}
         assert comp.pipeline_call_kwargs.get("height") == 512
+
+    def test_max_cached_calibration_inputs_validation(self):
+        class Parent:
+            def __init__(self, *args, **kwargs):
+                self.model_context = SimpleNamespace(pipe=None, model=None)
+
+        class MockCompressor(DiffusionMixin, Parent):
+            pass
+
+        assert MockCompressor(max_cached_calibration_inputs=128).max_cached_calibration_inputs == 128
+        for invalid in (0, -1, 1.5, True):
+            with pytest.raises(ValueError, match="positive integer"):
+                MockCompressor(max_cached_calibration_inputs=invalid)
 
 
 class TestFindAdditionalTransformers:

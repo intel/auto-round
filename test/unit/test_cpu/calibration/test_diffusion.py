@@ -87,6 +87,7 @@ class TestDiffusionCalibrator:
             guidance_scale=7.5,
             num_inference_steps=1,
             generator_seed=None,
+            max_cached_calibration_inputs=None,
             pipe=pipe,
             model=model,
             model_context=SimpleNamespace(
@@ -113,6 +114,21 @@ class TestDiffusionCalibrator:
         # DiffusionCalibrator inherits the base always-False stop policy so all
         # denoising steps execute during calibration.
         assert calibrator._should_stop_cache_forward("any_block") is False
+
+    def test_cache_input_limit_bounds_retained_tensors(self, calibrator):
+        calibrator.max_cached_calibration_inputs = 3
+        calibrator.batch_size = 1
+
+        block = torch.nn.Identity()
+        block.orig_forward = block.forward
+        capture = calibrator._make_block_forward_func("block")
+
+        for value in range(10):
+            capture(block, torch.tensor([[float(value)]]))
+
+        retained = calibrator.inputs["block"]["hidden_states"]
+        assert len(retained) == 3
+        assert any(tensor.item() >= 3 for tensor in retained)
 
     def test_detects_required_i2v_image_from_pipeline_signature(self, calibrator):
         calibrator.pipe = ImagePipeline()

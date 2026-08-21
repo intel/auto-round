@@ -346,6 +346,7 @@ _ENTRY_KWARG_OWNERS = {
     "guidance_scale": "diffusion",
     "num_inference_steps": "diffusion",
     "generator_seed": "diffusion",
+    "max_cached_calibration_inputs": "diffusion",
 }
 
 _SCHEME_FIELDS = set(QuantizationScheme.get_attributes())

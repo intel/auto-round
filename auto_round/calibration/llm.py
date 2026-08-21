@@ -20,7 +20,7 @@ Implements ``try_cache_inter_data_gpucpu`` / ``cache_inter_data`` /
 
 import traceback
 from functools import partial
-from typing import Callable
+from typing import Callable, Optional
 
 import accelerate
 import torch
@@ -457,6 +457,14 @@ class LLMCalibrator(Calibrator):
         The returned function expects to be bound as ``module.forward = partial(fn, module)``.
         """
 
+        def run_original_forward(m, hidden_states, positional_inputs, kwargs):
+            if hidden_states is not None:
+                kwargs.pop("hidden_states", None)
+                if positional_inputs:
+                    return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
+                return m.orig_forward(hidden_states, **kwargs)
+            return m.orig_forward(*positional_inputs, **kwargs)
+
         def post_process_cache_data(batch_size, data, data_name):
             new_data = data
             if data_name in self.shared_cache_keys:
@@ -471,6 +479,13 @@ class LLMCalibrator(Calibrator):
             return new_data
 
         def forward_capture(m, hidden_states=None, *positional_inputs, **kwargs):
+            cache_action, cache_slot = self._cache_block_input_action(name)
+            if cache_action == "skip":
+                return run_original_forward(m, hidden_states, positional_inputs, kwargs)
+
+            cache_lengths_before = {
+                key: len(value) if isinstance(value, list) else None for key, value in self.inputs.get(name, {}).items()
+            }
             if name not in self.inputs:
                 self.inputs[name] = {}
                 init_cache(positional_inputs, self.inputs[name])
@@ -554,24 +569,58 @@ class LLMCalibrator(Calibrator):
                             f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
                         )
             reset_params(self.inputs[name])
+            self._finalize_cache_block_input_action(name, cache_action, cache_slot, cache_lengths_before)
 
             if self._should_stop_cache_forward(name):
                 raise NotImplementedError
-            else:
-                if hidden_states is not None:
-                    kwargs.pop("hidden_states", None)
-                    if positional_inputs:
-                        return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
-                    else:
-                        return m.orig_forward(hidden_states, **kwargs)
-                else:
-                    # Currently only for Llama-3.2-Vision-Instruct Series
-                    return m.orig_forward(*positional_inputs, **kwargs)
+            return run_original_forward(m, hidden_states, positional_inputs, kwargs)
 
         # Apply positional-to-kwargs conversion so positional_inputs get their proper parameter names.
         from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
         return wrap_block_forward_positional_to_kwargs(forward_capture)
+
+    def _cache_block_input_action(self, name: str) -> tuple[str, Optional[int]]:
+        """Return how the current block input should be retained.
+
+        The default keeps every input. Diffusion calibration overrides this to
+        provide a bounded reservoir without changing the established LLM path.
+        """
+        return "append", None
+
+    def _finalize_cache_block_input_action(
+        self,
+        name: str,
+        action: str,
+        slot: Optional[int],
+        lengths_before: dict[str, Optional[int]],
+    ) -> None:
+        """Replace an existing reservoir slot after the normal cache append."""
+        if action != "replace" or slot is None:
+            return
+
+        cache = self.inputs[name]
+        for key, value in list(cache.items()):
+            if not isinstance(value, list):
+                continue
+            previous_length = lengths_before.get(key)
+            if previous_length is None:
+                # A shared scalar is upgraded to ``[old, new]`` on its second
+                # distinct value. Replacement can hit this path only for a
+                # one-slot reservoir, where retaining the latest value is enough.
+                if len(value) > 1 and slot == 0:
+                    cache[key] = value[-1]
+                continue
+            if len(value) <= previous_length:
+                continue
+            appended = value[previous_length:]
+            del value[previous_length:]
+            # Diffusion SignRound calibration uses batch_size=1. For larger
+            # batches, replace as many consecutive cached entries as fit.
+            for offset, item in enumerate(appended):
+                target = slot + offset
+                if target < len(value):
+                    value[target] = item
 
     def make_layer_cache_hook(self, name: str) -> Callable:
         """Build a forward-hook that captures inputs for *layer* ``name``.
