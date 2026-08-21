@@ -209,6 +209,169 @@ def _read_qconfig(output_dir):
 
 
 # ===========================================================================
+#  _PatternMatcher
+# ===========================================================================
+
+
+class TestPatternMatcher:
+    def test_ignore_substring(self):
+        m = _matcher(ignore=["mlp"])
+        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is True
+        assert m.should_ignore("model.layers.0.self_attn.q_proj.weight") is False
+
+    def test_ignore_trailing_dot(self):
+        m = _matcher(ignore=["layers.4."])
+        assert m.should_ignore("model.layers.4.mlp.fc1.weight") is True
+        assert m.should_ignore("model.layers.45.mlp.fc1.weight") is False
+
+    def test_skip_predefined(self):
+        m = _matcher()
+        assert m.should_skip("model.layers.0.shared_expert_gate.weight") is True
+        assert m.should_skip("model.layers.0.mlp.gate.weight") is True
+        assert m.should_skip("model.layers.0.mlp.gate_proj.weight") is False
+        assert m.should_skip("model.embed_tokens.weight") is True
+        assert m.should_skip("model.layers.0.mlp.fc1.weight") is False
+
+    def test_resolve_scheme_exact_regex_and_default(self):
+        default = {"bits": 4, "group_size": 128, "sym": True}
+        lc = {
+            "model.layers.0.mlp.fc1": {"bits": 8, "group_size": 32},
+            r".*k_proj": {"bits": 8},
+        }
+        m = _matcher(layer_config=lc, default=default)
+        assert m.resolve_scheme("model.layers.0.mlp.fc1.weight")["bits"] == 8
+        assert m.resolve_scheme("model.layers.0.self_attn.k_proj.weight")["bits"] == 8
+        assert m.resolve_scheme("model.layers.0.mlp.fc2.weight") == default
+
+    def test_resolve_bits16_returns_none(self):
+        m = _matcher(layer_config={"model.layers.0.fc1": {"bits": 16}}, default={"bits": 4, "group_size": 128})
+        assert m.resolve_scheme("model.layers.0.fc1.weight") is None
+
+    def test_resolve_substring_pattern(self):
+        default = {"bits": 4, "group_size": 128, "sym": True}
+        m = _matcher(layer_config={".ffn.experts.": {"bits": 2, "group_size": 64}}, default=default)
+        r = m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")
+        assert r["bits"] == 2 and r["group_size"] == 64
+        assert m.resolve_scheme("model.layers.0.self_attn.q_proj.weight") == default
+
+
+# ===========================================================================
+#  _parse_layer_config — scheme key resolution
+# ===========================================================================
+
+
+class TestParseLayerConfig:
+    @staticmethod
+    def _make_core(layer_config_input, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme=scheme,
+        )
+        core.layer_config_input = layer_config_input
+        core._parse_scheme()
+        core._parse_layer_config()
+        return core
+
+    def test_scheme_key_resolves(self):
+        core = self._make_core({".ffn.experts.": {"scheme": "W2A16"}})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2 and "scheme" not in cfg
+
+        m = _matcher(layer_config=core.layer_config, default=core.default_scheme)
+        assert m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")["bits"] == 2
+
+    def test_scheme_key_with_overrides(self):
+        core = self._make_core({".ffn.experts.": {"scheme": "W2A16", "group_size": 32}})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2 and cfg["group_size"] == 32
+
+    def test_string_value(self):
+        core = self._make_core({".ffn.experts.": "W2A16"})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2
+
+    def test_quantization_scheme_value(self):
+        core = self._make_core({".ffn.experts.": QuantizationScheme(bits=2, group_size=64)})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2 and cfg["group_size"] == 64
+
+    def test_w4a16_mixed_recipe_in_model_free(self):
+        core = self._make_core({}, scheme="W4A16_MIXED")
+        assert core.default_scheme["bits"] == 8
+        assert core.layer_config[".experts."]["bits"] == 4
+        assert core.layer_config[".moe."]["bits"] == 4
+        assert core.layer_config[".shared_expert."]["bits"] == 8
+
+
+# ===========================================================================
+#  _build_ignore_patterns
+# ===========================================================================
+
+
+class TestBuildIgnorePatterns:
+    @staticmethod
+    def _make_core(layer_config=None, quant_lm_head=False, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme=scheme,
+            quant_lm_head=quant_lm_head,
+        )
+        core._parse_scheme()
+        core._parse_layer_config()
+        if layer_config:
+            # Merge any explicit layer_config entries on top of the parsed defaults.
+            for k, v in layer_config.items():
+                core.layer_config[k] = v
+        return core
+
+    def test_lm_head_ignored_by_default(self):
+        """Without quant_lm_head or an explicit layer_config entry, lm_head is skipped."""
+        core = self._make_core()
+        core._build_ignore_patterns()
+        assert "lm_head" in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_quant_lm_head_true(self):
+        """quant_lm_head=True removes lm_head from ignore list."""
+        core = self._make_core(quant_lm_head=True)
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_in_layer_config(self):
+        """Explicit lm_head entry in layer_config removes it from the ignore list."""
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    def test_head_not_ignored_when_in_layer_config(self):
+        """DeepSeek v4 uses 'head' as the lm_head layer name; explicit entry in layer_config removes it from ignore."""
+        core = self._make_core(layer_config={"head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "head" not in core.ignore_patterns
+
+    def test_head_still_ignored_when_lm_head_in_layer_config_but_not_head(self):
+        """Specifying 'lm_head' in layer_config should not unblock the separate 'head' pattern."""
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        # 'lm_head' itself is unblocked, but 'head' (deepseek v4) remains ignored
+        assert "lm_head" not in core.ignore_patterns
+        assert "head" in core.ignore_patterns
+
+    def test_embed_out_not_ignored_when_in_layer_config(self):
+        """Pythia/Dolly models use 'embed_out' as the lm_head layer name."""
+        core = self._make_core(layer_config={"embed_out": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "embed_out" not in core.ignore_patterns
+
+    def test_output_not_ignored_when_in_layer_config(self):
+        """Some InternLM variants use 'output' as the lm_head layer name."""
+        core = self._make_core(layer_config={"output": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "output" not in core.ignore_patterns
+
+
+# ===========================================================================
 #  _process_shard
 # ===========================================================================
 
@@ -523,6 +686,30 @@ class TestModelFreeQuantize:
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")
         AutoRound(model=model_dir, scheme="W4A16", model_free=True, quant_lm_head=True).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
+    def test_layer_config_lm_head_bits_takes_effect(self, tmp_path):
+        """layer_config for lm_head should quantize lm_head even without quant_lm_head=True."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme="W2A16G64",
+            model_free=True,
+            layer_config={"lm_head": {"bits": 4}},
+        ).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
+    def test_layer_config_lm_head_scheme_takes_effect(self, tmp_path):
+        """layer_config with scheme override for lm_head should quantize lm_head even without quant_lm_head=True."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme="W2A16G64",
+            model_free=True,
+            layer_config={"lm_head": {"scheme": "W4A16"}},
+        ).quantize_and_save(output_dir)
         assert "lm_head.qweight" in _read_output_keys(output_dir)
 
     def test_asym(self, tmp_path):
