@@ -289,6 +289,71 @@ class TestIsMxfp4Model:
             assert result is True
 
 
+class TestIsFp8Model:
+    """Test _is_fp8_model function."""
+
+    def test_fp8_model_returns_false_for_old_transformers(self):
+        """Test _is_fp8_model returns False immediately for transformers < 4.56.0."""
+        from auto_round.utils.model import _is_fp8_model
+
+        with patch("auto_round.utils.model.version") as mock_version:
+            mock_version.parse.side_effect = lambda v: __import__("packaging.version", fromlist=["parse"]).parse(v)
+            # Simulate old transformers by making the version check fail
+            import packaging.version
+
+            with patch("auto_round.utils.model.transformers") as mock_tf:
+                mock_tf.__version__ = "4.50.0"
+                result = _is_fp8_model("test/model", trust_remote_code=True)
+                assert result is False
+
+    def test_fp8_model_returns_false_for_unsupported_model_type(self):
+        """Test _is_fp8_model returns False for model types not in _FP8_SUPPORTED_MODEL_TYPES."""
+        from auto_round.utils.model import _is_fp8_model
+
+        with patch("transformers.AutoConfig.from_pretrained") as mock_config:
+            mock_config_obj = MagicMock()
+            mock_config_obj.model_type = "opt"  # Not in _FP8_SUPPORTED_MODEL_TYPES
+            mock_config_obj.quantization_config = {"quant_method": "fp8"}
+            mock_config.return_value = mock_config_obj
+
+            result = _is_fp8_model("test/model", trust_remote_code=True)
+            assert result is False
+
+    def test_fp8_model_returns_false_when_no_quant_config(self):
+        """Test _is_fp8_model returns False when quantization_config is None."""
+        from auto_round.utils.model import _is_fp8_model
+
+        with patch("transformers.AutoConfig.from_pretrained") as mock_config:
+            mock_config_obj = MagicMock()
+            mock_config_obj.model_type = "deepseek_v32"
+            mock_config_obj.quantization_config = None
+            mock_config.return_value = mock_config_obj
+
+            result = _is_fp8_model("test/model", trust_remote_code=True)
+            assert result is False
+
+    def test_fp8_model_returns_true_for_valid_config(self):
+        """Test _is_fp8_model returns True for a valid FP8 checkpoint (deepseek_v32 + fp8)."""
+        from auto_round.utils.model import _is_fp8_model
+
+        with patch("transformers.AutoConfig.from_pretrained") as mock_config:
+            mock_config_obj = MagicMock()
+            mock_config_obj.model_type = "deepseek_v32"
+            mock_config_obj.quantization_config = {"quant_method": "fp8"}
+            mock_config.return_value = mock_config_obj
+
+            result = _is_fp8_model("test/model", trust_remote_code=True)
+            assert result is True
+
+    def test_fp8_model_swallows_config_load_errors(self):
+        """Test _is_fp8_model returns False (not raises) when AutoConfig.from_pretrained fails."""
+        from auto_round.utils.model import _is_fp8_model
+
+        with patch("transformers.AutoConfig.from_pretrained", side_effect=OSError("network error")):
+            result = _is_fp8_model("bad/path", trust_remote_code=True)
+            assert result is False
+
+
 class TestGetNestedAttr:
     """Test get_nested_attr function."""
 
