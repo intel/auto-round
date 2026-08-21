@@ -1,10 +1,12 @@
 """Fast unit tests for algorithm registry and bundle construction."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from auto_round import AutoRound as NewAutoRound
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward
+from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward, _has_nvfp4_layer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -74,6 +76,37 @@ def test_awq_disables_block_forward_compile():
     pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()])
 
     assert not _can_compile_block_forward(pipeline.block_quantizer, pipeline.preprocessors, user_enabled=True)
+
+
+def test_detect_nvfp4_from_layer_config_scheme_override():
+    orchestrator = SimpleNamespace(
+        data_type="mx_fp",
+        layer_config={"mlp.experts": {"scheme": "NVFP4"}},
+    )
+    assert _has_nvfp4_layer(orchestrator)
+
+
+def test_detect_nvfp4_from_layer_config_data_type_override():
+    orchestrator = SimpleNamespace(
+        data_type="mx_fp",
+        layer_config={"mlp.experts": {"data_type": "nv_fp"}},
+    )
+    assert _has_nvfp4_layer(orchestrator)
+
+
+def test_needs_calibration_data_when_layer_config_overrides_to_nvfp4():
+    class _DummyCompressor:
+        _needs_calibration_data = Compressor._needs_calibration_data
+        _layer_config_needs_calibration = Compressor._layer_config_needs_calibration
+
+    compressor = _DummyCompressor()
+    compressor._alg_configs = []
+    compressor.scheme = "MXFP8"
+    compressor.layer_config = {"mlp.experts": {"scheme": "NVFP4"}}
+    compressor.static_kv_dtype = None
+    compressor.static_attention_dtype = None
+
+    assert compressor._needs_calibration_data() is True
 
 
 def test_registry_builtin_aliases_and_unknown():
