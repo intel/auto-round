@@ -56,22 +56,40 @@ function check_storage_usage() {
     echo "##[endgroup]"
 }
 
+function run_common_group() {
+    # Run a group of common test files together in a single pytest invocation.
+    # $1: group name (used for log file), remaining args: test files
+    local group_name=$1
+    shift
+    local group_tests
+    group_tests=$(filter_changed_tests "test" "$*")
+
+    if [ -n "${group_tests}" ]; then
+        echo "##[group]Running common tests (${group_name})..."
+        local ut_log_name="${LOG_DIR}/unittest_test_common_${group_name}.log"
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=1200 \
+                --cov=auto_round --cov-report= --cov-append -vs \
+                --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    fi
+}
+
 function run_common_unit_test() {
     cd /auto-round/test || exit 1
 
     # common test case for cpu/gpu/xpu
-    local common_tests
-    common_tests=$(filter_changed_tests "test" "$(find ./unit/common -name "test*.py" | sort)")
-
-    if [ -n "${common_tests}" ]; then
-        echo "##[group]Running common tests..."
-        local ut_log_name="${LOG_DIR}/unittest_test_common.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=1200 \
-                --cov=auto_round --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${common_tests} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
-    fi
+    # Group cases by the first-level folder under unit/common; a single test
+    # file placed directly under unit/common (e.g. test_main.py) runs on its own.
+    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+        if [ -d "${entry}" ]; then
+            local group_name=$(basename "${entry}")
+            run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
+        elif [[ "$(basename "${entry}")" == test*.py ]]; then
+            local group_name=$(basename "${entry}" .py)
+            run_common_group "${group_name}" "${entry}"
+        fi
+    done
 }
 
 function run_unit_test() {
