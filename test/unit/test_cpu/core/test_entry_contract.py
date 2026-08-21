@@ -71,8 +71,8 @@ def test_cli_awq_rtn_opt_policy():
 def test_cli_rtn_inherits_built_awq_config_without_mutating_args(monkeypatch):
     from argparse import Namespace
 
-    from auto_round.cli.algorithms import AWQ, AlgorithmHandler
     from auto_round.algorithms.transforms.awq.config import AWQConfig
+    from auto_round.cli.algorithms import AWQ, AlgorithmHandler
 
     def build_awq_with_opt_rtn(self, args, common_kwargs):
         return AWQConfig(disable_opt_rtn=False)
