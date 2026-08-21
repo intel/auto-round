@@ -120,6 +120,7 @@ from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_laye
 from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
+    _LM_HEAD_PATTERNS,
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
@@ -132,7 +133,6 @@ from auto_round.utils.model_free_utils import (
     _layer_config_has_mxfp,
     _layer_config_has_nvfp4,
     _list_weight_shards,
-    _LM_HEAD_PATTERNS,
     _load_config,
     _load_weight_map_from_index,
     _looks_like_auto_scheme,
@@ -616,8 +616,7 @@ class _ModelFreeCompressorCore:
             # Each pattern is checked independently so a user-specified key takes priority over the default.
             for lm_head_pattern in _LM_HEAD_PATTERNS:
                 pattern_in_config = any(
-                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".")
-                    for key in layer_config_keys
+                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys
                 )
                 if not pattern_in_config and lm_head_pattern not in ignore_patterns:
                     ignore_patterns.append(lm_head_pattern)
