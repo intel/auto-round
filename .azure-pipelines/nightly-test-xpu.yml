@@ -20,6 +20,7 @@ parameters:
     type: object
     default:
       - 0
+      - ark
       - llmc
 
 schedules:
@@ -58,8 +59,10 @@ stages:
         timeoutInMinutes: 180
         strategy:
           matrix:
-            # PR-triggered runs only cover llmc; part 0 duplicates the fast PR unit-test pipeline.
+            # PR-triggered runs only cover ark/llmc; part 0 duplicates the fast PR unit-test pipeline.
             ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+              part_ark:
+                PART: ark
               part_llmc:
                 PART: llmc
             ${{ else }}:
