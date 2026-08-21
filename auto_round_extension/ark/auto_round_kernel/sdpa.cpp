@@ -114,31 +114,103 @@ KernelLauncher select_sage_prefill_launcher(BTLA_DTYPE dtype, int head_dim) {
 }
 
 
-KernelLauncher select_prefill_launcher(BTLA_DTYPE dtype, int head_dim) {
+KernelLauncher select_prefill_launcher(BTLA_DTYPE dtype, int head_dim, bool is_causal, bool has_mask, bool is_varlen) {
   switch (dtype) {
     case BTLA_DTYPE::F16:
       switch (head_dim) {
         case 128:
-          return detail::launch_prefill_kernel_f16_128;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_128_causal_varlen
+                             : detail::launch_prefill_kernel_f16_128_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_128_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_f16_128_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_f16_128_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_f16_128_noncausal_unmasked;
         case 64:
-          return detail::launch_prefill_kernel_f16_64;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_64_causal_varlen
+                             : detail::launch_prefill_kernel_f16_64_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_64_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_f16_64_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_f16_64_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_f16_64_noncausal_unmasked;
         case 96:
-          return detail::launch_prefill_kernel_f16_96;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_96_causal_varlen
+                             : detail::launch_prefill_kernel_f16_96_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_96_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_f16_96_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_f16_96_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_f16_96_noncausal_unmasked;
         case 192:
-          return detail::launch_prefill_kernel_f16_192;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_192_causal_varlen
+                             : detail::launch_prefill_kernel_f16_192_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_f16_192_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_f16_192_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_f16_192_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_f16_192_noncausal_unmasked;
         default:
           return nullptr;
       }
     case BTLA_DTYPE::BF16:
       switch (head_dim) {
         case 64:
-          return detail::launch_prefill_kernel_bf16_64;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_64_causal_varlen
+                             : detail::launch_prefill_kernel_bf16_64_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_64_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_bf16_64_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_bf16_64_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_bf16_64_noncausal_unmasked;
         case 96:
-          return detail::launch_prefill_kernel_bf16_96;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_96_causal_varlen
+                             : detail::launch_prefill_kernel_bf16_96_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_96_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_bf16_96_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_bf16_96_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_bf16_96_noncausal_unmasked;
         case 128:
-          return detail::launch_prefill_kernel_bf16_128;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_128_causal_varlen
+                             : detail::launch_prefill_kernel_bf16_128_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_128_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_bf16_128_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_bf16_128_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_bf16_128_noncausal_unmasked;
         case 192:
-          return detail::launch_prefill_kernel_bf16_192;
+          if (is_causal) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_192_causal_varlen
+                             : detail::launch_prefill_kernel_bf16_192_causal;
+          }
+          if (has_mask) {
+            return is_varlen ? detail::launch_prefill_kernel_bf16_192_noncausal_masked_varlen
+                             : detail::launch_prefill_kernel_bf16_192_noncausal_masked;
+          }
+          return is_varlen ? detail::launch_prefill_kernel_bf16_192_noncausal_unmasked_varlen
+                           : detail::launch_prefill_kernel_bf16_192_noncausal_unmasked;
         default:
           return nullptr;
       }
@@ -147,31 +219,47 @@ KernelLauncher select_prefill_launcher(BTLA_DTYPE dtype, int head_dim) {
   }
 }
 
-KernelLauncher select_decode_launcher(BTLA_DTYPE dtype, int head_dim) {
+KernelLauncher select_decode_launcher(BTLA_DTYPE dtype, int head_dim, bool is_causal, bool has_mask) {
   switch (dtype) {
     case BTLA_DTYPE::F16:
       switch (head_dim) {
         case 128:
-          return detail::launch_decode_kernel_f16_128;
+          if (is_causal) return detail::launch_decode_kernel_f16_128_causal;
+          if (has_mask) return detail::launch_decode_kernel_f16_128_noncausal_masked;
+          return detail::launch_decode_kernel_f16_128_noncausal_unmasked;
         case 64:
-          return detail::launch_decode_kernel_f16_64;
+          if (is_causal) return detail::launch_decode_kernel_f16_64_causal;
+          if (has_mask) return detail::launch_decode_kernel_f16_64_noncausal_masked;
+          return detail::launch_decode_kernel_f16_64_noncausal_unmasked;
         case 96:
-          return detail::launch_decode_kernel_f16_96;
+          if (is_causal) return detail::launch_decode_kernel_f16_96_causal;
+          if (has_mask) return detail::launch_decode_kernel_f16_96_noncausal_masked;
+          return detail::launch_decode_kernel_f16_96_noncausal_unmasked;
         case 192:
-          return detail::launch_decode_kernel_f16_192;
+          if (is_causal) return detail::launch_decode_kernel_f16_192_causal;
+          if (has_mask) return detail::launch_decode_kernel_f16_192_noncausal_masked;
+          return detail::launch_decode_kernel_f16_192_noncausal_unmasked;
         default:
           return nullptr;
       }
     case BTLA_DTYPE::BF16:
       switch (head_dim) {
         case 64:
-          return detail::launch_decode_kernel_bf16_64;
+          if (is_causal) return detail::launch_decode_kernel_bf16_64_causal;
+          if (has_mask) return detail::launch_decode_kernel_bf16_64_noncausal_masked;
+          return detail::launch_decode_kernel_bf16_64_noncausal_unmasked;
         case 96:
-          return detail::launch_decode_kernel_bf16_96;
+          if (is_causal) return detail::launch_decode_kernel_bf16_96_causal;
+          if (has_mask) return detail::launch_decode_kernel_bf16_96_noncausal_masked;
+          return detail::launch_decode_kernel_bf16_96_noncausal_unmasked;
         case 128:
-          return detail::launch_decode_kernel_bf16_128;
+          if (is_causal) return detail::launch_decode_kernel_bf16_128_causal;
+          if (has_mask) return detail::launch_decode_kernel_bf16_128_noncausal_masked;
+          return detail::launch_decode_kernel_bf16_128_noncausal_unmasked;
         case 192:
-          return detail::launch_decode_kernel_bf16_192;
+          if (is_causal) return detail::launch_decode_kernel_bf16_192_causal;
+          if (has_mask) return detail::launch_decode_kernel_bf16_192_noncausal_masked;
+          return detail::launch_decode_kernel_bf16_192_noncausal_unmasked;
         default:
           return nullptr;
       }
@@ -269,7 +357,7 @@ void flash_attn_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, v
   options.lse = lse;
   compat::set_default_queue(*q);
 
-  KernelLauncher launcher = select_prefill_launcher(q_dtype, head_dim);
+  KernelLauncher launcher = select_prefill_launcher(q_dtype, head_dim, is_causal, mask != nullptr, false);
   if (launcher == nullptr) {
     throw std::runtime_error(
         "Unsupported dtype or head dimension for flash_attn_prefill (only F16/BF16 and 64/96/128/192 are supported)");
@@ -293,7 +381,7 @@ void flash_attn_decode(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, vo
   options.lse = lse;
   compat::set_default_queue(*q);
 
-  KernelLauncher launcher = select_decode_launcher(q_dtype, head_dim);
+  KernelLauncher launcher = select_decode_launcher(q_dtype, head_dim, is_causal, mask != nullptr);
   if (launcher == nullptr) {
     throw std::runtime_error(
         "Unsupported dtype or head dimension for flash_attn_decode (only F16/BF16 and 64/96/128/192 are supported)");
@@ -520,7 +608,7 @@ void sdpa_varlen_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, voi
   options.cu_seqlens_kv_cache = zero_cu_buf;
   options.use_tensor_strides = true;
 
-  KernelLauncher launcher = select_prefill_launcher(q_dtype, head_dim);
+  KernelLauncher launcher = select_prefill_launcher(q_dtype, head_dim, is_causal, mask != nullptr, true);
   if (launcher == nullptr) {
     throw std::runtime_error(
         "Unsupported dtype or head dimension for sdpa_varlen_impl (only F16/BF16 and 64/96/128/192 are supported)");

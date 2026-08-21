@@ -22,7 +22,7 @@
 #endif
 
 #if ARK_SYCL_TLA
-#include "sycl_tla_dense_gemm.hpp"
+#include "sycl_tla_common.hpp"
 #endif
 
 #if ARK_XPU
