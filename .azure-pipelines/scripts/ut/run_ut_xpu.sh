@@ -42,23 +42,48 @@ function setup_environment() {
     SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 }
 
-function run_unit_test() {
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+function run_common_group() {
+    # Run a group of common test files together in a single pytest invocation.
+    # $1: group name (used for log file), remaining args: test files
+    local group_name=$1
+    shift
+    local group_tests
+    group_tests=$(filter_changed_tests "test" "$*")
 
-    local ark_tests xpu_tests common_tests
-    ark_tests=$(filter_changed_tests "test" "$(find ./unit/test_ark -name "test*.py" | sort)")
-    xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
-    common_tests=$(filter_changed_tests "test" "$(find ./unit/common -name "test*.py" | sort)")
-
-    if [ -n "${common_tests}" ]; then
-        echo "##[group]Running common tests..."
-        local ut_log_name="${LOG_DIR}/unittest_common.log"
+    if [ -n "${group_tests}" ]; then
+        echo "##[group]Running common tests (${group_name})..."
+        local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
             pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=1200 \
                 --cov="${auto_round_path}" --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${common_tests} 2>&1 | tee ${ut_log_name}
+                --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     fi
+}
+
+function run_common_unit_test() {
+    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    # common test case for cpu/gpu/xpu
+    # Group cases by the first-level folder under unit/common; a single test
+    # file placed directly under unit/common (e.g. test_main.py) runs on its own.
+    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+        if [ -d "${entry}" ]; then
+            local group_name=$(basename "${entry}")
+            run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
+        elif [[ "$(basename "${entry}")" == test*.py ]]; then
+            local group_name=$(basename "${entry}" .py)
+            run_common_group "${group_name}" "${entry}"
+        fi
+    done
+}
+
+function run_unit_test() {
+    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+
+    local ark_tests xpu_tests
+    ark_tests=$(filter_changed_tests "test" "$(find ./unit/test_ark -name "test*.py" | sort)")
+    xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
 
     for test_file in ${xpu_tests}; do
         local test_basename=$(basename ${test_file} .py)
@@ -146,6 +171,7 @@ function main() {
     if [[ "${UT_MODE}" == "llmc" ]]; then
         run_unit_test_llmc
     else
+        run_common_unit_test
         run_unit_test
     fi
     collect_log
