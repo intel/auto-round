@@ -123,31 +123,6 @@ void moe_gemm_launcher(sycl::queue* q, const ElementA* activations, const Elemen
 
 }  // namespace moe_detail
 
-// Public MOE GEMM API
-inline void moe_gemm(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs, BTLA_DTYPE dtype,
-                     int N, int K, int* num_tokens_per_expert, int num_experts) {
-  switch (dtype) {
-    case BTLA_DTYPE::BF16: {
-      using Element = cutlass::bfloat16_t;
-      moe_detail::moe_gemm_launcher<'R', 'R', Element, Element, Element, Element>(
-          q, static_cast<const Element*>(activations), static_cast<const Element*>(weights),
-          static_cast<const Element*>(scales), static_cast<Element*>(outputs), N, K, num_tokens_per_expert,
-          num_experts);
-      break;
-    }
-    case BTLA_DTYPE::F16: {
-      using Element = cutlass::half_t;
-      moe_detail::moe_gemm_launcher<'R', 'R', Element, Element, Element, Element>(
-          q, static_cast<const Element*>(activations), static_cast<const Element*>(weights),
-          static_cast<const Element*>(scales), static_cast<Element*>(outputs), N, K, num_tokens_per_expert,
-          num_experts);
-      break;
-    }
-    default:
-      throw std::runtime_error("moe_gemm: unsupported dtype, only BF16/FP16 supported");
-  }
-}
-
 #endif  // ARK_SYCL_TLA
 
 }  // namespace ark
