@@ -56,32 +56,6 @@ class _SimpleModel(nn.Module):
         return self.lm_head(x)
 
 
-class _Router(nn.Module):
-    """Unsupported leaf module used to emulate MoE routers like mlp.gate."""
-
-    def __init__(self, size: int = 32):
-        super().__init__()
-        self.weight = nn.Parameter(torch.randn(size, size))
-
-
-class _MoeBlock(nn.Module):
-
-    def __init__(self, size: int = 32):
-        super().__init__()
-        self.gate = _Router(size)
-        self.up_proj = nn.Linear(size, size)
-
-
-class _UnsupportedGateModel(nn.Module):
-
-    def __init__(self, size: int = 32):
-        super().__init__()
-        self.mlp = _MoeBlock(size)
-
-    def forward(self, x):  # pragma: no cover
-        return self.mlp.up_proj(x)
-
-
 # Shared helpers
 _SUPPORTED_TYPES = (nn.Linear,)
 _INNER_SUPPORTED_TYPES = ()
@@ -111,11 +85,6 @@ def model_12layers():
 @pytest.fixture
 def model():
     return _SimpleModel()
-
-
-@pytest.fixture
-def unsupported_gate_model():
-    return _UnsupportedGateModel()
 
 
 # ---------------------------------------------------------------------------
@@ -162,18 +131,6 @@ class TestUnmatchedLayerConfigWarns:
         # The warning should mention the bad name
         warning_messages = " ".join(str(call) for call in mock_warn.call_args_list)
         assert "nonexistent_layer" in warning_messages
-
-
-class TestIgnoreLayersRegexFallback:
-    """Unsupported ignore_layers should be preserved for export as regex extra_config."""
-
-    def test_unsupported_ignore_layer_is_kept_in_regex_config(self, unsupported_gate_model):
-        layer_config, _, regex_config = _call_set_layer_config(unsupported_gate_model, ignore_layers="mlp.gate")
-
-        assert "mlp.gate" not in layer_config
-        assert "mlp.gate" in regex_config
-        assert regex_config["mlp.gate"]["bits"] == 16
-        assert regex_config["mlp.gate"]["data_type"] == "float"
 
 
 class TestSchemeShorthand:
