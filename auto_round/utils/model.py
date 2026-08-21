@@ -289,6 +289,7 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=True):
@@ -318,6 +319,38 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
         else getattr(quant_config, "quant_method", "")
     )
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
+def _is_fp8_model(model_path, trust_remote_code=True):
+    """Check if a model is an FP8 quantized model supported for direct loading.
+
+    Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
+    adding zero overhead to non-FP8 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("4.56.0"):
+        return False
+
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except Exception:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _FP8_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "fp8" and model_type in _FP8_SUPPORTED_MODEL_TYPES
 
 
 def llm_load_model(
@@ -372,6 +405,14 @@ def llm_load_model(
         "device_map": "auto" if use_auto_mapping else None,
     }
     load_kwargs.update(kwargs)
+
+    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
+        is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_fp8 and "quantization_config" not in load_kwargs:
+            from transformers import FineGrainedFP8Config
+
+            load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
+            logger.info("Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading.")
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)

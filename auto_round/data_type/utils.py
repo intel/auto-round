@@ -20,6 +20,7 @@ from typing import List, Union
 import torch
 from torch.nn import Linear, Module
 
+from auto_round import envs
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
@@ -442,9 +443,12 @@ def update_fused_layer_global_scales(
     For MLP layers:
       - gate_proj and up_proj share a single global scale.
 
-    This behavior is currently required by vLLM and may become optional
-    in the future.
+    Set ``AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0`` to retain per-projection
+    global scales. The default keeps scales compatible with vLLM fused kernels.
     """
+    if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE:
+        return
+
     global_scale_name = f"{base_name}_global_scale"
 
     def _collect_scales(mods: List[Module]) -> List[torch.Tensor]:
@@ -459,14 +463,14 @@ def update_fused_layer_global_scales(
         return scales
 
     def _is_attention_module(module: Module):
-        return "attention" in module.__class__.__name__.lower() and (
-            hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
-        )
+        return all(hasattr(module, projection) for projection in ("q_proj", "k_proj", "v_proj"))
 
     def _is_mlp_module(module: Module):
-        return "mlp" in module.__class__.__name__.lower() and (
-            hasattr(module, "gate_proj") and hasattr(module, "up_proj")
-        )
+        return all(hasattr(module, projection) for projection in ("gate_proj", "up_proj"))
+
+    def _is_moe_expert_module(module: Module):
+        """Check for MoE expert naming: w1 (gate) and w3 (up)."""
+        return all(hasattr(module, projection) for projection in ("w1", "w3"))
 
     def _update_global_scales(modules: List[Module]):
         """Update global scales for a list of modules."""
@@ -487,28 +491,39 @@ def update_fused_layer_global_scales(
 
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
-        # Already fused
-        if hasattr(submodule, "qkv_proj"):
-            return
         _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
         return
 
     # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
         _update_global_scales([submodule.gate_proj, submodule.up_proj])
+        return
+
+    # ---------------- MoE Expert (w1/w3) ----------------
+    if _is_moe_expert_module(submodule):
+        _update_global_scales([submodule.w1, submodule.w3])
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
-    if not is_nv_fp(data_type):
-        return
-
     from auto_round.data_type.nvfp import calculate_gparam
+
+    has_nvfp = is_nv_fp(data_type)
 
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
-        if check_to_quantized(m) and not hasattr(m, "weight_global_scale"):
-            weight_global_scale = calculate_gparam(m.weight, group_size)
-            setattr(m, "weight_global_scale", weight_global_scale)
+        if not check_to_quantized(m):
+            continue
+        # Check per-layer data_type for mixed-scheme scenarios
+        module_data_type = getattr(m, "data_type", data_type)
+        module_group_size = getattr(m, "group_size", group_size)
+        if is_nv_fp(module_data_type):
+            has_nvfp = True
+            if not hasattr(m, "weight_global_scale"):
+                weight_global_scale = calculate_gparam(m.weight, module_group_size)
+                setattr(m, "weight_global_scale", weight_global_scale)
+
+    if not has_nvfp:
+        return
 
     # Update fused layer global scales
     for module in block.modules():

@@ -17,6 +17,7 @@ import math
 
 import pytest
 import torch
+from torch import nn
 
 from auto_round.data_type.nvfp import (
     FLOAT4_E2M1_MAX,
@@ -38,6 +39,7 @@ from auto_round.data_type.nvfp import (
     ref_nvfp4_quant,
     search_nvfp4_scale,
 )
+from auto_round.data_type.utils import update_fused_layer_global_scales
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -175,6 +177,52 @@ class TestCalculateGparam:
         g = calculate_gparam(t)
         expected = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / 4.0
         assert g.item() == pytest.approx(expected, rel=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# fused global scale
+# ---------------------------------------------------------------------------
+
+
+class TestFusedLayerGlobalScales:
+    @staticmethod
+    def _projection(scale: float) -> nn.Module:
+        projection = nn.Module()
+        projection.weight_global_scale = torch.tensor([scale])
+        return projection
+
+    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        attention = nn.Module()
+        attention.q_proj = self._projection(3.0)
+        attention.k_proj = self._projection(1.0)
+        attention.v_proj = self._projection(2.0)
+        mlp = nn.Module()
+        mlp.gate_proj = self._projection(4.0)
+        mlp.up_proj = self._projection(0.5)
+
+        update_fused_layer_global_scales(attention)
+        update_fused_layer_global_scales(mlp)
+
+        assert all(
+            proj.weight_global_scale.item() == 1.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
+        )
+        assert all(proj.weight_global_scale.item() == 0.5 for proj in (mlp.gate_proj, mlp.up_proj))
+
+    def test_fused_projection_scale_update_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+        attention = nn.Module()
+        attention.q_proj = self._projection(3.0)
+        attention.k_proj = self._projection(1.0)
+        attention.v_proj = self._projection(2.0)
+
+        update_fused_layer_global_scales(attention)
+
+        assert [proj.weight_global_scale.item() for proj in (attention.q_proj, attention.k_proj, attention.v_proj)] == [
+            3.0,
+            1.0,
+            2.0,
+        ]
 
 
 # ---------------------------------------------------------------------------
