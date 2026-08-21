@@ -194,10 +194,6 @@ def _make_model_dir(tmp_path, config, tensors, *, multi_shard=False):
     return model_dir
 
 
-def _matcher(ignore=None, layer_config=None, default=None):
-    return _PatternMatcher(ignore or [], layer_config or {}, default or {})
-
-
 def _read_output_keys(output_dir):
     keys = set()
     for f in os.listdir(output_dir):
@@ -210,102 +206,6 @@ def _read_output_keys(output_dir):
 def _read_qconfig(output_dir):
     with open(os.path.join(output_dir, "config.json")) as f:
         return json.load(f).get("quantization_config", {})
-
-
-# ===========================================================================
-#  _PatternMatcher
-# ===========================================================================
-
-
-class TestPatternMatcher:
-    def test_ignore_substring(self):
-        m = _matcher(ignore=["mlp"])
-        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is True
-        assert m.should_ignore("model.layers.0.self_attn.q_proj.weight") is False
-
-    def test_ignore_trailing_dot(self):
-        m = _matcher(ignore=["layers.4."])
-        assert m.should_ignore("model.layers.4.mlp.fc1.weight") is True
-        assert m.should_ignore("model.layers.45.mlp.fc1.weight") is False
-
-    def test_skip_predefined(self):
-        m = _matcher()
-        assert m.should_skip("model.layers.0.shared_expert_gate.weight") is True
-        assert m.should_skip("model.layers.0.mlp.gate.weight") is True
-        assert m.should_skip("model.layers.0.mlp.gate_proj.weight") is False
-        assert m.should_skip("model.embed_tokens.weight") is True
-        assert m.should_skip("model.layers.0.mlp.fc1.weight") is False
-
-    def test_resolve_scheme_exact_regex_and_default(self):
-        default = {"bits": 4, "group_size": 128, "sym": True}
-        lc = {
-            "model.layers.0.mlp.fc1": {"bits": 8, "group_size": 32},
-            r".*k_proj": {"bits": 8},
-        }
-        m = _matcher(layer_config=lc, default=default)
-        assert m.resolve_scheme("model.layers.0.mlp.fc1.weight")["bits"] == 8
-        assert m.resolve_scheme("model.layers.0.self_attn.k_proj.weight")["bits"] == 8
-        assert m.resolve_scheme("model.layers.0.mlp.fc2.weight") == default
-
-    def test_resolve_bits16_returns_none(self):
-        m = _matcher(layer_config={"model.layers.0.fc1": {"bits": 16}}, default={"bits": 4, "group_size": 128})
-        assert m.resolve_scheme("model.layers.0.fc1.weight") is None
-
-    def test_resolve_substring_pattern(self):
-        default = {"bits": 4, "group_size": 128, "sym": True}
-        m = _matcher(layer_config={".ffn.experts.": {"bits": 2, "group_size": 64}}, default=default)
-        r = m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")
-        assert r["bits"] == 2 and r["group_size"] == 64
-        assert m.resolve_scheme("model.layers.0.self_attn.q_proj.weight") == default
-
-
-# ===========================================================================
-#  _parse_layer_config — scheme key resolution
-# ===========================================================================
-
-
-class TestParseLayerConfig:
-    @staticmethod
-    def _make_core(layer_config_input, scheme="W4A16"):
-        core = _ModelFreeCompressorCore(
-            model_name_or_path="dummy",
-            output_dir="dummy_out",
-            scheme=scheme,
-        )
-        core.layer_config_input = layer_config_input
-        core._parse_scheme()
-        core._parse_layer_config()
-        return core
-
-    def test_scheme_key_resolves(self):
-        core = self._make_core({".ffn.experts.": {"scheme": "W2A16"}})
-        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
-        assert cfg["bits"] == 2 and "scheme" not in cfg
-
-        m = _matcher(layer_config=core.layer_config, default=core.default_scheme)
-        assert m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")["bits"] == 2
-
-    def test_scheme_key_with_overrides(self):
-        core = self._make_core({".ffn.experts.": {"scheme": "W2A16", "group_size": 32}})
-        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
-        assert cfg["bits"] == 2 and cfg["group_size"] == 32
-
-    def test_string_value(self):
-        core = self._make_core({".ffn.experts.": "W2A16"})
-        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
-        assert cfg["bits"] == 2
-
-    def test_quantization_scheme_value(self):
-        core = self._make_core({".ffn.experts.": QuantizationScheme(bits=2, group_size=64)})
-        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
-        assert cfg["bits"] == 2 and cfg["group_size"] == 64
-
-    def test_w4a16_mixed_recipe_in_model_free(self):
-        core = self._make_core({}, scheme="W4A16_MIXED")
-        assert core.default_scheme["bits"] == 8
-        assert core.layer_config[".experts."]["bits"] == 4
-        assert core.layer_config[".moe."]["bits"] == 4
-        assert core.layer_config[".shared_expert."]["bits"] == 8
 
 
 # ===========================================================================
@@ -582,32 +482,7 @@ class TestFP8Source:
 #  Quantization config builder
 # ===========================================================================
 
-
-class TestBuildQuantizationConfig:
-    def test_extra_config_filters_embed_conv_only(self):
-        default = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
-        ignored = [
-            "model.embed_tokens",
-            "model.conv1",
-            "model.layers.0.shared_expert_gate",
-            "model.layers.0.mlp.gate",
-        ]
-
-        cfg = _build_quantization_config(
-            default_scheme=default,
-            layer_config={},
-            ignore_patterns=[],
-            quantized_layers=[],
-            ignored_layers=ignored,
-        )
-
-        extra = cfg.get("extra_config", {})
-        # Non-Linear ops are filtered out.
-        assert "model.embed_tokens" not in extra
-        assert "model.conv1" not in extra
-        # Other ignored layers should still be recorded.
-        assert extra["model.layers.0.shared_expert_gate"] == {"bits": 16, "data_type": "float"}
-        assert extra["model.layers.0.mlp.gate"] == {"bits": 16, "data_type": "float"}
+# (TestBuildQuantizationConfig moved to test/unit/test_cpu/utils/test_model_free_utils.py)
 
 
 # ===========================================================================
@@ -719,42 +594,11 @@ class TestModelFreeQuantize:
 
 
 class TestModelFreeMXFP:
-    """End-to-end tests for MXFP4/MXFP8 model-free quantization."""
+    """End-to-end tests for MXFP4/MXFP8 model-free quantization.
 
-    def test_disable_opt_rtn_skips_mxfp_scale_search(self, monkeypatch):
-        from auto_round.data_type import mxfp
-
-        search_mock = Mock(side_effect=AssertionError("optimized RTN must be disabled"))
-        monkeypatch.setattr(mxfp, "quant_mx_opt_rtn", search_mock)
-
-        weight = torch.randn(8, 32, dtype=torch.bfloat16)
-        out = _quantize_weight_mxfp(
-            weight,
-            "layer",
-            bits=4,
-            group_size=32,
-            data_type="mx_fp",
-            disable_opt_rtn=True,
-        )
-
-        assert "layer.weight_packed" in out
-        search_mock.assert_not_called()
-
-    def test_quantize_weight_mxfp4_shapes(self):
-        w = torch.randn(64, 128, dtype=torch.bfloat16)
-        out = _quantize_weight_mxfp(w, "layer", bits=4, group_size=32, data_type="mx_fp")
-        assert out["layer.weight_packed"].shape == (64, 64)  # in_features / 2
-        assert out["layer.weight_packed"].dtype == torch.uint8
-        assert out["layer.weight_scale"].shape == (64, 4)  # in_features / group_size
-        assert out["layer.weight_scale"].dtype == torch.uint8
-
-    def test_quantize_weight_mxfp8_shapes(self):
-        w = torch.randn(64, 128, dtype=torch.bfloat16)
-        out = _quantize_weight_mxfp(w, "layer", bits=8, group_size=32, data_type="mx_fp")
-        assert out["layer.weight"].shape == (64, 128)
-        assert out["layer.weight"].dtype == torch.float8_e4m3fn
-        assert out["layer.weight_scale"].shape == (64, 4)
-        assert out["layer.weight_scale"].dtype == torch.uint8
+    Unit tests for _quantize_weight_mxfp and _build_mxfp_quantization_config
+    have been moved to test/unit/test_cpu/utils/test_model_free_utils.py.
+    """
 
     @require_compressed_tensors
     @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized")])
@@ -805,61 +649,8 @@ class TestModelFreeMXFP:
         assert "layer.fc1.weight_packed" in output
         assert "layer.fc1.weight_scale" in output
 
-    @require_compressed_tensors
-    def test_build_mxfp_mixed_config_uniform(self):
-        """Single-scheme path: no layer_config overrides → uniform format."""
-        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
-        quantized = ["model.layers.0.fc1", "model.layers.0.fc2"]
-        ignored = ["lm_head"]
-        cfg = _build_mxfp_quantization_config(default, quantized, ignored, layer_config={})
-        assert cfg["format"] == "mxfp4-pack-quantized"
-        assert "lm_head" in cfg["ignore"]
-        assert len(cfg["config_groups"]) == 1
-
-    @require_compressed_tensors
-    def test_build_mxfp_config_bf16_default_targets_only_overrides(self):
-        """A single MXFP override must not describe all BF16 Linear layers as quantized."""
-        default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
-        layer_config = {
-            "model.layers.0.self_attn.q_proj": {"bits": 4, "group_size": 32, "data_type": "mx_fp"},
-        }
-        quantized = ["model.layers.0.self_attn.q_proj"]
-
-        cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
-
-        assert cfg["format"] == "mxfp4-pack-quantized"
-        assert cfg["config_groups"]["group_0"]["targets"] == quantized
-
-    @require_compressed_tensors
-    def test_build_mxfp_mixed_config_two_groups(self):
-        """Mixed MXFP4+MXFP8: override layers get explicit targets; default gets ["Linear"]."""
-        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
-        layer_config = {
-            "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
-            "model.layers.0.self_attn.k_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
-        }
-        quantized = [
-            "model.layers.0.self_attn.q_proj",
-            "model.layers.0.self_attn.k_proj",
-            "model.layers.0.mlp.fc1",
-            "model.layers.0.mlp.fc2",
-        ]
-        ignored = ["lm_head"]
-        cfg = _build_mxfp_quantization_config(default, quantized, ignored, layer_config=layer_config)
-
-        assert cfg["format"] == "mixed-precision"
-        assert len(cfg["config_groups"]) == 2
-
-        # MXFP8 group (override, should come first) — explicit targets
-        mxfp8_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp8-quantized")
-        assert set(mxfp8_group["targets"]) == {
-            "model.layers.0.self_attn.q_proj",
-            "model.layers.0.self_attn.k_proj",
-        }
-
-        # MXFP4 group (default) — catch-all
-        mxfp4_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp4-pack-quantized")
-        assert mxfp4_group["targets"] == ["Linear"]
+    # Unit tests for _build_mxfp_quantization_config moved to
+    # test/unit/test_cpu/utils/test_model_free_utils.py -> TestBuildMxfpConfig
 
     @require_compressed_tensors
     def test_e2e_mxfp_mixed(self, tmp_path):
@@ -924,28 +715,7 @@ def _make_deepseek_v4_mxfp8(out_f, in_f, block_h, block_w):
     return weight_fp8, scale
 
 
-class TestExpandE8M0BlockScale:
-    """The coarse-block → per-group E8M0 scale expansion helper."""
-
-    def test_expand_repeat_interleave(self):
-        # Coarse [2, 2] block scale for a [64, 128] weight, group_size=32.
-        scale = torch.tensor([[100, 101], [102, 103]], dtype=torch.uint8)
-        out = _expand_e8m0_block_scale(scale, out_features=64, in_features=128, group_size=32)
-        assert out.shape == (64, 4)  # 128 // 32 == 4 groups
-        assert out.dtype == torch.uint8
-        # Row 0 (first 32 rows) maps to coarse row 0; cols 0..1 → coarse col 0, 2..3 → col 1.
-        assert out[0].tolist() == [100, 100, 101, 101]
-        assert out[63].tolist() == [102, 102, 103, 103]
-
-    def test_expand_noop_when_already_fine(self):
-        scale = torch.full((64, 4), 127, dtype=torch.uint8)
-        out = _expand_e8m0_block_scale(scale, out_features=64, in_features=128, group_size=32)
-        assert out.shape == (64, 4) and torch.equal(out, scale)
-
-    def test_expand_invalid_shape_raises(self):
-        scale = torch.full((3, 4), 127, dtype=torch.uint8)
-        with pytest.raises(ValueError):
-            _expand_e8m0_block_scale(scale, out_features=64, in_features=128, group_size=32)
+# TestExpandE8M0BlockScale moved to test/unit/test_cpu/utils/test_model_free_utils.py
 
 
 class TestDeepseekV4MXFP8Source:
@@ -981,7 +751,11 @@ _LLMCOMPRESSOR_MIXED_CFG = {
 
 
 class TestLLMCompressorMXFPSource:
-    """llm-compressor MXFP8/MXFP4 source models (generic non-deepseek_v4 path)."""
+    """llm-compressor MXFP8/MXFP4 source models (generic non-deepseek_v4 path).
+
+    Unit tests for _handle_mxfp_source_tensors and _dequant_mxfp_tensors moved to
+    test/unit/test_cpu/utils/test_model_free_utils.py -> TestHandleMXFPSourceTensors.
+    """
 
     def test_resolve_model_type_qwen3(self):
         core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
@@ -1000,98 +774,6 @@ class TestLLMCompressorMXFPSource:
         core.config = _LLAMA_CFG
         core._resolve_model_type()
         assert core.model_type == "llama"
-
-    def test_passthrough_mxfp8_same_target(self):
-        """MXFP8 source + MXFP8 target → passthrough (bytes preserved)."""
-        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)
-        raw = {
-            "layer.weight": weight_fp8.clone(),
-            "layer.weight_scale": weight_scale.clone(),
-        }
-        matcher = _matcher(default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"})
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
-
-        assert layers == ["layer"]
-        assert passthrough["layer.weight"].dtype == torch.float8_e4m3fn
-        assert torch.equal(passthrough["layer.weight"].view(torch.uint8), weight_fp8.view(torch.uint8))
-        assert passthrough["layer.weight_scale"].dtype == torch.uint8
-        assert "layer.weight" not in raw_out
-        assert "layer.weight_scale" not in raw_out
-
-    def test_passthrough_mxfp4_same_target(self):
-        """MXFP4 source + MXFP4 target → passthrough."""
-        weight_packed = torch.randint(0, 255, (64, 64), dtype=torch.uint8)
-        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)
-        raw = {
-            "layer.weight_packed": weight_packed.clone(),
-            "layer.weight_scale": weight_scale.clone(),
-        }
-        matcher = _matcher(default={"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"})
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
-
-        assert layers == ["layer"]
-        assert torch.equal(passthrough["layer.weight_packed"], weight_packed)
-        assert passthrough["layer.weight_scale"].dtype == torch.uint8
-        assert "layer.weight_packed" not in raw_out
-
-    def test_mxfp8_dequant_when_int_target(self):
-        """MXFP8 source + int target → dequantized to bf16 .weight."""
-        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)  # scale 1.0
-        raw = {
-            "layer.weight": weight_fp8.clone(),
-            "layer.weight_scale": weight_scale.clone(),
-        }
-        matcher = _matcher(default={"bits": 4, "group_size": 128, "sym": True, "data_type": "int"})
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
-
-        assert layers == [] and passthrough == {}
-        assert raw_out["layer.weight"].dtype == torch.bfloat16
-        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.bfloat16))
-        assert "layer.weight_scale" not in raw_out
-
-    def test_mixed_passthrough_and_dequant(self):
-        """Mixed: MXFP8 layer passthrough + MXFP4 layer dequanted (target MXFP8)."""
-        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        scale_fp8 = torch.full((64, 4), 127, dtype=torch.uint8)
-        weight_packed = torch.randint(0, 255, (64, 64), dtype=torch.uint8)
-        scale_packed = torch.full((64, 4), 127, dtype=torch.uint8)
-        raw = {
-            "attn.weight": weight_fp8.clone(),
-            "attn.weight_scale": scale_fp8.clone(),
-            "mlp.weight_packed": weight_packed.clone(),
-            "mlp.weight_scale": scale_packed.clone(),
-        }
-        matcher = _matcher(default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"})
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
-
-        assert "attn" in layers  # fp8 layer passthrough
-        assert passthrough["attn.weight"].dtype == torch.float8_e4m3fn
-        # mlp fp4 layer dequantized because target is MXFP8 (bits=8 != 4)
-        assert "mlp" not in layers
-        assert raw_out["mlp.weight"].dtype == torch.bfloat16
-        assert raw_out["mlp.weight"].shape == (64, 128)
-
-    def test_noop_without_mxfp_tensors(self):
-        """No MXFP tensors → input returned unchanged."""
-        raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16)}
-        matcher = _matcher(default={"bits": 8, "group_size": 32, "data_type": "mx_fp"})
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
-        assert raw_out is raw and passthrough == {} and layers == []
-
-    def test_reject_non_mxfp_packed_float_scale(self):
-        """weight_packed + float scale must NOT be treated as MXFP source."""
-        raw = {
-            "layer.weight_packed": torch.randint(0, 255, (64, 64), dtype=torch.uint8),
-            "layer.weight_scale": torch.ones(64, 8, dtype=torch.float16),
-        }
-        matcher = _matcher(default={"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"})
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
-
-        assert raw_out is raw
-        assert passthrough == {}
-        assert layers == []
 
     @require_compressed_tensors
     def test_e2e_mxfp8_passthrough(self, tmp_path):
@@ -1125,57 +807,8 @@ class TestLLMCompressorMXFPSource:
         assert torch.equal(wp.view(torch.uint8), weight_fp8.view(torch.uint8))
         assert ws.dtype == torch.uint8
 
-    def test_convert_passthrough_when_target_mxfp8(self):
-        """Target MXFP8 → converted tensors emitted directly (weight bytes preserved)."""
-        weight_fp8, scale = _make_deepseek_v4_mxfp8(64, 128, block_h=32, block_w=64)
-        raw = {"layer.weight": weight_fp8.clone(), "layer.scale": scale.clone()}
-        matcher = _matcher(default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"})
-        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
-
-        assert layers == ["layer"]
-        # weight kept as float8 under .weight; scale expanded to per-group uint8.
-        assert passthrough["layer.weight"].dtype == torch.float8_e4m3fn
-        assert torch.equal(passthrough["layer.weight"].view(torch.uint8), weight_fp8.view(torch.uint8))
-        assert passthrough["layer.weight_scale"].dtype == torch.uint8
-        assert passthrough["layer.weight_scale"].shape == (64, 4)
-        # source tensors consumed, nothing left in raw.
-        assert "layer.weight" not in raw_out
-        assert "layer.scale" not in raw_out
-
-    def test_convert_dequant_when_target_int(self):
-        """Non-MXFP8 target → tensors dequantized to bfloat16 .weight."""
-        weight_fp8, scale = _make_deepseek_v4_mxfp8(64, 128, block_h=32, block_w=64)
-        raw = {"layer.weight": weight_fp8.clone(), "layer.scale": scale.clone()}
-        matcher = _matcher(default={"bits": 4, "group_size": 128, "sym": True, "data_type": "int"})
-        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
-
-        assert layers == [] and passthrough == {}
-        assert raw_out["layer.weight"].dtype == torch.bfloat16
-        assert raw_out["layer.weight"].shape == (64, 128)
-        # scale 1.0 → dequant weight equals fp8 cast to bf16.
-        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.bfloat16))
-        assert "layer.scale" not in raw_out and "layer.weight_scale" not in raw_out
-
-    def test_convert_noop_without_quantized(self):
-        """No float8/packed weights → input returned unchanged."""
-        raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16)}
-        matcher = _matcher(default={"bits": 8, "group_size": 32, "data_type": "mx_fp"})
-        raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
-        assert state == {}
-        raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
-        assert raw_out is raw and passthrough == {} and layers == []
-
-    def test_dequant_mxfp_tensors_mxfp8(self):
-        """Generic MXFP dequant: float8 .weight + .weight_scale → bf16."""
-        weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)  # scale 1.0
-        raw = {"layer.weight": weight_fp8.clone(), "layer.weight_scale": weight_scale.clone()}
-        out = _dequant_mxfp_tensors(raw)
-        assert out["layer.weight"].dtype == torch.bfloat16
-        assert torch.allclose(out["layer.weight"], weight_fp8.to(torch.bfloat16))
-        assert "layer.weight_scale" not in out
+    # Unit tests test_convert_* and test_dequant_* moved to
+    # test/unit/test_cpu/utils/test_model_free_utils.py -> TestHandleMXFPSourceTensors
 
     @require_compressed_tensors
     def test_e2e_passthrough_mxfp8_target(self, tmp_path):
@@ -1714,80 +1347,12 @@ class TestResolveShardParallelism:
 
 
 class TestModelFreeAutoScheme:
-    """Model-free support for ``AutoScheme`` mixed-bit selection."""
+    """Model-free support for ``AutoScheme`` mixed-bit selection.
 
-    def test_looks_like_auto_scheme(self):
-        from auto_round import AutoScheme
-
-        assert _looks_like_auto_scheme(AutoScheme(avg_bits=3, options=("W2A16", "W4A16")))
-        assert not _looks_like_auto_scheme("W4A16")
-        assert not _looks_like_auto_scheme(QuantizationScheme(bits=4))
-
-    def test_validate_options_int_family(self):
-        from auto_round import AutoScheme
-
-        assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16"))) == "int"
-
-    def test_validate_options_int_family_with_bf16(self):
-        from auto_round import AutoScheme
-
-        assert _validate_auto_scheme_options(AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "BF16"))) == "int"
-
-    def test_validate_options_mxfp_family(self):
-        from auto_round import AutoScheme
-
-        assert _validate_auto_scheme_options(AutoScheme(avg_bits=6, options=("MXFP4", "MXFP8"))) == "mx_fp"
-
-    def test_validate_options_mixed_family_raises(self):
-        from auto_round import AutoScheme
-
-        with pytest.raises(ValueError, match="mix INT and MXFP"):
-            _validate_auto_scheme_options(AutoScheme(avg_bits=4, options=("W4A16", "MXFP4")))
-
-    @pytest.mark.parametrize(
-        "options",
-        [
-            ("W3A16", "W4A16"),
-            ("GGUF:Q4_K_M", "W8A16"),
-            ("NVFP4", "W4A16"),
-            ("MXFP4_RCEIL", "MXFP4"),
-        ],
-    )
-    def test_validate_options_unsupported_raises(self, options):
-        from auto_round import AutoScheme
-
-        with pytest.raises(ValueError, match="unsupported option"):
-            _validate_auto_scheme_options(AutoScheme(avg_bits=4, options=options))
-
-    def test_convert_layer_config(self):
-        generated = {
-            "model.layers.0.q_proj": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
-            "model.layers.0.k_proj": {"bits": 2, "group_size": 128, "sym": True, "data_type": "int"},
-            "model.layers.0.v_proj": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
-            "model.embed_tokens": {"bits": 16, "group_size": 128, "sym": True, "data_type": "int"},
-        }
-        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
-        # Most common quantized scheme (4-bit) becomes the base.
-        assert base_scheme.bits == 4 and base_scheme.group_size == 128
-        assert per_layer["model.layers.0.k_proj"]["bits"] == 2
-        assert "model.embed_tokens" not in per_layer
-        assert fp16_layers == ["model.embed_tokens"]
-
-    def test_convert_layer_config_infers_mxfp_bits_from_dtype_alias(self):
-        generated = {
-            "model.layers.0.q_proj": {"group_size": 32, "sym": True, "data_type": "mxfp8"},
-            "model.layers.0.k_proj": {"group_size": 32, "sym": True, "data_type": "MXFP4"},
-        }
-
-        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(generated)
-
-        assert fp16_layers == []
-        assert per_layer["model.layers.0.q_proj"]["bits"] == 8
-        assert per_layer["model.layers.0.q_proj"]["data_type"] == "mx_fp"
-        assert per_layer["model.layers.0.k_proj"]["bits"] == 4
-        assert per_layer["model.layers.0.k_proj"]["data_type"] == "mx_fp"
-        assert base_scheme.data_type == "mx_fp"
-        assert base_scheme.bits in (4, 8)
+    Pure unit tests for helper functions (_looks_like_auto_scheme,
+    _validate_auto_scheme_options, _convert_auto_scheme_layer_config) have been
+    moved to test/unit/test_cpu/utils/test_model_free_utils.py -> TestAutoSchemeHelpers.
+    """
 
     @pytest.mark.timeout(120)
     def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
@@ -1830,197 +1395,11 @@ class TestMXFPAutoRoundFormat:
 
     The weight tensors on disk are identical to the llm_compressor path;
     only the ``quantization_config`` metadata differs.
+
+    Unit tests for _build_mxfp_autoround_quantization_config and
+    _build_quantization_config routing have been moved to
+    test/unit/test_cpu/utils/test_model_free_utils.py -> TestBuildMxfpAutoRoundConfig.
     """
-
-    # ------------------------------------------------------------------
-    # Unit tests: _build_mxfp_autoround_quantization_config
-    # ------------------------------------------------------------------
-
-    @require_compressed_tensors
-    def test_mxfp4_top_level_fields(self):
-        """MXFP4 scheme → all mandatory top-level fields are correct."""
-        from dataclasses import asdict
-
-        from auto_round.schemes import PRESET_SCHEMES
-
-        default = {k: v for k, v in asdict(PRESET_SCHEMES["MXFP4"]).items() if v is not None}
-        cfg = _build_mxfp_autoround_quantization_config(default, quantized_layers=["layer.fc1"], ignored_layers=[])
-        assert cfg["quant_method"] == "auto-round"
-        assert cfg["packing_format"] == "auto_round:llm_compressor"
-        assert cfg["bits"] == 4
-        assert cfg["group_size"] == 32
-        assert cfg["data_type"] == "mx_fp"
-        assert cfg["sym"] is True
-        assert cfg["enable_quanted_input"] is False
-        assert cfg["model_free"] is True
-        assert "autoround_version" in cfg
-
-    @require_compressed_tensors
-    def test_mxfp4_activation_fields(self):
-        """MXFP4 scheme carries act_* fields matching the real AutoRound output."""
-        from dataclasses import asdict
-
-        from auto_round.schemes import PRESET_SCHEMES
-
-        default = {k: v for k, v in asdict(PRESET_SCHEMES["MXFP4"]).items() if v is not None}
-        cfg = _build_mxfp_autoround_quantization_config(default, quantized_layers=["layer.fc1"], ignored_layers=[])
-        assert cfg["act_bits"] == 4
-        assert cfg["act_data_type"] == "mx_fp"
-        assert cfg["act_dynamic"] is True
-        assert cfg["act_group_size"] == 32
-        assert cfg["act_sym"] is True
-
-    @require_compressed_tensors
-    def test_mxfp8_bits(self):
-        """MXFP8 scheme → bits=8, act_bits=8."""
-        from dataclasses import asdict
-
-        from auto_round.schemes import PRESET_SCHEMES
-
-        default = {k: v for k, v in asdict(PRESET_SCHEMES["MXFP8"]).items() if v is not None}
-        cfg = _build_mxfp_autoround_quantization_config(default, quantized_layers=["layer.fc1"], ignored_layers=[])
-        assert cfg["bits"] == 8
-        assert cfg["act_bits"] == 8
-        assert cfg["packing_format"] == "auto_round:llm_compressor"
-
-    @require_compressed_tensors
-    def test_ignored_layers_in_extra_config(self):
-        """Ignored layers (non-embed/conv) go into extra_config as bits=16."""
-        default = {
-            "bits": 4,
-            "group_size": 32,
-            "sym": True,
-            "data_type": "mx_fp",
-            "act_bits": 4,
-            "act_data_type": "mx_fp",
-            "act_dynamic": True,
-            "act_group_size": 32,
-            "act_sym": True,
-        }
-        ignored = ["lm_head", "model.embed_tokens", "model.conv1", "model.layers.0.mlp.gate"]
-        cfg = _build_mxfp_autoround_quantization_config(
-            default,
-            quantized_layers=["model.layers.0.fc1"],
-            ignored_layers=ignored,
-        )
-        extra = cfg.get("extra_config", {})
-        full_precision = {"bits": 16, "data_type": "float", "act_bits": 16, "act_data_type": "float"}
-        assert extra.get("lm_head") == full_precision
-        assert extra.get("model.layers.0.mlp.gate") == full_precision
-        # embed / conv are non-Linear — filtered out
-        assert "model.embed_tokens" not in extra
-        assert "model.conv1" not in extra
-
-    @require_compressed_tensors
-    def test_ignored_lm_head_loads_as_full_precision(self):
-        """An ignored lm_head must not inherit MXFP activation quantization."""
-        from types import SimpleNamespace
-
-        from transformers import OPTConfig, OPTForCausalLM
-
-        from auto_round.inference.convert_model import get_layer_config
-        from auto_round.utils import check_to_quantized
-
-        default = {
-            "bits": 4,
-            "group_size": 32,
-            "sym": True,
-            "data_type": "mx_fp",
-            "act_bits": 4,
-            "act_data_type": "mx_fp",
-            "act_dynamic": True,
-            "act_group_size": 32,
-            "act_sym": True,
-        }
-        quantization_config = _build_mxfp_autoround_quantization_config(
-            default,
-            quantized_layers=["model.decoder.layers.0.fc1"],
-            ignored_layers=["lm_head"],
-            block_name_to_quantize="model.decoder.layers",
-        )
-        model = OPTForCausalLM(
-            OPTConfig(
-                hidden_size=32,
-                ffn_dim=64,
-                num_hidden_layers=1,
-                num_attention_heads=4,
-                vocab_size=64,
-                word_embed_proj_dim=32,
-            )
-        )
-
-        layer_configs = get_layer_config(model, SimpleNamespace(**quantization_config))
-        lm_head_config = layer_configs["lm_head"]
-
-        assert lm_head_config.bits == 16
-        assert lm_head_config.act_bits == 16
-        assert lm_head_config.data_type == "float"
-        assert lm_head_config.act_data_type == "float"
-        assert not check_to_quantized(lm_head_config)
-
-    @require_compressed_tensors
-    def test_quantized_lm_head_in_extra_config(self):
-        """When lm_head is quantized it must appear in extra_config with its scheme."""
-        default = {
-            "bits": 4,
-            "group_size": 32,
-            "sym": True,
-            "data_type": "mx_fp",
-            "act_bits": 4,
-            "act_data_type": "mx_fp",
-            "act_dynamic": True,
-            "act_group_size": 32,
-            "act_sym": True,
-        }
-        cfg = _build_mxfp_autoround_quantization_config(
-            default,
-            quantized_layers=["model.layers.0.fc1", "lm_head"],
-            ignored_layers=[],
-        )
-        extra = cfg.get("extra_config", {})
-        assert "lm_head" in extra
-        assert extra["lm_head"]["bits"] == 4
-        assert extra["lm_head"]["data_type"] == "mx_fp"
-
-    @require_compressed_tensors
-    def test_build_quantization_config_routes_mxfp_to_autoround(self):
-        """_build_quantization_config with format='auto_round' routes MXFP to auto-round style."""
-        default = {
-            "bits": 4,
-            "group_size": 32,
-            "sym": True,
-            "data_type": "mx_fp",
-            "act_bits": 4,
-            "act_data_type": "mx_fp",
-            "act_dynamic": True,
-            "act_group_size": 32,
-            "act_sym": True,
-        }
-        cfg = _build_quantization_config(
-            default_scheme=default,
-            layer_config={},
-            ignore_patterns=[],
-            quantized_layers=["layer.fc1"],
-            ignored_layers=[],
-            format="auto_round",
-        )
-        assert cfg["quant_method"] == "auto-round"
-        assert cfg["packing_format"] == "auto_round:llm_compressor"
-
-    @require_compressed_tensors
-    def test_build_quantization_config_mxfp_llmcompressor_path_unchanged(self):
-        """_build_quantization_config with format='llm_compressor' still produces compressed-tensors."""
-        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
-        cfg = _build_quantization_config(
-            default_scheme=default,
-            layer_config={},
-            ignore_patterns=[],
-            quantized_layers=["layer.fc1"],
-            ignored_layers=["lm_head"],
-            format="llm_compressor",
-        )
-        assert cfg["quant_method"] == "compressed-tensors"
-        assert cfg["format"] == "mxfp4-pack-quantized"
 
     # ------------------------------------------------------------------
     # End-to-end tests via AutoRound.quantize_and_save

@@ -1445,6 +1445,30 @@ def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
     return qconfig
 
 
+# TODO: Remove when the issue is fixed
+# https://github.com/vllm-project/llm-compressor/issues/3069
+def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
+    """Append ``"RoutedExperts"`` to *targets* when *layer_names* indicates a MoE model.
+
+    LLM-Compressor has a known bug where MoE expert projections (e.g. ``w1``/
+    ``w3`` or layers inside ``block_sparse_moe``) are not matched by the generic
+    ``"Linear"`` target and require the explicit ``"RoutedExperts"`` target to be
+    present in the config group.  This helper detects that situation and injects
+    the extra target so quantization is applied correctly.
+
+    A model is considered MoE if any layer name contains:
+
+    * ``.w1`` or ``.w3`` (typical Mixtral / DeepSeek gating projections), or
+    * ``block_sparse_moe`` (Mixtral-style naming).
+    """
+    if "RoutedExperts" in targets:
+        return targets
+    moe_re = re.compile(r"\.w[13](?:\.|$)|block_sparse_moe")
+    if any(moe_re.search(name) for name in layer_names):
+        return list(targets) + ["RoutedExperts"]
+    return targets
+
+
 def _get_mxfp_group_scheme_and_format(
     group_bits: int,
     group_data_type: str,
@@ -1554,7 +1578,8 @@ def _build_mxfp_quantization_config(
 
             qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignore)
             if is_fp_default and scheme_groups:
-                qconfig["config_groups"]["group_0"]["targets"] = list(quantized_layers)
+                targets = _add_routed_experts_if_moe(list(quantized_layers), quantized_layers)
+                qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = fmt
             qconfig.update(_get_llm_compressor_metadata())
             return qconfig
@@ -1563,7 +1588,7 @@ def _build_mxfp_quantization_config(
         scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
         qconfig = _init_q(scheme=scheme_name, ignore=ignore)
         if is_fp_default and scheme_groups:
-            targets = list(quantized_layers)
+            targets = _add_routed_experts_if_moe(list(quantized_layers), quantized_layers)
             qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
@@ -1589,6 +1614,7 @@ def _build_mxfp_quantization_config(
         group_name = f"group_{idx}"
         is_default_group = (group_bits, group_dt) == default_key
         targets = ["Linear"] if is_default_group else layer_names
+        targets = _add_routed_experts_if_moe(targets, layer_names)
         group_scheme, fmt = _get_mxfp_group_scheme_and_format(group_bits, group_dt, ignore)
         group_scheme.targets = targets
         config_groups[group_name] = group_scheme
@@ -1937,6 +1963,8 @@ def _build_quantization_config(
     if is_fp_default and _layer_config_has_nvfp4(layer_config) and format == "llm_compressor":
         nvfp4_dt = _get_layer_config_nvfp4_dt(layer_config)
         targets = list(dict.fromkeys(quantized_layers)) if quantized_layers else ["Linear"]
+        if quantized_layers:
+            targets = _add_routed_experts_if_moe(targets, quantized_layers)
         if nvfp4_dt == _NVFP4_E5M3_DATA_TYPE:
             warnings.warn(
                 "LLMC/llm-compressor does not currently support the NVFP4_E5M3 scheme. "
