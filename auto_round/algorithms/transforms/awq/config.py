@@ -49,6 +49,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_sample_token: int = 512,
         awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
+        disable_opt_rtn: bool | None = True,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
         **kwargs,
@@ -120,6 +121,11 @@ class AWQConfig(QuantizationConfig):
                 peak VRAM while preserving the AWQ parent-output loss, at the
                 cost of more parent forward calls. ``None`` or ``<= 0`` replays
                 the cached calibration batch as-is.
+            disable_opt_rtn: Whether AWQ's internal weight QDQ should use the
+                plain RTN path. Defaults to True because AWQ calibration has not
+                shown accuracy or cost benefits from optimized RTN in benchmarks.
+                ``enable_opt_rtn=True`` may also be passed to force the
+                optimized path.
             skip_moe: Whether to exclude routed MoE experts from AWQ smoothing.
                 When True, balance layers belonging to routed experts (module
                 names matching ``.experts.<N>.``) are dropped from the resolved
@@ -135,6 +141,9 @@ class AWQConfig(QuantizationConfig):
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
+        if enable_opt_rtn:
+            disable_opt_rtn = False
         super().__init__(**kwargs)
 
         if awq_seqlen is None:
@@ -163,6 +172,7 @@ class AWQConfig(QuantizationConfig):
             raise ValueError(f"`clip_n_sample_token` must be a positive integer, got {clip_n_sample_token!r}")
         if smooth_batch_size is not None and smooth_batch_size < 0:
             raise ValueError(f"`smooth_batch_size` must be a non-negative integer or None, got {smooth_batch_size!r}")
+        self._disable_opt_rtn = disable_opt_rtn
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
         self.clip_n_sample_token = clip_n_sample_token
@@ -172,6 +182,15 @@ class AWQConfig(QuantizationConfig):
         self.mappings = mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
+
+    @property
+    def disable_opt_rtn(self) -> bool | None:
+        """Whether AWQ's internal QDQ uses plain RTN instead of optimized RTN."""
+        return self._disable_opt_rtn
+
+    @disable_opt_rtn.setter
+    def disable_opt_rtn(self, value: bool | None) -> None:
+        self._disable_opt_rtn = value
 
     def finalize_scheme(self) -> None:
         """Adjust AWQ state that depends on the resolved run scheme."""
@@ -191,6 +210,7 @@ class AWQConfig(QuantizationConfig):
             f"smooth_iters={self.smooth_iters}, "
             f"apply_clip={self.apply_clip}, clip_as_init={self.clip_as_init}, "
             f"awq_seqlen={self.awq_seqlen}, smooth_batch_size={self.smooth_batch_size}, "
+            f"disable_opt_rtn={self.disable_opt_rtn}, "
             f"skip_moe={self.skip_moe}, "
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"

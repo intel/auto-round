@@ -70,6 +70,12 @@ def test_hadamard_disables_only_block_forward_compile():
     assert not _can_compile_block_forward(quantizer, [], user_enabled=False)
 
 
+def test_awq_disables_block_forward_compile():
+    pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()])
+
+    assert not _can_compile_block_forward(pipeline.block_quantizer, pipeline.preprocessors, user_enabled=True)
+
+
 def test_registry_builtin_aliases_and_unknown():
     assert isinstance(_r.resolve_alg_config("RTN"), RTNConfig)
     assert isinstance(_r.resolve_alg_config("awq"), AWQConfig)
