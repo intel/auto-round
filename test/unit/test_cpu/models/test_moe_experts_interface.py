@@ -225,6 +225,47 @@ def test_linear_loop_forward():
     assert not torch.allclose(output, torch.zeros_like(output)), "Output is all zeros"
 
 
+def test_linear_loop_force_routing_preserves_original_output(monkeypatch):
+    """Forced expert coverage should not change the returned MoE output."""
+    from auto_round.modeling.fused_moe.moe_experts_interface import (
+        _unfuse_experts_weights_inplace,
+        linear_loop_experts_forward,
+    )
+
+    num_experts = 4
+    hidden_dim = 16
+    intermediate_dim = 32
+    num_tokens = 9
+    top_k = 2
+
+    class MockExperts(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_up_proj = nn.Parameter(torch.randn(num_experts, 2 * intermediate_dim, hidden_dim))
+            self.down_proj = nn.Parameter(torch.randn(num_experts, hidden_dim, intermediate_dim))
+            self.act_fn = nn.SiLU()
+            self.num_experts = num_experts
+            self.has_bias = False
+            self.is_transposed = False
+
+    torch.manual_seed(7)
+    module = MockExperts()
+    _unfuse_experts_weights_inplace(module, check_decorator=False)
+
+    hidden_states = torch.randn(num_tokens, hidden_dim)
+    top_k_index = torch.randint(0, num_experts, (num_tokens, top_k))
+    top_k_weights = torch.softmax(torch.randn(num_tokens, top_k), dim=-1)
+
+    monkeypatch.setenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0")
+    output_normal = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+
+    monkeypatch.setenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "1")
+    output_forced = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+
+    assert torch.allclose(output_normal, output_forced, atol=1e-6, rtol=1e-5)
+    assert hasattr(module, "_auto_round_forced_route_offset")
+
+
 def test_prepare_model_for_moe_quantization():
     """Test the full prepare_model_for_moe_quantization flow."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (

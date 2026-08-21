@@ -30,6 +30,16 @@ export AR_LOG_LEVEL=DEBUG
 export AR_ENABLE_COMPILE_PACKING=1
 ```
 
+### AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE
+- **描述**：让 fused NVFP4 权重投影共用一个 weight global scale。该设置作用于 `q_proj`/`k_proj`/`v_proj` 与 `gate_proj`/`up_proj`，以满足 vLLM fused kernel 的要求。
+- **默认值**：`True`（等价于 `"1"`）
+- **有效值**：`"0"`、`"false"`、`"no"` 或 `"off"`（不区分大小写）表示关闭共享；其他值表示启用。
+- **用途**：仅当导出的运行时不要求 fused 投影使用统一 global scale 时关闭。
+
+```bash
+export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
+```
+
 ### AR_USE_MODELSCOPE
 - **描述**：控制是否使用 ModelScope 下载模型
 - **默认值**：`False`
