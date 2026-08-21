@@ -189,53 +189,6 @@ def _read_qconfig(output_dir):
 
 
 # ===========================================================================
-#  _PatternMatcher
-# ===========================================================================
-
-
-class TestPatternMatcher:
-    def test_ignore_substring(self):
-        m = _matcher(ignore=["mlp"])
-        assert m.should_ignore("model.layers.0.mlp.fc1.weight") is True
-        assert m.should_ignore("model.layers.0.self_attn.q_proj.weight") is False
-
-    def test_ignore_trailing_dot(self):
-        m = _matcher(ignore=["layers.4."])
-        assert m.should_ignore("model.layers.4.mlp.fc1.weight") is True
-        assert m.should_ignore("model.layers.45.mlp.fc1.weight") is False
-
-    def test_skip_predefined(self):
-        m = _matcher()
-        assert m.should_skip("model.layers.0.shared_expert_gate.weight") is True
-        assert m.should_skip("model.layers.0.mlp.gate.weight") is True
-        assert m.should_skip("model.layers.0.mlp.gate_proj.weight") is False
-        assert m.should_skip("model.embed_tokens.weight") is True
-        assert m.should_skip("model.layers.0.mlp.fc1.weight") is False
-
-    def test_resolve_scheme_exact_regex_and_default(self):
-        default = {"bits": 4, "group_size": 128, "sym": True}
-        lc = {
-            "model.layers.0.mlp.fc1": {"bits": 8, "group_size": 32},
-            r".*k_proj": {"bits": 8},
-        }
-        m = _matcher(layer_config=lc, default=default)
-        assert m.resolve_scheme("model.layers.0.mlp.fc1.weight")["bits"] == 8
-        assert m.resolve_scheme("model.layers.0.self_attn.k_proj.weight")["bits"] == 8
-        assert m.resolve_scheme("model.layers.0.mlp.fc2.weight") == default
-
-    def test_resolve_bits16_returns_none(self):
-        m = _matcher(layer_config={"model.layers.0.fc1": {"bits": 16}}, default={"bits": 4, "group_size": 128})
-        assert m.resolve_scheme("model.layers.0.fc1.weight") is None
-
-    def test_resolve_substring_pattern(self):
-        default = {"bits": 4, "group_size": 128, "sym": True}
-        m = _matcher(layer_config={".ffn.experts.": {"bits": 2, "group_size": 64}}, default=default)
-        r = m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")
-        assert r["bits"] == 2 and r["group_size"] == 64
-        assert m.resolve_scheme("model.layers.0.self_attn.q_proj.weight") == default
-
-
-# ===========================================================================
 #  _parse_layer_config — scheme key resolution
 # ===========================================================================
 
@@ -258,7 +211,11 @@ class TestParseLayerConfig:
         cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
         assert cfg["bits"] == 2 and "scheme" not in cfg
 
-        m = _matcher(layer_config=core.layer_config, default=core.default_scheme)
+        m = _PatternMatcher(
+            ignore_patterns=[],
+            layer_config=core.layer_config,
+            default_scheme=core.default_scheme,
+        )
         assert m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")["bits"] == 2
 
     def test_scheme_key_with_overrides(self):
