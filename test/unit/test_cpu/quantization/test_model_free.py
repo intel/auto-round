@@ -54,16 +54,13 @@ from auto_round import AutoRound
 from auto_round.compressors.model_free import (
     _ModelFreeCompressorCore,
     _process_single_shard_task,
-    get_predefined_ignore_layers_from_config,
 )
 from auto_round.schemes import QuantizationScheme
-from auto_round.utils.model import is_model_free_route
 from auto_round.utils.model_free_utils import (
     _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
-    _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
@@ -73,11 +70,6 @@ from auto_round.utils.model_free_utils import (
     _quantize_weight_mxfp,
     _quantize_weight_nvfp4_e5m3,
     _validate_auto_scheme_options,
-)
-from auto_round.utils.model_free_utils import (
-    handle_model_type_low_precision_source_tensors as _handle_model_type_low_precision_source_tensors,
-)
-from auto_round.utils.model_free_utils import (
     is_model_free_supported_scheme,
 )
 from auto_round.utils.model_free_utils import (
@@ -132,18 +124,6 @@ from ...envs import require_compressed_tensors
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("scheme", ["MXFP8", "mxfp8"])
-def test_model_free_route_accepts_mxfp_scheme_case_insensitively(scheme):
-    assert is_model_free_route("model", scheme, 0, True, {})
-
-
-@pytest.mark.parametrize("dtype_key", ["static_kv_dtype", "static_attention_dtype"])
-@pytest.mark.parametrize("explicit", [False, True])
-def test_model_free_route_rejects_static_attention_quantization(dtype_key, explicit):
-    kwargs = {dtype_key: "fp8", "model_free": explicit}
-    assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
 
 
 _LLAMA_CFG = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
@@ -583,62 +563,8 @@ def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
 
 
 # ===========================================================================
-#  FP8 source model
+#  FP8 source model — moved to test/unit/test_cpu/utils/test_model_free_utils.py
 # ===========================================================================
-
-
-class TestFP8Source:
-    def test_dequant_fp8(self):
-        w = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        raw = {"layer.weight": w, "layer.weight_scale_inv": torch.tensor(0.5), "layer.bias": torch.randn(64)}
-        result = _dequant_fp8_tensors(raw, block_size=None)
-        assert result["layer.weight"].dtype == torch.bfloat16 and "layer.weight_scale_inv" not in result
-
-    def test_no_fp8_noop(self):
-        raw = {"layer.weight": torch.randn(64, 128)}
-        assert _dequant_fp8_tensors(raw, block_size=None) is raw
-
-    def test_process_shard_fp8(self, tmp_path):
-        shard_path = str(tmp_path / "shard.safetensors")
-        w = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
-        save_file({"layer.weight": w, "layer.weight_scale_inv": torch.tensor(1.0)}, shard_path)
-        output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], device="cpu", fp8_block_size=None)
-        assert "layer" in quantized and "layer.qweight" in output
-
-    def test_dequant_fp8_hydrates_scale_from_sibling_shard(self, tmp_path):
-        """When scale_inv is sharded separately, dequant should hydrate it via index."""
-        shard_dir = tmp_path / "source"
-        shard_dir.mkdir(parents=True, exist_ok=True)
-
-        weight_name = "model.layers.0.mlp.experts.1.gate_proj.weight"
-        scale_name = "model.layers.0.mlp.experts.1.gate_proj.weight_scale_inv"
-
-        shard_a = shard_dir / "model-00001-of-00002.safetensors"
-        shard_b = shard_dir / "model-00002-of-00002.safetensors"
-        save_file({weight_name: torch.randn(2048, 7168, dtype=torch.bfloat16).to(torch.float8_e4m3fn)}, str(shard_a))
-        save_file({scale_name: torch.ones(16, 56, dtype=torch.float32)}, str(shard_b))
-
-        with open(shard_dir / "model.safetensors.index.json", "w") as f:
-            json.dump(
-                {
-                    "metadata": {"total_size": 0},
-                    "weight_map": {
-                        weight_name: shard_a.name,
-                        scale_name: shard_b.name,
-                    },
-                },
-                f,
-            )
-
-        output, quantized, _ = _process_shard(
-            str(shard_a),
-            _DEFAULT_SCHEME,
-            {},
-            [],
-            fp8_block_size=[128, 128],
-        )
-        assert "model.layers.0.mlp.experts.1.gate_proj" in quantized
-        assert "model.layers.0.mlp.experts.1.gate_proj.qweight" in output
 
 
 # ===========================================================================
@@ -903,22 +829,7 @@ def _make_deepseek_v4_mxfp8(out_f, in_f, block_h, block_w):
 
 
 # TestExpandE8M0BlockScale moved to test/unit/test_cpu/utils/test_model_free_utils.py
-
-
-class TestDeepseekV4MXFP8Source:
-    """deepseek_v4 source models stored as float8 weights + coarse E8M0 scales."""
-
-    def test_resolve_model_type(self):
-        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
-        core.config = _DEEPSEEK_V4_CFG
-        core._resolve_model_type()
-        assert core.model_type == "deepseek_v4"
-
-    def test_resolve_model_type_negative(self):
-        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
-        core.config = _LLAMA_CFG
-        core._resolve_model_type()
-        assert core.model_type == "llama"
+# TestDeepseekV4MXFP8Source (resolve_model_type tests) moved to test/unit/test_cpu/utils/test_model_free_utils.py
 
 
 # ===========================================================================
@@ -942,25 +853,8 @@ class TestLLMCompressorMXFPSource:
 
     Unit tests for _handle_mxfp_source_tensors and _dequant_mxfp_tensors moved to
     test/unit/test_cpu/utils/test_model_free_utils.py -> TestHandleMXFPSourceTensors.
+    resolve_model_type tests moved to test/unit/test_cpu/utils/test_model_free_utils.py.
     """
-
-    def test_resolve_model_type_qwen3(self):
-        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
-        core.config = _LLMCOMPRESSOR_MXFP_CFG_FP8
-        core._resolve_model_type()
-        assert core.model_type == "qwen3"
-
-    def test_resolve_model_type_mixed(self):
-        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
-        core.config = _LLMCOMPRESSOR_MIXED_CFG
-        core._resolve_model_type()
-        assert core.model_type == "qwen3"
-
-    def test_resolve_model_type_negative_not_compressed_tensors(self):
-        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
-        core.config = _LLAMA_CFG
-        core._resolve_model_type()
-        assert core.model_type == "llama"
 
     @require_compressed_tensors
     def test_e2e_mxfp8_passthrough(self, tmp_path):
@@ -1122,72 +1016,8 @@ class TestSchemeValidation:
 
 
 # ===========================================================================
-#  kimi_k25 INT4 packed source models
+#  kimi_k25 INT4 packed source models — moved to test/unit/test_cpu/utils/test_model_free_utils.py
 # ===========================================================================
-
-
-_KIMI_K25_CFG = {
-    "architectures": ["KimiK25ForConditionalGeneration"],
-    "model_type": "kimi_k25",
-    "quantization_config": {
-        "quant_method": "compressed-tensors",
-        "weights": {"num_bits": 4, "type": "int", "group_size": 8, "symmetric": True},
-    },
-}
-
-
-class TestKimiK25Int4Source:
-    def test_kimi_k25_int4_dequant_helper(self):
-        raw = {
-            "layer.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
-            "layer.weight_scale": torch.ones(128, 16, dtype=torch.float16),
-        }
-        out = _handle_model_type_low_precision_source_tensors(
-            raw,
-            model_type="kimi_k25",
-            source_quant_config=_KIMI_K25_CFG["quantization_config"],
-            device="cpu",
-        )
-        assert "layer.weight" in out
-        assert out["layer.weight"].dtype == torch.bfloat16
-        assert out["layer.weight"].shape == (128, 128)
-        assert "layer.weight_packed" not in out
-        assert "layer.weight_scale" not in out
-
-    @require_compressed_tensors
-    def test_kimi_k25_int4_to_mxfp4_via_model_free(self, tmp_path):
-        tensors = {
-            "model.layers.0.mlp.fc1.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
-            "model.layers.0.mlp.fc1.weight_scale": torch.ones(128, 16, dtype=torch.float16),
-            "lm_head.weight": torch.randn(1000, 128),
-        }
-        model_dir = _make_model_dir(tmp_path, _KIMI_K25_CFG, tensors)
-        output_dir = str(tmp_path / "output")
-
-        _ModelFreeCompressorCore(
-            model_name_or_path=model_dir,
-            output_dir=output_dir,
-            scheme="MXFP4",
-            format="llm_compressor",
-        ).run()
-
-        qc = _read_qconfig(output_dir)
-        assert qc["format"] == "mxfp4-pack-quantized"
-        assert qc["quant_method"] == "compressed-tensors"
-
-        found_scale_dtype = None
-        found_packed_shape = None
-        for fname in os.listdir(output_dir):
-            if not fname.endswith(".safetensors"):
-                continue
-            with safe_open(os.path.join(output_dir, fname), framework="pt") as sf:
-                if "model.layers.0.mlp.fc1.weight_scale" in sf.keys():
-                    found_scale_dtype = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale").dtype
-                    found_packed_shape = sf.get_tensor("model.layers.0.mlp.fc1.weight_packed").shape
-
-        # Re-quantized MXFP4 scales are uint8 E8M0 (source INT4 scales were fp16).
-        assert found_scale_dtype == torch.uint8
-        assert found_packed_shape == (128, 64)
 
 
 # ===========================================================================
@@ -1245,24 +1075,7 @@ class TestCliAutoRouting:
         assert auto_route is False
 
 
-# ===========================================================================
-#  Predefined ignore layers
-# ===========================================================================
-
-
-class TestPredefinedIgnoreLayers:
-    def test_normal_model_empty(self):
-        assert get_predefined_ignore_layers_from_config({"architectures": ["LlamaForCausalLM"]}) == []
-
-    def test_step3p5_ignore_layers(self):
-        cfg = {"model_type": "step3p5"}
-        assert get_predefined_ignore_layers_from_config(cfg) == [
-            "g_proj",
-            "moe.gate",
-            "eh_proj",
-            "shared_head",
-            "layers.45",
-        ]
+# TestPredefinedIgnoreLayers moved to test/unit/test_cpu/utils/test_model_free_utils.py
 
 
 # ===========================================================================
@@ -1339,7 +1152,7 @@ _TRANSFORMER_TENSORS = {
 }
 
 
-class TestCopyMetadataSubfolders:
+class TestKimiK25Int4Source:
     """Tests for _copy_metadata_files including subdirectory handling."""
 
     def test_non_diffusion_copies_subfolders(self, tmp_path):

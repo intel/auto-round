@@ -14,32 +14,89 @@
 
 """Unit tests for model_free_utils helpers."""
 
+import json
+import os
+import tempfile
 from unittest.mock import Mock
 
 import pytest
 import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
 
-from auto_round.compressors.model_free import _ModelFreeCompressorCore
+from auto_round.compressors.model_free import (
+    _ModelFreeCompressorCore,
+    get_predefined_ignore_layers_from_config,
+)
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.model import is_model_free_route
 from auto_round.utils.model_free_utils import (
     _add_routed_experts_if_moe,
+    _build_cross_shard_pairs_from_weight_map,
     _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
+    _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
+    _hydrate_missing_fp8_scales_from_index,
     _looks_like_auto_scheme,
     _PatternMatcher,
+    _process_shard,
     _quantize_weight_mxfp,
     _validate_auto_scheme_options,
+)
+from auto_round.utils.model_free_utils import (
+    handle_model_type_low_precision_source_tensors as _handle_model_type_low_precision_source_tensors,
 )
 from auto_round.utils.model_free_utils import (
     preprocess_model_type_source_tensors as _preprocess_model_type_source_tensors,
 )
 
 from ...envs import require_compressed_tensors
+
+
+def _make_model_dir(tmp_path, config, tensors, *, multi_shard=False):
+    """Create a minimal local model directory with config.json and safetensors."""
+    model_dir = str(tmp_path / "source_model")
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        json.dump(config, f)
+
+    if not multi_shard:
+        save_file(tensors, os.path.join(model_dir, "model.safetensors"))
+    else:
+        keys = list(tensors.keys())
+        mid = max(1, len(keys) // 2)
+        shard1 = {k: tensors[k] for k in keys[:mid]}
+        shard2 = {k: tensors[k] for k in keys[mid:]}
+        save_file(shard1, os.path.join(model_dir, "model-00001-of-00002.safetensors"))
+        save_file(shard2, os.path.join(model_dir, "model-00002-of-00002.safetensors"))
+        weight_map = {}
+        for k in keys[:mid]:
+            weight_map[k] = "model-00001-of-00002.safetensors"
+        for k in keys[mid:]:
+            weight_map[k] = "model-00002-of-00002.safetensors"
+        with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {"total_size": 0}, "weight_map": weight_map}, f)
+    return model_dir
+
+
+def _read_qconfig(output_dir):
+    with open(os.path.join(output_dir, "config.json")) as f:
+        return json.load(f).get("quantization_config", {})
+
+
+def _read_output_keys(output_dir):
+    keys = set()
+    for f in os.listdir(output_dir):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
+                keys.update(sf.keys())
+    return keys
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -609,6 +666,26 @@ class TestExpandE8M0BlockScale:
 # ===========================================================================
 
 _DEEPSEEK_V4_CFG = {"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4"}
+_LLAMA_CFG = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
+_DEFAULT_SCHEME = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+_KIMI_K25_CFG = {
+    "architectures": ["KimiK25ForConditionalGeneration"],
+    "model_type": "kimi_k25",
+    "quantization_config": {
+        "quant_method": "compressed-tensors",
+        "weights": {"num_bits": 4, "type": "int", "group_size": 8, "symmetric": True},
+    },
+}
+_LLMCOMPRESSOR_MXFP_CFG_FP8 = {
+    "architectures": ["Qwen3ForCausalLM"],
+    "model_type": "qwen3",
+    "quantization_config": {"quant_method": "compressed-tensors", "format": "mxfp8-quantized"},
+}
+_LLMCOMPRESSOR_MIXED_CFG = {
+    "architectures": ["Qwen3ForCausalLM"],
+    "model_type": "qwen3",
+    "quantization_config": {"quant_method": "compressed-tensors", "format": "mixed-precision"},
+}
 
 
 def _make_deepseek_v4_mxfp8(out_f, in_f, block_h, block_w):
@@ -943,3 +1020,428 @@ class TestBuildMxfpAutoRoundConfig:
         )
         assert cfg["quant_method"] == "compressed-tensors"
         assert cfg["format"] == "mxfp4-pack-quantized"
+
+
+# ===========================================================================
+#  is_model_free_route (basic function tests)
+# ===========================================================================
+
+
+@pytest.mark.parametrize("scheme", ["MXFP8", "mxfp8"])
+def test_model_free_route_accepts_mxfp_scheme_case_insensitively(scheme):
+    assert is_model_free_route("model", scheme, 0, True, {})
+
+
+@pytest.mark.parametrize("dtype_key", ["static_kv_dtype", "static_attention_dtype"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_model_free_route_rejects_static_attention_quantization(dtype_key, explicit):
+    kwargs = {dtype_key: "fp8", "model_free": explicit}
+    assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
+
+
+# ===========================================================================
+#  _resolve_model_type (model-type unit tests)
+# ===========================================================================
+
+
+class TestResolveModelTypeDeepseekV4:
+    """_resolve_model_type unit tests for deepseek_v4."""
+
+    def test_resolve_model_type(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _DEEPSEEK_V4_CFG
+        core._resolve_model_type()
+        assert core.model_type == "deepseek_v4"
+
+    def test_resolve_model_type_negative(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLAMA_CFG
+        core._resolve_model_type()
+        assert core.model_type == "llama"
+
+
+class TestResolveModelTypeLLMCompressor:
+    """_resolve_model_type unit tests for llm-compressor MXFP models."""
+
+    def test_resolve_model_type_qwen3(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLMCOMPRESSOR_MXFP_CFG_FP8
+        core._resolve_model_type()
+        assert core.model_type == "qwen3"
+
+    def test_resolve_model_type_mixed(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLMCOMPRESSOR_MIXED_CFG
+        core._resolve_model_type()
+        assert core.model_type == "qwen3"
+
+    def test_resolve_model_type_negative_not_compressed_tensors(self):
+        core = _ModelFreeCompressorCore(model_name_or_path="x", output_dir="o", scheme="MXFP8")
+        core.config = _LLAMA_CFG
+        core._resolve_model_type()
+        assert core.model_type == "llama"
+
+
+# ===========================================================================
+#  Predefined ignore layers
+# ===========================================================================
+
+
+class TestPredefinedIgnoreLayers:
+    def test_normal_model_empty(self):
+        assert get_predefined_ignore_layers_from_config({"architectures": ["LlamaForCausalLM"]}) == []
+
+    def test_step3p5_ignore_layers(self):
+        cfg = {"model_type": "step3p5"}
+        assert get_predefined_ignore_layers_from_config(cfg) == [
+            "g_proj",
+            "moe.gate",
+            "eh_proj",
+            "shared_head",
+            "layers.45",
+        ]
+
+
+# ===========================================================================
+#  Cross-shard FP8 scale handling
+# ===========================================================================
+
+
+def _write_fake_fp8_shard(path: str, tensors: dict) -> None:
+    """Save a dict of tensors as a safetensors file."""
+    save_file(tensors, path)
+
+
+def _write_index_json(directory: str, weight_map: dict) -> str:
+    index_path = os.path.join(directory, "model.safetensors.index.json")
+    with open(index_path, "w") as f:
+        json.dump({"weight_map": weight_map}, f)
+    return index_path
+
+
+class TestBuildCrossShardPairs:
+    """Tests for _build_cross_shard_pairs_from_weight_map."""
+
+    def test_no_fp8_entries_returns_empty(self):
+        weight_map = {
+            "model.layer.weight": "shard-00001.safetensors",
+            "model.layer.bias": "shard-00001.safetensors",
+        }
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+        assert recipient_to_donors == {}
+        assert donor_shard_tensors == {}
+
+    def test_same_shard_scale_not_cross(self):
+        """weight and weight_scale_inv in the same shard → not a cross-shard pair."""
+        weight_map = {
+            "model.layer.weight": "shard-00001.safetensors",
+            "model.layer.weight_scale_inv": "shard-00001.safetensors",
+        }
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+        assert recipient_to_donors == {}
+        assert donor_shard_tensors == {}
+
+    def test_cross_shard_single_pair(self):
+        """weight in shard-1, weight_scale_inv in shard-2."""
+        weight_map = {
+            "model.layer.weight": "shard-00001.safetensors",
+            "model.layer.weight_scale_inv": "shard-00002.safetensors",
+        }
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+
+        assert "shard-00001.safetensors" in recipient_to_donors
+        donor_map = recipient_to_donors["shard-00001.safetensors"]
+        assert "shard-00002.safetensors" in donor_map
+        assert "model.layer.weight_scale_inv" in donor_map["shard-00002.safetensors"]
+
+        assert "shard-00002.safetensors" in donor_shard_tensors
+        assert "model.layer.weight_scale_inv" in donor_shard_tensors["shard-00002.safetensors"]
+
+    def test_cross_shard_multiple_layers_one_donor(self):
+        """Multiple layers whose scale_inv all live in the same donor shard."""
+        weight_map = {
+            "model.layer0.weight": "shard-00001.safetensors",
+            "model.layer0.weight_scale_inv": "shard-00002.safetensors",
+            "model.layer1.weight": "shard-00001.safetensors",
+            "model.layer1.weight_scale_inv": "shard-00002.safetensors",
+        }
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+
+        donor_map = recipient_to_donors["shard-00001.safetensors"]
+        scales = donor_map["shard-00002.safetensors"]
+        assert "model.layer0.weight_scale_inv" in scales
+        assert "model.layer1.weight_scale_inv" in scales
+        assert len(donor_shard_tensors["shard-00002.safetensors"]) == 2
+
+    def test_cross_shard_multiple_donors(self):
+        """Recipient shard needs scales from two different donor shards."""
+        weight_map = {
+            "model.layerA.weight": "shard-00001.safetensors",
+            "model.layerA.weight_scale_inv": "shard-00002.safetensors",
+            "model.layerB.weight": "shard-00001.safetensors",
+            "model.layerB.weight_scale_inv": "shard-00003.safetensors",
+        }
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+
+        donor_map = recipient_to_donors["shard-00001.safetensors"]
+        assert "shard-00002.safetensors" in donor_map
+        assert "shard-00003.safetensors" in donor_map
+        assert len(donor_shard_tensors) == 2
+
+    def test_scale_inv_without_matching_weight_ignored(self):
+        """weight_scale_inv present in weight_map but no corresponding .weight → ignored."""
+        weight_map = {
+            "model.layer.weight_scale_inv": "shard-00002.safetensors",
+            # no "model.layer.weight" key at all
+        }
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+        assert recipient_to_donors == {}
+        assert donor_shard_tensors == {}
+
+    def test_empty_weight_map(self):
+        recipient_to_donors, donor_shard_tensors = _build_cross_shard_pairs_from_weight_map({})
+        assert recipient_to_donors == {}
+        assert donor_shard_tensors == {}
+
+
+class TestHydrateMissingFp8Scales:
+    """Tests for _hydrate_missing_fp8_scales_from_index."""
+
+    def test_non_safetensors_shard_returns_unchanged(self, tmp_path):
+        raw = {"w": torch.zeros(4)}
+        result = _hydrate_missing_fp8_scales_from_index(raw, str(tmp_path / "model.bin"))
+        assert result is raw
+
+    def test_no_fp8_weights_returns_unchanged(self, tmp_path):
+        shard_path = str(tmp_path / "shard-00001.safetensors")
+        raw = {"model.layer.weight": torch.zeros(4, dtype=torch.bfloat16)}
+        result = _hydrate_missing_fp8_scales_from_index(raw, shard_path)
+        assert result is raw
+
+    def test_all_scales_present_returns_unchanged(self, tmp_path):
+        shard_path = str(tmp_path / "shard-00001.safetensors")
+        raw = {
+            "model.layer.weight": torch.zeros(4, dtype=torch.float8_e4m3fn),
+            "model.layer.weight_scale_inv": torch.ones(1),
+        }
+        result = _hydrate_missing_fp8_scales_from_index(raw, shard_path)
+        assert "model.layer.weight_scale_inv" in result
+
+    def test_cross_shard_hydration_local_mode(self, tmp_path):
+        """Recipient shard gets scale_inv from donor shard in local (non-streaming) mode."""
+        donor_name = "shard-00002.safetensors"
+        recipient_name = "shard-00001.safetensors"
+        scale_name = "model.layer.weight_scale_inv"
+
+        donor_path = tmp_path / donor_name
+        _write_fake_fp8_shard(str(donor_path), {scale_name: torch.ones(1)})
+
+        weight_map = {
+            "model.layer.weight": recipient_name,
+            scale_name: donor_name,
+        }
+        _write_index_json(str(tmp_path), weight_map)
+
+        recipient_path = tmp_path / recipient_name
+        raw = {"model.layer.weight": torch.zeros(4, dtype=torch.float8_e4m3fn)}
+
+        result = _hydrate_missing_fp8_scales_from_index(raw, str(recipient_path))
+        assert scale_name in result, "scale_inv should be hydrated from donor shard"
+        assert result[scale_name].dtype == torch.float32 or result[scale_name].numel() == 1
+
+    def test_cross_shard_hydration_streaming_mode(self, tmp_path):
+        """In streaming mode, index.json lives in work_dir, shards in cache subdir."""
+        work_dir = tmp_path / "work_dir"
+        cache_dir = work_dir / ".cache" / "model_free_source_shards"
+        work_dir.mkdir()
+        cache_dir.mkdir(parents=True)
+
+        donor_name = "shard-00002.safetensors"
+        recipient_name = "shard-00001.safetensors"
+        scale_name = "model.layer.weight_scale_inv"
+
+        _write_fake_fp8_shard(str(cache_dir / donor_name), {scale_name: torch.ones(1)})
+
+        weight_map = {
+            "model.layer.weight": recipient_name,
+            scale_name: donor_name,
+        }
+        _write_index_json(str(work_dir), weight_map)
+
+        recipient_path = cache_dir / recipient_name
+        raw = {"model.layer.weight": torch.zeros(4, dtype=torch.float8_e4m3fn)}
+
+        result = _hydrate_missing_fp8_scales_from_index(
+            raw,
+            str(recipient_path),
+            index_dir=str(work_dir),
+            donor_shard_dir=str(cache_dir),
+        )
+        assert scale_name in result, "streaming mode: scale_inv should be hydrated via index_dir/donor_shard_dir params"
+
+    def test_missing_index_json_returns_unchanged(self, tmp_path):
+        """If no index.json exists, raw_tensors is returned as-is (no crash)."""
+        shard_path = str(tmp_path / "shard-00001.safetensors")
+        raw = {"model.layer.weight": torch.zeros(4, dtype=torch.float8_e4m3fn)}
+        result = _hydrate_missing_fp8_scales_from_index(raw, shard_path)
+        assert result is raw
+
+    def test_donor_shard_missing_on_disk_returns_unchanged(self, tmp_path):
+        """Index references a donor shard that doesn't exist on disk → graceful skip."""
+        scale_name = "model.layer.weight_scale_inv"
+        recipient_name = "shard-00001.safetensors"
+        donor_name = "shard-00002.safetensors"  # not written
+
+        weight_map = {
+            "model.layer.weight": recipient_name,
+            scale_name: donor_name,
+        }
+        _write_index_json(str(tmp_path), weight_map)
+
+        raw = {"model.layer.weight": torch.zeros(4, dtype=torch.float8_e4m3fn)}
+        result = _hydrate_missing_fp8_scales_from_index(raw, str(tmp_path / recipient_name))
+        assert scale_name not in result  # hydration skipped silently
+
+    def test_multiple_layers_hydrated_from_single_donor(self, tmp_path):
+        """Multiple missing scale_inv tensors are hydrated in a single donor open."""
+        donor_name = "shard-00002.safetensors"
+        recipient_name = "shard-00001.safetensors"
+        scales = {
+            "model.layerA.weight_scale_inv": torch.ones(1),
+            "model.layerB.weight_scale_inv": torch.ones(1),
+        }
+        _write_fake_fp8_shard(str(tmp_path / donor_name), scales)
+
+        weight_map = {
+            "model.layerA.weight": recipient_name,
+            "model.layerA.weight_scale_inv": donor_name,
+            "model.layerB.weight": recipient_name,
+            "model.layerB.weight_scale_inv": donor_name,
+        }
+        _write_index_json(str(tmp_path), weight_map)
+
+        raw = {
+            "model.layerA.weight": torch.zeros(4, dtype=torch.float8_e4m3fn),
+            "model.layerB.weight": torch.zeros(4, dtype=torch.float8_e4m3fn),
+        }
+        result = _hydrate_missing_fp8_scales_from_index(raw, str(tmp_path / recipient_name))
+        assert "model.layerA.weight_scale_inv" in result
+        assert "model.layerB.weight_scale_inv" in result
+
+
+# ===========================================================================
+#  FP8 source model
+# ===========================================================================
+
+
+class TestFP8Source:
+    def test_dequant_fp8(self):
+        w = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        raw = {"layer.weight": w, "layer.weight_scale_inv": torch.tensor(0.5), "layer.bias": torch.randn(64)}
+        result = _dequant_fp8_tensors(raw, block_size=None)
+        assert result["layer.weight"].dtype == torch.bfloat16 and "layer.weight_scale_inv" not in result
+
+    def test_no_fp8_noop(self):
+        raw = {"layer.weight": torch.randn(64, 128)}
+        assert _dequant_fp8_tensors(raw, block_size=None) is raw
+
+    def test_process_shard_fp8(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        w = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        save_file({"layer.weight": w, "layer.weight_scale_inv": torch.tensor(1.0)}, shard_path)
+        output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], device="cpu", fp8_block_size=None)
+        assert "layer" in quantized and "layer.qweight" in output
+
+    def test_dequant_fp8_hydrates_scale_from_sibling_shard(self, tmp_path):
+        """When scale_inv is sharded separately, dequant should hydrate it via index."""
+        shard_dir = tmp_path / "source"
+        shard_dir.mkdir(parents=True, exist_ok=True)
+
+        weight_name = "model.layers.0.mlp.experts.1.gate_proj.weight"
+        scale_name = "model.layers.0.mlp.experts.1.gate_proj.weight_scale_inv"
+
+        shard_a = shard_dir / "model-00001-of-00002.safetensors"
+        shard_b = shard_dir / "model-00002-of-00002.safetensors"
+        save_file({weight_name: torch.randn(2048, 7168, dtype=torch.bfloat16).to(torch.float8_e4m3fn)}, str(shard_a))
+        save_file({scale_name: torch.ones(16, 56, dtype=torch.float32)}, str(shard_b))
+
+        with open(shard_dir / "model.safetensors.index.json", "w") as f:
+            json.dump(
+                {
+                    "metadata": {"total_size": 0},
+                    "weight_map": {
+                        weight_name: shard_a.name,
+                        scale_name: shard_b.name,
+                    },
+                },
+                f,
+            )
+
+        output, quantized, _ = _process_shard(
+            str(shard_a),
+            _DEFAULT_SCHEME,
+            {},
+            [],
+            fp8_block_size=[128, 128],
+        )
+        assert "model.layers.0.mlp.experts.1.gate_proj" in quantized
+        assert "model.layers.0.mlp.experts.1.gate_proj.qweight" in output
+
+
+# ===========================================================================
+#  kimi_k25 INT4 packed source models
+# ===========================================================================
+
+
+class TestKimiK25Int4Source:
+    def test_kimi_k25_int4_dequant_helper(self):
+        raw = {
+            "layer.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
+            "layer.weight_scale": torch.ones(128, 16, dtype=torch.float16),
+        }
+        out = _handle_model_type_low_precision_source_tensors(
+            raw,
+            model_type="kimi_k25",
+            source_quant_config=_KIMI_K25_CFG["quantization_config"],
+            device="cpu",
+        )
+        assert "layer.weight" in out
+        assert out["layer.weight"].dtype == torch.bfloat16
+        assert out["layer.weight"].shape == (128, 128)
+        assert "layer.weight_packed" not in out
+        assert "layer.weight_scale" not in out
+
+    @require_compressed_tensors
+    def test_kimi_k25_int4_to_mxfp4_via_model_free(self, tmp_path):
+        tensors = {
+            "model.layers.0.mlp.fc1.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
+            "model.layers.0.mlp.fc1.weight_scale": torch.ones(128, 16, dtype=torch.float16),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _KIMI_K25_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="MXFP4",
+            format="llm_compressor",
+        ).run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp4-pack-quantized"
+        assert qc["quant_method"] == "compressed-tensors"
+
+        found_scale_dtype = None
+        found_packed_shape = None
+        for fname in os.listdir(output_dir):
+            if not fname.endswith(".safetensors"):
+                continue
+            with safe_open(os.path.join(output_dir, fname), framework="pt") as sf:
+                if "model.layers.0.mlp.fc1.weight_scale" in sf.keys():
+                    found_scale_dtype = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale").dtype
+                    found_packed_shape = sf.get_tensor("model.layers.0.mlp.fc1.weight_packed").shape
+
+        # Re-quantized MXFP4 scales are uint8 E8M0 (source INT4 scales were fp16).
+        assert found_scale_dtype == torch.uint8
+        assert found_packed_shape == (128, 64)
