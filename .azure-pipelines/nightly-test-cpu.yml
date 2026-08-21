@@ -61,9 +61,16 @@ stages:
         timeoutInMinutes: 60
         strategy:
           matrix:
-            ${{ each part in parameters.unitTestParts }}:
-              part_${{ part }}:
-                PART: ${{ part }}
+            # PR-triggered runs only cover inc/llmc; the 0-4 parts duplicate the fast PR unit-test pipeline.
+            ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+              part_inc:
+                PART: inc
+              part_llmc:
+                PART: llmc
+            ${{ else }}:
+              ${{ each part in parameters.unitTestParts }}:
+                part_${{ part }}:
+                  PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
