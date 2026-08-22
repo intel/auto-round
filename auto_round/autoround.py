@@ -435,12 +435,12 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
     from auto_round.algorithms.transforms import normalize_rotation_config
-    from auto_round.algorithms.transforms.base import BaseRotationConfig
     from auto_round.algorithms.transforms.awq.config import (
         awq_disable_opt_rtn,
         rtn_inherited_opt_kwargs,
         sync_rtn_opt_rtn_from_awq,
     )
+    from auto_round.algorithms.transforms.base import BaseRotationConfig
 
     direct_kwargs = dict(direct_kwargs or {})
     legacy_algorithm = direct_kwargs.pop("algorithm", None)
