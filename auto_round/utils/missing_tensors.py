@@ -63,6 +63,13 @@ _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
 _AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
 _WARNING_INDEX_PLACEHOLDER = "<idx>"
 
+# model_type values whose native inference-engine loader (e.g. vLLM's custom
+# MoE weight loader) expects the *fused*, per-layer stacked 3-D expert
+# tensors (``experts.w13_weight`` / ``experts.w2_weight``) to be preserved
+# as-is (quantized in place) rather than unfused into per-expert 2-D
+# tensors. Splitting these would break loading for such architectures.
+_KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
+
 
 def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
     """Normalize tensor names for warning_once deduplication.
@@ -84,6 +91,7 @@ def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WA
 
 def split_fused_expert_tensors(
     tensors_dict: dict[str, torch.Tensor],
+    model_type: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Split 3-D fused expert tensors into per-expert 2-D tensors.
 
@@ -110,12 +118,23 @@ def split_fused_expert_tensors(
 
     Non-3-D or non-expert tensors pass through unchanged.
 
+    Some architectures (see ``_KEEP_FUSED_EXPERT_MODEL_TYPES``) ship a custom
+    inference-engine loader that consumes the fused 3-D stacked tensors
+    directly (quantizing/packing them in place without unfusing per expert).
+    For those ``model_type`` values, this function is a no-op passthrough.
+
     Args:
         tensors_dict: Mapping of tensor names to tensors.
+        model_type: Source model's ``model_type`` (from ``config.json``), used
+            to skip splitting for architectures whose native loader expects
+            fused stacked expert tensors.
 
     Returns:
         New dict with fused expert tensors replaced by per-expert 2-D tensors.
     """
+    if (model_type or "").lower() in _KEEP_FUSED_EXPERT_MODEL_TYPES:
+        return dict(tensors_dict)
+
     result: dict[str, torch.Tensor] = {}
     split_count = 0
 

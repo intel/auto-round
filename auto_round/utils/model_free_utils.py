@@ -362,6 +362,103 @@ def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
     return tensor_name.endswith(".weight") and tensor.dim() == 2
 
 
+def _is_moe_fused_expert_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
+    """Check if *tensor* is a 3-D fused per-layer stacked MoE expert weight
+    (e.g. ``experts.w13_weight`` / ``experts.w2_weight``, shape
+    ``[num_experts, out, in]``).
+
+    Such tensors are produced when :func:`split_fused_expert_tensors
+    <auto_round.utils.missing_tensors.split_fused_expert_tensors>` skips
+    unfusing for the source model's ``model_type`` (see
+    ``_KEEP_FUSED_EXPERT_MODEL_TYPES``) because the target inference engine's
+    loader expects the fused layout preserved rather than split per expert.
+
+    Matches ``<prefix>.experts.<proj_name>`` only -- ``shared_experts`` (never
+    a quantization target) is intentionally excluded by requiring the
+    immediate parent segment to be exactly ``experts``.
+    """
+    if tensor.dim() != 3:
+        return False
+    parts = tensor_name.split(".")
+    return len(parts) >= 2 and parts[-2] == "experts"
+
+
+def _quantize_moe_fused_expert_weight(
+    tensor_name: str,
+    tensor: torch.Tensor,
+    matcher: "_PatternMatcher",
+    device: str = "cpu",
+    disable_opt_rtn: bool = False,
+) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
+    """Quantize a 3-D fused per-layer stacked MoE expert weight in place.
+
+    Each expert's 2-D slice (``tensor[i]``) is quantized independently via
+    :func:`_quantize_weight_mxfp` and the packed outputs are re-stacked along
+    a new leading dimension, preserving the tensor's original fused layout
+    (e.g. ``experts.w13_weight.weight_packed`` stays 3-D instead of being
+    unfused into per-expert 2-D tensors). RTN/MXFP quantization groups values
+    along the last (``in_features``) dimension on a per-row basis, so this is
+    numerically equivalent to quantizing whatever 2-D weight each row
+    originally came from -- any gate/up row interleaving within a slice does
+    not affect correctness.
+
+    Only the MXFP4/MXFP8 path is currently supported for this layout; other
+    schemes fall back to keeping the original (unquantized) weight.
+
+    Returns:
+        (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
+    """
+    layer_name = tensor_name
+
+    if matcher.should_ignore(tensor_name) or matcher.should_skip(tensor_name):
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    scheme = matcher.resolve_scheme(tensor_name)
+    if scheme is None:
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    bits = scheme["bits"]
+    if bits >= 16:
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    data_type = (scheme.get("data_type") or "int").lower()
+    group_size = scheme["group_size"]
+
+    if not is_mx_fp(data_type):
+        logger.warning_once(
+            f"3-D fused MoE weight '{tensor_name}' (shape={list(tensor.shape)}) is only "
+            "supported for MXFP schemes in model_free mode; keeping original weight."
+        )
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    try:
+        packed_parts: dict[str, list[torch.Tensor]] = {}
+        for i in range(tensor.shape[0]):
+            slice_out = _quantize_weight_mxfp(
+                weight=tensor[i],
+                layer_name=f"{layer_name}.{i}",
+                bits=bits,
+                group_size=group_size,
+                data_type=data_type,
+                device=device,
+                disable_opt_rtn=disable_opt_rtn,
+            )
+            prefix = f"{layer_name}.{i}"
+            for key, value in slice_out.items():
+                suffix = key[len(prefix) :]  # e.g. ".weight_packed" / ".weight_scale"
+                packed_parts.setdefault(suffix, []).append(value)
+
+        out = {f"{layer_name}{suffix}": torch.stack(values, dim=0) for suffix, values in packed_parts.items()}
+        logger.debug(
+            f"Quantized (MXFP, fused 3-D): {layer_name} "
+            f"(bits={bits}, group_size={group_size}, num_experts={tensor.shape[0]})"
+        )
+        return layer_name, out, layer_name, None
+    except Exception as e:
+        logger.warning(f"Failed to MXFP-quantize fused 3-D MoE weight {layer_name}: {e}. Keeping original weight.")
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+
 def _quantize_weight_mxfp(
     weight: torch.Tensor,
     layer_name: str,
@@ -510,6 +607,9 @@ def _quantize_single_tensor(
     Returns:
         (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
     """
+    if _is_moe_fused_expert_weight(tensor_name, tensor):
+        return _quantize_moe_fused_expert_weight(tensor_name, tensor, matcher, device, disable_opt_rtn)
+
     layer_name = tensor_name.rsplit(".", 1)[0]
 
     if not _is_eligible_weight(tensor_name, tensor):
@@ -1046,7 +1146,7 @@ def _process_shard(
         with safe_open(shard_path, framework="pt", device="cpu") as f:
             raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
-    raw_tensors = split_fused_expert_tensors(raw_tensors)
+    raw_tensors = split_fused_expert_tensors(raw_tensors, model_type=model_type)
 
     # Hydrate cross-shard FP8 weight_scale_inv tensors *before* any
     # preprocessing below. Otherwise a weight whose scale lives in a sibling
@@ -1066,11 +1166,14 @@ def _process_shard(
     # Snapshot candidate weight layer names *before* any preprocessing. 1D
     # weights (for example LayerNorm) are not quantization targets, while 3D
     # weights remain tracked so unsupported layouts are visible as ignored.
+    # Fused 3-D MoE expert weights (e.g. ``experts.w13_weight``, kept fused
+    # for model_type architectures like Inkling) have no ``.weight`` suffix
+    # of their own, so they are tracked separately here.
     input_weight_layers: list[str] = list(
         dict.fromkeys(
-            name.rsplit(".", 1)[0]
+            name.rsplit(".", 1)[0] if name.endswith(".weight") else name
             for name, tensor in raw_tensors.items()
-            if name.endswith(".weight") and tensor.dim() > 1
+            if (name.endswith(".weight") and tensor.dim() > 1) or _is_moe_fused_expert_weight(name, tensor)
         )
     )
 
