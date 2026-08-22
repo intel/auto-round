@@ -1,17 +1,46 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Functional (non-accuracy) checks for the ``torch`` inference backend.
+
+Verifies that models quantized via RTN or tuning, at various bit-widths/group
+sizes/formats, can be reloaded with ``AutoRoundConfig(backend="torch")`` and
+produce output -- no accuracy thresholds here (see
+``test_cuda/backends/test_torch_backend_accuracy.py`` for that, which needs a
+real, non-tiny model to produce meaningful numbers).
+"""
+
 import shutil
-from test.helpers import evaluate_accuracy, generate_prompt, get_model_path, model_infer
+from test.helpers import model_infer
 
 import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
+from auto_round.utils.device_manager import get_major_device
 
-from ...envs import require_autogptq, require_gptqmodel
+_AVAILABLE_DEVICES = [get_major_device()]
+
+# (sym, group_size, format) combinations for 4-bit quantization.
+_4BIT_CASES = [
+    (False, 128, "auto_round:gptqmodel"),
+    (True, 32, "auto_round"),
+]
 
 
-class TestAutoRoundTorchBackend:
-
+class TestTorchBackendFunctional:
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
         self.save_dir = str(tmp_path / "saved")
@@ -20,169 +49,51 @@ class TestAutoRoundTorchBackend:
 
     @pytest.fixture(autouse=True, scope="class")
     def setup_and_teardown_class(self):
-        # ===== SETUP (setup_class) =====
-        print("[Setup] Running before any test in class")
-
-        # Yield to hand control to the test methods
         yield
-
-        # ===== TEARDOWN (teardown_class) =====
-        print("[Teardown] Running after all tests in class")
         shutil.rmtree("runs", ignore_errors=True)
 
-    # Keep one CI test for torch backend and skip others to save time.
-    # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
-    @pytest.mark.timeout(90)
-    def test_torch_4bits_asym(self, dataloader):
-        model_path = get_model_path("facebook/opt-125m")
-        model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, False
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-        _, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, format="auto_round:gptqmodel"
-        )
+    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    @pytest.mark.parametrize("iters", [0, 1], ids=["rtn", "tuning"])
+    @pytest.mark.parametrize("sym,group_size,format", _4BIT_CASES)
+    def test_torch_backend_4bit(self, tiny_opt_model_path, sym, group_size, format, iters, device):
+        """4-bit (a)symmetric model, RTN or tuned, loads via the torch backend and generates text."""
+        ar = AutoRound(tiny_opt_model_path, bits=4, group_size=group_size, sym=sym, iters=iters, seqlen=2, nsamples=1)
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format=format)
 
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
-        torch.cuda.empty_cache()
-
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
-    def test_torch_4bits_sym(self, dataloader):
-        model_path = get_model_path("facebook/opt-125m")
-        model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        bits, group_size, sym = 4, 128, True
-        autoround = AutoRound(
-            model,
-            tokenizer,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=1,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        quantized_model_path = self.save_dir
-        _, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, format="auto_round"
-        )  ##will convert to gptq model
-
-        quantization_config = AutoRoundConfig(backend="torch")
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
+            quantized_model_path,
+            torch_dtype=torch.float16,
+            device_map=device,
+            quantization_config=quantization_config,
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=16)
-        torch.cuda.empty_cache()
 
-    def test_autoround_3bit_asym_torch_format(self, tiny_opt_model_path, dataloader):
-        bits, group_size, sym = 3, 128, False
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        autoround.quantize()
-        quantized_model_path = self.save_dir
+    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    def test_torch_backend_3bit_asym(self, tiny_opt_model_path, dataloader, device):
+        """3-bit asymmetric model loads via the torch backend and generates text."""
+        ar = AutoRound(tiny_opt_model_path, bits=3, group_size=128, sym=False, iters=2, seqlen=2, dataset=dataloader)
+        ar.quantize()
+        ar.save_quantized(output_dir=self.save_dir, inplace=False, format="auto_round:gptqmodel")
 
-        autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round:gptqmodel")
-
-        device = "auto"  ##cpu, hpu, cuda
-        from transformers import AutoRoundConfig
-
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map=device)
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=10)[0]))
+        model = AutoModelForCausalLM.from_pretrained(self.save_dir, device_map=device)
+        tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
+        model_infer(model, tokenizer)
 
     @pytest.mark.skip_ci(reason="Not necessary to test both symmetric and asymmetric for 3-bit quantization in CI")
-    def test_autoround_3bit_sym_torch_format(self, tiny_opt_model_path, dataloader):
-        bits, group_size, sym = 3, 128, True
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=2,
-            seqlen=2,
-            dataset=dataloader,
-        )
-        autoround.quantize()
-        quantized_model_path = self.save_dir
-
-        _, quantized_model_path = autoround.save_quantized(
-            output_dir=quantized_model_path, inplace=False, format="auto_round", return_folders=True
+    @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
+    def test_torch_backend_3bit_sym(self, tiny_opt_model_path, dataloader, device):
+        """3-bit symmetric model loads via the torch backend and generates text."""
+        ar = AutoRound(tiny_opt_model_path, bits=3, group_size=128, sym=True, iters=2, seqlen=2, dataset=dataloader)
+        ar.quantize()
+        _, quantized_model_path = ar.save_quantized(
+            output_dir=self.save_dir, inplace=False, format="auto_round", return_folders=True
         )
 
-        device = "auto"  ##cpu, hpu, cuda
-        from transformers import AutoRoundConfig
-
-        quantization_config = AutoRoundConfig(backend=device)
+        quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=device, quantization_config=quantization_config
         )
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        text = "There is a girl who likes adventure,"
-        inputs = tokenizer(text, return_tensors="pt").to(model.device)
-        print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
-        shutil.rmtree(self.save_dir, ignore_errors=True)
-
-    @require_gptqmodel
-    @pytest.mark.skip_ci(reason="Not necessary to test low priority backend in CI")
-    def test_gptqmodel_awq_torch_4bits_group_size_16(self, dataloader):
-        """Test AWQ quantization with gptqmodel:awq_torch backend (group_size=16, float16)."""
-        model_path = get_model_path("facebook/opt-125m")
-        bits, group_size, sym = 4, 16, True
-        autoround = AutoRound(
-            model_path,
-            bits=bits,
-            group_size=group_size,
-            sym=sym,
-            iters=0,
-            disable_opt_rtn=True,
-        )
-        quantized_model_path = self.save_dir
-        _, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, format="auto_round:auto_awq"
-        )
-
-        quantization_config = AutoRoundConfig(backend="gptqmodel:awq_torch")
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        # Inference generation check
-        output = model_infer(model, tokenizer)
-        assert isinstance(output, str) and len(output.strip()) > 0, "Model failed to generate non-empty output"
-        generated = generate_prompt(model, tokenizer, "There is a girl who likes adventure,")
-        assert len(generated) > len("There is a girl who likes adventure,"), "Generation did not produce new tokens"
-        # Accuracy check
-        evaluate_accuracy(model, tokenizer, threshold=0.2, batch_size=16)
-        torch.cuda.empty_cache()
-        shutil.rmtree("./saved", ignore_errors=True)
+        model_infer(model, tokenizer)

@@ -1,1 +1,4 @@
 pillow
+gguf
+diffusers
+compressed-tensors
