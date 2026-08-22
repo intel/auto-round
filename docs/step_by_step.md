@@ -350,6 +350,8 @@ AWQ (Activation-Aware Weight Quantization) is available as an alternative quanti
 
 The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
+AWQ can also be composed with AutoRound optimization (`--algorithm awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
+
 #### CLI Usage
 
 ```bash
