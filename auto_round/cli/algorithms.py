@@ -14,6 +14,7 @@ No manual registry update needed — subclasses are auto-registered on definitio
 from __future__ import annotations
 
 import argparse
+import copy
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
@@ -115,16 +116,34 @@ class AlgorithmHandler(ABC):
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
 
-        # Default quantization algorithm if none was specified
-        if not ({"awq", "rtn", "auto_round"} & seen):
-            canonical.append("rtn" if getattr(args, "iters", 0) == 0 else "auto_round")
+        # Default terminal quantizer if none was specified. AWQ is a
+        # calibration preprocessor; AWQ-only pipelines intentionally default to
+        # RTN so RTN CLI flags such as --disable_opt_rtn are applied before the
+        # lower-level composer has to append a fallback quantizer.
+        if not ({"rtn", "auto_round"} & seen):
+            default_terminal = "rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round"
+            canonical.append(default_terminal)
 
         # Keep the legacy API rule even when the user explicitly spells out
         # ``--algorithm auto_round``: zero iterations select RTN.
         if getattr(args, "iters", None) == 0:
             canonical = ["rtn" if name == "auto_round" else name for name in canonical]
 
-        return [cls.get(name).build(args, common_kwargs) for name in canonical]
+        explicit_opt_rtn = getattr(args, "disable_opt_rtn", None) is not None
+        awq_config = cls.get("awq").build(args, common_kwargs) if "awq" in canonical else None
+        awq_disable_opt_rtn = getattr(awq_config, "disable_opt_rtn", None)
+
+        configs = []
+        for name in canonical:
+            if name == "awq":
+                configs.append(awq_config)
+                continue
+            build_args = args
+            if name == "rtn" and not explicit_opt_rtn and awq_disable_opt_rtn is not None:
+                build_args = copy.copy(args)
+                setattr(build_args, "disable_opt_rtn", awq_disable_opt_rtn)
+            configs.append(cls.get(name).build(build_args, common_kwargs))
+        return configs
 
     @classmethod
     def format_listing(cls) -> str:
@@ -242,6 +261,7 @@ class AWQ(AlgorithmHandler):
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         awq_seqlen = getattr(args, "awq_seqlen", None)
+        disable_opt_rtn = getattr(args, "disable_opt_rtn", None)
         return AWQConfig(
             duo_scaling=getattr(args, "duo_scaling", True),
             n_grid=getattr(args, "n_grid", 20),
@@ -249,6 +269,7 @@ class AWQ(AlgorithmHandler):
             clip_as_init=getattr(args, "awq_clip_as_init", False),
             awq_seqlen=512 if awq_seqlen is None else awq_seqlen,
             smooth_batch_size=getattr(args, "awq_smooth_batch_size", None),
+            disable_opt_rtn=True if disable_opt_rtn is None else disable_opt_rtn,
             **common_kwargs,
         )
 

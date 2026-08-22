@@ -72,6 +72,12 @@ def test_hadamard_disables_only_block_forward_compile():
     assert not _can_compile_block_forward(quantizer, [], user_enabled=False)
 
 
+def test_awq_disables_block_forward_compile():
+    pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()])
+
+    assert not _can_compile_block_forward(pipeline.block_quantizer, pipeline.preprocessors, user_enabled=True)
+
+
 def test_detect_nvfp4_from_layer_config_scheme_override():
     orchestrator = SimpleNamespace(
         data_type="mx_fp",

@@ -84,11 +84,22 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
-def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: bool) -> bool:
+def _can_compile_block_forward(block_quantizer, compile_participants, user_enabled: bool) -> bool:
     """Return whether every component participating in block replay supports compilation."""
     if not user_enabled or not block_quantizer.can_compile_block_forward():
         return False
-    return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
+    return all(getattr(component, "can_compile_block_forward", lambda: True)() for component in compile_participants)
+
+
+def _block_forward_compile_blockers(block_quantizer, compile_participants) -> list[str]:
+    """Return participant names that make block-forward compilation unsafe."""
+    blockers = []
+    if not block_quantizer.can_compile_block_forward():
+        blockers.append(type(block_quantizer).__name__)
+    for component in compile_participants:
+        if not getattr(component, "can_compile_block_forward", lambda: True)():
+            blockers.append(type(component).__name__)
+    return blockers
 
 
 class AlgorithmComposer:
@@ -193,15 +204,17 @@ class AlgorithmComposer:
                 getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
+            compile_participants = [*self.preprocessors, *rotation_configs]
             can_compile_block_forward = _can_compile_block_forward(
-                self.block_quantizer, rotation_configs, user_torch_compile
+                self.block_quantizer, compile_participants, user_torch_compile
             )
-            if (
-                user_torch_compile
-                and not can_compile_block_forward
-                and any(not getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
-            ):
-                logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
+            if user_torch_compile and not can_compile_block_forward:
+                blockers = _block_forward_compile_blockers(self.block_quantizer, compile_participants)
+                if blockers:
+                    logger.info(
+                        "Block-forward torch.compile is disabled because %s is incompatible.",
+                        ", ".join(blockers),
+                    )
 
             if _has_nvfp4_layer(orchestrator):
                 can_compile_block_forward = False
