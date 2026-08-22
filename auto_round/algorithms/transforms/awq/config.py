@@ -16,6 +16,52 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
 
+def _unique_opt_rtn_value(values) -> bool | None:
+    values = [value for value in values if value is not None]
+    unique_values = []
+    for value in values:
+        if not any(value == existing for existing in unique_values):
+            unique_values.append(value)
+    if len(unique_values) > 1:
+        raise ValueError("Conflicting AWQ disable_opt_rtn values. Use one AWQ config or the same opt-RTN policy.")
+    return unique_values[0] if unique_values else None
+
+
+def awq_disable_opt_rtn(configs) -> bool | None:
+    """Return AWQ's resolved opt-RTN policy from normalized config objects."""
+    return _unique_opt_rtn_value(config.disable_opt_rtn for config in configs if isinstance(config, AWQConfig))
+
+
+def direct_opt_rtn_kwargs(config_kwargs) -> dict:
+    """Return explicit opt-RTN kwargs from direct entry/CLI arguments."""
+    if config_kwargs.get("enable_opt_rtn"):
+        return {"enable_opt_rtn": True}
+    if config_kwargs.get("disable_opt_rtn") is not None:
+        return {"disable_opt_rtn": config_kwargs["disable_opt_rtn"]}
+    return {}
+
+
+def rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn_value) -> dict:
+    """Return RTN kwargs where explicit user policy wins over AWQ inheritance."""
+    opt_kwargs = direct_opt_rtn_kwargs(config_kwargs)
+    if not opt_kwargs and awq_disable_opt_rtn_value is not None:
+        opt_kwargs["disable_opt_rtn"] = awq_disable_opt_rtn_value
+    return opt_kwargs
+
+
+def sync_rtn_opt_rtn_from_awq(configs) -> None:
+    """Apply AWQ's opt-RTN policy to RTN configs that did not set one explicitly."""
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+    awq_value = awq_disable_opt_rtn(configs)
+    if awq_value is None:
+        return
+    for config in configs:
+        if isinstance(config, RTNConfig) and getattr(config, "orig_disable_opt_rtn", None) is None:
+            config.disable_opt_rtn = awq_value
+            config.orig_disable_opt_rtn = awq_value
+
+
 class AWQConfig(QuantizationConfig):
     """Configuration for AWQ (Activation-Aware Weight Quantization).
 

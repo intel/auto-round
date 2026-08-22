@@ -429,66 +429,6 @@ def _config_fields(config):
     return fields
 
 
-def _awq_disable_opt_rtn(configs) -> bool | None:
-    from auto_round.algorithms.transforms.awq.config import AWQConfig
-
-    values = [config.disable_opt_rtn for config in configs if isinstance(config, AWQConfig)]
-    values = [value for value in values if value is not None]
-    unique_values = []
-    for value in values:
-        if not any(value == existing for existing in unique_values):
-            unique_values.append(value)
-    if len(unique_values) > 1:
-        raise ValueError("Conflicting AWQ disable_opt_rtn values. Use one AWQ config or the same opt-RTN policy.")
-    return unique_values[0] if unique_values else None
-
-
-def _raw_awq_disable_opt_rtn(raw_configs) -> bool | None:
-    from auto_round.algorithms.transforms.awq.config import AWQConfig
-
-    values = []
-    for raw_config in raw_configs:
-        if isinstance(raw_config, str) and raw_config == "awq":
-            values.append(True)
-        elif isinstance(raw_config, AWQConfig):
-            values.append(raw_config.disable_opt_rtn)
-    values = [value for value in values if value is not None]
-    unique_values = []
-    for value in values:
-        if not any(value == existing for existing in unique_values):
-            unique_values.append(value)
-    if len(unique_values) > 1:
-        raise ValueError("Conflicting AWQ disable_opt_rtn values. Use one AWQ config or the same opt-RTN policy.")
-    return unique_values[0] if unique_values else None
-
-
-def _direct_opt_rtn_kwargs(config_kwargs) -> dict:
-    if config_kwargs.get("enable_opt_rtn"):
-        return {"enable_opt_rtn": True}
-    if config_kwargs.get("disable_opt_rtn") is not None:
-        return {"disable_opt_rtn": config_kwargs["disable_opt_rtn"]}
-    return {}
-
-
-def _rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn) -> dict:
-    opt_kwargs = _direct_opt_rtn_kwargs(config_kwargs)
-    if not opt_kwargs and awq_disable_opt_rtn is not None:
-        opt_kwargs["disable_opt_rtn"] = awq_disable_opt_rtn
-    return opt_kwargs
-
-
-def _sync_rtn_opt_rtn_from_awq(configs) -> None:
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
-
-    awq_value = _awq_disable_opt_rtn(configs)
-    if awq_value is None:
-        return
-    for config in configs:
-        if isinstance(config, RTNConfig) and getattr(config, "orig_disable_opt_rtn", None) is None:
-            config.disable_opt_rtn = awq_value
-            config.orig_disable_opt_rtn = awq_value
-
-
 def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -496,6 +436,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
     from auto_round.algorithms.transforms import normalize_rotation_config
     from auto_round.algorithms.transforms.base import BaseRotationConfig
+    from auto_round.algorithms.transforms.awq.config import (
+        awq_disable_opt_rtn,
+        rtn_inherited_opt_kwargs,
+        sync_rtn_opt_rtn_from_awq,
+    )
 
     direct_kwargs = dict(direct_kwargs or {})
     legacy_algorithm = direct_kwargs.pop("algorithm", None)
@@ -537,11 +482,13 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     else:
         raw_configs = [alg_configs]
 
-    raw_awq_disable_opt_rtn = _raw_awq_disable_opt_rtn(raw_configs)
     configs = []
+    pending_rtn_indices = []
     for raw_config in raw_configs:
         if isinstance(raw_config, str) and raw_config == "rtn":
-            config = RTNConfig(**_rtn_inherited_opt_kwargs(config_kwargs, raw_awq_disable_opt_rtn))
+            pending_rtn_indices.append(len(configs))
+            configs.append(None)
+            continue
         else:
             config = resolve_alg_config(raw_config) if isinstance(raw_config, str) else raw_config
         if not isinstance(config, (QuantizationConfig, BaseRotationConfig)):
@@ -550,6 +497,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
                 f"got {type(config).__name__}."
             )
         configs.append(normalize_algorithm_config(config))
+
+    awq_opt_rtn_policy = awq_disable_opt_rtn(configs)
+    for index in pending_rtn_indices:
+        config = RTNConfig(**rtn_inherited_opt_kwargs(config_kwargs, awq_opt_rtn_policy))
+        configs[index] = normalize_algorithm_config(config)
 
     # ``iters=0`` has always selected RTN in the public entry and CLI. Apply
     # that rule after every input form has become a config so aliases, config
@@ -561,7 +513,7 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     for index, config in enumerate(configs):
         effective_iters = direct_iters if direct_iters is not None else getattr(config, "iters", None)
         if isinstance(config, SignRoundConfig) and effective_iters == 0:
-            rtn_kwargs = _rtn_inherited_opt_kwargs(config_kwargs, _awq_disable_opt_rtn(configs))
+            rtn_kwargs = rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn(configs))
             rtn_config = RTNConfig(scheme=config.scheme.copy(), **rtn_kwargs)
             rtn_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
             configs[index] = normalize_algorithm_config(rtn_config)
@@ -579,7 +531,7 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
 
     preprocessors, block_configs = split_quantization_configs(configs)
     if preprocessors and not block_configs:
-        fallback_rtn_kwargs = _rtn_inherited_opt_kwargs(config_kwargs, _awq_disable_opt_rtn(configs))
+        fallback_rtn_kwargs = rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn(configs))
         configs.append(normalize_algorithm_config(RTNConfig(**fallback_rtn_kwargs)))
 
     _, block_configs = split_quantization_configs(configs)
@@ -635,22 +587,15 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             )
             continue
         target = targets[0]
-        if key in ("disable_opt_rtn", "enable_opt_rtn"):
-            if key == "disable_opt_rtn" or value:
-                target.disable_opt_rtn = False if key == "enable_opt_rtn" else value
-                target.orig_disable_opt_rtn = target.disable_opt_rtn
-        else:
-            setattr(target, key, value)
+        setattr(target, key, value)
         recommended_config_name = type(target).__name__.replace("Config", "")
-        if key == "disable_opt_rtn" and value:
-            recommended_config_name = "RTN"
         logger.warning(
             "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
             "'alg_configs=%sConfig(...)'.",
             key,
             recommended_config_name,
         )
-    _sync_rtn_opt_rtn_from_awq(configs)
+    sync_rtn_opt_rtn_from_awq(configs)
     return [normalize_algorithm_config(config) for config in configs]
 
 
