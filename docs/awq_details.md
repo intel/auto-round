@@ -2,7 +2,7 @@
 
 This document summarizes an experimental comparison between native AutoRound flows and AWQ-composed flows. The goal is to evaluate whether applying AWQ smoothing before RTN or AutoRound improves accuracy for `W4A16`, `MXFP4`, and `INT8` (`W8A8`) schemes.
 
-All results were measured with `--format fake` and evaluated on `mmlu,gsm8k,piqa,hellaswag,winogrande`. Unless noted otherwise, the remaining quantization settings follow the AutoRound defaults.
+All results were measured with `--format fake` and evaluated on `mmlu,gsm8k,piqa,hellaswag,winogrande`. These five widely used LLM benchmarks cover complementary error modes: MMLU for factual knowledge and broad understanding, GSM8K for mathematical reasoning, PIQA for physical commonsense, HellaSwag for commonsense sentence completion, and Winogrande for pronoun and coreference resolution. Reporting the average score across this task set reduces sensitivity to single-task variance and provides a more stable view of quantization-induced accuracy changes. Unless noted otherwise, the remaining quantization settings follow the AutoRound defaults.
 
 ## AWQ Algorithm Characteristics
 

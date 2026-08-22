@@ -2,7 +2,7 @@
 
 本文总结了原生 AutoRound 流程与 AWQ 组合流程的实验对比。目标是评估在 `W4A16`、`MXFP4` 和 `INT8`（`W8A8`）方案下，在 RTN 或 AutoRound 之前加入 AWQ smoothing 是否能够提升准确率。
 
-所有结果均使用 `--format fake` 测得，并在 `mmlu,gsm8k,piqa,hellaswag,winogrande` 上评估。除非特别说明，其余量化参数均采用 AutoRound 默认设置。
+所有结果均使用 `--format fake` 测得，并在 `mmlu,gsm8k,piqa,hellaswag,winogrande` 上评估。这五个常用 LLM 基准覆盖互补的误差类型：MMLU 侧重事实知识与综合理解，GSM8K 侧重数学推理，PIQA 侧重物理常识，HellaSwag 侧重常识句子补全，Winogrande 侧重代词与指代消解。报告该任务集合的平均分，可以降低单个任务波动对结论的影响，并更稳定地反映量化引入的精度变化。除非特别说明，其余量化参数均采用 AutoRound 默认设置。
 
 ## AWQ 算法特点
 
