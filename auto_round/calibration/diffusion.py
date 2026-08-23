@@ -35,6 +35,19 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
 
 
+def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage: bool) -> str | None:
+    """Place a diffusion pipeline for calibration without exceeding one GPU."""
+    resolved_device = torch.device(target_device)
+    if low_gpu_mem_usage:
+        enable_model_cpu_offload = getattr(pipe, "enable_model_cpu_offload", None)
+        if not callable(enable_model_cpu_offload):
+            raise ValueError("The diffusion pipeline does not support component-level model CPU offload.")
+        enable_model_cpu_offload(device=resolved_device)
+        return "model"
+    pipe.to(resolved_device)
+    return None
+
+
 @register_calibrator("diffusion")
 class DiffusionCalibrator(LLMCalibrator):
     """Calibrator for diffusion models (Stable Diffusion / FLUX / ...)."""
@@ -50,6 +63,10 @@ class DiffusionCalibrator(LLMCalibrator):
     def _wrap_block_forward(self, forward_fn):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
         return wrap_block_forward_positional_to_kwargs(forward_fn)
+
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Diffusion calibration never early-stops: all denoising steps execute."""
+        return False
 
     def _get_calibration_image(self, batch_size: int):
         """Return a synthetic PIL Image for I2V pipeline calibration."""
@@ -72,6 +89,11 @@ class DiffusionCalibrator(LLMCalibrator):
         if batch_size == 1:
             return image
         return [image.copy() for _ in range(batch_size)]
+
+    def _requires_calibration_image(self) -> bool:
+        """Return whether the pipeline requires an image input."""
+        image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
+        return image_param is not None and image_param.default is inspect.Parameter.empty
 
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
@@ -116,15 +138,14 @@ class DiffusionCalibrator(LLMCalibrator):
             exit(-1)
 
         target_device = device_manager.device
-        if pipe.device != torch.device(target_device):
-            pipe.to(target_device)
+        self._cpu_offload_mode = _prepare_pipeline_for_calibration(
+            pipe,
+            target_device,
+            low_gpu_mem_usage=self.low_gpu_mem_usage,
+        )
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         # Check if this is an I2V pipeline (needs calibration image)
-        requires_image = False
-        if hasattr(self, "_requires_calibration_image"):
-            image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
-            if image_param is not None and image_param.default is inspect.Parameter.empty:
-                requires_image = True
+        requires_image = self._requires_calibration_image()
 
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:

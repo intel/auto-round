@@ -21,7 +21,14 @@ import time
 import auto_round_kernel
 import pytest
 import torch
-from ut_utils import decode_fp8_to_float, gen_weis8, get_torch_dt, sample_valid_fp8, sample_valid_fp8_e8m0_xpu_safe
+from ut_utils import (
+    decode_fp8_to_float,
+    gen_weis8,
+    get_torch_dt,
+    make_fp8_consistent_weight,
+    sample_valid_fp8,
+    sample_valid_fp8_e8m0_xpu_safe,
+)
 
 ark = auto_round_kernel
 
@@ -64,14 +71,9 @@ def main_op(m, n, k, blocksize, compute_type, weight_type, scale_type, asym, dev
             raw_qweight = sample_valid_fp8((k, n), weight_type, device)
         decoded = decode_fp8_to_float(raw_qweight.cpu(), weight_type).to(dtype).to(device)
         if scale_type == "fp8_e8m0":
-            # Narrow exponent range for fp16 to avoid inf/nan in matmul and kernel output.
-            if compute_type == "fp16":
-                scale = torch.randint(-4, 4, (k // blocksize, n), dtype=torch.int32, device=device).to(torch.float32)
-            else:
-                scale = torch.randint(-8, 8, (k // blocksize, n), dtype=torch.int32, device=device).to(torch.float32)
-            scale_re = torch.pow(torch.tensor(2.0, device=device, dtype=torch.float32), scale)
-            scale_re = scale_re.repeat_interleave(repeats=blocksize, dim=0)
-            ref_dst = decoded * scale_re.to(dtype)
+            raw_qweight, scale, ref_dst = make_fp8_consistent_weight(
+                k, n, blocksize, weight_type, scale_type, dtype, device
+            )
         else:
             scale = torch.randn(k // blocksize, n, dtype=stype, device=device) / 100 + 0.01
             scale_re = scale.repeat_interleave(repeats=blocksize, dim=0)
@@ -215,6 +217,15 @@ def test_xpu(m, n, k, blocksize, compute_type, weight_type, scale_type, asym):
         pytest.skip("No XPU Device")
     with torch.no_grad():
         main_op(m, n, k, blocksize, compute_type, weight_type, scale_type, asym, "xpu", True)
+        torch.xpu.empty_cache()
+
+
+@pytest.mark.parametrize("m, n, k", [(1280, 256, 256), (1281, 288, 256)])
+def test_xpu_s8_large_tile(m, n, k):
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    with torch.no_grad():
+        main_op(m, n, k, 128, "int8", "int8", "fp16", False, "xpu", True)
         torch.xpu.empty_cache()
 
 

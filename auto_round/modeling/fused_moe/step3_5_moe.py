@@ -19,8 +19,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 
@@ -56,6 +57,19 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Step3p5ExpertMLP(hidden_size, intermediate_size, limit) for _ in range(self.num_experts)])
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_proj": {},
+                    "up_proj": {},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=False,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         """Split fused MoELinear weights into individual expert nn.Linear weights.
@@ -78,6 +92,8 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
 class LinearStep3p5MoEMLP(ReplacementModuleBase):
     """Replacement for Step3p5MoEMLP that splits fused MoELinear into
     individual nn.Linear per expert for quantization support."""
+
+    supports_gguf_fused_moe = True
 
     def __init__(self, original, config=None):
         super().__init__(original)
@@ -141,19 +157,9 @@ class LinearStep3p5MoEMLP(ReplacementModuleBase):
 
         routing_weights = routing_weights * self.routed_scaling_factor
 
-        final_hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+        final_hidden_states = sequential_moe_forward(
+            hidden_states, selected_experts, routing_weights, self.experts, self.num_experts
         )
-
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-
-        for expert_idx in range(self.num_experts):
-            idx, top_x = torch.where(expert_mask[expert_idx])
-
-            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
-            current_hidden_states = self.experts[expert_idx](current_state) * routing_weights[top_x, idx, None]
-
-            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
         return final_hidden_states
 

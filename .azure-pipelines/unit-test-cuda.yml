@@ -10,10 +10,11 @@ pr:
     include:
       - auto_round
       - auto_round_extension
-      - test/test_cuda
+      - test/unit/test_cuda
       - setup.py
       - requirements.txt
       - .azure-pipelines/scripts/cuda_unit_test
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
       - .azure-pipelines/unit-test-cuda.yml
 
     exclude:
@@ -35,8 +36,6 @@ parameters:
         PART: 0
       part1:
         PART: 1
-      part2:
-        PART: 2
 
 stages:
   - ${{ each pair in parameters.matrix }}:
@@ -142,14 +141,10 @@ stages:
 
               - script: |
                   export UV_NO_CACHE=0
-                  if [ ${{ pair.value.PART }} -eq 0 ]; then
-                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
-                      --test_case=specific
-                  else
-                    bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
-                      --test_case=all \
-                      --test_part=${{ pair.value.PART }}
-                  fi
+                  export FILTER_CHANGED_TESTS=true
+                  bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
+                    --test_case=ci \
+                    --test_part=${{ pair.value.PART }}
                 displayName: "Run GPU Tests"
 
               - task: PublishPipelineArtifact@1

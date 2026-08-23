@@ -30,6 +30,16 @@ export AR_LOG_LEVEL=DEBUG
 export AR_ENABLE_COMPILE_PACKING=1
 ```
 
+### AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE
+- **描述**：让 fused NVFP4 权重投影共用一个 weight global scale。该设置作用于 `q_proj`/`k_proj`/`v_proj` 与 `gate_proj`/`up_proj`，以满足 vLLM fused kernel 的要求。
+- **默认值**：`True`（等价于 `"1"`）
+- **有效值**：`"0"`、`"false"`、`"no"` 或 `"off"`（不区分大小写）表示关闭共享；其他值表示启用。
+- **用途**：仅当导出的运行时不要求 fused 投影使用统一 global scale 时关闭。
+
+```bash
+export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
+```
+
 ### AR_USE_MODELSCOPE
 - **描述**：控制是否使用 ModelScope 下载模型
 - **默认值**：`False`
@@ -100,7 +110,7 @@ export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **描述**：在启用 `enable_torch_compile=True` 时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可以保留静态 shape 编译（性能最佳），仅增加缓存条目数。
+- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。
 - **默认值**：`16`
 - **有效值**：正整数
 - **用途**：当模型单个 block 内 linear 权重 shape 种类超过 16 时（较少见）可调大。
@@ -139,6 +149,66 @@ export AR_AUTO_SCHEME_NSAMPLES=1
 
 ```bash
 export AR_AUTO_SCHEME_BATCH_SIZE=1
+```
+
+### AR_AUTO_SCHEME_SEQLEN
+- **描述**：控制 AutoScheme 评分时使用的校准序列长度默认值，仅在 `AutoScheme.seqlen` 未显式设置时生效。
+- **默认值**：未设置 → 走内置启发式规则（MoE 模型为 128，其他为 256）
+- **有效值**：任意正整数，如 `256`、`512`、`1024`
+- **用途**：覆盖 AutoScheme 的默认序列长度（2-bit 方案通常在 `1024` 时效果更好）
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
+### AR_AUTO_SCHEME_CACHE
+- **描述**：存放可持久复用的 AutoScheme 单方案评分 JSON 文件。该目录独立于用于临时工作数据的 `AR_WORK_SPACE`。
+- **默认值**：`~/.cache/auto_round`
+- **有效值**：任意可写目录路径
+- **用途**：将可复用的 AutoScheme 评分结果保存到其他缓存目录
+
+```bash
+export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
+```
+
+### AR_ENABLE_AUTO_SCHEME_PARALLEL
+- **描述**：启用 AutoScheme 候选方案之间的多进程并行。可与 `AR_DISK_STREAM_MODEL=1` 同时使用；此时每个 worker 会构建独立的 meta 模型骨架并分别流式加载 block。当并发 worker 可能耗尽主机内存或显存时，请将其关闭。
+- **默认值**：`"1"`（满足多进程要求时并行评分各方案）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用并行评分；其他值表示关闭
+- **用途**：运行 AutoScheme 前将其设为 `0`，以强制串行评分候选方案
+
+```bash
+export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **描述**：控制 `NVFP4E5M3QuantLinear` 是否在首次前向后缓存解量化得到的高精度权重，而不是每次调用都从打包的 FP4 权重重新解量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`、`"on"`（不区分大小写）表示启用缓存；其他值表示禁用缓存
+- **用途**：当重复推理吞吐比内存占用更重要时可启用。当前实现会在缓存高精度权重后释放 `weight_packed` 和 `weight_scale`，因此稳态内存占用会增大，且之后无法再切回打包存储。
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
+```
+
+### AR_DISK_STREAM_MODEL
+- **描述**：启用后，`AutoRound(model=<path>, ...)` 会将模型构建为 meta 设备骨架，而不是先把整个 checkpoint 完全加载到 CPU 内存；随后按需从 checkpoint 的 safetensors 分片中流式加载每个解码器块的真实权重——在该块被使用前（校准、调优或 `AutoScheme` 敏感度评分）才实体化，用完后立即释放回 meta。这样峰值 CPU 内存基本保持平稳，而不会随 checkpoint 大小成比例增长。非块参数（embedding、`lm_head`、最终归一化层）体积通常较小，仍会一次性加载。文本模型的 AutoScheme 评分也支持与默认启用的并行评分组合使用；每个 worker 会流式加载自己的 block 副本。
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`、`"yes"`(不区分大小写)表示启用；其他任何值表示禁用
+- **用途**：用于量化体积超过可用 CPU 内存 + GPU 显存总和的 checkpoint。仅在 `model` 为字符串(本地目录)路径时生效，对已加载的模型对象无效。
+
+```bash
+export AR_DISK_STREAM_MODEL=1
+```
+
+### AR_RESUME_DIR
+- **描述**：设置为目录路径后，逐块调优循环会在每完成一个块后将进度写入该目录，并在针对同一目录的新一次运行中从第一个未完成的块继续——而不是在崩溃或被杀死后从第 0 块重新开始整个调优过程。
+- **默认值**：未设置(不支持断点续跑)
+- **有效值**：任意可写目录路径
+- **用途**：用于大 checkpoint 的长时间量化任务，避免运行中途崩溃导致从头重跑的高昂代价。
+
+```bash
+export AR_RESUME_DIR=/path/to/resume/state
 ```
 
 ## 使用示例

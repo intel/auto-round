@@ -48,6 +48,7 @@ import contextlib
 import functools
 import gc
 import re
+import sys
 from typing import Optional, Union
 
 import torch
@@ -60,6 +61,7 @@ __all__ = [
     "device_manager",
     "normalize_default_device_map",
     "get_ar_device",
+    "default_enable_torch_compile",
     "get_current_device_manager",
     "get_current_device_type",
     "is_device_available",
@@ -410,9 +412,35 @@ class ARDevice:
         return _DeviceIndexContext(self, index)
 
     def total_memory(self, index: int = 0) -> int:
-        fn = getattr(self._module, "get_memory_info", None)
+        return self.mem_get_info(index)[1]
 
-        return fn(index)[1] if callable(fn) else None  # pylint: disable=E1102
+    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+        """Return ``(free_bytes, total_bytes)`` for ``index``."""
+        modules = (self._module, self.get_device_module(self.type))
+        for module in dict.fromkeys(modules):
+            if module is None:
+                continue
+            for name in ("get_memory_info", "mem_get_info"):
+                fn = getattr(module, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    free, total = fn(index)  # pylint: disable=E1102
+                    if int(total) > 0:
+                        return int(free), int(total)
+                except Exception:
+                    continue
+
+        module = self.get_device_module(self.type)
+        get_properties = getattr(module, "get_device_properties", None)
+        if callable(get_properties):
+            try:
+                total = int(get_properties(index).total_memory)
+                if total > 0:
+                    return max(0, total - self.memory_reserved(index)), total
+            except Exception:
+                pass
+        return 0, 0
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
@@ -431,17 +459,6 @@ class ARDevice:
             return int(fn(index)) if callable(fn) else 0  # pylint: disable=E1102
         except Exception:
             return 0
-
-    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-    #     """Return ``(free_bytes, total_bytes)`` for ``index``.
-    #
-    #     Falls back to ``total - reserved`` when the backend lacks a native
-    #     ``mem_get_info`` implementation.
-    #     """
-    #     module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
-    #     fn = getattr(module, "get_memory_info", None)
-    #
-    #     return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -877,6 +894,14 @@ def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> AR
     return device_manager.get_ar_device(device_type)
 
 
+def default_enable_torch_compile(
+    device: Union[None, str, int, torch.device] = None, platform_name: str | None = None
+) -> bool:
+    """Return the safe torch.compile default for a backend."""
+    device_type = _normalize_device_type(device) or get_current_device_type()
+    return device_type != "xpu" and (platform_name or sys.platform) != "win32"
+
+
 def get_current_device_manager() -> ARDevice:
     """Return the :class:`Device` handle for the active backend (or CPU)."""
     return device_manager.current()
@@ -1055,7 +1080,15 @@ def get_device_memory(i: int = 0) -> int:
     dev_mgr = get_current_device_manager()
     if not dev_mgr.is_available() or dev_mgr.type == "cpu":
         raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
-    return dev_mgr.total_memory(i) / 1024 / 1024 / 1024
+
+    total_memory = dev_mgr.total_memory(i)
+    if total_memory is None:
+        raise RuntimeError(f"Failed to query total memory for device index {i} on backend {dev_mgr.type}.")
+    if total_memory <= 0:
+        raise RuntimeError(
+            f"Detected non-positive total memory ({total_memory}) for device index {i} on backend {dev_mgr.type}."
+        )
+    return total_memory / 1024**3
 
 
 def _clear_memory_for_cpu_and_cuda(

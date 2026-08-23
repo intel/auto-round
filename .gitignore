@@ -12,3 +12,7 @@ tmp_autoround/
 ut_log_dir/
 CLAUDE.local.md
 docs/plan/
+.venv/
+auto_round_extension/ark/auto_round_kernel/build_*/
+auto_round_extension/ark/build-*/
+auto_round_extension/ark/auto_round_kernel/*.so

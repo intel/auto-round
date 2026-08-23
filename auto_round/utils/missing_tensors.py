@@ -39,6 +39,7 @@
 
 import json
 import os
+import re
 from typing import Optional, Tuple
 
 import torch
@@ -60,6 +61,25 @@ _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
 }
 
 _AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
+_WARNING_INDEX_PLACEHOLDER = "<idx>"
+
+
+def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
+    """Normalize tensor names for warning_once deduplication.
+
+    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
+    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
+    (``<idx>`` by default) so warning keys are stable across different
+    layer/expert ids.
+    """
+    parts = name.split(".")
+    normalized_parts = []
+    for part in parts:
+        if part.isdigit():
+            normalized_parts.append(numeric_replacement)
+            continue
+        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
+    return ".".join(normalized_parts)
 
 
 def split_fused_expert_tensors(
@@ -104,6 +124,8 @@ def split_fused_expert_tensors(
             result[tensor_name] = tensor
             continue
 
+        warning_tensor_name = _normalize_tensor_name_for_warning(tensor_name)
+
         # Strip optional .weight suffix for pattern matching
         stripped = tensor_name
         stripped = stripped.removesuffix(".weight")  # len(".weight") == 7
@@ -123,12 +145,11 @@ def split_fused_expert_tensors(
 
         # The immediate parent must be "experts" or "moe"
         if not is_experts_parent and not is_moe_parent:
-            logger.warning(
-                "Found 3-D tensor '%s' with unsupported parent '%s' while splitting expert tensors; "
+            logger.warning_once(
+                "Found 3-D tensor '%s' while splitting expert tensors; "
                 "it will be kept unchanged. If this is an MoE/expert weight that should be split/quantized, "
                 "please open an issue at %s.",
-                tensor_name,
-                parent,
+                warning_tensor_name,
                 _AUTOROUND_ISSUE_URL,
             )
             result[tensor_name] = tensor
@@ -140,8 +161,8 @@ def split_fused_expert_tensors(
 
         if proj_name in _FUSED_EXPERT_PROJ_PATTERNS:
             split_names = _FUSED_EXPERT_PROJ_PATTERNS[proj_name]
-            logger.info(
-                f"Splitting fused expert tensor '{tensor_name}' "
+            logger.warning_once(
+                f"Splitting fused expert tensor '{warning_tensor_name}' "
                 f"(shape={list(tensor.shape)}, num_experts={num_experts}) "
                 f"into {split_names}"
             )
@@ -152,8 +173,8 @@ def split_fused_expert_tensors(
                     out_key = f"{target_prefix}.{i}.{split_name}.weight"
                     result[out_key] = chunk.contiguous()
         else:
-            logger.info(
-                f"Splitting stacked expert tensor '{tensor_name}' "
+            logger.warning_once(
+                f"Splitting stacked expert tensor '{warning_tensor_name}' "
                 f"(shape={list(tensor.shape)}, num_experts={num_experts})"
             )
             for i in range(num_experts):
@@ -162,12 +183,6 @@ def split_fused_expert_tensors(
                 result[out_key] = expert_2d.contiguous()
 
         split_count += 1
-
-    if split_count:
-        logger.info(
-            f"Split {split_count} fused expert tensor(s) into "
-            f"{len(result) - (len(tensors_dict) - split_count)} per-expert tensors."
-        )
 
     return result
 
@@ -506,6 +521,7 @@ def quantize_weight_rtn(
     group_size: int,
     sym: bool = True,
     device: Optional[torch.device] = None,
+    disable_opt_rtn: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Quantize a 2-D weight tensor and pack into auto_gptq format.
 
@@ -516,6 +532,10 @@ def quantize_weight_rtn(
     group_size : quantization group size along in_features
     sym    : use symmetric quantisation
     device : compute device (cuda / cpu). Results are always returned on CPU.
+    disable_opt_rtn : when False and sym=True, use the optimised-RTN scale
+        search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
+        candidates per group and picks the best MSE.  Defaults to True
+        (plain RTN) to preserve backward-compatible behaviour.
 
     Returns
     -------
@@ -548,21 +568,19 @@ def quantize_weight_rtn(
         weight = torch.nn.functional.pad(weight, (0, 0, 0, out_pad))
     padded_out = weight.shape[0]
 
-    # Use quantization functions from auto_round/data_type/int.py
-    from auto_round.data_type.int import quant_tensor_asym, quant_tensor_rtn_sym
-    from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+    from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size
 
-    q_scale_thresh = 1e-5  # match quant_tensor_sym / quant_tensor_asym threshold
+    # Use get_quant_func (same as WrapperLinear) so all data types and opt_rtn
+    # variants are resolved via the QUANT_FUNC_WITH_DTYPE registry uniformly.
+    quant_func, _ = get_quant_func("int", bits, sym=sym, disable_opt_rtn=disable_opt_rtn, iters=0)
+    # quant_func returns (qdq_result, scale, zp_or_maxq)
+    _, scale, zp_val = quant_func(weight, bits=bits, group_size=group_size)
 
     if sym:
-        # Full-range symmetric quantization via quant_tensor_rtn_sym
         maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit
         zero_point = maxq  # unsigned offset for packing
 
-        # quant_tensor_rtn_sym returns (qdq_result, scale, maxq)
         # scale shape: [padded_out * num_groups, 1]
-        _, scale, _ = quant_tensor_rtn_sym(weight, bits=bits, group_size=group_size)
-
         # Reshape weight for group-wise quantization: [padded_out * num_groups, group_size]
         w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
         w_grouped = w_grouped.to(device=device, dtype=torch.float32)
@@ -580,12 +598,10 @@ def quantize_weight_rtn(
 
         zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
     else:
-        # Asymmetric quantization via quant_tensor_asym
+        # Asymmetric quantization
         max_int = (1 << bits) - 1
 
-        # quant_tensor_asym returns (qdq_result, scale, zp)
-        # scale shape: [padded_out * num_groups, 1], zp shape: [padded_out * num_groups, 1]
-        _, scale, zp_val = quant_tensor_asym(weight, bits=bits, group_size=group_size)
+        # scale shape: [padded_out * num_groups, 1], zp_val shape: [padded_out * num_groups, 1]
 
         # Reshape weight for group-wise quantization
         w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)

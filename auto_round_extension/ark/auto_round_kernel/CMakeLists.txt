@@ -4,13 +4,30 @@ project(ark LANGUAGES CXX)
 option(ARK_XPU "Build XPU kernels" OFF)
 option(ARK_UT "Build XPU kernels UT" OFF)
 option(ARK_RESCALE "Experimental" OFF)
-set(ARK_DNNL_BUILD_SOURCE ON CACHE BOOL "Build oneDNN from source" FORCE)
+if(ARK_XPU)
+  option(ARK_DNNL "Build oneDNN-backed kernels" OFF)
+  option(ARK_JOINT_MATRIX "Build BestLA joint_matrix S8 backend" OFF)
+else()
+  option(ARK_DNNL "Build oneDNN-backed kernels" ON)
+endif()
 
 # ARK_SYCL_TLA defaults to ON when ARK_XPU is enabled
 if(ARK_XPU AND NOT DEFINED ARK_SYCL_TLA)
   set(ARK_SYCL_TLA ON CACHE BOOL "Build SYCL TLA (auto-enabled with ARK_XPU)")
 else()
   option(ARK_SYCL_TLA "Build SYCL TLA" OFF)
+endif()
+
+if(ARK_SYCL_TLA AND NOT ARK_XPU)
+  message(FATAL_ERROR "ARK_SYCL_TLA requires ARK_XPU=ON")
+endif()
+
+if(ARK_XPU AND NOT ARK_DNNL AND NOT ARK_SYCL_TLA)
+  message(FATAL_ERROR "XPU build requires ARK_SYCL_TLA=ON or ARK_DNNL=ON")
+endif()
+
+if(ARK_XPU AND NOT ARK_SYCL_TLA AND NOT ARK_JOINT_MATRIX)
+  message(FATAL_ERROR "XPU S8 WOQ requires ARK_SYCL_TLA=ON unless ARK_JOINT_MATRIX=ON")
 endif()
 
 include(FetchContent)
@@ -25,40 +42,43 @@ include(FindOpenMP)
 
 set(BTLA_ENABLE_OPENMP ON CACHE BOOL "BesTLA enable compiling OpenMP threading")
 
-FetchContent_Declare(
-    dnnl
-    GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
-    GIT_TAG v3.10.2
-)
-set(libs dnnl)
-set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
-set(
-    DNNL_ENABLE_PRIMITIVE
-    "MATMUL;ELTWISE;REDUCTION;REORDER"
-    CACHE STRING "oneDNN primitives used by ARK production code"
-)
+set(libs)
 
-set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
-set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
-set(DNNL_BUILD_DOC OFF CACHE INTERNAL "")
-set(ONEDNN_BUILD_GRAPH OFF CACHE INTERNAL "")
-set(ONEDNN_ENABLE_WORKLOAD "INFERENCE" CACHE INTERNAL "")
+if(ARK_DNNL)
+  set(ARK_DNNL_BUILD_SOURCE ON CACHE BOOL "Build oneDNN from source" FORCE)
+  FetchContent_Declare(
+      dnnl
+      GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
+      GIT_TAG v3.10.2
+  )
+  list(APPEND libs dnnl)
+  set(DNNL_LIBRARY_TYPE "STATIC" CACHE INTERNAL "")
+  set(DNNL_ENABLE_PRIMITIVE "MATMUL;ELTWISE;REDUCTION;REORDER" CACHE STRING "oneDNN primitives used by ARK production code")
+  set(DNNL_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+  set(DNNL_BUILD_TESTS OFF CACHE INTERNAL "")
+  set(DNNL_BUILD_DOC OFF CACHE INTERNAL "")
+  set(ONEDNN_BUILD_GRAPH OFF CACHE INTERNAL "")
+  set(ONEDNN_ENABLE_WORKLOAD "INFERENCE" CACHE INTERNAL "")
+endif()
 
 if(ARK_XPU)
-    # Skip oneDNN CPU engine compilation for the XPU module build.
-    set(DNNL_CPU_RUNTIME "NONE" CACHE INTERNAL "")
-    set(DNNL_GPU_RUNTIME "SYCL" CACHE INTERNAL "")
-    FetchContent_MakeAvailable(dnnl)
+    if(ARK_DNNL)
+      set(DNNL_CPU_RUNTIME "NONE" CACHE INTERNAL "")
+      set(DNNL_GPU_RUNTIME "SYCL" CACHE INTERNAL "")
+      FetchContent_MakeAvailable(dnnl)
+    endif()
     set(BTLA_SYCL ON CACHE BOOL "BesTLA with SYCL")
     set(PY_NAME auto_round_kernel_xpu)
     set(ARK_TYPE ARK_XPU)
     find_package(IntelSYCL REQUIRED)
     list(APPEND libs IntelSYCL::SYCL_CXX)
 else()
-    set(DNNL_CPU_RUNTIME "OMP" CACHE INTERNAL "")
-    set(DNNL_CPU_THREADING_RUNTIME "OMP")
-    set(DNNL_GPU_RUNTIME "NONE" CACHE INTERNAL "")
-    FetchContent_MakeAvailable(dnnl)
+    if(ARK_DNNL)
+      set(DNNL_CPU_RUNTIME "OMP" CACHE INTERNAL "")
+      set(DNNL_CPU_THREADING_RUNTIME "OMP")
+      set(DNNL_GPU_RUNTIME "NONE" CACHE INTERNAL "")
+      FetchContent_MakeAvailable(dnnl)
+    endif()
     set(BTLA_SYCL OFF CACHE BOOL "BesTLA without SYCL")
     set(PY_NAME auto_round_kernel_cpu)
     set(ARK_TYPE ARK_CPU)
@@ -73,10 +93,18 @@ endif()
 list(APPEND libs bestla)
 
 file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(NOT ARK_XPU)
+    list(APPEND SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/sdpa.cpp
+    )
+endif()
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
+set(SYCL_TLA_GENERATED_SRCS)
 
 include_directories(wrapper/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 # Build flash_attn_wrapper as a separate static library with sycl-tla flags
 if(ARK_XPU AND ARK_SYCL_TLA)
@@ -91,9 +119,14 @@ if(ARK_XPU AND ARK_SYCL_TLA)
   )
 
   # Map target to device name for -Xs flag
-  set(DPCPP_SYCL_TARGET "intel_gpu_bmg_g21" CACHE STRING "SYCL target (intel_gpu_pvc, intel_gpu_bmg_g21)")
-  if(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g21" OR DPCPP_SYCL_TARGET STREQUAL "bmg")
-    set(SYCL_DEVICE_NAME "bmg_g21")
+  set(DPCPP_SYCL_TARGET "intel_gpu_bmg_g21" CACHE STRING "SYCL target (intel_gpu_pvc, intel_gpu_bmg_g31, intel_gpu_bmg_g21)")
+
+  if(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g21")
+    set(SYCL_DEVICE_NAME "bmg-g21")
+  elseif(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g31")
+    set(SYCL_DEVICE_NAME "bmg-g31")
+  elseif(DPCPP_SYCL_TARGET STREQUAL "bmg")
+    set(SYCL_DEVICE_NAME "bmg-g21,bmg-g31")
   elseif(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_pvc" OR DPCPP_SYCL_TARGET STREQUAL "pvc")
     set(SYCL_DEVICE_NAME "pvc")
   else()
@@ -129,14 +162,24 @@ if(ARK_XPU AND ARK_SYCL_TLA)
     ${CUTLASS_DIR}/examples/12_xe20_moe_gemm_cute_interface
   )
   include(${CMAKE_CURRENT_LIST_DIR}/sdpa_generation.cmake)
+  include(${CMAKE_CURRENT_LIST_DIR}/sycl_tla_generation.cmake)
 endif()
 
-pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS})
+pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS} ${SYCL_TLA_GENERATED_SRCS})
 target_compile_features(${PY_NAME} PRIVATE cxx_std_17)
 target_compile_definitions(${PY_NAME} PRIVATE PY_NAME=${PY_NAME} ${ARK_TYPE}=1)
+if(ARK_DNNL)
+  target_compile_definitions(${PY_NAME} PRIVATE ARK_DNNL=1)
+endif()
+
+if(ARK_XPU AND ARK_JOINT_MATRIX)
+  target_compile_definitions(${PY_NAME} PRIVATE ARK_JOINT_MATRIX=1)
+endif()
+
 if(ARK_RESCALE)
     target_compile_definitions(${PY_NAME} PRIVATE ARK_RESCALE=1)
 endif()
+
 if(ARK_XPU AND ARK_SYCL_TLA)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
@@ -174,6 +217,12 @@ if(ARK_UT)
       endforeach()
       target_compile_options(${TEST_NAME} PRIVATE -fsycl -fno-sycl-instrument-device-code)
       target_link_options(${TEST_NAME} PRIVATE ${SYCL_TLA_LINK_FLAGS})
+    endif()
+    if(ARK_DNNL)
+      target_compile_definitions(${TEST_NAME} PRIVATE ARK_DNNL=1)
+    endif()
+    if(ARK_XPU AND ARK_JOINT_MATRIX)
+      target_compile_definitions(${TEST_NAME} PRIVATE ARK_JOINT_MATRIX=1)
     endif()
     target_link_libraries(${TEST_NAME} PRIVATE ${libs})
 endif()

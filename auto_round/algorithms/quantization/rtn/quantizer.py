@@ -19,6 +19,7 @@ from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RT
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.logger import logger
 from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
     check_to_quantized,
 )
 
@@ -38,7 +39,7 @@ class RTNQuantizer(BaseQuantizer):
         fp_outputs,
         q_inputs,
         block_ctx,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ) -> dict:
         """Apply zero-shot RTN quantization to a block.
@@ -54,10 +55,7 @@ class RTNQuantizer(BaseQuantizer):
             q_inputs: Quantized inputs from the previous block, or ``None`` when
                 cascaded quantized-input is disabled.
             block_ctx: Per-block pipeline context (BlockContext).
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed (e.g. standard string datasets without padding).
+            input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
@@ -74,16 +72,7 @@ class RTNQuantizer(BaseQuantizer):
 class OptimizedRTNQuantizer(RTNQuantizer):
 
     def __init__(self, config: RTNConfig) -> None:
-        BaseQuantizer.__init__(self, config)
-        if (
-            self.scheme is not None
-            and self.scheme.data_type
-            and ("nv_fp" in self.scheme.data_type or "mx_fp" in self.scheme.data_type)
-        ):
-            logger.warning_once(
-                "opt-rtn does not support NVFP or MXFP. It behaves the same as RTN but is much slower. "
-                "Please use RTN instead."
-            )
+        super().__init__(config)
 
     def can_compile_block_forward(self):
         return False
@@ -111,7 +100,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
 
         handles = []
         for _, module in model.named_modules():
-            if check_to_quantized(module):
+            if isinstance(module, SUPPORTED_LAYER_TYPES) and check_to_quantized(module):
                 handles.append(module.register_forward_hook(collect_imatrix))
         return handles
 
@@ -124,7 +113,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         fp_outputs,
         q_inputs,
         block_ctx,
-        valid_token_mask=None,
+        input_ids=None,
         **kwargs,
     ):
         """Apply imatrix-informed RTN quantization to a block.
@@ -140,11 +129,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             q_inputs: Quantized inputs from the previous block, or ``None`` when
                 cascaded quantized-input is disabled.
             block_ctx: Per-block pipeline context (BlockContext).
-            valid_token_mask: Per-sample boolean/int masks of shape
-                ``[1, seq_len]`` indicating valid (non-padding) token positions.
-                ``1`` means valid, ``0`` means padding. ``None`` if no masking
-                is needed (e.g. standard string datasets without padding).
-                Currently unused in imatrix-RTN; reserved for future use.
+            input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
         """
         # Normalize imatrix and quantize layers

@@ -21,6 +21,7 @@ from typing import Callable, Iterator
 
 import torch
 
+from auto_round.modeling.fused_moe.fusion_spec import MoETensorSource, iter_moe_fusion_views
 from auto_round.utils import logger
 
 
@@ -30,6 +31,7 @@ class RestoredTensor:
     tensor_fn: Callable[[], torch.Tensor]
     hf_names: tuple[str, ...]
     transform_kind: str
+    moe_sources: tuple[MoETensorSource, ...] = ()
 
 
 class HFCheckpointRestorer:
@@ -49,12 +51,55 @@ class HFCheckpointRestorer:
 
     def iter_tensors(self) -> Iterator[RestoredTensor]:
         state_dict = self.model.state_dict()
+        source_order = {name: index for index, name in enumerate(state_dict)}
+        moe_source_names = set()
+        ordered_tensors = []
+        moe_views = iter_moe_fusion_views(self.model) if hasattr(self.model, "named_modules") else ()
+        for view in moe_views:
+            hf_names = tuple(name for source in view.sources for name in source.hf_names)
+            completed = [name for name in hf_names if name in self.completed_hf_names]
+            if len(completed) == len(hf_names):
+                # Already packed (and freed) by a previous block; the sources are
+                # expected to be gone from state_dict, so skip the presence check.
+                moe_source_names.update(hf_names)
+                continue
+            if completed:
+                incomplete = [name for name in hf_names if name not in self.completed_hf_names]
+                raise ValueError(
+                    f"Cannot restore {view.checkpoint_name} from partially completed sources; "
+                    f"incomplete sources: {', '.join(incomplete)}"
+                )
+            missing = [name for name in hf_names if name not in source_order]
+            if missing:
+                raise ValueError(
+                    f"Cannot restore {view.checkpoint_name}; missing state-dict sources: {', '.join(missing)}"
+                )
+            moe_source_names.update(hf_names)
+            ordered_tensors.append(
+                (
+                    min(source_order[name] for name in hf_names),
+                    RestoredTensor(
+                        checkpoint_name=view.checkpoint_name,
+                        tensor_fn=view.tensor_fn,
+                        hf_names=hf_names,
+                        transform_kind="moe_refusion",
+                        moe_sources=view.sources,
+                    ),
+                )
+            )
+
         weight_conversions = self._get_weight_conversions()
         if not weight_conversions:
-            for name, tensor in state_dict.items():
+            for index, (name, tensor) in enumerate(state_dict.items()):
+                if name in moe_source_names:
+                    continue
                 if name in self.completed_hf_names:
                     continue
-                yield RestoredTensor(name, lambda tensor=tensor: tensor, (name,), "passthrough")
+                ordered_tensors.append(
+                    (index, RestoredTensor(name, lambda tensor=tensor: tensor, (name,), "passthrough"))
+                )
+            for _, restored in sorted(ordered_tensors, key=lambda item: item[0]):
+                yield restored
             return
 
         inverted_transforms = self._get_inverted_transforms(weight_conversions)
@@ -70,9 +115,9 @@ class HFCheckpointRestorer:
         converter_lineage = defaultdict(list)
         converter_fallback_tensors = defaultdict(list)
         converter_order = {}
-        ordered_tensors = []
-
-        for source_order, (original_key, tensor) in enumerate(state_dict.items()):
+        for index, (original_key, tensor) in enumerate(state_dict.items()):
+            if original_key in moe_source_names:
+                continue
             converter_key, matched_pattern = self._rename_source_key(original_key, [], inverted_converters)
             checkpoint_key, _ = self._rename_source_key(converter_key, inverted_renamings, [])
 
@@ -82,7 +127,7 @@ class HFCheckpointRestorer:
                 transform_kind = "rename" if checkpoint_key != original_key else "passthrough"
                 ordered_tensors.append(
                     (
-                        source_order,
+                        index,
                         RestoredTensor(
                             checkpoint_key,
                             lambda tensor=tensor: tensor,
@@ -96,7 +141,7 @@ class HFCheckpointRestorer:
             mapping = conversion_mapping.setdefault(converter_key, deepcopy(pattern_to_converter[matched_pattern]))
             mapping.add_tensor(checkpoint_key, original_key, matched_pattern, tensor)
             converter_lineage[converter_key].append(original_key)
-            converter_order.setdefault(converter_key, source_order)
+            converter_order.setdefault(converter_key, index)
             converter_fallback_tensors[converter_key].append(
                 RestoredTensor(checkpoint_key, lambda tensor=tensor: tensor, (original_key,), "passthrough")
             )
