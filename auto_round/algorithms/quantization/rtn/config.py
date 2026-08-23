@@ -13,11 +13,12 @@
 # limitations under the License.
 
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.logger import logger
 
 
 class RTNConfig(QuantizationConfig):
+    need_calib = False
+
     def __init__(
         self,
         *,
@@ -38,14 +39,11 @@ class RTNConfig(QuantizationConfig):
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         super().__init__(**kwargs)
 
-        # Some helpers
-        self.infer_bs_coeff = 1
-
         if enable_opt_rtn:
             disable_opt_rtn = False
         self.orig_disable_opt_rtn = disable_opt_rtn
 
-        if disable_opt_rtn is None:
+        if disable_opt_rtn is None:  # TODO wenhuach move to AR entry
             if self.bits and self.bits >= 8 and self.act_bits and self.act_bits >= 8 and self.data_type == "int":
                 logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
                 disable_opt_rtn = True
@@ -58,4 +56,4 @@ class RTNConfig(QuantizationConfig):
 
 
 class OptimizedRTNConfig(RTNConfig):
-    pass
+    need_calib = True

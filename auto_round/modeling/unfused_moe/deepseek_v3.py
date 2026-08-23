@@ -15,6 +15,12 @@
 import torch
 import torch.nn as nn
 
+from auto_round.modeling.fused_moe.utils import (
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+    sequential_moe_forward,
+)
+
 
 class LinearDeepseekV3MoE(nn.Module):
     """
@@ -47,30 +53,21 @@ class LinearDeepseekV3MoE(nn.Module):
         top_k_index: torch.Tensor,
         top_k_weights: torch.Tensor,
     ) -> torch.Tensor:
-        final_hidden_states = torch.zeros_like(hidden_states)
-        with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
-            expert_mask = expert_mask.permute(2, 1, 0)
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-
-        for expert_idx in expert_hit:
-            expert_idx = expert_idx[0]
-            if expert_idx == self.num_experts:
-                continue
-            top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
-            current_state = hidden_states[token_idx]
-            # gate, up = nn.functional.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)
-            # current_hidden_states = self.act_fn(gate) * up
-            # current_hidden_states = nn.functional.linear(current_hidden_states, self.down_proj[expert_idx])
-            expert_layer = self.experts[expert_idx]
-            current_hidden_states = expert_layer(current_state)
-            current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
-            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
-
-        return final_hidden_states
+        return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, self.experts, self.num_experts)
 
     def route_tokens_to_experts(self, router_logits):
         router_logits = router_logits.sigmoid()
+        if force_all_experts_routing_enabled():
+            return build_forced_routing(
+                module=self,
+                routing_scores=router_logits,
+                top_k=self.top_k,
+                num_experts=self.num_experts,
+                dtype=router_logits.dtype,
+                normalize=self.norm_topk_prob,
+                scaling_factor=self.routed_scaling_factor,
+            )
+
         router_logits_for_choice = router_logits + self.gate.e_score_correction_bias
         group_scores = (
             router_logits_for_choice.view(-1, self.n_group, self.n_routed_experts // self.n_group)
@@ -98,7 +95,20 @@ class LinearDeepseekV3MoE(nn.Module):
         residuals = hidden_states
         orig_shape = hidden_states.shape
         router_logits = self.gate(hidden_states)
-        topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
+        if isinstance(router_logits, tuple):  # transformers >= 5.13.0
+            base_router_logits, topk_weights, topk_indices = router_logits
+            if force_all_experts_routing_enabled():
+                topk_indices, topk_weights = build_forced_routing(
+                    module=self,
+                    routing_scores=base_router_logits.sigmoid(),
+                    top_k=self.top_k,
+                    num_experts=self.num_experts,
+                    dtype=hidden_states.dtype,
+                    normalize=self.norm_topk_prob,
+                    scaling_factor=self.routed_scaling_factor,
+                )
+        else:
+            topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = self.experts_forward(hidden_states, topk_indices, topk_weights).view(*orig_shape)
         hidden_states = hidden_states + self.shared_experts(residuals)

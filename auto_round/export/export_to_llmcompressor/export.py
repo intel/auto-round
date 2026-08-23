@@ -14,6 +14,7 @@
 
 import copy
 import os
+from collections.abc import Mapping
 from typing import Callable, Union
 
 import torch
@@ -99,6 +100,85 @@ def _get_quant_format(model):
         if hasattr(m, "quantization_scheme") and hasattr(m.quantization_scheme, "format"):
             return m.quantization_scheme.format
     return None
+
+
+def _canonicalize_quantization_value(value):
+    """Convert a serialized quantization value into a deterministic hashable form."""
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(key), _canonicalize_quantization_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonicalize_quantization_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted((_canonicalize_quantization_value(item) for item in value), key=repr))
+
+    value = getattr(value, "value", value)
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    return str(value)
+
+
+def _quant_args_signature(args):
+    """Return a hashable signature of every serialized QuantizationArgs field.
+
+    Two layers whose weight (and activation) args share this signature end up in
+    the same config_group, so we use it to map real module names back onto the
+    group that `QuantizationConfig.from_pretrained` built for them.
+    """
+    if args is None:
+        return None
+
+    if not isinstance(args, Mapping):
+        args = args.model_dump(mode="json")
+    return _canonicalize_quantization_value(args)
+
+
+def _rewrite_config_group_targets(model, quantization_config_dict):
+    """Fill each config_group's `targets` with the real module names it covers.
+
+    `construct_ct_scheme` writes `targets=[layer.__class__.__name__]` (always
+    "Linear") for every layer, so a mixed-precision model ends up with multiple
+    config_groups that all say `targets=["Linear"]`. Inference engines (vLLM)
+    then cannot tell which layer is 4-bit vs 8-bit and miss-unpack the weights,
+    producing garbage output. Here we group the actually-quantized modules by
+    their scheme signature and rewrite the matching group's `targets` to the
+    concrete module names.
+
+    Single-group (uniform) models are left untouched: their lone `["Linear"]`
+    target is unambiguous and already loads correctly.
+    """
+    groups = quantization_config_dict.get("config_groups", {})
+    if len(groups) <= 1:
+        return quantization_config_dict
+
+    from collections import defaultdict
+
+    sig_to_names = defaultdict(list)
+    for name, module in model.named_modules():
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None:
+            continue
+        sig = (
+            _quant_args_signature(getattr(scheme, "weights", None)),
+            _quant_args_signature(getattr(scheme, "input_activations", None)),
+        )
+        sig_to_names[sig].append(name)
+
+    for group in groups.values():
+        sig = (
+            _quant_args_signature(group.get("weights")),
+            _quant_args_signature(group.get("input_activations")),
+        )
+        names = sig_to_names.get(sig)
+        if names:
+            group["targets"] = sorted(names)
+        else:
+            logger.warning(
+                "AutoRound llm_compressor export: no quantized module matched "
+                "config_group %s; leaving its targets unchanged.",
+                group.get("targets"),
+            )
+
+    return quantization_config_dict
 
 
 def _compress_and_set_format(layer, scheme, device=None):
@@ -221,7 +301,13 @@ def save_quantized_as_llmcompressor(
 
     quant_format = _get_quant_format(model)
     quantization_config = QuantizationConfig.from_pretrained(model, format=quant_format)
-    model.config.quantization_config = quantization_config.to_dict()
+    quantization_config_dict = quantization_config.to_dict()
+    # from_pretrained groups layers by scheme correctly, but every group inherits
+    # the placeholder targets=["Linear"] from construct_ct_scheme. For mixed
+    # precision that makes groups indistinguishable to vLLM; rewrite targets with
+    # the concrete module names each group covers.
+    quantization_config_dict = _rewrite_config_group_targets(model, quantization_config_dict)
+    model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:
         return model

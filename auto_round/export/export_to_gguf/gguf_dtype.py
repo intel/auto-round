@@ -223,7 +223,6 @@ class GGUFDTypeSelector:
             )
             or 0
         )
-
         # llama.cpp: output & token_embd handling (llama_tensor_get_type outer wrapper)
         if category == TensorCategory.OUTPUT or (self.has_tied_embeddings and category == TensorCategory.TOKEN_EMBD):
             # llama.cpp: if new_type != Q8_0, upgrade to Q6_K
@@ -266,7 +265,7 @@ class GGUFDTypeSelector:
             elif self.ftype == gguf.LlamaFileType.MOSTLY_Q3_K_M:
                 if i_layer < n_layer // 16:
                     qtype = gguf.GGMLQuantizationType.Q5_K
-                elif self.model_arch == gguf.MODEL_ARCH.FALCON or _use_more_bits(i_layer, n_layer):
+                elif self.model_arch != gguf.MODEL_ARCH.FALCON or _use_more_bits(i_layer, n_layer):
                     qtype = gguf.GGMLQuantizationType.Q4_K
                 else:
                     qtype = gguf.GGMLQuantizationType.Q3_K

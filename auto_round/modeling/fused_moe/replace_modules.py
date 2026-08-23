@@ -35,7 +35,7 @@ BUILTIN_MODULES = {
     "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
     # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
     "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
-    # supports transformers >= 5.0.0
+    # Qwen3.5 MoE uses block-local materialization to avoid eagerly unfusing the full model.
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
@@ -43,6 +43,13 @@ BUILTIN_MODULES = {
     # Qwen3-Omni MoE: thinker (no shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
 }
+
+_FUSED_MOE_PROJECTION_NAMES = frozenset({"gate_up_proj", "gate_proj", "up_proj", "down_proj", "w1", "w2", "w3"})
+
+
+def _is_fused_moe_parameter(name: str, parameter: torch.Tensor) -> bool:
+    return parameter.ndim == 3 and any(part in _FUSED_MOE_PROJECTION_NAMES for part in name.split("."))
+
 
 # Module name prefixes to exclude from MoE unfusing, keyed by model_type.
 # Modules under these prefixes stay in their original fused 3D format during
@@ -155,14 +162,12 @@ def release_original_module_(model: torch.nn.Module) -> None:
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
-    # If no replacement happened, move model to CPU directly
-    if global_state.replaced_module_count == 0:
+    """Move a model to CPU unless it still contains unmaterialized meta tensors."""
+    has_meta_tensor = any(param.device.type == "meta" for param in model.parameters()) or any(
+        buffer.device.type == "meta" for buffer in model.buffers()
+    )
+    if not has_meta_tensor:
         model.to("cpu")
-        return
-    else:
-        # TODO: (yiliu30) there might be some edge cases where some modules are replaced
-        # and we need to move them to CPU safely.
-        pass
 
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
@@ -180,6 +185,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     # Registry: module class name -> replacement module class
     _replacement_registry: Dict[str, Type["ReplacementModuleBase"]] = {}
+    supports_gguf_fused_moe: bool = False
 
     def __init_subclass__(cls, **kwargs):
         """Automatically register subclasses in the replacement registry."""
@@ -205,6 +211,8 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     def __init__(self, original: torch.nn.Module):
         super().__init__()
+        if any(_is_fused_moe_parameter(name, parameter) for name, parameter in original.named_parameters()):
+            self._auto_round_replaced_fused_moe = True
         _global_tracker.register_replacement(
             name=str(id(self)),
             original=original,
@@ -290,6 +298,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 def apply_replacements(
     model: torch.nn.Module,
     auto_detect_moe: bool = True,
+    gguf_export: bool = False,
 ) -> torch.nn.Module:
     """
     Function to apply module replacements to a model.
@@ -303,6 +312,8 @@ def apply_replacements(
         model: The model to apply module replacement to (modified in-place).
         auto_detect_moe: If True, automatically detect and handle fused MOE modules
             (transformers 5.0+ pattern). Default is True.
+        gguf_export: If True, skip custom fused-MoE replacements without an explicit
+            reversible GGUF fusion specification.
 
     Returns:
         The model with modules replaced.
@@ -316,7 +327,7 @@ def apply_replacements(
         if not _raw_expert_is_logged:
             _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
 
-        _apply_custom_replacements(model)
+        _apply_custom_replacements(model, gguf_export=gguf_export)
 
     if auto_detect_moe and is_transformers_version_greater_or_equal_5():
 
@@ -332,7 +343,7 @@ def apply_replacements(
 
 
 @dump_mem_usage("applying custom replacements")
-def _apply_custom_replacements(model: torch.nn.Module) -> list:
+def _apply_custom_replacements(model: torch.nn.Module, gguf_export: bool = False) -> list:
     """Scan model and replace registered modules with custom implementations.
 
     Args:
@@ -354,6 +365,13 @@ def _apply_custom_replacements(model: torch.nn.Module) -> list:
         class_name = module.__class__.__name__
         if ReplacementModuleBase.is_registered(class_name):
             replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+            if (
+                gguf_export
+                and any(_is_fused_moe_parameter(name, parameter) for name, parameter in module.named_parameters())
+                and not replacement_cls.supports_gguf_fused_moe
+            ):
+                skipped_modules.append((name, class_name, "skipped because GGUF fusion spec is unavailable"))
+                continue
             # If llm-compressor already linearized experts, skip custom replacement.
             if hasattr(module, "experts") and is_linearized_layout(module.experts):
                 skipped_modules.append((name, class_name, "skipped because linearize_moe"))

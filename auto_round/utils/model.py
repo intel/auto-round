@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import psutil
 import torch
@@ -289,6 +289,7 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=True):
@@ -318,6 +319,38 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
         else getattr(quant_config, "quant_method", "")
     )
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
+def _is_fp8_model(model_path, trust_remote_code=True):
+    """Check if a model is an FP8 quantized model supported for direct loading.
+
+    Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
+    adding zero overhead to non-FP8 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("4.56.0"):
+        return False
+
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except Exception:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _FP8_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "fp8" and model_type in _FP8_SUPPORTED_MODEL_TYPES
 
 
 def llm_load_model(
@@ -356,11 +389,30 @@ def llm_load_model(
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    if "dtype" in kwargs:
+        torch_dtype = kwargs.pop("dtype")
+        kwargs.pop("torch_dtype", None)
+    elif "torch_dtype" in kwargs:
+        torch_dtype = kwargs.pop("torch_dtype")
+    dtype_key = (
+        "dtype"
+        if platform == "hf" and version.parse(transformers.__version__) >= version.parse("4.56.0")
+        else "torch_dtype"
+    )
     load_kwargs = {
-        "torch_dtype": torch_dtype,
+        dtype_key: torch_dtype,
         "trust_remote_code": trust_remote_code,
         "device_map": "auto" if use_auto_mapping else None,
     }
+    load_kwargs.update(kwargs)
+
+    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
+        is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_fp8 and "quantization_config" not in load_kwargs:
+            from transformers import FineGrainedFP8Config
+
+            load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
+            logger.info("Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading.")
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -855,6 +907,20 @@ def diffusion_load_model(
         pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
+    # A special case for Cosmos3: model_index.json _class_name may not match
+    # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    _model_index = None
+    if isinstance(pretrained_model_name_or_path, str):
+        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(_mi_path):
+            with open(_mi_path, "r", encoding="utf-8") as f:
+                _model_index = json.load(f)
+    _pipe_class = (_model_index or {}).get("_class_name", "")
+    if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
+        from auto_round.special_model_handler import load_cosmos3_diffusion
+
+        return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
@@ -890,7 +956,12 @@ def diffusion_load_model(
             pipe.config[k] = v
 
     pipe = _to_model_dtype(pipe, model_dtype)
-    model = pipe.transformer
+    if hasattr(pipe, "unet"):
+        # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
+        model = pipe.unet
+    else:
+        # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
+        model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls
     _attach_diffusion_pipeline_fn(pipe)
@@ -925,6 +996,119 @@ def diffusion_load_model(
     return pipe, model.to(device)
 
 
+def load_model(
+    pretrained_model_name_or_path: Union[str, torch.nn.Module],
+    platform: str = "hf",
+    model_dtype: str = None,
+    trust_remote_code: bool = True,
+    device: str = "cpu",
+    use_auto_mapping: bool = None,
+    use_model_replacements: bool = False,
+    **kwargs,
+) -> tuple:
+    """Unified model loader supporting LLM, MLLM (VLM), and diffusion models.
+
+    Automatically detects model type (text-only LLM / multimodal MLLM / diffusion
+    pipeline) via ``is_mllm_model`` / ``is_diffusion_model`` and dispatches to the
+    corresponding loader.  When a pre-loaded ``torch.nn.Module`` is passed the
+    function skips loading and only performs type detection.
+
+    Args:
+        pretrained_model_name_or_path: HuggingFace model ID, local path, or an
+            already-loaded ``torch.nn.Module``.
+        platform: ``"hf"`` (default) or ``"model_scope"``.
+        model_dtype: Cast the model to this dtype after loading (e.g. ``"bf16"``).
+        trust_remote_code: Passed through to every HF ``from_pretrained`` call.
+        device: Device to load the model onto (default ``"cpu"``).
+        use_auto_mapping: Override ``device_map="auto"`` for MLLM/diffusion loaders.
+            ``None`` means each sub-loader decides its own default.
+        use_model_replacements: Apply AutoRound replacement modules and special-model
+            forward patches after loading. Intended for isolated quantization workers.
+        **kwargs: Extra keyword arguments forwarded verbatim to the active sub-loader.
+
+    Returns:
+        A 7-tuple ``(model, tokenizer, processor, image_processor, pipe, is_mllm,
+        is_diffusion)`` where unused fields are ``None`` / ``False``.
+    """
+
+    def _prepare_model(model):
+        if not use_model_replacements:
+            return model
+        from auto_round.special_model_handler import _handle_special_model, update_module
+
+        model = update_module(model, formats=None, cleanup_original=False)
+        return _handle_special_model(model)
+
+    model = None
+    tokenizer = None
+    processor = None
+    image_processor = None
+    pipe = None
+    _is_mllm = False
+    _is_diffusion = False
+
+    if isinstance(pretrained_model_name_or_path, str):
+        if is_mllm_model(pretrained_model_name_or_path, platform=platform):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            model, processor, tokenizer, image_processor = mllm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            _is_mllm = True
+
+        elif is_diffusion_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            pipe, model = diffusion_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            _is_diffusion = True
+
+        else:
+            # Plain text LLM
+            # Apply class-level block patches (e.g. unfused-MoE replacements) before
+            # ``from_pretrained`` so the model is loaded with the correct architecture.
+            from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+
+            apply_model_monkey_patches(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            _kwargs.update(kwargs)
+            model, tokenizer = llm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+    else:
+        # Already a loaded model object – detect type without triggering any file I/O.
+        try:
+            _is_mllm = is_mllm_model(pretrained_model_name_or_path)
+        except Exception:
+            pass
+        if not _is_mllm:
+            try:
+                _is_diffusion = is_diffusion_model(pretrained_model_name_or_path)
+            except Exception:
+                pass
+        model = _prepare_model(pretrained_model_name_or_path)
+
+    return model, tokenizer, processor, image_processor, pipe, _is_mllm, _is_diffusion
+
+
 def is_pure_text_model(model):
     """verify on: phi-3.5, Mistral-Small-3.1, gemma-3, qwen2-vl,"""
     if hasattr(model, "config") and hasattr(model.config, "vision_config"):
@@ -953,6 +1137,86 @@ def get_model_name_or_path(model_or_path: Union[str, torch.nn.Module]) -> Option
     if isinstance(model_or_path, str):
         return model_or_path
     return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
+
+
+_CODE_MODEL_TOKENS = {"code", "coder", "coding", "programming", "swe", "devstral"}
+_CODE_MODEL_FAMILIES = {
+    "codellama",
+    "codegemma",
+    "codestral",
+    "deepseekcoder",
+    "granitecode",
+    "magicoder",
+    "opencoder",
+    "qwencoder",
+    "santacoder",
+    "stablecode",
+    "starcoder",
+    "wizardcoder",
+}
+_CODE_MODEL_TASKS = {"code-generation", "software-engineering", "text-to-code"}
+
+
+def _match_code_model_name(value) -> Optional[str]:
+    if not isinstance(value, str) or not value:
+        return None
+    value = re.split(r"[/\\]", value.rstrip("/\\"))[-1]
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    token_matches = _CODE_MODEL_TOKENS.intersection(re.findall(r"[a-z]+", value.lower()))
+    if token_matches:
+        return sorted(token_matches)[0]
+    components = re.findall(r"[a-z0-9]+", value.lower())
+    for family in sorted(_CODE_MODEL_FAMILIES):
+        if any(component == family or re.fullmatch(rf"{family}\d+", component) for component in components):
+            return family
+    return None
+
+
+def _config_value(config, name: str):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name)
+    return getattr(config, name, None)
+
+
+def _get_code_model_match(model_or_path, config=None):
+    config = config or getattr(model_or_path, "config", None)
+    candidates = [
+        ("model name_or_path", get_model_name_or_path(model_or_path)),
+        ("config._name_or_path", _config_value(config, "_name_or_path")),
+        ("config.model_type", _config_value(config, "model_type")),
+    ]
+    architectures = _config_value(config, "architectures") or []
+    if isinstance(architectures, str):
+        architectures = [architectures]
+    candidates.extend(("config.architectures", architecture) for architecture in architectures)
+
+    for source, value in candidates:
+        match = _match_code_model_name(value)
+        if match:
+            return source, match
+
+    task_candidates = []
+    for field in ("finetuning_task", "task", "pipeline_tag"):
+        task_candidates.append((f"config.{field}", _config_value(config, field)))
+
+    task_specific_params = _config_value(config, "task_specific_params") or {}
+    if isinstance(task_specific_params, dict):
+        task_candidates.extend(("config.task_specific_params", task) for task in task_specific_params)
+    for source, task in task_candidates:
+        if isinstance(task, str) and task.lower().replace("_", "-") in _CODE_MODEL_TASKS:
+            return source, task
+    return None
+
+
+def is_code_model(model_or_path: Union[str, torch.nn.Module], config=None) -> bool:
+    """Return whether a pure-text model is explicitly specialized for code."""
+    match = _get_code_model_match(model_or_path, config)
+    if match is None:
+        return False
+    logger.info("Detected a code-specialized model from %s (matched %r).", *match)
+    return True
 
 
 def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
@@ -1543,6 +1807,19 @@ def unsupported_meta_device(model):
     return False
 
 
+def map_nested_tensors(value: Any, transform: Callable[[torch.Tensor], torch.Tensor]) -> Any:
+    """Apply ``transform`` to tensors in nested tuples, lists, and mappings."""
+    if torch.is_tensor(value):
+        return transform(value)
+    if isinstance(value, tuple):
+        return tuple(map_nested_tensors(item, transform) for item in value)
+    if isinstance(value, list):
+        return [map_nested_tensors(item, transform) for item in value]
+    if isinstance(value, (dict, UserDict)):
+        return type(value)({key: map_nested_tensors(item, transform) for key, item in value.items()})
+    return value
+
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
@@ -1571,6 +1848,23 @@ def to_device(input, device=torch.device("cpu")):
             input_res = tuple(input_res)
         input = input_res
 
+    return input
+
+
+def move_to_device(input: Any, device=torch.device("cpu"), non_blocking: bool = False) -> Any:
+    """Return a nested tensor container moved to *device* without mutating it."""
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(device, non_blocking=non_blocking)
+    if isinstance(input, UserDict):
+        return type(input)({k: move_to_device(v, device, non_blocking) for k, v in input.items()})
+    if isinstance(input, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in input.items()}
+    if isinstance(input, tuple):
+        return tuple(move_to_device(v, device, non_blocking) for v in input)
+    if isinstance(input, list):
+        return [move_to_device(v, device, non_blocking) for v in input]
     return input
 
 
@@ -2310,6 +2604,11 @@ def is_model_free_route(
 
     explicit = bool(kwargs.get("model_free", False))
     disabled = bool(kwargs.get("disable_model_free", False))
+    has_static_attention_quantization = any(
+        kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
+    )
+    if has_static_attention_quantization:
+        return False
     if explicit:
         return True
     # Only auto-route when format is auto_round (or not specified).
@@ -2331,6 +2630,16 @@ def is_model_free_route(
             return common_conditions and family == "mx_fp"
         return False
 
+    if fmt_first == "llm_compressor":
+        from auto_round.compressors.model_free import _apply_scheme_overrides
+        from auto_round.schemes import is_mx_fp as _is_mx_fp
+
+        try:
+            scheme_obj = _apply_scheme_overrides(scheme, kwargs)
+            scheme_is_mx_fp = _is_mx_fp(scheme_obj.data_type or "")
+        except Exception:
+            scheme_is_mx_fp = False
+        return common_conditions and scheme_is_mx_fp and is_model_free_supported_scheme(scheme, kwargs)
     if fmt_first != "auto_round":
         return False
     return common_conditions and is_model_free_supported_scheme(scheme, kwargs)

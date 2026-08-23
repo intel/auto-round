@@ -353,10 +353,48 @@ def monkey_patch_transformers():
         _patch_tensor_get_dtype_for_prequantized_loading()
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
+    _patch_nvfp4_e5m3_compressed_tensors_quantizer()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
+
+
+def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
+    """Route the global-scale-free E5M3 format through AutoRound qmodules."""
+    try:
+        from transformers.quantizers.quantizer_compressed_tensors import CompressedTensorsHfQuantizer
+    except ImportError:
+        return
+
+    original_before = CompressedTensorsHfQuantizer._process_model_before_weight_loading
+    if getattr(original_before, "_auto_round_nvfp4_e5m3_patch", False):
+        return
+    original_after = CompressedTensorsHfQuantizer._process_model_after_weight_loading
+
+    def is_nvfp4_e5m3(self):
+        compression_config = getattr(getattr(self, "compressor", None), "quantization_config", None)
+        return getattr(compression_config, "format", None) == "nvfp4-e5m3-pack-quantized"
+
+    def patched_before(self, model, **kwargs):
+        if not is_nvfp4_e5m3(self):
+            return original_before(self, model, **kwargs)
+        from auto_round.inference.convert_model import convert_hf_model
+
+        model.config.quantization_config = self.compressor.quantization_config
+        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        model, _ = convert_hf_model(model, target_device=target_device)
+        self.run_compressed = True
+        return model
+
+    def patched_after(self, model, **kwargs):
+        if is_nvfp4_e5m3(self):
+            return model
+        return original_after(self, model, **kwargs)
+
+    patched_before._auto_round_nvfp4_e5m3_patch = True
+    CompressedTensorsHfQuantizer._process_model_before_weight_loading = patched_before
+    CompressedTensorsHfQuantizer._process_model_after_weight_loading = patched_after
 
 
 @lru_cache(None)
@@ -619,6 +657,7 @@ class SupportedFormats:
             "auto_round:fp8",
             "mlx",
             "auto_round:mlx",
+            "svdquant_nunchaku",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -1191,8 +1230,22 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             target_patterns = [target_patterns]
         for target_pattern in target_patterns:
             source_pattern = source_pattern.lstrip("^")  # strip off un-needed chars and patterns
-            source_pattern = re.sub(r"\(.*\)", "", source_pattern)
-            name, n_replace = re.subn(source_pattern, target_pattern, name)
+            # Skip stripping the capture group if the target backreferences it,
+            # otherwise re.subn raises "invalid group reference".
+            if not re.search(r"\\g?<?\d+>?", target_pattern):
+                source_pattern = re.sub(r"\(.*\)", "", source_pattern)
+
+            # Weight-conversion reverse mappings may expose bare tensor names
+            # such as "weight" -> ".weight_packed". Treat those as terminal
+            # tensor suffixes so they do not rewrite already-quantized names
+            # like ".weight_packed" into malformed keys such as
+            # "..weight_packed_packed".
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", source_pattern) and target_pattern.startswith("."):
+                match_pattern = rf"\.{re.escape(source_pattern)}$"
+            else:
+                match_pattern = source_pattern
+
+            name, n_replace = re.subn(match_pattern, target_pattern, name)
             # Early exit of the loop
             if n_replace > 0:
                 return name

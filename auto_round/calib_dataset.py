@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import json
 import logging
 import multiprocessing
@@ -23,12 +24,40 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
 from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
+from packaging.version import Version
 from torch.utils.data import DataLoader
 
 from . import envs
 from .utils import is_local_path, logger
 
 CALIB_DATASETS = {}
+_GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
+
+
+def get_code_calibration_dataset(nsamples, datasets_version=None):
+    """Build an exact-size code calibration mix compatible with datasets."""
+    if datasets_version is None:
+        import datasets
+
+        datasets_version = datasets.__version__
+    parsed_version = Version(str(datasets_version))
+    sources = [("opencode-instruct:concat=true", 50), ("github-code-clean", 50)]
+    if parsed_version > _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION:
+        sources = [source for source in sources if source[0] != "github-code-clean"]
+        logger.warning_once(
+            "datasets %s does not support the script-based github-code-clean dataset; "
+            "using OpenCodeInstruct only instead.",
+            parsed_version,
+        )
+
+    weights = [weight for _, weight in sources]
+    raw_counts = [nsamples * weight / sum(weights) for weight in weights]
+    counts = [int(count) for count in raw_counts]
+    remainder = nsamples - sum(counts)
+    order = sorted(range(len(weights)), key=lambda index: (-(raw_counts[index] - counts[index]), index))
+    for index in order[:remainder]:
+        counts[index] += 1
+    return ",".join(f"{name}:num={count}" for (name, _), count in zip(sources, counts) if count)
 
 
 def register_dataset(name):
@@ -334,6 +363,108 @@ def get_github_code_clean_dataset(
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)  ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
+
+    return calib_dataset
+
+
+@register_dataset(["nvidia/OpenCodeInstruct", "opencode-instruct"])
+def get_opencode_instruct_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="nvidia/OpenCodeInstruct",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+):
+    """Return tokenized coding instructions and responses from OpenCodeInstruct."""
+    split = "train" if split is None else split
+    if isinstance(split, list):
+        if len(split) != 1:
+            raise ValueError("OpenCodeInstruct supports only the train split.")
+        split = split[0]
+    if split != "train":
+        raise ValueError("OpenCodeInstruct supports only the train split.")
+
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
+
+    dataset = load_dataset("nvidia/OpenCodeInstruct", split=split, streaming=True)
+    dataset = dataset.shuffle(seed=seed).take(10000)
+    samples = []
+    for data in dataset:
+        if apply_chat_template:
+            messages = []
+            if system_prompt is not None and system_prompt != "":
+                messages.append({"role": "system", "content": system_prompt})
+            messages.extend(
+                [
+                    {"role": "user", "content": data["input"]},
+                    {"role": "assistant", "content": data["output"]},
+                ]
+            )
+            try:
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            except:
+                logger.warning("Failed to apply chat template. removing the system role in chat history.")
+                messages = [message for message in messages if message["role"] != "system"]
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            samples.append({"text": text})
+        else:
+            samples.append({"text": f"{data['input']}\n\n{data['output']}"})
+    random.Random(seed).shuffle(samples)
+
+    calib_dataset = Dataset.from_list(samples)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+
+    calib_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+    input_ids, concat_input_ids = [eg["input_ids"] for eg in calib_dataset], []
+    attention_mask_list, attention_mask = [], torch.ones([seqlen]).to(torch.int64)
+    buffer_input_id = torch.Tensor().to(torch.int64)
+    bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
+    os_cnt, have_bos, have_eos = 0, False, False
+
+    for input_id in input_ids:
+        if input_id[0] == bos_token_id:
+            input_id = input_id[1:]
+            os_cnt, have_bos = os_cnt + 1, True
+        if input_id[-1] == eos_token_id:
+            input_id = input_id[:-1]
+            os_cnt, have_eos = os_cnt + 1, True
+
+        if buffer_input_id.shape[-1] + input_id.shape[-1] + os_cnt > seqlen:
+            idx_keep = seqlen - buffer_input_id.shape[-1] - os_cnt
+            input_id_to_append = [buffer_input_id, input_id[:idx_keep]]
+            if have_bos:
+                input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
+            if have_eos:
+                input_id_to_append.append(torch.tensor([eos_token_id]))
+
+            concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64).tolist())
+            attention_mask_list.append(attention_mask.tolist())
+            buffer_input_id = input_id[idx_keep:]
+        else:
+            buffer_input_id = torch.cat([buffer_input_id, input_id])
+
+        if buffer_input_id.shape[-1] + os_cnt == seqlen:
+            input_id_to_append = [buffer_input_id]
+            if have_bos:
+                input_id_to_append = [torch.tensor([bos_token_id])] + input_id_to_append
+            if have_eos:
+                input_id_to_append.append(torch.tensor([eos_token_id]))
+            concat_input_ids.append(torch.cat(input_id_to_append).to(torch.int64).tolist())
+            attention_mask_list.append(attention_mask.tolist())
+            buffer_input_id = torch.Tensor().to(torch.int64)
+
+    data = [{"input_ids": a, "attention_mask": b} for a, b in zip(concat_input_ids, attention_mask_list)]
+    calib_dataset = Dataset.from_list(data)
 
     return calib_dataset
 
@@ -885,7 +1016,12 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if name in data_lens:
             dataset = select_dataset(dataset, range(data_lens[name]))
         if isinstance(dataset, IterableDataset):
-            dataset = Dataset.from_list(list(dataset))
+            # A single dataset source never contributes more than `nsamples` rows to the
+            # final combined dataset, so cap materialization here instead of fully consuming
+            # the (much larger) internal `.take(...)` pool used by streaming dataset loaders.
+            # This avoids needless downloads/shard resolution for large remote datasets
+            # (e.g. BAAI/CCI3-HQ) when only a small subset of samples is actually needed.
+            dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         new_features = {}
         for k, v in dataset.features.items():

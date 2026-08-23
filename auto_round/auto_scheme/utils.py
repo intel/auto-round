@@ -536,27 +536,40 @@ def _log_score_summary_by_block_and_nonblock(
 
     tag = f"[{scheme_tag}] " if scheme_tag else ""
     stage_str = f" ({summary_stage})" if summary_stage else ""
-    logger.debug("AutoScheme %sblock loss summary%s:", tag, stage_str)
-    logger.debug("AutoScheme | block | avg_loss |")
-
+    rows_in_order: list[tuple[str, float]] = []
     for block_name in block_names:
         total_loss, cnt = block_stats.get(block_name, [0.0, 0.0])
         avg_loss = 0.0 if cnt <= 0 else total_loss / cnt
-        logger.debug("AutoScheme | %s | %.6f |", _short_summary_name(block_name), avg_loss)
+        if math.isfinite(avg_loss):
+            rows_in_order.append((_short_summary_name(block_name), avg_loss))
 
-    if head_name is not None:
-        head_loss = None
-        if head_name in scores_dict:
-            head_loss = float(scores_dict[head_name][1])
-        head_avg = "N/A" if head_loss is None or not math.isfinite(head_loss) else f"{head_loss:.6f}"
-        logger.debug("AutoScheme | %s | %s |", head_name, head_avg)
+    # lm_head participates in ranking and ratio when present.
+    if head_name is not None and head_name in scores_dict:
+        head_loss = float(scores_dict[head_name][1])
+        if math.isfinite(head_loss):
+            rows_in_order.append((head_name, head_loss))
+
+    sorted_for_rank = sorted(rows_in_order, key=lambda item: item[1], reverse=True)
+    rank_map: dict[str, int] = {}
+    for idx, (name, _avg_loss) in enumerate(sorted_for_rank, start=1):
+        rank_map[name] = idx
+
+    total_avg_loss = sum(avg_loss for _, avg_loss in rows_in_order)
+
+    logger.debug("AutoScheme %sblock loss summary%s:", tag, stage_str)
+    logger.debug("AutoScheme | rank | block | avg_loss | ratio(%%total) |")
+    for name, avg_loss in rows_in_order:
+        rank = rank_map.get(name, -1)
+        ratio_pct = 0.0 if abs(total_avg_loss) < _ZERO_EPS else (avg_loss / total_avg_loss) * 100.0
+        logger.debug("AutoScheme | %d | %s | %.6f | %.2f%% |", rank, name, avg_loss, ratio_pct)
+
+    if head_name is not None and head_name not in scores_dict:
+        logger.debug("AutoScheme | - | %s | N/A | N/A |", head_name)
 
     if non_block_items:
         non_block_items.sort(key=lambda x: x[0])
         for layer_name, layer_loss in non_block_items:
             logger.info("AutoScheme non_block=%s loss=%.6f", layer_name, layer_loss)
-    else:
-        logger.info("AutoScheme non_block loss: none")
 
 
 def _collect_current_scores(model):
@@ -621,16 +634,13 @@ def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, tota
                 )
 
 
-def _build_layer_config_header_rows(columns: list[str]) -> list[list[str]]:
+def _build_layer_config_header_rows(columns: list[str], has_expert_layers: bool = False) -> list[list[str]]:
     """Build a compact two-row header for the layer-config matrix.
 
     The first row keeps a shared prefix for each grouped set of columns (for
     example ``mlp`` or ``self_attn``), while the second row keeps the leaf
     suffix (for example ``down_proj``).
     """
-    if not columns:
-        return [["block"], [""]]
-
     leaves = []
     first_row = []
     prev_prefix = None
@@ -648,6 +658,10 @@ def _build_layer_config_header_rows(columns: list[str]) -> list[list[str]]:
             leaves.append(column)
             first_row.append("")
             prev_prefix = None
+
+    if has_expert_layers:
+        first_row.append("mlp")
+        leaves.append("experts")
 
     header_rows = [["block"] + first_row]
     header_rows.append([""] + leaves)
@@ -696,7 +710,7 @@ def _log_scheme_loss_matrix(total_scores, options, block_names, model=None, laye
     has_expert_layers = any(block_expert_keys.get(b) for b in block_names)
 
     block_display_names = [_short_summary_name(b) for b in block_names]
-    header_rows = _build_layer_config_header_rows(columns)
+    header_rows = _build_layer_config_header_rows(columns, has_expert_layers)
 
     # Fixed cell width for scientific-notation values: "1.234E-05" = 9 chars.
     _CELL_W = 9
@@ -712,11 +726,8 @@ def _log_scheme_loss_matrix(total_scores, options, block_names, model=None, laye
             widths[col] = max(widths[col], len(prefix))
 
     header_keys = ["block"] + columns + (["experts"] if has_expert_layers else [])
-    header_vals = [header_rows[0][0]] + header_rows[0][1:]
-    header_vals_row2 = ([""]) + (header_rows[1][1:] if len(header_rows) > 1 else [""] * len(columns))
-    if has_expert_layers:
-        header_vals.append("experts")
-        header_vals_row2.append("")
+    header_vals = header_rows[0]
+    header_vals_row2 = header_rows[1]
 
     def _fmt_row(values: list[str], keys: list[str]) -> str:
         return "|".join(v.ljust(widths[k]) for v, k in zip(values, keys))
@@ -847,7 +858,7 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
     has_expert_layers = any(block_expert_layers.get(block_name) for block_name in block_names)
 
     block_display_names = [_short_summary_name(block_name) for block_name in block_names]
-    header_rows = _build_layer_config_header_rows(columns)
+    header_rows = _build_layer_config_header_rows(columns, has_expert_layers)
 
     # Width is driven by the leaf name and cell content — NOT the full dotted column name,
     # so columns stay tight (e.g. "down_proj" width, not "mlp.down_proj" width).
@@ -857,7 +868,9 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
         max_cell_len = max((len(block_cells.get(b, {}).get(col, "-")) for b in block_names), default=1)
         widths[col] = max(len(leaf), max_cell_len)
     if has_expert_layers:
-        widths["experts"] = max(len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1))
+        widths["experts"] = max(
+            len("mlp"), len("experts"), max((len(v) for v in expert_text_by_block.values()), default=1)
+        )
     # Ensure the first column of each prefix group is wide enough for the prefix text in header row 1.
     for col, prefix in zip(columns, header_rows[0][1:]):
         if prefix:
@@ -867,11 +880,8 @@ def _describe_layer_config(layer_config, total_scores, options, block_names, mod
         return "|".join(v.ljust(widths[k]) for v, k in zip(values, keys))
 
     header_keys = ["block"] + columns + (["experts"] if has_expert_layers else [])
-    header_vals = [header_rows[0][0]] + header_rows[0][1:]
-    if len(header_rows) > 1:
-        header_vals_row2 = [header_rows[1][0]] + header_rows[1][1:]
-    else:
-        header_vals_row2 = [""] + [""] * len(columns)
+    header_vals = header_rows[0]
+    header_vals_row2 = header_rows[1]
 
     logger.info("AutoScheme final layer_config matrix:")
     logger.info("AutoScheme note: cell=`scheme`.")
