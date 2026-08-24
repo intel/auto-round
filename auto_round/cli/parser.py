@@ -140,6 +140,15 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="AutoScheme options. Accepts comma-separated ('W4A16,W8A16') or space-separated (W4A16 W8A16).",
     )
     rt.add_argument(
+        "--auto_scheme_solver",
+        "--solver",
+        default="dp",
+        type=str,
+        choices=["dp", "lagrangian"],
+        help="AutoScheme bit-allocation solver: 'dp' (knapsack DP, default) or "
+        "'lagrangian' (shadow-price bisection, same allocation but ~10-15x faster).",
+    )
+    rt.add_argument(
         "--low_gpu_mem_usage", action="store_true", help="Enable memory-efficient mode by offloading features to CPU."
     )
     rt.add_argument(

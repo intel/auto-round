@@ -196,6 +196,255 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         return qdq_w, 1.0, None
 
 
+# Attributes that fully describe a weight-quantization option on ``orig_layer``.
+_WEIGHT_SCHEME_KEYS = ("bits", "group_size", "sym", "data_type", "super_bits", "super_group_size")
+_ACT_SCHEME_KEYS = ("act_bits", "act_group_size", "act_sym", "act_data_type", "act_dynamic")
+
+
+class MultiOptionScoreWrapper(AutoSchemeWrapperLinear):
+    """Score *all* candidate schemes for a layer in a single forward/backward.
+
+    The forward runs at the **anchor** configuration (whatever scheme was set on
+    ``orig_layer`` before wrapping, i.e. the current mixed assignment). The backward hook
+    then evaluates, for every candidate ``s``:
+
+        score(l, s) = sum |g_l(anchor) * (W - Q_s(W))|      (+ the activation counterpart)
+
+    This is exactly the baseline Delta-Loss metric, with the single crucial difference
+    that ``g`` is measured at *one shared* expansion point for all options instead of a
+    different uniform-``s`` model per option. That is what makes the per-option scores
+    mutually comparable, and what lets already-committed layers contribute their true
+    cross terms ``H_lm D_m`` through ``g``.
+
+    Cost: one extra quant-dequant per option per backward call (no extra model passes,
+    no persistent weight-sized buffers -- each diff is built and discarded in place).
+    """
+
+    def set_candidates(self, cand_schemes: list[dict], score_reduction: str = "abs", split_half: bool = True) -> None:
+        """Bind the candidate option list and allocate the score accumulators."""
+        self._cand_schemes = list(cand_schemes)
+        n = len(self._cand_schemes)
+        self._cand_weight_funcs: list = []
+        self._cand_act_funcs: list = []
+        self._cand_gparam: list = []
+        self._score_reduction = score_reduction
+        self._split_half = split_half
+        # Split-half is driven by the parity of this layer's own backward-call counter:
+        # each hook fires exactly once per calibration batch, so the parity yields two
+        # disjoint halves of the data without touching any forward loop.
+        self._w_calls = 0
+        self._a_calls = 0
+        self.opt_scores = [0.0] * n
+        self.opt_half_scores = [[0.0] * n, [0.0] * n]
+
+        iters = getattr(self.orig_layer, "iters", 0)
+        disable_opt_rtn = getattr(self, "disable_opt_rtn", True)
+        # The NVFP global scale is derived from ``weight`` and is cached across batches.
+        # Left attached it would make the second backward walk an already-freed graph
+        # ("backward through the graph a second time"), so pin it as a constant.
+        base_gparam = getattr(self, "weight_global_scale", None)
+        if isinstance(base_gparam, torch.Tensor) and base_gparam.grad_fn is not None:
+            self.weight_global_scale = base_gparam.detach()
+        for sch in self._cand_schemes:
+            if sch.get("bits", 16) >= 16:
+                self._cand_weight_funcs.append(None)
+                self._cand_gparam.append(None)
+            else:
+                func, dtype = get_quant_func(
+                    sch.get("data_type", "int"),
+                    sch.get("bits", 16),
+                    sch.get("sym", True),
+                    disable_opt_rtn,
+                    sch.get("group_size", 128),
+                    iters=iters,
+                )
+                self._cand_weight_funcs.append((func, dtype))
+                self._cand_gparam.append(self._candidate_gparam(dtype, sch))
+
+            if sch.get("act_bits", 16) > 8:
+                self._cand_act_funcs.append(None)
+            else:
+                func, dtype = get_quant_func(
+                    sch.get("act_data_type", sch.get("data_type", "int")),
+                    sch.get("act_bits", 16),
+                    sch.get("act_sym", True),
+                    True,
+                    iters=iters,
+                )
+                self._cand_act_funcs.append((func, dtype))
+
+    def _candidate_gparam(self, data_type, sch):
+        """Pre-compute the NVFP global scale for a candidate (it is scheme-dependent)."""
+        from auto_round.data_type.utils import is_nv_fp
+
+        if not is_nv_fp(data_type):
+            return None
+        from auto_round.data_type.nvfp import calculate_gparam
+
+        weight = self.orig_layer.weight
+        if weight.device.type == "meta":
+            weight = self.orig_layer.get_weight()
+        with torch.no_grad():
+            return calculate_gparam(weight.to(self.device), sch.get("group_size", 16)).detach()
+
+    @staticmethod
+    def _scale_dtype_for(sch):
+        """Mirror the scale-dtype policy used when scoring a uniform scheme."""
+        if sch.get("super_bits") is not None:
+            return torch.float32
+        return torch.float16 if sch.get("act_bits", 16) > 8 else torch.bfloat16
+
+    def _reduce(self, grad, diff):
+        """Reduce the per-element first-order terms of one backward call to a scalar."""
+        prod = grad.to(diff.dtype) * diff
+        if self._score_reduction == "signed":
+            # True directional derivative for this batch; the absolute value is taken
+            # only across batches, so sign cancellation inside a batch is preserved.
+            return abs(prod.sum().item())
+        return torch.abs(prod).sum().item()
+
+    def _weight_diff(self, idx, ref_device):
+        """Return ``W - Q_s(W)`` for candidate ``idx`` (``None`` when the option is BF16)."""
+        entry = self._cand_weight_funcs[idx]
+        if entry is None:
+            return None
+        sch = self._cand_schemes[idx]
+        orig = self.orig_layer
+        saved_layer = {k: getattr(orig, k, None) for k in _WEIGHT_SCHEME_KEYS}
+        saved_scale_dtype = getattr(orig, "scale_dtype", None)
+        saved_func, saved_dtype = self.weight_quant_func, self.data_type
+        saved_gparam = getattr(self, "weight_global_scale", None)
+        try:
+            for k in _WEIGHT_SCHEME_KEYS:
+                setattr(orig, k, sch.get(k, saved_layer[k]))
+            orig.scale_dtype = self._scale_dtype_for(sch)
+            self.weight_quant_func, self.data_type = entry
+            self.weight_global_scale = self._cand_gparam[idx]
+            device = self.device
+            qdq_w, _, _ = WrapperLinear._qdq_weight(
+                self,
+                torch.tensor(0, device=device),
+                torch.tensor(1.0, device=device),
+                torch.tensor(1.0, device=device),
+            )
+        finally:
+            for k in _WEIGHT_SCHEME_KEYS:
+                setattr(orig, k, saved_layer[k])
+            if saved_scale_dtype is not None:
+                orig.scale_dtype = saved_scale_dtype
+            self.weight_quant_func, self.data_type = saved_func, saved_dtype
+            self.weight_global_scale = saved_gparam
+
+        weight = orig.weight
+        if weight.device.type == "meta":
+            weight = orig.get_weight()
+        return (weight.to(ref_device) - qdq_w.detach().to(ref_device)).to(ref_device)
+
+    def _act_diff(self, idx, x, ref_device):
+        """Return ``x - Q_s(x)`` for candidate ``idx`` (``None`` when activations stay high precision)."""
+        entry = self._cand_act_funcs[idx]
+        if entry is None:
+            return None
+        sch = self._cand_schemes[idx]
+        orig = self.orig_layer
+        saved_layer = {k: getattr(orig, k, None) for k in _ACT_SCHEME_KEYS}
+        saved_scale_dtype = getattr(orig, "scale_dtype", None)
+        saved_func = getattr(self, "act_quant_func", None)
+        saved_dtype = getattr(self, "act_data_type", None)
+        try:
+            for k in _ACT_SCHEME_KEYS:
+                setattr(orig, k, sch.get(k, saved_layer[k]))
+            orig.scale_dtype = self._scale_dtype_for(sch)
+            self.act_quant_func, self.act_data_type = entry
+            qdq_x, _, _ = WrapperLinear._qdq_act(
+                self,
+                x,
+                act_min_scale=torch.tensor(1.0, device=x.device),
+                act_max_scale=torch.tensor(1.0, device=x.device),
+                act_max=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a single bad option must not kill scoring
+            logger.warning_once(f"AutoScheme: activation scoring failed for a candidate option: {exc}")
+            return None
+        finally:
+            for k in _ACT_SCHEME_KEYS:
+                setattr(orig, k, saved_layer[k])
+            if saved_scale_dtype is not None:
+                orig.scale_dtype = saved_scale_dtype
+            if saved_func is not None:
+                self.act_quant_func = saved_func
+            if saved_dtype is not None:
+                self.act_data_type = saved_dtype
+        return (x - qdq_x).detach().to(ref_device)
+
+    def _accumulate(self, idx, value, half):
+        """Add ``value`` to the total and to the given split-half accumulator."""
+        self.opt_scores[idx] += value
+        if self._split_half:
+            self.opt_half_scores[half][idx] += value
+
+    def _qdq_weight(self, value, min_scale, max_scale):
+        """Run the anchor's quant-dequant for the forward, and score every option in the backward."""
+        device = self.device
+        qdq_w, _, _ = WrapperLinear._qdq_weight(
+            self,
+            torch.tensor(0, device=device),
+            torch.tensor(1.0, device=device),
+            torch.tensor(1.0, device=device),
+        )
+        if self.grad_mode and getattr(self, "_cand_schemes", None):
+
+            def save_grad(grad):
+                """Backward hook: score W - Q_s(W) against this batch's gradient, for every s."""
+                if torch.isnan(grad).any():
+                    return None
+                half = self._w_calls % 2
+                self._w_calls += 1
+                with torch.no_grad():
+                    for idx in range(len(self._cand_schemes)):
+                        diff = self._weight_diff(idx, grad.device)
+                        if diff is None:
+                            continue
+                        self._accumulate(idx, self._reduce(grad, diff), half)
+                        del diff
+                return None
+
+            if qdq_w.requires_grad:
+                qdq_w.register_hook(save_grad)
+        return qdq_w, 1.0, None
+
+    def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
+        """Run the anchor's activation quant-dequant, and score every option in the backward."""
+        if hasattr(self.orig_layer, "act_bits") and self.orig_layer.act_bits > 8:
+            qdq_x = x
+        else:
+            qdq_x, _, _ = self.act_qdq_func(x, act_min_scale, act_max_scale, act_max)
+
+        has_act_option = getattr(self, "_cand_act_funcs", None) and any(f is not None for f in self._cand_act_funcs)
+        if self.grad_mode and has_act_option:
+            with torch.no_grad():
+                if torch.abs(x).max() != 0:
+                    self.act_cnt += 1
+                diffs = [self._act_diff(idx, x, "cpu") for idx in range(len(self._cand_schemes))]
+
+            def save_grad(grad):
+                """Backward hook: score x - Q_s(x) against this batch's gradient, for every s."""
+                if torch.isnan(grad).any():
+                    return None
+                half = self._a_calls % 2
+                self._a_calls += 1
+                with torch.no_grad():
+                    for idx, diff in enumerate(diffs):
+                        if diff is None:
+                            continue
+                        self._accumulate(idx, self._reduce(grad, diff.to(grad.device)), half)
+                return None
+
+            if qdq_x.requires_grad:
+                qdq_x.register_hook(save_grad)
+        return qdq_x, 1.0, None
+
+
 class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
     """GGUF-K wrapper that scores a layer using an imatrix-aware quant search (RTN, iters=0)."""
 
@@ -891,11 +1140,28 @@ def get_score_for_scheme(
     model_name: Optional[str] = None,
     scheme_tag: Optional[str] = None,
     disk_index=None,
+    anchor_scheme: Optional[dict] = None,
+    candidate_schemes: Optional[list] = None,
+    score_reduction: str = "abs",
+    split_half: bool = False,
 ):
     """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
     forward(+backward, unless RTN-only) calibration over ``nsamples`` examples from
     ``dataset``/``dataloader``, then unwrap and return each layer's ``[bits, loss]``.
+
+    Two modes:
+
+    * **Uniform (default)** -- the caller has already applied one scheme to every layer;
+      each layer reports the loss of that single scheme. Returns ``{name: [bits, loss]}``.
+    * **Anchor + multi-option** (``anchor_scheme`` / ``candidate_schemes`` given) -- the
+      forward runs at the per-layer ``anchor_scheme`` (the current *mixed* assignment) and
+      a single backward scores **all** ``candidate_schemes`` at once. This makes the
+      per-option scores share one Taylor expansion point, and folds the cross terms of the
+      already-decided layers into the gradient. Returns
+      ``{name: [losses, half0_losses, half1_losses]}``; bit costs are scheme properties
+      and are reused from the caller's stage-0 table.
     """
+    multi_option = bool(candidate_schemes)
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     # Include the visual block(s) when scoring VLMs with ``--quant_nontext_module``
     # (``force_mllm=True``) so vision-tower layer losses match a block below instead
@@ -921,14 +1187,41 @@ def get_score_for_scheme(
     for name in quant_layer_names:
         if offload_context is not None:
             offload_context.ensure_loaded(model, name)
-        if name in fixed_layer_scheme.keys():
+        # In anchor mode the fixed layers must still run *quantized* during the forward,
+        # otherwise the expansion point is not the real mixed configuration. They are
+        # wrapped but given no candidates, so they contribute no scores.
+        is_fixed = name in fixed_layer_scheme.keys()
+        if is_fixed and not multi_option:
             continue
         m = get_module(model, name)
         if m is None:
             raise RuntimeError(f"AutoScheme scoring layer {name!r} is missing after model preprocessing")
+        if multi_option and anchor_scheme is not None and name in anchor_scheme:
+            for _k, _v in anchor_scheme[name].items():
+                setattr(m, _k, _v)
+        # A layer whose *anchor* is BF16 still has non-BF16 candidates that must be
+        # scored, otherwise it could never be moved off BF16 in a later stage. BF16
+        # layers cannot build a quant func, so wrap with a constructible placeholder and
+        # then force bits/act_bits back to 16 -- ``WrapperLinear._qdq_weight`` short
+        # circuits on ``bits >= 16``, so the forward is an exact BF16 pass-through while
+        # the candidate scoring path (which swaps in its own per-option funcs) is intact.
+        anchor_is_bf16 = multi_option and not is_fixed and not check_to_quantized(m)
+        if anchor_is_bf16:
+            placeholder = next((c for c in candidate_schemes if c.get("bits", 16) < 16), None)
+            if placeholder is None:
+                n_cand = len(candidate_schemes)
+                scores_dict[name] = [[0.0] * n_cand, [0.0] * n_cand, [0.0] * n_cand]
+                continue
+            for _k, _v in placeholder.items():
+                setattr(m, _k, _v)
         if not check_to_quantized(m):
-            layer_bits, _ = compute_layer_bits(m, ignore_scale_zp_bits)
-            scores_dict[name] = [layer_bits, 0.0]
+            if not is_fixed:
+                if multi_option:
+                    n_cand = len(candidate_schemes)
+                    scores_dict[name] = [[0.0] * n_cand, [0.0] * n_cand, [0.0] * n_cand]
+                else:
+                    layer_bits, _ = compute_layer_bits(m, ignore_scale_zp_bits)
+                    scores_dict[name] = [layer_bits, 0.0]
             continue
         if m.act_bits > 8 and m.super_bits is not None:
             m.scale_dtype = torch.float32  # TODO set this via API
@@ -945,6 +1238,8 @@ def get_score_for_scheme(
                 WrapperLayer = AutoSchemeWrapperLinearForGGUFKImatrix
             else:
                 WrapperLayer = AutoSchemeWrapperLinearForGGUFK
+        if multi_option:
+            WrapperLayer = MultiOptionScoreWrapper
 
         with torch.no_grad():
             if low_gpu_mem_usage:
@@ -964,9 +1259,20 @@ def get_score_for_scheme(
                 enable_minmax_tuning=False,
                 enable_norm_bias_tuning=False,
                 enable_round_tuning=False,
-                need_weight_grad=need_weight_grad,
+                need_weight_grad=need_weight_grad or multi_option,
                 enable_torch_compile=enable_torch_compile,
             )
+            if multi_option:
+                if anchor_is_bf16:
+                    # Restore the true BF16 anchor now that the wrapper is built.
+                    new_m.orig_layer.bits = 16
+                    new_m.orig_layer.act_bits = 16
+                    new_m.enable_act_quant = False
+                new_m.set_candidates(
+                    [] if is_fixed else candidate_schemes,
+                    score_reduction=score_reduction,
+                    split_half=split_half,
+                )
             set_module(model, name, new_m)
     if offload_context is not None:
         offload_context.flush_loaded(model)
@@ -1243,6 +1549,10 @@ def get_score_for_scheme(
             m.grad = None
 
     for n, m in model.named_modules():
+        if multi_option:
+            if isinstance(m, MultiOptionScoreWrapper) and getattr(m, "_cand_schemes", None):
+                scores_dict[n] = [list(m.opt_scores), list(m.opt_half_scores[0]), list(m.opt_half_scores[1])]
+            continue
         if hasattr(m, "mix_score"):
             if m.orig_layer.act_bits <= 8:
                 if m.act_cnt == 0:
@@ -1251,14 +1561,15 @@ def get_score_for_scheme(
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
             scores_dict[n] = [layer_bits, m.mix_score]
-    _fill_inactive_expert_scores(scores_dict, block_names)
-    _log_score_summary_by_block_and_nonblock(
-        scores_dict,
-        block_names,
-        model=model,
-        scheme_tag=scheme_tag,
-        summary_stage="final",
-    )
+    if not multi_option:
+        _fill_inactive_expert_scores(scores_dict, block_names)
+        _log_score_summary_by_block_and_nonblock(
+            scores_dict,
+            block_names,
+            model=model,
+            scheme_tag=scheme_tag,
+            summary_stage="final",
+        )
 
     for n, m in model.named_modules():
         if hasattr(m, "orig_layer"):
@@ -2156,6 +2467,7 @@ def _gen_layer_config(
                 m.to(major_device)
 
     total_scores = {}
+    per_op_bits: dict[int, dict[str, int]] = {}
     schemes = auto_scheme.options
 
     def check_bf16_scheme(scheme):
@@ -2398,6 +2710,8 @@ def _gen_layer_config(
             for key, item in grouped_scores.items():
                 total_scores.setdefault(key, []).append(item)
             options_scores.append(total_loss)
+            # Bit costs are a property of the scheme, not of the expansion point.
+            per_op_bits[index] = {name: score[0] for name, score in per_op_scores.items()}
             return total_loss
 
         def _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores):
@@ -2876,9 +3190,31 @@ def _gen_layer_config(
     )
 
     dp_started = time.perf_counter()
-    best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+
+    # ------------------------------------------------------------------ #
+    # Bit allocation. Both solvers optimise the same objective over the same score
+    # table; they differ only in how the knapsack is solved. The DP is the historical
+    # default; the Lagrangian dual reaches the same allocation far faster because it
+    # needs no discretised state space.
+    # ------------------------------------------------------------------ #
+    if auto_scheme.solver == "lagrangian":
+        from auto_round.auto_scheme.solver import solve_lagrangian
+
+        assign = solve_lagrangian(total_scores, target_params_cnt)
+        if assign is None:
+            # Infeasible under the dual -- fall back to the DP so a solver problem can
+            # never make AutoScheme worse than before.
+            logger.warning("AutoScheme: Lagrangian solver found no feasible allocation; falling back to DP.")
+            best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+        else:
+            best_path = [(opt[3], opt[0]) for opt in assign.values()]
+            best_loss = sum(opt[2] for opt in assign.values())
+    else:
+        best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+
     logger.info(
-        "AutoScheme post-scoring: DP selection took %.2fs (layers=%d)",
+        "AutoScheme post-scoring: %s selection took %.2fs (layers=%d)",
+        auto_scheme.solver,
         time.perf_counter() - dp_started,
         len(total_scores),
     )
@@ -2953,7 +3289,7 @@ def gen_layer_config(
     """Public AutoScheme entry.
 
     This wrapper performs model loading/dispatch and environment preparation,
-    then delegates to `_gen_layer_config` for staged scoring + DP selection.
+    then delegates to `_gen_layer_config` for scoring + solver-based selection.
     """
     model_name = None
     is_vlm = False
