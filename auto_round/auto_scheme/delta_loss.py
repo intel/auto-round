@@ -898,7 +898,15 @@ def _tensor_referrer_snippet(tensor, max_depth: int = 3, max_entries: int = 4) -
         if isinstance(obj, dict):
             keys = list(obj.keys())[:max_entries]
             shown = [k if isinstance(k, str) else type(k).__name__ for k in keys]
-            return "dict{" + ", ".join(map(str, shown)) + "}"
+            desc = "dict{" + ", ".join(map(str, shown)) + "}"
+            if refers_to is not None:
+                # name the holding attribute deterministically: identity-search
+                # the walked object among the dict's values, so the snippet does
+                # not depend on key order or gc traversal order across platforms
+                for key, value in obj.items():
+                    if value is refers_to and isinstance(key, str):
+                        return f"{desc}[holding {key!r}]"
+            return desc
         if isinstance(obj, _nn.Module):
             desc = f"module:{type(obj).__name__}"
             if refers_to is not None:
