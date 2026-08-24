@@ -107,6 +107,7 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
     <td>25.65GB</td>
     <td>1.65GB</td>
   </tr>
+  <!-- TODO: MXFP4 Llama-3.1 AR data is anomalous (GSM8K=0.00, AVG=43.13); treat as preliminary and revisit for now. -->
   <tr>
     <td>AR</td>
     <td>0.00</td>

@@ -85,6 +85,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
   </tr>
   <tr><td>RTN</td><td>59.06</td><td>58.88</td><td>64.63</td><td>78.94</td><td>72.77</td><td>66.86</td><td>72.30</td><td>25.52GB</td><td>0.83GB</td></tr>
   <tr><td>opt_rtn</td><td>65.20</td><td>58.91</td><td>65.04</td><td>79.05</td><td>73.48</td><td>68.34</td><td>62.00</td><td>25.65GB</td><td>1.65GB</td></tr>
+  <!-- TODO: MXFP4 Llama-3.1 的 AR 数据异常（GSM8K=0.00，AVG=43.13），暂时视为初步结果，后续复核。 -->
   <tr><td>AR</td><td>0.00</td><td>31.20</td><td>48.50</td><td>75.24</td><td>60.69</td><td>43.13</td><td>959.21</td><td>25.39GB</td><td>16.30GB</td></tr>
   <tr><td>AR2</td><td>67.32</td><td>57.94</td><td>64.11</td><td>80.25</td><td>73.80</td><td>68.68</td><td>1104.91</td><td>24.38GB</td><td>17.78GB</td></tr>
   <tr><td>AWQ_RTN</td><td>66.26</td><td>58.36</td><td>66.12</td><td>79.00</td><td>73.95</td><td>68.74</td><td>1132.04</td><td>24.36GB</td><td>7.60GB</td></tr>
