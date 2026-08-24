@@ -78,9 +78,10 @@ void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* sca
   // those paths removes an extra device-timeline kernel launch from the decode
   // hot path; every other path (fp, int8, int2, and the scalar int4 / fp8
   // fallbacks) still needs the per-token expert mapping.
-  const bool dpas_fastpath = (weight_dtype == BTLA_DTYPE::S4_CLIP && sycl_tla_moe_decode_int4_dpas_applicable(params)) ||
-                             ((weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) &&
-                              sycl_tla_moe_decode_fp8_dpas_applicable(params));
+  const bool dpas_fastpath =
+      (weight_dtype == BTLA_DTYPE::S4_CLIP && sycl_tla_moe_decode_int4_dpas_applicable(params)) ||
+      ((weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) &&
+       sycl_tla_moe_decode_fp8_dpas_applicable(params));
   if (!dpas_fastpath) {
     sycl_tla_moe_decode_fill_expert_id(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts, total_tokens);
   }

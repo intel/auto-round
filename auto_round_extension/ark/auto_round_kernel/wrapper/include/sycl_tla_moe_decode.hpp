@@ -532,7 +532,8 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
     throw std::invalid_argument("moe_gemm_decode(int4): N must be a multiple of 16");
   }
   if (K % group_size != 0 || (group_size & 1) != 0) {
-    throw std::invalid_argument("moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
+    throw std::invalid_argument(
+        "moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
   }
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_decode(int4): zeros pointer required when asym=true");
@@ -716,7 +717,8 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
     throw std::invalid_argument("moe_gemm_decode(int4): N must be a multiple of 16");
   }
   if (K % group_size != 0 || (group_size & 1) != 0) {
-    throw std::invalid_argument("moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
+    throw std::invalid_argument(
+        "moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
   }
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_decode(int4): zeros pointer required when asym=true");
