@@ -120,6 +120,7 @@ from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_laye
 from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
+    _LM_HEAD_PATTERNS,
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
@@ -613,9 +614,16 @@ class _ModelFreeCompressorCore:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
             ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
-        if not self.quant_lm_head and "lm_head" not in ignore_patterns:
-            ignore_patterns.append("lm_head")
-            ignore_patterns.append("head")  # for deepseek v4
+        if not self.quant_lm_head:
+            layer_config_keys = set(self.layer_config or {})
+            # Skip each known lm_head name variant unless the user has explicitly listed it in layer_config.
+            # Each pattern is checked independently so a user-specified key takes priority over the default.
+            for lm_head_pattern in _LM_HEAD_PATTERNS:
+                pattern_in_config = any(
+                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys
+                )
+                if not pattern_in_config and lm_head_pattern not in ignore_patterns:
+                    ignore_patterns.append(lm_head_pattern)
 
         if not self.quant_nontext_module:
             for kw in _NONTEXT_KEYWORDS:
