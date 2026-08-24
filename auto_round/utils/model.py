@@ -940,9 +940,7 @@ def diffusion_load_model(
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    configured_dtype = component_config.get(
-                        "dtype", component_config.get("torch_dtype", "float32")
-                    )
+                    configured_dtype = component_config.get("dtype", component_config.get("torch_dtype", "float32"))
                     if isinstance(configured_dtype, str):
                         configured_dtype = getattr(torch, configured_dtype.removeprefix("torch."), torch.float32)
                     torch_dtype[k] = configured_dtype
