@@ -8,7 +8,12 @@ from transformers.utils.versions import require_version
 
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
+from auto_round.modeling.fused_moe.utils import (
+    _update_parameter,
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+    sequential_moe_forward,
+)
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 require_version("transformers>=5.2.0")
@@ -43,7 +48,26 @@ class LinearQwen3_5MoeSparseMoeBlock(ReplacementModuleBase):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states_reshaped = hidden_states.view(-1, hidden_dim)
         shared_expert_output = self.shared_expert(hidden_states_reshaped)
-        _, routing_weights, selected_experts = self.gate(hidden_states_reshaped)
+        router_logits, routing_weights, selected_experts = self.gate(hidden_states_reshaped)
+        if force_all_experts_routing_enabled():
+            routing_scores = (
+                torch.softmax(router_logits, dim=-1, dtype=torch.float)
+                if router_logits is not None
+                else torch.full(
+                    (hidden_states_reshaped.size(0), self.num_experts),
+                    1.0 / float(self.num_experts),
+                    device=hidden_states_reshaped.device,
+                    dtype=torch.float,
+                )
+            )
+            selected_experts, routing_weights = build_forced_routing(
+                module=self,
+                routing_scores=routing_scores,
+                top_k=routing_weights.size(-1),
+                num_experts=self.num_experts,
+                dtype=hidden_states_reshaped.dtype,
+                normalize=True,
+            )
         expert_output = self.experts_forward(hidden_states_reshaped, selected_experts, routing_weights)
 
         shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states_reshaped)) * shared_expert_output
