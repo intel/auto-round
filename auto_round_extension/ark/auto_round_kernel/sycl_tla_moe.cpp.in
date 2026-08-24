@@ -149,6 +149,12 @@ void sycl_tla_moe_decode_fp(const MoeDecodeParams& params) {
 
 #include "sycl_tla_common.hpp"
 #include "sycl_tla_moe_decode.hpp"
+// FP8 per-group DPAS grouped GEMM. Unlike the S4 decode path, whose tile
+// policies are instantiated in the generated `sycl_tla_moe_prefill_s4_*`
+// translation units, the decode-phase FP8 dispatch (finer small-M ladder plus
+// the persistent atomic counter) is instantiated here, so this TU needs the
+// definitions and not just the shape-gate helpers.
+#include "sycl_tla_moe_prefill_fp8_dpas.hpp"
 
 namespace ark {
 
