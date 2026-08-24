@@ -61,6 +61,18 @@ class TestDiffusionMixinProperties:
         for invalid in (0, -1, 1.5, True):
             with pytest.raises(ValueError, match="positive integer"):
                 MockCompressor(max_cached_calibration_inputs=invalid)
+    def test_align_pipeline_dtype_preserves_fp32_modules(self):
+        protected = torch.nn.Linear(2, 2)
+        protected._keep_in_fp32_modules = ["weight"]
+        protected.dtype = torch.float32
+        ordinary = torch.nn.Linear(2, 2)
+        ordinary.dtype = torch.float32
+        pipe = SimpleNamespace(components=["protected", "ordinary"], protected=protected, ordinary=ordinary)
+
+        DiffusionMixin._align_pipeline_dtype(pipe, torch.bfloat16)
+
+        assert protected.weight.dtype == torch.float32
+        assert ordinary.weight.dtype == torch.bfloat16
 
 
 class TestFindAdditionalTransformers:
