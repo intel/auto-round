@@ -16,7 +16,11 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from auto_round.modeling.fused_moe.utils import sequential_moe_forward
+from auto_round.modeling.fused_moe.utils import (
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+    sequential_moe_forward,
+)
 
 
 class LinearQwen3NextSparseMoeBlock(nn.Module):
@@ -45,11 +49,21 @@ class LinearQwen3NextSparseMoeBlock(nn.Module):
         router_logits = self.gate(hidden_states)
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-        if self.norm_topk_prob:
-            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        # we cast back to the input dtype
-        routing_weights = routing_weights.to(hidden_states.dtype)
+        if force_all_experts_routing_enabled():
+            selected_experts, routing_weights = build_forced_routing(
+                module=self,
+                routing_scores=routing_weights,
+                top_k=self.top_k,
+                num_experts=self.num_experts,
+                dtype=hidden_states.dtype,
+                normalize=self.norm_topk_prob,
+            )
+        else:
+            routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+            if self.norm_topk_prob:
+                routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+            # we cast back to the input dtype
+            routing_weights = routing_weights.to(hidden_states.dtype)
 
         final_hidden_states = sequential_moe_forward(
             hidden_states, selected_experts, routing_weights, self.experts, self.num_experts

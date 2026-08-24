@@ -102,3 +102,38 @@ def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_c
         quantization_status=QuantizationStatus.COMPRESSED,
         ignore=ignore,
     )
+
+
+def initialize_nvfp4_e5m3_quantization(ignore=None):
+    """Build stable compressed-tensors metadata for global-scale-free NVFP4 E5M3."""
+
+    def quant_args(dynamic):
+        return {
+            "actorder": None,
+            "block_structure": None,
+            "dynamic": dynamic,
+            "group_size": 16,
+            "num_bits": 4,
+            "observer": "minmax",
+            "observer_kwargs": {},
+            "strategy": "tensor_group",
+            "symmetric": True,
+            "type": "float",
+        }
+
+    return {
+        "config_groups": {
+            "group_0": {
+                "input_activations": quant_args("local"),
+                "output_activations": None,
+                "targets": ["Linear"],
+                "weights": quant_args(False),
+            }
+        },
+        "format": "nvfp4-e5m3-pack-quantized",
+        "global_compression_ratio": None,
+        "ignore": list(dict.fromkeys(ignore or ["lm_head"])),
+        "kv_cache_scheme": None,
+        "quant_method": "compressed-tensors",
+        "quantization_status": "compressed",
+    }
