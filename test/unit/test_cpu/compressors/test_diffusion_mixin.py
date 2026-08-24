@@ -61,6 +61,7 @@ class TestDiffusionMixinProperties:
         for invalid in (0, -1, 1.5, True):
             with pytest.raises(ValueError, match="positive integer"):
                 MockCompressor(max_cached_calibration_inputs=invalid)
+
     def test_align_pipeline_dtype_preserves_fp32_modules(self):
         protected = torch.nn.Linear(2, 2)
         protected._keep_in_fp32_modules = ["weight"]
