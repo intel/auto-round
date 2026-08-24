@@ -47,6 +47,19 @@ class TestDiffusionMixinProperties:
         comp.pipeline_call_kwargs = {"height": 512, "width": 512}
         assert comp.pipeline_call_kwargs.get("height") == 512
 
+    def test_align_pipeline_dtype_preserves_fp32_modules(self):
+        protected = torch.nn.Linear(2, 2)
+        protected._keep_in_fp32_modules = ["weight"]
+        protected.dtype = torch.float32
+        ordinary = torch.nn.Linear(2, 2)
+        ordinary.dtype = torch.float32
+        pipe = SimpleNamespace(components=["protected", "ordinary"], protected=protected, ordinary=ordinary)
+
+        DiffusionMixin._align_pipeline_dtype(pipe, torch.bfloat16)
+
+        assert protected.weight.dtype == torch.float32
+        assert ordinary.weight.dtype == torch.bfloat16
+
 
 class TestFindAdditionalTransformers:
     """Test _find_additional_transformers logic."""
