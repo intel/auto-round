@@ -162,10 +162,10 @@ export AR_AUTO_SCHEME_SEQLEN=1024
 ```
 
 ### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
-- **Description**: Turn a parallel-scoring failure into a hard error instead of falling back to serial scoring. Useful when the serial pass is known to be unable to run (or would take workers-count times longer): completed schemes and batches are persisted in the per-scheme cache, so a rerun scores only the failed parts.
-- **Default**: unset -> parallel scoring failure falls back to serial
-- **Valid Values**: `1`, `true`, `yes`
-- **Usage**: Set this to fail fast on parallel scoring errors
+- **描述**：将并行评分失败变为硬错误，而不是回退到串行评分。当串行路径已知无法运行（或耗时会是 worker 数量的倍数）时非常有用：已完成的方案和批次会持久化在单方案缓存中，重新运行时只补打失败的部分。
+- **默认值**：未设置时，并行评分失败会回退到串行评分
+- **有效值**：`1`、`true`、`yes`（不区分大小写）
+- **用法**：设置该变量以在并行评分出错时快速失败
 
 ```bash
 export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
@@ -189,6 +189,16 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_SCHEME_MEM_INVENTORY
+- **描述**：启用后，AutoScheme 流式评分会在 block 边界打印当前 CUDA tensor 清单（`[mem-inv]` 行）——按 (shape, dtype) 分组、按大小降序——便于发现未释放的模块权重或被保留的计算图。与该变量无关，打分 worker 的 CUDA OOM 错误始终会附带更详细的清单（活动 tensor、持有它们的容器以及出错算子的 traceback）。
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用；其他值表示禁用
+- **用法**：排查 AutoScheme 打分期间显存增长问题时启用
+
+```bash
+export AR_SCHEME_MEM_INVENTORY=1
 ```
 
 ### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
