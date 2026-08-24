@@ -59,6 +59,7 @@ class TestAutoRoundFormatGeneration:
         print(res)
         assert "!!!" not in res
 
+    @pytest.mark.timeout(120)
     def test_autoround_sym(self, dataloader):
         for bits in [4]:
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)

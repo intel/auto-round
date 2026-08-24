@@ -170,17 +170,20 @@ class TestAutoRound:
 
     def test_parse_available_devices(self):
         from auto_round.utils.device import parse_available_devices
+        from auto_round.utils.device_manager import get_major_device
 
         device_list = parse_available_devices("auto")
-        assert len(device_list) == 1 and "cpu" in device_list
+        assert device_list == [get_major_device("auto")]
         device_list = parse_available_devices("a:cuda:0,b:cuda:1,c:cpu")
         assert len(device_list) == 3
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
-        assert len(device_list) == 1 and "cpu" in device_list
+        assert len(device_list) == 1
+        assert device_list[0] == get_major_device("0")
 
     @pytest.mark.timeout(60)
     def test_set_scheme(self, tiny_qwen_model_path):
+        pytest.importorskip("sentencepiece")
         ar = AutoRound(
             tiny_qwen_model_path,
             scheme="gguf:q2_k_s",

@@ -11,7 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import importlib
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -1355,9 +1357,6 @@ def _bypass_cosmos3_safety_checker():
     # Prefer an already-registered module.  Besides avoiding an unnecessary
     # import, this makes the optional dependency easy to substitute in tests
     # and in environments where diffusers lazily registers pipeline modules.
-    import importlib
-    import sys
-
     module_name = "diffusers.pipelines.cosmos.pipeline_cosmos3_omni"
     pipeline_cosmos3_omni = sys.modules.get(module_name)
     if pipeline_cosmos3_omni is None:

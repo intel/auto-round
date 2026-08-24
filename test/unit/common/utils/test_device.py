@@ -1024,12 +1024,11 @@ class TestSetNonAutoDeviceMap:
 
     def test_dict_assigns_layers(self):
         from auto_round.utils.device import set_non_auto_device_map
+        from auto_round.utils.device_manager import get_major_device
 
         model = nn.Sequential(nn.Linear(4, 4))
-        # get_major_device('0') -> 'cpu' on a CPU-only host, so the assigned
-        # device value should be 'cpu'.
         set_non_auto_device_map(model, {"0": "0"})
-        assert model[0].tuning_device == "cpu"
+        assert model[0].tuning_device == get_major_device("0")
 
     def test_dict_string_digit_key_with_unknown_layer_logs(self):
         from auto_round.utils.device import set_non_auto_device_map
@@ -1288,6 +1287,7 @@ class TestMemoryMonitor:
         from auto_round.utils.device import MemoryMonitor
 
         m = MemoryMonitor()
+        m.reset()
         assert m.peak_ram == 0.0
         assert m.peak_vram == {}
         assert m.enabled is True
@@ -1356,6 +1356,7 @@ class TestMemoryMonitor:
         from auto_round.utils.device import MemoryMonitor
 
         m = MemoryMonitor()
+        m.reset()
         with patch("auto_round.utils.device.is_hpex_available", return_value=False):
             m.update_hpu(device_list=[0])
         assert m.peak_vram == {}
@@ -1626,7 +1627,7 @@ class TestSetCudaVisibleDevicesExtra:
         original = os.environ.get("CUDA_VISIBLE_DEVICES")
         try:
             set_cuda_visible_devices("0 ")
-            assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0 "
+            assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0"
         finally:
             if original is not None:
                 os.environ["CUDA_VISIBLE_DEVICES"] = original
@@ -1659,6 +1660,9 @@ class TestPatchXpuSdpaCausalMask:
 
         # Force hasattr(torch, "xpu") False
         with patch("auto_round.utils.device.torch") as mock_torch:
+            from auto_round.utils import device as device_mod
+
+            device_mod._xpu_sdpa_patched = False
             # Remove the xpu attribute
             mock_torch.configure_mock(**{"xpu.is_available.return_value": False})
             mock_torch.xpu = MagicMock()
@@ -1674,13 +1678,12 @@ class TestPatchXpuSdpaCausalMask:
         from auto_round.utils import device as device_mod
         from auto_round.utils.device import patch_xpu_sdpa_drop_causal_mask
 
-        # First call returns early (no xpu available) -> patched stays False.
-        # Second call similarly returns early.
-        patch_xpu_sdpa_drop_causal_mask()
-        assert device_mod._xpu_sdpa_patched is False
-        # Second call must not raise.
-        patch_xpu_sdpa_drop_causal_mask()
-        assert device_mod._xpu_sdpa_patched is False
+        with patch("auto_round.utils.device.torch.xpu.is_available", return_value=False):
+            device_mod._xpu_sdpa_patched = False
+            patch_xpu_sdpa_drop_causal_mask()
+            assert device_mod._xpu_sdpa_patched is False
+            patch_xpu_sdpa_drop_causal_mask()
+            assert device_mod._xpu_sdpa_patched is False
 
     def test_force_flag_bypass(self):
         """Calling while already patched must return immediately."""

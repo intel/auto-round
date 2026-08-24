@@ -366,6 +366,10 @@ class TestGetCurrentDeviceType:
             __import__("auto_round.utils.device_manager", fromlist=["_torch_accelerator_type"]),
             "_torch_accelerator_type",
             return_value=None,
+        ), patch.object(
+            __import__("auto_round.utils.device_manager", fromlist=["_PREFERRED_ORDER"]),
+            "_PREFERRED_ORDER",
+            (),
         ):
             # Need to clear the lru_cache
             get_current_device_type.cache_clear()

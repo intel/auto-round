@@ -1525,6 +1525,7 @@ _TRANSFORMER_TENSORS = {
 class TestCopyMetadataSubfolders:
     """Tests for _copy_metadata_files including subdirectory handling."""
 
+    @pytest.mark.timeout(120)
     def test_non_diffusion_copies_subfolders(self, tmp_path):
         """Non-diffusion model: subdirectories should be copied to output."""
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)

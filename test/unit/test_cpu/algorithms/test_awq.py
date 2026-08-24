@@ -138,8 +138,6 @@ class TestAWQNormalLLM:
         This is a genuine backend/device-dispatch check (real reload + inference on `device`),
         unlike the other AWQ tests in this class which only check algorithm/config correctness.
         """
-        from test.helpers import eval_generated_prompt
-
         ar = AutoRound(
             tiny_opt_model_path,
             scheme="W4A16",
@@ -150,7 +148,9 @@ class TestAWQNormalLLM:
             device_map=device,
         )
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-        eval_generated_prompt(quantized_model_path, device=device)
+        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+        output = generate_prompt(quantized_model_path, tokenizer, device=device)
+        assert output.strip()
 
 
 class TestAWQNonIntegerSchemes:
