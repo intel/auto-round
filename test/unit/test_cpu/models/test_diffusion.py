@@ -96,7 +96,13 @@ def test_diffusion_model_dtype_is_applied_during_loading(monkeypatch, tmp_path):
         def load_config(self, _path):
             return {}
 
-    (tmp_path / "model_index.json").write_text(json.dumps({"_class_name": "FakePipeline"}), encoding="utf-8")
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"_class_name": "FakePipeline", "transformer": ["diffusers", "FakeModel"]}), encoding="utf-8"
+    )
+    (tmp_path / "transformer" / "config.json").write_text(
+        json.dumps({"torch_dtype": "torch.float32"}), encoding="utf-8"
+    )
     captured_kwargs = {}
 
     def fake_from_pretrained(_path, **kwargs):
@@ -108,6 +114,9 @@ def test_diffusion_model_dtype_is_applied_during_loading(monkeypatch, tmp_path):
     diffusion_load_model(str(tmp_path), model_dtype="bf16")
 
     assert captured_kwargs["torch_dtype"] is torch.bfloat16
+    captured_kwargs.clear()
+    diffusion_load_model(str(tmp_path))
+    assert captured_kwargs["torch_dtype"] == {"transformer": torch.float32}
 
 
 @pytest.fixture

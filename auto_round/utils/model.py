@@ -940,11 +940,17 @@ def diffusion_load_model(
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                    configured_dtype = component_config.get(
+                        "dtype", component_config.get("torch_dtype", "float32")
+                    )
+                    if isinstance(configured_dtype, str):
+                        configured_dtype = getattr(torch, configured_dtype.removeprefix("torch."), torch.float32)
+                    torch_dtype[k] = configured_dtype
 
-        pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
-            pretrained_model_name_or_path, torch_dtype=torch_dtype
-        )
+        pipeline_cls = pipelines.pipeline_utils.DiffusionPipeline
+        supports_dtype = 'kwargs.pop("dtype"' in inspect.getsource(pipeline_cls.from_pretrained)
+        dtype_key = "dtype" if supports_dtype else "torch_dtype"
+        pipe = pipeline_cls.from_pretrained(pretrained_model_name_or_path, **{dtype_key: torch_dtype})
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
     elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
