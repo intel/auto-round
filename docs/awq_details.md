@@ -56,6 +56,8 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 
 ## MXFP4
 
+**Note: For Llama-3.1-Instruct, we recommend removing `@use_kernel_forward_from_hub("RMSNorm")` in [modeling_llama.py](https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L52C1-L52C40); the tests below did not remove it, which can make the accuracy results inaccurate.**
+
 <table border="1">
   <tr>
     <td>Model</td>

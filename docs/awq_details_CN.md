@@ -56,6 +56,8 @@ auto-round --model <model> --scheme <scheme> --format fake \
 
 ## MXFP4
 
+**注意：对于 Llama-3.1-Instruct，我们建议移除 [modeling_llama.py](https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L52C1-L52C40) 中的 `@use_kernel_forward_from_hub("RMSNorm")`；下方的测试并未移除该装饰器，会导致精度测试结果不准确。**
+
 <table border="1">
   <tr>
     <td>Model</td>
