@@ -123,9 +123,6 @@ void moe_gemm_launcher(sycl::queue* q, const ElementA* activations, const Elemen
                      'R'>(activations, weights, scales, outputs, mma, num_rows_per_expert_device, num_experts, gemm_n,
                           gemm_k, scheduler_params);
       });
-
-  EventManager::getInstance().addEvent(event);
-  event.wait();
 }
 
 // Whether the N-based tile-policy heuristic is enabled (default on).
