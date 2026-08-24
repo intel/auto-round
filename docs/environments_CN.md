@@ -161,6 +161,16 @@ export AR_AUTO_SCHEME_BATCH_SIZE=1
 export AR_AUTO_SCHEME_SEQLEN=1024
 ```
 
+### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
+- **Description**: Turn a parallel-scoring failure into a hard error instead of falling back to serial scoring. Useful when the serial pass is known to be unable to run (or would take workers-count times longer): completed schemes and batches are persisted in the per-scheme cache, so a rerun scores only the failed parts.
+- **Default**: unset -> parallel scoring failure falls back to serial
+- **Valid Values**: `1`, `true`, `yes`
+- **Usage**: Set this to fail fast on parallel scoring errors
+
+```bash
+export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **描述**：存放可持久复用的 AutoScheme 单方案评分 JSON 文件。该目录独立于用于临时工作数据的 `AR_WORK_SPACE`。
 - **默认值**：`~/.cache/auto_round`
