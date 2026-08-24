@@ -57,11 +57,7 @@
 
 #include "bestla/bestla.h"
 #include "sycl_tla_moe_dequant.hpp"
-// S4-sym per-group DPAS grouped-GEMM (shared with the prefill path). The
-// header self-guards on `ARK_XPU && ARK_SYCL_TLA`, so including it here is a
-// no-op when the DPAS backend is disabled. Decode routes small-M int4-sym
-// GEMV through this kernel; see `moe_gemm_decode` below.
-#include "sycl_tla_moe_prefill_s4_dpas.hpp"
+#include "sycl_tla_common.hpp"
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -536,7 +532,8 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
     throw std::invalid_argument("moe_gemm_decode(int4): N must be a multiple of 16");
   }
   if (K % group_size != 0 || (group_size & 1) != 0) {
-    throw std::invalid_argument("moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
+    throw std::invalid_argument(
+        "moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
   }
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_decode(int4): zeros pointer required when asym=true");
@@ -720,7 +717,8 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
     throw std::invalid_argument("moe_gemm_decode(int4): N must be a multiple of 16");
   }
   if (K % group_size != 0 || (group_size & 1) != 0) {
-    throw std::invalid_argument("moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
+    throw std::invalid_argument(
+        "moe_gemm_decode(int4): K must be a multiple of group_size and group_size must be even");
   }
   if (Asym && zeros == nullptr) {
     throw std::invalid_argument("moe_gemm_decode(int4): zeros pointer required when asym=true");
@@ -1743,16 +1741,15 @@ void launch_fp8_by_mode(sycl::queue* q, const ScalarT* activations, const uint8_
 // process; call this to hand the memory back, or to drop a repack cached under
 // `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer is
 // freed. Safe to call at any time -- the next decode simply reallocates.
+//
+// Declared in `sycl_tla_common.hpp` and defined in the generated int4 decode
+// translation unit, which owns both pools.
 // ----------------------------------------------------------------------------
-inline void moe_decode_release_scratch() {
-  moe_decode_detail::int4_repack_pool().release_all();
-  moe_decode_detail::act_group_sum_pool().release_all();
-}
 
 // ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_DPAS_S4` (default ON). When ON, int4-sym
 // (S4_CLIP, !asym) decode is routed to the dedicated decode-phase S4 DPAS
-// grouped GEMM (`moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch`) instead
+// grouped GEMM in the generated int4 decode translation unit instead
 // of the scalar FMA GEMV (`launch_int4`). Mirroring vLLM-xpu-kernels'
 // `w4a16` decode dispatch, this path selects the DPAS tile from the average
 // tokens-per-expert (`A_avg_M`) ladder (`_m_8` -> `_m_16` -> `_m_32` -> wide),
@@ -1922,279 +1919,6 @@ inline bool moe_decode_coalesce_int4_amortized(int total_tokens, int num_experts
 //                                   decode-sized batch uses the scalar GEMV.
 // act_dtype: F16 or BF16 (must match scales/outputs dtype)
 // ----------------------------------------------------------------------------
-inline void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros,
-                            void* outputs, int* expert_id_per_token_buf, BTLA_DTYPE act_dtype,
-                            BTLA_DTYPE weight_dtype, int N, int K, int group_size, int* num_tokens_per_expert,
-                            int num_experts, int total_tokens, bool asym) {
-  // The S4-sym and FP8 DPAS fast paths consume `num_tokens_per_expert` directly
-  // and never read `expert_id_per_token_buf`. Skipping the fill on those paths
-  // removes an extra device-timeline kernel launch from the decode hot path;
-  // every other path (fp, int8, int2, and the scalar int4 / fp8 fallbacks)
-  // still needs the per-token expert mapping.
-  const bool s4_dpas_fastpath = weight_dtype == BTLA_DTYPE::S4_CLIP && !asym && moe_decode_dpas_s4_enabled() &&
-                                moe_decode_dpas_s4_occupancy_ok(total_tokens, num_experts) &&
-                                moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(N, K, group_size);
-  const bool fp8_dpas_fastpath = (weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) &&
-                                 !asym && moe_decode_dpas_fp8_enabled() &&
-                                 moe_decode_dpas_fp8_occupancy_ok(total_tokens, num_experts) &&
-                                 moe_dpas_fp8::moe_prefill_dpas_fp8_pergroup_shape_ok(N, K, group_size);
-  if (!s4_dpas_fastpath && !fp8_dpas_fastpath) {
-    moe_decode_detail::fill_expert_id_per_token(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts,
-                                                total_tokens);
-  }
-
-  if (weight_dtype == BTLA_DTYPE::F16 || weight_dtype == BTLA_DTYPE::BF16) {
-    if (weight_dtype != act_dtype) {
-      throw std::invalid_argument("moe_gemm_decode: unquantized weight_dtype must match act_dtype");
-    }
-    if (act_dtype == BTLA_DTYPE::F16) {
-      moe_decode_detail::launch_fp<sycl::half>(q, static_cast<const sycl::half*>(activations),
-                                               static_cast<const sycl::half*>(weights),
-                                               static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-                                               total_tokens, N, K);
-    } else {
-      moe_decode_detail::launch_fp<sycl::ext::oneapi::bfloat16>(
-          q, static_cast<const sycl::ext::oneapi::bfloat16*>(activations),
-          static_cast<const sycl::ext::oneapi::bfloat16*>(weights),
-          static_cast<sycl::ext::oneapi::bfloat16*>(outputs), expert_id_per_token_buf, total_tokens, N, K);
-    }
-    return;
-  }
-
-  if (weight_dtype == BTLA_DTYPE::S4_CLIP) {
-    if (act_dtype != BTLA_DTYPE::F16 && act_dtype != BTLA_DTYPE::BF16) {
-      throw std::invalid_argument("moe_gemm_decode(int4): act_dtype must be FP16 or BF16");
-    }
-    // Fast path: sym int4 through the shared per-group S4 DPAS grouped GEMM.
-    // Falls back to the scalar GEMV for asym weights (DPAS S4 is sym-only),
-    // when the env flag is off, when the batch is too small to fill the DPAS M
-    // tile (the usual decode case -- sym then runs the exact same
-    // `launch_int4*` kernel as asym, with `Asym=false`), or when the shape gate
-    // rejects the tile geometry (e.g. N%64!=0, K%32!=0, unsupported
-    // group_size). Reuses the
-    // `s4_dpas_fastpath` predicate computed above (which also gated the
-    // `fill_expert_id_per_token` skip) so the two decisions cannot diverge.
-    if (s4_dpas_fastpath) {
-      if (act_dtype == BTLA_DTYPE::F16) {
-        moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch<sycl::half>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), num_tokens_per_expert,
-            num_experts, N, K, group_size, total_tokens);
-      } else {
-        using BF = sycl::ext::oneapi::bfloat16;
-        moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch<BF>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<BF*>(outputs), num_tokens_per_expert, num_experts, N, K,
-            group_size, total_tokens);
-      }
-      return;
-    }
-    // Scalar FMA GEMV fallback (asym, flag off, or shape gate miss). By
-    // default this uses the coalesced-load variant, which repacks the weights
-    // on-device so sub-group loads are contiguous; `ARK_MOE_DECODE_COALESCE_INT4=0`
-    // forces the legacy per-lane-strided kernel.
-    const bool coalesce = moe_decode_coalesce_int4_enabled() &&
-                          moe_decode_coalesce_int4_amortized(total_tokens, num_experts);
-    if (act_dtype == BTLA_DTYPE::F16) {
-      if (asym) {
-        if (coalesce) {
-          moe_decode_detail::launch_int4_coalesced<sycl::half, true>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size,
-              num_experts);
-        } else {
-          moe_decode_detail::launch_int4<sycl::half, true>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
-        }
-      } else {
-        if (coalesce) {
-          moe_decode_detail::launch_int4_coalesced<sycl::half, false>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size,
-              num_experts);
-        } else {
-          moe_decode_detail::launch_int4<sycl::half, false>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-              static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
-        }
-      }
-    } else {
-      using BF = sycl::ext::oneapi::bfloat16;
-      if (asym) {
-        if (coalesce) {
-          moe_decode_detail::launch_int4_coalesced<BF, true>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-              expert_id_per_token_buf, total_tokens, N, K, group_size, num_experts);
-        } else {
-          moe_decode_detail::launch_int4<BF, true>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-              expert_id_per_token_buf, total_tokens, N, K, group_size);
-        }
-      } else {
-        if (coalesce) {
-          moe_decode_detail::launch_int4_coalesced<BF, false>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-              expert_id_per_token_buf, total_tokens, N, K, group_size, num_experts);
-        } else {
-          moe_decode_detail::launch_int4<BF, false>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-              expert_id_per_token_buf, total_tokens, N, K, group_size);
-        }
-      }
-    }
-    return;
-  }
-
-  if (weight_dtype == BTLA_DTYPE::S8) {
-    if (act_dtype == BTLA_DTYPE::F16) {
-      if (asym) {
-        moe_decode_detail::launch_int8<sycl::half, true>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-            static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
-      } else {
-        moe_decode_detail::launch_int8<sycl::half, false>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-            static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
-      }
-    } else if (act_dtype == BTLA_DTYPE::BF16) {
-      using BF = sycl::ext::oneapi::bfloat16;
-      if (asym) {
-        moe_decode_detail::launch_int8<BF, true>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-            expert_id_per_token_buf, total_tokens, N, K, group_size);
-      } else {
-        moe_decode_detail::launch_int8<BF, false>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-            expert_id_per_token_buf, total_tokens, N, K, group_size);
-      }
-    } else {
-      throw std::invalid_argument("moe_gemm_decode(int8): act_dtype must be FP16 or BF16");
-    }
-    return;
-  }
-
-  if (weight_dtype == BTLA_DTYPE::S2_CLIP) {
-    if (act_dtype == BTLA_DTYPE::F16) {
-      if (asym) {
-        moe_decode_detail::launch_int2<sycl::half, true>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-            static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
-      } else {
-        moe_decode_detail::launch_int2<sycl::half, false>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<const sycl::half*>(zeros),
-            static_cast<sycl::half*>(outputs), expert_id_per_token_buf, total_tokens, N, K, group_size);
-      }
-    } else if (act_dtype == BTLA_DTYPE::BF16) {
-      using BF = sycl::ext::oneapi::bfloat16;
-      if (asym) {
-        moe_decode_detail::launch_int2<BF, true>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-            expert_id_per_token_buf, total_tokens, N, K, group_size);
-      } else {
-        moe_decode_detail::launch_int2<BF, false>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<const BF*>(zeros), static_cast<BF*>(outputs),
-            expert_id_per_token_buf, total_tokens, N, K, group_size);
-      }
-    } else {
-      throw std::invalid_argument("moe_gemm_decode(int2): act_dtype must be FP16 or BF16");
-    }
-    return;
-  }
-
-  if (weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) {
-    if (asym) {
-      throw std::invalid_argument("moe_gemm_decode(fp8): asym mode is not supported");
-    }
-    if (act_dtype != BTLA_DTYPE::F16 && act_dtype != BTLA_DTYPE::BF16) {
-      throw std::invalid_argument("moe_gemm_decode(fp8): act_dtype must be FP16 or BF16");
-    }
-    const bool is_e4m3 = (weight_dtype == BTLA_DTYPE::F8_E4M3);
-    // Fast path: FP8 through the decode-phase per-group DPAS grouped GEMM.
-    // Falls back to the scalar GEMV when the env flag is off, when the batch is
-    // too small to fill the DPAS M tile (the usual decode case), or when the
-    // shape gate rejects the tile geometry (e.g. N%64!=0, K%32!=0, unsupported
-    // group_size). Reuses the `fp8_dpas_fastpath` predicate computed above
-    // (which also gated the `fill_expert_id_per_token` skip) so the two
-    // decisions cannot diverge.
-    if (fp8_dpas_fastpath) {
-      if (act_dtype == BTLA_DTYPE::F16) {
-        if (is_e4m3) {
-          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<sycl::half, true>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), num_tokens_per_expert,
-              num_experts, N, K, group_size, total_tokens);
-        } else {
-          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<sycl::half, false>(
-              q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), num_tokens_per_expert,
-              num_experts, N, K, group_size, total_tokens);
-        }
-      } else {
-        using BF = sycl::ext::oneapi::bfloat16;
-        if (is_e4m3) {
-          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<BF, true>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<BF*>(outputs), num_tokens_per_expert, num_experts, N, K,
-              group_size, total_tokens);
-        } else {
-          moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<BF, false>(
-              q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-              static_cast<const BF*>(scales), static_cast<BF*>(outputs), num_tokens_per_expert, num_experts, N, K,
-              group_size, total_tokens);
-        }
-      }
-      return;
-    }
-    if (act_dtype == BTLA_DTYPE::F16) {
-      if (is_e4m3) {
-        moe_decode_detail::launch_fp8_by_mode<sycl::half, true>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-            total_tokens, N, K, group_size);
-      } else {
-        moe_decode_detail::launch_fp8_by_mode<sycl::half, false>(
-            q, static_cast<const sycl::half*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const sycl::half*>(scales), static_cast<sycl::half*>(outputs), expert_id_per_token_buf,
-            total_tokens, N, K, group_size);
-      }
-    } else {
-      using BF = sycl::ext::oneapi::bfloat16;
-      if (is_e4m3) {
-        moe_decode_detail::launch_fp8_by_mode<BF, true>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
-            group_size);
-      } else {
-        moe_decode_detail::launch_fp8_by_mode<BF, false>(
-            q, static_cast<const BF*>(activations), static_cast<const uint8_t*>(weights),
-            static_cast<const BF*>(scales), static_cast<BF*>(outputs), expert_id_per_token_buf, total_tokens, N, K,
-            group_size);
-      }
-    }
-    return;
-  }
-
-  throw std::invalid_argument(
-      "moe_gemm_decode: unsupported weight_dtype (supported: F16, BF16, S8, S4_CLIP, S2_CLIP, F8_E4M3, F8_E5M2)");
-}
-
 }  // namespace ark
 
 #endif  // ARK_XPU && ARK_SYCL_TLA

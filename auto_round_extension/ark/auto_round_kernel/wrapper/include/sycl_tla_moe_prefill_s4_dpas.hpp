@@ -626,6 +626,42 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
 // Scales `[E, N, K/group_size]` in act dtype (half / bfloat16).
 // ---------------------------------------------------------------------------
 
+template <typename ScalarT, class Policy>
+void moe_prefill_s4_dpas_per_group_dispatch_policy(
+    sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NKp,
+    const ScalarT* scales, ScalarT* outputs,
+    const int* num_tokens_per_expert, int E, int N, int K, int group_size,
+    int total_tokens) {
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+  if (K % group_size != 0) {
+    throw std::invalid_argument(
+        "moe_prefill_s4_dpas(per-group): K must be a multiple of group_size");
+  }
+  if ((K & 1) != 0) {
+    throw std::invalid_argument(
+        "moe_prefill_s4_dpas(per-group): K must be even (packed nibbles)");
+  }
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+  const auto* weights_i4 =
+      reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
+
+  // Reusable per-queue work-group counter (self-zeroed by the kernel); avoids
+  // a malloc_device/free (each a queue sync) on every dispatch call.
+  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
+
+  MoEGEMMLauncher_s4<'R', 'C', Policy>(
+      *q, activations_ca, weights_i4, scales_ca,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, group_size, atomic_buffer);
+}
+
 template <typename ScalarT>
 void moe_prefill_s4_dpas_per_group_dispatch(
     sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NKp,

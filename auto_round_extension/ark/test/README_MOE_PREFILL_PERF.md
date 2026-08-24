@@ -359,9 +359,9 @@ The mid-size `32×64` tile now covers `A_avg_M` up to 128 (previously it
 jumped to the wide tile at 33), which avoids padding waste on the
 common chunked-prefill batch sizes.
 
-**S4 DPAS decode path** — the *decode* phase (`sycl_tla_moe_decode.hpp`,
-int4-sym / `S4_CLIP`, `!asym`, `ARK_MOE_DECODE_DPAS_S4` default ON) has
-its own dedicated dispatch, `moe_decode_s4_dpas_per_group_dispatch`,
+**S4 DPAS decode path** — the *decode* phase (int4-sym / `S4_CLIP`,
+`!asym`, `ARK_MOE_DECODE_DPAS_S4` default ON) has its own dedicated
+dispatch in the generated `sycl_tla_moe_decode_int4.cpp` translation unit,
 mirroring vLLM-xpu-kernels' `w4a16` decode dispatch. It selects the DPAS
 tile from the same `A_avg_M` ladder as prefill (`_m_8` → `_m_16` → `_m_32`
 → wide): the 8-row tile is used only for the tiny-batch tail (`A_avg_M ≤

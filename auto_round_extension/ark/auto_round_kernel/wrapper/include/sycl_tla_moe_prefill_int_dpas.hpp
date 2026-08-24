@@ -761,6 +761,34 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
 // Scale pointer `[E]` FP32 (one per-expert scalar).
 // ---------------------------------------------------------------------------
 
+template <typename ScalarT, class Policy>
+void moe_prefill_int_dpas_per_tensor_dispatch_policy(
+    sycl::queue* q, const ScalarT* activations, const int8_t* weights_KN,
+    const float* scales_e, ScalarT* outputs, const int* num_tokens_per_expert,
+    int E, int N, int K, int total_tokens) {
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+
+  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
+  if (atomic_buffer == nullptr) {
+    throw std::runtime_error(
+        "moe_prefill_int_dpas(per-tensor): failed to allocate atomic buffer");
+  }
+
+  MoEGEMMLauncher_int<'R', 'R', Policy, ScaleMode::kPerTensor>(
+      *q, activations_ca, weights_KN, scales_e,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, /*group_size=*/0, atomic_buffer);
+
+  sycl::free(atomic_buffer, *q);
+}
+
 template <typename ScalarT>
 void moe_prefill_int_dpas_per_tensor_dispatch(
     sycl::queue* q, const ScalarT* activations, const int8_t* weights_KN,
@@ -818,6 +846,40 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
 // Scales `[E, N, K/group_size]` in act dtype (half / bfloat16), same layout
 // as the FP8 per-group path.
 // ---------------------------------------------------------------------------
+
+template <typename ScalarT, class Policy>
+void moe_prefill_int_dpas_per_group_dispatch_policy(
+    sycl::queue* q, const ScalarT* activations, const int8_t* weights_NK,
+    const ScalarT* scales, ScalarT* outputs,
+    const int* num_tokens_per_expert, int E, int N, int K, int group_size,
+    int total_tokens) {
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+  if (K % group_size != 0) {
+    throw std::invalid_argument(
+        "moe_prefill_int_dpas(per-group): K must be a multiple of group_size");
+  }
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+
+  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
+  if (atomic_buffer == nullptr) {
+    throw std::runtime_error(
+        "moe_prefill_int_dpas(per-group): failed to allocate atomic buffer");
+  }
+
+  MoEGEMMLauncher_int<'R', 'C', Policy, ScaleMode::kPerGroup>(
+      *q, activations_ca, weights_NK, scales_ca,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, group_size, atomic_buffer);
+
+  sycl::free(atomic_buffer, *q);
+}
 
 template <typename ScalarT>
 void moe_prefill_int_dpas_per_group_dispatch(
