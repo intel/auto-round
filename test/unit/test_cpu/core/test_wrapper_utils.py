@@ -67,6 +67,15 @@ class TestGetScaleShape:
             get_scale_shape(weight, group_size=(8,))  # 1D tuple but weight is 2D
 
 
+class TestWrapperMinMaxScaleBound:
+    """Tests for the allowed min/max scale tuning window."""
+
+    def test_default_bound_allows_two_x_scale(self):
+        from auto_round.wrapper import WrapperLinear
+
+        assert WrapperLinear.minmax_scale_bound == (0.0, 2.0)
+
+
 class TestWrapperLayerNorm:
     """Tests for WrapperLayerNorm class."""
 

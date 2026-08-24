@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import math
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
@@ -40,6 +41,15 @@ from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, 
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import BlockContext
+
+
+def _extend_total_iters_if_needed(total_iters: int, best_iter: int, already_extended: bool, use_best_mse: bool):
+    if not use_best_mse or already_extended or total_iters <= 0:
+        return total_iters, already_extended
+    if best_iter < total_iters * 0.8:
+        return total_iters, already_extended
+    total_iters += max(1, math.ceil(total_iters * 0.5))
+    return total_iters, True
 
 
 @register_pipeline_member(SignRoundConfig)
@@ -468,7 +478,10 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
-        for i in range(self.iters):
+        target_iters = self.iters
+        has_extended_iters = False
+        i = 0
+        while i < target_iters:
             if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
@@ -513,7 +526,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(block, self.compress_context.cache_device)
                     last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
+            if self.not_use_best_mse and i == target_iters - 1:
                 best_params = collect_best_params(block, self.compress_context.cache_device)
 
             if not self.not_use_best_mse:
@@ -521,6 +534,15 @@ class SignRoundQuantizer(BaseQuantizer):
                     break
             sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
+            i += 1
+            target_iters, has_extended_iters = _extend_total_iters_if_needed(
+                target_iters,
+                last_best_iter,
+                has_extended_iters,
+                not self.not_use_best_mse,
+            )
+            if has_extended_iters and hasattr(lr_schedule, "total_iters"):
+                lr_schedule.total_iters = target_iters
 
         last_loss = total_loss
         best_iter = self.iters
@@ -685,7 +707,10 @@ class SignRoundQuantizer(BaseQuantizer):
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
-        for i in range(self.iters):
+        target_iters = self.iters
+        has_extended_iters = False
+        i = 0
+        while i < target_iters:
             total_loss = 0
             global_indices = index_sampler.next_batch()
 
@@ -739,13 +764,22 @@ class SignRoundQuantizer(BaseQuantizer):
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
                     last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
+            if self.not_use_best_mse and i == target_iters - 1:
                 best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
             self._step(scaler, optimizer, lr_schedule)
+            i += 1
+            target_iters, has_extended_iters = _extend_total_iters_if_needed(
+                target_iters,
+                last_best_iter,
+                has_extended_iters,
+                not self.not_use_best_mse,
+            )
+            if has_extended_iters and hasattr(lr_schedule, "total_iters"):
+                lr_schedule.total_iters = target_iters
 
         last_loss = total_loss
         best_iter = self.iters

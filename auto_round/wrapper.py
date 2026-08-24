@@ -73,7 +73,11 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    minmax_scale_bound = (0.0, 1.0)
+    # MXFP uses a shared exponent scale that can legitimately shift the effective
+    # quantization range by powers of two. Keeping the tunable coefficient within
+    # a 2x window preserves stability while allowing the optimizer enough room for
+    # the MXFP-specific scale search.
+    minmax_scale_bound = (0.0, 2.0)
 
     def __init__(
         self,
