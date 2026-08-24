@@ -3,18 +3,18 @@ import os
 import shutil
 
 import pytest
-
-from auto_round import AutoRound, AutoScheme
 import torch
 
-from auto_round.auto_scheme.delta_loss import _annotate_worker_oom, _parallel_scoring_must_raise
+from auto_round import AutoRound, AutoScheme
 from auto_round.auto_scheme.delta_loss import (
+    AutoSchemeWrapperLinear,
+    _annotate_worker_oom,
     _clear_wrapper_score_caches,
+    _parallel_scoring_must_raise,
     _replay_retain_graph,
     _tensor_referrer_snippet,
     _vram_inventory_text,
 )
-from auto_round.auto_scheme.delta_loss import AutoSchemeWrapperLinear
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
 
 
