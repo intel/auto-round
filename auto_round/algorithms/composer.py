@@ -194,7 +194,7 @@ class AlgorithmComposer:
                 if not getattr(component, "can_compile_block_forward", lambda: True)():
                     blockers.append(type(component).__name__)
             can_compile_block_forward = user_torch_compile and not blockers
-            if user_torch_compile and not can_compile_block_forward and blockers:
+            if user_torch_compile and blockers:
                 logger.info(
                     "Block-forward torch.compile is disabled because %s is incompatible.",
                     ", ".join(blockers),
