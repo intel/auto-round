@@ -67,15 +67,15 @@ def test_hadamard_disables_only_block_forward_compile():
     quantizer = CompileCompatibleQuantizer()
     hadamard = RotationConfig()
 
-    assert not _can_compile_block_forward(quantizer, [hadamard], user_enabled=True)
-    assert _can_compile_block_forward(quantizer, [CompileCompatibleRotation()], user_enabled=True)
-    assert not _can_compile_block_forward(quantizer, [], user_enabled=False)
+    assert not _can_compile_block_forward(quantizer, [hadamard], user_enabled=True)[0]
+    assert _can_compile_block_forward(quantizer, [CompileCompatibleRotation()], user_enabled=True)[0]
+    assert not _can_compile_block_forward(quantizer, [], user_enabled=False)[0]
 
 
 def test_awq_disables_block_forward_compile():
     pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()])
 
-    assert not _can_compile_block_forward(pipeline.block_quantizer, pipeline.preprocessors, user_enabled=True)
+    assert not _can_compile_block_forward(pipeline.block_quantizer, pipeline.preprocessors, user_enabled=True)[0]
 
 
 def test_detect_nvfp4_from_layer_config_scheme_override():
