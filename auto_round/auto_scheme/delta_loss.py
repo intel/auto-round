@@ -2458,7 +2458,6 @@ def _score_scheme_worker(args):
 
     # mid-scheme resume: reload additive accumulators and skip completed batches
     skip_batches = 0
-    batch_checkpoint = None
     if worker_cache_path is not None:
         expected_total = max(1, math.ceil(nsamples / max(1, batch_size)))
         partial = _load_partial_scores(worker_cache_path, expected_total)
@@ -2474,6 +2473,9 @@ def _score_scheme_worker(args):
 
         def batch_checkpoint(batch_idx, total_batches):
             _save_partial_scores(worker_cache_path, batch_idx, total_batches, _extract_score_accumulators(model))
+
+    else:
+        batch_checkpoint = None
 
     is_bf16 = isinstance(scheme, str) and scheme.upper() == "BF16"
     if isinstance(scheme, dict):
