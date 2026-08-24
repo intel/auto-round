@@ -151,6 +151,13 @@ _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
 
+# Known lm_head layer name variants across model families:
+#   "lm_head"   - most models (LLaMA, Mistral, Qwen, ...)
+#   "head"      - DeepSeek v4
+#   "embed_out" - Pythia / Dolly
+#   "output"    - some InternLM variants
+_LM_HEAD_PATTERNS: tuple[str, ...] = ("lm_head", "head", "embed_out", "output")
+
 
 # ---------------------------------------------------------------------------
 # Predefined ignore-layer rules
@@ -440,6 +447,10 @@ class _PatternMatcher:
         if cached is not None:
             return cached
         layer_name = tensor_name.rsplit(".", 1)[0] if "." in tensor_name else tensor_name
+        # Explicit layer_config entries take priority over ignore patterns.
+        if layer_name in self._layer_config:
+            self._ignore_cache[tensor_name] = False
+            return False
         result = bool(self._ignore_re and self._ignore_re.search(layer_name))
         self._ignore_cache[tensor_name] = result
         return result
@@ -1349,6 +1360,17 @@ def _build_mxfp_quantization_config(
         initialize_quantization,
     )
 
+    # TODO: Remove when fixed in llm-compressor.
+    # See: https://github.com/vllm-project/llm-compressor/issues/3069
+    def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
+        """Append ``RoutedExperts`` when target layers indicate an MoE model."""
+        if "RoutedExperts" in targets:
+            return targets
+        moe_re = re.compile(r"\.w[13](?:\.|$)|block_sparse_moe")
+        if any(moe_re.search(name) for name in layer_names):
+            return list(targets) + ["RoutedExperts"]
+        return targets
+
     bits = default_scheme.get("bits", 4)
     is_fp_default = (bits or 0) >= 16  # BF16/FP16 full-precision default
 
@@ -1388,7 +1410,7 @@ def _build_mxfp_quantization_config(
         fmt = "mxfp4-pack-quantized" if actual_bits == 4 else "mxfp8-quantized"
         qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
         if is_fp_default and scheme_groups:
-            targets = list(quantized_layers)
+            targets = _add_routed_experts_if_moe(list(quantized_layers), quantized_layers)
             qconfig.config_groups["group_0"].targets = targets
         qconfig = qconfig.to_dict()
         qconfig["format"] = fmt
@@ -1415,6 +1437,7 @@ def _build_mxfp_quantization_config(
         fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
         is_default_group = group_bits == bits
         targets = ["Linear"] if is_default_group else layer_names
+        targets = _add_routed_experts_if_moe(targets, layer_names)
         tmp_qconfig = initialize_quantization(scheme=scheme_name, ignore=ignore)
         group_scheme = tmp_qconfig.config_groups["group_0"]
         group_scheme.targets = targets
@@ -1536,11 +1559,12 @@ def _build_mxfp_autoround_quantization_config(
             "act_data_type": "float",
         }
 
-    # lm_head: when explicitly quantized, record its full scheme in extra_config
-    # (mirrors the regular AutoRound MXFP export behavior).
-    if "lm_head" in quantized_set and "lm_head" not in extra_config:
-        lm_head_cfg = (layer_config or {}).get("lm_head", default_scheme)
-        extra_config["lm_head"] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
+    # lm_head variants: when explicitly quantized, record each variant's full
+    # scheme in extra_config (mirrors regular AutoRound MXFP export behavior).
+    for lm_head_name in _LM_HEAD_PATTERNS:
+        if lm_head_name in quantized_set and lm_head_name not in extra_config:
+            lm_head_cfg = (layer_config or {}).get(lm_head_name, default_scheme)
+            extra_config[lm_head_name] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
 
     if extra_config:
         qconfig["extra_config"] = extra_config
@@ -1739,9 +1763,10 @@ def _build_quantization_config(
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
 
     quantized_layer_set = set(quantized_layers)
-    if "lm_head" in quantized_layer_set and "lm_head" not in extra_config:
-        lm_head_cfg = layer_config.get("lm_head", default_scheme)
-        extra_config["lm_head"] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
+    for lm_head_name in _LM_HEAD_PATTERNS:
+        if lm_head_name in quantized_layer_set and lm_head_name not in extra_config:
+            lm_head_cfg = layer_config.get(lm_head_name, default_scheme)
+            extra_config[lm_head_name] = {k: lm_head_cfg.get(k) for k in scheme_keys if lm_head_cfg.get(k) is not None}
 
     if extra_config:
         qconfig["extra_config"] = extra_config
@@ -2385,9 +2410,14 @@ class _ModelFreeCompressorCore:
             ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
             ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
 
-        if not self.quant_lm_head and "lm_head" not in ignore_patterns:
-            ignore_patterns.append("lm_head")
-            ignore_patterns.append("head")  # for deepseek v4
+        if not self.quant_lm_head:
+            layer_config_keys = set(self.layer_config or {})
+            for lm_head_pattern in _LM_HEAD_PATTERNS:
+                pattern_in_config = any(
+                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys
+                )
+                if not pattern_in_config and lm_head_pattern not in ignore_patterns:
+                    ignore_patterns.append(lm_head_pattern)
 
         if not self.quant_nontext_module:
             for kw in _NONTEXT_KEYWORDS:

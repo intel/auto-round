@@ -300,6 +300,50 @@ class TestParseLayerConfig:
 
 
 # ===========================================================================
+#  _build_ignore_patterns
+# ===========================================================================
+
+
+class TestBuildIgnorePatterns:
+    @staticmethod
+    def _make_core(layer_config=None, quant_lm_head=False, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme=scheme,
+            quant_lm_head=quant_lm_head,
+        )
+        core._parse_scheme()
+        core._parse_layer_config()
+        if layer_config:
+            for k, v in layer_config.items():
+                core.layer_config[k] = v
+        return core
+
+    def test_lm_head_ignored_by_default(self):
+        core = self._make_core()
+        core._build_ignore_patterns()
+        assert "lm_head" in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_quant_lm_head_true(self):
+        core = self._make_core(quant_lm_head=True)
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    @pytest.mark.parametrize("name", ["lm_head", "head", "embed_out", "output"])
+    def test_lm_head_variants_not_ignored_when_in_layer_config(self, name):
+        core = self._make_core(layer_config={name: {"bits": 4}})
+        core._build_ignore_patterns()
+        assert name not in core.ignore_patterns
+
+    def test_head_still_ignored_when_only_lm_head_in_layer_config(self):
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+        assert "head" in core.ignore_patterns
+
+
+# ===========================================================================
 #  _process_shard
 # ===========================================================================
 
@@ -685,6 +729,20 @@ class TestModelFreeMXFP:
         assert cfg["config_groups"]["group_0"]["targets"] == quantized
 
     @require_compressed_tensors
+    def test_build_mxfp_config_bf16_default_adds_routed_experts_target_for_moe(self):
+        default = {"bits": 16, "group_size": -1, "sym": True, "data_type": "bf16"}
+        layer_config = {
+            "model.layers.0.block_sparse_moe.experts.w1": {"bits": 4, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = ["model.layers.0.block_sparse_moe.experts.w1"]
+
+        cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
+
+        targets = cfg["config_groups"]["group_0"]["targets"]
+        assert "model.layers.0.block_sparse_moe.experts.w1" in targets
+        assert "RoutedExperts" in targets
+
+    @require_compressed_tensors
     def test_build_mxfp_mixed_config_two_groups(self):
         """Mixed MXFP4+MXFP8: override layers get explicit targets; default gets ["Linear"]."""
         default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
@@ -714,6 +772,22 @@ class TestModelFreeMXFP:
         # MXFP4 group (default) — catch-all
         mxfp4_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp4-pack-quantized")
         assert mxfp4_group["targets"] == ["Linear"]
+
+    @require_compressed_tensors
+    def test_build_mxfp_mixed_config_moe_group_adds_routed_experts(self):
+        default = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        layer_config = {
+            "model.layers.0.block_sparse_moe.experts.w1": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+        }
+        quantized = [
+            "model.layers.0.block_sparse_moe.experts.w1",
+            "model.layers.0.mlp.fc1",
+        ]
+        cfg = _build_mxfp_quantization_config(default, quantized, [], layer_config=layer_config)
+
+        mxfp8_group = next(g for g in cfg["config_groups"].values() if g["format"] == "mxfp8-quantized")
+        assert "model.layers.0.block_sparse_moe.experts.w1" in mxfp8_group["targets"]
+        assert "RoutedExperts" in mxfp8_group["targets"]
 
     @require_compressed_tensors
     def test_e2e_mxfp_mixed(self, tmp_path):
