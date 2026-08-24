@@ -2729,7 +2729,11 @@ def _gen_layer_config(
         act_bits = scheme.get("act_bits", 16)
         if scheme.get("super_group_size"):
             need_imatrix = True
-        if bits <= 8 < act_bits:
+        # Weight scores must accumulate for every weight-quantized scheme, not
+        # only A16 ones: MX options (W4A4/W8A8) quantify weight error solely via
+        # the weight score, and skipping it zeroes every layer score, so the
+        # bit allocation collapses to the cheapest option.
+        if bits <= 8:
             need_weight_grad = True
         if not auto_scheme.low_gpu_mem_usage:
             pbar_cnt += nsamples
