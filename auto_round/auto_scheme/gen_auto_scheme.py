@@ -51,8 +51,8 @@ class AutoScheme:
     """Allocation solver: ``"dp"`` (knapsack DP) or ``"lagrangian"`` (shadow-price
     bisection). Both optimise the same objective and in practice produce the same
     allocation, but the Lagrangian solver hits a *fractional* avg_bits target exactly
-    and avoids the DP state explosion, making it roughly an order of magnitude faster
-    on 8B-scale models. See docs/auto_scheme_solver.md for measured accuracy/speed."""
+    and needs no discretised state space. See docs/auto_scheme_solver.md for measured
+    per-task accuracy."""
 
     def __post_init__(self):
         if isinstance(self.options, str):
