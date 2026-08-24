@@ -679,6 +679,7 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 
 - INT8/W8A8 is already a high-accuracy setting in these experiments. Most INT8 recipes are close to the BF16 reference, and some recipes slightly exceed BF16 AVG.
 - The experimental `RTN_smooth2048_clip` rows give the best INT8 AVG for both models in this table: 71.04 on Llama and 72.51 on Qwen.
+- In `RTN_smooth2048_clip`, `smooth2048` denotes AWQ calibration with sequence length 2048 (`awq_seqlen=2048`), and `clip` denotes AWQ weight clipping (`apply_clip=True`) enabled during the AWQ search.
 - For AWQ-composed INT8, the AVG movement is small. Llama `AWQ_RTN` improves over `RTN` by +0.11 points (+0.16% relative), while the other AWQ-composed comparisons are slightly below their native counterparts.
 - Given the strong INT8 baseline, AWQ is better positioned as an optional exploration path for INT8/W8A8 rather than a primary default.
 

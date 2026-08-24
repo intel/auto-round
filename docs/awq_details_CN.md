@@ -261,6 +261,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
 
 - INT8/W8A8 在这些实验中本身已经是高精度设置。大多数 INT8 recipe 的结果接近 BF16 参考水平，部分 recipe 的 AVG 还略高于 BF16。
 - 实验性的 `RTN_smooth2048_clip` 行在两个模型的 INT8 表中都取得最高 AVG：Llama 为 71.04，Qwen 为 72.51。
+- 在 `RTN_smooth2048_clip` 中，`smooth2048` 表示 AWQ 校准使用序列长度 2048（`awq_seqlen=2048`），`clip` 表示在 AWQ 搜索中启用权重裁剪（`apply_clip=True`）。
 - 对 AWQ 组合的 INT8 路径而言，AVG 变化幅度较小。Llama `AWQ_RTN` 相比 `RTN` 提升 +0.11 分（AVG 相对提升 +0.16%），其他 AWQ 组合结果则略低于对应的原生量化路径。
 - 考虑到 INT8 的原生基线已经较强，AWQ 更适合作为 INT8/W8A8 的可选探索路径，而不是首选默认路径。
 
