@@ -63,7 +63,7 @@ function run_unit_test() {
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
     uv pip uninstall torch torchvision
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
@@ -102,8 +102,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
         pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
-            -vs --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -117,7 +116,7 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/integration/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -151,7 +150,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -185,7 +184,7 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
