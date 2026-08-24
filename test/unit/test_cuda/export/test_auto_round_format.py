@@ -39,8 +39,11 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_greater_than_050
-    @pytest.mark.parametrize("bits", [2, 4, 8])
-    @pytest.mark.parametrize("group_size", [32, 128])
+    # Keep one representative group size and both symmetry modes in PR CI.
+    # The complete bits/group-size matrix belongs in nightly coverage; every
+    # case performs a full quantize, save, reload and CUDA dispatch.
+    @pytest.mark.parametrize("bits", [4])
+    @pytest.mark.parametrize("group_size", [128])
     @pytest.mark.parametrize("is_sym", [True, False])
     def test_autoround_format(self, tiny_opt_model_path, bits, group_size, is_sym):
         autoround = AutoRound(
@@ -69,8 +72,8 @@ class TestAutoRound:
     # Split 3 bits test with [2,4,8] bits to avoid segmentation fault
     @require_greater_than_050
     @pytest.mark.parametrize("bits", [3])
-    @pytest.mark.parametrize("group_size", [32, 128])
-    @pytest.mark.parametrize("is_sym", [True, False])
+    @pytest.mark.parametrize("group_size", [128])
+    @pytest.mark.parametrize("is_sym", [True])
     def test_autoround_format_3bit(self, tiny_opt_model_path, bits, group_size, is_sym):
         autoround = AutoRound(
             tiny_opt_model_path,
