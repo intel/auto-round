@@ -286,9 +286,9 @@ nibble 的 B 流字节量是 INT8 路径的一半,大 M tile 加宽到 `128×256
 中等大小的 `32×64` tile 现在覆盖 `A_avg_M` 至 128(此前在 33 就跳到大
 tile),避免了常见 chunked-prefill batch 大小下的 padding 浪费。
 
-**S4 DPAS decode 路径** — decode(生成)阶段(`sycl_tla_moe_decode.hpp`,
-int4-sym / `S4_CLIP`,`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)拥有
-独立的 dispatch `moe_decode_s4_dpas_per_group_dispatch`,对齐
+**S4 DPAS decode 路径** — decode(生成)阶段(int4-sym / `S4_CLIP`,
+`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)在生成的
+`sycl_tla_moe_decode_int4.cpp` 翻译单元中拥有独立的 dispatch,对齐
 vLLM-xpu-kernels 的 `w4a16` decode dispatch。它与 prefill 使用相同的
 `A_avg_M` 阶梯选择 DPAS tile(`_m_8` → `_m_16` → `_m_32` → 大 tile):
 仅在极小 batch 尾部(`A_avg_M ≤ 4`)使用 8 行 tile,一旦平均每个专家

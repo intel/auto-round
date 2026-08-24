@@ -1747,7 +1747,7 @@ void launch_fp8_by_mode(sycl::queue* q, const ScalarT* activations, const uint8_
 // ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_DPAS_S4` (default ON). When ON, int4-sym
 // (S4_CLIP, !asym) decode is routed to the dedicated decode-phase S4 DPAS
-// grouped GEMM (`moe_dpas_s4::moe_decode_s4_dpas_per_group_dispatch`) instead
+// grouped GEMM in the generated int4 decode translation unit instead
 // of the scalar FMA GEMV (`launch_int4`). Mirroring vLLM-xpu-kernels'
 // `w4a16` decode dispatch, this path selects the DPAS tile from the average
 // tokens-per-expert (`A_avg_M`) ladder (`_m_8` -> `_m_16` -> `_m_32` -> wide),
