@@ -27,7 +27,7 @@ from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 scheme = AutoScheme(
     avg_bits=4.5,
     options="MXFP4,MXFP8",
-    solver="lagrangian",   # default is "dp"
+    solver="lagrangian",  # default is "dp"
 )
 ar = AutoRound(model_name, scheme=scheme)
 model, layer_config = ar.quantize()

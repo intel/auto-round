@@ -233,4 +233,3 @@ def solve_allocation(total_scores: dict, budget: int, solver: str = "dp", max_st
         else:  # pragma: no cover - defensive
             assign[key] = min(opts, key=lambda o: o[1])
     return assign
-
