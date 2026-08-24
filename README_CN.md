@@ -35,7 +35,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
-* [2026/08] 现已支持 AWQ 与 AutoRound 组合（`--algorithm awq,auto_round`），可在 AutoRound 优化前进行 activation-aware smoothing。基准结果请参考 [AWQ 算法结果](./docs/awq_details_CN.md)。
+* [2026/08] 现已支持 AWQ 与 AutoRound 组合（`--algorithm awq,auto_round`），可在 AutoRound 优化前进行 activation-aware smoothing。在使用激活量化时建议开启 AWQ。基准结果请参考 [AWQ 算法结果](./docs/awq_details_CN.md)。
 
 * [2026/08] 感谢 Humming Kernel，AutoScheme WOQ 在 vLLM 上的部署已实验性恢复：[*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890)，[*示例模型*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound)。注意：共享层需按 vLLM 的融合模式进行配置。
 

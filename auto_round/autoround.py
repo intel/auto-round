@@ -676,12 +676,18 @@ class _CompressorBuilder(object):
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant:
             format = "svdquant_nunchaku"
-        from auto_round.algorithms.transforms.awq.config import AWQConfig
 
-        has_awq_preprocessor = any(isinstance(config, AWQConfig) for config in preprocessor_configs)
-        if has_awq_preprocessor and route_kwargs.get("model_free", False):
+        # Any preprocessor that requires calibration data (e.g. AWQ, SVDQuant
+        # smoothing) must run on the regular model-loaded path; model-free RTN
+        # cannot replay their calibration.
+        calibration_preprocessors = [
+            type(config).__name__ for config in preprocessor_configs if getattr(config, "need_calib", False)
+        ]
+        has_calibration_preprocessor = bool(calibration_preprocessors)
+        if has_calibration_preprocessor and route_kwargs.get("model_free", False):
             raise ValueError(
-                "model_free=True is not supported with calibration/preprocessor algorithms (AWQConfig). "
+                "model_free=True is not supported with calibration-based preprocessor algorithms "
+                f"({', '.join(calibration_preprocessors)}). "
                 "Use the regular flow so the model can be loaded for calibration."
             )
 
@@ -697,9 +703,9 @@ class _CompressorBuilder(object):
         if is_svdquant_rtn and not route_kwargs.get("model_free", False):
             # SVDQuant must run before plain RTN on the regular blockwise path.
             route_decision_kwargs["disable_model_free"] = True
-        if has_awq_preprocessor:
-            # AWQ is calibration-based and must run with the regular
-            # model-loaded path; model-free RTN cannot apply AWQ smoothing.
+        if has_calibration_preprocessor:
+            # Calibration-based preprocessors need the model loaded for
+            # calibration; model-free RTN cannot apply their transforms.
             route_decision_kwargs["disable_model_free"] = True
         route_scheme = (
             scheme
