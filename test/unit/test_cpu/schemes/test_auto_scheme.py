@@ -467,6 +467,21 @@ class TestAutoScheme:
                     f"cache may have stored merged group scores instead of individual scores"
                 )
 
+    def test_mxfp_options_produce_mixed_layer_config(self, tiny_opt_model_path):
+        """MX schemes score weight error via the weight-score path, so their
+        layer scores must be nonzero and the allocator must mix MXFP4/MXFP8
+        (a zeroed score set collapses the config onto the cheapest option)."""
+        scheme = AutoScheme(
+            avg_bits=7,
+            options=("MXFP4", "MXFP8"),
+            shared_layers=["q_proj", "k_proj", "v_proj"],
+            nsamples=1,
+        )
+        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, nsamples=1)
+        _, config = ar.quantize()
+        bits_used = {v["bits"] for v in config.values() if "bits" in v}
+        assert bits_used == {4, 8}, f"expected a mixed MXFP4/MXFP8 config, got {sorted(bits_used)}"
+
     def test_different_avg_bits_produces_different_layer_config(self, tiny_opt_model_path):
         """Changing avg_bits should change the resulting layer_config."""
         scheme_low = AutoScheme(
