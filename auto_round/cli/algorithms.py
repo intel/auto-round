@@ -121,8 +121,8 @@ class AlgorithmHandler(ABC):
         # RTN so RTN CLI flags such as --disable_opt_rtn are applied before the
         # lower-level composer has to append a fallback quantizer.
         if not ({"rtn", "auto_round"} & seen):
-            default_terminal = "rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round"
-            canonical.append(default_terminal)
+            default_quantizer = "rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round"
+            canonical.append(default_quantizer)
 
         # Keep the legacy API rule even when the user explicitly spells out
         # ``--algorithm auto_round``: zero iterations select RTN.

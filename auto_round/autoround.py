@@ -544,7 +544,7 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             opt_rtn_value = False if key == "enable_opt_rtn" else value
             targets = [config for config in configs if "disable_opt_rtn" in _config_fields(config)]
             if not targets:
-                logger.error(
+                logger.warning_once(
                     "RTN-specific parameter '%s' was provided, but RTN/AWQ is not enabled by alg_configs. "
                     "The parameter is ignored.",
                     key,
@@ -556,7 +556,7 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
                     target.orig_disable_opt_rtn = opt_rtn_value
             logger.warning(
                 "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
-                "'alg_configs=AWQConfig(...)' or 'alg_configs=RTNConfig(...)'.",
+                "'alg_configs=\"awq\"' or 'alg_configs=\"rtn\"'.",
                 key,
             )
             continue

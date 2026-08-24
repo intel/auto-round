@@ -84,23 +84,6 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
-def _can_compile_block_forward(block_quantizer, compile_participants, user_enabled: bool) -> tuple[bool, list[str]]:
-    """Return whether block-forward compilation is safe and the participants that block it.
-
-    ``blockers`` lists the component class names that make block-forward compilation
-    unsafe. ``can_compile`` is True only when the user enabled torch.compile and there
-    are no blockers.
-    """
-    blockers = []
-    if not block_quantizer.can_compile_block_forward():
-        blockers.append(type(block_quantizer).__name__)
-    for component in compile_participants:
-        if not getattr(component, "can_compile_block_forward", lambda: True)():
-            blockers.append(type(component).__name__)
-    can_compile = user_enabled and not blockers
-    return can_compile, blockers
-
-
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -204,9 +187,13 @@ class AlgorithmComposer:
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
             compile_participants = [*self.preprocessors, *rotation_configs]
-            can_compile_block_forward, blockers = _can_compile_block_forward(
-                self.block_quantizer, compile_participants, user_torch_compile
-            )
+            blockers = []
+            if not self.block_quantizer.can_compile_block_forward():
+                blockers.append(type(self.block_quantizer).__name__)
+            for component in compile_participants:
+                if not getattr(component, "can_compile_block_forward", lambda: True)():
+                    blockers.append(type(component).__name__)
+            can_compile_block_forward = user_torch_compile and not blockers
             if user_torch_compile and not can_compile_block_forward and blockers:
                 logger.info(
                     "Block-forward torch.compile is disabled because %s is incompatible.",

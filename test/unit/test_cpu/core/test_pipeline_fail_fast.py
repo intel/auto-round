@@ -6,7 +6,7 @@ import pytest
 
 from auto_round import AutoRound as NewAutoRound
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward, _has_nvfp4_layer
+from auto_round.algorithms.composer import AlgorithmComposer, _has_nvfp4_layer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -36,9 +36,14 @@ class CompileCompatibleRotation:
         return True
 
 
-class CompileCompatibleQuantizer:
-    def can_compile_block_forward(self):
-        return True
+def _compile_orchestrator(enable_torch_compile=True, rotation_configs=()):
+    return SimpleNamespace(
+        model_context=None,
+        compress_context=SimpleNamespace(enable_torch_compile=enable_torch_compile),
+        rotation_configs=rotation_configs,
+        data_type="int",
+        layer_config={},
+    )
 
 
 def test_split_awq_plus_rtn():
@@ -64,18 +69,22 @@ def test_pipeline_multiple_block_quantizers_rejected():
 
 
 def test_hadamard_disables_only_block_forward_compile():
-    quantizer = CompileCompatibleQuantizer()
-    hadamard = RotationConfig()
+    hadamard = AlgorithmComposer([SignRoundConfig()], _compile_orchestrator(rotation_configs=(RotationConfig(),)))
+    assert not hadamard.block_forward.enable_torch_compile
 
-    assert not _can_compile_block_forward(quantizer, [hadamard], user_enabled=True)[0]
-    assert _can_compile_block_forward(quantizer, [CompileCompatibleRotation()], user_enabled=True)[0]
-    assert not _can_compile_block_forward(quantizer, [], user_enabled=False)[0]
+    compatible = AlgorithmComposer(
+        [SignRoundConfig()], _compile_orchestrator(rotation_configs=(CompileCompatibleRotation(),))
+    )
+    assert compatible.block_forward.enable_torch_compile
+
+    disabled = AlgorithmComposer([SignRoundConfig()], _compile_orchestrator(enable_torch_compile=False))
+    assert not disabled.block_forward.enable_torch_compile
 
 
 def test_awq_disables_block_forward_compile():
-    pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()])
+    pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()], _compile_orchestrator())
 
-    assert not _can_compile_block_forward(pipeline.block_quantizer, pipeline.preprocessors, user_enabled=True)[0]
+    assert not pipeline.block_forward.enable_torch_compile
 
 
 def test_detect_nvfp4_from_layer_config_scheme_override():
