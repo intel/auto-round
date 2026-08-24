@@ -9,6 +9,7 @@ pr:
   branches:
     include:
       - main
+      - v0.15.0rc
   paths:
     include:
       - test/integration/test_cpu

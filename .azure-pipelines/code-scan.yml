@@ -6,6 +6,7 @@ pr:
   branches:
     include:
       - main
+      - v0.15.0rc
   paths:
     include:
       - auto_round
