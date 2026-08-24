@@ -319,20 +319,30 @@ def _dequantize_with_device_fallback(
 ) -> torch.Tensor:
     """Run dequantization on ``dequant_device`` and fall back to CPU on errors."""
     if dequant_device != "cpu":
+        failure: tuple[bool, str] | None = None
         try:
             return on_device()
         except Exception as e:
-            if _is_out_of_memory_error(e):
-                logger.warning(
-                    f"{shard_prefix}{op_name} on {dequant_device} ran OOM for {tensor_label}: {e}. "
-                    "Clearing accelerator memory and falling back to CPU for this tensor."
-                )
-                clear_memory()
-            else:
-                logger.warning(
-                    f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {e}. "
-                    "Falling back to CPU for this tensor."
-                )
+            # Only keep plain data here.  Holding the exception object alive
+            # keeps its traceback (and therefore every device tensor still
+            # referenced by the failed frames) reachable, which would make the
+            # clear_memory() below a no-op for exactly the memory we need back.
+            failure = (_is_out_of_memory_error(e), str(e))
+
+        # Outside the ``except`` block the exception and its traceback have
+        # already been released, so reclaiming memory is now effective.
+        is_oom, message = failure
+        if is_oom:
+            logger.warning(
+                f"{shard_prefix}{op_name} on {dequant_device} ran OOM for {tensor_label}: {message}. "
+                "Clearing accelerator memory and falling back to CPU for this tensor."
+            )
+            clear_memory()
+        else:
+            logger.warning(
+                f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {message}. "
+                "Falling back to CPU for this tensor."
+            )
     return on_cpu()
 
 
@@ -373,14 +383,35 @@ def _is_moe_fused_expert_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
     ``_KEEP_FUSED_EXPERT_MODEL_TYPES``) because the target inference engine's
     loader expects the fused layout preserved rather than split per expert.
 
-    Matches ``<prefix>.experts.<proj_name>`` only -- ``shared_experts`` (never
-    a quantization target) is intentionally excluded by requiring the
-    immediate parent segment to be exactly ``experts``.
+    Matches ``<prefix>.experts.<proj>_weight`` as well as the nested tensor
+    layouts ``<prefix>.experts.<proj>_weight.weight`` (dequantized) and
+    ``<prefix>.experts.<proj>_weight.weight_packed`` (MXFP4 source).
+    ``shared_experts`` (never a quantization target) is excluded because it is
+    a distinct path segment, and auxiliary 3-D tensors such as ``.scale`` /
+    ``.weight_scale`` are excluded because they are not weight tensors.
     """
     if tensor.dim() != 3:
         return False
     parts = tensor_name.split(".")
-    return len(parts) >= 2 and parts[-2] == "experts"
+    if "experts" not in parts:
+        return False
+    last = parts[-1]
+    if last in ("weight", "weight_packed"):
+        return True
+    return len(parts) >= 2 and parts[-2] == "experts" and last.endswith("_weight")
+
+
+def _fused_expert_layer_name(tensor_name: str) -> str:
+    """Strip the tensor-kind suffix from a fused MoE expert tensor name.
+
+    ``experts.w13_weight`` stays as-is, while ``experts.w13_weight.weight`` and
+    ``experts.w13_weight.weight_packed`` collapse to ``experts.w13_weight`` so
+    quantized / ignored layer bookkeeping uses one consistent layer name.
+    """
+    for suffix in (".weight_packed", ".weight"):
+        if tensor_name.endswith(suffix):
+            return tensor_name[: -len(suffix)]
+    return tensor_name
 
 
 def _quantize_moe_fused_expert_weight(
@@ -408,7 +439,7 @@ def _quantize_moe_fused_expert_weight(
     Returns:
         (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
     """
-    layer_name = tensor_name
+    layer_name = _fused_expert_layer_name(tensor_name)
 
     if matcher.should_ignore(tensor_name) or matcher.should_skip(tensor_name):
         return layer_name, {tensor_name: tensor}, None, layer_name
@@ -449,6 +480,9 @@ def _quantize_moe_fused_expert_weight(
                 packed_parts.setdefault(suffix, []).append(value)
 
         out = {f"{layer_name}{suffix}": torch.stack(values, dim=0) for suffix, values in packed_parts.items()}
+        # The per-expert slices have been copied into the stacked tensors; free
+        # them immediately instead of holding a second full-size copy.
+        packed_parts.clear()
         logger.debug(
             f"Quantized (MXFP, fused 3-D): {layer_name} "
             f"(bits={bits}, group_size={group_size}, num_experts={tensor.shape[0]})"
@@ -511,31 +545,43 @@ def _quantize_weight_mxfp(
 
     # Build a lightweight nn.Linear holding the original weight so we can
     # delegate packing to the existing QuantLinear.pack implementation.
-    fake_linear = nn.Linear(in_features, out_features, bias=False)
+    # Materialize it on the meta device so no (out_features x in_features)
+    # buffer is allocated/initialized just to be immediately overwritten.
+    with torch.device("meta"):
+        fake_linear = nn.Linear(in_features, out_features, bias=False)
     with torch.no_grad():
         fake_linear.weight = nn.Parameter(weight_dev, requires_grad=False)
 
-    qlayer = QuantLinear(
-        bits=bits,
-        group_size=group_size,
-        infeatures=in_features,
-        outfeatures=out_features,
-        bias=False,
-        data_type="mx_fp4" if bits == 4 else "mx_fp8e4m3",
-        sym=True,
-        act_bits=bits,
-    )
+    # QuantLinear registers zero-filled packed weight/scale buffers that pack()
+    # replaces wholesale; allocate them on meta to avoid the throwaway copy.
+    with torch.device("meta"):
+        qlayer = QuantLinear(
+            bits=bits,
+            group_size=group_size,
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=False,
+            data_type="mx_fp4" if bits == 4 else "mx_fp8e4m3",
+            sym=True,
+            act_bits=bits,
+        )
     qlayer.pack(fake_linear, shared_exp, device=device)
 
+    # Drop every intermediate before returning so the (potentially large)
+    # high-precision weight and device-side buffers are freed as soon as the
+    # packed CPU copies exist.
     if bits == 8:
-        return {
+        out = {
             f"{layer_name}.weight": qlayer.weight.to("cpu"),
             f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
         }
-    return {
-        f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
-        f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
-    }
+    else:
+        out = {
+            f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
+            f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
+        }
+    del qlayer, fake_linear, weight_dev, shared_exp
+    return out
 
 
 def _quantize_weight_nvfp4_e5m3(
@@ -582,16 +628,22 @@ def _pack_weight_nvfp4_e5m3(
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
-    linear = torch.nn.Linear(in_features, out_features, bias=False, device=device, dtype=weight.dtype)
+    # Meta-device construction avoids allocating a full weight tensor on the
+    # accelerator (and zero-filled packed buffers) that are immediately replaced.
+    with torch.device("meta"):
+        linear = torch.nn.Linear(in_features, out_features, bias=False, dtype=weight.dtype)
     linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
-    qlayer = QuantLinear(
-        4, group_size, in_features, out_features, False, data_type="nvfp4_v2", act_bits=4, act_data_type="nvfp4_v2"
-    )
+    with torch.device("meta"):
+        qlayer = QuantLinear(
+            4, group_size, in_features, out_features, False, data_type="nvfp4_v2", act_bits=4, act_data_type="nvfp4_v2"
+        )
     qlayer.pack(linear, scale, device=device)
-    return {
+    out = {
         f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
         f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
     }
+    del qlayer, linear, weight_dev, scale
+    return out
 
 
 def _quantize_single_tensor(
@@ -935,6 +987,10 @@ def _dequant_mxfp_tensors(
                 ),
             )
         raw_tensors[f"{layer_name}.weight"] = dq_weight
+        # Drop the loop-local aliases so the source (packed weight + scale) and
+        # the previous iteration's dequantized tensor are not kept alive while
+        # the next, potentially much larger, layer is being processed.
+        del weight, scale, dq_weight
 
     return raw_tensors
 
@@ -1074,6 +1130,9 @@ def _dequant_fp8_tensors(
             ).to("cpu"),
             on_cpu=lambda: _dequant_fp8_linear_weight(weight, scale, block_size=block_size),
         )
+        # ``weight`` still aliases the original FP8 storage after the dict slot
+        # was rebound; release it (and the scale) before the next iteration.
+        del weight, scale
 
     return raw_tensors
 
@@ -1171,7 +1230,11 @@ def _process_shard(
     # of their own, so they are tracked separately here.
     input_weight_layers: list[str] = list(
         dict.fromkeys(
-            name.rsplit(".", 1)[0] if name.endswith(".weight") else name
+            (
+                _fused_expert_layer_name(name)
+                if _is_moe_fused_expert_weight(name, tensor)
+                else (name.rsplit(".", 1)[0] if name.endswith(".weight") else name)
+            )
             for name, tensor in raw_tensors.items()
             if (name.endswith(".weight") and tensor.dim() > 1) or _is_moe_fused_expert_weight(name, tensor)
         )
@@ -1245,6 +1308,8 @@ def _process_shard(
         donor_shard_dir=donor_shard_dir,
     )
     raw_tensors.update(preserved_tensors)
+    # ``raw_tensors`` now owns these; drop the duplicate references.
+    preserved_tensors.clear()
 
     for tensor_name in list(raw_tensors.keys()):
         tensor = raw_tensors.pop(tensor_name)
@@ -1259,6 +1324,10 @@ def _process_shard(
         output_tensors.update(out_dict)
         if q_layer:
             quantized_layers.append(q_layer)
+        # Release the (possibly high-precision) source tensor and the packing
+        # result before loading the next one, so peak RSS stays at ~one layer
+        # instead of two.
+        del tensor, out_dict
 
     # Remove scale_inv tensors that this shard donates to other shards.
     # These tensors have no corresponding weight in this shard; keeping them

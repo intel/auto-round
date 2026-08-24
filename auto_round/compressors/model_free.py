@@ -375,6 +375,11 @@ def _quantize_local_shard_task(
         local_weight_map,
     )
     tensor_names = list(local_weight_map.keys())
+    # Drop the packed tensors *before* reclaiming memory; otherwise the whole
+    # quantized shard (hundreds of MB) is still reachable and clear_memory()
+    # cannot return it to the allocator/OS.
+    output_tensors.clear()
+    del output_tensors
     clear_memory()
 
     if cleanup_source_shard:
