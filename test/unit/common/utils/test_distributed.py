@@ -118,20 +118,16 @@ class TestAllReduceModelGrads:
         _all_reduce_model_grads(layer)
 
     def test_no_distributed_raises(self):
-        """Without distributed initialized, all_reduce raises."""
+        """Without distributed initialized, all_reduce is a no-op."""
         model = nn.Linear(4, 4)
         model.weight.grad = torch.randn_like(model.weight)
-        # This will raise since torch.distributed isn't initialized
-        with pytest.raises(ValueError, match="process group"):
-            _all_reduce_model_grads(model)
+        _all_reduce_model_grads(model)
 
     def test_raises_when_dist_not_initialized(self):
         layer = nn.Linear(4, 4)
         layer.weight.grad = torch.randn_like(layer.weight)
         with patch("torch.cuda.is_available", return_value=False):
-            # Without dist init, all_reduce should fail
-            with pytest.raises((RuntimeError, ValueError)):
-                _all_reduce_model_grads(layer)
+            _all_reduce_model_grads(layer)
 
     def test_with_cuda_grad_no_distributed(self):
         """Grad is CUDA but distributed not initialized - should not raise."""

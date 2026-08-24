@@ -18,6 +18,7 @@ import shutil
 from test.helpers import model_infer
 
 import pytest
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
@@ -31,7 +32,17 @@ requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA 
 # (bits, group_size) combinations exercised by the quant-param sweep below.
 _QUANT_PARAMS = [(4, 32), (4, 64), (4, 128), (2, 128), (8, 128)]
 
-_FORMATS = ["auto_round", "auto_round:auto_gptq", "auto_round:gptqmodel"]
+_FORMATS = [
+    "auto_round",
+    "auto_round:auto_gptq",
+    # GPTQModel's ExLlama post-init can segfault on some CUDA/Python
+    # combinations.  Its CUDA backend has dedicated coverage; keep this
+    # common test active on CPU/XPU and skip only the unstable CUDA variant.
+    pytest.param(
+        "auto_round:gptqmodel",
+        marks=pytest.mark.skipif(torch.cuda.is_available(), reason="GPTQModel ExLlama CUDA path is covered separately"),
+    ),
+]
 
 
 def _device_params(devices):

@@ -56,7 +56,14 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         # Verify loading
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        # Validate the saved format without JIT-compiling Marlin for every
+        # parameter combination in the CUDA smoke suite.
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            device_map="cuda:0",
+            trust_remote_code=True,
+            quantization_config=AutoRoundConfig(backend="torch"),
+        )
         assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
     # Split 3 bits test with [2,4,8] bits to avoid segmentation fault
@@ -78,7 +85,12 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         # Verify loading
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            device_map="cuda:0",
+            trust_remote_code=True,
+            quantization_config=AutoRoundConfig(backend="torch"),
+        )
         assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")

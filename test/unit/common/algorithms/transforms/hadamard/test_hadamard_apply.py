@@ -115,5 +115,5 @@ class TestTritonAvailable:
 
     def test_fp_data_type_returns_false(self):
         # NV FP types don't use Triton
-        result = _triton_available("nf4")
+        result = _triton_available("nvfp4")
         assert result is False

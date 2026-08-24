@@ -110,6 +110,12 @@ def _all_reduce_model_grads(module: torch.nn.Module):
     """All-reduce (AVG) gradients of all parameters in *module* across ranks."""
     import torch.distributed as dist
 
+    # Lightweight CUDA smoke tests can call this helper without creating a
+    # process group.  Synchronization is only meaningful for initialized
+    # distributed jobs; otherwise leave gradients unchanged.
+    if not dist.is_initialized() or dist.get_world_size() <= 1:
+        return
+
     comm_device = torch.cuda.current_device() if torch.cuda.is_available() else None
     if comm_device is not None:
         comm_device = torch.device("cuda", comm_device)

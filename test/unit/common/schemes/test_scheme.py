@@ -173,7 +173,9 @@ class TestAutoRound:
         from auto_round.utils.device_manager import get_major_device
 
         device_list = parse_available_devices("auto")
-        assert device_list == [get_major_device("auto")]
+        # ``parse_available_devices`` resolves to ``cuda:0`` while
+        # ``get_major_device`` may return the backend name ``cuda``.
+        assert device_list[0].split(":", 1)[0] == get_major_device("auto").split(":", 1)[0]
         device_list = parse_available_devices("a:cuda:0,b:cuda:1,c:cpu")
         assert len(device_list) == 3
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
