@@ -2707,9 +2707,9 @@ def _validate_moe_quant_args(
     return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
 
 
-@dataclass
-class MoeSymmetricGemmPlan:
-    """Prepared symmetric quantized MoE GEMM metadata.
+@dataclass(eq=False)
+class MoeSymmetricGemm:
+    """Prepared symmetric quantized MoE GEMM runtime state.
 
     This is an internal fast-path contract for callers that already validated
     fixed layer state during model load. Dynamic per-call tensors must still
@@ -2732,6 +2732,101 @@ class MoeSymmetricGemmPlan:
     zeros_ptr: int = 0
     decode_expert_id_per_token: Optional[torch.Tensor] = None
 
+    @classmethod
+    def prepare(
+        cls,
+        weights: torch.Tensor,
+        scales: Optional[torch.Tensor],
+        *,
+        weight_bits: int = 4,
+        group_size: int = 128,
+        activation_dtype: Optional[torch.dtype] = None,
+        max_decode_tokens: int = 0,
+    ) -> "MoeSymmetricGemm":
+        """Prepare the symmetric quantized MoE GEMM fast path.
+
+        Call this once after weights/scales are finalized, e.g. from
+        ``process_weights_after_loading``. It performs the fixed validation
+        from ``moe_gemm_decode``/``moe_gemm_prefill`` and caches metadata and
+        pointers that do not depend on the current token count.
+
+        The returned object is for symmetric quantized weights only:
+        ``zeros=None`` and ``asym=False``. Dynamic inputs passed to the
+        prepared call sites must be contiguous ``[total_tokens, K]`` fp16/bf16
+        tensors and an int32 routing table of length ``num_experts``.
+        """
+        if weights.device.type != "xpu":
+            raise NotImplementedError("MoeSymmetricGemm.prepare is only supported on XPU")
+        if weights.ndim != 3:
+            raise ValueError("weights must be 3D [E, N, K_packed]")
+        if weight_bits not in (2, 4, 8):
+            raise ValueError(f"MoeSymmetricGemm.prepare supports weight_bits 2, 4, or 8, got {weight_bits}")
+        if weights.dtype != torch.uint8:
+            raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
+        if group_size <= 0:
+            raise ValueError(f"group_size must be positive, got {group_size}")
+        if max_decode_tokens < 0:
+            raise ValueError(f"max_decode_tokens must be non-negative, got {max_decode_tokens}")
+
+        if not weights.is_contiguous():
+            weights = weights.contiguous()
+
+        num_experts, N, K_packed = weights.shape
+        pack_factor = 8 // weight_bits
+        K = K_packed * pack_factor
+
+        if N % 16 != 0:
+            raise ValueError(f"N must be a multiple of 16 (got {N})")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        if weight_bits == 4 and (group_size & 1) != 0:
+            raise ValueError("group_size must be even for int4 weights")
+        if weight_bits == 2 and (group_size & 3) != 0:
+            raise ValueError("group_size must be a multiple of 4 for int2 weights")
+
+        if scales is None:
+            raise ValueError(f"scales is required for int{weight_bits} weights")
+        if scales.device != weights.device:
+            raise ValueError(f"scales must be on the same device as weights, got {scales.device} vs {weights.device}")
+
+        if activation_dtype is None:
+            activation_dtype = scales.dtype
+        if activation_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"activation_dtype must be fp16/bf16, got {activation_dtype}")
+        if scales.dtype != activation_dtype:
+            raise ValueError("scales dtype must match activation_dtype")
+
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+
+        prefill_workspace = _get_moe_prefill_workspace(weights.device, activation_dtype, num_experts, K, N)
+        decode_scratch = (
+            torch.empty((max_decode_tokens,), device=weights.device, dtype=torch.int32)
+            if max_decode_tokens > 0
+            else None
+        )
+
+        return cls(
+            lib=get_lib(weights),
+            weights=weights,
+            scales=scales,
+            prefill_workspace=prefill_workspace,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            act_dtype=cvt_dtype(activation_dtype),
+            weight_dtype={8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits],
+            N=N,
+            K=K,
+            num_experts=num_experts,
+            weights_ptr=weights.data_ptr(),
+            scales_ptr=scales.data_ptr(),
+            zeros_ptr=0,
+            decode_expert_id_per_token=decode_scratch,
+        )
+
     def get_decode_scratch(
         self,
         total_tokens: int,
@@ -2751,13 +2846,36 @@ class MoeSymmetricGemmPlan:
         outputs: Optional[torch.Tensor] = None,
         expert_id_per_token: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return moe_gemm_decode_sym_prepared(
-            self,
-            activations,
-            num_tokens_per_expert,
-            outputs=outputs,
-            expert_id_per_token=expert_id_per_token,
+        total_tokens = int(activations.shape[0])
+        if outputs is None:
+            outputs = torch.empty((total_tokens, self.N), device=activations.device, dtype=activations.dtype)
+        else:
+            outputs = outputs[:total_tokens]
+        if expert_id_per_token is None:
+            expert_id_per_token = self.get_decode_scratch(total_tokens, activations.device)
+        else:
+            expert_id_per_token = expert_id_per_token[:total_tokens]
+
+        stream = get_stream(activations)
+        self.lib.moe_gemm_decode(
+            stream,
+            activations.data_ptr(),
+            self.weights_ptr,
+            self.scales_ptr,
+            self.zeros_ptr,
+            outputs.data_ptr(),
+            expert_id_per_token.data_ptr(),
+            self.act_dtype,
+            self.weight_dtype,
+            self.N,
+            self.K,
+            self.group_size,
+            num_tokens_per_expert.data_ptr(),
+            self.num_experts,
+            total_tokens,
+            False,
         )
+        return outputs
 
     def prefill(
         self,
@@ -2767,13 +2885,34 @@ class MoeSymmetricGemmPlan:
         outputs: Optional[torch.Tensor] = None,
         workspace: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return moe_gemm_prefill_sym_prepared(
-            self,
-            activations,
-            num_tokens_per_expert,
-            outputs=outputs,
-            workspace=workspace,
+        total_tokens = int(activations.shape[0])
+        if outputs is None:
+            outputs = torch.empty((total_tokens, self.N), device=activations.device, dtype=activations.dtype)
+        else:
+            outputs = outputs[:total_tokens]
+        if workspace is None:
+            workspace = self.prefill_workspace
+
+        stream = get_stream(activations)
+        self.lib.moe_gemm_prefill(
+            stream,
+            activations.data_ptr(),
+            self.weights_ptr,
+            self.scales_ptr,
+            self.zeros_ptr,
+            outputs.data_ptr(),
+            workspace.data_ptr(),
+            self.act_dtype,
+            self.weight_dtype,
+            self.N,
+            self.K,
+            self.group_size,
+            num_tokens_per_expert.data_ptr(),
+            self.num_experts,
+            total_tokens,
+            False,
         )
+        return outputs
 
     def moe(
         self,
@@ -2786,8 +2925,39 @@ class MoeSymmetricGemmPlan:
         expert_id_per_token: Optional[torch.Tensor] = None,
         workspace: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return moe_sym_prepared(
-            self,
+        if phase not in _MOE_VALID_PHASES:
+            raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+
+        if phase == "auto":
+            threshold = _moe_auto_decode_max_total_tokens() if decode_threshold is None else int(decode_threshold)
+            phase = "decode" if int(activations.shape[0]) <= threshold else "prefill"
+
+        if phase == "decode":
+            return self.decode(
+                activations,
+                num_tokens_per_expert,
+                outputs=outputs,
+                expert_id_per_token=expert_id_per_token,
+            )
+        return self.prefill(
+            activations,
+            num_tokens_per_expert,
+            outputs=outputs,
+            workspace=workspace,
+        )
+
+    def apply(
+        self,
+        activations: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        *,
+        phase: str = "auto",
+        decode_threshold: Optional[int] = None,
+        outputs: Optional[torch.Tensor] = None,
+        expert_id_per_token: Optional[torch.Tensor] = None,
+        workspace: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.moe(
             activations,
             num_tokens_per_expert,
             phase=phase,
@@ -2796,213 +2966,6 @@ class MoeSymmetricGemmPlan:
             expert_id_per_token=expert_id_per_token,
             workspace=workspace,
         )
-
-
-def prepare_moe_gemm_sym(
-    weights: torch.Tensor,
-    scales: Optional[torch.Tensor],
-    *,
-    weight_bits: int = 4,
-    group_size: int = 128,
-    activation_dtype: Optional[torch.dtype] = None,
-    max_decode_tokens: int = 0,
-) -> MoeSymmetricGemmPlan:
-    """Prepare the symmetric quantized MoE GEMM fast path.
-
-    Call this once after weights/scales are finalized, e.g. from
-    ``process_weights_after_loading``. It performs the fixed validation from
-    ``moe_gemm_decode``/``moe_gemm_prefill`` and caches the metadata/pointers
-    that do not depend on the current token count.
-
-    The returned plan is for symmetric quantized weights only: ``zeros=None``
-    and ``asym=False``. Dynamic inputs passed to the prepared call sites must
-    be contiguous ``[total_tokens, K]`` fp16/bf16 tensors and an int32 routing
-    table of length ``num_experts``.
-    """
-    if weights.device.type != "xpu":
-        raise NotImplementedError("prepare_moe_gemm_sym is only supported on XPU")
-    if weights.ndim != 3:
-        raise ValueError("weights must be 3D [E, N, K_packed]")
-    if weight_bits not in (2, 4, 8):
-        raise ValueError(f"prepare_moe_gemm_sym supports weight_bits 2, 4, or 8, got {weight_bits}")
-    if weights.dtype != torch.uint8:
-        raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
-    if group_size <= 0:
-        raise ValueError(f"group_size must be positive, got {group_size}")
-    if max_decode_tokens < 0:
-        raise ValueError(f"max_decode_tokens must be non-negative, got {max_decode_tokens}")
-
-    if not weights.is_contiguous():
-        weights = weights.contiguous()
-
-    num_experts, N, K_packed = weights.shape
-    pack_factor = 8 // weight_bits
-    K = K_packed * pack_factor
-
-    if N % 16 != 0:
-        raise ValueError(f"N must be a multiple of 16 (got {N})")
-    if K % group_size != 0:
-        raise ValueError("K must be a multiple of group_size")
-    if weight_bits == 4 and (group_size & 1) != 0:
-        raise ValueError("group_size must be even for int4 weights")
-    if weight_bits == 2 and (group_size & 3) != 0:
-        raise ValueError("group_size must be a multiple of 4 for int2 weights")
-
-    if scales is None:
-        raise ValueError(f"scales is required for int{weight_bits} weights")
-    if scales.device != weights.device:
-        raise ValueError(f"scales must be on the same device as weights, got {scales.device} vs {weights.device}")
-
-    if activation_dtype is None:
-        activation_dtype = scales.dtype
-    if activation_dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(f"activation_dtype must be fp16/bf16, got {activation_dtype}")
-    if scales.dtype != activation_dtype:
-        raise ValueError("scales dtype must match activation_dtype")
-
-    expected_scale_shape = (num_experts, N, K // group_size)
-    if tuple(scales.shape) != expected_scale_shape:
-        raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
-    if not scales.is_contiguous():
-        scales = scales.contiguous()
-
-    prefill_workspace = _get_moe_prefill_workspace(weights.device, activation_dtype, num_experts, K, N)
-    decode_scratch = (
-        torch.empty((max_decode_tokens,), device=weights.device, dtype=torch.int32)
-        if max_decode_tokens > 0
-        else None
-    )
-
-    return MoeSymmetricGemmPlan(
-        lib=get_lib(weights),
-        weights=weights,
-        scales=scales,
-        prefill_workspace=prefill_workspace,
-        weight_bits=weight_bits,
-        group_size=group_size,
-        act_dtype=cvt_dtype(activation_dtype),
-        weight_dtype={8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits],
-        N=N,
-        K=K,
-        num_experts=num_experts,
-        weights_ptr=weights.data_ptr(),
-        scales_ptr=scales.data_ptr(),
-        zeros_ptr=0,
-        decode_expert_id_per_token=decode_scratch,
-    )
-
-
-def moe_gemm_decode_sym_prepared(
-    plan: MoeSymmetricGemmPlan,
-    activations: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    *,
-    outputs: Optional[torch.Tensor] = None,
-    expert_id_per_token: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    total_tokens = int(activations.shape[0])
-    if outputs is None:
-        outputs = torch.empty((total_tokens, plan.N), device=activations.device, dtype=activations.dtype)
-    else:
-        outputs = outputs[:total_tokens]
-    if expert_id_per_token is None:
-        expert_id_per_token = plan.get_decode_scratch(total_tokens, activations.device)
-    else:
-        expert_id_per_token = expert_id_per_token[:total_tokens]
-
-    stream = get_stream(activations)
-    plan.lib.moe_gemm_decode(
-        stream,
-        activations.data_ptr(),
-        plan.weights_ptr,
-        plan.scales_ptr,
-        plan.zeros_ptr,
-        outputs.data_ptr(),
-        expert_id_per_token.data_ptr(),
-        plan.act_dtype,
-        plan.weight_dtype,
-        plan.N,
-        plan.K,
-        plan.group_size,
-        num_tokens_per_expert.data_ptr(),
-        plan.num_experts,
-        total_tokens,
-        False,
-    )
-    return outputs
-
-
-def moe_gemm_prefill_sym_prepared(
-    plan: MoeSymmetricGemmPlan,
-    activations: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    *,
-    outputs: Optional[torch.Tensor] = None,
-    workspace: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    total_tokens = int(activations.shape[0])
-    if outputs is None:
-        outputs = torch.empty((total_tokens, plan.N), device=activations.device, dtype=activations.dtype)
-    else:
-        outputs = outputs[:total_tokens]
-    if workspace is None:
-        workspace = plan.prefill_workspace
-
-    stream = get_stream(activations)
-    plan.lib.moe_gemm_prefill(
-        stream,
-        activations.data_ptr(),
-        plan.weights_ptr,
-        plan.scales_ptr,
-        plan.zeros_ptr,
-        outputs.data_ptr(),
-        workspace.data_ptr(),
-        plan.act_dtype,
-        plan.weight_dtype,
-        plan.N,
-        plan.K,
-        plan.group_size,
-        num_tokens_per_expert.data_ptr(),
-        plan.num_experts,
-        total_tokens,
-        False,
-    )
-    return outputs
-
-
-def moe_sym_prepared(
-    plan: MoeSymmetricGemmPlan,
-    activations: torch.Tensor,
-    num_tokens_per_expert: torch.Tensor,
-    *,
-    phase: str = "auto",
-    decode_threshold: Optional[int] = None,
-    outputs: Optional[torch.Tensor] = None,
-    expert_id_per_token: Optional[torch.Tensor] = None,
-    workspace: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    if phase not in _MOE_VALID_PHASES:
-        raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
-
-    if phase == "auto":
-        threshold = _moe_auto_decode_max_total_tokens() if decode_threshold is None else int(decode_threshold)
-        phase = "decode" if int(activations.shape[0]) <= threshold else "prefill"
-
-    if phase == "decode":
-        return moe_gemm_decode_sym_prepared(
-            plan,
-            activations,
-            num_tokens_per_expert,
-            outputs=outputs,
-            expert_id_per_token=expert_id_per_token,
-        )
-    return moe_gemm_prefill_sym_prepared(
-        plan,
-        activations,
-        num_tokens_per_expert,
-        outputs=outputs,
-        workspace=workspace,
-    )
 
 
 def moe_gemm(
