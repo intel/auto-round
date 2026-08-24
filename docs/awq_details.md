@@ -18,13 +18,11 @@ The configurations in the tables map to the following CLI usage:
 
 ```bash
 # Pure RTN baseline
-auto-round --model <model> --scheme <scheme> --format fake \
-  --iters 0 --disable_opt_rtn --disable_model_free \
+auto-round-rtn --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 # Optimized RTN baseline
-auto-round --model <model> --scheme <scheme> --format fake \
-  --iters 0 --enable_opt_rtn --disable_model_free \
+auto-round-opt-rtn --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 # Native AutoRound / AutoRound with algorithm extension
