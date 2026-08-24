@@ -186,11 +186,10 @@ class AlgorithmComposer:
                 getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
-            compile_participants = [*self.preprocessors, *rotation_configs]
             blockers = []
             if not self.block_quantizer.can_compile_block_forward():
                 blockers.append(type(self.block_quantizer).__name__)
-            for component in compile_participants:
+            for component in [*self.preprocessors, *rotation_configs]:
                 if not getattr(component, "can_compile_block_forward", lambda: True)():
                     blockers.append(type(component).__name__)
             can_compile_block_forward = user_torch_compile and not blockers

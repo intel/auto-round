@@ -36,7 +36,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/08] AWQ can now be composed with AutoRound (`--algorithm awq,auto_round`) for activation-aware smoothing before AutoRound optimization. It is recommended to enable AWQ when activation quantization is used. See [AWQ algorithm results](./docs/awq_details.md) for details.
+* [2026/08] We experimentally support algorithm composition, e.g., AWQ + SignRound ([./docs/awq_details.md](./docs/awq_details.md)) and Hadamard (research feature) + AWQ + SignRound ([./docs/rotation_details.md](./docs/rotation_details.md)), to improve accuracy, especially in scenarios with activation quantization.
 
 * [2026/08] AutoScheme WOQ deployment on vLLM is experimentally restored, thanks to Humming Kernel: [*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890), [*Example Model*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound). Note: shared layers must be configured per vLLM's fusion patterns.
 
