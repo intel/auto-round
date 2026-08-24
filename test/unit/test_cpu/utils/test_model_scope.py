@@ -34,9 +34,7 @@ class TestModelScope:
 
     @pytest.mark.timeout(120)
     def test_llm(self, dataloader):
-        model_name = save_tiny_model(
-            get_model_path("Qwen/Qwen2.5-0.5B-Instruct"), self.tiny_model_path, num_layers=2
-        )
+        model_name = save_tiny_model(get_model_path("Qwen/Qwen2.5-0.5B-Instruct"), self.tiny_model_path, num_layers=2)
         autoround = AutoRound(model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=dataloader)
         autoround.quantize_and_save(self.saved_path)
 
