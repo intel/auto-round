@@ -888,8 +888,14 @@ def diffusion_load_model(
         )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
-    if device_str is not None and "hpu" in device_str:
+    if model_dtype is not None:
+        normalized_dtype = get_model_dtype(model_dtype)
+        torch_dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }.get(normalized_dtype, normalized_dtype)
+    elif device_str is not None and "hpu" in device_str and torch_dtype == "auto":
         torch_dtype = torch.bfloat16
 
     try:
@@ -955,7 +961,6 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    pipe = _to_model_dtype(pipe, model_dtype)
     if hasattr(pipe, "unet"):
         # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
         model = pipe.unet

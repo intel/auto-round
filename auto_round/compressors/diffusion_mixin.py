@@ -133,7 +133,9 @@ class DiffusionMixin:
                 or component.dtype == target_dtype
             ):
                 continue
-            if getattr(component, "_keep_in_fp32_modules", None):
+            # A post-load dtype cast cannot preserve names declared by a
+            # Diffusers model. This also avoids its warning for an empty list.
+            if hasattr(component, "_keep_in_fp32_modules"):
                 continue
             component.to(dtype=target_dtype)
 
