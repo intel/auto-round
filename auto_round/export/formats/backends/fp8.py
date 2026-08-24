@@ -71,10 +71,6 @@ class FP8Format(OutputFormat):
 
         if isinstance(serialization_dict["group_size"], tuple):
             serialization_dict["weight_block_size"] = serialization_dict["group_size"]
-            # ``group_size`` is a tuple for block-wise FP8; the block dimensions are
-            # persisted via ``weight_block_size``. Reset ``group_size`` to -1 so loaders
-            # that expect a scalar (e.g. transformers' AutoRoundConfig) don't choke on it.
-            serialization_dict["group_size"] = -1
 
             ignored_layers = []
             for layer_name, cfg in layer_config.items():
