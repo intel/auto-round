@@ -228,22 +228,12 @@ def linear_loop_experts_forward(
         # Get current hidden states for selected samples
         selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
 
-        # Group token-expert pairs by expert using a single sort, then run each
-        # expert on a contiguous *static* slice, instead of doing a per-expert
-        # nonzero()/boolean-mask lookup inside the Python loop.
-        sort_order = torch.argsort(expert_ids)
-        permuted_hidden_states = selected_hidden_states.index_select(0, sort_order)  # (S, hidden_dim)
-
-        # Per-expert token counts, computed once on host to drive static slicing.
-        counts = torch.bincount(expert_ids, minlength=num_experts).tolist()
-
-        out_permuted = torch.zeros_like(permuted_hidden_states)
-        start = 0
-        for expert_idx, count in enumerate(counts):
-            if count == 0:
+        out_per_sample = torch.zeros_like(selected_hidden_states)
+        for expert_idx in range(num_experts):
+            sample_idx = torch.nonzero(expert_ids == expert_idx, as_tuple=False).squeeze(-1)
+            if sample_idx.numel() == 0:
                 continue
-            end = start + count
-            expert_input = permuted_hidden_states[start:end]  # static slice/view, no gather kernel
+            expert_input = selected_hidden_states.index_select(0, sample_idx)
 
             # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
@@ -260,12 +250,7 @@ def linear_loop_experts_forward(
             # Down projection
             expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
 
-            out_permuted[start:end] = expert_out.to(out_permuted.dtype)
-            start = end
-
-        # Scatter results back to their original (pre-sort) token-expert order.
-        out_per_sample = torch.empty_like(out_permuted)
-        out_per_sample.index_copy_(0, sort_order, out_permuted)
+            out_per_sample.index_copy_(0, sample_idx, expert_out.to(out_per_sample.dtype))
 
         # Apply routing weights
         out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
