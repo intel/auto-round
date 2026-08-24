@@ -797,12 +797,18 @@ def test_autoscheme_cache_path_is_independent_from_workspace(tmp_path, monkeypat
     from auto_round.auto_scheme.delta_loss import _autoscheme_cache_path
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Windows expanduser prefers USERPROFILE over HOME; patch both so the
+    # default-cache assertion holds on every platform (no-op on Linux).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path / "workspace"))
     monkeypatch.delenv("AR_AUTO_SCHEME_CACHE", raising=False)
 
     cache_path = _autoscheme_cache_path("cache_key", 1)
 
-    assert cache_path == str(tmp_path / "home" / ".cache" / "auto_round" / "scheme_01_cache_key.json")
+    # normpath: expanduser keeps the forward slashes of "~/.cache" on Windows
+    assert os.path.normpath(cache_path) == os.path.normpath(
+        str(tmp_path / "home" / ".cache" / "auto_round" / "scheme_01_cache_key.json")
+    )
 
 
 def test_autoscheme_cache_path_can_be_overridden(tmp_path, monkeypatch):
@@ -894,17 +900,26 @@ def test_parallel_scheme_scoring_supports_disk_stream_model():
     assert _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, False)
 
 
-def test_parallel_scheme_scoring_rejects_disk_stream_vlm():
+def test_parallel_scheme_scoring_allows_text_only_disk_stream_vlm():
+    """c34538d2: text-only scoring of a VLM language tower streams blocks like
+    a text model; only vision scoring (force_mllm) is excluded from disk
+    streaming."""
     from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
 
-    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
+    # is_vlm alone no longer disqualifies disk-stream parallel scoring
+    assert _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
+    # force_mllm (vision scoring needs a full-model backward) still does
+    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, False, force_mllm=True)
 
 
 @pytest.mark.parametrize(
     "model_id,is_vlm,low_gpu_mem_usage,expected",
     [
+        # c34538d2: is_vlm no longer disqualifies disk-stream workers -- the
+        # language tower streams blocks like a text model; multimodal archs
+        # are covered via materialize_non_block_params.
         ("local-model", False, True, True),
-        ("local-model", True, True, False),
+        ("local-model", True, True, True),
         ("local-model", False, False, False),
         (None, False, True, False),
     ],
@@ -945,7 +960,15 @@ def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
     from auto_round.auto_scheme import delta_loss
     from auto_round.utils import disk_stream_util
 
-    expected = (object(), object(), object())
+    class FakeMetaModel:
+        """Minimal module stand-in: the loader structurally unfuses MoE modules
+        (named_modules walk) before weights are streamed."""
+
+        def named_modules(self, memo=None):
+            return iter(())
+
+    model, tokenizer, disk_index = FakeMetaModel(), object(), object()
+    expected = (model, tokenizer, disk_index)
     monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
 
     assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
@@ -956,7 +979,11 @@ def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
     from auto_round.auto_scheme import delta_loss
     from auto_round.utils import disk_stream_util
 
-    model = object()
+    class FakeMetaModel:
+        def named_modules(self, memo=None):
+            return iter(())
+
+    model = FakeMetaModel()
     updated_model = object()
     handled_model = object()
     tokenizer = object()
@@ -1379,3 +1406,70 @@ class TestScoreLinearRecompute:
         out = wrapper.forward(x)
         assert not out.requires_grad
         assert wrapper._score_qdq_cpu is None
+
+
+def test_parallel_scheme_scoring_min_uncached_overrides_single_scheme():
+    """A single uncached scheme can still be scored through a worker when the
+    serial full-model pass cannot run (weights spanning several GPUs)."""
+    from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
+
+    # default keeps the >=2 heuristic: one scheme stays serial
+    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 1, False, True, False)
+    # an explicit lower floor admits the single-scheme worker run
+    assert _can_parallel_scheme_scoring(True, "local-model", 1, 1, False, True, False, min_uncached=1)
+
+
+def test_serial_scoring_device_safe():
+    """Serial full-model scoring is device-safe only on single-GPU/CPU models;
+    any multi-GPU weight span is unsafe regardless of leftover hook markers
+    (partial dispatch / manual placement does not shuttle activations)."""
+    import torch
+    import torch.nn as nn
+
+    from auto_round.auto_scheme.delta_loss import _serial_scoring_device_safe, _weights_span_multiple_gpus
+
+    class Tiny(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(4, 4)
+
+    assert _serial_scoring_device_safe(Tiny()) is True
+
+    # a meta-skeleton (disk-stream) model has all params on meta - the live
+    # scan sees nothing; the placement plan in hf_device_map is what the
+    # serial streaming path materializes blocks onto
+    class MetaSkeleton(Tiny):
+        hf_device_map = {"": "cuda:0", "model.layers.1": "cuda:3"}
+
+    assert _serial_scoring_device_safe(MetaSkeleton()) is False
+
+    class SingleDeviceMap(Tiny):
+        hf_device_map = {"": "cuda:1"}
+
+    assert _serial_scoring_device_safe(SingleDeviceMap()) is True
+
+    # a streamed (meta-skeleton) model with several visible CUDA devices is
+    # serial-unsafe: the in-process streaming pass is only validated with a
+    # single visible GPU; workers pin one GPU each
+    class StreamedSkeleton(Tiny):
+        _disk_stream_index = object()
+
+    assert _serial_scoring_device_safe(StreamedSkeleton(), visible_cuda_devices=["cuda:0", "cuda:1"]) is False
+    assert _serial_scoring_device_safe(StreamedSkeleton(), visible_cuda_devices=["cuda:0"]) is True
+    assert _serial_scoring_device_safe(Tiny(), visible_cuda_devices=["cuda:0", "cuda:1"]) is True
+
+    assert _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:0")]) is False
+    assert _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:3")]) is True
+    assert _weights_span_multiple_gpus([torch.device("cpu"), torch.device("cpu")]) is False
+
+    # a multi-GPU span is unsafe even when an _hf_hook marker is present:
+    # the marker alone does not guarantee activation transfer under the
+    # scoring wrappers
+    class FakeHooked(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self._hf_hook = object()
+
+    assert (
+        _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:1")]) is True
+    )  # the unsafe case _serial_scoring_device_safe keys on

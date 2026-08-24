@@ -2239,6 +2239,40 @@ def _get_scheme_worker_count(num_schemes, num_gpus):
     return num_schemes
 
 
+def _weights_span_multiple_gpus(devices) -> bool:
+    """Whether a device collection places weights on more than one GPU."""
+    cuda_devices = {str(device) for device in devices if str(device).startswith("cuda")}
+    return len(cuda_devices) > 1
+
+
+def _serial_scoring_device_safe(model, visible_cuda_devices=None) -> bool:
+    """Whether in-process (serial) full-model scoring can run on ``model``.
+
+    Serial scoring runs the whole-model forward through per-layer wrappers.
+    Two placement sources can spread work over several GPUs: live parameter
+    devices (a materialized model), and ``hf_device_map`` - which is what a
+    disk-stream (meta-skeleton) model consults when its blocks materialize
+    block-by-block during scoring. Either spanning more than one GPU makes
+    the first cross-device layer raise a tensor-device error mid-forward.
+
+    Additionally, a disk-stream (meta-skeleton) model scored serially with
+    more than one visible CUDA device is not considered safe: block
+    materialization and wrapper bookkeeping are only validated with a
+    single visible GPU, and workers pin one GPU each. Such models are
+    routed through disk-stream workers instead.
+    """
+    if _weights_span_multiple_gpus({parameter.device for parameter in model.parameters()}):
+        return False
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if hf_device_map:
+        if _weights_span_multiple_gpus(set(hf_device_map.values())):
+            return False
+    if visible_cuda_devices is not None and len(visible_cuda_devices) > 1:
+        if getattr(model, "_disk_stream_index", None) is not None:
+            return False
+    return True
+
+
 def _can_parallel_scheme_scoring(
     parallel_enabled,
     model_id,
@@ -2249,19 +2283,23 @@ def _can_parallel_scheme_scoring(
     is_vlm,
     low_gpu_mem_usage=True,
     force_mllm=False,
+    min_uncached=2,
 ):
     """Return whether candidate schemes can be scored in separate workers.
 
     ``is_vlm`` is accepted for call-site compatibility; text-only scoring of a
     VLM's language tower streams blocks just like a text model. Only vision
     scoring (``force_mllm``) requires a full-model backward and is excluded
-    from the block-wise materialize/free path used by disk streaming."""
+    from the block-wise materialize/free path used by disk streaming.
+    ``min_uncached`` is the parallel-worthiness floor (2 by default); the call
+    site lowers it to 1 when serial scoring cannot run on the loaded model and
+    a disk-stream worker can."""
     return (
         parallel_enabled
         and low_gpu_mem_usage
         and model_id is not None
         and num_gpus >= 1
-        and uncached_count >= 2
+        and uncached_count >= min_uncached
         and not need_imatrix
         and (not disk_stream_model or not force_mllm)
     )
@@ -2906,6 +2944,46 @@ def _gen_layer_config(
         worker_disk_stream_model = _prefer_disk_stream_scheme_worker(
             _model_id_for_cache, is_vlm, auto_scheme.low_gpu_mem_usage
         )
+        # Serial scoring runs the full-model forward, which cannot cross GPUs on
+        # a manually sharded model. When that is the loaded configuration and a
+        # disk-stream worker is possible, lower the parallel floor to 1 so even
+        # a single uncached scheme is scored through a worker instead of the
+        # broken in-process pass.
+        serial_device_safe = _serial_scoring_device_safe(model, visible_cuda_devices=worker_device_pool)
+        min_uncached = 2
+        if not serial_device_safe and worker_disk_stream_model:
+            min_uncached = 1
+            logger.info(
+                "AutoScheme: serial in-process scoring is unsafe (multi-GPU weights, "
+                "hf_device_map, or a streamed model with several visible GPUs); "
+                "routing even a single uncached scheme through a disk-stream scoring worker."
+            )
+        elif not serial_device_safe and uncached_indices:
+            raise RuntimeError(
+                "AutoScheme serial scoring cannot run on a model whose weights span "
+                "multiple GPUs without accelerate dispatch (the full-model forward has "
+                "no cross-device activation transfer). Score via disk-stream workers: "
+                "point AR_DISK_STREAM_MODEL at a local checkpoint directory and keep "
+                "AR_ENABLE_AUTO_SCHEME_PARALLEL enabled, or load the model on a single "
+                "GPU / with device_map='auto'."
+            )
+        if __debug__:
+            from collections import Counter
+
+            _param_devs = Counter(str(p_.device) for p_ in model.parameters())
+            _hf_map = getattr(model, "hf_device_map", None)
+            _hf_devs = sorted({str(v_) for v_ in _hf_map.values()}) if _hf_map else None
+            logger.info(
+                "AutoScheme serial-safety census: serial_device_safe=%s "
+                "param_devices=%s hf_device_map_devices=%s disk_stream_index=%s meta_params=%d "
+                "cuda_visible=%s",
+                serial_device_safe,
+                dict(_param_devs),
+                _hf_devs,
+                getattr(model, "_disk_stream_index", None) is not None,
+                sum(1 for p_ in model.parameters() if p_.device.type == "meta"),
+                [str(d_) for d_ in worker_device_pool],
+            )
         # Vision scoring requires a full-model backward and therefore cannot use
         # the block-wise materialize/free path used by disk streaming.
         can_parallel = _can_parallel_scheme_scoring(
@@ -2918,6 +2996,7 @@ def _gen_layer_config(
             is_vlm,
             low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
             force_mllm=force_mllm,
+            min_uncached=min_uncached,
         )
         logger.info(
             "AutoScheme scoring mode: parallel_configured=%s, parallel_enabled=%s, disk_stream_enabled=%s",
