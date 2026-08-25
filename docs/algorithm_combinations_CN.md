@@ -21,12 +21,12 @@ AutoRound 可以在量化之前（或量化过程中）与多种算法结合使�
 
 ## 矩阵
 
-| 组合                                | 精度收益 | 可部署性 | 详情                                      | 命令行用法                            | 备注                                   | 参考文献                                                 |
-|:----------------------------------|:----:|:----:|:----------------------------------------|:---------------------------------|:-------------------------------------|:-----------------------------------------------------|
-| AutoRound + AWQ（激活感知缩放）           |  🟢  |  🟢  | [awq_details](awq_details.md)           | `--algorithm awq,signround`      | 在量化激活（如 W4A4）场景下推荐使用。                | [arXiv:2306.00978](https://arxiv.org/abs/2306.00978) |
-| AutoRound + Hadamard 旋转           |  🟢  |  🔴  | [rotation_details](rotation_details.md) | `--algorithm hadamard,signround` | 尤其适用于 INT4（W4A4）及部分 MXFP4 场景；暂无生产内核。 | [arXiv:2404.00456](https://arxiv.org/abs/2404.00456) |
-| AutoRound + SpinQuant             |  🟡  |  🔴  | [rotation_details](rotation_details.md) | 仅 Python API                     | 需学习旋转矩阵，精度更高但有额外训练开销；暂无生产内核。         | [arXiv:2405.16406](https://arxiv.org/abs/2405.16406) |
-| AutoRound + LFQ（logit 感知的末层块量化）   |  🔴  |  🟢  | [lfq_acc](lfq_acc.md)                   | `--enable_lfq`                   | 优化末层块以提升低比特生成质量。                     | [arXiv:2605.29756](https://arxiv.org/abs/2605.29756) |
-| AutoRound + MX Attention（MXFP4变体） |  🟡  |  🔴  | [mxnv_acc](mxnv_acc.md)                 | 仅 Python API                     | 在计算量化scale的时候用7.25做分母                | [arXiv:2607.24377](https://arxiv.org/abs/2607.24377) |
-| AutoRound + SVDQuant（低秩离群值吸收）     |  🟡  |  🟡  | [svdquant_details](svdquant_details.md) | `--algorithm svdquant,signround` | 推荐用于扩散模型；目前仅支持 FLUX。                 | [arXiv:2411.05007](https://arxiv.org/abs/2411.05007) |
+| 组合                                 | 精度收益 | 可部署性 | 详情                                      | 命令行用法                            | 备注                                   | 参考文献                                                 |
+|:-----------------------------------|:----:|:----:|:----------------------------------------|:---------------------------------|:-------------------------------------|:-----------------------------------------------------|
+| AutoRound + AWQ（激活感知缩放）            |  🟢  |  🟢  | [awq_details](awq_details.md)           | `--algorithm awq,signround`      | 在量化激活（如 W4A4）场景下推荐使用。                | [arXiv:2306.00978](https://arxiv.org/abs/2306.00978) |
+| AutoRound + Hadamard 旋转            |  🟢  |  🔴  | [rotation_details](rotation_details.md) | `--algorithm hadamard,signround` | 尤其适用于 INT4（W4A4）及部分 MXFP4 场景；暂无生产内核。 | [arXiv:2404.00456](https://arxiv.org/abs/2404.00456) |
+| AutoRound + SpinQuant              |  🟡  |  🔴  | [rotation_details](rotation_details.md) | 仅 Python API                     | 需学习旋转矩阵，精度更高但有额外训练开销；暂无生产内核。         | [arXiv:2405.16406](https://arxiv.org/abs/2405.16406) |
+| AutoRound + LFQ（logit 感知的末层块量化）    |  🔴  |  🟢  | [lfq_acc](lfq_acc.md)                   | `--enable_lfq`                   | 优化末层块以提升低比特生成质量。                     | [arXiv:2605.29756](https://arxiv.org/abs/2605.29756) |
+| AutoRound + MX Attention（MXFP4 变体） |  🟡  |  🔴  | [mxnv_acc](mxnv_acc.md)                 | `--data_type mx_fp4_rceil_v2`    | 采用 7.25 作为 scale 计算的分母。              | [arXiv:2607.24377](https://arxiv.org/abs/2607.24377) |
+| AutoRound + SVDQuant（低秩离群值吸收）      |  🟡  |  🟡  | [svdquant_details](svdquant_details.md) | `--algorithm svdquant,signround` | 推荐用于扩散模型；目前仅支持 FLUX。                 | [arXiv:2411.05007](https://arxiv.org/abs/2411.05007) |
 
