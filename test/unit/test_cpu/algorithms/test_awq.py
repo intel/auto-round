@@ -967,6 +967,13 @@ class TestAWQUseV2ScaleSearch:
 
         return AWQTransform(AWQConfig(n_grid=1, apply_smooth=True))
 
+    @staticmethod
+    def _signroundv2_config(**kwargs):
+        """Build a real SignRoundV2 config for the legacy compressor-shaped test."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+
+        return SignRoundV2Config(**kwargs)
+
     def test_rtn_block_is_not_v2(self):
         """An RTN block quantizer must NOT be detected as V2."""
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
