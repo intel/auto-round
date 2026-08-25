@@ -180,8 +180,11 @@ class TestAutoRound:
         assert len(device_list) == 3
         assert device_list == ["cuda:0", "cuda:1", "cpu"]
         device_list = parse_available_devices("0,1")
-        assert len(device_list) == 1
-        assert device_list[0] == get_major_device("0")
+        major_type = get_major_device("0").split(":", 1)[0]
+        if major_type == "cpu":
+            assert device_list == ["cpu"]
+        else:
+            assert device_list == [f"{major_type}:0", f"{major_type}:1"]
 
     @pytest.mark.timeout(60)
     def test_set_scheme(self, tiny_qwen_model_path):

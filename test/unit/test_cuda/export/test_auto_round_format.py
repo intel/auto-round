@@ -189,8 +189,10 @@ class TestAutoRound:
         assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
         assert compressed_model.config.quantization_config["quant_method"] == "auto-round"
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
-        if is_cuda_support_fp8():
-            eval_generated_prompt(quantized_model_path, device="cuda:0")
+        # TODO: open below test after this issue is fixed.
+        # https://github.com/huggingface/transformers/issues/46209
+        # if is_cuda_support_fp8():
+        #     eval_generated_prompt(quantized_model_path, device="cuda:0")
 
     def test_fp8_block_autoround_format(self):
         model_name = "Qwen/Qwen3-0.6B"

@@ -59,7 +59,6 @@ class TestTorchBackendFunctional:
         """4-bit (a)symmetric model, RTN or tuned, loads via the torch backend and generates text."""
         ar = AutoRound(tiny_opt_model_path, bits=4, group_size=group_size, sym=sym, iters=iters, seqlen=2, nsamples=1)
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format=format)
-
         quantization_config = AutoRoundConfig(backend="torch")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path,

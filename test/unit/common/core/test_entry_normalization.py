@@ -93,6 +93,41 @@ def test_awq_and_signround_does_not_append_rtn():
     assert _types(configs) == ["AWQConfig", "SignRoundConfig"]
 
 
+def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
+    from auto_round import AutoRound
+
+    created = {}
+
+    class FakeCompressor:
+        def __init__(self, config, **kwargs):
+            created["config"] = config
+            created["kwargs"] = kwargs
+
+    def fail_model_free(*args, **kwargs):
+        raise AssertionError("AWQ pipelines must not auto-route to model-free quantization.")
+
+    monkeypatch.setattr("auto_round.autoround._build_model_free_compressor", fail_model_free)
+    monkeypatch.setattr("auto_round.autoround._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {}))
+    monkeypatch.setattr("auto_round.autoround._get_compressor_class", lambda model_type, base_cls: FakeCompressor)
+
+    ar = AutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        alg_configs=[AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)],
+    )
+
+    assert isinstance(ar, FakeCompressor)
+    assert _types(created["config"]) == ["AWQConfig", "RTNConfig"]
+
+    with pytest.raises(ValueError, match="model_free=True.*AWQConfig"):
+        AutoRound(
+            "dummy-model",
+            scheme="W4A16",
+            alg_configs=[AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)],
+            model_free=True,
+        )
+
+
 def test_direct_signround_kwargs_warn_and_apply(monkeypatch):
     warnings = []
     monkeypatch.setattr("auto_round.autoround.logger.warning", lambda message, *args: warnings.append(message % args))
@@ -111,6 +146,31 @@ def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():
     assert len(configs) == 1
     assert isinstance(configs[0], RTNConfig)
     assert configs[0].disable_opt_rtn is True
+
+
+def test_awq_rtn_opt_policy_defaults_and_explicit_overrides():
+    cases = [
+        (_normalize_alg_configs("awq"), ["AWQConfig", "RTNConfig"], [True, True]),
+        (
+            _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,rtn", "disable_opt_rtn": True}),
+            ["AWQConfig", "RTNConfig"],
+            [True, True],
+        ),
+        (
+            _normalize_alg_configs([AWQConfig(enable_opt_rtn=True), RTNConfig()]),
+            ["AWQConfig", "OptimizedRTNConfig"],
+            [False, False],
+        ),
+        (
+            _normalize_alg_configs([AWQConfig(), RTNConfig(enable_opt_rtn=True)]),
+            ["AWQConfig", "OptimizedRTNConfig"],
+            [True, False],
+        ),
+    ]
+
+    for configs, expected_types, expected_disable_opt_rtn in cases:
+        assert _types(configs) == expected_types
+        assert [config.disable_opt_rtn for config in configs] == expected_disable_opt_rtn
 
 
 @pytest.mark.parametrize("algorithm", ["signround", "auto_round", "autoround"])
@@ -133,14 +193,14 @@ def test_explicit_zero_iter_signround_config_selects_rtn():
 def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
     configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,signround", "iters": 0})
 
-    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
+    assert _types(configs) == ["AWQConfig", "RTNConfig"]
 
 
 @pytest.mark.parametrize(
     ("algorithm", "expected_types"),
     [
         ("rtn", ["OptimizedRTNConfig"]),
-        ("awq", ["AWQConfig", "OptimizedRTNConfig"]),
+        ("awq", ["AWQConfig", "RTNConfig"]),
         ("signround", ["SignRoundConfig"]),
         ("awq,signround", ["AWQConfig", "SignRoundConfig"]),
     ],

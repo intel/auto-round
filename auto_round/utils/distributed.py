@@ -55,6 +55,10 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     """
     import torch.distributed as dist
 
+    # The process group can be created and destroyed by individual tests or
+    # by successive launcher invocations.  Do not reuse a cached result from
+    # a previous process-group lifetime.
+    is_distributed.cache_clear()
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "unset")
 
     if not is_distributed():

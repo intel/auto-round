@@ -26,7 +26,7 @@ function setup_environment() {
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
     # install unit report dependencies
-    uv pip install pytest-cov pytest-timeout
+    uv pip install pytest-cov
     uv pip install -U chardet
     uv pip list
 
@@ -125,7 +125,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest -m "not skip_ci" \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"

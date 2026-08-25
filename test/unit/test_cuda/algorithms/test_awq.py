@@ -152,7 +152,7 @@ class TestAWQNormalLLM:
             device_map=device,
         )
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
-        output = generate_prompt(quantized_model_path, prompt_text="United States of", device=device)
+        output = generate_prompt(quantized_model_path, text="United States of", device=device)
         assert output.strip()
 
 
