@@ -1971,9 +1971,7 @@ class BaseOrchestrator(object):
         # because AutoScheme's delta-loss selection requires gradient tracking.
         self.post_init()
         if used_default_format and scheme_to_preset_name(self.scheme_context) == "FP8_BLOCK":
-            logger.warning(
-                "--format fp8 is recommended for better compatibility with serving frameworks for now."
-            )
+            logger.warning("--format fp8 is recommended for better compatibility with serving frameworks for now.")
         # If post_init() was called manually before quantize_and_save() (e.g. ar.post_init()
         # in tests), _resolve_formats saw formats=None and was a no-op.  Now that we have set
         # self.formats to a default string above, resolve it into OutputFormat objects so that
