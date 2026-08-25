@@ -41,6 +41,7 @@ def _clean_disk_stream_env():
     else:
         os.environ["AR_DISK_STREAM_MODEL"] = previous
 
+
 class TestAutoSchemeDiskStream:
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):
@@ -76,6 +77,7 @@ class TestAutoSchemeDiskStream:
         from auto_round import envs
 
         assert envs.AR_DISK_STREAM_MODEL is False
+
 
 class TestDiskStreamWorkerModelPrep:
     def test_disk_stream_build_unfuses_moe_modules(self, monkeypatch):
