@@ -144,7 +144,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_SIGNROUND_EARLY_STOP_PATIENCE": lambda: (
         _get_optional_positive_int_env("AR_SIGNROUND_EARLY_STOP_PATIENCE")
         if os.getenv("AR_SIGNROUND_EARLY_STOP_PATIENCE") is not None
-        else 30
+        else 50
     ),
     # Minimum loss decrease to count as an improvement for SignRound
     # early-stop. Defaults to strict improvement (> 0).
