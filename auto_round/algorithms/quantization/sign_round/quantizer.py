@@ -507,6 +507,8 @@ class SignRoundQuantizer(BaseQuantizer):
 
             if i == 0:
                 init_loss = total_loss
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.debug("iter %d loss: %.10f lr: %s", i, total_loss, current_lr)
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -733,6 +735,8 @@ class SignRoundQuantizer(BaseQuantizer):
                 self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.debug("iter %d loss: %.10f lr: %s", i, total_loss, current_lr)
 
             if total_loss < best_loss:
                 best_loss = total_loss
