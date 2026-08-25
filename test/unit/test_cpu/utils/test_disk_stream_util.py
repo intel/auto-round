@@ -14,11 +14,10 @@
 
 """Unit tests for auto_round.utils.disk_stream_util (AR_DISK_STREAM_MODEL primitives)."""
 
+import pytest
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
-
-import pytest
 
 from auto_round.utils.disk_stream_util import (
     build_meta_model,
