@@ -587,7 +587,7 @@ class SpinQuantPreprocessor:
 
         logger.info(
             f"[SpinQuant] Training complete: {result.steps} steps, "
-            f"best_loss={result.best_loss:.6f}, ortho_dev={result.final_ortho_deviation:.2e}"
+            f"best_loss={result.best_loss:.10f}, ortho_dev={result.final_ortho_deviation:.2e}"
         )
 
         del original_model
