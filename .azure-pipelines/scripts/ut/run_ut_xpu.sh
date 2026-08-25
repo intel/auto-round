@@ -54,7 +54,7 @@ function run_common_group() {
         echo "##[group]Running common tests (${group_name})..."
         local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci"--cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     fi
