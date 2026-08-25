@@ -364,7 +364,11 @@ class BaseOrchestrator(object):
         if enable_torch_compile is None:
             enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
             if not enable_torch_compile:
-                if self.device == "xpu":
+                # Device values may include an ordinal (for example,
+                # ``xpu:0``), so normalize before selecting the backend
+                # specific warning message.
+                device_type = str(self.device).split(":", 1)[0]
+                if device_type == "xpu":
                     logger.warning_once(
                         "`torch.compile` is disabled by default on XPU for compatibility. "
                         "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
