@@ -41,7 +41,6 @@ def _clean_disk_stream_env():
     else:
         os.environ["AR_DISK_STREAM_MODEL"] = previous
 
-
 class TestAutoSchemeDiskStream:
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path):

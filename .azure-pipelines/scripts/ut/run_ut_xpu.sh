@@ -54,15 +54,13 @@ function run_common_group() {
         echo "##[group]Running common tests (${group_name})..."
         local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     fi
 }
 
 function run_common_unit_test() {
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-
     # common test case for cpu/gpu/xpu
     # Group cases by the first-level folder under unit/common; a single test
     # file placed directly under unit/common (e.g. test_main.py) runs on its own.
@@ -78,8 +76,6 @@ function run_common_unit_test() {
 }
 
 function run_unit_test() {
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-
     local xpu_tests
     xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
 
@@ -89,15 +85,13 @@ function run_unit_test() {
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }
 
 function run_unit_test_ark() {
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-
     local ark_tests
     ark_tests=$(filter_changed_tests "test" "$(find ./unit/test_ark -name "test*.py" | sort)")
 
@@ -107,7 +101,7 @@ function run_unit_test_ark() {
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -126,15 +120,13 @@ function run_unit_test_llmc() {
     uv pip list
     echo "##[endgroup]" 
 
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-
     for test_file in ${llmc_tests}; do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
