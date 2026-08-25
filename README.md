@@ -36,7 +36,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md).
+* [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.
 
 * [2026/08] AutoScheme WOQ deployment on vLLM is experimentally restored, thanks to Humming Kernel: [*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890), [*Example Model*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound). Note: shared layers must be configured per vLLM's fusion patterns.
 
