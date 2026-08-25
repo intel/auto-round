@@ -187,7 +187,7 @@ class TestAutoRound:
         assert hasattr(tmp_layer, "weight_scale_inv")
         assert tmp_layer.weight.dtype is torch.float8_e4m3fn
         assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
-        assert compressed_model.config.quantization_config["quant_method"] == "auto-round"
+        assert compressed_model.config.quantization_config["quant_method"] == "fp8"
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
         # TODO: open below test after this issue is fixed.
         # https://github.com/huggingface/transformers/issues/46209

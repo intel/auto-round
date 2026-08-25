@@ -46,8 +46,6 @@ from typing import List
 import pytest
 import torch
 
-pytestmark = pytest.mark.enable_torch_compile
-
 # ---------------------------------------------------------------------------
 # Output sink
 # ---------------------------------------------------------------------------
@@ -94,6 +92,7 @@ pytestmark = [
         not torch.cuda.is_available(),
         reason="SGLang throughput tests require a CUDA GPU",
     ),
+    pytest.mark.enable_torch_compile,
 ]
 
 
