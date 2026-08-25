@@ -3,8 +3,18 @@ import os
 import shutil
 
 import pytest
+import torch
 
 from auto_round import AutoRound, AutoScheme
+from auto_round.auto_scheme.delta_loss import (
+    AutoSchemeWrapperLinear,
+    _annotate_worker_oom,
+    _clear_wrapper_score_caches,
+    _parallel_scoring_must_raise,
+    _replay_retain_graph,
+    _tensor_referrer_snippet,
+    _vram_inventory_text,
+)
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
 
 
@@ -457,6 +467,21 @@ class TestAutoScheme:
                     f"cache may have stored merged group scores instead of individual scores"
                 )
 
+    def test_mxfp_options_produce_mixed_layer_config(self, tiny_opt_model_path):
+        """MX schemes score weight error via the weight-score path, so their
+        layer scores must be nonzero and the allocator must mix MXFP4/MXFP8
+        (a zeroed score set collapses the config onto the cheapest option)."""
+        scheme = AutoScheme(
+            avg_bits=7,
+            options=("MXFP4", "MXFP8"),
+            shared_layers=["q_proj", "k_proj", "v_proj"],
+            nsamples=1,
+        )
+        ar = AutoRound(model=tiny_opt_model_path, scheme=scheme, iters=0, nsamples=1)
+        _, config = ar.quantize()
+        bits_used = {v["bits"] for v in config.values() if "bits" in v}
+        assert bits_used == {4, 8}, f"expected a mixed MXFP4/MXFP8 config, got {sorted(bits_used)}"
+
     def test_different_avg_bits_produces_different_layer_config(self, tiny_opt_model_path):
         """Changing avg_bits should change the resulting layer_config."""
         scheme_low = AutoScheme(
@@ -787,12 +812,18 @@ def test_autoscheme_cache_path_is_independent_from_workspace(tmp_path, monkeypat
     from auto_round.auto_scheme.delta_loss import _autoscheme_cache_path
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Windows expanduser prefers USERPROFILE over HOME; patch both so the
+    # default-cache assertion holds on every platform (no-op on Linux).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path / "workspace"))
     monkeypatch.delenv("AR_AUTO_SCHEME_CACHE", raising=False)
 
     cache_path = _autoscheme_cache_path("cache_key", 1)
 
-    assert cache_path == str(tmp_path / "home" / ".cache" / "auto_round" / "scheme_01_cache_key.json")
+    # normpath: expanduser keeps the forward slashes of "~/.cache" on Windows
+    assert os.path.normpath(cache_path) == os.path.normpath(
+        str(tmp_path / "home" / ".cache" / "auto_round" / "scheme_01_cache_key.json")
+    )
 
 
 def test_autoscheme_cache_path_can_be_overridden(tmp_path, monkeypatch):
@@ -884,17 +915,26 @@ def test_parallel_scheme_scoring_supports_disk_stream_model():
     assert _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, False)
 
 
-def test_parallel_scheme_scoring_rejects_disk_stream_vlm():
+def test_parallel_scheme_scoring_allows_text_only_disk_stream_vlm():
+    """c34538d2: text-only scoring of a VLM language tower streams blocks like
+    a text model; only vision scoring (force_mllm) is excluded from disk
+    streaming."""
     from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
 
-    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
+    # is_vlm alone no longer disqualifies disk-stream parallel scoring
+    assert _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, True)
+    # force_mllm (vision scoring needs a full-model backward) still does
+    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 2, False, True, False, force_mllm=True)
 
 
 @pytest.mark.parametrize(
     "model_id,is_vlm,low_gpu_mem_usage,expected",
     [
+        # c34538d2: is_vlm no longer disqualifies disk-stream workers -- the
+        # language tower streams blocks like a text model; multimodal archs
+        # are covered via materialize_non_block_params.
         ("local-model", False, True, True),
-        ("local-model", True, True, False),
+        ("local-model", True, True, True),
         ("local-model", False, False, False),
         (None, False, True, False),
     ],
@@ -935,7 +975,15 @@ def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
     from auto_round.auto_scheme import delta_loss
     from auto_round.utils import disk_stream_util
 
-    expected = (object(), object(), object())
+    class FakeMetaModel:
+        """Minimal module stand-in: the loader structurally unfuses MoE modules
+        (named_modules walk) before weights are streamed."""
+
+        def named_modules(self, memo=None):
+            return iter(())
+
+    model, tokenizer, disk_index = FakeMetaModel(), object(), object()
+    expected = (model, tokenizer, disk_index)
     monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
 
     assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
@@ -946,7 +994,11 @@ def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
     from auto_round.auto_scheme import delta_loss
     from auto_round.utils import disk_stream_util
 
-    model = object()
+    class FakeMetaModel:
+        def named_modules(self, memo=None):
+            return iter(())
+
+    model = FakeMetaModel()
     updated_model = object()
     handled_model = object()
     tokenizer = object()
@@ -1053,3 +1105,386 @@ def test_replacement_wrapper_without_tuning_device_uses_major_device():
     move_module_to_tuning_device(wrapper, major_device="cpu")
 
     assert wrapper.orig_layer.weight.device.type == "cpu"
+
+
+def test_env_ar_auto_scheme_no_serial_fallback(monkeypatch):
+    import auto_round.envs as envs
+
+    monkeypatch.delenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", raising=False)
+    assert envs.AR_AUTO_SCHEME_NO_SERIAL_FALLBACK is False
+    monkeypatch.setenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", "1")
+    assert envs.AR_AUTO_SCHEME_NO_SERIAL_FALLBACK is True
+
+
+def test_parallel_error_must_raise_respects_env_and_lost_worker(monkeypatch):
+    import auto_round.envs as envs
+
+    monkeypatch.delenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", raising=False)
+    # plain failure, env off -> serial fallback proceeds
+    assert not _parallel_scoring_must_raise(RuntimeError("CUDA out of memory"))
+    # scheme lost with its worker always raises
+    assert _parallel_scoring_must_raise(RuntimeError("scheme 2 (W4A16) was lost with its worker"))
+    # env on -> any failure raises
+    monkeypatch.setenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", "1")
+    assert _parallel_scoring_must_raise(RuntimeError("CUDA out of memory"))
+
+
+class TestScoreAnchorWeightScoring:
+    """The scoring wrapper quantizes each layer once and routes the score hook
+    through a scalar anchor, so block backwards never materialize weight-shaped
+    gradients or re-run the quant search."""
+
+    def _make_wrapper(self):
+        """Minimal scoring wrapper: a Linear with the attributes _qdq_weight reads."""
+        layer = torch.nn.Linear(8, 8, bias=False)
+        layer.bits, layer.group_size, layer.sym = 4, 8, True
+        layer.scale_dtype = None
+        layer.data_type = "int"
+        wrapper = AutoSchemeWrapperLinear.__new__(AutoSchemeWrapperLinear)
+        torch.nn.Module.__init__(wrapper)
+        wrapper.orig_layer = layer
+        wrapper.device = "cpu"
+        wrapper.data_type = "int"
+        wrapper.q_scale_thresh = None
+        wrapper.grad_mode = True
+        wrapper.need_weight_grad = True
+        wrapper.enable_act_quant = False
+        wrapper.minmax_scale_bound = (1e-4, 1e3)
+        wrapper.weight_min = None
+        wrapper.weight_max = None
+        from auto_round.wrapper import WrapperLinear
+
+        wrapper.super_qdq_func = WrapperLinear._qdq_weight.__get__(wrapper)
+        wrapper.act_score = 0.0
+        wrapper.avg_act_score = 0.0
+        wrapper.act_cnt = 0.0
+        wrapper.weight_score = 0.0
+        wrapper.mix_score = 0.0
+        wrapper.max_act_value = 0
+        wrapper._score_qdq_cpu = None
+
+        def _fake_quant(weight, **kwargs):
+            scale = weight.abs().amax().clamp(min=1e-4) / 7.0
+            return ((weight / scale).round().clamp(-7, 7) * scale), scale, None
+
+        wrapper.weight_quant_func = _fake_quant
+        layer.weight.requires_grad = True
+        return wrapper, layer
+
+    def test_qdq_weight_quantizes_once_and_reuses_cache(self):
+        wrapper, layer = self._make_wrapper()
+        calls = {"n": 0}
+        real_quant = wrapper.weight_quant_func
+
+        def counting_quant(weight, **kwargs):
+            calls["n"] += 1
+            return real_quant(weight, **kwargs)
+
+        wrapper.weight_quant_func = counting_quant
+        args = (torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
+        first, _, _ = wrapper._qdq_weight(*args)
+        second, _, _ = wrapper._qdq_weight(*args)
+        assert calls["n"] == 1
+        assert torch.equal(first, second)
+
+    def test_score_anchor_accumulates_expected_weight_score(self):
+        torch.manual_seed(0)
+        wrapper, layer = self._make_wrapper()
+        with torch.no_grad():
+            layer.weight.copy_(torch.randn(8, 8) * 0.5)
+        x = torch.randn(4, 8)
+        qdq_w, _, _ = wrapper._qdq_weight(torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
+        assert qdq_w.requires_grad
+        torch.nn.functional.linear(x, qdq_w).sum().backward()
+        # dL/d(qdq_w)[j, k] = sum_i x[i, k], so the expected score is
+        # sum_{j,k} |x.sum(0)[k]| * |w_diff[j, k]|
+        w_diff = layer.weight - wrapper._score_qdq_cpu
+        expected = (w_diff.abs().sum(dim=0) * x.sum(dim=0).abs()).sum().item()
+        assert wrapper.weight_score > 0
+        assert abs(wrapper.weight_score - expected) < 1e-5
+
+    def test_orig_weight_gets_no_grad(self):
+        wrapper, layer = self._make_wrapper()
+        qdq_w, _, _ = wrapper._qdq_weight(torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
+        torch.nn.functional.linear(torch.randn(2, 8), qdq_w).sum().backward()
+        assert layer.weight.grad is None
+
+    def test_capture_mode_returns_fresh_tensor_without_cache(self):
+        wrapper, layer = self._make_wrapper()
+        wrapper.grad_mode = False
+        out, _, _ = wrapper._qdq_weight(torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
+        assert not out.requires_grad
+        assert wrapper._score_qdq_cpu is None  # one-shot phases must not grow CPU caches
+
+    def test_clear_wrapper_score_caches_drops_block_cache(self):
+        import torch.nn as nn
+
+        wrapper, layer = self._make_wrapper()
+        block = nn.Sequential(wrapper)
+        wrapper._qdq_weight(torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
+        assert wrapper._score_qdq_cpu is not None
+        _clear_wrapper_score_caches(block)
+        assert wrapper._score_qdq_cpu is None
+
+
+class TestOomCensus:
+    def test_vram_inventory_text_cpu_only_returns_graceful_string(self):
+        text = _vram_inventory_text(top_k=4)
+        assert isinstance(text, str)
+        assert len(text) > 0
+
+    def test_annotate_worker_oom_embeds_census_and_original(self, monkeypatch):
+        monkeypatch.setattr("auto_round.auto_scheme.delta_loss._vram_inventory_text", lambda top_k=12: "CENSUS-LINE")
+        out = _annotate_worker_oom(2, RuntimeError("CUDA out of memory. Tried to allocate 12.00 MiB"))
+        assert "CENSUS-LINE" in str(out)
+        assert "Tried to allocate 12.00 MiB" in str(out)
+
+    def test_non_oom_runtime_errors_are_not_annotated(self, monkeypatch):
+        called = {"n": 0}
+
+        def boom(top_k=12):
+            called["n"] += 1
+            return "CENSUS-LINE"
+
+        monkeypatch.setattr("auto_round.auto_scheme.delta_loss._vram_inventory_text", boom)
+        exc = RuntimeError("something else entirely")
+        try:
+            if "out of memory" not in str(exc).lower():
+                raise _annotate_worker_oom(0, exc) if False else exc
+        except RuntimeError as caught:
+            assert caught is exc
+        assert called["n"] == 0
+
+
+class TestVramReferrerTrace:
+    def test_referrer_snippet_names_container_types(self):
+        import torch
+
+        holder = {"box": [torch.zeros(2, 3)]}
+
+        def _find():
+            import gc
+
+            for obj in gc.get_objects():
+                if torch.is_tensor(obj) and tuple(obj.shape) == (2, 3):
+                    return obj
+            return None
+
+        t = _find()
+        assert t is not None
+        snippet = _tensor_referrer_snippet(t, max_depth=3)
+        assert isinstance(snippet, str)
+        assert "list" in snippet or "dict" in snippet
+
+
+class TestReferrerAttributeNaming:
+    def test_module_referrer_names_the_holding_attribute(self):
+        import torch.nn as nn
+
+        class Holder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.cache_box = []
+
+        t = torch.zeros(2, 2)
+        holder = Holder()
+        holder.cache_box.append(t)
+        snippet = _tensor_referrer_snippet(t, max_depth=3)
+        assert "Holder" in snippet
+        assert "cache_box" in snippet
+
+
+class TestReplayRetainGraph:
+    def test_int_data_type_frees_graph(self):
+        import torch.nn as nn
+
+        block = nn.Sequential(nn.Linear(4, 4))
+        block[0].data_type = "int"
+        assert _replay_retain_graph(block) is False
+
+    def test_mx_family_data_type_retains_graph(self):
+        import torch.nn as nn
+
+        block = nn.Sequential(nn.Linear(4, 4))
+        block[0].data_type = "mxfp4"
+        assert _replay_retain_graph(block) is True
+
+    def test_grads_flow_with_freed_graph(self):
+        lin = torch.nn.Linear(4, 4)
+        x = torch.randn(2, 4, requires_grad=True)
+        out = lin(x).sum()
+        torch.autograd.backward(out, retain_graph=False)
+        assert x.grad is not None
+        assert x.grad.abs().sum() > 0
+
+
+class TestScoreLinearRecompute:
+    """The scoring forward runs the linear through a custom Function that saves
+    only the input activation: the weight is re-transferred from the CPU cache
+    in backward, so the block graph never retains weight-shaped copies."""
+
+    def _make_wrapper(self):
+        layer = torch.nn.Linear(8, 6, bias=False)
+        layer.bits, layer.group_size, layer.sym = 4, 8, True
+        layer.scale_dtype = None
+        layer.data_type = "int"
+        wrapper = AutoSchemeWrapperLinear.__new__(AutoSchemeWrapperLinear)
+        torch.nn.Module.__init__(wrapper)
+        wrapper.orig_layer = layer
+        wrapper.device = "cpu"
+        wrapper.output_device = "cpu"
+        wrapper.data_type = "int"
+        wrapper.q_scale_thresh = None
+        wrapper.grad_mode = True
+        wrapper.need_weight_grad = True
+        wrapper.enable_act_quant = False
+        wrapper.enable_norm_bias_tuning = False
+        wrapper.minmax_scale_bound = (1e-4, 1e3)
+        wrapper.weight_min = None
+        wrapper.weight_max = None
+        from auto_round.wrapper import WrapperLinear
+
+        wrapper.super_qdq_func = WrapperLinear._qdq_weight.__get__(wrapper)
+        wrapper.act_qdq_func = WrapperLinear._qdq_act.__get__(wrapper)
+        wrapper.act_score = 0.0
+        wrapper.avg_act_score = 0.0
+        wrapper.act_cnt = 0.0
+        wrapper.weight_score = 0.0
+        wrapper.mix_score = 0.0
+        wrapper.max_act_value = 0
+        wrapper._score_qdq_cpu = None
+        wrapper._custom_score_forward = True
+        wrapper.orig_forward = torch.nn.functional.linear
+        wrapper.value = torch.tensor(0.0)
+        wrapper.min_scale = torch.tensor(1.0)
+        wrapper.max_scale = torch.tensor(1.0)
+
+        def _fake_quant(weight, **kwargs):
+            scale = weight.abs().amax().clamp(min=1e-4) / 7.0
+            return (weight / scale).round().clamp(-7, 7) * scale, scale, None
+
+        wrapper.weight_quant_func = _fake_quant
+        layer.weight.requires_grad = True
+        return wrapper, layer
+
+    def test_forward_matches_reference_linear(self):
+        torch.manual_seed(0)
+        wrapper, layer = self._make_wrapper()
+        with torch.no_grad():
+            layer.weight.copy_(torch.randn(6, 8) * 0.5)
+        x = torch.randn(4, 8, requires_grad=True)
+        out = wrapper.forward(x)
+        ref_w, _, _ = wrapper._qdq_weight(torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
+        ref = torch.nn.functional.linear(x, ref_w.detach())
+        assert torch.equal(out, ref)
+
+    def test_input_grads_match_reference(self):
+        torch.manual_seed(0)
+        wrapper, layer = self._make_wrapper()
+        x = torch.randn(4, 8, requires_grad=True)
+        out = wrapper.forward(x)
+        grad_out = torch.randn_like(out)
+        out.backward(grad_out)
+        ref_w = wrapper._score_qdq_cpu
+        ref_x = x.detach().clone().requires_grad_(True)
+        ref = torch.nn.functional.linear(ref_x, ref_w)
+        ref.backward(grad_out)
+        assert torch.allclose(x.grad, ref_x.grad, atol=1e-6)
+
+    def test_weight_score_accumulated_in_backward(self):
+        torch.manual_seed(0)
+        wrapper, layer = self._make_wrapper()
+        with torch.no_grad():
+            layer.weight.copy_(torch.randn(6, 8) * 0.5)
+        x = torch.randn(4, 8, requires_grad=True)
+        out = wrapper.forward(x)
+        grad_out = torch.randn_like(out)
+        out.backward(grad_out)
+        qdq_w = wrapper._score_qdq_cpu
+        grad_w = grad_out.t() @ x.detach()
+        expected = (grad_w.abs() * (layer.weight - qdq_w).abs()).sum().item()
+        assert wrapper.weight_score > 0
+        assert abs(wrapper.weight_score - expected) / expected < 1e-5
+
+    def test_weight_refetched_in_backward_and_no_weight_grad(self):
+        wrapper, layer = self._make_wrapper()
+        x = torch.randn(4, 8, requires_grad=True)
+        wrapper.forward(x).sum().backward()
+        assert layer.weight.grad is None
+        assert wrapper.weight_score > 0
+
+    def test_capture_mode_uses_base_forward(self):
+        torch.manual_seed(1)
+        wrapper, layer = self._make_wrapper()
+        wrapper.grad_mode = False
+        x = torch.randn(4, 8)
+        out = wrapper.forward(x)
+        assert not out.requires_grad
+        assert wrapper._score_qdq_cpu is None
+
+
+def test_parallel_scheme_scoring_min_uncached_overrides_single_scheme():
+    """A single uncached scheme can still be scored through a worker when the
+    serial full-model pass cannot run (weights spanning several GPUs)."""
+    from auto_round.auto_scheme.delta_loss import _can_parallel_scheme_scoring
+
+    # default keeps the >=2 heuristic: one scheme stays serial
+    assert not _can_parallel_scheme_scoring(True, "local-model", 1, 1, False, True, False)
+    # an explicit lower floor admits the single-scheme worker run
+    assert _can_parallel_scheme_scoring(True, "local-model", 1, 1, False, True, False, min_uncached=1)
+
+
+def test_serial_scoring_device_safe():
+    """Serial full-model scoring is device-safe only on single-GPU/CPU models;
+    any multi-GPU weight span is unsafe regardless of leftover hook markers
+    (partial dispatch / manual placement does not shuttle activations)."""
+    import torch
+    import torch.nn as nn
+
+    from auto_round.auto_scheme.delta_loss import _serial_scoring_device_safe, _weights_span_multiple_gpus
+
+    class Tiny(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(4, 4)
+
+    assert _serial_scoring_device_safe(Tiny()) is True
+
+    # a meta-skeleton (disk-stream) model has all params on meta - the live
+    # scan sees nothing; the placement plan in hf_device_map is what the
+    # serial streaming path materializes blocks onto
+    class MetaSkeleton(Tiny):
+        hf_device_map = {"": "cuda:0", "model.layers.1": "cuda:3"}
+
+    assert _serial_scoring_device_safe(MetaSkeleton()) is False
+
+    class SingleDeviceMap(Tiny):
+        hf_device_map = {"": "cuda:1"}
+
+    assert _serial_scoring_device_safe(SingleDeviceMap()) is True
+
+    # a streamed (meta-skeleton) model with several visible CUDA devices is
+    # serial-unsafe: the in-process streaming pass is only validated with a
+    # single visible GPU; workers pin one GPU each
+    class StreamedSkeleton(Tiny):
+        _disk_stream_index = object()
+
+    assert _serial_scoring_device_safe(StreamedSkeleton(), visible_cuda_devices=["cuda:0", "cuda:1"]) is False
+    assert _serial_scoring_device_safe(StreamedSkeleton(), visible_cuda_devices=["cuda:0"]) is True
+    assert _serial_scoring_device_safe(Tiny(), visible_cuda_devices=["cuda:0", "cuda:1"]) is True
+
+    assert _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:0")]) is False
+    assert _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:3")]) is True
+    assert _weights_span_multiple_gpus([torch.device("cpu"), torch.device("cpu")]) is False
+
+    # a multi-GPU span is unsafe even when an _hf_hook marker is present:
+    # the marker alone does not guarantee activation transfer under the
+    # scoring wrappers
+    class FakeHooked(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self._hf_hook = object()
+
+    assert (
+        _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:1")]) is True
+    )  # the unsafe case _serial_scoring_device_safe keys on

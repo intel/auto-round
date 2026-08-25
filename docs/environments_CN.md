@@ -151,6 +151,16 @@ export AR_AUTO_SCHEME_BATCH_SIZE=1
 export AR_AUTO_SCHEME_SEQLEN=1024
 ```
 
+### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
+- **描述**：将并行评分失败变为硬错误，而不是回退到串行评分。当串行路径已知无法运行（或耗时会是 worker 数量的倍数）时非常有用：已完成的方案和批次会持久化在单方案缓存中，重新运行时只补打失败的部分。
+- **默认值**：未设置时，并行评分失败会回退到串行评分
+- **有效值**：`1`、`true`、`yes`（不区分大小写）
+- **用法**：设置该变量以在并行评分出错时快速失败
+
+```bash
+export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **描述**：存放可持久复用的 AutoScheme 单方案评分 JSON 文件。该目录独立于用于临时工作数据的 `AR_WORK_SPACE`。
 - **默认值**：`~/.cache/auto_round`
@@ -169,6 +179,26 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_SCHEME_MEM_INVENTORY
+- **描述**：启用后，AutoScheme 流式评分会在 block 边界打印当前 CUDA tensor 清单（`[mem-inv]` 行）——按 (shape, dtype) 分组、按大小降序——便于发现未释放的模块权重或被保留的计算图。与该变量无关，打分 worker 的 CUDA OOM 错误始终会附带更详细的清单（活动 tensor、持有它们的容器以及出错算子的 traceback）。
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用；其他值表示禁用
+- **用法**：排查 AutoScheme 打分期间显存增长问题时启用
+
+```bash
+export AR_SCHEME_MEM_INVENTORY=1
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **描述**：控制 `NVFP4E5M3QuantLinear` 是否在首次前向后缓存解量化得到的高精度权重，而不是每次调用都从打包的 FP4 权重重新解量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`、`"on"`（不区分大小写）表示启用缓存；其他值表示禁用缓存
+- **用途**：当重复推理吞吐比内存占用更重要时可启用。当前实现会在缓存高精度权重后释放 `weight_packed` 和 `weight_scale`，因此稳态内存占用会增大，且之后无法再切回打包存储。
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 ```
 
 ### AR_DISK_STREAM_MODEL

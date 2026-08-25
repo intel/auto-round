@@ -99,3 +99,30 @@ class TestDiskStreamUtilRoundTrip:
         for _, tensor in list(block.named_parameters()):
             assert str(tensor.device) == "meta"
         assert total_resident_bytes(block) == 0
+
+
+class TestDiskStreamWorkerModelPrep:
+    def test_disk_stream_build_unfuses_moe_modules(self, monkeypatch):
+        """The disk-stream worker build must structurally unfuse fused MoE experts
+        (the regular load pipeline does this via custom replacements; the
+        meta-skeleton build skips them, leaving per-expert quant layers
+        unresolvable)."""
+        import auto_round.auto_scheme.delta_loss as dl
+
+        seen = {}
+        sentinel_model, sentinel_tokenizer, sentinel_index = object(), object(), object()
+
+        def _fake_build_meta_model(model_name):
+            return sentinel_model, sentinel_tokenizer, sentinel_index
+
+        def _fake_handle_moe(model):
+            seen["model"] = model
+            return []
+
+        monkeypatch.setattr("auto_round.utils.disk_stream_util.build_meta_model", _fake_build_meta_model)
+        monkeypatch.setattr("auto_round.modeling.fused_moe.replace_modules._handle_moe_modules", _fake_handle_moe)
+
+        model, _tokenizer, _index = dl._load_disk_stream_scheme_worker_model("dummy-model")
+
+        assert model is sentinel_model
+        assert seen["model"] is sentinel_model
