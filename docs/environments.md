@@ -161,6 +161,16 @@ export AR_AUTO_SCHEME_BATCH_SIZE=1
 export AR_AUTO_SCHEME_SEQLEN=1024
 ```
 
+### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
+- **Description**: Turn a parallel-scoring failure into a hard error instead of falling back to serial scoring. Useful when the serial pass is known to be unable to run (or would take workers-count times longer): completed schemes and batches are persisted in the per-scheme cache, so a rerun scores only the failed parts.
+- **Default**: unset -> parallel scoring failure falls back to serial
+- **Valid Values**: `1`, `true`, `yes`
+- **Usage**: Set this to fail fast on parallel scoring errors
+
+```bash
+export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **Description**: Stores persistent per-scheme AutoScheme scoring JSON files. This directory is independent of `AR_WORK_SPACE`, which is reserved for temporary working data.
 - **Default**: `~/.cache/auto_round`
@@ -179,6 +189,16 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_SCHEME_MEM_INVENTORY
+- **Description**: When enabled, AutoScheme streaming scoring prints a live CUDA-tensor census (`[mem-inv]` lines) at block boundaries -- tensors grouped by (shape, dtype), largest first -- which makes unreleased module weights or retained autograd graphs visible as they accumulate. Independently of this variable, a richer census (live tensors, the retaining containers, and the failing op's traceback) is always attached to scoring-worker CUDA OOM errors.
+- **Default**: `False`
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
+- **Usage**: Enable when investigating VRAM growth during AutoScheme scoring
+
+```bash
+export AR_SCHEME_MEM_INVENTORY=1
 ```
 
 ### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
