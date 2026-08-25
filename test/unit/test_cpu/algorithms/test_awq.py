@@ -940,6 +940,34 @@ class TestAWQUseV2ScaleSearch:
         compressor = self._make_compressor(block)
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
 
+    def test_qdq_configure_resolves_opt_rtn_policy_and_legacy_shapes(self):
+        """QDQ wiring covers AWQ-owned policy plus legacy compressor-shaped callers."""
+        from auto_round.algorithms.composer import AlgorithmComposer
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        composer = AlgorithmComposer([AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)])
+        awq = composer.preprocessors[0]
+        awq._qdq_tool.configure(composer)
+
+        assert awq._qdq_tool.disable_opt_rtn is True
+
+        composer = AlgorithmComposer([AWQConfig(n_grid=1, enable_opt_rtn=True), RTNConfig(disable_opt_rtn=True)])
+        awq = composer.preprocessors[0]
+        awq._qdq_tool.configure(composer, awq_config=awq.config)
+
+        assert awq._qdq_tool.disable_opt_rtn is False
+
+        q = self._awq_transform()
+        compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
+        q._qdq_tool.configure(compressor)
+
+        assert q._qdq_tool.disable_opt_rtn is True
+
+        compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
+
+        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
+
     def test_init_scale_dispatch_by_data_type(self):
         """``search_optimized_init_scale`` injects only for sym int/mx/nv."""
         import torch
