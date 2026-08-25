@@ -7,7 +7,7 @@
 </p>
 
 
-<h3> Advanced Quantization Algorithm for LLMs</h3>
+<h3> Advanced Quantization Toolkit for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.14.0-green)](https://github.com/intel/auto-round/releases)
@@ -36,7 +36,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
-* [2026/08] We experimentally support **algorithm composition**, e.g., `--algs awq,signround`[./docs/awq_details.md](./docs/awq_details.md) and `--algs hadamard,awq,signround`[./docs/rotation_details.md](./docs/rotation_details.md), to improve accuracy, especially in scenarios with activation quantization.
+* [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.
 
 * [2026/08] AutoScheme WOQ deployment on vLLM is experimentally restored, thanks to Humming Kernel: [*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890), [*Example Model*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound). Note: shared layers must be configured per vLLM's fusion patterns.
 
