@@ -1,6 +1,6 @@
 # Algorithm Combinations
 
-AutoRound can be combined with several weight/activation transform algorithms
+AutoRound can be combined with several algorithms
 before (or during) quantization. This page summarizes each combination and rates
 it along two dimensions:
 
