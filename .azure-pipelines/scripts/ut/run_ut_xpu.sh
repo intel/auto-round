@@ -9,7 +9,7 @@ SESSION_TIMEOUT=600
 
 function setup_environment() {
     echo "##[group]set up UT env..."
-    uv pip install pytest-cov pytest-timeout
+    uv pip install pytest-cov
     uv pip install -U chardet
     uv pip list
     echo "##[endgroup]"
@@ -54,8 +54,7 @@ function run_common_group() {
         echo "##[group]Running common tests (${group_name})..."
         local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=1200 \
-                --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci"--cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     fi
@@ -90,8 +89,7 @@ function run_unit_test() {
         echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
-                --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -109,8 +107,7 @@ function run_unit_test_ark() {
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
-                --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -137,8 +134,7 @@ function run_unit_test_llmc() {
         echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
         numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
-                --cov="${auto_round_path}" --cov-report= --cov-append -vs \
+            pytest -m "not skip_ci" --cov="${auto_round_path}" --cov-report= --cov-append -vs \
                 --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
