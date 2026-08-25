@@ -5,6 +5,7 @@ from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import BaseOrchestrator
+from auto_round.logger import logger
 from auto_round.utils.device_manager import default_enable_torch_compile
 
 
@@ -62,6 +63,13 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
 
 def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path):
     monkeypatch.setattr("auto_round.compressors.base.sys.platform", "win32")
+    # AutoRound's logger normally uses a private handler with propagation
+    # disabled; enable propagation so pytest's caplog fixture can observe it.
+    monkeypatch.setattr(logger, "propagate", True)
+    # The production warning uses warning_once and may have been emitted by an
+    # earlier test in the same pytest process. Reset its cache so this test is
+    # independent of collection order and can assert the warning content.
+    logger.warning_once.cache_clear()
 
     with caplog.at_level(logging.WARNING):
         ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
@@ -73,6 +81,7 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         assert "cl.exe" in caplog.text
 
     caplog.clear()
+    logger.warning_once.cache_clear()
     with caplog.at_level(logging.WARNING):
         ar = AutoRound(
             model=tiny_opt_model_path,

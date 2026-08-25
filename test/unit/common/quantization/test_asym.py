@@ -80,7 +80,11 @@ class TestAutoRoundAsym:
     @pytest.mark.parametrize("format", _FORMATS)
     def test_asym_format_rtn(self, tiny_opt_model_path, format, device):
         """RTN-quantized asym model can be saved in each export format and reloaded for inference."""
-        if format == "auto_round:gptqmodel" and str(device).startswith("cuda"):
+        if str(device).startswith("cuda") and format in {
+            "auto_round",
+            "auto_round:auto_gptq",
+            "auto_round:gptqmodel",
+        }:
             pytest.skip("GPTQModel ExLlamaV2 CUDA path is covered by dedicated backend tests")
         bits, group_size, sym = 4, 128, False
         ar = AutoRound(
