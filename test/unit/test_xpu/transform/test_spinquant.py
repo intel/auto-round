@@ -33,7 +33,7 @@ from auto_round.algorithms.transforms import apply_rotation
 from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import remove_spinquant_hooks_from_model
 
-from ...helpers import generate_prompt
+from test.helpers import generate_prompt
 
 DEVICE = "xpu"
 

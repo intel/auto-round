@@ -29,7 +29,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from auto_round import AutoRound
 from auto_round.algorithms.transforms import apply_rotation, normalize_rotation_config
 
-from ...helpers import generate_prompt
+from test.helpers import generate_prompt
 
 DEVICE = "xpu"
 
