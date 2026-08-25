@@ -3056,13 +3056,29 @@ def _gen_layer_config(
                 # forward, and each worker owns its private copy. A shared-GPU
                 # worker then gets the card's full budget.
                 _moved = 0
+                _parked = []
                 for _p in model.parameters():
                     if _p.device.type == "cuda":
+                        _parked.append((_p, _p.device))
                         _p.data = _p.data.to("cpu")
                         _moved += 1
                 for _b in model.buffers():
                     if _b.device.type == "cuda":
+                        _parked.append((_b, _b.device))
                         _b.data = _b.data.to("cpu")
+
+                def _restore_parked_tensors():
+                    """Move tensors parked before spawning back to their devices.
+
+                    The serial fallback and the post-parallel phases run
+                    full-model forwards; leaving non-block params on CPU while
+                    ``model.device`` still reports the GPU crashes the first
+                    non-block module on a device mismatch (e.g. final norm)."""
+                    for _tensor, _device in _parked:
+                        if _tensor.device.type == "cpu" and _device.type != "cpu":
+                            _tensor.data = _tensor.data.to(_device)
+                    _parked.clear()
+
                 if _moved:
                     logger.info("AutoScheme: parked %d parent-side GPU tensors on CPU before spawning workers", _moved)
                     clear_memory()
@@ -3196,8 +3212,10 @@ def _gen_layer_config(
                     )
                 parallel_done = True
                 logger.info("AutoScheme: parallel scoring completed.")
+                _restore_parked_tensors()
                 post_scoring_started = time.perf_counter()
             except Exception as parallel_error:  # noqa: BLE001
+                _restore_parked_tensors()
                 if _parallel_scoring_must_raise(parallel_error):
                     logger.error(
                         "AutoScheme: keeping the parallel scoring failure as a hard error "

@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
 
+import pytest
+
 from auto_round.utils.disk_stream_util import (
     build_meta_model,
     free_module,
@@ -120,6 +122,20 @@ class TestBuildMetaModel:
         # Decoder blocks must still be untouched (meta).
         for name, tensor in model.model.decoder.layers[0].named_parameters():
             assert str(tensor.device) == "meta", f"{name} was unexpectedly materialized"
+
+    def test_tied_lm_head_shares_the_embedding_tensor(self, tiny_opt_model_path):
+        """A tied lm_head.weight has no checkpoint tensor of its own; the meta
+        skeleton must tie it to embed_tokens.weight so materializing the
+        embedding makes both real (otherwise it stays a separate meta tensor
+        and the first device move crashes)."""
+        model, _tokenizer, index = build_meta_model(tiny_opt_model_path)
+        if not getattr(model.config, "tie_word_embeddings", False):
+            pytest.skip("fixture model does not tie word embeddings")
+        assert model.lm_head.weight is model.model.decoder.embed_tokens.weight
+
+        block_names = ["model.decoder.layers.0", "model.decoder.layers.1"]
+        materialize_non_block_params(model, block_names, index, device="cpu")
+        assert str(model.lm_head.weight.device) != "meta", "tied lm_head stayed on meta"
 
 
 class TestCheckpointNameAliases:

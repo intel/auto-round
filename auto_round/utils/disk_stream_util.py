@@ -269,6 +269,14 @@ def build_meta_model(model_name: str, trust_remote_code: bool = True):
             model = model_cls(config)
         else:
             model = AutoModelForCausalLM.from_config(config, trust_remote_code=trust_remote_code)
+    # Constructing from config does not tie weights (that happens in
+    # from_pretrained), so tied params such as lm_head.weight -- absent from
+    # the checkpoint by design -- stay separate meta tensors and later crash
+    # with "Cannot copy out of meta tensor" on the first device move. Tie
+    # here: the shared tensor materializes once from the checkpoint side it
+    # is stored under and both names become real together.
+    if getattr(model.config, "tie_word_embeddings", False):
+        model.tie_weights()
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
     index = SafetensorsIndex(model_name)
     return model, tokenizer, index
@@ -307,6 +315,12 @@ def materialize_non_block_params(
         # is required so the checkpoint's real dtype wins over whatever the
         # meta skeleton happened to declare.
         set_module_tensor_to_device(model, name, device, value=values[full_name], dtype=values[full_name].dtype)
+    # set_module_tensor_to_device replaces parameter objects, which breaks
+    # weight tying: a tied lm_head still references the old (meta) parameter
+    # while the embedding points at the new real one. Re-tie so every tied
+    # name follows its checkpoint-backed source tensor.
+    if getattr(getattr(model, "config", None), "tie_word_embeddings", False):
+        model.tie_weights()
 
 
 class stream_block_forward:
