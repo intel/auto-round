@@ -123,7 +123,6 @@ class TestAWQMoE:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(120)
     def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
         """AWQ mapping resolution works on MoE model."""
         from auto_round.algorithms.transforms.awq.mappings import resolve_mappings

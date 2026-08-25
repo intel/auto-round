@@ -2603,7 +2603,7 @@ def _gen_layer_config(
                         _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
                     total_loss = _record_scheme_scores(index, per_op_scores)
                     logger.info(
-                        "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.6f)",
+                        "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.4e)",
                         index + 1,
                         len(schemes),
                         total_loss,
@@ -2701,7 +2701,7 @@ def _gen_layer_config(
 
                 total_loss = _record_scheme_scores(index, per_op_scores)
                 logger.info(
-                    "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.6f)",
+                    "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.4e)",
                     index + 1,
                     len(schemes),
                     total_loss,

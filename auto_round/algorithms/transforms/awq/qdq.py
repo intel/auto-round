@@ -62,16 +62,32 @@ class QDQTool:
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
 
-    # # ── runtime wiring ────────────────────────────────────────────────────────
-    def configure(self, composer) -> None:
+    # ── runtime wiring ────────────────────────────────────────────────────────
+    @staticmethod
+    def _block_quantizer_config(block_quantizer_or_composer):
+        """Return the terminal block-quantizer config from new or legacy hosts."""
+        block_quantizer = getattr(block_quantizer_or_composer, "block_quantizer", block_quantizer_or_composer)
+        config = getattr(block_quantizer, "config", None)
+        if config is not None:
+            return config
+        return getattr(block_quantizer_or_composer, "quantize_config", None)
+
+    def configure(self, composer, awq_config=None) -> None:
         """Derive QDQ behaviour from the run's block quantizer."""
-        self.disable_opt_rtn = bool(getattr(composer.block_quantizer, "disable_opt_rtn", False))
-        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer.block_quantizer)
+        block_config = self._block_quantizer_config(composer)
+        awq_disable_opt_rtn = getattr(awq_config, "disable_opt_rtn", None)
+        if awq_disable_opt_rtn is None:
+            awq_disable_opt_rtn = getattr(block_config, "disable_opt_rtn", False)
+        self.disable_opt_rtn = bool(awq_disable_opt_rtn)
+        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer)
 
     @staticmethod
-    def _block_quantizer_is_signroundv2(quantizer) -> bool:
+    def _block_quantizer_is_signroundv2(block_quantizer_or_composer) -> bool:
         """Return ``True`` if the terminal block quantizer is SignRoundV2."""
-        return quantizer.__class__.__name__ == "SignRoundV2Quantizer"
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+
+        config = QDQTool._block_quantizer_config(block_quantizer_or_composer)
+        return isinstance(config, SignRoundV2Config)
 
     # ── per-layer scheme resolution + dispatch ────────────────────────────────
     def _layer_config_for(self, layer: torch.nn.Module) -> dict:
