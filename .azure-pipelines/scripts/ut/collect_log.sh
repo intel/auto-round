@@ -7,6 +7,12 @@ cd "${BUILD_SOURCESDIRECTORY}/log_dir"
 
 echo "collect coverage for PR branch"
 mkdir -p coverage_PR
+# Every matrix part may legitimately select no test (change-based filtering),
+# in which case there is nothing to combine.
+if ! compgen -G "ut-*/.coverage.*" > /dev/null; then
+    echo "no coverage data found, skip coverage collection."
+    exit 0
+fi
 cp ut-*/.coverage.* ./coverage_PR/
 cd coverage_PR
 coverage combine --keep --rcfile=${COVERAGE_RCFILE}

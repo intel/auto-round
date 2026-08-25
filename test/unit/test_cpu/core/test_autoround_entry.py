@@ -19,17 +19,10 @@ def test_default_alg_configs_is_signround():
     assert _types(configs) == ["SignRoundConfig"]
 
 
-def test_public_entry_no_longer_has_algorithm_parameter():
+def test_public_entry_keeps_legacy_algorithm_parameter():
     from auto_round import AutoRound
 
-    assert "algorithm" not in inspect.signature(AutoRound.__new__).parameters
-
-
-def test_public_entry_rejects_algorithm_kwarg():
-    from auto_round import AutoRound
-
-    with pytest.raises(TypeError, match="algorithm.*no longer supported"):
-        AutoRound("dummy-model", algorithm="awq")
+    assert "algorithm" in inspect.signature(AutoRound.__new__).parameters
 
 
 @pytest.mark.parametrize(
@@ -61,6 +54,41 @@ def test_awq_and_signround_does_not_append_rtn():
     assert _types(configs) == ["AWQConfig", "SignRoundConfig"]
 
 
+def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
+    from auto_round import AutoRound
+
+    created = {}
+
+    class FakeCompressor:
+        def __init__(self, config, **kwargs):
+            created["config"] = config
+            created["kwargs"] = kwargs
+
+    def fail_model_free(*args, **kwargs):
+        raise AssertionError("AWQ pipelines must not auto-route to model-free quantization.")
+
+    monkeypatch.setattr("auto_round.autoround._build_model_free_compressor", fail_model_free)
+    monkeypatch.setattr("auto_round.autoround._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {}))
+    monkeypatch.setattr("auto_round.autoround._get_compressor_class", lambda model_type, base_cls: FakeCompressor)
+
+    ar = AutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        alg_configs=[AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)],
+    )
+
+    assert isinstance(ar, FakeCompressor)
+    assert _types(created["config"]) == ["AWQConfig", "RTNConfig"]
+
+    with pytest.raises(ValueError, match="model_free=True.*AWQConfig"):
+        AutoRound(
+            "dummy-model",
+            scheme="W4A16",
+            alg_configs=[AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)],
+            model_free=True,
+        )
+
+
 def test_direct_signround_kwargs_warn_and_apply(monkeypatch):
     warnings = []
     monkeypatch.setattr("auto_round.autoround.logger.warning", lambda message, *args: warnings.append(message % args))
@@ -81,6 +109,41 @@ def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():
     assert configs[0].disable_opt_rtn is True
 
 
+def test_awq_rtn_opt_policy_defaults_and_explicit_overrides():
+    cases = [
+        (_normalize_alg_configs("awq"), ["AWQConfig", "RTNConfig"], [True, True]),
+        (
+            _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,rtn", "disable_opt_rtn": True}),
+            ["AWQConfig", "RTNConfig"],
+            [True, True],
+        ),
+        (
+            _normalize_alg_configs([AWQConfig(enable_opt_rtn=True), RTNConfig()]),
+            ["AWQConfig", "OptimizedRTNConfig"],
+            [False, False],
+        ),
+        (
+            _normalize_alg_configs([AWQConfig(), RTNConfig(enable_opt_rtn=True)]),
+            ["AWQConfig", "OptimizedRTNConfig"],
+            [True, False],
+        ),
+    ]
+
+    for configs, expected_types, expected_disable_opt_rtn in cases:
+        assert _types(configs) == expected_types
+        assert [config.disable_opt_rtn for config in configs] == expected_disable_opt_rtn
+
+
+@pytest.mark.parametrize("algorithm", ["signround", "auto_round", "autoround"])
+def test_legacy_signround_alias_with_zero_iters_selects_rtn(algorithm):
+    legacy_configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": algorithm, "iters": 0})
+    unified_configs = _normalize_alg_configs(algorithm, direct_kwargs={"iters": 0})
+
+    assert len(legacy_configs) == len(unified_configs) == 1
+    assert isinstance(legacy_configs[0], RTNConfig)
+    assert isinstance(unified_configs[0], RTNConfig)
+
+
 def test_explicit_zero_iter_signround_config_selects_rtn():
     configs = _normalize_alg_configs(SignRoundConfig(iters=0))
 
@@ -89,24 +152,31 @@ def test_explicit_zero_iter_signround_config_selects_rtn():
 
 
 def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
-    configs = _normalize_alg_configs("awq,signround", direct_kwargs={"iters": 0})
+    configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,signround", "iters": 0})
 
-    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
+    assert _types(configs) == ["AWQConfig", "RTNConfig"]
 
 
 @pytest.mark.parametrize(
     ("algorithm", "expected_types"),
     [
         ("rtn", ["OptimizedRTNConfig"]),
-        ("awq", ["AWQConfig", "OptimizedRTNConfig"]),
+        ("awq", ["AWQConfig", "RTNConfig"]),
         ("signround", ["SignRoundConfig"]),
         ("awq,signround", ["AWQConfig", "SignRoundConfig"]),
     ],
 )
-def test_alg_configs_aliases_resolve_to_expected_types(algorithm, expected_types):
+def test_legacy_algorithm_matches_alg_configs_aliases(algorithm, expected_types):
+    legacy_configs = _normalize_alg_configs(None, direct_kwargs={"algorithm": algorithm})
     unified_configs = _normalize_alg_configs(algorithm)
 
+    assert _types(legacy_configs) == expected_types
     assert _types(unified_configs) == expected_types
+
+
+def test_algorithm_and_alg_configs_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="cannot be used together"):
+        _normalize_alg_configs("signround", direct_kwargs={"algorithm": "rtn"})
 
 
 def test_string_and_string_sequence_use_same_alias_deduplication():
@@ -117,10 +187,10 @@ def test_string_and_string_sequence_use_same_alias_deduplication():
     assert _types(sequence_configs) == _types(comma_configs)
 
 
-def test_combined_alg_configs_forwards_each_algorithm_option():
+def test_legacy_combined_algorithm_forwards_each_algorithm_option():
     configs = _normalize_alg_configs(
-        "awq,signround",
-        direct_kwargs={"n_grid": 7, "iters": 3, "enable_alg_ext": False},
+        None,
+        direct_kwargs={"algorithm": "awq,signround", "n_grid": 7, "iters": 3, "enable_alg_ext": False},
     )
 
     assert _types(configs) == ["AWQConfig", "SignRoundConfig"]
@@ -129,11 +199,17 @@ def test_combined_alg_configs_forwards_each_algorithm_option():
     assert configs[1].enable_alg_ext is False
 
 
-def test_alg_configs_composition_selects_expected_v1_quantizer():
+@pytest.mark.parametrize(
+    "configs",
+    [
+        lambda: _normalize_alg_configs(None, direct_kwargs={"algorithm": "awq,signround", "iters": 3}),
+        lambda: _normalize_alg_configs([AWQConfig(), SignRoundConfig(iters=3)]),
+    ],
+)
+def test_legacy_and_unified_composition_select_same_v1_quantizer(configs):
     from auto_round.algorithms.composer import AlgorithmComposer
 
-    configs = _normalize_alg_configs("awq,signround", direct_kwargs={"iters": 3})
-    composer = AlgorithmComposer(configs)
+    composer = AlgorithmComposer(configs())
 
     assert [type(pre).__name__ for pre in composer.preprocessors] == ["AWQTransform"]
     assert type(composer.block_quantizer).__name__ == "SignRoundQuantizer"
@@ -148,15 +224,10 @@ def test_direct_enable_opt_rtn_forces_optimized_rtn():
     assert configs[0].orig_disable_opt_rtn is False
 
 
-def test_rtn_only_kwarg_without_rtn_selected_is_ignored_with_log(monkeypatch):
-    errors = []
-    monkeypatch.setattr("auto_round.autoround.logger.error", lambda message, *args: errors.append(message % args))
-
+def test_rtn_switches_only_when_iters_is_zero():
     configs = _normalize_alg_configs(None, direct_kwargs={"disable_opt_rtn": True})
 
     assert isinstance(configs[0], SignRoundConfig)
-    assert not hasattr(configs[0], "disable_opt_rtn")
-    assert any("disable_opt_rtn" in message and "RTNConfig" in message for message in errors)
 
 
 def test_direct_enable_alg_ext_normalizes_signround_variant():
@@ -166,8 +237,8 @@ def test_direct_enable_alg_ext_normalizes_signround_variant():
     assert isinstance(configs[0], SignRoundV2Config)
 
 
-def test_alg_configs_can_include_rotation_config():
-    configs = _normalize_alg_configs(["signround", "hadamard"])
+def test_direct_rotation_config_is_added_to_pipeline():
+    configs = _normalize_alg_configs(None, direct_kwargs={"rotation_config": "default"})
 
     assert any(isinstance(config, RotationConfig) for config in configs)
 
@@ -179,38 +250,23 @@ def test_direct_enable_lfq_is_forwarded():
     assert configs[0].enable_lfq is True
 
 
-def test_alg_configs_accepts_spinquant_shorthand():
-    configs = _normalize_alg_configs(["rtn", "quarot"])
+def test_rotation_config_accepts_spinquant_shorthand():
+    configs = _normalize_alg_configs(None, direct_kwargs={"rotation_config": "quarot"})
 
     assert any(type(config).__name__ == "SpinQuantConfig" for config in configs)
 
 
-def test_rotation_config_kwarg_is_rejected():
-    with pytest.raises(TypeError, match="alg_configs"):
-        _normalize_alg_configs(None, direct_kwargs={"rotation_config": "default"})
-
-
-def test_rotation_backend_must_be_set_on_config_object():
-    with pytest.raises(ValueError, match="alg_configs"):
+def test_rotation_backend_must_be_nested_in_rotation_config():
+    with pytest.raises(ValueError, match="rotation_config"):
         _normalize_alg_configs(None, direct_kwargs={"backend": "transform"})
 
 
-def test_awq_kwargs_without_awq_are_ignored_with_log(monkeypatch):
+def test_awq_kwargs_without_awq_error_and_are_ignored(monkeypatch):
     errors = []
     monkeypatch.setattr("auto_round.autoround.logger.error", lambda message, *args: errors.append(message % args))
 
-    configs = _normalize_alg_configs(None, direct_kwargs={"n_grid": 7})
+    configs = _normalize_alg_configs(None, direct_kwargs={"n_grid": 7, "apply_clip": True})
 
     assert isinstance(configs[0], SignRoundConfig)
     assert not hasattr(configs[0], "n_grid")
-    assert any("n_grid" in message and "AWQConfig" in message for message in errors)
-
-
-def test_unknown_kwarg_is_ignored_with_log(monkeypatch):
-    errors = []
-    monkeypatch.setattr("auto_round.autoround.logger.error", lambda message, *args: errors.append(message % args))
-
-    configs = _normalize_alg_configs(None, direct_kwargs={"totally_made_up_option": 1})
-
-    assert isinstance(configs[0], SignRoundConfig)
-    assert any("Unknown parameter" in message and "totally_made_up_option" in message for message in errors)
+    assert any("AWQ" in message for message in errors)

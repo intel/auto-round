@@ -1,10 +1,12 @@
 """Fast unit tests for algorithm registry and bundle construction."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from auto_round import AutoRound as NewAutoRound
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer, _can_compile_block_forward
+from auto_round.algorithms.composer import AlgorithmComposer, _has_nvfp4_layer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -34,9 +36,14 @@ class CompileCompatibleRotation:
         return True
 
 
-class CompileCompatibleQuantizer:
-    def can_compile_block_forward(self):
-        return True
+def _compile_orchestrator(enable_torch_compile=True, rotation_configs=()):
+    return SimpleNamespace(
+        model_context=None,
+        compress_context=SimpleNamespace(enable_torch_compile=enable_torch_compile),
+        rotation_configs=rotation_configs,
+        data_type="int",
+        layer_config={},
+    )
 
 
 def test_split_awq_plus_rtn():
@@ -62,12 +69,53 @@ def test_pipeline_multiple_block_quantizers_rejected():
 
 
 def test_hadamard_disables_only_block_forward_compile():
-    quantizer = CompileCompatibleQuantizer()
-    hadamard = RotationConfig()
+    hadamard = AlgorithmComposer([SignRoundConfig()], _compile_orchestrator(rotation_configs=(RotationConfig(),)))
+    assert not hadamard.block_forward.enable_torch_compile
 
-    assert not _can_compile_block_forward(quantizer, [hadamard], user_enabled=True)
-    assert _can_compile_block_forward(quantizer, [CompileCompatibleRotation()], user_enabled=True)
-    assert not _can_compile_block_forward(quantizer, [], user_enabled=False)
+    compatible = AlgorithmComposer(
+        [SignRoundConfig()], _compile_orchestrator(rotation_configs=(CompileCompatibleRotation(),))
+    )
+    assert compatible.block_forward.enable_torch_compile
+
+    disabled = AlgorithmComposer([SignRoundConfig()], _compile_orchestrator(enable_torch_compile=False))
+    assert not disabled.block_forward.enable_torch_compile
+
+
+def test_awq_disables_block_forward_compile():
+    pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()], _compile_orchestrator())
+
+    assert not pipeline.block_forward.enable_torch_compile
+
+
+def test_detect_nvfp4_from_layer_config_scheme_override():
+    orchestrator = SimpleNamespace(
+        data_type="mx_fp",
+        layer_config={"mlp.experts": {"scheme": "NVFP4"}},
+    )
+    assert _has_nvfp4_layer(orchestrator)
+
+
+def test_detect_nvfp4_from_layer_config_data_type_override():
+    orchestrator = SimpleNamespace(
+        data_type="mx_fp",
+        layer_config={"mlp.experts": {"data_type": "nv_fp"}},
+    )
+    assert _has_nvfp4_layer(orchestrator)
+
+
+def test_needs_calibration_data_when_layer_config_overrides_to_nvfp4():
+    class _DummyCompressor:
+        _needs_calibration_data = Compressor._needs_calibration_data
+        _layer_config_needs_calibration = Compressor._layer_config_needs_calibration
+
+    compressor = _DummyCompressor()
+    compressor._alg_configs = []
+    compressor.scheme = "MXFP8"
+    compressor.layer_config = {"mlp.experts": {"scheme": "NVFP4"}}
+    compressor.static_kv_dtype = None
+    compressor.static_attention_dtype = None
+
+    assert compressor._needs_calibration_data() is True
 
 
 def test_registry_builtin_aliases_and_unknown():

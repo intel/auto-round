@@ -13,6 +13,11 @@ import math
 import pytest
 import torch
 
+cpuinfo = pytest.importorskip("cpuinfo")
+CPU_FLAGS = set(cpuinfo.get_cpu_info().get("flags", []))
+if "amx_bf16" not in CPU_FLAGS:
+    pytest.skip("ARK mixed BestLA SDPA tests require CPU flag amx_bf16", allow_module_level=True)
+
 auto_round_kernel = pytest.importorskip(
     "auto_round_kernel", reason="compiled ARK extension not built in this environment"
 )

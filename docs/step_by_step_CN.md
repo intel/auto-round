@@ -28,6 +28,7 @@
     - [AutoScheme 中的超参数](#autoscheme-超参数说明)
   + [OPT RTN 模式](#opt-rtn-模式)
   + [AWQ 算法-实验性功能](#awq-算法)
+  + [SVDQuant 算法-实验性功能](#svdquant-算法)
   + [免模型架构量化模式](#免模型架构量化模式)
   + [GGUF 格式](#gguf-格式量化)
   + [量化成本](#量化成本)
@@ -35,7 +36,7 @@
     - [lm_head 量化中开启多 GPU 标定](#lm_head-量化中开启多-gpu-标定)
     - [手动配置设备映射](#手动配置设备映射)
   + [超参数调整](#超参数调整)
-  + [旋转（Rotation）（实验性）](#旋转rotation实验性)
+  + [旋转（Rotation）（研究性）](#旋转rotation研究性)
 * [4 推理部署](#4-推理部署)
   + [CPU](#cpu)
   + [英特尔 GPU](#英特尔-gpu)
@@ -157,16 +158,16 @@ AutoRound 支持多种量化配置：
 
 > 灰色背景的 schemes 表示它没有专门优化的内核，或只有效率极低的参考内核。
 
-| 格式                              | 支持的量化方案                                                                                                                                                                                                 |
-|:--------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **auto_round**                  | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`                                                               |
-| **auto_awq**                    | W4A16、BF16                                                                                                                                                                                                   |
-| **auto_gptq**                   | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                                                                           |
-| **llm_compressor**              | NVFP4、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`、FP8_BLOCK                                                                                                                                                              |
-| **mlx** / **auto_round:mlx** (实验性功能) | W2A16、W3A16、W4A16、W5A16、W6A16、W8A16、BF16、混合 bit / 混合 group_size（仅 Apple Silicon）                                                                                                                  |
-| **gguf**                        | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0                                           |
-| **fp8**                         | FP8_BLOCK  |
-| **fake**                        | `所有方案（仅用于研究场景）`                                                                                                                                                                                   |
+| 格式                                   | 支持的量化方案                                                                                                                                                     |
+|:-------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **auto_round**                       | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`           |
+| **gguf**                             | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0 |
+| **llm_compressor**                   | NVFP4、W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、FP8_BLOCK 、  `MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                         |
+| **auto_awq**                         | W4A16、BF16                                                                                                                                                  |
+| **auto_gptq**                        | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                              |
+| **mlx** / **auto_round:mlx** (实验性功能) | W2A16、W3A16、W4A16、W5A16、W6A16、W8A16、BF16、混合 bit / 混合 group_size（仅 Apple Silicon）                                                                            |
+| **fp8**                              | FP8_BLOCK                                                                                                                                                   |
+| **fake**                             | `所有方案（仅用于研究场景）`                                                                                                                                             |
 
 ### 硬件兼容性
 
@@ -345,6 +346,8 @@ AWQ（Activation-Aware Weight Quantization，激活感知权重量化）是一�
 
 AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**INT8** 是 AutoRound 的 W8A8 scheme，可在 RTN 量化前使用 AWQ 平滑化，并通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
 
+AWQ 也可以与 AutoRound 优化组合使用（`--algorithm awq,auto_round`）。W4A16、MXFP4 和 INT8 的准确率与成本对比请参考 [AWQ 算法结果](./awq_details_CN.md)。
+
 #### 命令行用法
 
 ```bash
@@ -412,12 +415,53 @@ ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
 - `alg_configs="awq"` + `format="auto_round"`：使用 AWQ 平滑，并采用 AutoRound 打包。
 - `alg_configs="signround"` + `format="auto_awq"`：不使用 AWQ 平滑，但采用 AutoAWQ 打包。
 
+### SVDQuant 算法
+
+**实验性功能：目前仅在 FLUX.1-dev 上完成端到端流程验证。**
+
+SVDQuant 将每个 Linear 权重拆分为量化残差分支和较小的浮点低秩分支，并可与 RTN 或 SignRound 组合，生成供 Nunchaku 推理使用的 MXFP4 模型。
+
+RTN（建议先使用此配置）：
+
+```bash
+auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --format svdquant_nunchaku \
+  --output_dir ./flux-dev-mxfp4-svdquant-rtn
+```
+
+SignRound：
+
+```bash
+auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --format svdquant_nunchaku \
+  --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
+  --output_dir ./flux-dev-mxfp4-svdquant-signround
+```
+
+使用 Nunchaku commit [`4de4986`](https://github.com/changwangss/nunchaku/commit/4de49869eaa8565d8c29da344323e82298bdf198) 测得的 FLUX.1-dev 质量结果：
+
+| 配置 | CLIP | CLIP-IQA | ImageReward |
+|---|---:|---:|---:|
+| BF16 | 26.0189 | 0.954360 | 1.018340 |
+| MXFP4，smooth + SVDQuant + SignRound | **26.1039** | **0.962655** | **1.021020** |
+| MXFP4，no smooth + SVDQuant + SignRound | 26.0727 | 0.959363 | 1.002380 |
+| MXFP4，smooth + SVDQuant + RTN | 25.9719 | 0.947763 | 0.939392 |
+| MXFP4，no smooth + SVDQuant + RTN | 25.9624 | 0.946939 | 0.934579 |
+
+SignRound 配置使用 128 个 calibration samples、50 个 inference steps、200 次 tuning iterations、rank 32 和 20 次 residual iterations。
+
+Smooth 搜索、residual iterations、导出和推理说明请参阅 [SVDQuant 详细说明](./svdquant_details_CN.md)。
+
 
 ### AutoScheme 自动混合精度量化方案
 
 AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案。精度测试结果请参考 [AutoScheme 精度报告](./auto_scheme_acc.md)。
 
-**说明：** 混合数据类型支持调优，但目前无法将其导出到实际模型中。
+为了更好地在 vLLM 中部署，目前推荐导出到 llm_compressor 格式。
+
+**说明：** 混合数据类型支持调优，但目前无法将其导出成实际模型。
 
 #### 命令行用法
 
@@ -494,8 +538,7 @@ ar.quantize_and_save()
 #### AutoScheme 耗时与显存成本
 测试基于 Nvidia A100 80G、PyTorch 2.8。
 
-后续我们会进一步优化显存占用。当前该方案的显存占用约为模型以 BF16 精度加载时的 1.1~1.5 倍。
-
+从 v0.14.2 起，RAM 占用已得到优化。
 | 模型            | 量化方案                | 显存占用 | 耗时                  |
 |---------------| ----------------------- | -------- | --------------------- |
 | Qwen3-8B      | W2A16 / W4A16 / W8A16   | 14G      | 60秒 × 可选方案数量   |
@@ -872,9 +915,9 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 #### 使用 AdamW 优化器
 添加 `--adam` 参数即可启用；**注意**：在我们的多项测试场景中，AdamW 优化器的效果均不如符号梯度下降（sign gradient descent）。
 
-### 旋转（Rotation）（实验性）
+### 旋转（Rotation）（研究性）
 
-> ⚠️ **实验性功能**：旋转变换仍处于实验阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，旋转后的模型推理速度可能较慢。
+> ⚠️ **研究性功能**：旋转变换仍处于研究阶段。推理依赖 forward hook 机制，目前仅支持 Hugging Face Transformers 后端，因此相比非旋转模型，旋转后的模型推理速度可能较慢。
 
 旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀、对量化更友好。它对 MXFP4、NVFP4、W4A4 等激进的低比特方案最为有效。
 

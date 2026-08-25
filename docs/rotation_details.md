@@ -1,6 +1,6 @@
-# Rotation Transform — Details (Experimental)
+# Rotation Transform — Details (Research)
 
-> ⚠️ **Experimental feature.** Rotation transform is still in an experimental stage. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend. As a result, inference may be slower compared to native (non-rotated) models.
+> ⚠️ **Research feature.** Rotation transform is still in a research stage. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend. As a result, inference may be slower compared to native (non-rotated) models.
 
 This document is the in-depth reference for AutoRound's rotation transforms. For a
 concise getting-started guide, see the *Rotation* section in
@@ -77,8 +77,8 @@ Defined in `auto_round/algorithms/transforms/spinquant/preprocessor.py`.
 | `rotation_size` | `None` (auto) | Overrides the R1/R4 block size (R1 uses it instead of `hidden_size`, R4 instead of `intermediate_size`). R2 always uses `head_dim`; R3 has no custom size. Must be a positive power of 2. |
 | `random_r1` / `random_r2` / `random_r3` / `random_r4` | `False` | Use random Hadamard (`H × diag(±1)`) instead of the deterministic matrix at that position. Only relevant in QuaRot mode. |
 | `online_r1_rotation` | `True` | Apply R1 online via hook (`True`) or fuse it fully into weights (`False`). |
-| `trainable_rotation` | `False` | Learn the rotation matrices via Cayley SGD (SpinQuant mode). **Experimental**, requires a dataloader. |
-| `trainable_smooth` | `False` | Learn SmoothQuant-style `smooth_values` jointly via Adam. **Experimental**, requires a dataloader. |
+| `trainable_rotation` | `False` | Learn the rotation matrices via Cayley SGD (SpinQuant mode). **Research**, requires a dataloader. |
+| `trainable_smooth` | `False` | Learn SmoothQuant-style `smooth_values` jointly via Adam. **Research**, requires a dataloader. |
 | `iters` | `200` | Training iterations (trainable modes only). |
 | `lr` | `1e-4` | SGDG (Cayley) learning rate for rotation matrices. |
 | `smooth_lr` | `1e-3` | Adam learning rate for smooth values. |
@@ -97,12 +97,12 @@ Both are registered algorithm aliases usable directly in `alg_configs`:
 | Alias | Equivalent |
 |-------|-----------|
 | `"quarot"` | `SpinQuantConfig(trainable_rotation=False, trainable_smooth=False)` — deterministic Hadamard, no training, no calibration data. |
-| `"spinquant"` | `SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)` — **experimental**, requires a dataloader. |
+| `"spinquant"` | `SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)` — **research**, requires a dataloader. |
 
 Both presets keep the default `r1=True, r2=True, r3=False, r4=False`.
 
 > ⚠️ **SpinQuant trainable rotation** (`trainable_rotation=True`) enables learnable
-> rotation matrices optimized via Cayley SGD. This feature is experimental and not
+> rotation matrices optimized via Cayley SGD. This feature is a research feature and not
 > fully validated on real models. Use `"quarot"` (fixed Hadamard) for production
 > workloads.
 
@@ -212,7 +212,7 @@ with a `*_type` code: `0` = deterministic, `1` = random, `2` = trained):
 
 ## 2. Per-Linear Block Rotation
 
-> ⚠️ This is an earlier experimental implementation that applies block-diagonal
+> ⚠️ This is an earlier research implementation that applies block-diagonal
 > Hadamard rotation **per linear layer** by patching every `nn.Linear` module in the
 > model. For most use cases the QuaRot / SpinQuant approach above is preferred — it
 > provides architecture-aware rotation at specific positions (R1–R4) with better

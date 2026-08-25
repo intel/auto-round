@@ -114,6 +114,13 @@ class TestDiffusionCalibrator:
         # denoising steps execute during calibration.
         assert calibrator._should_stop_cache_forward("any_block") is False
 
+    def test_detects_required_i2v_image_from_pipeline_signature(self, calibrator):
+        calibrator.pipe = ImagePipeline()
+        assert calibrator._requires_calibration_image() is True
+
+        calibrator.pipe = FakePipeline()
+        assert calibrator._requires_calibration_image() is False
+
     def test_wrap_block_forward_delegates_to_utility(self, calibrator):
         seen = []
 

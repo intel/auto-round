@@ -206,14 +206,19 @@ def ref_fp4_quant(x, global_scale, block_size=16, v=0, max_scale=1.0):
     scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
     scale = torch.clip(scale, 0, FLOAT8_UE5M3_MAX)
     scale = cast_to_ue5m3_ste(scale).to(torch.float32)
-    output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
-    scaled_x = x.to(torch.float32) * output_scale + v
+    dequant_scale = scale * get_reciprocal(global_scale)
+    scaled_x = torch.where(
+        dequant_scale == 0,
+        torch.zeros_like(x, dtype=torch.float32),
+        x.to(torch.float32) / dequant_scale,
+    )
+    scaled_x = scaled_x + v
     clipped_x = torch.clamp(scaled_x, -6.0, 6.0)
-    return (cast_to_fp4(clipped_x) * get_reciprocal(output_scale)).reshape(m, n), scale
+    return (cast_to_fp4(clipped_x) * dequant_scale).reshape(m, n), scale
 
 
-@register_dtype("fp4_v2_with_global_scale")
-def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None, max_scale=1.0, **kwargs):
+@register_dtype("nvfp4_v2_with_global_scale")
+def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None, max_scale=1.0, **kwargs):
     assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
@@ -230,8 +235,8 @@ def fp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=None
     return qdq_res.to(orig_dtype), scale, None
 
 
-@register_dtype("fp4_v2")
-def fp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
+@register_dtype("nvfp4_v2")
+def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)

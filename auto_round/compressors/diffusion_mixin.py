@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import inspect
+import json
 import os
 from typing import Any, Optional, Union
 
@@ -119,7 +120,22 @@ class DiffusionMixin:
         if pipe is not None and model is not None:
             is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
             if not is_nextstep:
-                pipe.to(model.dtype)
+                self._align_pipeline_dtype(pipe, model.dtype)
+
+    @staticmethod
+    def _align_pipeline_dtype(pipe, target_dtype) -> None:
+        """Align ordinary components while preserving declared FP32 modules."""
+        for component_name in pipe.components:
+            component = getattr(pipe, component_name, None)
+            if (
+                not isinstance(component, torch.nn.Module)
+                or not hasattr(component, "dtype")
+                or component.dtype == target_dtype
+            ):
+                continue
+            if getattr(component, "_keep_in_fp32_modules", None):
+                continue
+            component.to(dtype=target_dtype)
 
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
@@ -149,16 +165,15 @@ class DiffusionMixin:
         return result
 
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
-        """Align dtype and dispatch secondary transformer for multi-transformer pipelines."""
+        """Align safe component dtypes and dispatch a secondary transformer."""
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is None or model is None:
             return
 
-        # Cast full pipeline to transformer's dtype
         is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
         if not is_nextstep:
-            pipe.to(model.dtype)
+            self._align_pipeline_dtype(pipe, model.dtype)
 
         # Dispatch secondary transformer to GPU(s)
         device_map = getattr(self.compress_context, "device_map", None)
@@ -178,8 +193,6 @@ class DiffusionMixin:
                 )
                 is_other_component = not comp_name.startswith("transformer")
                 if is_other_transformer or is_other_component:
-                    if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") and comp.dtype != model.dtype:
-                        comp.to(dtype=model.dtype)
                     try:
                         comp.to(comp_device)
                     except (NotImplementedError, RuntimeError):
@@ -216,7 +229,7 @@ class DiffusionMixin:
                 dataset=dataset,
                 bs=self.batch_size,
                 seed=self.seed,
-                nsamples=self.nsamples,
+                nsamples=self.calibration_context.nsamples,
             )
         else:
             self.dataloader = self.dataset
@@ -373,6 +386,10 @@ class DiffusionMixin:
                 layer_names=[],
             )
             self.inputs = all_inputs
+            if getattr(self.calibration, "_cpu_offload_mode", None) == "model":
+                from accelerate.hooks import remove_hook_from_submodules
+
+                remove_hook_from_submodules(self.model_context.model)
             clear_memory()
             self._inputs_cached = True
             return super().quantize()
@@ -409,7 +426,7 @@ class DiffusionMixin:
         logger.info("start to cache block inputs for primary transformer")
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
-            self.nsamples,
+            self.calibration_context.nsamples,
             layer_names=[],
         )
         self.inputs = all_inputs
@@ -430,7 +447,7 @@ class DiffusionMixin:
             self.model_context.quantized = False
             self._post_init_done = False
 
-            # Re-align device/dtype and dispatch pipeline for secondary transformer
+            # Dispatch the pipeline for the secondary transformer without recasting it.
             self._align_device_and_dtype_for_secondary(comp_name)
 
             # Re-run post_init to set up quantizer for new model
@@ -458,7 +475,7 @@ class DiffusionMixin:
             logger.info(f"start to cache block inputs for {comp_name}")
             all_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names,
-                self.nsamples,
+                self.calibration_context.nsamples,
                 layer_names=[],
             )
             self.inputs = all_inputs
@@ -486,7 +503,7 @@ class DiffusionMixin:
     def save_quantized(
         self,
         output_dir: Optional[str] = None,
-        format: Union[str, list] = "auto_round",
+        format: Optional[Union[str, list]] = None,
         inplace: bool = True,
         return_folders: bool = False,
         **kwargs,
@@ -517,7 +534,7 @@ class DiffusionMixin:
         has_multiple_quantized_transformers = bool(quantized_transformers)
 
         # Handle multi-format (convert string to list if needed)
-        _format = format
+        _format = format if format is not None else getattr(self, "formats", None) or "auto_round"
         if isinstance(_format, str):
             _format = self._resolve_format_string(_format)
 
@@ -587,8 +604,6 @@ class DiffusionMixin:
             pipe.config.save_pretrained(output_dir)
         else:
             # FrozenDict / plain dict — write model_index.json manually
-            import json
-
             model_index_path = os.path.join(output_dir, "model_index.json")
             with open(model_index_path, "w", encoding="utf-8") as f:
                 f.write(json.dumps(dict(pipe.config), indent=2, sort_keys=True) + "\n")

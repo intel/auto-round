@@ -172,10 +172,12 @@ class TestAutoRound:
         assert hasattr(tmp_layer, "weight_scale_inv")
         assert tmp_layer.weight.dtype is torch.float8_e4m3fn
         assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
-        assert compressed_model.config.quantization_config["quant_method"] == "fp8"
+        assert compressed_model.config.quantization_config["quant_method"] == "auto-round"
         assert compressed_model.config.quantization_config["weight_block_size"] == (128, 128)
-        if is_cuda_support_fp8():
-            eval_generated_prompt(quantized_model_path, device="cuda:0")
+        # TODO: open below test after this issue is fixed.
+        # https://github.com/huggingface/transformers/issues/46209
+        # if is_cuda_support_fp8():
+        #     eval_generated_prompt(quantized_model_path, device="cuda:0")
 
     def test_fp8_block_autoround_format(self):
         model_name = "Qwen/Qwen3-0.6B"
@@ -199,7 +201,7 @@ class TestAutoRound:
         assert list(tmp_layer.weight_scale_inv.shape) == [16, 8]
 
         in_memory_qconfig = compressed_model.config.quantization_config
-        assert in_memory_qconfig["quant_method"] == "auto_round:fp8"
+        assert in_memory_qconfig["quant_method"] == "auto-round"
         assert in_memory_qconfig["weight_block_size"] == (128, 128)
         assert in_memory_qconfig["activation_scheme"] == "dynamic"
         assert in_memory_qconfig["fmt"] == "e4m3"
@@ -207,7 +209,7 @@ class TestAutoRound:
         with open(os.path.join(quantized_model_path, "quantization_config.json"), "r", encoding="utf-8") as f:
             quantization_config = json.load(f)
 
-        assert quantization_config["quant_method"] == "auto_round:fp8"
+        assert quantization_config["quant_method"] == "auto-round"
         assert quantization_config["weight_block_size"] == [128, 128]
         assert quantization_config["activation_scheme"] == "dynamic"
         assert quantization_config["fmt"] == "e4m3"

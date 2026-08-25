@@ -17,6 +17,52 @@ from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.logger import logger
 
 
+def _unique_opt_rtn_value(values) -> bool | None:
+    values = [value for value in values if value is not None]
+    unique_values = []
+    for value in values:
+        if not any(value == existing for existing in unique_values):
+            unique_values.append(value)
+    if len(unique_values) > 1:
+        raise ValueError("Conflicting AWQ disable_opt_rtn values. Use one AWQ config or the same opt-RTN policy.")
+    return unique_values[0] if unique_values else None
+
+
+def awq_disable_opt_rtn(configs) -> bool | None:
+    """Return AWQ's resolved opt-RTN policy from normalized config objects."""
+    return _unique_opt_rtn_value(config.disable_opt_rtn for config in configs if isinstance(config, AWQConfig))
+
+
+def direct_opt_rtn_kwargs(config_kwargs) -> dict:
+    """Return explicit opt-RTN kwargs from direct entry/CLI arguments."""
+    if config_kwargs.get("enable_opt_rtn"):
+        return {"enable_opt_rtn": True}
+    if config_kwargs.get("disable_opt_rtn") is not None:
+        return {"disable_opt_rtn": config_kwargs["disable_opt_rtn"]}
+    return {}
+
+
+def rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn_value) -> dict:
+    """Return RTN kwargs where explicit user policy wins over AWQ inheritance."""
+    opt_kwargs = direct_opt_rtn_kwargs(config_kwargs)
+    if not opt_kwargs and awq_disable_opt_rtn_value is not None:
+        opt_kwargs["disable_opt_rtn"] = awq_disable_opt_rtn_value
+    return opt_kwargs
+
+
+def sync_rtn_opt_rtn_from_awq(configs) -> None:
+    """Apply AWQ's opt-RTN policy to RTN configs that did not set one explicitly."""
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+    awq_value = awq_disable_opt_rtn(configs)
+    if awq_value is None:
+        return
+    for config in configs:
+        if isinstance(config, RTNConfig) and getattr(config, "orig_disable_opt_rtn", None) is None:
+            config.disable_opt_rtn = awq_value
+            config.orig_disable_opt_rtn = awq_value
+
+
 class AWQConfig(QuantizationConfig):
     """Configuration for AWQ (Activation-Aware Weight Quantization).
 
@@ -47,6 +93,7 @@ class AWQConfig(QuantizationConfig):
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
         registry.add_argument(
+            "--awq_duo_scaling",
             "--awq-duo-scaling",
             field="duo_scaling",
             dest="duo_scaling",
@@ -56,6 +103,7 @@ class AWQConfig(QuantizationConfig):
             help="Use activation+weight duo scaling (true/false/both).",
         )
         registry.add_argument(
+            "--awq_n_grid",
             "--awq-n-grid",
             field="n_grid",
             dest="n_grid",
@@ -64,6 +112,22 @@ class AWQConfig(QuantizationConfig):
             help="Number of grid-search points for AWQ scaling ratio.",
         )
         registry.add_argument(
+            "--awq_seqlen",
+            field="awq_seqlen",
+            default=None,
+            type=int,
+            help="Maximum sequence length used by AWQ calibration, distinct from global --seqlen.",
+        )
+        registry.add_argument(
+            "--awq_smooth_batch_size",
+            field="smooth_batch_size",
+            dest="awq_smooth_batch_size",
+            default=None,
+            type=int,
+            help="Microbatch size for AWQ parent replay during scale search; <=0 disables microbatching.",
+        )
+        registry.add_argument(
+            "--awq_apply_clip",
             "--awq-apply-clip",
             field="apply_clip",
             dest="awq_apply_clip",
@@ -71,6 +135,7 @@ class AWQConfig(QuantizationConfig):
             help="Search and hard-clamp per-group AWQ weight clipping after smoothing.",
         )
         registry.add_argument(
+            "--awq_clip_as_init",
             "--awq-clip-as-init",
             field="clip_as_init",
             dest="awq_clip_as_init",
@@ -98,6 +163,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_sample_token: int = 512,
         awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
+        disable_opt_rtn: bool | None = True,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
         **kwargs,
@@ -169,6 +235,11 @@ class AWQConfig(QuantizationConfig):
                 peak VRAM while preserving the AWQ parent-output loss, at the
                 cost of more parent forward calls. ``None`` or ``<= 0`` replays
                 the cached calibration batch as-is.
+            disable_opt_rtn: Whether AWQ's internal weight QDQ should use the
+                plain RTN path. Defaults to True because AWQ calibration has not
+                shown accuracy or cost benefits from optimized RTN in benchmarks.
+                ``enable_opt_rtn=True`` may also be passed to force the
+                optimized path.
             skip_moe: Whether to exclude routed MoE experts from AWQ smoothing.
                 When True, balance layers belonging to routed experts (module
                 names matching ``.experts.<N>.``) are dropped from the resolved
@@ -184,6 +255,9 @@ class AWQConfig(QuantizationConfig):
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
+        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
+        if enable_opt_rtn:
+            disable_opt_rtn = False
         super().__init__(**kwargs)
 
         if awq_seqlen is None:
@@ -212,6 +286,7 @@ class AWQConfig(QuantizationConfig):
             raise ValueError(f"`clip_n_sample_token` must be a positive integer, got {clip_n_sample_token!r}")
         if smooth_batch_size is not None and smooth_batch_size < 0:
             raise ValueError(f"`smooth_batch_size` must be a non-negative integer or None, got {smooth_batch_size!r}")
+        self._disable_opt_rtn = disable_opt_rtn
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
         self.clip_n_sample_token = clip_n_sample_token
@@ -221,6 +296,15 @@ class AWQConfig(QuantizationConfig):
         self.mappings = mappings
         self.infer_bs_coeff = 1
         self.batch_dim = None
+
+    @property
+    def disable_opt_rtn(self) -> bool | None:
+        """Whether AWQ's internal QDQ uses plain RTN instead of optimized RTN."""
+        return self._disable_opt_rtn
+
+    @disable_opt_rtn.setter
+    def disable_opt_rtn(self, value: bool | None) -> None:
+        self._disable_opt_rtn = value
 
     def finalize_scheme(self) -> None:
         """Adjust AWQ state that depends on the resolved run scheme."""
@@ -240,6 +324,7 @@ class AWQConfig(QuantizationConfig):
             f"smooth_iters={self.smooth_iters}, "
             f"apply_clip={self.apply_clip}, clip_as_init={self.clip_as_init}, "
             f"awq_seqlen={self.awq_seqlen}, smooth_batch_size={self.smooth_batch_size}, "
+            f"disable_opt_rtn={self.disable_opt_rtn}, "
             f"skip_moe={self.skip_moe}, "
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"

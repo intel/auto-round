@@ -28,13 +28,14 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [OPT RTN mode](#opt-rtn-mode)
   + [AWQ Algorithm-Experimental](#awq-algorithm)
+  + [SVDQuant Algorithm-Experimental](#svdquant-algorithm)
   + [Model-Free Mode](#model-free-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Rotation (Experimental)](#rotation-experimental)
+  + [Rotation (Research)](#rotation-research)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -165,15 +166,14 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 #### Format and scheme support matrix
 > Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
 
-
 | Format                       | Supported Schemes                                                                                                                                                       |
 |:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **auto_round**               | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`      |
+| **auto_round**               | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`         |
+| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK, W4A16, W2A16, W8A16, W2A16G64, W2A16G32,  W3A16                                                            |
+| **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
+| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                                       |
 | **auto_awq**                 | W4A16, BF16                                                                                                                                                             |
 | **auto_gptq**                | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
-| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
-| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                  |
-| **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **fp8**                      | FP8_BLOCK                                                                                                                                                               |
 | **fake**                     | `all schemes (only for research)`                                                                                                                                       |
 
@@ -350,6 +350,8 @@ AWQ (Activation-Aware Weight Quantization) is available as an alternative quanti
 
 The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
+AWQ can also be composed with AutoRound optimization (`--algorithm awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
+
 #### CLI Usage
 
 ```bash
@@ -419,9 +421,50 @@ format selection such as `format="auto_awq"`. For example:
 - `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing with AutoRound packing.
 - `alg_configs="signround"` + `format="auto_awq"`: AutoAWQ packing without AWQ smoothing.
 
+### SVDQuant Algorithm
+
+**Experimental feature: the end-to-end workflow has currently been validated with FLUX.1-dev only.**
+
+SVDQuant decomposes each Linear weight into a quantized residual branch and a small floating-point low-rank branch. It can be combined with RTN or SignRound to produce an MXFP4 model for Nunchaku inference.
+
+RTN (recommended starting point):
+
+```bash
+auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --format svdquant_nunchaku \
+  --output_dir ./flux-dev-mxfp4-svdquant-rtn
+```
+
+SignRound:
+
+```bash
+auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --format svdquant_nunchaku \
+  --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
+  --output_dir ./flux-dev-mxfp4-svdquant-signround
+```
+
+FLUX.1-dev quality results using Nunchaku commit [`4de4986`](https://github.com/changwangss/nunchaku/commit/4de49869eaa8565d8c29da344323e82298bdf198):
+
+| Configuration | CLIP | CLIP-IQA | ImageReward |
+|---|---:|---:|---:|
+| BF16 | 26.0189 | 0.954360 | 1.018340 |
+| MXFP4, smooth + SVDQuant + SignRound | **26.1039** | **0.962655** | **1.021020** |
+| MXFP4, no smooth + SVDQuant + SignRound | 26.0727 | 0.959363 | 1.002380 |
+| MXFP4, smooth + SVDQuant + RTN | 25.9719 | 0.947763 | 0.939392 |
+| MXFP4, no smooth + SVDQuant + RTN | 25.9624 | 0.946939 | 0.934579 |
+
+SignRound used 128 calibration samples, 50 inference steps, 200 tuning iterations, rank 32, and 20 residual iterations.
+
+See [SVDQuant Details](./svdquant_details.md) for smooth search, residual iterations, export, and inference.
+
 ### AutoScheme
 
 AutoScheme automatically generates adaptive mixed-bit and mixed-data-type quantization recipes. For accuracy results, see [AutoScheme Accuracy Report](./auto_scheme_acc.md).
+
+We recommend exporting to the llm_compressor format for now, as it can be easily deployed with vLLM.
 
 **Note:** Mixed-data-types are supported during tuning, but cannot be exported to real models at this time.
 
@@ -500,7 +543,7 @@ ar.quantize_and_save()
 
 We tested it on Nvidia A100 80G using torch v2.8.
 
-We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-1.5x of the model's BF16 size
+RAM usage has been optimized since v0.14.2.
 
 | Models        | Scheme                | VRAM Cost | Time Cost             |
 | ------------- | --------------------- | --------- | --------------------- |
@@ -909,9 +952,9 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Rotation (Experimental)
+### Rotation (Research)
 
-> ⚠️ **Experimental feature**: Rotation transform is still experimental. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
+> ⚠️ **Research feature**: Rotation transform is still a research feature. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
 
 Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly. It is most useful for aggressive low-bit schemes such as MXFP4, NVFP4 and W4A4.
 

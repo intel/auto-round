@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 source /auto-round/.azure-pipelines/scripts/change_color.sh
+source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 function setup_environment() {
     # install requirements
@@ -8,7 +9,7 @@ function setup_environment() {
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
-    pip install pytest-cov pytest-timeout
+    pip install pytest-cov
     pip list
     echo "##[endgroup]"
 
@@ -28,13 +29,19 @@ function setup_environment() {
 function run_unit_test() {
     auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
 
-    for test_file in $(find ./unit/test_hpu -name "test*.py" | sort); do
+    local hpu_tests
+    hpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_hpu -name "test*.py" | sort)")
+    if [ -z "${hpu_tests}" ]; then
+        echo "No changed HPU test file, skip."
+        return 0
+    fi
+
+    for test_file in ${hpu_tests}; do
         local test_basename=$(basename ${test_file} .py)
 
         echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
         PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
-            --timeout=30 --session-timeout=600 \
             --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -42,7 +49,6 @@ function run_unit_test() {
         echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
         PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
-            --timeout=30 --session-timeout=600 \
             --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -55,21 +61,29 @@ function print_summary() {
 }
 
 function collect_log() {
+    touch "${SUMMARY_LOG}"
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
-    cp .coverage "${LOG_DIR}/.coverage"
-    python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-    python -m coverage html -d "${LOG_DIR}/htmlcov"
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage"
+        python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+        python -m coverage html -d "${LOG_DIR}/htmlcov"
+    else
+        echo "No coverage data (no test selected), skip coverage report."
+        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
+    fi
 }
 
 function print_coverage() {
     echo "##[group]overall code coverage..."
-    python -m coverage report
+    [ -f .coverage ] && python -m coverage report || echo "No coverage data."
     echo "##[endgroup]"
 }
 
 function main() {
     setup_environment
+    init_changed_tests
+    scope_changed_tests "$(cd /auto-round && find test/unit/test_hpu -name "test_*.py" 2>/dev/null)"
     run_unit_test
     collect_log
     print_coverage

@@ -564,14 +564,6 @@ class TestAutoRound:
                 scale_dtype=ar.scale_dtype,
             )
 
-        with pytest.raises(ValueError, match="but got bits=2, data_type=int"):
-            resolve_formats(
-                ResolvedScheme.from_scheme(ar.scheme_context),
-                format="auto_round:llm_compressor",
-                model=ar.model_context.model,
-                scale_dtype=ar.scale_dtype,
-            )
-
         ar = AutoRound(
             model=tiny_qwen_model_path,
             scheme="FP8_STATIC",

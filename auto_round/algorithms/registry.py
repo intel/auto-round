@@ -37,6 +37,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     from auto_round.algorithms.transforms.awq.config import AWQConfig
     from auto_round.algorithms.transforms.hadamard.config import RotationConfig
     from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 
     register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, summary="Round-To-Nearest quantization.")
     register_algorithm(
@@ -50,6 +51,12 @@ def _ensure_builtin_algorithms_registered() -> None:
         aliases=("awq",),
         config_factory=AWQConfig,
         summary="Activation-Aware Weight Quantization (pre-processing).",
+    )
+    register_algorithm(
+        "svdquant",
+        aliases=("svdquant",),
+        config_factory=SVDQuantConfig,
+        summary="SVD low-rank decomposition before residual quantization.",
     )
     register_algorithm(
         "hadamard",
@@ -87,6 +94,7 @@ def _ensure_pipeline_members_registered() -> None:
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
         "auto_round.algorithms.transforms.awq.base",
+        "auto_round.algorithms.transforms.svdquant.apply",
     ):
         importlib.import_module(module_name)
     _pipeline_members_registered = True
@@ -230,6 +238,8 @@ def normalize_algorithm_config(config: object) -> object:
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config
 
+    if type(config) is OptimizedRTNConfig and getattr(config, "disable_opt_rtn", False):
+        return coerce_config_class(config, RTNConfig)
     if type(config) is RTNConfig and not getattr(config, "disable_opt_rtn", False):
         return coerce_config_class(config, OptimizedRTNConfig)
     if type(config) is SignRoundConfig:

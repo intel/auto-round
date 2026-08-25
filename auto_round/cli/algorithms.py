@@ -55,9 +55,9 @@ class AlgorithmHandler:
     @classmethod
     def get(cls, name: str) -> type:
         entry = get_algorithm_entry(name)
-        if entry.config_factory is None or not isinstance(entry.config_factory, type):
+        if entry.config_factory is None:
             raise KeyError(f"No config class registered for algorithm '{name}'.")
-        return entry.config_factory
+        return entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
 
     @classmethod
     def resolve_alias(cls, user_name: str) -> str | None:
@@ -70,9 +70,12 @@ class AlgorithmHandler:
     @classmethod
     def add_groups(cls, parser) -> None:
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None or not isinstance(entry.config_factory, type):
+            if entry.config_factory is None:
                 continue
-            registry = _parameter_registry(entry.config_factory)
+            config_cls = (
+                entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
+            )
+            registry = _parameter_registry(config_cls)
             if registry.parameters:
                 group = parser.add_argument_group(f"Algorithm: {entry.name}")
                 _add_registered_arguments(group, registry)
@@ -87,18 +90,48 @@ class AlgorithmHandler:
 
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
-        if not ({"awq", "rtn", "auto_round"} & seen):
-            canonical.append("rtn" if getattr(args, "iters", 0) == 0 else "auto_round")
+        if not ({"rtn", "auto_round"} & seen):
+            canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = ["rtn" if name == "auto_round" else name for name in canonical]
 
         configs = []
+        built_configs = {}
+        if "awq" in canonical:
+            awq_entry = get_algorithm_entry("awq")
+            awq_cls = cls.get("awq")
+            awq_kwargs = _parameter_registry(awq_cls).config_kwargs(args)
+            if getattr(awq_cls, "cli_include_common_args", True):
+                awq_kwargs.update(common_kwargs)
+            if isinstance(awq_entry.config_factory, type):
+                awq_config = awq_entry.config_factory(**awq_kwargs)
+            elif awq_kwargs:
+                awq_config = awq_cls(**awq_kwargs)
+            else:
+                awq_config = awq_entry.config_factory()
+            explicit_opt_rtn = getattr(args, "disable_opt_rtn", None)
+            if explicit_opt_rtn is not None:
+                awq_config.disable_opt_rtn = explicit_opt_rtn
+            built_configs["awq"] = awq_config
+        awq_disable_opt_rtn = getattr(built_configs.get("awq"), "disable_opt_rtn", None)
         for name in canonical:
+            if name in built_configs:
+                configs.append(built_configs[name])
+                continue
+            entry = get_algorithm_entry(name)
             config_cls = cls.get(name)
             kwargs = _parameter_registry(config_cls).config_kwargs(args)
             if getattr(config_cls, "cli_include_common_args", True):
                 kwargs.update(common_kwargs)
-            configs.append(config_cls(**kwargs))
+            if name == "rtn" and getattr(args, "disable_opt_rtn", None) is None and awq_disable_opt_rtn is not None:
+                kwargs["disable_opt_rtn"] = awq_disable_opt_rtn
+            if isinstance(entry.config_factory, type):
+                config = entry.config_factory(**kwargs)
+            elif kwargs:
+                config = config_cls(**kwargs)
+            else:
+                config = entry.config_factory()
+            configs.append(config)
         return configs
 
     @classmethod

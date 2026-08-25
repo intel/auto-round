@@ -19,10 +19,17 @@ for i in "$@"; do
 done
 
 source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/change_color.sh
+# Change-based test selection helpers. REPO_DIR points the detector at the
+# agent checkout instead of the container default (/auto-round).
+REPO_DIR="${BUILD_SOURCESDIRECTORY}"
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
 LOG_DIR="${BUILD_SOURCESDIRECTORY}/log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+# print_summary reads this file unconditionally; a matrix part that selects no
+# test never writes it, so make sure it always exists.
+touch "${SUMMARY_LOG}"
 
 function setup_environment() {
     export TZ='Asia/Shanghai'
@@ -56,7 +63,7 @@ function run_unit_test() {
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
     uv pip uninstall torch torchvision
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
@@ -82,6 +89,12 @@ function run_unit_test() {
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+    selected_files=$(filter_changed_tests "test" "${selected_files}")
+
+    if [ -z "${selected_files}" ]; then
+        echo "No changed CUDA unit test file in part ${test_part}, skip."
+        return 0
+    fi
 
     for test_file in ${selected_files}; do
         echo "##[group]Running ${test_file}..."
@@ -89,8 +102,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
         pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
-            -vs --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -104,7 +116,7 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/integration/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -138,7 +150,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -172,7 +184,7 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
@@ -203,11 +215,15 @@ function run_unit_test_vllm() {
 
 function main() {
     setup_environment
+    init_changed_tests
     if [ "${test_case}" == "nightly" ]; then
         run_unit_test_sglang
         run_unit_test_llmc
         run_unit_test_vllm
     elif [ "${test_case}" == "ci" ]; then
+        # Mirror the selection below: tests excluded from the ci run (vlms,
+        # llmc, sglang, vllm, multiple_card) must not enable filtering.
+        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
         run_unit_test
     else
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."
