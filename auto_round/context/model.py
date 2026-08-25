@@ -156,8 +156,15 @@ class ModelContext(BaseContext):
     def _load_model(self):
         if is_diffusion_model(self.model):
             self.is_diffusion = True
+            default_torch_dtype = "auto"
+            if self.amp and get_ar_device(self.device).supports_bf16():
+                default_torch_dtype = torch.bfloat16
             self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                self.model,
+                platform=self.platform,
+                device="cpu",
+                model_dtype=self.model_dtype,
+                default_torch_dtype=default_torch_dtype,
             )
         elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
