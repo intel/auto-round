@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 import torch
 from torch import autocast
 
+from auto_round import envs
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
@@ -70,6 +71,16 @@ class SignRoundQuantizer(BaseQuantizer):
         self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
         # Emit the low-bit lr notice at most once across all blocks/layers.
         self._logged_low_bit_lr = False
+
+    def _get_early_stop_config(self) -> tuple[bool, int, float]:
+        enabled = bool(envs.AR_SIGNROUND_EARLY_STOP)
+        patience = int(envs.AR_SIGNROUND_EARLY_STOP_PATIENCE)
+        min_delta = float(envs.AR_SIGNROUND_EARLY_STOP_MIN_DELTA)
+        return enabled and patience > 0, patience, max(min_delta, 0.0)
+
+    @staticmethod
+    def _is_loss_improved(total_loss: float, best_loss: float, min_delta: float) -> bool:
+        return total_loss < (best_loss - min_delta)
 
     def _maybe_log_low_bit_lr(self, bits) -> None:
         """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
@@ -454,6 +465,7 @@ class SignRoundQuantizer(BaseQuantizer):
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
+        early_stop_enabled, early_stop_patience, early_stop_min_delta = self._get_early_stop_config()
 
         # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
         # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
@@ -508,7 +520,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if i == 0:
                 init_loss = total_loss
 
-            if total_loss < best_loss:
+            if self._is_loss_improved(total_loss, best_loss, early_stop_min_delta):
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(block, self.compress_context.cache_device)
@@ -519,6 +531,15 @@ class SignRoundQuantizer(BaseQuantizer):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
+            if early_stop_enabled and i - last_best_iter >= early_stop_patience:
+                logger.info(
+                    "SignRound early-stop triggered at iter %s (best iter=%s, patience=%s, min_delta=%s)",
+                    i,
+                    last_best_iter,
+                    early_stop_patience,
+                    early_stop_min_delta,
+                )
+                break
             sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
 
@@ -684,6 +705,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 num_elm = self._count_layer_input_elements(fp_inputs, whole_indices)
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
+        early_stop_enabled, early_stop_patience, early_stop_min_delta = self._get_early_stop_config()
 
         for i in range(self.iters):
             total_loss = 0
@@ -734,7 +756,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if i == 0:
                 init_loss = total_loss
 
-            if total_loss < best_loss:
+            if self._is_loss_improved(total_loss, best_loss, early_stop_min_delta):
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
@@ -745,6 +767,16 @@ class SignRoundQuantizer(BaseQuantizer):
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
                     break
+            if early_stop_enabled and i - last_best_iter >= early_stop_patience:
+                logger.info(
+                    "SignRound early-stop triggered for %s at iter %s (best iter=%s, patience=%s, min_delta=%s)",
+                    layer_name,
+                    i,
+                    last_best_iter,
+                    early_stop_patience,
+                    early_stop_min_delta,
+                )
+                break
             self._step(scaler, optimizer, lr_schedule)
 
         last_loss = total_loss
