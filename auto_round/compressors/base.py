@@ -51,6 +51,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     parse_scheme,
     preset_name_to_scheme,
+    scheme_to_preset_name,
 )
 from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
@@ -1952,6 +1953,7 @@ class BaseOrchestrator(object):
         self.compress_context.output_dir = output_dir
 
         # check and update the format based on the current configuration
+        used_default_format = format is None and self.formats is None
         if format and self.formats is None:
             self.formats = format
         if self.formats is None:
@@ -1968,6 +1970,10 @@ class BaseOrchestrator(object):
         # IMPORTANT: post_init() must run outside any @torch.inference_mode() context
         # because AutoScheme's delta-loss selection requires gradient tracking.
         self.post_init()
+        if used_default_format and scheme_to_preset_name(self.scheme_context) == "FP8_BLOCK":
+            logger.warning(
+                "--format fp8 is recommended for better compatibility with serving frameworks for now."
+            )
         # If post_init() was called manually before quantize_and_save() (e.g. ar.post_init()
         # in tests), _resolve_formats saw formats=None and was a no-op.  Now that we have set
         # self.formats to a default string above, resolve it into OutputFormat objects so that
