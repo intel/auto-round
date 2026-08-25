@@ -22,6 +22,7 @@ XPU counterpart of test/test_cuda/transform/test_spinquant.py. Covers:
 """
 
 import shutil
+from test.helpers import generate_prompt
 
 import pytest
 import torch
@@ -32,8 +33,6 @@ from auto_round import AutoRound
 from auto_round.algorithms.transforms import apply_rotation
 from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import remove_spinquant_hooks_from_model
-
-from test.helpers import generate_prompt
 
 DEVICE = "xpu"
 

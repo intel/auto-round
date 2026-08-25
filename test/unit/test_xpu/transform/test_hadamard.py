@@ -21,6 +21,7 @@ XPU counterpart of test/test_cuda/transform/test_mxfp4_transform.py. Covers:
 """
 
 import shutil
+from test.helpers import generate_prompt
 
 import pytest
 import torch
@@ -28,8 +29,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.algorithms.transforms import apply_rotation, normalize_rotation_config
-
-from test.helpers import generate_prompt
 
 DEVICE = "xpu"
 
