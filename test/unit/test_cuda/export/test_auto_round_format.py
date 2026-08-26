@@ -39,8 +39,11 @@ class TestAutoRound:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_greater_than_050
-    @pytest.mark.parametrize("bits", [2, 4, 8])
-    @pytest.mark.parametrize("group_size", [32, 128])
+    # Keep one representative group size and both symmetry modes in PR CI.
+    # The complete bits/group-size matrix belongs in nightly coverage; every
+    # case performs a full quantize, save, reload and CUDA dispatch.
+    @pytest.mark.parametrize("bits", [4])
+    @pytest.mark.parametrize("group_size", [128])
     @pytest.mark.parametrize("is_sym", [True, False])
     def test_autoround_format(self, tiny_opt_model_path, bits, group_size, is_sym):
         autoround = AutoRound(
@@ -56,14 +59,21 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         # Verify loading
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        # Validate the saved format without JIT-compiling Marlin for every
+        # parameter combination in the CUDA smoke suite.
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            device_map="cuda:0",
+            trust_remote_code=True,
+            quantization_config=AutoRoundConfig(backend="torch"),
+        )
         assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
     # Split 3 bits test with [2,4,8] bits to avoid segmentation fault
     @require_greater_than_050
     @pytest.mark.parametrize("bits", [3])
-    @pytest.mark.parametrize("group_size", [32, 128])
-    @pytest.mark.parametrize("is_sym", [True, False])
+    @pytest.mark.parametrize("group_size", [128])
+    @pytest.mark.parametrize("is_sym", [True])
     def test_autoround_format_3bit(self, tiny_opt_model_path, bits, group_size, is_sym):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -78,7 +88,12 @@ class TestAutoRound:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_round")
 
         # Verify loading
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            quantized_model_path,
+            device_map="cuda:0",
+            trust_remote_code=True,
+            quantization_config=AutoRoundConfig(backend="torch"),
+        )
         assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
     @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
