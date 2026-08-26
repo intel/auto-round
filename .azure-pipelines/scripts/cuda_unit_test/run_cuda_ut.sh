@@ -36,6 +36,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 }
 
 function print_summary() {
@@ -71,8 +72,6 @@ function setup_basic_test_env() {
     echo "##[endgroup]"
 
     uv pip list
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
-
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 }
 
@@ -86,7 +85,7 @@ function run_common_group() {
 
     if [ -n "${group_tests}" ]; then
         echo "##[group]Running common tests (${group_name})..."
-        local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
+        local ut_log_name="${LOG_DIR}/unittest_cuda_common_${group_name}.log"
         pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append \
             -vs --junitxml="${ut_log_name%.log}.xml" \
@@ -108,8 +107,6 @@ function run_common_unit_test() {
             run_common_group "${group_name}" "${entry}"
         fi
     done
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "Common Unit Tests" --log-pattern "unittest_common_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 
@@ -146,9 +143,6 @@ function run_unit_test() {
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
-    [ -f .coverage ] && cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA Unit Tests" --log-pattern "unittest_cuda_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_llmc() {
@@ -168,8 +162,6 @@ function run_unit_test_llmc() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
-
     for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
@@ -180,9 +172,6 @@ function run_unit_test_llmc() {
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
-    [ -f .coverage ] && cp .coverage "${LOG_DIR}/.coverage.llmc"
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA LLMC Tests" --log-pattern "unittest_cuda_llmc_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_sglang() {
@@ -202,7 +191,6 @@ function run_unit_test_sglang() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         echo "##[group]Running ${test_file}..."
@@ -214,9 +202,6 @@ function run_unit_test_sglang() {
              ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
-    [ -f .coverage ] && cp .coverage "${LOG_DIR}/.coverage.sglang"
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA SGLang Tests" --log-pattern "unittest_cuda_sglang_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_vllm() {
@@ -236,7 +221,6 @@ function run_unit_test_vllm() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         echo "##[group]Running ${test_file}..."
@@ -248,9 +232,16 @@ function run_unit_test_vllm() {
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
-    [ -f .coverage ] && cp .coverage "${LOG_DIR}/.coverage.vllm"
+}
 
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA VLLM Tests" --log-pattern "unittest_cuda_vllm_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+function collect_log() {
+    touch "${SUMMARY_LOG}"
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py \
+        --test-type "Unit Tests" --log-pattern "unittest_cuda_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+    fi
 }
 
 function main() {
@@ -274,6 +265,7 @@ function main() {
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."
         exit 1
     fi
+    collect_log
     check_storage_usage
     print_summary
 }
