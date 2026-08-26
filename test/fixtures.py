@@ -376,9 +376,9 @@ def tiny_qwen2_5_omni_model_path():
     tests while still exercising the real config structure.
     Skipped automatically when the model path does not exist locally.
     """
-    from huggingface_hub import hf_hub_download
-
     model_name_or_path = get_model_path(qwen2_5_omni_name_or_path)
+    if not os.path.isdir(model_name_or_path):
+        pytest.skip("Qwen2.5-Omni fixture is not available locally")
     tiny_model_path = "./tmp/tiny_qwen2_5_omni_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
@@ -390,7 +390,7 @@ def tiny_qwen2_5_omni_model_path():
     if os.path.exists(local_spk_dict):
         shutil.copy(local_spk_dict, tiny_model_path)
     else:
-        hf_hub_download(repo_id=qwen2_5_omni_name_or_path, filename="spk_dict.pt", local_dir=tiny_model_path)
+        pytest.skip("Qwen2.5-Omni spk_dict.pt is not available locally")
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 

@@ -227,6 +227,10 @@ def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
                         layers.append(res)
                     elif isinstance(res, list):
                         layers.extend(res)
+            # The first matching rule owns the model family.  Continuing to
+            # walk this global registry would leak rules registered by other
+            # integrations or tests into unrelated configs.
+            break
 
     return list(dict.fromkeys(layers))
 

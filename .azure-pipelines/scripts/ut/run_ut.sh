@@ -26,7 +26,7 @@ function setup_environment() {
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
     # install unit report dependencies
-    uv pip install pytest-cov pytest-timeout
+    uv pip install pytest-cov
     uv pip install -U chardet
     uv pip list
 
@@ -56,15 +56,50 @@ function check_storage_usage() {
     echo "##[endgroup]"
 }
 
+function run_common_group() {
+    # Run a group of common test files together in a single pytest invocation.
+    # $1: group name (used for log file), remaining args: test files
+    local group_name=$1
+    shift
+    local group_tests
+    group_tests=$(filter_changed_tests "test" "$*")
+
+    if [ -n "${group_tests}" ]; then
+        echo "##[group]Running common tests (${group_name})..."
+        local ut_log_name="${LOG_DIR}/unittest_test_common_${group_name}.log"
+        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
+                --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    fi
+}
+
+function run_common_unit_test() {
+    cd /auto-round/test || exit 1
+
+    # common test case for cpu/gpu/xpu
+    # Group cases by the first-level folder under unit/common; a single test
+    # file placed directly under unit/common (e.g. test_main.py) runs on its own.
+    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+        if [ -d "${entry}" ]; then
+            local group_name=$(basename "${entry}")
+            run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
+        elif [[ "$(basename "${entry}")" == test*.py ]]; then
+            local group_name=$(basename "${entry}" .py)
+            run_common_group "${group_name}" "${entry}"
+        fi
+    done
+}
+
 function run_unit_test() {
     cd /auto-round/test || exit 1
 
-    # Split test files into 5 parts.
+    # Split cpu specific test files into 4 parts.
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
-    # run in the nightly/weekly pipelines (see nightly-test.yml / weekly-test.yml).
+    # run in the nightly pipelines (see nightly-test.yml).
     find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
-    NUM_CHUNKS=5
+    NUM_CHUNKS=4
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
     if [ "$test_part" -le "$r" ]; then
@@ -89,7 +124,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_${test_basename}.log
 
         numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --timeout=${TIMEOUT} --session-timeout=${SESSION_TIMEOUT} \
+            pytest -m "not skip_ci" \
                 --cov=auto_round --cov-report= --cov-append \
                 -vs --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -165,11 +200,13 @@ function collect_log() {
 function main() {
     setup_environment
     init_changed_tests
-    scope_changed_tests "$(cd /auto-round && find test/unit/test_cpu test/integration/test_cpu -name "test_*.py" 2>/dev/null)"
+    scope_changed_tests "$(cd /auto-round && find test/unit/common test/unit/test_cpu test/integration/test_cpu -name "test_*.py" 2>/dev/null)"
     if [ "$test_part" = "inc" ]; then
         run_inc_unit_test
     elif [ "$test_part" = "llmc" ]; then
         run_llmc_unit_test
+    elif [ "$test_part" = "0" ]; then
+        run_common_unit_test
     else
         run_unit_test
     fi

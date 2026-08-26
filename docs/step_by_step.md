@@ -35,7 +35,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Rotation (Experimental)](#rotation-experimental)
+  + [Rotation (Research)](#rotation-research)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -349,6 +349,8 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
 
 The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
+
+AWQ can also be composed with AutoRound optimization (`--algorithm awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
 
 #### CLI Usage
 
@@ -950,9 +952,9 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Rotation (Experimental)
+### Rotation (Research)
 
-> ⚠️ **Experimental feature**: Rotation transform is still experimental. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
+> ⚠️ **Research feature**: Rotation transform is still a research feature. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
 
 Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly. It is most useful for aggressive low-bit schemes such as MXFP4, NVFP4 and W4A4.
 

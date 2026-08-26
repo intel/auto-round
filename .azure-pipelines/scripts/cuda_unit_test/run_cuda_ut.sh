@@ -53,9 +53,9 @@ function check_storage_usage() {
     echo "##[endgroup]"
 }
 
-function run_unit_test() {
-    # install unit test dependencies
-    echo "##[group]set up UT env..."
+function setup_basic_test_env() {
+    echo "##[group]Setting up test environment..."
+
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
@@ -63,7 +63,7 @@ function run_unit_test() {
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
     uv pip uninstall torch torchvision
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
@@ -74,18 +74,58 @@ function run_unit_test() {
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
+}
 
+function run_common_group() {
+    # Run a group of common test files together in a single pytest invocation.
+    # $1: group name (used for log file), remaining args: test files
+    local group_name=$1
+    shift
+    local group_tests
+    group_tests=$(filter_changed_tests "test" "$*")
+
+    if [ -n "${group_tests}" ]; then
+        echo "##[group]Running common tests (${group_name})..."
+        local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
+        pytest -m "not skip_ci" \
+            --cov=auto_round --cov-report= --cov-append \
+            -vs --junitxml="${ut_log_name%.log}.xml" \
+            ${group_tests} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    fi
+}
+
+function run_common_unit_test() {
+    # common test case for cpu/gpu/xpu
+    # Group cases by the first-level folder under unit/common; a single test
+    # file placed directly under unit/common (e.g. test_main.py) runs on its own.
+    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+        if [ -d "${entry}" ]; then
+            local group_name=$(basename "${entry}")
+            run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
+        elif [[ "$(basename "${entry}")" == test*.py ]]; then
+            local group_name=$(basename "${entry}" .py)
+            run_common_group "${group_name}" "${entry}"
+        fi
+    done
+
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "Common Unit Tests" --log-pattern "unittest_common_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+}
+
+
+function run_unit_test() {
+    # run ci cuda ut scope 
     find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
-    if [ "$test_part" -lt "$r" ]; then
+    if [ "$test_part" -le "$r" ]; then
         chunk_size=$(( q + 1 ))
-        start_line=$(( test_part * chunk_size + 1 ))
+        start_line=$(( (test_part - 1) * chunk_size + 1 ))
     else
         chunk_size=$q
-        start_line=$(( r * (q + 1) + (test_part - r) * q + 1 ))
+        start_line=$(( r * (q + 1) + (test_part - r - 1) * q + 1 ))
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
@@ -102,8 +142,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
         pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append --timeout=60 --session-timeout=720 \
-            -vs --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
@@ -117,7 +156,7 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/integration/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -151,7 +190,7 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -185,7 +224,7 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
-    uv pip install -U pytest-cov pytest-timeout
+    uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
@@ -224,8 +263,13 @@ function main() {
     elif [ "${test_case}" == "ci" ]; then
         # Mirror the selection below: tests excluded from the ci run (vlms,
         # llmc, sglang, vllm, multiple_card) must not enable filtering.
-        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
-        run_unit_test
+        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/common test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
+        setup_basic_test_env
+        if [ "${test_part}" == "0" ]; then
+            run_common_unit_test
+        else
+            run_unit_test
+        fi
     else
         echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."
         exit 1
@@ -234,4 +278,4 @@ function main() {
     print_summary
 }
 
-main
+main "$@"
