@@ -447,8 +447,8 @@ class DiffusionMixin:
             self.layer_config = {}
 
             # Get new block names for caching
-            if bool(self.quantizer.quant_block_list):
-                all_blocks = self.quantizer.quant_block_list
+            if bool(self.quant_block_list):
+                all_blocks = self.quant_block_list
             else:
                 all_blocks = get_block_names(self.model_context.model)
             if len(all_blocks) == 0:
@@ -486,7 +486,7 @@ class DiffusionMixin:
         self.compress_context.is_immediate_saving = orig_immediate_saving
         self.num_inference_steps = orig_steps
 
-        return self.model_context.model, self.quantizer.layer_config
+        return self.model_context.model, self.layer_config
 
     def save_quantized(
         self,
