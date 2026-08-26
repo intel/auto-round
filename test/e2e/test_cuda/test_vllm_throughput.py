@@ -43,6 +43,7 @@ Run the full (large) matrix::
 
 import json
 import os
+import subprocess
 import time
 from test.e2e.test_cuda.conftest import (  # noqa: E402
     BenchResult,
@@ -102,9 +103,8 @@ def _build_vllm_engine(model_path: str, max_model_len: int, gpu_mem_util: float)
     if not (current_platform.is_cpu() or current_platform.is_xpu() or current_platform.is_cuda()):
         pytest.skip("vLLM tests only run on CPU/XPU/CUDA")
 
-    # ``auto-round`` is registered as a vLLM plugin via entrypoints.  We still
-    # pass ``quantization="auto-round"`` explicitly to make the dependency
-    # obvious in CI logs and to be future-proof against entrypoint changes.
+    # Let vLLM infer quantization backend from the exported checkpoint config.
+    # Newer vLLM versions do not accept legacy aliases like "auto-round".
     return LLM(
         model=model_path,
         quantization="auto-round",
@@ -113,6 +113,7 @@ def _build_vllm_engine(model_path: str, max_model_len: int, gpu_mem_util: float)
         gpu_memory_utilization=gpu_mem_util,
         max_model_len=max_model_len,
         dtype="auto",
+        allow_deprecated_quantization=True,
         enforce_eager=False,
     )
 
@@ -356,5 +357,5 @@ def test_vllm_offline_eval_backend(tmp_path, require_cuda):
     env["NCCL_ASYNC_ERROR_HANDLING"] = "1"
     env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
-    rc = os.system(cmd)
-    assert rc == 0, f"`auto-round --eval_backend vllm` failed (rc={rc})"
+    completed = subprocess.run(cmd, shell=True, env=env, check=False)
+    assert completed.returncode == 0, f"`auto-round --eval_backend vllm` failed (rc={completed.returncode})"
