@@ -37,6 +37,9 @@ class TestDiffusionMixinProperties:
         comp = MockCompressor()
         assert comp._get_calibrator_kind() == "diffusion"
 
+    def test_quantize_does_not_use_removed_quantizer_attribute(self):
+        assert "self.quantizer" not in inspect.getsource(DiffusionMixin.quantize)
+
     def test_pipeline_call_kwargs_extracted_from_kwargs(self):
         class MockCompressor(DiffusionMixin):
             def __init__(self):
