@@ -10,6 +10,7 @@ pytest test/integration/ -v
 
 # Run specific integration tests
 pytest test/integration/test_cpu/ -v
+pytest test/integration/test_xpu/ -v
 pytest test/integration/test_cuda/ -v
 ```
 
@@ -19,3 +20,4 @@ These tests run in the **nightly** CI pipelines:
 
 - CPU integration → `.azure-pipelines/nightly-test.yml`
 - XPU integration → `.azure-pipelines/nightly-test-xpu.yml`
+- CUDA integration → `.azure-pipelines/nightly-test-cuda.yml`
