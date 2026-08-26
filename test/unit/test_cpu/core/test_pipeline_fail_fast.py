@@ -17,7 +17,7 @@ from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
-
+from types import SimpleNamespace
 
 class PartialSharedConfig(RTNConfig):
     def __init__(self, *, weight_clip_ratio=None, **kwargs):
