@@ -32,7 +32,9 @@ class TestSpecialModelHandlerGpu:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_moe_gate_ignore_layers(self, tiny_qwen_moe_model_path):
-        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_moe_model_path, trust_remote_code=True).to("cuda")
+        # Ignore-layer discovery is architecture-only; avoid a needless CUDA
+        # transfer in this smoke test.
+        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_moe_model_path, trust_remote_code=True)
         layers = get_predefined_ignore_layers(model)
         assert any(".gate" in name for name in layers), f"No MoE gate ignore layers found: {layers}"
 
@@ -59,7 +61,7 @@ class TestSpecialModelHandlerGpu:
 
     def test_non_special_model_ignore_layers_empty(self, tiny_opt_model_path):
         """A plain OPT model is not special: no predefined ignore layers are returned."""
-        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, trust_remote_code=True).to("cuda")
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
         layers = get_predefined_ignore_layers(model)
         assert layers == []
 

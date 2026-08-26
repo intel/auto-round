@@ -36,6 +36,8 @@ parameters:
         PART: 0
       part1:
         PART: 1
+      part2:
+        PART: 2
 
 stages:
   - ${{ each pair in parameters.matrix }}:

@@ -173,6 +173,7 @@ class TestAutoRoundMarlinBackend:
     #     shutil.rmtree("./saved", ignore_errors=True)
 
     @require_gptqmodel
+    @pytest.mark.skip_ci(reason="AWQ Marlin is a format/backend matrix case; standard Marlin smoke remains in PR CI")
     @pytest.mark.timeout(90)
     def test_gptqmodel_awq_marlin_4bits_sym(self):
         """Test AWQ quantization with gptqmodel:awq_marlin backend (sym-only, float16)."""
