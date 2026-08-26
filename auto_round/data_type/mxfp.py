@@ -260,6 +260,8 @@ def compute_mx_v_scale(scaled_tensor, ebits, mbits):
         private_exp = torch.zeros_like(abs_t)
     # step = 2^(private_exp - (mbits-2))
     step = torch.pow(2.0, private_exp - float(mbits - 2))
+    # If step <= 1, use 1; keep values > 1 unchanged
+    step = torch.where(step <= 1.0, torch.ones_like(step), step)
     return step.detach()
 
 
