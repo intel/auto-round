@@ -1,4 +1,6 @@
 #!/bin/bash
+# This script used for weekly unit test on CUDA environment, and will not be triggered by PR or CI pipeline. 
+# CI related cuda UT could be found in .azure-pipelines/scripts/cuda_unit_test. 
 set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
