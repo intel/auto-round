@@ -115,6 +115,34 @@ class DiffusionMixin:
         # Call parent class __init__ (will be Compressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
 
+        pipe = getattr(self.model_context, "pipe", None)
+        model = getattr(self.model_context, "model", None)
+        if (
+            getattr(self.model_context, "preloaded_diffusion_pipeline", False)
+            and pipe is not None
+            and model is not None
+        ):
+            self._align_pipeline_dtype(pipe, model.dtype)
+
+    @staticmethod
+    def _align_pipeline_dtype(pipe, target_dtype) -> None:
+        """Align a preloaded pipeline without casting declared FP32 tensors."""
+
+        for component_name in pipe.components:
+            component = getattr(pipe, component_name, None)
+            if not isinstance(component, torch.nn.Module):
+                continue
+
+            fp32_modules = getattr(component, "_keep_in_fp32_modules", None) or []
+            tensors = list(component.named_parameters()) + list(component.named_buffers())
+            for tensor_name, tensor in tensors:
+                if not tensor.is_floating_point():
+                    continue
+                keep_in_fp32 = any(module_name in tensor_name for module_name in fp32_modules)
+                desired_dtype = torch.float32 if keep_in_fp32 else target_dtype
+                if tensor.dtype != desired_dtype:
+                    tensor.data = tensor.data.to(dtype=desired_dtype)
+
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
 
