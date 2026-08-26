@@ -85,7 +85,7 @@ function run_common_group() {
 
     if [ -n "${group_tests}" ]; then
         echo "##[group]Running common tests (${group_name})..."
-        local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
+        local ut_log_name="${LOG_DIR}/unittest_cuda_common_${group_name}.log"
         pytest -m "not skip_ci" \
             --cov=auto_round --cov-report= --cov-append \
             -vs --junitxml="${ut_log_name%.log}.xml" \
