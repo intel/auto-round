@@ -54,6 +54,8 @@ class BasicTransformerBlock(torch.nn.Module):
         super().__init__()
         self.attn1 = torch.nn.Module()
         self.attn1.to_q = torch.nn.Linear(32, 16)
+        self.attn1.to_k = torch.nn.Linear(32, 16)
+        self.attn1.to_v = torch.nn.Linear(32, 16)
         self.attn2 = torch.nn.Module()
         self.attn2.to_k = torch.nn.Linear(32, 16)
 
@@ -241,4 +243,8 @@ def test_sdxl_targets_resolve_when_model_is_attached_after_prepare_run():
     transform.pre_quantize_block(ctx)
 
     assert isinstance(model.blocks[0].attn1.to_q, SVDQuantLinear)
+    assert isinstance(model.blocks[0].attn1.to_k, SVDQuantLinear)
+    assert isinstance(model.blocks[0].attn1.to_v, SVDQuantLinear)
+    torch.testing.assert_close(model.blocks[0].attn1.to_q.lora_down.weight, model.blocks[0].attn1.to_k.lora_down.weight)
+    torch.testing.assert_close(model.blocks[0].attn1.to_q.lora_down.weight, model.blocks[0].attn1.to_v.lora_down.weight)
     assert isinstance(model.blocks[0].attn2.to_k, torch.nn.Linear)
