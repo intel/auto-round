@@ -12,12 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+
+import pytest
 import torch
 
 from auto_round.export.svdquant_adapters import (
     SDXL_SVDQUANT_TARGET_MODULES,
     detect_svdquant_model_adapter,
 )
+from auto_round.export.svdquant_adapters.sdxl import SDXLSVDQuantNunchakuAdapter
+from auto_round.export.svdquant_nunchaku import SourceLinearRecord, SVDQuantLinearScheme
+
+SCHEME = SVDQuantLinearScheme("mx_fp4", 4, 32, True, "mx_fp4", 4, 32, True, True)
 
 
 class ConfiguredModel(torch.nn.Module):
@@ -26,15 +33,49 @@ class ConfiguredModel(torch.nn.Module):
         self.config = config
 
 
-def test_detects_sdxl_unet_from_runtime_relevant_config():
-    model = ConfiguredModel(
-        {
-            "_class_name": "UNet2DConditionModel",
-            "addition_embed_type": "text_time",
-            "cross_attention_dim": 2048,
-            "projection_class_embeddings_input_dim": 2816,
-        }
+class BasicTransformerBlock(torch.nn.Module):
+    pass
+
+
+def _install(root, path, module):
+    current = root
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if not hasattr(current, part):
+            current.add_module(part, torch.nn.Module())
+        current = getattr(current, part)
+    current.add_module(parts[-1], module)
+
+
+def _sdxl_config():
+    return {
+        "_class_name": "UNet2DConditionModel",
+        "addition_embed_type": "text_time",
+        "cross_attention_dim": 2048,
+        "projection_class_embeddings_input_dim": 2816,
+    }
+
+
+def _source(name, out_features=8, in_features=8, rank=2, seed=0, bias=True):
+    generator = torch.Generator().manual_seed(seed)
+    return SourceLinearRecord(
+        name=name,
+        residual_weight=torch.randn(out_features, in_features, generator=generator),
+        lora_down=torch.randn(rank, in_features, generator=generator),
+        lora_up=torch.randn(out_features, rank, generator=generator),
+        smooth=torch.linspace(0.5, 1.5, in_features),
+        smooth_orig=torch.linspace(0.75, 1.75, in_features),
+        bias=torch.randn(out_features, generator=generator) if bias else None,
+        scheme=SCHEME,
     )
+
+
+def _effective(source):
+    return (source.residual_weight + source.lora_up @ source.lora_down) * source.smooth
+
+
+def test_detects_sdxl_unet_from_runtime_relevant_config():
+    model = ConfiguredModel(_sdxl_config())
 
     assert detect_svdquant_model_adapter(model) == "sdxl"
 
@@ -62,3 +103,75 @@ def test_sdxl_target_allowlist_matches_nunchaku_patched_linears():
         "ff.net.2",
     }
 
+
+def test_sdxl_maps_direct_linears_and_fuses_self_attention_qkv():
+    prefix = "down_blocks.1.attentions.0.transformer_blocks.0"
+    qkv = tuple(_source(f"{prefix}.attn1.to_{name}", seed=index + 1) for index, name in enumerate("qkv"))
+    direct = _source(f"{prefix}.attn2.to_q", seed=9)
+    adapter = SDXLSVDQuantNunchakuAdapter(require_complete_model=False)
+
+    records = tuple(adapter.map_modules(ConfiguredModel(_sdxl_config()), (*qkv, direct)))
+
+    assert [record.prefix for record in records] == [f"{prefix}.attn1.to_qkv", f"{prefix}.attn2.to_q"]
+    fused = records[0]
+    assert fused.sources == qkv
+    assert fused.lora_down.shape[0] == 2
+    expected = torch.cat([_effective(source) for source in qkv])
+    actual = (fused.residual_weight + fused.lora_up @ fused.lora_down) * fused.smooth
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(fused.bias, torch.cat([source.bias for source in qkv]))
+    assert records[1].sources == (direct,)
+
+
+def test_sdxl_preserves_shared_qkv_decomposition_without_recomposing():
+    prefix = "mid_block.attentions.0.transformer_blocks.0"
+    shared_down = torch.randn(2, 8)
+    shared_smooth = torch.linspace(0.5, 1.5, 8)
+    shared_smooth_orig = torch.linspace(0.75, 1.75, 8)
+    sources = tuple(_source(f"{prefix}.attn1.to_{name}", seed=index + 11) for index, name in enumerate("qkv"))
+    sources = tuple(
+        SourceLinearRecord(
+            name=source.name,
+            residual_weight=source.residual_weight,
+            lora_down=shared_down.clone(),
+            lora_up=source.lora_up,
+            smooth=shared_smooth.clone(),
+            smooth_orig=shared_smooth_orig.clone(),
+            bias=source.bias,
+            scheme=source.scheme,
+        )
+        for source in sources
+    )
+
+    (record,) = tuple(
+        SDXLSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(
+            ConfiguredModel(_sdxl_config()), sources
+        )
+    )
+
+    torch.testing.assert_close(record.residual_weight, torch.cat([source.residual_weight for source in sources]))
+    torch.testing.assert_close(record.lora_down, shared_down)
+    torch.testing.assert_close(record.lora_up, torch.cat([source.lora_up for source in sources]))
+    torch.testing.assert_close(record.smooth, shared_smooth)
+    torch.testing.assert_close(record.smooth_orig, shared_smooth_orig)
+
+
+def test_sdxl_metadata_names_runtime_model_and_serializes_config():
+    model = ConfiguredModel(_sdxl_config())
+
+    metadata = SDXLSVDQuantNunchakuAdapter(require_complete_model=False).metadata(model, rank=32)
+
+    assert metadata["model_class"] == "NunchakuSDXLUNet2DConditionModel"
+    assert metadata["format"] == "pt"
+    assert metadata["comfy_config"] == "{}"
+    assert json.loads(metadata["config"]) == _sdxl_config()
+
+
+def test_complete_sdxl_mapping_rejects_missing_runtime_projection():
+    prefix = "down_blocks.1.attentions.0.transformer_blocks.0"
+    sources = tuple(_source(f"{prefix}.attn1.to_{name}", seed=index + 1) for index, name in enumerate("qkv"))
+    model = ConfiguredModel(_sdxl_config())
+    _install(model, prefix, BasicTransformerBlock())
+
+    with pytest.raises(ValueError, match="coverage.*missing"):
+        tuple(SDXLSVDQuantNunchakuAdapter(require_complete_model=True).map_modules(model, sources))

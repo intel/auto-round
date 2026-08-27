@@ -28,7 +28,11 @@ from auto_round.export.svdquant_adapters.flux import (
     FluxSVDQuantNunchakuAdapter,
     flux_onefile_tensor_count,
 )
-from auto_round.export.svdquant_adapters.sdxl import SDXL_SVDQUANT_TARGET_MODULES
+from auto_round.export.svdquant_adapters.sdxl import (
+    SDXL_SVDQUANT_TARGET_MODULES,
+    SDXLSVDQuantNunchakuAdapter,
+    is_sdxl_unet_config,
+)
 
 
 def _model_config(model: torch.nn.Module) -> dict:
@@ -50,13 +54,7 @@ def detect_svdquant_model_adapter(model: torch.nn.Module) -> str:
     class_name = str(config.get("_class_name", type(model).__name__)).lower()
     if "fluxtransformer" in class_name:
         return "flux"
-    is_unet = class_name == "unet2dconditionmodel" or type(model).__name__ == "UNet2DConditionModel"
-    if (
-        is_unet
-        and config.get("addition_embed_type") == "text_time"
-        and config.get("cross_attention_dim") == 2048
-        and config.get("projection_class_embeddings_input_dim") == 2816
-    ):
+    if is_sdxl_unet_config(config, type(model).__name__):
         return "sdxl"
     return "identity"
 
@@ -81,6 +79,12 @@ def resolve_svdquant_model_adapter(
             decomposition_device=decomposition_device,
             require_complete_model=True,
         )
+    if normalized == "sdxl":
+        return SDXLSVDQuantNunchakuAdapter(
+            config=config or None,
+            decomposition_device=decomposition_device,
+            require_complete_model=True,
+        )
     return IdentitySVDQuantModelAdapter()
 
 
@@ -88,6 +92,7 @@ __all__ = [
     "FLUX_TOP_LEVEL_TENSOR_KEYS",
     "FLUX_SVDQUANT_TARGET_MODULES",
     "SDXL_SVDQUANT_TARGET_MODULES",
+    "SDXLSVDQuantNunchakuAdapter",
     "FluxSVDQuantNunchakuAdapter",
     "detect_svdquant_model_adapter",
     "flux_onefile_tensor_count",
