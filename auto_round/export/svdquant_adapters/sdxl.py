@@ -279,5 +279,65 @@ class SDXLSVDQuantNunchakuAdapter:
         if len(prefixes) != len(set(prefixes)):
             raise ValueError("SDXL adapter produced duplicate logical record prefixes")
 
+    def extra_tensors(self, model: torch.nn.Module) -> Mapping[str, torch.Tensor]:
+        """Copy every runtime tensor not replaced by an SVDQW4A4Linear."""
+
+        from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+        quantized_prefixes = tuple(
+            f"{name}." for name, module in model.named_modules() if name and isinstance(module, SVDQuantLinear)
+        )
+        tensors: dict[str, torch.Tensor] = {}
+        for name, tensor in model.state_dict().items():
+            if name.startswith(quantized_prefixes):
+                continue
+            value = tensor.detach()
+            if value.is_floating_point():
+                value = value.to(torch.bfloat16)
+            tensors[name] = value.cpu().contiguous()
+        self._passthrough_keys = frozenset(tensors)
+        return tensors
+
+    def validate(self, tensors: Mapping[str, torch.Tensor], metadata: Mapping[str, str]) -> None:
+        if metadata.get("model_class") != "NunchakuSDXLUNet2DConditionModel":
+            raise ValueError("SDXL metadata has incorrect model_class")
+        if metadata.get("format") != "pt" or metadata.get("comfy_config") != "{}":
+            raise ValueError("SDXL metadata requires format='pt' and empty comfy_config")
+        try:
+            config = json.loads(metadata["config"])
+        except (KeyError, json.JSONDecodeError) as exc:
+            raise ValueError("SDXL metadata config must be a JSON object") from exc
+        if not isinstance(config, dict) or not is_sdxl_unet_config(config):
+            raise ValueError("SDXL metadata config must describe an SDXL UNet")
+
+        passthrough_keys = getattr(self, "_passthrough_keys", frozenset())
+        missing_passthrough = passthrough_keys - tensors.keys()
+        if missing_passthrough:
+            raise ValueError(f"SDXL artifact is missing passthrough tensors: {sorted(missing_passthrough)[:5]}")
+        internal_markers = (".residual_linear.", ".lora_down.", ".lora_up.")
+        for key, tensor in tensors.items():
+            if any(marker in key for marker in internal_markers):
+                raise ValueError(f"SDXL artifact exposes wrapper-internal tensor {key!r}")
+            if tensor.device.type != "cpu" or not tensor.is_contiguous():
+                raise ValueError(f"SDXL tensor {key!r} must be contiguous on CPU")
+            if tensor.is_floating_point() and not bool(torch.isfinite(tensor).all()):
+                raise ValueError(f"SDXL tensor {key!r} must be finite")
+            if key in passthrough_keys:
+                continue
+            if key.endswith(".qweight"):
+                if tensor.dtype != torch.int8 or tensor.ndim != 2:
+                    raise ValueError(f"SDXL qweight {key!r} must be 2D int8")
+            elif key.endswith(".wscales"):
+                if tensor.dtype != torch.uint8 or tensor.ndim != 2:
+                    raise ValueError(f"SDXL wscales {key!r} must be 2D uint8")
+            elif key.endswith((".lora_down", ".lora_up")):
+                if tensor.dtype != torch.bfloat16 or tensor.ndim != 2:
+                    raise ValueError(f"SDXL low-rank tensor {key!r} must be 2D BF16")
+            elif key.endswith((".smooth", ".smooth_orig", ".bias")):
+                if tensor.dtype != torch.bfloat16 or tensor.ndim != 1:
+                    raise ValueError(f"SDXL vector tensor {key!r} must be 1D BF16")
+            else:
+                raise ValueError(f"SDXL artifact contains unknown packed tensor {key!r}")
+
 
 __all__ = ["SDXL_SVDQUANT_TARGET_MODULES", "SDXLSVDQuantNunchakuAdapter", "is_sdxl_unet_config"]

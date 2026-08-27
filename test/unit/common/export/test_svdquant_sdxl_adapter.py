@@ -22,7 +22,13 @@ from auto_round.export.svdquant_adapters import (
     detect_svdquant_model_adapter,
 )
 from auto_round.export.svdquant_adapters.sdxl import SDXLSVDQuantNunchakuAdapter
-from auto_round.export.svdquant_nunchaku import SourceLinearRecord, SVDQuantLinearScheme
+from auto_round.export.svdquant_nunchaku import (
+    SourceLinearRecord,
+    SVDQuantExportConfig,
+    SVDQuantLinearScheme,
+    collect_svdquant_tensors,
+    save_svdquant_nunchaku_safetensors,
+)
 
 SCHEME = SVDQuantLinearScheme("mx_fp4", 4, 32, True, "mx_fp4", 4, 32, True, True)
 
@@ -72,6 +78,21 @@ def _source(name, out_features=8, in_features=8, rank=2, seed=0, bias=True):
 
 def _effective(source):
     return (source.residual_weight + source.lora_up @ source.lora_down) * source.smooth
+
+
+def _wrapped_linear(in_features=32, out_features=8, rank=2):
+    from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+    residual = torch.nn.Linear(in_features, out_features)
+    residual.data_type, residual.bits, residual.group_size, residual.sym = "mx_fp4", 4, 32, True
+    residual.act_data_type, residual.act_bits, residual.act_group_size = "mx_fp4", 4, 32
+    residual.act_sym, residual.act_dynamic = True, True
+    return SVDQuantLinear(
+        residual,
+        torch.nn.Linear(in_features, rank, bias=False),
+        torch.nn.Linear(rank, out_features, bias=False),
+        torch.linspace(0.5, 1.5, in_features),
+    )
 
 
 def test_detects_sdxl_unet_from_runtime_relevant_config():
@@ -175,3 +196,30 @@ def test_complete_sdxl_mapping_rejects_missing_runtime_projection():
 
     with pytest.raises(ValueError, match="coverage.*missing"):
         tuple(SDXLSVDQuantNunchakuAdapter(require_complete_model=True).map_modules(model, sources))
+
+
+def test_sdxl_export_preserves_float_unet_state_without_wrapper_internal_keys(tmp_path):
+    from safetensors import safe_open
+
+    prefix = "down_blocks.1.attentions.0.transformer_blocks.0"
+    model = ConfiguredModel(_sdxl_config())
+    _install(model, f"{prefix}.attn2.to_q", _wrapped_linear())
+    _install(model, f"{prefix}.attn2.to_k", torch.nn.Linear(32, 8))
+    _install(model, "conv_in", torch.nn.Conv2d(4, 8, kernel_size=3, padding=1))
+    adapter = SDXLSVDQuantNunchakuAdapter(require_complete_model=False)
+    config = SVDQuantExportConfig(runtime_loadable=True)
+
+    tensors = collect_svdquant_tensors(model, adapter=adapter, config=config)
+    path = tmp_path / "sdxl.safetensors"
+    save_svdquant_nunchaku_safetensors(model, str(path), adapter=adapter, config=config)
+
+    assert f"{prefix}.attn2.to_k.weight" in tensors
+    assert f"{prefix}.attn2.to_k.bias" in tensors
+    assert "conv_in.weight" in tensors
+    assert "conv_in.bias" in tensors
+    assert not any(".residual_linear." in key or ".lora_down." in key or ".lora_up." in key for key in tensors)
+    assert all(tensor.device.type == "cpu" and tensor.is_contiguous() for tensor in tensors.values())
+    with safe_open(path, framework="pt") as handle:
+        assert set(handle.keys()) == set(tensors)
+        assert handle.metadata()["model_class"] == "NunchakuSDXLUNet2DConditionModel"
+        assert handle.get_tensor("conv_in.weight").dtype == torch.bfloat16
