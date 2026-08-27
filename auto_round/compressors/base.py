@@ -81,7 +81,6 @@ from auto_round.utils.device import (
 from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
 from auto_round.utils.offload import OffloadManager
 
-
 # ``torch.compile`` only pays for itself when the compiled quant function is
 # replayed many times.  Below this many SignRound iterations the one-off
 # compilation cost dominates, so compiling is pure overhead.
@@ -1236,8 +1235,7 @@ class BaseOrchestrator(object):
             if disabled_reason is not None:
                 self.enable_torch_compile = False
                 logger.warning_once(
-                    "reset enable_torch_compile to `False` as %s, "
-                    "so compilation cost would outweigh its benefit",
+                    "reset enable_torch_compile to `False` as %s, " "so compilation cost would outweigh its benefit",
                     disabled_reason,
                 )
 
