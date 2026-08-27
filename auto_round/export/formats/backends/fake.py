@@ -17,6 +17,7 @@ from typing import Any, Callable, Union
 
 import torch
 
+from auto_round import envs
 from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -79,6 +80,20 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
+        if not envs.AR_SAVE_FAKE_MODEL:
+            logger.warning(
+                "AR_SAVE_FAKE_MODEL=0 (default): skipping fake-format save and module replacement. "
+                "The in-memory tuned model is used directly for evaluation. "
+                "Set AR_SAVE_FAKE_MODEL=1 to enable saving."
+            )
+            return model
+        logger.warning(
+            "AR_SAVE_FAKE_MODEL=1: saving fake-quantized model to disk. "
+            "When loading this checkpoint later, the quantization config must match exactly; "
+            "a mismatch may cause unexpected behaviour. "
+            "If you encounter a loading issue, please open an issue at "
+            "https://github.com/intel/auto-round/issues."
+        )
         has_meta_device = unsupported_meta_device(model)
         if not inplace and not has_meta_device:
             model = copy.deepcopy(model.to("cpu"))

@@ -211,6 +211,17 @@ export AR_SCHEME_MEM_INVENTORY=1
 export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 ```
 
+### AR_SAVE_FAKE_MODEL
+- **描述**：控制 `fake` 导出格式是否将量化模型保存到磁盘，并将内存中的模块替换为 `FakeActQuantLinear`。禁用时（默认），调优后的模型直接用于评估，不做任何模块替换或磁盘写入，适合快速 eval 循环。启用时，执行完整的保存 + 模块替换流程，生成以 `auto_round:fake` 打包格式存储的可加载 checkpoint。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用；其他值表示禁用
+- **用法**：调优后快速评估时保持默认（或设为 `0`）。仅当需要持久化 fake 量化 checkpoint 时才设为 `1`。
+- **⚠ 警告**：`AR_SAVE_FAKE_MODEL=0` 时模型**不会**被序列化。若之后尝试加载用不同设置保存的 checkpoint，量化配置可能对不上，导致非预期行为。如遇到此类不匹配问题，请[提 issue](https://github.com/intel/auto-round/issues)。
+
+```bash
+export AR_SAVE_FAKE_MODEL=1
+```
+
 ### AR_DISK_STREAM_MODEL
 - **描述**：启用后，`AutoRound(model=<path>, ...)` 会将模型构建为 meta 设备骨架，而不是先把整个 checkpoint 完全加载到 CPU 内存；随后按需从 checkpoint 的 safetensors 分片中流式加载每个解码器块的真实权重——在该块被使用前（校准、调优或 `AutoScheme` 敏感度评分）才实体化，用完后立即释放回 meta。这样峰值 CPU 内存基本保持平稳，而不会随 checkpoint 大小成比例增长。非块参数（embedding、`lm_head`、最终归一化层）体积通常较小，仍会一次性加载。文本模型的 AutoScheme 评分也支持与默认启用的并行评分组合使用；每个 worker 会流式加载自己的 block 副本。
 - **默认值**：`False`
