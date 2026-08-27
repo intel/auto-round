@@ -58,7 +58,8 @@ class _SaveableModel(torch.nn.Module):
             json.dump({"quantization_config": self.config.quantization_config}, config_file)
 
 
-def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
+def test_fake_format_unwraps_quantized_layers_before_save(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_SAVE_FAKE_MODEL", "1")
     model = _SaveableModel()
     expected_weight = model.linear.orig_layer.weight.detach().clone()
     output_dir = str(tmp_path / "fake_model")
@@ -209,7 +210,8 @@ def test_transformers_load_replaces_fake_linear(tmp_path):
     assert not torch.equal(q_proj.qdq_input(activation), activation)
 
 
-def test_fake_format_keeps_woq_packing_format(tmp_path):
+def test_fake_format_keeps_woq_packing_format(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_SAVE_FAKE_MODEL", "1")
     model = _SaveableModel()
     output_dir = str(tmp_path / "woq_model")
 
@@ -234,6 +236,35 @@ def test_fake_format_keeps_woq_packing_format(tmp_path):
 
     assert quantization_config["packing_format"] == "auto_round:auto_gptq"
     assert "act_bits" not in quantization_config
+
+
+def test_fake_format_skips_save_when_env_disabled(tmp_path, monkeypatch):
+    """AR_SAVE_FAKE_MODEL=0 (default): save_quantized returns the model without writing any files."""
+    monkeypatch.setenv("AR_SAVE_FAKE_MODEL", "0")
+    model = _SaveableModel()
+    output_dir = str(tmp_path / "no_save_model")
+
+    returned = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+        inplace=False,
+        serialization_dict={
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nvfp4_v2",
+            "act_bits": 4,
+            "act_group_size": 16,
+            "act_sym": True,
+            "act_data_type": "nvfp4_v2",
+            "to_quant_block_names": ["block"],
+            "supported_types": [torch.nn.Linear],
+        },
+    )
+
+    # Model is returned as-is; nothing written to disk.
+    assert returned is model
+    assert not os.path.exists(output_dir)
 
 
 def test_fake_backend_accepts_mxfp_roundtrip_config():
