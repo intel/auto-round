@@ -1,12 +1,12 @@
 import os
 import shutil
+from test.helpers import transformers_version
 
 import pytest
 import torch
 from packaging import version
 
 from auto_round import AutoRound
-from test.helpers import transformers_version
 
 MODEL_LIST = (
     pytest.param(
