@@ -15,7 +15,6 @@ import importlib
 import re
 import sys
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
@@ -1158,69 +1157,6 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     return list(dict.fromkeys(layers))
 
 
-# ---------------------------------------------------------------------------
-# Architectures that must not run under ``torch.compile``
-# ---------------------------------------------------------------------------
-@dataclass
-class PreDefinedTorchCompileOff:
-    """A rule that force-disables ``torch.compile`` for a family of models."""
-
-    matchers: list[Callable[[Any], bool]]
-    reason: str
-
-
-_PRE_DEFINED_TORCH_COMPILE_OFF: list[PreDefinedTorchCompileOff] = []
-
-
-def register_torch_compile_off(matchers: list[Callable[[Any], bool]], reason: str) -> None:
-    """Register an architecture family for which ``torch.compile`` stays off.
-
-    Any matcher hitting is enough (``any``, not ``all``) so one rule can cover
-    several equivalent identifiers (model_type and architecture name).
-    """
-    _PRE_DEFINED_TORCH_COMPILE_OFF.append(PreDefinedTorchCompileOff(matchers, reason))
-
-
-def get_torch_compile_off_reason(model_or_config: Any) -> str | None:
-    """Return why ``torch.compile`` must stay off for this model, else ``None``.
-
-    Accepts either a model (anything with ``.config``) or a bare config object so
-    it can be queried before the weights are materialized.
-    """
-    if model_or_config is None:
-        return None
-
-    # The matchers read ``obj.config``; wrap a bare config so both forms work.
-    proxy = model_or_config if hasattr(model_or_config, "config") else SimpleNamespace(config=model_or_config)
-
-    for rule in _PRE_DEFINED_TORCH_COMPILE_OFF:
-        if any(matcher(proxy) for matcher in rule.matchers):
-            return rule.reason
-    return None
-
-
-# DeepSeek V2/V3/V3.2/V4: MLA + fused MoE + the DSA indexer produce shape-dependent
-# control flow, so torch.compile keeps recompiling (or graph-breaks) per block and
-# ends up slower than eager while consuming extra host memory.
-register_torch_compile_off(
-    matchers=[
-        ModelTypeMatcher("deepseek", mode="in"),
-        ArchitectureMatcher("Deepseek", mode="in"),
-        ArchitectureMatcher("DeepSeek", mode="in"),
-    ],
-    reason="`torch.compile` is not supported on DeepSeek architectures",
-)
-
-# GLM-5.3-Flash: ``glm5_next`` (VLM) / ``glm_moe_dsa`` (text) share the same DSA
-# indexer + hybrid linear-attention blocks and hit the same recompilation issue.
-register_torch_compile_off(
-    matchers=[
-        ModelTypeMatcher(r"glm5_next", mode="full"),
-        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
-        ArchitectureMatcher(r"Glm5Next", mode="in"),
-    ],
-    reason="`torch.compile` is not supported on the GLM-5.3-Flash architecture",
-)
 
 
 def _attach_gemma4_rotary_emb(model):

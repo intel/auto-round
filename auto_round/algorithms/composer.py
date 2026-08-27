@@ -199,6 +199,7 @@ class AlgorithmComposer:
                     ", ".join(blockers),
                 )
 
+
             if _has_nvfp4_layer(orchestrator):
                 can_compile_block_forward = False
                 logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
