@@ -1,11 +1,13 @@
 import inspect
 import logging
+from types import SimpleNamespace
 
 from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import MIN_ITERS_FOR_TORCH_COMPILE, BaseOrchestrator
 from auto_round.logger import logger
+from auto_round.special_model_handler import get_torch_compile_off_reason
 from auto_round.utils.device_manager import default_enable_torch_compile
 
 
@@ -191,3 +193,43 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         enable_torch_compile=False,
     )
     assert not ar.enable_torch_compile
+
+
+def test_torch_compile_off_for_unsupported_architectures():
+    """DeepSeek / GLM-5.3-Flash blocks recompile endlessly, so compilation stays off."""
+    for model_type in ("deepseek_v2", "deepseek_v3", "deepseek_v32", "glm5_next", "glm_moe_dsa"):
+        config = SimpleNamespace(model_type=model_type, architectures=[])
+        assert get_torch_compile_off_reason(config) is not None, model_type
+
+    # Architecture name alone is enough when model_type is unavailable.
+    assert (
+        get_torch_compile_off_reason(SimpleNamespace(model_type="", architectures=["Glm5NextForConditionalGeneration"]))
+        is not None
+    )
+    assert (
+        get_torch_compile_off_reason(SimpleNamespace(model_type="", architectures=["DeepseekV3ForCausalLM"]))
+        is not None
+    )
+
+    # Unrelated architectures (including other GLM variants) keep torch.compile.
+    assert get_torch_compile_off_reason(SimpleNamespace(model_type="qwen3", architectures=["Qwen3ForCausalLM"])) is None
+    assert get_torch_compile_off_reason(SimpleNamespace(model_type="glm4", architectures=["Glm4ForCausalLM"])) is None
+    assert get_torch_compile_off_reason(None) is None
+
+
+def test_unsupported_arch_overrides_explicit_torch_compile(tiny_opt_model_path):
+    """The architecture block is a hard rule: an explicit opt-in cannot re-enable it."""
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme="W4A16",
+        iters=MIN_ITERS_FOR_TORCH_COMPILE,
+        nsamples=1,
+        enable_torch_compile=True,
+    )
+    assert ar.enable_torch_compile
+
+    ar.model_context.config = SimpleNamespace(model_type="glm5_next", architectures=["Glm5NextForConditionalGeneration"])
+    ar._apply_torch_compile_constraints(True)
+    assert not ar.enable_torch_compile
+    assert "GLM-5.3-Flash" in ar._torch_compile_off_reason
+

@@ -1179,12 +1179,30 @@ class BaseOrchestrator(object):
             and not is_raw_nv_fp
             and not is_valid_act_static
             and self._torch_compile_disabled_reason(ignore_user_override=True) is None
+            and self._torch_compile_unsupported_arch_reason() is None
             and self.need_calib
         ):
             logger.info(
                 "%s",
                 "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
+
+    def _torch_compile_unsupported_arch_reason(self) -> Optional[str]:
+        """Return why the *architecture* forbids ``torch.compile``, else ``None``.
+
+        Unlike the algorithm heuristics in ``_torch_compile_disabled_reason`` these
+        are hard incompatibilities (endless recompiles / graph breaks on DeepSeek and
+        GLM-5.3-Flash style DSA blocks), so an explicit ``enable_torch_compile=True``
+        does not override them.
+        """
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        # Prefer the pre-loaded config: it is available even when the model itself
+        # has not been materialized yet.
+        config = getattr(getattr(self, "model_context", None), "config", None)
+        if config is None:
+            config = getattr(getattr(self, "model", None), "config", None)
+        return get_torch_compile_off_reason(config)
 
     def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> Optional[str]:
         """Return why torch.compile must stay off for the current algorithm, else None.
@@ -1245,6 +1263,15 @@ class BaseOrchestrator(object):
             self.enable_torch_compile = False
             self._torch_compile_off_reason = "activation is static"
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
+
+        # Architecture-level hard blocks (DeepSeek, GLM-5.3-Flash, ...) are not
+        # overridable by the user, unlike the algorithm heuristics below.
+        if self.enable_torch_compile:
+            unsupported_reason = self._torch_compile_unsupported_arch_reason()
+            if unsupported_reason is not None:
+                self.enable_torch_compile = False
+                self._torch_compile_off_reason = unsupported_reason
+                logger.warning_once("reset enable_torch_compile to `False` as %s", unsupported_reason)
 
         if self.enable_torch_compile:
             disabled_reason = self._torch_compile_disabled_reason()
