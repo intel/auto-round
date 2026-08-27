@@ -375,23 +375,12 @@ class BaseOrchestrator(object):
         if enable_torch_compile is None:
             enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
             if not enable_torch_compile:
-                # Device values may include an ordinal (for example,
-                # ``xpu:0``), so normalize before selecting the backend
-                # specific warning message.
-                device_type = str(self.device).split(":", 1)[0]
-                if device_type == "xpu":
-                    self._torch_compile_default_off_reason = "it is off by default on XPU"
-                    logger.warning_once(
-                        "`torch.compile` is disabled by default on XPU for compatibility. "
-                        "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
-                    )
-                else:
-                    self._torch_compile_default_off_reason = "it is off by default on Windows"
-                    logger.warning_once(
-                        "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
-                        "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
-                        "`--enable_torch_compile` to force enable it."
-                    )
+                self._torch_compile_default_off_reason = "it is off by default on Windows"
+                logger.warning_once(
+                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                    "`--enable_torch_compile` to force enable it."
+                )
         elif enable_torch_compile and sys.platform == "win32":
             logger.warning_once(
                 "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
