@@ -215,9 +215,11 @@ class SDXLSVDQuantNunchakuAdapter:
                 lora_up=up.to(dtype=template.lora_up.dtype).cpu().contiguous(),
                 smooth=torch.ones(weight.shape[1], dtype=template.smooth.dtype).cpu(),
                 smooth_orig=torch.ones(weight.shape[1], dtype=template.smooth_orig.dtype).cpu(),
-                bias=_fused_bias(prefix, sources, self.decomposition_device).cpu().contiguous()
-                if sources[0].bias is not None
-                else None,
+                bias=(
+                    _fused_bias(prefix, sources, self.decomposition_device).cpu().contiguous()
+                    if sources[0].bias is not None
+                    else None
+                ),
                 scheme=template.scheme,
                 sources=sources,
             )

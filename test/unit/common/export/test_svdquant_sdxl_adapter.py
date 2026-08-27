@@ -165,9 +165,7 @@ def test_sdxl_preserves_shared_qkv_decomposition_without_recomposing():
     )
 
     (record,) = tuple(
-        SDXLSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(
-            ConfiguredModel(_sdxl_config()), sources
-        )
+        SDXLSVDQuantNunchakuAdapter(require_complete_model=False).map_modules(ConfiguredModel(_sdxl_config()), sources)
     )
 
     torch.testing.assert_close(record.residual_weight, torch.cat([source.residual_weight for source in sources]))

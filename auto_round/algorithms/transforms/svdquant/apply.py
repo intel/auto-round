@@ -158,10 +158,15 @@ class SVDQuantTransform(BasePreprocessor):
             from auto_round.export.svdquant_adapters import detect_svdquant_model_adapter
 
             model_adapter = detect_svdquant_model_adapter(model) if model is not None else "identity"
-            if model_adapter == "identity" and block is not None and block.__class__.__name__ in {
-                "FluxTransformerBlock",
-                "FluxSingleTransformerBlock",
-            }:
+            if (
+                model_adapter == "identity"
+                and block is not None
+                and block.__class__.__name__
+                in {
+                    "FluxTransformerBlock",
+                    "FluxSingleTransformerBlock",
+                }
+            ):
                 model_adapter = "flux"
         if model is not None:
             model._autoround_svdquant_model_adapter = model_adapter
