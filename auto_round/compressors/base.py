@@ -368,6 +368,11 @@ class BaseOrchestrator(object):
 
         self.nblocks = nblocks
 
+        # ``None`` means "not set by the user", which is the only case where the
+        # algorithm-driven auto-disabling below may override the value.
+        self._torch_compile_user_specified = enable_torch_compile is not None
+        # Fallback explanation used by ``_log_torch_compile_state``.
+        self._torch_compile_default_off_reason = None if enable_torch_compile is None else "the user disabled it"
         if enable_torch_compile is None:
             enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
             if not enable_torch_compile:
@@ -376,11 +381,13 @@ class BaseOrchestrator(object):
                 # specific warning message.
                 device_type = str(self.device).split(":", 1)[0]
                 if device_type == "xpu":
+                    self._torch_compile_default_off_reason = "it is off by default on XPU"
                     logger.warning_once(
                         "`torch.compile` is disabled by default on XPU for compatibility. "
                         "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
                     )
                 else:
+                    self._torch_compile_default_off_reason = "it is off by default on Windows"
                     logger.warning_once(
                         "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
                         "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
@@ -1183,7 +1190,7 @@ class BaseOrchestrator(object):
             and not is_debug_mode()
             and not is_raw_nv_fp
             and not is_valid_act_static
-            and self._torch_compile_disabled_reason() is None
+            and self._torch_compile_disabled_reason(ignore_user_override=True) is None
             and self.need_calib
         ):
             logger.info(
@@ -1191,13 +1198,21 @@ class BaseOrchestrator(object):
                 "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
-    def _torch_compile_disabled_reason(self) -> Optional[str]:
+    def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> Optional[str]:
         """Return why torch.compile must stay off for the current algorithm, else None.
 
         RTN and optimized RTN quantize each layer in a single pass, and very short
         SignRound runs (``iters < MIN_ITERS_FOR_TORCH_COMPILE``) finish before the
         compilation cost is amortized, so ``torch.compile`` only adds overhead there.
+
+        This only adjusts the *default*: when the user explicitly passed
+        ``enable_torch_compile``, their choice is always honored.  Pass
+        ``ignore_user_override=True`` to query the algorithm rules alone (used to
+        suppress the "you should enable torch.compile" hint).
         """
+        if not ignore_user_override and getattr(self, "_torch_compile_user_specified", False):
+            return None
+
         quantize_config = getattr(self, "quantize_config", None)
         if quantize_config is None:
             return None
@@ -1224,17 +1239,30 @@ class BaseOrchestrator(object):
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
+        # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
+        # incoming value is already False, keep the reason recorded by the earlier
+        # precheck pass instead of dropping it.
+        self._torch_compile_off_reason = (
+            None
+            if enable_torch_compile
+            else (
+                getattr(self, "_torch_compile_off_reason", None)
+                or getattr(self, "_torch_compile_default_off_reason", None)
+            )
+        )
         _, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
+            self._torch_compile_off_reason = "activation is static"
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
 
         if self.enable_torch_compile:
             disabled_reason = self._torch_compile_disabled_reason()
             if disabled_reason is not None:
                 self.enable_torch_compile = False
+                self._torch_compile_off_reason = disabled_reason
                 logger.warning_once(
                     "reset enable_torch_compile to `False` as %s, "
                     "so compilation cost would outweigh its benefit",
@@ -1256,6 +1284,19 @@ class BaseOrchestrator(object):
         self._apply_torch_compile_constraints(requested_enable_torch_compile)
         if not requested_enable_torch_compile:
             self._maybe_log_torch_compile_default_hint()
+        self._log_torch_compile_state()
+
+    def _log_torch_compile_state(self) -> None:
+        """Always report the final torch.compile decision so a run is self-documenting."""
+        if self.enable_torch_compile:
+            logger.info("`torch.compile` is enabled")
+            return
+
+        reason = getattr(self, "_torch_compile_off_reason", None)
+        if reason is None:
+            logger.info("`torch.compile` is disabled")
+        else:
+            logger.info("`torch.compile` is disabled, as %s", reason)
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""

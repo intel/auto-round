@@ -61,8 +61,12 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
 
-def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path):
+def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path, monkeypatch):
     """RTN / opt-RTN and `iters` < 10 never amortize the torch.compile cost."""
+    # Pin the platform default to "enabled" so the algorithm heuristic is observable
+    # regardless of the host device / OS.
+    monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
+
     # Plain RTN and opt-RTN both resolve to an RTNConfig subclass.
     for disable_opt_rtn in (True, False):
         ar = AutoRound(
@@ -71,45 +75,70 @@ def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path)
             iters=0,
             nsamples=1,
             disable_opt_rtn=disable_opt_rtn,
-            enable_torch_compile=True,
         )
         assert not ar.enable_torch_compile
         assert not ar.compress_context.enable_torch_compile
 
     # SignRound with too few iterations.
     for iters in (1, MIN_ITERS_FOR_TORCH_COMPILE - 1):
-        ar = AutoRound(
-            model=tiny_opt_model_path,
-            scheme="W4A16",
-            iters=iters,
-            nsamples=1,
-            enable_torch_compile=True,
-        )
+        ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=iters, nsamples=1)
         assert not ar.enable_torch_compile
         assert not ar.compress_context.enable_torch_compile
 
     # Enough iterations to pay back the compilation cost.
-    ar = AutoRound(
-        model=tiny_opt_model_path,
-        scheme="W4A16",
-        iters=MIN_ITERS_FOR_TORCH_COMPILE,
-        nsamples=1,
-        enable_torch_compile=True,
-    )
+    ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=MIN_ITERS_FOR_TORCH_COMPILE, nsamples=1)
     assert ar.enable_torch_compile
     assert ar.compress_context.enable_torch_compile
 
 
-def test_torch_compile_kept_for_auto_scheme_with_rtn(tiny_opt_model_path):
+def test_explicit_torch_compile_overrides_algorithm_heuristic(tiny_opt_model_path, monkeypatch):
+    """An explicit `enable_torch_compile` is always honored, even for RTN / tiny iters."""
+    monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: False)
+
+    for kwargs in ({"iters": 0}, {"iters": 1}, {"iters": 0, "disable_opt_rtn": True}):
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            nsamples=1,
+            enable_torch_compile=True,
+            **kwargs,
+        )
+        assert ar.enable_torch_compile
+        assert ar.compress_context.enable_torch_compile
+
+
+def test_torch_compile_state_is_always_logged(tiny_opt_model_path, monkeypatch, caplog):
+    """`post_init` reports the final torch.compile decision on every run."""
+    monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
+    # AutoRound's logger uses a private handler with propagation disabled.
+    monkeypatch.setattr(logger, "propagate", True)
+
+    # RTN turns compilation off, and says why.
+    with caplog.at_level(logging.INFO):
+        ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
+        ar.post_init()
+    assert "`torch.compile` is disabled" in caplog.text
+    assert "single pass" in caplog.text
+
+    # An explicit opt-in is honored and reported as enabled.
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=0,
+            nsamples=1,
+            enable_torch_compile=True,
+        )
+        ar.post_init()
+    assert "`torch.compile` is enabled" in caplog.text
+
+def test_torch_compile_kept_for_auto_scheme_with_rtn(tiny_opt_model_path, monkeypatch):
     """AutoScheme's delta-loss pass still relies on torch.compile to save VRAM."""
+    monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
+
     auto_scheme = AutoScheme(avg_bits=4.0, options=["W4A16"])
-    ar = AutoRound(
-        model=tiny_opt_model_path,
-        scheme=auto_scheme,
-        iters=0,
-        nsamples=1,
-        enable_torch_compile=True,
-    )
+    ar = AutoRound(model=tiny_opt_model_path, scheme=auto_scheme, iters=0, nsamples=1)
     assert ar.enable_torch_compile
 
 
@@ -138,7 +167,7 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         ar = AutoRound(
             model=tiny_opt_model_path,
             scheme="W4A16",
-            iters=200,
+            iters=0,
             nsamples=1,
             enable_torch_compile=True,
         )
