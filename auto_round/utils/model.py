@@ -1394,42 +1394,6 @@ def get_block_names(model, quant_vision=False):
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
-    config = getattr(model, "config", None)
-    config_get = getattr(config, "get", None)
-    if callable(config_get):
-        class_name = str(config_get("_class_name", type(model).__name__)).lower()
-        sdxl_scalar_fields = {
-            "addition_embed_type": "text_time",
-            "cross_attention_dim": 2048,
-            "projection_class_embeddings_input_dim": 2816,
-            "layers_per_block": 2,
-            "sample_size": 128,
-            "in_channels": 4,
-            "out_channels": 4,
-            "use_linear_projection": True,
-        }
-        sdxl_sequence_fields = {
-            "block_out_channels": (320, 640, 1280),
-            "down_block_types": ("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
-            "up_block_types": ("CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"),
-            "transformer_layers_per_block": (1, 2, 10),
-            "attention_head_dim": (5, 10, 20),
-        }
-        is_sdxl_unet = class_name == "unet2dconditionmodel" and all(
-            config_get(name) == expected for name, expected in sdxl_scalar_fields.items()
-        )
-        is_sdxl_unet = is_sdxl_unet and all(
-            tuple(config_get(name, ())) == expected for name, expected in sdxl_sequence_fields.items()
-        )
-        if is_sdxl_unet:
-            block_names = [
-                [name]
-                for name, module in model.named_modules()
-                if name and module.__class__.__name__ == "BasicTransformerBlock"
-            ]
-            if block_names:
-                return block_names
-
     def _search_block(name, module):
         if hasattr(type(module), "__name__") and "ModuleList" in type(module).__name__:
             return [(name, module)]

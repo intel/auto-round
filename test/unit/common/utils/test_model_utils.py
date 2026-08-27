@@ -112,50 +112,6 @@ class TestGetBlockNames:
         assert isinstance(block_names, list)
         assert len(block_names) > 0
 
-    def test_sdxl_uses_basic_transformer_blocks_instead_of_unet_container_lists(self):
-        from auto_round.utils.model import get_block_names
-
-        class BasicTransformerBlock(torch.nn.Module):
-            pass
-
-        class UNet2DConditionModel(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.config = {
-                    "_class_name": "UNet2DConditionModel",
-                    "addition_embed_type": "text_time",
-                    "attention_head_dim": [5, 10, 20],
-                    "block_out_channels": [320, 640, 1280],
-                    "cross_attention_dim": 2048,
-                    "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
-                    "in_channels": 4,
-                    "layers_per_block": 2,
-                    "out_channels": 4,
-                    "projection_class_embeddings_input_dim": 2816,
-                    "sample_size": 128,
-                    "transformer_layers_per_block": [1, 2, 10],
-                    "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
-                    "use_linear_projection": True,
-                }
-                attention = torch.nn.Module()
-                attention.transformer_blocks = torch.nn.ModuleList([BasicTransformerBlock(), BasicTransformerBlock()])
-                down_block = torch.nn.Module()
-                down_block.attentions = torch.nn.ModuleList([attention])
-                self.down_blocks = torch.nn.ModuleList([down_block])
-
-        model = UNet2DConditionModel()
-
-        assert get_block_names(model) == [
-            ["down_blocks.0.attentions.0.transformer_blocks.0"],
-            ["down_blocks.0.attentions.0.transformer_blocks.1"],
-        ]
-
-        model.config["sample_size"] = 64
-        assert get_block_names(model) != [
-            ["down_blocks.0.attentions.0.transformer_blocks.0"],
-            ["down_blocks.0.attentions.0.transformer_blocks.1"],
-        ]
-
 
 class TestGetLmHeadName:
     """Test get_lm_head_name function."""
