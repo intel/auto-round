@@ -32,9 +32,10 @@ def test_sdxl_base_svdquant_mxfp4_loads_and_generates(tmp_path):
     """Quantize the real SDXL Base 1.0 UNet, load it with Nunchaku, and generate one image."""
     pytest.importorskip("diffusers")
     pytest.importorskip("nunchaku")
+    from test.helpers import get_model_path
+
     from diffusers import StableDiffusionXLPipeline
     from nunchaku.models.unets.unet_sdxl import NunchakuSDXLUNet2DConditionModel
-    from test.helpers import get_model_path
 
     from auto_round import AutoRound
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
