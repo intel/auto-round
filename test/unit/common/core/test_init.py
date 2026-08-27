@@ -39,8 +39,8 @@ def test_auto_scheme_inherits_torch_compile_setting():
     assert auto_scheme.enable_torch_compile is None
 
 
-def test_xpu_torch_compile_is_disabled_by_default():
-    assert not default_enable_torch_compile("xpu", platform_name="linux")
+def test_xpu_torch_compile_is_enabled_by_default():
+    assert default_enable_torch_compile("xpu", platform_name="linux")
     assert default_enable_torch_compile("cuda", platform_name="linux")
 
 
