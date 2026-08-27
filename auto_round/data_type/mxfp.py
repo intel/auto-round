@@ -230,6 +230,41 @@ def quant_mx_opt_rtn(
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
+def compute_mx_v_scale(scaled_tensor, ebits, mbits):
+    """Compute per-element v step-scale for MXFP, making v semantics equivalent to INT.
+
+    In INT quantization the grid is uniform (step=1), so v=0.5 is always the rounding
+    decision boundary.  In MXFP the grid step varies with the element's private exponent
+    (e.g. FP4 has step=0.5 near 0 but step=2.0 near max_norm).  Multiplying v by this
+    scale before adding it to the scaled tensor normalises v so that |v|=0.5 still
+    represents "exactly at the decision boundary" for every element, regardless of
+    magnitude — identical semantics to INT.
+
+    The FP-element step at a given level is  2^(private_exp - (mbits-2)).
+    For FP4 (mbits=3): step = 2^(private_exp - 1) → 0.5 / 1.0 / 2.0 for exp 0/1/2.
+
+    Args:
+        scaled_tensor: tensor already divided by the MX shared scale, fp32.
+        ebits: number of exponent bits of the element format.
+        mbits: total bits of the element format (sign + exponent + mantissa).
+
+    Returns:
+        Tensor of same shape with per-element v step-scales (detached, no grad).
+    """
+    abs_t = torch.abs(scaled_tensor)
+    if ebits != 0:
+        min_exp = -(2.0 ** float(ebits - 1)) + 2
+        private_exp = torch.floor(torch.log2(abs_t + (abs_t == 0).to(abs_t.dtype))).clamp(min=min_exp)
+    else:
+        # Integer MX formats: uniform grid, step = 2^(-(mbits-2))
+        private_exp = torch.zeros_like(abs_t)
+    # step = 2^(private_exp - (mbits-2))
+    step = torch.pow(2.0, private_exp - float(mbits - 2))
+    # If step <= 1, use 1; keep values > 1 unchanged
+    step = torch.where(step <= 1.0, torch.ones_like(step), step)
+    return step.detach()
+
+
 def quant_mx(
     tensor,
     bits=4,
@@ -282,9 +317,21 @@ def quant_mx(
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2.0, shared_exp.float())
-    tensor = tensor / scale + v
-    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
-    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
+    scaled = tensor / scale
+
+    if isinstance(v, torch.Tensor) and v.shape == scaled.shape:
+        # Derive per-element grid step from the current scaled values so that
+        # |v|=0.5 always lands on the rounding decision boundary — same semantics
+        # as INT quantization regardless of FP element magnitude.
+        with torch.no_grad():
+            v_scale = compute_mx_v_scale(scaled.clamp(-max_norm, max_norm), ebits, mbits)
+        scaled = scaled + v * v_scale.to(v.dtype)
+    else:
+        # v is a scalar (0 at eval / RTN path): keep original fast path
+        scaled = scaled + v
+
+    scaled = torch.clamp(scaled, min=-max_norm, max=max_norm)
+    tensor = quant_element(scaled, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
