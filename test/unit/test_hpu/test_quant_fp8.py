@@ -1,13 +1,21 @@
 import os
 import shutil
+from test.helpers import transformers_version
 
 import pytest
 import torch
+from packaging import version
 
 from auto_round import AutoRound
 
 MODEL_LIST = (
-    "Qwen/Qwen3-0.6B-FP8",
+    pytest.param(
+        "Qwen/Qwen3-0.6B-FP8",
+        marks=pytest.mark.skipif(
+            version.parse("5.16.0") <= transformers_version < version.parse("5.17.0"),
+            reason="fails with transformers 5.16.x",
+        ),
+    ),
     "Qwen/Qwen3-0.6B",
 )
 
