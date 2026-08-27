@@ -228,8 +228,9 @@ def test_unsupported_arch_overrides_explicit_torch_compile(tiny_opt_model_path):
     )
     assert ar.enable_torch_compile
 
-    ar.model_context.config = SimpleNamespace(model_type="glm5_next", architectures=["Glm5NextForConditionalGeneration"])
+    ar.model_context.config = SimpleNamespace(
+        model_type="glm5_next", architectures=["Glm5NextForConditionalGeneration"]
+    )
     ar._apply_torch_compile_constraints(True)
     assert not ar.enable_torch_compile
     assert "GLM-5.3-Flash" in ar._torch_compile_off_reason
-
