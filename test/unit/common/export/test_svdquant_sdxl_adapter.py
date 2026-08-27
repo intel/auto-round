@@ -135,6 +135,33 @@ def test_does_not_treat_stable_diffusion_v1_unet_as_sdxl():
     assert detect_svdquant_model_adapter(model) == "identity"
 
 
+def test_sdxl_quant_block_list_returns_nested_basic_transformer_blocks_in_named_module_order():
+    model = ConfiguredModel(_sdxl_config())
+    first = "down_blocks.1.attentions.0.transformer_blocks.0"
+    second = "mid_block.attentions.0.transformer_blocks.0"
+    _install(model, first, BasicTransformerBlock())
+    _install(model, second, BasicTransformerBlock())
+
+    assert SDXLSVDQuantNunchakuAdapter().quant_block_list(model) == [[first], [second]]
+
+
+def test_sdxl_quant_block_list_rejects_unsupported_config():
+    config = _sdxl_config()
+    config["sample_size"] = 64
+    model = ConfiguredModel(config)
+    _install(model, "mid_block.attentions.0.transformer_blocks.0", BasicTransformerBlock())
+
+    with pytest.raises(ValueError, match="requires an SDXL UNet2DConditionModel config"):
+        SDXLSVDQuantNunchakuAdapter().quant_block_list(model)
+
+
+def test_sdxl_quant_block_list_rejects_supported_model_without_basic_transformer_blocks():
+    model = ConfiguredModel(_sdxl_config())
+
+    with pytest.raises(ValueError, match="no BasicTransformerBlock"):
+        SDXLSVDQuantNunchakuAdapter().quant_block_list(model)
+
+
 def test_sdxl_target_allowlist_matches_nunchaku_patched_linears():
     assert set(SDXL_SVDQUANT_TARGET_MODULES) == {
         "attn1.to_q",

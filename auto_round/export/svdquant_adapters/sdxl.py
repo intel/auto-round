@@ -182,6 +182,17 @@ class SDXLSVDQuantNunchakuAdapter:
             raise ValueError("SDXL config must be JSON serializable") from exc
         return config
 
+    def quant_block_list(self, model: torch.nn.Module) -> list[list[str]]:
+        self._resolved_config(model)
+        block_names = [
+            [name]
+            for name, module in model.named_modules()
+            if name and type(module).__name__ == "BasicTransformerBlock"
+        ]
+        if not block_names:
+            raise ValueError("SDXL adapter found no BasicTransformerBlock modules")
+        return block_names
+
     def metadata(self, model: torch.nn.Module, rank: int) -> Mapping[str, str]:
         return {
             "model_class": "NunchakuSDXLUNet2DConditionModel",
