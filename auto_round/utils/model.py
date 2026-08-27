@@ -1398,11 +1398,28 @@ def get_block_names(model, quant_vision=False):
     config_get = getattr(config, "get", None)
     if callable(config_get):
         class_name = str(config_get("_class_name", type(model).__name__)).lower()
-        is_sdxl_unet = (
-            class_name == "unet2dconditionmodel"
-            and config_get("addition_embed_type") == "text_time"
-            and config_get("cross_attention_dim") == 2048
-            and config_get("projection_class_embeddings_input_dim") == 2816
+        sdxl_scalar_fields = {
+            "addition_embed_type": "text_time",
+            "cross_attention_dim": 2048,
+            "projection_class_embeddings_input_dim": 2816,
+            "layers_per_block": 2,
+            "sample_size": 128,
+            "in_channels": 4,
+            "out_channels": 4,
+            "use_linear_projection": True,
+        }
+        sdxl_sequence_fields = {
+            "block_out_channels": (320, 640, 1280),
+            "down_block_types": ("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
+            "up_block_types": ("CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"),
+            "transformer_layers_per_block": (1, 2, 10),
+            "attention_head_dim": (5, 10, 20),
+        }
+        is_sdxl_unet = class_name == "unet2dconditionmodel" and all(
+            config_get(name) == expected for name, expected in sdxl_scalar_fields.items()
+        )
+        is_sdxl_unet = is_sdxl_unet and all(
+            tuple(config_get(name, ())) == expected for name, expected in sdxl_sequence_fields.items()
         )
         if is_sdxl_unet:
             block_names = [

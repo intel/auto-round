@@ -36,6 +36,23 @@ _DIRECT_SOURCES = (
     "ff.net.0.proj",
     "ff.net.2",
 )
+_SDXL_BASE_SEQUENCE_FIELDS = {
+    "block_out_channels": (320, 640, 1280),
+    "down_block_types": ("DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"),
+    "up_block_types": ("CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"),
+    "transformer_layers_per_block": (1, 2, 10),
+    "attention_head_dim": (5, 10, 20),
+}
+_SDXL_BASE_SCALAR_FIELDS = {
+    "addition_embed_type": "text_time",
+    "cross_attention_dim": 2048,
+    "projection_class_embeddings_input_dim": 2816,
+    "layers_per_block": 2,
+    "sample_size": 128,
+    "in_channels": 4,
+    "out_channels": 4,
+    "use_linear_projection": True,
+}
 
 SDXL_SVDQUANT_TARGET_MODULES = (
     "attn1.to_q",
@@ -75,15 +92,14 @@ def _normalize_config_paths(value: Any) -> Any:
 
 
 def is_sdxl_unet_config(config: Mapping[str, Any], class_name: str = "") -> bool:
-    """Return whether a Diffusers config matches the SDXL UNet runtime contract."""
+    """Return whether a Diffusers config matches the supported SDXL base 1.0 UNet fingerprint."""
 
     resolved_class = str(config.get("_class_name", class_name)).lower()
-    return (
-        resolved_class == "unet2dconditionmodel"
-        and config.get("addition_embed_type") == "text_time"
-        and config.get("cross_attention_dim") == 2048
-        and config.get("projection_class_embeddings_input_dim") == 2816
-    )
+    if resolved_class != "unet2dconditionmodel":
+        return False
+    if any(config.get(name) != expected for name, expected in _SDXL_BASE_SCALAR_FIELDS.items()):
+        return False
+    return all(tuple(config.get(name, ())) == expected for name, expected in _SDXL_BASE_SEQUENCE_FIELDS.items())
 
 
 def _effective_weight(source: SourceLinearRecord, device: torch.device) -> torch.Tensor:
@@ -139,10 +155,19 @@ class SDXLSVDQuantNunchakuAdapter:
             raise ValueError(f"invalid SDXL decomposition_device {self.decomposition_device!r}") from exc
         if self.decomposition_device.type not in ("cpu", "cuda"):
             raise ValueError("SDXL decomposition_device must be CPU or CUDA")
-        if self.decomposition_device.type == "cuda" and not torch.cuda.is_available():
-            raise ValueError("SDXL decomposition_device requests CUDA, but CUDA is not available")
+        if self.decomposition_device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise ValueError("SDXL decomposition_device requests CUDA, but CUDA is not available")
+            device_count = torch.cuda.device_count()
+            index = self.decomposition_device.index
+            if index is not None and (index < 0 or index >= device_count):
+                raise ValueError(
+                    f"SDXL decomposition_device index {index} is invalid for CUDA device_count={device_count}"
+                )
         if self.config is not None:
             self.config = _config_dict(self.config)
+        if not isinstance(self.require_complete_model, bool):
+            raise ValueError("require_complete_model must be a bool")
 
     def _resolved_config(self, model: torch.nn.Module) -> dict[str, Any]:
         value = self.config if self.config is not None else getattr(model, "config", None)

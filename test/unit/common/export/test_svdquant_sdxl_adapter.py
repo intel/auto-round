@@ -57,8 +57,18 @@ def _sdxl_config():
     return {
         "_class_name": "UNet2DConditionModel",
         "addition_embed_type": "text_time",
+        "attention_head_dim": [5, 10, 20],
+        "block_out_channels": [320, 640, 1280],
         "cross_attention_dim": 2048,
+        "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
+        "in_channels": 4,
+        "layers_per_block": 2,
+        "out_channels": 4,
         "projection_class_embeddings_input_dim": 2816,
+        "sample_size": 128,
+        "transformer_layers_per_block": [1, 2, 10],
+        "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
+        "use_linear_projection": True,
     }
 
 
@@ -99,6 +109,13 @@ def test_detects_sdxl_unet_from_runtime_relevant_config():
     model = ConfiguredModel(_sdxl_config())
 
     assert detect_svdquant_model_adapter(model) == "sdxl"
+
+
+def test_does_not_detect_custom_sdxl_like_unet_as_base_1_0():
+    config = _sdxl_config()
+    config["transformer_layers_per_block"] = [1, 2, 4]
+
+    assert detect_svdquant_model_adapter(ConfiguredModel(config)) == "identity"
 
 
 def test_does_not_treat_stable_diffusion_v1_unet_as_sdxl():

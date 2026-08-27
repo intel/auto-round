@@ -130,8 +130,18 @@ def test_format_auto_resolves_sdxl_adapter(monkeypatch, tmp_path):
         config = {
             "_class_name": "UNet2DConditionModel",
             "addition_embed_type": "text_time",
+            "attention_head_dim": [5, 10, 20],
+            "block_out_channels": [320, 640, 1280],
             "cross_attention_dim": 2048,
+            "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
+            "in_channels": 4,
+            "layers_per_block": 2,
+            "out_channels": 4,
             "projection_class_embeddings_input_dim": 2816,
+            "sample_size": 128,
+            "transformer_layers_per_block": [1, 2, 10],
+            "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
+            "use_linear_projection": True,
         }
 
         def save_config(self, output_dir):
