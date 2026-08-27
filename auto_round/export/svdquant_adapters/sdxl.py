@@ -321,10 +321,15 @@ class SDXLSVDQuantNunchakuAdapter:
         for name, tensor in model.state_dict().items():
             if name.startswith(quantized_prefixes):
                 continue
+            runtime_name = name.replace(".orig_layer.", ".")
+            if runtime_name in tensors:
+                raise ValueError(
+                    f"SDXL passthrough tensor name collision after unwrapping {name!r} to {runtime_name!r}"
+                )
             value = tensor.detach()
             if value.is_floating_point():
                 value = value.to(torch.bfloat16)
-            tensors[name] = value.cpu().contiguous()
+            tensors[runtime_name] = value.cpu().contiguous()
         self._passthrough_keys = frozenset(tensors)
         return tensors
 

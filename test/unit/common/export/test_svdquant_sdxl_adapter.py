@@ -43,6 +43,12 @@ class BasicTransformerBlock(torch.nn.Module):
     pass
 
 
+class RuntimeLinearWrapper(torch.nn.Module):
+    def __init__(self, orig_layer):
+        super().__init__()
+        self.orig_layer = orig_layer
+
+
 def _install(root, path, module):
     current = root
     parts = path.split(".")
@@ -244,7 +250,7 @@ def test_sdxl_export_preserves_float_unet_state_without_wrapper_internal_keys(tm
     prefix = "down_blocks.1.attentions.0.transformer_blocks.0"
     model = ConfiguredModel(_sdxl_config())
     _install(model, f"{prefix}.attn2.to_q", _wrapped_linear())
-    _install(model, f"{prefix}.attn2.to_k", torch.nn.Linear(32, 8))
+    _install(model, f"{prefix}.attn2.to_k", RuntimeLinearWrapper(torch.nn.Linear(32, 8)))
     _install(model, "conv_in", torch.nn.Conv2d(4, 8, kernel_size=3, padding=1))
     adapter = SDXLSVDQuantNunchakuAdapter(require_complete_model=False)
     config = SVDQuantExportConfig(runtime_loadable=True)
@@ -255,6 +261,7 @@ def test_sdxl_export_preserves_float_unet_state_without_wrapper_internal_keys(tm
 
     assert f"{prefix}.attn2.to_k.weight" in tensors
     assert f"{prefix}.attn2.to_k.bias" in tensors
+    assert not any(".orig_layer." in key for key in tensors)
     assert "conv_in.weight" in tensors
     assert "conv_in.bias" in tensors
     assert not any(".residual_linear." in key or ".lora_down." in key or ".lora_up." in key for key in tensors)
