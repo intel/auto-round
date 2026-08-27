@@ -133,6 +133,7 @@ def test_torch_compile_state_is_always_logged(tiny_opt_model_path, monkeypatch, 
         ar.post_init()
     assert "`torch.compile` is enabled" in caplog.text
 
+
 def test_torch_compile_kept_for_auto_scheme_with_rtn(tiny_opt_model_path, monkeypatch):
     """AutoScheme's delta-loss pass still relies on torch.compile to save VRAM."""
     monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
