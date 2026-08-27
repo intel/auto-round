@@ -42,12 +42,25 @@ def test_sdxl_base_svdquant_mxfp4_loads_and_generates(tmp_path):
 
     model_path = get_model_path("stabilityai/stable-diffusion-xl-base-1.0")
     output_dir = tmp_path / "sdxl-base-svdquant-mxfp4"
+    prompt = "A cinematic photograph of a red panda in a bamboo forest"
+    seed = 12345
+    num_inference_steps = 20
+    guidance_scale = 5.0
     pipe = StableDiffusionXLPipeline.from_pretrained(
         model_path,
         torch_dtype=torch.bfloat16,
         use_safetensors=True,
         variant="fp16",
-    )
+    ).to("cuda:0")
+    reference_image = pipe(
+        prompt,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        generator=torch.Generator(device="cuda:0").manual_seed(seed),
+        height=512,
+        width=512,
+    ).images[0]
+    reference_pixels = np.asarray(reference_image, dtype=np.float32) / 255.0
     compressor = AutoRound(
         model=pipe,
         tokenizer=None,
@@ -88,17 +101,24 @@ def test_sdxl_base_svdquant_mxfp4_loads_and_generates(tmp_path):
     ).to("cuda:0")
     try:
         image = quantized_pipe(
-            "A cinematic photograph of a red panda in a bamboo forest",
-            num_inference_steps=1,
-            guidance_scale=1.0,
-            generator=torch.Generator(device="cuda:0").manual_seed(12345),
+            prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=torch.Generator(device="cuda:0").manual_seed(seed),
             height=512,
             width=512,
         ).images[0]
-        pixels = np.asarray(image)
+        pixels = np.asarray(image, dtype=np.float32) / 255.0
         assert pixels.shape == (512, 512, 3)
         assert np.isfinite(pixels).all()
-        assert pixels.std() > 1.0
+        mean_absolute_error = np.abs(reference_pixels - pixels).mean()
+        reference_centered = reference_pixels - reference_pixels.mean()
+        pixels_centered = pixels - pixels.mean()
+        centered_cosine = np.sum(reference_centered * pixels_centered) / np.sqrt(
+            np.sum(reference_centered**2) * np.sum(pixels_centered**2)
+        )
+        assert mean_absolute_error < 0.15
+        assert centered_cosine > 0.70
     finally:
         del quantized_pipe, unet
         torch.cuda.empty_cache()
