@@ -160,7 +160,16 @@ def _run_sglang_benchmark(
         outputs = llm.generate(prompts, sampling_params)
         total_time = time.perf_counter() - t0
 
-        n_out_tokens = sum(len(o.get("meta_info", {}).get("output_ids", []) or []) for o in outputs)
+        # SGLang 0.5.x puts ``output_ids`` at the TOP level of each output dict,
+        # not inside ``meta_info``. ``completion_tokens`` in ``meta_info`` is
+        # always present, so fall back to it for robustness across versions.
+        def _count_output_tokens(o):
+            ids = o.get("output_ids") or (o.get("meta_info", {}) or {}).get("output_ids")
+            if ids:
+                return len(ids)
+            return (o.get("meta_info", {}) or {}).get("completion_tokens", 0) or 0
+
+        n_out_tokens = sum(_count_output_tokens(o) for o in outputs)
         gen_tokens_per_s = n_out_tokens / max(total_time, 1e-6)
 
         # SGLang's per-request meta_info exposes per-request decode throughput
