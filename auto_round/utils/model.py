@@ -1394,6 +1394,25 @@ def get_block_names(model, quant_vision=False):
     """
     from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK
 
+    config = getattr(model, "config", None)
+    config_get = getattr(config, "get", None)
+    if callable(config_get):
+        class_name = str(config_get("_class_name", type(model).__name__)).lower()
+        is_sdxl_unet = (
+            class_name == "unet2dconditionmodel"
+            and config_get("addition_embed_type") == "text_time"
+            and config_get("cross_attention_dim") == 2048
+            and config_get("projection_class_embeddings_input_dim") == 2816
+        )
+        if is_sdxl_unet:
+            block_names = [
+                [name]
+                for name, module in model.named_modules()
+                if name and module.__class__.__name__ == "BasicTransformerBlock"
+            ]
+            if block_names:
+                return block_names
+
     def _search_block(name, module):
         if hasattr(type(module), "__name__") and "ModuleList" in type(module).__name__:
             return [(name, module)]
