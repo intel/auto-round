@@ -335,7 +335,7 @@ class SVDQuant(AlgorithmHandler):
         group.add_argument(
             "--svdquant-model-adapter",
             default="auto",
-            choices=["auto", "identity", "flux"],
+            choices=["auto", "identity", "flux", "sdxl"],
             help="Architecture adapter used by SVDQuant export.",
         )
 
