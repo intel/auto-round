@@ -82,6 +82,12 @@ from auto_round.utils.device_manager import default_enable_torch_compile, device
 from auto_round.utils.offload import OffloadManager
 
 
+# ``torch.compile`` only pays for itself when the compiled quant function is
+# replayed many times.  Below this many SignRound iterations the one-off
+# compilation cost dominates, so compiling is pure overhead.
+MIN_ITERS_FOR_TORCH_COMPILE = 10
+
+
 @dataclass
 class SerializedCompressorConfig:
     bits: Optional[int] = None
@@ -1177,12 +1183,43 @@ class BaseOrchestrator(object):
             and not is_debug_mode()
             and not is_raw_nv_fp
             and not is_valid_act_static
+            and self._torch_compile_disabled_reason() is None
             and self.need_calib
         ):
             logger.info(
                 "%s",
                 "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
+
+    def _torch_compile_disabled_reason(self) -> Optional[str]:
+        """Return why torch.compile must stay off for the current algorithm, else None.
+
+        RTN and optimized RTN quantize each layer in a single pass, and very short
+        SignRound runs (``iters < MIN_ITERS_FOR_TORCH_COMPILE``) finish before the
+        compilation cost is amortized, so ``torch.compile`` only adds overhead there.
+        """
+        quantize_config = getattr(self, "quantize_config", None)
+        if quantize_config is None:
+            return None
+
+        # AutoScheme runs its own delta-loss pass on top of the block quantizer and
+        # relies on torch.compile to keep VRAM down, so the rules below don't apply.
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+        if getattr(self, "is_auto_scheme", False) or isinstance(getattr(self, "scheme", None), AutoScheme):
+            return None
+
+        # OptimizedRTNConfig subclasses RTNConfig, so this covers rtn and opt-rtn.
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        if isinstance(quantize_config, RTNConfig):
+            return "RTN/OPT-RTN quantizes each layer in a single pass"
+
+        iters = getattr(quantize_config, "iters", None)
+        if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
+            return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+
+        return None
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
@@ -1193,6 +1230,16 @@ class BaseOrchestrator(object):
         if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
+
+        if self.enable_torch_compile:
+            disabled_reason = self._torch_compile_disabled_reason()
+            if disabled_reason is not None:
+                self.enable_torch_compile = False
+                logger.warning_once(
+                    "reset enable_torch_compile to `False` as %s, "
+                    "so compilation cost would outweigh its benefit",
+                    disabled_reason,
+                )
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.

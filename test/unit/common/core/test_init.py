@@ -4,7 +4,7 @@ import logging
 from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.parser import build_quantize_parser
-from auto_round.compressors.base import BaseOrchestrator
+from auto_round.compressors.base import MIN_ITERS_FOR_TORCH_COMPILE, BaseOrchestrator
 from auto_round.logger import logger
 from auto_round.utils.device_manager import default_enable_torch_compile
 
@@ -45,20 +45,72 @@ def test_xpu_torch_compile_is_disabled_by_default():
 
 
 def test_torch_compile_runtime_defaults(tiny_opt_model_path):
-    ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
+    ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=200, nsamples=1)
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
     ar = AutoRound(
         model=tiny_opt_model_path,
         scheme="W4A16",
-        iters=0,
+        iters=200,
         nsamples=1,
         enable_torch_compile=False,
     )
     assert not ar.enable_torch_compile
 
-    ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", iters=0, nsamples=1)
+    ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", iters=200, nsamples=1)
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
+
+
+def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path):
+    """RTN / opt-RTN and `iters` < 10 never amortize the torch.compile cost."""
+    # Plain RTN and opt-RTN both resolve to an RTNConfig subclass.
+    for disable_opt_rtn in (True, False):
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=0,
+            nsamples=1,
+            disable_opt_rtn=disable_opt_rtn,
+            enable_torch_compile=True,
+        )
+        assert not ar.enable_torch_compile
+        assert not ar.compress_context.enable_torch_compile
+
+    # SignRound with too few iterations.
+    for iters in (1, MIN_ITERS_FOR_TORCH_COMPILE - 1):
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=iters,
+            nsamples=1,
+            enable_torch_compile=True,
+        )
+        assert not ar.enable_torch_compile
+        assert not ar.compress_context.enable_torch_compile
+
+    # Enough iterations to pay back the compilation cost.
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme="W4A16",
+        iters=MIN_ITERS_FOR_TORCH_COMPILE,
+        nsamples=1,
+        enable_torch_compile=True,
+    )
+    assert ar.enable_torch_compile
+    assert ar.compress_context.enable_torch_compile
+
+
+def test_torch_compile_kept_for_auto_scheme_with_rtn(tiny_opt_model_path):
+    """AutoScheme's delta-loss pass still relies on torch.compile to save VRAM."""
+    auto_scheme = AutoScheme(avg_bits=4.0, options=["W4A16"])
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=auto_scheme,
+        iters=0,
+        nsamples=1,
+        enable_torch_compile=True,
+    )
+    assert ar.enable_torch_compile
 
 
 def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path):
@@ -86,7 +138,7 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         ar = AutoRound(
             model=tiny_opt_model_path,
             scheme="W4A16",
-            iters=0,
+            iters=200,
             nsamples=1,
             enable_torch_compile=True,
         )
