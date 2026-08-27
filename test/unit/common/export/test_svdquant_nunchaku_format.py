@@ -32,6 +32,83 @@ def _mxfp4_compressor(**updates):
     return SimpleNamespace(**values)
 
 
+def _sdxl_base_config():
+    return {
+        "_class_name": "UNet2DConditionModel",
+        "addition_embed_type": "text_time",
+        "attention_head_dim": [5, 10, 20],
+        "block_out_channels": [320, 640, 1280],
+        "cross_attention_dim": 2048,
+        "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
+        "in_channels": 4,
+        "layers_per_block": 2,
+        "out_channels": 4,
+        "projection_class_embeddings_input_dim": 2816,
+        "sample_size": 128,
+        "transformer_layers_per_block": [1, 2, 10],
+        "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
+        "use_linear_projection": True,
+    }
+
+
+def test_format_resolves_nested_sdxl_quant_blocks():
+    class BasicTransformerBlock(torch.nn.Module):
+        pass
+
+    class SDXLModel(torch.nn.Module):
+        config = _sdxl_base_config()
+
+        def __init__(self):
+            super().__init__()
+            attention = torch.nn.Module()
+            attention.transformer_blocks = torch.nn.ModuleList([BasicTransformerBlock(), BasicTransformerBlock()])
+            down_block = torch.nn.Module()
+            down_block.attentions = torch.nn.ModuleList([attention])
+            self.down_blocks = torch.nn.ModuleList([down_block])
+
+    scheme = PRESET_SCHEMES["MXFP4"].copy()
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    ctx = SimpleNamespace(model=SDXLModel(), layer_config=None, quant_block_list=None)
+
+    _, _, _, quant_block_list = output_format.check_and_reset_format(scheme, ctx)
+
+    assert quant_block_list == [
+        ["down_blocks.0.attentions.0.transformer_blocks.0"],
+        ["down_blocks.0.attentions.0.transformer_blocks.1"],
+    ]
+
+
+@pytest.mark.parametrize("quant_block_list", [[["custom.block"]], []], ids=["custom", "empty"])
+def test_format_preserves_explicit_quant_blocks_without_adapter_resolution(monkeypatch, quant_block_list):
+    import auto_round.export.svdquant_adapters as svdquant_adapters
+
+    monkeypatch.setattr(
+        svdquant_adapters,
+        "resolve_svdquant_model_adapter",
+        lambda *args, **kwargs: pytest.fail("explicit quant blocks must skip adapter resolution"),
+    )
+    scheme = PRESET_SCHEMES["MXFP4"].copy()
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    ctx = SimpleNamespace(model=torch.nn.Module(), layer_config=None, quant_block_list=quant_block_list)
+
+    _, _, _, resolved_quant_block_list = output_format.check_and_reset_format(scheme, ctx)
+
+    assert resolved_quant_block_list is quant_block_list
+
+
+def test_format_leaves_flux_quant_blocks_unresolved():
+    class FluxModel(torch.nn.Module):
+        config = {"_class_name": "FluxTransformer2DModel", "num_layers": 0, "num_single_layers": 0}
+
+    scheme = PRESET_SCHEMES["MXFP4"].copy()
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    ctx = SimpleNamespace(model=FluxModel(), layer_config=None, quant_block_list=None)
+
+    _, _, _, quant_block_list = output_format.check_and_reset_format(scheme, ctx)
+
+    assert quant_block_list is None
+
+
 def test_svdquant_nunchaku_rejects_incompatible_scheme():
     scheme = PRESET_SCHEMES["MXFP4"].copy()
     scheme.group_size = 64
