@@ -19,6 +19,10 @@ from auto_round.utils.weight_handler import (
 DEVICE_CAPABILITY = torch.cuda.get_device_capability()
 
 
+@pytest.mark.skipif(
+    version.parse("5.16.0") <= transformers_version < version.parse("5.17.0"),
+    reason="fails with transformers 5.16.x",
+)
 class TestAutoRound:
 
     @pytest.fixture(autouse=True)
