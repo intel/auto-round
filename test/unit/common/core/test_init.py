@@ -61,13 +61,25 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
 
+def _assert_compile(ar, expected: bool):
+    """Assert the effective torch.compile flag, tolerating the model-free path.
+
+    ``ModelFreeCompressor`` has no ``compress_context``; the regular compressor
+    mirrors ``enable_torch_compile`` onto it, so check both when present.
+    """
+    assert ar.enable_torch_compile is expected
+    compress_context = getattr(ar, "compress_context", None)
+    if compress_context is not None:
+        assert compress_context.enable_torch_compile is expected
+
+
 def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path, monkeypatch):
     """RTN / opt-RTN and `iters` < 10 never amortize the torch.compile cost."""
     # Pin the platform default to "enabled" so the algorithm heuristic is observable
     # regardless of the host device / OS.
     monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
 
-    # Plain RTN and opt-RTN both resolve to an RTNConfig subclass.
+    # Plain RTN (routes to the model-free compressor) and opt-RTN both stay off.
     for disable_opt_rtn in (True, False):
         ar = AutoRound(
             model=tiny_opt_model_path,
@@ -76,19 +88,16 @@ def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path,
             nsamples=1,
             disable_opt_rtn=disable_opt_rtn,
         )
-        assert not ar.enable_torch_compile
-        assert not ar.compress_context.enable_torch_compile
+        _assert_compile(ar, False)
 
     # SignRound with too few iterations.
     for iters in (1, MIN_ITERS_FOR_TORCH_COMPILE - 1):
         ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=iters, nsamples=1)
-        assert not ar.enable_torch_compile
-        assert not ar.compress_context.enable_torch_compile
+        _assert_compile(ar, False)
 
     # Enough iterations to pay back the compilation cost.
     ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=MIN_ITERS_FOR_TORCH_COMPILE, nsamples=1)
-    assert ar.enable_torch_compile
-    assert ar.compress_context.enable_torch_compile
+    _assert_compile(ar, True)
 
 
 def test_explicit_torch_compile_overrides_algorithm_heuristic(tiny_opt_model_path, monkeypatch):
@@ -103,8 +112,7 @@ def test_explicit_torch_compile_overrides_algorithm_heuristic(tiny_opt_model_pat
             enable_torch_compile=True,
             **kwargs,
         )
-        assert ar.enable_torch_compile
-        assert ar.compress_context.enable_torch_compile
+        _assert_compile(ar, True)
 
 
 def test_torch_compile_state_is_always_logged(tiny_opt_model_path, monkeypatch, caplog):
