@@ -11,11 +11,12 @@ Linear(x) ~= QuantizedLinear(x, Q(R)) + Linear(Linear(x, V), U)
 This feature follows the decomposition proposed in [SVDQuant: Absorbing
 Outliers by Low-Rank Components for 4-Bit Diffusion
 Models](https://arxiv.org/abs/2411.05007). AutoRound can combine the transform
-with RTN or SignRound and export a Nunchaku-loadable MXFP4 FLUX pipeline.
+with RTN or SignRound and export Nunchaku-loadable MXFP4 FLUX and SDXL
+pipelines.
 
-> The end-to-end export path has been validated with FLUX.1-dev only. Other
-> models using compatible Diffusers FLUX block classes are experimental and
-> produce a warning.
+> The architecture adapters are strict: FLUX is validated for FLUX.1-dev and
+> the SDXL adapter targets `stabilityai/stable-diffusion-xl-base-1.0`. Stable
+> Diffusion 1.x UNets are not handled by the SDXL adapter.
 
 ## Quick start
 
@@ -44,6 +45,29 @@ CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
 
 When `svdquant` is selected and `--format` is omitted, the CLI also defaults to
 `svdquant_nunchaku`.
+
+### SDXL base 1.0 RTN workflow
+
+SDXL uses a UNet rather than a Diffusers transformer component. Auto detection
+selects the SDXL adapter from the UNet config; it can also be selected
+explicitly:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
+  --model /path/to/stable-diffusion-xl-base-1.0 \
+  --model_dtype bf16 \
+  --scheme MXFP4 \
+  --algorithm svdquant \
+  --svdquant-model-adapter sdxl \
+  --format svdquant_nunchaku \
+  --device 0 \
+  --output_dir ./sdxl-base-1.0-mxfp4-svdquant-rtn
+```
+
+Only the projections replaced by Nunchaku are quantized. SDXL self-attention
+Q/K/V projections share one low-rank down factor and are exported as fused
+`to_qkv`. Cross-attention K/V, convolutions, normalization layers, and the
+remaining UNet state stay in BF16.
 
 ### Default SignRound workflow
 
@@ -109,8 +133,9 @@ Original linear weights
   -> Nunchaku export
 ```
 
-FLUX Q/K/V projections are grouped so they share one low-rank down factor and
-retain separate up factors, matching the runtime layout.
+FLUX and SDXL self-attention Q/K/V projections are grouped so they share one
+low-rank down factor and retain separate up factors, matching their runtime
+layouts.
 
 ## Residual iteration
 
@@ -233,9 +258,39 @@ image = pipe(
 image.save("flux-svdquant-mxfp4.png")
 ```
 
+For SDXL, load the exported Nunchaku UNet and inject it into the saved
+Diffusers pipeline:
+
+```python
+import torch
+from diffusers import StableDiffusionXLPipeline
+from nunchaku.models.unets.unet_sdxl import NunchakuSDXLUNet2DConditionModel
+
+model_dir = "./sdxl-base-1.0-mxfp4-svdquant-rtn"
+unet = NunchakuSDXLUNet2DConditionModel.from_pretrained(
+    f"{model_dir}/unet/diffusion_pytorch_model.safetensors",
+    torch_dtype=torch.bfloat16,
+    device="cuda:0",
+)
+pipe = StableDiffusionXLPipeline.from_pretrained(
+    model_dir,
+    unet=unet,
+    torch_dtype=torch.bfloat16,
+    local_files_only=True,
+).to("cuda:0")
+
+image = pipe(
+    "A cinematic photograph of a red panda in a bamboo forest",
+    num_inference_steps=20,
+    guidance_scale=5.0,
+    generator=torch.Generator(device="cuda").manual_seed(12345),
+).images[0]
+image.save("sdxl-svdquant-mxfp4.png")
+```
+
 ## Limitations
 
-- Runtime-loadable export is currently validated only for FLUX.1-dev.
+- The SDXL adapter supports SDXL base 1.0, not Stable Diffusion 1.x UNets.
 - SVDQuant requires `nblocks=1`.
 - Smooth search replays every retained call for every Alpha/Beta candidate.
 - More residual iterations repeat decomposition and QDQ work.
