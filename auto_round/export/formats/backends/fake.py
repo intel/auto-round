@@ -89,10 +89,10 @@ class FakeFormat(OutputFormat):
             return model
         logger.warning(
             "AR_SAVE_FAKE_MODEL=1: saving fake-quantized model to disk. "
-            "When loading this checkpoint later, the quantization config must match exactly; "
-            "a mismatch may cause unexpected behaviour. "
-            "If you encounter a loading issue, please open an issue at "
-            "https://github.com/intel/auto-round/issues."
+            "Wrapped modules (WrapperWALayer) will be replaced with FakeActQuantLinear for saving, "
+            "which may introduce minor accuracy differences. "
+            "If you observe significant accuracy degradation, feel free to open an issue or submit a PR at "
+            "https://github.com/intel/auto-round."
         )
         has_meta_device = unsupported_meta_device(model)
         if not inplace and not has_meta_device:
