@@ -139,6 +139,8 @@ pip install auto-round
 
 ## 模型量化（CPU / Intel GPU / Gaudi / CUDA）
 
+> 如果在量化过程中遇到问题，可尝试启动纯 RTN 模式，具体是指将 `iters` 设置为 `0` 并打开 `disable_opt_rtn=True`。另外，使用 `group_size=32` 或混合比特也有助于提升效果。
+
 ### CLI 用法
 
 终端运行 `auto-round -h` 可以查看 auto-round 完整的参数列表。
@@ -259,7 +261,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 - ​**​`enable_torch_compile`​**（bool）：启用 `torch.compile` 可能提升量化速度，但编译开销会改变峰值内存，某些模型或量化方案的峰值内存可能增加。除 Windows 外默认开启；Windows 上默认关闭，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。在 Windows 上可通过 Python 参数 `enable_torch_compile=True` 或命令行参数 `--enable_torch_compile` 强制开启；其他平台可使用 `enable_torch_compile=False` 或 `--disable_torch_compile` 关闭。
 - ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
-- ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `False`）。
+- ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `True`）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
 
 </details>
@@ -311,9 +313,6 @@ ar.quantize_and_save()
 </details>
 
 ### 视觉语言模型（VLM）的 API 调用方法
-
-如果在量化过程中遇到问题可尝试启动 RTN 模式，具体是指将 `iters` 设置为 `0` 并打开 `disable_opt_rtn`。另外可以将 `group_size` 设为 `32` 可以提升RTN模型的精度，副作用是有一定的性能下降。
-
 
 <details>
   <summary>点击展开</summary>
