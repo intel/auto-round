@@ -33,6 +33,27 @@ def _serialize_quantization_config_value(value):
     return value
 
 
+def _build_fake_act_quant_config(serialization_dict: dict | None, layer: torch.nn.Module) -> QuantizationScheme:
+    """Build a QuantizationScheme for FakeActQuantLinear from export metadata."""
+    config_dict = dict(serialization_dict or {})
+    for key in QuantizationScheme.get_attributes():
+        if hasattr(layer, key):
+            value = getattr(layer, key)
+            if value is not None:
+                config_dict.setdefault(key, value)
+    return QuantizationScheme.from_dict(config_dict)
+
+
+def _unwrap_wrapper_module(module: torch.nn.Module) -> torch.nn.Module:
+    """Strip nested WrapperLinear/WrapperWALayer containers and return the base layer."""
+    from auto_round.wrapper import WrapperLinear, WrapperWALayer
+
+    layer = module
+    while isinstance(layer, (WrapperLinear, WrapperWALayer)):
+        layer = layer.orig_layer
+    return layer
+
+
 @OutputFormat.register("fake")
 class FakeFormat(OutputFormat):
     support_schemes = None
@@ -72,30 +93,34 @@ class FakeFormat(OutputFormat):
                 if name and isinstance(module, (WrapperLinear, WrapperWALayer))
             ]
             wrapped_names = {name for name, _ in wrapped_modules}
+            has_fake_act_quant = False
             for name, module in wrapped_modules:
                 if any(name.startswith(f"{parent}.") for parent in wrapped_names if parent != name):
                     continue
-                orig_layer = module.orig_layer
-                while isinstance(orig_layer, (WrapperLinear, WrapperWALayer)):
-                    orig_layer = orig_layer.orig_layer
-                for attr_name in ("act_min_scale", "act_max_scale", "act_scale"):
-                    orig_layer._parameters.pop(attr_name, None)
-                    orig_layer._buffers.pop(attr_name, None)
-                    if hasattr(orig_layer, attr_name):
-                        delattr(orig_layer, attr_name)
-                set_module(model, name, orig_layer.to("cpu"))
+                orig_layer = _unwrap_wrapper_module(module)
+                act_bits = getattr(orig_layer, "act_bits", None)
+                if act_bits is None:
+                    act_bits = (serialization_dict or {}).get("act_bits")
+                if act_bits is not None and act_bits <= 8:
+                    from auto_round.experimental.qmodules.fake import FakeActQuantLinear
 
-        is_nvfp4_v2 = (serialization_dict or {}).get("data_type") == "nvfp4_v2"
-        if is_nvfp4_v2:
-            quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
-            quantization_config["quant_method"] = "auto-round"
+                    fake_config = _build_fake_act_quant_config(serialization_dict, orig_layer)
+                    replacement = FakeActQuantLinear.from_original(fake_config, orig_layer).to("cpu")
+                    has_fake_act_quant = True
+                else:
+                    replacement = orig_layer.to("cpu")
+                set_module(model, name, replacement)
+
+        quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
+        quantization_config["quant_method"] = "auto-round"
+        if locals().get("has_fake_act_quant", False):
             quantization_config["packing_format"] = "auto_round:fake"
-            quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-            from auto_round.export.utils import filter_quantization_config
+        quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+        from auto_round.export.utils import filter_quantization_config
 
-            filter_quantization_config(quantization_config)
-            if hasattr(model, "config") and model.config is not None:
-                model.config.quantization_config = quantization_config
+        filter_quantization_config(quantization_config)
+        if hasattr(model, "config") and model.config is not None:
+            model.config.quantization_config = quantization_config
 
         if not has_meta_device:
             model = model.to("cpu")
