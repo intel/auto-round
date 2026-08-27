@@ -507,6 +507,8 @@ class SignRoundQuantizer(BaseQuantizer):
 
             if i == 0:
                 init_loss = total_loss
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -530,7 +532,7 @@ class SignRoundQuantizer(BaseQuantizer):
         if self.iters > 0:
             dump_info = (
                 f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-                f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+                f"layers in the block, loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
             )
         else:
             dump_info = (
@@ -733,6 +735,8 @@ class SignRoundQuantizer(BaseQuantizer):
                 self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -755,7 +759,7 @@ class SignRoundQuantizer(BaseQuantizer):
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer)
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
         logger.info(dump_info)
 
     def finalize_run(self) -> None:
