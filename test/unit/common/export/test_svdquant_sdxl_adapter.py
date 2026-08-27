@@ -80,10 +80,10 @@ def _effective(source):
     return (source.residual_weight + source.lora_up @ source.lora_down) * source.smooth
 
 
-def _wrapped_linear(in_features=32, out_features=8, rank=2):
+def _wrapped_linear(in_features=32, out_features=8, rank=2, bias=True):
     from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 
-    residual = torch.nn.Linear(in_features, out_features)
+    residual = torch.nn.Linear(in_features, out_features, bias=bias)
     residual.data_type, residual.bits, residual.group_size, residual.sym = "mx_fp4", 4, 32, True
     residual.act_data_type, residual.act_bits, residual.act_group_size = "mx_fp4", 4, 32
     residual.act_sym, residual.act_dynamic = True, True
@@ -184,6 +184,31 @@ def test_sdxl_metadata_names_runtime_model_and_serializes_config():
     assert metadata["format"] == "pt"
     assert metadata["comfy_config"] == "{}"
     assert json.loads(metadata["config"]) == _sdxl_config()
+
+
+def test_sdxl_biasless_runtime_records_omit_zero_bias_tensor():
+    prefix = "mid_block.attentions.0.transformer_blocks.0"
+    source = _source(f"{prefix}.attn2.to_q", bias=False)
+    adapter = SDXLSVDQuantNunchakuAdapter(require_complete_model=False)
+
+    (record,) = tuple(adapter.map_modules(ConfiguredModel(_sdxl_config()), (source,)))
+
+    assert record.omitted_suffixes == frozenset({"bias"})
+
+
+def test_sdxl_biasless_runtime_serialization_has_no_unexpected_bias_key():
+    prefix = "mid_block.attentions.0.transformer_blocks.0"
+    model = ConfiguredModel(_sdxl_config())
+    _install(model, f"{prefix}.attn2.to_q", _wrapped_linear(bias=False))
+
+    tensors = collect_svdquant_tensors(
+        model,
+        adapter=SDXLSVDQuantNunchakuAdapter(require_complete_model=False),
+        config=SVDQuantExportConfig(runtime_loadable=True),
+    )
+
+    assert f"{prefix}.attn2.to_q.qweight" in tensors
+    assert f"{prefix}.attn2.to_q.bias" not in tensors
 
 
 def test_complete_sdxl_mapping_rejects_missing_runtime_projection():

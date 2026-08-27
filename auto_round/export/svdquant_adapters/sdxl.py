@@ -177,6 +177,7 @@ class SDXLSVDQuantNunchakuAdapter:
             bias=source.bias,
             scheme=source.scheme,
             sources=(source,),
+            omitted_suffixes=frozenset({"bias"}) if source.bias is None else frozenset(),
         )
 
     def _fuse_qkv(self, prefix: str, sources: tuple[SourceLinearRecord, ...], rank: int) -> SVDQuantExportRecord:
@@ -192,6 +193,7 @@ class SDXLSVDQuantNunchakuAdapter:
                 bias=_fused_bias(prefix, sources),
                 scheme=first.scheme,
                 sources=sources,
+                omitted_suffixes=frozenset({"bias"}) if first.bias is None else frozenset(),
             )
         try:
             effective = [_effective_weight(source, self.decomposition_device) for source in sources]
@@ -222,6 +224,7 @@ class SDXLSVDQuantNunchakuAdapter:
                 ),
                 scheme=template.scheme,
                 sources=sources,
+                omitted_suffixes=frozenset({"bias"}) if template.bias is None else frozenset(),
             )
         finally:
             if self.decomposition_device.type == "cuda":
