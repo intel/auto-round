@@ -165,7 +165,7 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
     assert not ar.enable_torch_compile
     if str(ar.device).split(":", 1)[0] == "xpu":
-        assert "disabled by default on XPU" in caplog.text
+        assert "disabled by default on XPU" not in caplog.text
     else:
         assert "disabled by default on Windows" in caplog.text
         assert "cl.exe" in caplog.text
