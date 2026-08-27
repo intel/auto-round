@@ -678,7 +678,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                     ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
                 )
 
-
         for group_idx, block_names in enumerate(all_blocks):
             inputs = all_inputs[block_names[0]]
             all_inputs.pop(block_names[0])
@@ -812,7 +811,6 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         self.model_context.quantized = True
         return self.model_context.model, self.layer_config
-
 
     def _quantize_layers_outside_blocks(
         self,

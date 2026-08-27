@@ -19,6 +19,17 @@ import torch
 from torch.amp import autocast
 
 from auto_round.compressors.config_resolution import LayerConfigResolutionError
+
+# Explicit compatibility exports for callers that historically imported GGUF and
+# ignore-layer helpers from compressors.utils.
+from auto_round.compressors.layer_config_resolver import get_fp_layer_names
+from auto_round.export.formats.backends.gguf import (
+    _apply_gguf_shape_fallback,
+    _infer_gguf_n_layers_from_model,
+    _resolve_gguf_n_layers,
+    get_layer_config_by_gguf_format,
+    gguf_type_fallback,
+)
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -33,16 +44,7 @@ from auto_round.utils import (
     get_module,
 )
 from auto_round.utils.device_manager import device_manager
-# Explicit compatibility exports for callers that historically imported GGUF and
-# ignore-layer helpers from compressors.utils.
-from auto_round.compressors.layer_config_resolver import get_fp_layer_names
-from auto_round.export.formats.backends.gguf import (
-    _apply_gguf_shape_fallback,
-    _infer_gguf_n_layers_from_model,
-    _resolve_gguf_n_layers,
-    get_layer_config_by_gguf_format,
-    gguf_type_fallback,
-)
+
 
 def _as_scheme(ar_or_scheme) -> "QuantizationScheme":
     """Resolve a compressor-like object or QuantizationScheme to a QuantizationScheme.
@@ -326,9 +328,6 @@ def set_layer_config(
         plan.has_qlayer_outside_block,
         {name: dict(config) for name, config in plan.regex_config.items()},
     )
-
-
-
 
 
 def get_shared_keys(model):
