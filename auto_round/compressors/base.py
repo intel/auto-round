@@ -33,7 +33,7 @@ from auto_round.compressors.config_resolution import (
     resolve_quantization_config,
     thaw_mapping,
 )
-from auto_round.compressors.layer_config import (
+from auto_round.compressors.layer_config_resolver import (
     apply_plan_to_model,
     extract_regex_config,
     has_quantized_layer_outside_blocks,

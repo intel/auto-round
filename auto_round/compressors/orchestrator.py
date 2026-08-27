@@ -678,85 +678,83 @@ class CompressionOrchestrator(BaseOrchestrator):
                     ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
                 )
 
-        try:
-            for group_idx, block_names in enumerate(all_blocks):
-                inputs = all_inputs[block_names[0]]
-                all_inputs.pop(block_names[0])
-                q_inputs = None
-                if all_q_inputs is not None:
-                    q_inputs = all_q_inputs[block_names[0]]
-                    all_q_inputs.pop(block_names[0])
 
-                inputs, q_inputs = _update_inputs(inputs, q_inputs)
+        for group_idx, block_names in enumerate(all_blocks):
+            inputs = all_inputs[block_names[0]]
+            all_inputs.pop(block_names[0])
+            q_inputs = None
+            if all_q_inputs is not None:
+                q_inputs = all_q_inputs[block_names[0]]
+                all_q_inputs.pop(block_names[0])
 
-                clear_memory(self.inputs)
+            inputs, q_inputs = _update_inputs(inputs, q_inputs)
 
-                resume_state = resume_states[group_idx] if resume_states is not None else None
-                resume_input_ids = None
-                if resume_state is not None and resume_state.resume_index > 0:
-                    if self.nblocks != 1:
+            clear_memory(self.inputs)
+
+            resume_state = resume_states[group_idx] if resume_states is not None else None
+            resume_input_ids = None
+            if resume_state is not None and resume_state.resume_index > 0:
+                if self.nblocks != 1:
+                    logger.warning(
+                        "AR_RESUME_DIR is set but nblocks != 1; resuming mid-group is only "
+                        "supported for nblocks=1 -- restarting this group from block 0."
+                    )
+                    resume_state = None
+                else:
+                    resume_name = block_names[resume_state.resume_index]
+                    # Only used here for `input_others` (position/mask info,
+                    # which is legitimately re-sourced from this same cache
+                    # every iteration regardless of resuming); the actual
+                    # chained `input_ids` comes from `resume_input_ids`
+                    # below, not this cache -- see
+                    # auto_round/utils/resume.py's module docstring for why
+                    # the two aren't interchangeable.
+                    if resume_name in all_inputs:
+                        inputs = all_inputs.pop(resume_name)
+                    q_inputs = resume_state.load_q_input()
+                    resume_input_ids = resume_state.load_input_ids()
+                    if resume_input_ids is None:
                         logger.warning(
-                            "AR_RESUME_DIR is set but nblocks != 1; resuming mid-group is only "
-                            "supported for nblocks=1 -- restarting this group from block 0."
+                            "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
+                            "restarting this group from block 0 instead of resuming with a "
+                            "possibly-inconsistent chain value."
                         )
                         resume_state = None
                     else:
-                        resume_name = block_names[resume_state.resume_index]
-                        # Only used here for `input_others` (position/mask info,
-                        # which is legitimately re-sourced from this same cache
-                        # every iteration regardless of resuming); the actual
-                        # chained `input_ids` comes from `resume_input_ids`
-                        # below, not this cache -- see
-                        # auto_round/utils/resume.py's module docstring for why
-                        # the two aren't interchangeable.
-                        if resume_name in all_inputs:
-                            inputs = all_inputs.pop(resume_name)
-                        q_inputs = resume_state.load_q_input()
-                        resume_input_ids = resume_state.load_input_ids()
-                        if resume_input_ids is None:
-                            logger.warning(
-                                "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
-                                "restarting this group from block 0 instead of resuming with a "
-                                "possibly-inconsistent chain value."
-                            )
-                            resume_state = None
-                        else:
-                            pbar.update(resume_state.resume_index)
+                        pbar.update(resume_state.resume_index)
 
-                self._quantize_blocks(
-                    self.model_context.model,
-                    inputs,
-                    block_names,
-                    q_input=q_inputs if q_inputs is not None else None,
-                    nblocks=self.nblocks,
-                    pbar=pbar,
-                    input_others_extra_blocks=all_inputs,
-                    token_ids=input_ids_cache,
-                    resume_state=resume_state,
-                    resume_input_ids=resume_input_ids,
+            self._quantize_blocks(
+                self.model_context.model,
+                inputs,
+                block_names,
+                q_input=q_inputs if q_inputs is not None else None,
+                nblocks=self.nblocks,
+                pbar=pbar,
+                input_others_extra_blocks=all_inputs,
+                token_ids=input_ids_cache,
+                resume_state=resume_state,
+                resume_input_ids=resume_input_ids,
+            )
+            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
+                raise ValueError(
+                    f"Expected exactly one packing format when 'immediate_packing' is True, "
+                    f"but got {len(self.formats)} formats."
                 )
-                if self.compress_context.is_immediate_packing and len(self.formats) != 1:
-                    raise ValueError(
-                        f"Expected exactly one packing format when 'immediate_packing' is True, "
-                        f"but got {len(self.formats)} formats."
-                    )
-            if resume_states is not None:
-                if self.compress_context.is_immediate_saving:
-                    # Don't clear resume state yet when exporting to shards --
-                    # a crash in the save/export step that follows this method
-                    # returning (config writing, tokenizer copy, format-specific
-                    # global packing pass) would otherwise force a full
-                    # re-tune from block 0 on the next attempt, even though
-                    # every block's weights are already correctly flushed to
-                    # disk. quantize_and_save() clears these once
-                    # save_quantized() actually succeeds.
-                    self._resume_states = resume_states
-                else:
-                    for rs in resume_states:
-                        rs.clear()
-        finally:
-            # ── Pipeline lifecycle: finalize_quantization (model-level teardown)
-            self.alg_composer.finalize_run()
+        if resume_states is not None:
+            if self.compress_context.is_immediate_saving:
+                # Don't clear resume state yet when exporting to shards --
+                # a crash in the save/export step that follows this method
+                # returning (config writing, tokenizer copy, format-specific
+                # global packing pass) would otherwise force a full
+                # re-tune from block 0 on the next attempt, even though
+                # every block's weights are already correctly flushed to
+                # disk. quantize_and_save() clears these once
+                # save_quantized() actually succeeds.
+                self._resume_states = resume_states
+            else:
+                for rs in resume_states:
+                    rs.clear()
+
         pbar.set_description("Quantizing done")
         pbar.close()
         if self.compress_context.low_cpu_mem_usage:
@@ -815,27 +813,6 @@ class CompressionOrchestrator(BaseOrchestrator):
         self.model_context.quantized = True
         return self.model_context.model, self.layer_config
 
-    # def _immediate_pack_and_save_module(self, module_name):
-    #     from auto_round.compressors.shard_writer import ShardWriter
-    #
-    #     shard_writer = ShardWriter.get_shard_writer()
-    #     to_cpu = self.compress_context.low_gpu_mem_usage
-    #     module = get_module(self.model, module_name)
-    #     if self.compress_context.is_immediate_packing:
-    #         immediate_pack(module_name, self.layer_config)
-    #         if to_cpu:
-    #             module = module.to("cpu")
-    #             packed_module = get_module(self.model, module_name)
-    #             set_module(self.model, module_name, packed_module.to("cpu"))
-    #     else:
-    #         if to_cpu:
-    #             module = module.to("cpu")
-    #         set_module(self.model, module_name, module)
-    #     if self.compress_context.is_immediate_saving:
-    #         module = get_module(self.model, module_name)
-    #         module.to("cpu")
-    #         shard_writer.write(module, module_name, False)
-    #         module.to("meta")
 
     def _quantize_layers_outside_blocks(
         self,

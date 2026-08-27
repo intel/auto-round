@@ -15,7 +15,7 @@
 import torch.nn as nn
 
 from auto_round.compressors.config_resolution import ResolvedScheme
-from auto_round.compressors.layer_config import (
+from auto_round.compressors.layer_config_resolver import (
     extract_regex_config,
     has_quantized_layer_outside_blocks,
     resolve_layer_config,
