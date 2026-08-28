@@ -1002,9 +1002,7 @@ class TestTorchCompileOff:
         assert get_torch_compile_off_reason(self._cfg(model_type="glm5_next")) is not None
         assert get_torch_compile_off_reason(self._cfg(model_type="glm_moe_dsa")) is not None
         # Architecture name alone is enough (config before weights are materialized).
-        assert (
-            get_torch_compile_off_reason(self._cfg(architectures=["Glm5NextForConditionalGeneration"])) is not None
-        )
+        assert get_torch_compile_off_reason(self._cfg(architectures=["Glm5NextForConditionalGeneration"])) is not None
 
     def test_other_models_unaffected(self):
         from auto_round.special_model_handler import get_torch_compile_off_reason

@@ -1187,7 +1187,6 @@ class BaseOrchestrator(object):
                 "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
-
     def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> Optional[str]:
         """Return why torch.compile must stay off for the current algorithm, else None.
 
