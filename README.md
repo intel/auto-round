@@ -40,7 +40,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2026/08] AutoScheme WOQ deployment on vLLM is experimentally restored, thanks to Humming Kernel: [*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890), [*Example Model*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound). Note: shared layers must be configured per vLLM's fusion patterns.
 
-* [2026/07] `torch.compile` is enabled by default except on Windows to accelerate quantization. Minor numerical differences compared with the non-compiled path are expected due to compiler optimizations. To disable it, pass `enable_torch_compile=False` to the Python API or use `--disable_torch_compile` on the CLI.
+* [2026/07] `torch.compile` is enabled in most scenarios to accelerate quantization, at the cost of ~10G extra RAM usage.  Minor numerical differences compared with the non-compiled path are expected due to compiler optimizations. To disable it, pass `enable_torch_compile=False` to the Python API or use `--disable_torch_compile` on the CLI.
 
 * [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
 
