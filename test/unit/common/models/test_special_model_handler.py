@@ -912,6 +912,30 @@ class TestGetPredefinedIgnoreLayers:
         layers = get_predefined_ignore_layers(mock_model)
         assert "layers.0.mlp" in layers
         assert "layers.1.mlp" in layers
+        # The whole DSA indexer stays FP: its forward is @torch.no_grad() and
+        # transformers keeps indexer.weights_proj in _keep_in_fp32_modules.
+        assert "weights_proj" in layers
+        assert "indexer" in layers
+
+    def test_glm5_next_matcher(self):
+        """GLM-5.3-Flash keeps its whole DSA indexer in full precision.
+
+        ``Glm5NextTextIndexer.forward`` is ``@torch.no_grad()``, so quantizing its
+        ``wq_b`` / ``wk`` / ``weights_proj`` linears makes the same compiled quant
+        function run under both grad modes and breaks the AOTAutograd backward.
+        The leading dense MLPs are excluded for the same vLLM reason as glm_moe_dsa.
+        """
+        from auto_round.special_model_handler import get_predefined_ignore_layers
+
+        mock_model = MagicMock()
+        mock_model.config.model_type = "glm5_next"
+        mock_model.config.first_k_dense_replace = 3
+        layers = get_predefined_ignore_layers(mock_model)
+        assert "weights_proj" in layers
+        assert "indexer" in layers
+        assert "layers.0.mlp" in layers
+        assert "layers.1.mlp" in layers
+        assert "layers.2.mlp" in layers
 
     def test_step3p5_matcher(self):
         from auto_round.special_model_handler import get_predefined_ignore_layers
@@ -956,6 +980,38 @@ class TestGetPredefinedIgnoreLayers:
         mock_model.named_modules.return_value = iter([])
         layers = get_predefined_ignore_layers(mock_model)
         # Should not add any layers without matching rules
+
+
+class TestTorchCompileOff:
+    """DeepSeek / GLM-5.3-Flash DSA families must not run under torch.compile."""
+
+    def _cfg(self, model_type="", architectures=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(config=SimpleNamespace(model_type=model_type, architectures=architectures or []))
+
+    def test_deepseek_disabled(self):
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        for mt in ("deepseek_v3", "deepseek_v32"):
+            assert get_torch_compile_off_reason(self._cfg(model_type=mt)) is not None
+
+    def test_glm5_family_disabled(self):
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        assert get_torch_compile_off_reason(self._cfg(model_type="glm5_next")) is not None
+        assert get_torch_compile_off_reason(self._cfg(model_type="glm_moe_dsa")) is not None
+        # Architecture name alone is enough (config before weights are materialized).
+        assert (
+            get_torch_compile_off_reason(self._cfg(architectures=["Glm5NextForConditionalGeneration"])) is not None
+        )
+
+    def test_other_models_unaffected(self):
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        assert get_torch_compile_off_reason(self._cfg(model_type="qwen3", architectures=["Qwen3ForCausalLM"])) is None
+        assert get_torch_compile_off_reason(self._cfg(model_type="glm4", architectures=["Glm4ForCausalLM"])) is None
+        assert get_torch_compile_off_reason(None) is None
 
 
 class TestGetBagelIgnoreLayers:

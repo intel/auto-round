@@ -1179,6 +1179,7 @@ class BaseOrchestrator(object):
             and not is_raw_nv_fp
             and not is_valid_act_static
             and self._torch_compile_disabled_reason(ignore_user_override=True) is None
+            and self._torch_compile_unsupported_arch_reason() is None
             and self.need_calib
         ):
             logger.info(
@@ -1225,6 +1226,19 @@ class BaseOrchestrator(object):
 
         return None
 
+    def _torch_compile_unsupported_arch_reason(self) -> Optional[str]:
+        """Return why the model *architecture* forbids ``torch.compile``, else ``None``.
+
+        Rules live in :mod:`auto_round.special_model_handler` so a new architecture can
+        be registered in one place.
+        """
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        model = getattr(getattr(self, "model_context", None), "model", None)
+        if model is None:
+            model = getattr(self, "model", None)
+        return get_torch_compile_off_reason(model)
+
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
@@ -1247,6 +1261,15 @@ class BaseOrchestrator(object):
             self._torch_compile_off_reason = "activation is static"
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
 
+        # Architecture-level hard block (DeepSeek / GLM-5.3-Flash DSA families). These
+        # hit dynamo's recompile_limit and cannot be overridden by an explicit
+        # ``enable_torch_compile=True``.
+        if self.enable_torch_compile:
+            arch_reason = self._torch_compile_unsupported_arch_reason()
+            if arch_reason is not None:
+                self.enable_torch_compile = False
+                self._torch_compile_off_reason = arch_reason
+                logger.warning_once("reset enable_torch_compile to `False` as %s", arch_reason)
 
         if self.enable_torch_compile:
             disabled_reason = self._torch_compile_disabled_reason()
