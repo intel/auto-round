@@ -385,10 +385,20 @@ def test_sglang_awq_format_via_cli(require_cuda):
         rc = os.system(cmd)
         assert rc == 0, f"awq-format quant via CLI failed (rc={rc})"
 
+        # The CLI derives a descriptive export sub-directory under
+        # ``output_dir`` (e.g. ``Qwen3-0.6B-w4g128/`` via ``_get_export_dir``),
+        # so the engine must load from that folder rather than ``out`` itself.
+        saved = [
+            os.path.join(out, d)
+            for d in os.listdir(out)
+            if os.path.isdir(os.path.join(out, d)) and os.path.isfile(os.path.join(out, d, "config.json"))
+        ]
+        assert len(saved) == 1, f"expected one quantized model dir under {out}, got {saved}"
+
         # SGLang will JIT-compile the awq kernels during the first generate
         # call, so we expect the first request to be slow but the second
         # to be representative.
-        llm = _build_sglang_engine(out, mem_fraction_static=0.5, context_len=1024)
+        llm = _build_sglang_engine(saved[0], mem_fraction_static=0.5, context_len=1024)
         try:
             outputs = llm.generate(["Hello, my name is"], {"max_new_tokens": 16, "temperature": 0.0})
             text = outputs[0]["text"]
