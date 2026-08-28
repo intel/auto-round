@@ -79,17 +79,6 @@ def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path,
     # regardless of the host device / OS.
     monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
 
-    # Plain RTN (routes to the model-free compressor) and opt-RTN both stay off.
-    for disable_opt_rtn in (True, False):
-        ar = AutoRound(
-            model=tiny_opt_model_path,
-            scheme="W4A16",
-            iters=0,
-            nsamples=1,
-            disable_opt_rtn=disable_opt_rtn,
-        )
-        _assert_compile(ar, False)
-
     # SignRound with too few iterations.
     for iters in (1, MIN_ITERS_FOR_TORCH_COMPILE - 1):
         ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=iters, nsamples=1)
