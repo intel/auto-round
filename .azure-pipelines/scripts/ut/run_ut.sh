@@ -106,7 +106,7 @@ function run_unit_test() {
     # run in the nightly pipelines (see nightly-test.yml).
     find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
-    NUM_CHUNKS=4
+    NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
     r=$(( total_lines % NUM_CHUNKS ))
     if [ "$test_part" -le "$r" ]; then

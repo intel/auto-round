@@ -52,8 +52,6 @@ parameters:
       - 0
       - 1
       - 2
-      - 3
-      - 4
 
 stages:
   - template: template/lib-build-template.yml
