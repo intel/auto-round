@@ -191,6 +191,3 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         enable_torch_compile=False,
     )
     assert not ar.enable_torch_compile
-
-
-
