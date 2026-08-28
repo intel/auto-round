@@ -62,6 +62,17 @@ def _record(result: BenchResult) -> None:
         f.write(json.dumps(result.__dict__) + "\n")
 
 
+def _server_arg_fields():
+    try:
+        import dataclasses
+
+        from sglang.srt.server_args import ServerArgs
+
+        return {f.name for f in dataclasses.fields(ServerArgs)}
+    except Exception:
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Skip markers
 # ---------------------------------------------------------------------------
@@ -113,14 +124,24 @@ def _build_sglang_engine(model_path: str, mem_fraction_static: float, context_le
     except ImportError as e:
         pytest.skip(f"sglang is not installed: {e}")
 
+    fields = _server_arg_fields()
+    engine_kwargs = {}
+    if "disable_piecewise_cuda_graph" in fields:
+        engine_kwargs["disable_piecewise_cuda_graph"] = True
+        if "cuda_graph_bs" in fields:
+            engine_kwargs["cuda_graph_bs"] = [1]
+    elif "disable_cuda_graph" in fields:
+        engine_kwargs["disable_cuda_graph"] = True
+        if "cuda_graph_bs_decode" in fields:
+            engine_kwargs["cuda_graph_bs_decode"] = [1]
+
     return sgl.Engine(
         model_path=model_path,
         mem_fraction_static=mem_fraction_static,
         context_length=context_len,
         # Keep cuda-graphs conservative – AutoRound-int4 checkpoints don't
         # benefit from large captured graphs on small workloads.
-        disable_piecewise_cuda_graph=True,
-        cuda_graph_bs=[1, 2, 4],
+        **engine_kwargs,
     )
 
 

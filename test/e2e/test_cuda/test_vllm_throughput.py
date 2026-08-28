@@ -107,7 +107,6 @@ def _build_vllm_engine(model_path: str, max_model_len: int, gpu_mem_util: float)
     # Newer vLLM versions do not accept legacy aliases like "auto-round".
     return LLM(
         model=model_path,
-        quantization="auto-round",
         trust_remote_code=True,
         tensor_parallel_size=1,
         gpu_memory_utilization=gpu_mem_util,
