@@ -265,6 +265,34 @@ def compute_mx_v_scale(scaled_tensor, ebits, mbits):
     return step.detach()
 
 
+def map_max_scale_to_power2(max_scale, step=1, min_exp=-1, max_exp=1):
+    """Map a linear `max_scale` (float or tensor) to a 2-step (power-of-two) ladder.
+
+    By default this uses hard rounding (non-differentiable). When
+    `differentiable=True` and `max_scale` is a tensor with `requires_grad`, a
+    straight-through estimator (STE) is used so gradients flow through the
+    continuous value while forward uses rounded exponents.
+
+    Mapping rule: exp = round((s - 1)/step), mapped = 2**exp, clamped to
+    [min_exp, max_exp]. Example: 0.5,1,1.5 -> 0.5,1,2.
+    """
+    # Scalar path
+    if not isinstance(max_scale, torch.Tensor):
+        try:
+            s = float(max_scale)
+        except Exception:
+            return max_scale
+        exp = (s - 1.0) / float(step)
+        exp = max(min(exp, max_exp), min_exp)
+        return 2.0**exp
+
+    # Tensor path
+    s = max_scale.to(torch.float32)
+    exp = (s - 1.0) / float(step)
+    exp = exp.clamp(min=min_exp, max=max_exp)
+    return torch.pow(2.0, exp)
+
+
 def quant_mx(
     tensor,
     bits=4,
@@ -305,10 +333,12 @@ def quant_mx(
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
     max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    if isinstance(max_scale, torch.Tensor):
-        max_val *= init_scale * (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+    # map linear max_scale to power-of-two ladder before applying
+    mapped_max_scale = map_max_scale_to_power2(max_scale)
+    if isinstance(mapped_max_scale, torch.Tensor):
+        max_val *= init_scale * (mapped_max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
-        max_val *= init_scale * max_scale
+        max_val *= init_scale * mapped_max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
@@ -369,10 +399,12 @@ def quant_mx_rceil(
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
     max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    if isinstance(max_scale, torch.Tensor):
-        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+    # map linear max_scale to power-of-two ladder before applying
+    mapped_max_scale = map_max_scale_to_power2(max_scale)
+    if isinstance(mapped_max_scale, torch.Tensor):
+        max_val *= (mapped_max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
-        max_val *= max_scale
+        max_val *= mapped_max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / max_norm)))
@@ -433,10 +465,12 @@ def quant_mx_rceil_v2(
     orig_dtype = tensor.dtype
     tensor = tensor.to(torch.float32)
     max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    if isinstance(max_scale, torch.Tensor):
-        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+    # map linear max_scale to power-of-two ladder before applying
+    mapped_max_scale = map_max_scale_to_power2(max_scale)
+    if isinstance(mapped_max_scale, torch.Tensor):
+        max_val *= (mapped_max_scale.unsqueeze(dim=-1)).to(tensor.device)
     else:
-        max_val *= max_scale
+        max_val *= mapped_max_scale
 
     # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
     shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / 7.25)))
