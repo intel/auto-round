@@ -79,7 +79,7 @@ stages:
               utArtifact: "$(PART)-xpu"
               imageTag: $(IMAGE_TAG)
               dockerFileName: $(DOCKERFILE_NAME)
-              utContainerName: "AutoRoundNightlyXPU$(NODE_LABEL)"
+              utContainerName: "AutoRoundNightly$(NODE_LABEL)"
               buildARKWheel: "false"
               filterChangedTests: true
 
