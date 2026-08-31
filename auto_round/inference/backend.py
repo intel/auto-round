@@ -211,7 +211,7 @@ GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
-FAKE_FORMAT = ["auto_round:fake"]
+FAKE_FORMAT = ["auto_round:fake", "auto_round:auto_gptq", "auto_round", "auto_round:auto_awq"]
 NVFP4_E5M3_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
@@ -354,7 +354,8 @@ BackendInfos["auto_round:fake"] = BackendInfo(
     compute_dtype=["float32", "float16", "bfloat16"],
     bits=[1, 2, 3, 4, 5, 6, 7, 8],
     sym=[True, False],
-    priority=0,
+    # Keep fake backend as a fallback path; prefer real kernels when available.
+    priority=-1,
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.12.0"],
 )

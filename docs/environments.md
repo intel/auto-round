@@ -211,17 +211,6 @@ export AR_SCHEME_MEM_INVENTORY=1
 export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 ```
 
-### AR_SAVE_FAKE_MODEL
-- **Description**: Controls whether the `fake` export format saves the quantized model to disk and replaces in-memory modules with `FakeActQuantLinear`. When disabled (default), the tuned model is used as-is for evaluation without any module replacement or disk write. This is the recommended workflow for quick eval loops. When enabled, the full save + module-replacement path is executed, producing a loadable checkpoint in `auto_round:fake` packing format.
-- **Default**: `False` (equivalent to `"0"`)
-- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
-- **Usage**: Leave unset (or set to `0`) for fast in-memory evaluation after tuning. Set to `1` only when you need a persistent fake-quantized checkpoint.
-- **⚠ Warning**: When `AR_SAVE_FAKE_MODEL=0` the model is **not** serialized. If you later try to load a checkpoint saved with a different setting, the quantization config may not match and you may see unexpected behaviour. If you encounter such a mismatch, please [open an issue](https://github.com/intel/auto-round/issues).
-
-```bash
-export AR_SAVE_FAKE_MODEL=1
-```
-
 ### AR_DISK_STREAM_MODEL
 - **Description**: When enabled, `AutoRound(model=<path>, ...)` builds the model as a meta-device skeleton instead of fully materializing the checkpoint on CPU RAM up front, and streams each decoder block's real weights from the checkpoint's safetensors shards on demand -- materializing right before a block is used (calibration, tuning, or `AutoScheme` sensitivity scoring) and freeing it back to meta right after. This keeps peak CPU RAM roughly flat regardless of checkpoint size, instead of proportional to it. Non-block parameters (embeddings, `lm_head`, final norm) are still loaded up front, since they are typically small. Text-model AutoScheme scoring also supports combining this with parallel scoring, which is enabled by default; each worker streams its own block copy.
 - **Default**: `False`

@@ -13,11 +13,12 @@
 # limitations under the License.
 
 import copy
+import glob
+import os
 from typing import Any, Callable, Union
 
 import torch
 
-from auto_round import envs
 from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -34,25 +35,49 @@ def _serialize_quantization_config_value(value):
     return value
 
 
-def _build_fake_act_quant_config(serialization_dict: dict | None, layer: torch.nn.Module) -> QuantizationScheme:
-    """Build a QuantizationScheme for FakeActQuantLinear from export metadata."""
-    config_dict = dict(serialization_dict or {})
-    for key in QuantizationScheme.get_attributes():
-        if hasattr(layer, key):
-            value = getattr(layer, key)
-            if value is not None:
-                config_dict.setdefault(key, value)
-    return QuantizationScheme.from_dict(config_dict)
+def _normalize_state_dict_keys(state_dict: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], bool]:
+    """Collapse wrapped-layer keys like ``*.orig_layer.weight`` to ``*.weight``."""
+    normalized = {}
+    changed = False
+    for key, value in state_dict.items():
+        new_key = key.replace(".orig_layer.", ".")
+        if new_key != key:
+            changed = True
+        # Prefer already-normalized keys if both happen to exist.
+        if new_key not in normalized:
+            normalized[new_key] = value
+    return normalized, changed
 
 
-def _unwrap_wrapper_module(module: torch.nn.Module) -> torch.nn.Module:
-    """Strip nested WrapperLinear/WrapperWALayer containers and return the base layer."""
-    from auto_round.wrapper import WrapperLinear, WrapperWALayer
+def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
+    """Rewrite saved checkpoint shards in-place so no ``.orig_layer.`` keys remain."""
+    if not os.path.isdir(output_dir):
+        return
 
-    layer = module
-    while isinstance(layer, (WrapperLinear, WrapperWALayer)):
-        layer = layer.orig_layer
-    return layer
+    safetensor_files = sorted(glob.glob(os.path.join(output_dir, "*.safetensors")))
+    for file_path in safetensor_files:
+        try:
+            from safetensors.torch import load_file as safe_load_file
+            from safetensors.torch import save_file as safe_save_file
+
+            state = safe_load_file(file_path)
+            normalized, changed = _normalize_state_dict_keys(state)
+            if changed:
+                safe_save_file(normalized, file_path)
+        except Exception as exc:
+            logger.warning("Failed to normalize safetensors keys for %s: %s", file_path, exc)
+
+    bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")))
+    for file_path in bin_files:
+        try:
+            state = torch.load(file_path, weights_only=True)
+            if not isinstance(state, dict):
+                continue
+            normalized, changed = _normalize_state_dict_keys(state)
+            if changed:
+                torch.save(normalized, file_path)
+        except Exception as exc:
+            logger.warning("Failed to normalize pytorch checkpoint keys for %s: %s", file_path, exc)
 
 
 @OutputFormat.register("fake")
@@ -80,55 +105,23 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
-        if not envs.AR_SAVE_FAKE_MODEL:
-            logger.warning(
-                "AR_SAVE_FAKE_MODEL=0 (default): skipping fake-format save and module replacement. "
-                "The in-memory tuned model is used directly for evaluation. "
-                "Set AR_SAVE_FAKE_MODEL=1 to enable saving."
-            )
-            return model
+        has_fake_act_quant = False
         logger.warning(
-            "AR_SAVE_FAKE_MODEL=1: saving fake-quantized model to disk. "
-            "Wrapped modules (WrapperWALayer) will be replaced with FakeActQuantLinear for saving, "
-            "which may introduce minor accuracy differences. "
-            "If you observe significant accuracy degradation, feel free to open an issue or submit a PR at "
-            "https://github.com/intel/auto-round."
+            "Saving fake-quantized model to disk. "
+            "Linear replacement is deferred to load-time (via auto_round:fake backend); "
+            "save-time now keeps the in-memory quantized model structure unchanged."
         )
         has_meta_device = unsupported_meta_device(model)
         if not inplace and not has_meta_device:
             model = copy.deepcopy(model.to("cpu"))
 
-        from auto_round.utils.model import set_module
-        from auto_round.wrapper import WrapperLinear, WrapperWALayer
-
-        if not has_meta_device:
-            wrapped_modules = [
-                (name, module)
-                for name, module in model.named_modules()
-                if name and isinstance(module, (WrapperLinear, WrapperWALayer))
-            ]
-            wrapped_names = {name for name, _ in wrapped_modules}
-            has_fake_act_quant = False
-            for name, module in wrapped_modules:
-                if any(name.startswith(f"{parent}.") for parent in wrapped_names if parent != name):
-                    continue
-                orig_layer = _unwrap_wrapper_module(module)
-                act_bits = getattr(orig_layer, "act_bits", None)
-                if act_bits is None:
-                    act_bits = (serialization_dict or {}).get("act_bits")
-                if act_bits is not None and act_bits <= 8:
-                    from auto_round.experimental.qmodules.fake import FakeActQuantLinear
-
-                    fake_config = _build_fake_act_quant_config(serialization_dict, orig_layer)
-                    replacement = FakeActQuantLinear.from_original(fake_config, orig_layer).to("cpu")
-                    has_fake_act_quant = True
-                else:
-                    replacement = orig_layer.to("cpu")
-                set_module(model, name, replacement)
+        config_act_bits = (serialization_dict or {}).get("act_bits")
+        if config_act_bits is not None and config_act_bits <= 8:
+            has_fake_act_quant = True
 
         quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
         quantization_config["quant_method"] = "auto-round"
-        if locals().get("has_fake_act_quant", False):
+        if has_fake_act_quant:
             quantization_config["packing_format"] = "auto_round:fake"
         quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
         from auto_round.export.utils import filter_quantization_config
@@ -142,6 +135,11 @@ class FakeFormat(OutputFormat):
             model.save_pretrained(output_dir)
         elif hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(output_dir)
+
+        # Some save flows write wrapper keys first; normalize to plain Linear keys
+        # so HF loading does not report UNEXPECTED/MISSING pairs.
+        if has_fake_act_quant:
+            _rewrite_saved_weights_without_orig_layer(output_dir)
 
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)

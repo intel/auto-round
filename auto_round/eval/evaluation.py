@@ -433,13 +433,6 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
     if model is not None:
         model.eval()
 
-    # When fake format is used without saving (AR_SAVE_FAKE_MODEL=0), the model was never
-    # written to disk — use the in-memory model object for type detection to avoid
-    # triggering HuggingFace Hub requests on the (non-existent) eval_folder path.
-    from auto_round import envs
-
-    is_fake_format = isinstance(formats, list) and formats[-1] == "fake"
-
     # Detect model type for compatibility with evaluation code
     from auto_round.utils.model import detect_model_type
 
@@ -450,8 +443,8 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         eval_folder = folders
 
     # set model_type for ModelFreeCompressor.
-    # When fake+no-save, detect from the model object to avoid HF Hub access.
-    type_probe = model if (is_fake_format and not envs.AR_SAVE_FAKE_MODEL) else eval_folder
+    # Fake format now always saves, so eval_folder is the canonical probe.
+    type_probe = eval_folder
     model_type = detect_model_type(type_probe)
     if hasattr(autoround, "model_context") and model_type in ("mllm", "diffusion"):
         setattr(autoround.model_context, f"is_{model_type}", True)
@@ -506,7 +499,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
 
-    # Check if GGUF model (eval_folder may not exist when fake+no-save)
+    # Check if GGUF model in exported eval folder.
     eval_gguf_model = (
         eval_folder is not None
         and os.path.isdir(eval_folder)
