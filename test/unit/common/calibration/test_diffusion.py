@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from auto_round.calibration.diffusion import DiffusionCalibrator
+from auto_round.calibration.diffusion import DiffusionCalibrator, _stratified_random_indices, _subset_scheduler_schedule
 from auto_round.calibration.register import get_calibrator
 from auto_round.utils.device_manager import device_manager
 
@@ -66,6 +66,38 @@ class ImagePipeline(FakePipeline):
         return self._fn(image, prompt=prompt, **kwargs)
 
 
+class FakeScheduler:
+    def __init__(self):
+        self.calls = []
+        self.timesteps = torch.tensor([])
+        self.sigmas = torch.tensor([])
+
+    def set_timesteps(self, num_inference_steps, **kwargs):
+        self.calls.append(num_inference_steps)
+        self.timesteps = torch.arange(num_inference_steps - 1, -1, -1)
+        self.sigmas = torch.linspace(1.0, 0.0, steps=num_inference_steps + 1)
+
+
+class SchedulerPipeline(FakePipeline):
+    def __init__(self):
+        super().__init__()
+        self.scheduler = FakeScheduler()
+        self.seen_timestep_batches = []
+        self.seen_num_inference_steps = []
+
+    def __call__(self, prompts, **kwargs):
+        self.seen_num_inference_steps.append(kwargs["num_inference_steps"])
+        self.scheduler.set_timesteps(kwargs["num_inference_steps"], device=self.device)
+        self.seen_timestep_batches.append(self.scheduler.timesteps.tolist())
+
+
+class DefaultStepsPipeline(SchedulerPipeline):
+    def __call__(self, prompts, num_inference_steps=13, **kwargs):
+        self.seen_num_inference_steps.append(num_inference_steps)
+        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+        self.seen_timestep_batches.append(self.scheduler.timesteps.tolist())
+
+
 class TestDiffusionCalibrator:
     """Mocks keep everything CPU-only and fast."""
 
@@ -85,7 +117,8 @@ class TestDiffusionCalibrator:
             low_gpu_mem_usage=False,
             has_variable_block_shape=False,
             guidance_scale=7.5,
-            num_inference_steps=1,
+            calib_num_inference_steps=4,
+            num_inference_steps=20,
             generator_seed=None,
             pipe=pipe,
             model=model,
@@ -247,6 +280,7 @@ class TestDiffusionCalibrator:
         assert len(calls) == 1
         assert calls[0][1] == ["p1", "p2"]
         assert calls[0][2]["guidance_scale"] == pytest.approx(7.5)
+        assert calls[0][2]["num_inference_steps"] == 4
         assert calls[0][2]["generator"] is None
 
     def test_calib_falls_back_to_pipe_when_no_pipeline_fn(self, calibrator):
@@ -264,6 +298,65 @@ class TestDiffusionCalibrator:
 
         assert len(calls) == 1
         assert calls[0][0] == ["p1", "p2"]
+        assert calls[0][1]["num_inference_steps"] == 4
+
+    def test_calib_samples_timesteps_from_full_scheduler_schedule(self, calibrator):
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = SchedulerPipeline()
+        calibrator._requires_calibration_image = lambda: False
+
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+            calibrator.calib(nsamples=1, bs=1)
+
+        assert calibrator.pipe.seen_num_inference_steps == [20]
+        assert calibrator.pipe.scheduler.calls == [20]
+        assert calibrator.pipe.seen_timestep_batches == [[19, 10, 5, 0]]
+        assert len(calibrator.pipe.scheduler.sigmas) == 5
+
+    def test_calib_uses_different_reproducible_timestep_samples_per_batch(self, calibrator):
+        calibrator.dataset = [("id0", ["p1"]), ("id1", ["p2"])]
+        calibrator.pipe = SchedulerPipeline()
+        calibrator._requires_calibration_image = lambda: False
+
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+            calibrator.calib(nsamples=2, bs=1)
+
+        assert calibrator.pipe.seen_num_inference_steps == [20, 20]
+        assert calibrator.pipe.scheduler.calls == [20, 20]
+        assert calibrator.pipe.seen_timestep_batches == [
+            [19, 10, 5, 0],
+            [19, 14, 5, 0],
+        ]
+
+    def test_calib_uses_pipeline_step_default_when_generation_steps_omitted(self, calibrator):
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = DefaultStepsPipeline()
+        calibrator.num_inference_steps = None
+        calibrator._requires_calibration_image = lambda: False
+
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+            calibrator.calib(nsamples=1, bs=1)
+
+        assert calibrator.pipe.seen_num_inference_steps == [13]
+        assert calibrator.pipe.scheduler.calls == [13]
+        assert len(calibrator.pipe.seen_timestep_batches[0]) == 4
+
+    def test_scheduler_subset_leaves_schedule_unchanged_for_unknown_sigmas_shape(self):
+        scheduler = SimpleNamespace(
+            timesteps=torch.arange(9, -1, -1),
+            sigmas=torch.linspace(1.0, 0.0, steps=7),
+        )
+        original_timesteps = scheduler.timesteps.clone()
+        original_sigmas = scheduler.sigmas.clone()
+
+        _subset_scheduler_schedule(scheduler, calib_num_inference_steps=4, seed=0)
+
+        assert torch.equal(scheduler.timesteps, original_timesteps)
+        assert torch.equal(scheduler.sigmas, original_sigmas)
+
+    def test_timestep_sampling_changes_with_seed(self):
+        assert _stratified_random_indices(total=20, target=4, seed=0) == [0, 9, 14, 19]
+        assert _stratified_random_indices(total=20, target=4, seed=1) == [0, 5, 14, 19]
 
     def test_calib_passes_image_when_required(self, calibrator):
         seen_images = []

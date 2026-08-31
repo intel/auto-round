@@ -43,7 +43,7 @@ class TestAutoRound:
             scheme="MXFP4",
             iters=0,
             disable_opt_rtn=True,
-            num_inference_steps=2,
+            calib_num_inference_steps=2,
             dataset="coco2014",
         )
         # skip model saving since it takes much time
@@ -54,7 +54,7 @@ class TestAutoRound:
             tiny_z_image_model_path,
             iters=1,
             nsamples=1,
-            num_inference_steps=2,
+            calib_num_inference_steps=2,
             dataset="coco2014",
         )
         # skip model saving since it takes much time
@@ -88,7 +88,7 @@ class TestAutoRound:
             scheme="MXFP4",
             iters=1,
             nsamples=1,
-            num_inference_steps=2,
+            calib_num_inference_steps=2,
             layer_config=layer_config,
             dataset="coco2014",
         )
@@ -133,7 +133,7 @@ class TestAutoRound:
             scheme="MXFP4",
             iters=1,
             nsamples=1,
-            num_inference_steps=2,
+            calib_num_inference_steps=2,
             layer_config=layer_config,
             dataset="coco2014",
             device_map="0,1",

@@ -87,7 +87,8 @@ Smooth search and additional residual iterations are opt-in:
 ```
 
 For diffusion calibration, `--nsamples` controls prompts and
-`--num_inference_steps` controls denoising steps. Start small before running a
+`--calib_num_inference_steps` controls how many denoising steps are sampled from the full scheduler
+schedule for calibration. Sampling is stratified and controlled by `--seed`. Start small before running a
 full quality configuration.
 
 ## Processing flow

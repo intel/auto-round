@@ -85,7 +85,8 @@ Smooth 搜索和更多 residual iterations 默认不开启，可按需添加：
 ```
 
 Diffusion calibration 中，`--nsamples` 控制 prompt 数量，
-`--num_inference_steps` 控制去噪步数。建议先用小配置跑通端到端流程，再运行完整质量配置。
+`--calib_num_inference_steps` 控制从完整 scheduler schedule 中抽样多少个去噪步用于校准。
+抽样是分层随机的，并由 `--seed` 控制。建议先用小配置跑通端到端流程，再运行完整质量配置。
 
 ## 处理流程
 

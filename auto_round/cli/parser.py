@@ -281,7 +281,16 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     diff.add_argument("--guidance_scale", default=7.5, type=float, help="Classifier-free guidance scale.")
     diff.add_argument(
-        "--num_inference_steps", default=50, type=int, help="Number of denoising steps for diffusion evaluation."
+        "--calib_num_inference_steps",
+        default=8,
+        type=int,
+        help="Number of denoising steps used to collect diffusion quantization calibration inputs.",
+    )
+    diff.add_argument(
+        "--num_inference_steps",
+        default=50,
+        type=int,
+        help="Number of denoising steps for diffusion generation/evaluation.",
     )
     diff.add_argument("--generator_seed", default=None, type=int, help="Random seed used for diffusion generation.")
 

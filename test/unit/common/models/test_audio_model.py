@@ -357,7 +357,7 @@ class TestStableAudioQuantization:
             nsamples=1,
             iters=0,
             disable_opt_rtn=True,
-            num_inference_steps=2,
+            calib_num_inference_steps=2,
             device_map=device,
             enable_torch_compile=True,
         )

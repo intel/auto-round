@@ -100,9 +100,9 @@ class CompressionOrchestrator(BaseOrchestrator):
     def post_init(self) -> None:
         """Run base post-init then attach the registered calibrator strategy.
 
-        Subclasses (MLLM/Diffusion) override ``calib`` directly on the
-        CompressionOrchestrator; the calibrator owns ``try_cache_inter_data_gpucpu`` /
-        ``cache_inter_data`` orchestration plus the LLM ``calib`` body.
+        Model-type mixins select the calibrator kind; the calibrator owns
+        ``try_cache_inter_data_gpucpu`` / ``cache_inter_data`` orchestration
+        plus the model-specific ``calib`` body.
         """
         if self._post_init_done:
             return
