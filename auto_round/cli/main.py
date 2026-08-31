@@ -405,11 +405,11 @@ def tune(args):
         ),
     )
 
-    model, folders = autoround.quantize_and_save(
+    model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
         args.output_dir,
         format=getattr(args, "_api_format", args.format),
         max_shard_size=args.max_shard_size,
-    )  # pylint: disable=no-member
+    )
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()
 
