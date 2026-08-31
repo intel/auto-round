@@ -29,9 +29,9 @@ def test_cli_torch_compile_flags():
 
 def test_cli_deterministic_algorithms_flags_are_forwarded():
     for flag, expected in (
-        (None, (False, True)),
-        ("--enable_deterministic_algorithms", (True, True)),
-        ("--disable_deterministic_algorithms", (False, True)),
+        (None, (None, None)),
+        ("--enable_deterministic_algorithms", (True, None)),
+        ("--disable_deterministic_algorithms", (None, True)),
     ):
         argv = ["--model", "test-model"]
         if flag is not None:
@@ -55,7 +55,7 @@ def test_deterministic_algorithms_runtime_logging(monkeypatch, caplog, tiny_opt_
 
     with caplog.at_level(logging.INFO):
         AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
-    assert calls[-1] == (True, True)
+    assert calls == []
     assert "disable_deterministic_algorithms is deprecated" not in caplog.text
     assert "Deterministic algorithms are enabled." not in caplog.text
 

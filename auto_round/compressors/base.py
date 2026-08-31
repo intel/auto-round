@@ -309,7 +309,7 @@ class BaseOrchestrator(object):
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
         nblocks = kwargs.pop("nblocks", 1)
-        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
+        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", None)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
 
         self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", offload_dir_prefix="compressor")
@@ -348,14 +348,17 @@ class BaseOrchestrator(object):
         if enable_deterministic_algorithms:
             logger.info("Deterministic algorithms are enabled.")
             torch.use_deterministic_algorithms(True, warn_only=False)
-        elif not disable_deterministic_algorithms:
+        elif disable_deterministic_algorithms is False:
             logger.warning(
                 "disable_deterministic_algorithms=False is deprecated; "
                 "please use enable_deterministic_algorithms=True instead."
             )
             torch.use_deterministic_algorithms(True, warn_only=False)
-        else:
-            torch.use_deterministic_algorithms(True, warn_only=True)
+        elif disable_deterministic_algorithms is True:
+            logger.warning(
+                "disable_deterministic_algorithms=True is deprecated; "
+                "it only keeps the legacy warn-only behavior and does not enable strict determinism."
+            )
 
         # XPU SDPA workaround: drop pure causal masks so FLASH backend is used,
         # and set torch.use_deterministic_algorithms(False)

@@ -254,11 +254,13 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     compat.add_argument(
         "--disable_deterministic_algorithms",
         action="store_true",
+        default=None,
         help="Deprecated flag to disable deterministic algorithms.",
     )
     compat.add_argument(
         "--enable_deterministic_algorithms",
         action="store_true",
+        default=None,
         help="Enable deterministic algorithms for reproducible runs.",
     )
     compat.add_argument("--model_free", action="store_true", help="Force model-free quantization mode.")
