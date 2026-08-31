@@ -12,7 +12,9 @@
 
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <limits>
 #include <vector>
@@ -35,6 +37,85 @@ namespace ark {
 
 class XpuWrapper {
  public:
+  static inline int64_t profile_now_ns() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               clock::now().time_since_epoch())
+        .count();
+  }
+
+  static inline void profile_woq_record(int m, QuantParam* p,
+                                        bool did_s8_unpack,
+                                        bool skipped_s8_unpack,
+                                        int64_t s8_unpack_ns,
+                                        int64_t total_ns,
+                                        size_t s8_scratch_bytes,
+                                        bool s8_rescale,
+                                        int s8_blocksize) {
+    static std::atomic<int64_t> calls{0};
+    static std::atomic<int64_t> unpack_calls{0};
+    static std::atomic<int64_t> skip_unpack_calls{0};
+    static std::atomic<int64_t> unpack_total_ns{0};
+    static std::atomic<int64_t> total_total_ns{0};
+
+    int64_t call = calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    int64_t total = total_total_ns.fetch_add(total_ns, std::memory_order_relaxed) + total_ns;
+    int64_t unpack_total = unpack_total_ns.load(std::memory_order_relaxed);
+    int64_t unpack_call_count = unpack_calls.load(std::memory_order_relaxed);
+    int64_t skip_unpack_call_count = skip_unpack_calls.load(std::memory_order_relaxed);
+
+    if (did_s8_unpack) {
+      unpack_call_count = unpack_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+      unpack_total = unpack_total_ns.fetch_add(s8_unpack_ns, std::memory_order_relaxed) + s8_unpack_ns;
+    }
+    if (skipped_s8_unpack) {
+      skip_unpack_call_count = skip_unpack_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
+    int interval = env_params::Instance()->profile_woq_interval;
+    if (interval <= 0) interval = 1000;
+    if (call % interval != 0) return;
+
+    double unpack_ms = static_cast<double>(unpack_total) / 1.0e6;
+    double total_ms = static_cast<double>(total) / 1.0e6;
+    double pct = total > 0 ? static_cast<double>(unpack_total) * 100.0 / static_cast<double>(total) : 0.0;
+    double avg_unpack_us = unpack_call_count > 0 ? static_cast<double>(unpack_total) / unpack_call_count / 1.0e3 : 0.0;
+    double avg_total_us = static_cast<double>(total) / call / 1.0e3;
+    double last_unpack_us = did_s8_unpack ? static_cast<double>(s8_unpack_ns) / 1.0e3 : 0.0;
+    double last_total_us = static_cast<double>(total_ns) / 1.0e3;
+    double last_rest_us = static_cast<double>(total_ns - s8_unpack_ns) / 1.0e3;
+    double last_unpack_pct = total_ns > 0 ? static_cast<double>(s8_unpack_ns) * 100.0 / static_cast<double>(total_ns) : 0.0;
+    std::fprintf(stderr,
+                 "[ARK_PROFILE_WOQ] calls=%ld unpack_calls=%ld skip_unpack_calls=%ld last_mnk=(%d,%d,%d) "
+                 "unpack_total=%.3fms total=%.3fms unpack_pct=%.2f avg_unpack=%.3fus avg_total=%.3fus "
+                 "last_unpack=%.3fus last_total=%.3fus last_rest=%.3fus last_unpack_pct=%.2f\n",
+                 call, unpack_call_count, skip_unpack_call_count, m, p->n, p->k, unpack_ms, total_ms, pct,
+                 avg_unpack_us, avg_total_us, last_unpack_us, last_total_us, last_rest_us, last_unpack_pct);
+
+    if (env_params::Instance()->profile_woq_detail != 0) {
+      size_t packed_q_bytes = get_weight_qbytes(p);
+      size_t scale_bytes = get_scale_size(p);
+      size_t zp_bytes = get_zp_size(p);
+      size_t scalext_bytes = get_scalext_size(p);
+      double scratch_mb = static_cast<double>(s8_scratch_bytes) / 1048576.0;
+      double packed_q_mb = static_cast<double>(packed_q_bytes) / 1048576.0;
+      double scale_mb = static_cast<double>(scale_bytes) / 1048576.0;
+      double scalext_mb = static_cast<double>(scalext_bytes) / 1048576.0;
+      double unpack_bw_gbs = s8_unpack_ns > 0 ? static_cast<double>(s8_scratch_bytes) / static_cast<double>(s8_unpack_ns) : 0.0;
+      std::fprintf(stderr,
+                   "[ARK_PROFILE_WOQ_DETAIL] call=%ld (m,n,k)=(%d,%d,%d) weight_type=%s(%d) "
+                   "scale_type=%s(%d) compute_type=%s(%d) blocksize=%d s8_rescale=%d s8_blocksize=%d "
+                   "packed_q=%.3fMB scale=%.3fMB zp=%zuB scalext=%.3fMB s8_scratch=%.3fMB "
+                   "last_unpack=%.3fus unpack_bw=%.3fGBps last_total=%.3fus last_rest=%.3fus skipped=%d\n",
+                   call, m, p->n, p->k, bestla::utils::bestla_dtype_str(p->weight_type),
+                   static_cast<int>(p->weight_type), bestla::utils::bestla_dtype_str(p->scale_type),
+                   static_cast<int>(p->scale_type), bestla::utils::bestla_dtype_str(p->compute_type),
+                   static_cast<int>(p->compute_type), p->blocksize, s8_rescale ? 1 : 0, s8_blocksize, packed_q_mb,
+                   scale_mb, zp_bytes, scalext_mb, scratch_mb, last_unpack_us, unpack_bw_gbs, last_total_us,
+                   last_rest_us, skipped_s8_unpack ? 1 : 0);
+    }
+  }
+
   static inline size_t get_weight_qbits(QuantParam* p) { return bestla::utils::bestla_dtype_bits(p->weight_type); }
 
   static inline size_t get_weight_qbytes(QuantParam* p) { return get_weight_qbits(p) * p->k * p->n / 8; }
@@ -702,6 +783,19 @@ class XpuWrapper {
 
   static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
                        sycl::queue* q, size_t blob_count = 0) {
+    bool profile_woq = env_params::Instance()->profile_woq != 0;
+    bool skip_s8_unpack = env_params::Instance()->profile_woq_skip_unpack != 0;
+    int64_t profile_start_ns = 0;
+    int64_t profile_s8_unpack_ns = 0;
+    size_t profile_s8_scratch_bytes = 0;
+    bool profile_did_s8_unpack = false;
+    bool profile_skipped_s8_unpack = false;
+    bool profile_s8_rescale = false;
+    int profile_s8_blocksize = 0;
+    if (profile_woq && q != nullptr) {
+      q->wait();
+      profile_start_ns = profile_now_ns();
+    }
     if (blob_count > 0) {
       auto expected = get_packw_size(p);
       if (blob_count < expected) {
@@ -733,13 +827,39 @@ class XpuWrapper {
         } else {
           size_t elesize = 1;
           size_t total_size = elesize * p->k * p->n;
+          profile_s8_scratch_bytes = total_size;
+          profile_s8_rescale = _rescale;
           bptr = (int8_t*)DeviceMemoryPool::Instance()->get_scratch_mem(total_size, 2, q);
-          unpackq(BTLA_DTYPE::S8, (int8_t*)b, bptr, p, q);
+          if (skip_s8_unpack) {
+            profile_skipped_s8_unpack = true;
+          } else {
+            int64_t profile_unpack_start_ns = 0;
+            if (profile_woq && q != nullptr) {
+              q->wait();
+              profile_unpack_start_ns = profile_now_ns();
+            }
+            unpackq(BTLA_DTYPE::S8, (int8_t*)b, bptr, p, q);
+            if (profile_woq && q != nullptr) {
+              q->wait();
+              profile_s8_unpack_ns += profile_now_ns() - profile_unpack_start_ns;
+              profile_did_s8_unpack = true;
+            }
+          }
           scaleb_ptr = _rescale ? (int8_t*)b + get_scalext_offset(p) : (int8_t*)b + get_scale_offset(p);
         }
         auto blocksize = rescale_blocksize(p);
+        profile_s8_blocksize = blocksize;
         ark::SyclS8Wrapper::woq_s8(q, m, p->n, p->k, a, bptr, true, c, acdt, scaleb_ptr, (void*)bias, blocksize);
       }
+    }
+    if (profile_woq && q != nullptr) {
+      q->wait();
+      profile_woq_record(m, p, profile_did_s8_unpack, profile_skipped_s8_unpack,
+                         profile_s8_unpack_ns,
+                         profile_now_ns() - profile_start_ns,
+                         profile_s8_scratch_bytes,
+                         profile_s8_rescale,
+                         profile_s8_blocksize);
     }
   }
 

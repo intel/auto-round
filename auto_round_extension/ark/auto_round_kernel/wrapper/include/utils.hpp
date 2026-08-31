@@ -13,6 +13,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
@@ -46,6 +49,11 @@ namespace ark {
 struct env_params {
   int verbose = 2;  // trace 0/ debug 1/ info 2/ warn 3/ error 4/ critical 5/ off 6
   int auto_s8 = -1;
+  int profile_woq = 0;
+  int profile_woq_interval = 1000;
+  int profile_woq_skip_unpack = 0;
+  int profile_woq_detail = 0;
+  int mem_pool = 0;
   int sage_use_mean_bias = 1;
   int sage_print_kbias = 0;
   int sage_disable_packed_hnd_fast = 0;
@@ -58,6 +66,11 @@ struct env_params {
   env_params() {
     env_i("ARK_VERBOSE", verbose);
     env_i("ARK_AUTO_S8", auto_s8);
+    env_i("ARK_PROFILE_WOQ", profile_woq);
+    env_i("ARK_PROFILE_WOQ_INTERVAL", profile_woq_interval);
+    env_i("ARK_PROFILE_WOQ_SKIP_UNPACK", profile_woq_skip_unpack);
+    env_i("ARK_PROFILE_WOQ_DETAIL", profile_woq_detail);
+    env_i("ARK_MEM_POOL", mem_pool);
     env_i("ARK_SAGE_USE_MEAN_BIAS", sage_use_mean_bias);
     env_i("ARK_SAGE_PRINT_KBIAS", sage_print_kbias);
     env_i("ARK_SAGE_DISABLE_PACKED_HND_FAST", sage_disable_packed_hnd_fast);
@@ -88,6 +101,68 @@ struct UUIDHasher {
 
 class DeviceMemoryPool {
  public:
+  static inline int64_t profile_now_ns() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               clock::now().time_since_epoch())
+        .count();
+  }
+
+  static inline void profile_mem_pool_record(const char* event, size_t buf_loc, size_t key, size_t request_size,
+                                             size_t old_size, size_t cached_size, int64_t op_ns) {
+    static std::atomic<int64_t> requests{0};
+    static std::atomic<int64_t> hits{0};
+    static std::atomic<int64_t> allocs{0};
+    static std::atomic<int64_t> reallocs{0};
+    static std::atomic<int64_t> releases{0};
+    static std::atomic<int64_t> alloc_total_ns{0};
+    static std::atomic<int64_t> cached_total_bytes{0};
+    static std::atomic<int64_t> peak_cached_total_bytes{0};
+
+    int64_t request_count = requests.fetch_add(1, std::memory_order_relaxed) + 1;
+    int64_t hit_count = hits.load(std::memory_order_relaxed);
+    int64_t alloc_count = allocs.load(std::memory_order_relaxed);
+    int64_t realloc_count = reallocs.load(std::memory_order_relaxed);
+    int64_t release_count = releases.load(std::memory_order_relaxed);
+    int64_t total_alloc_ns = alloc_total_ns.load(std::memory_order_relaxed);
+    int64_t cached_bytes = cached_total_bytes.load(std::memory_order_relaxed);
+
+    if (std::strcmp(event, "hit") == 0) {
+      hit_count = hits.fetch_add(1, std::memory_order_relaxed) + 1;
+    } else if (std::strcmp(event, "alloc") == 0) {
+      alloc_count = allocs.fetch_add(1, std::memory_order_relaxed) + 1;
+      total_alloc_ns = alloc_total_ns.fetch_add(op_ns, std::memory_order_relaxed) + op_ns;
+      cached_bytes = cached_total_bytes.fetch_add(static_cast<int64_t>(cached_size), std::memory_order_relaxed) +
+                     static_cast<int64_t>(cached_size);
+    } else if (std::strcmp(event, "realloc") == 0) {
+      realloc_count = reallocs.fetch_add(1, std::memory_order_relaxed) + 1;
+      release_count = releases.fetch_add(1, std::memory_order_relaxed) + 1;
+      total_alloc_ns = alloc_total_ns.fetch_add(op_ns, std::memory_order_relaxed) + op_ns;
+      cached_bytes = cached_total_bytes.fetch_add(static_cast<int64_t>(cached_size) - static_cast<int64_t>(old_size),
+                                                  std::memory_order_relaxed) +
+                     static_cast<int64_t>(cached_size) - static_cast<int64_t>(old_size);
+    }
+
+    int64_t peak = peak_cached_total_bytes.load(std::memory_order_relaxed);
+    while (cached_bytes > peak &&
+           !peak_cached_total_bytes.compare_exchange_weak(peak, cached_bytes, std::memory_order_relaxed)) {
+    }
+    peak = peak_cached_total_bytes.load(std::memory_order_relaxed);
+
+    int profile = env_params::Instance()->mem_pool;
+    if (profile == 0 || (profile == 1 && std::strcmp(event, "hit") == 0)) return;
+
+    std::fprintf(stderr,
+                 "[ARK_MEM_POOL] requests=%ld hits=%ld allocs=%ld reallocs=%ld releases=%ld "
+                 "event=%s buf_loc=%zu key=%zu request=%.3fMB old=%.3fMB cached=%.3fMB "
+                 "cached_total=%.3fMB peak_cached_total=%.3fMB op=%.3fus alloc_total=%.3fms\n",
+                 request_count, hit_count, alloc_count, realloc_count, release_count, event, buf_loc, key,
+                 static_cast<double>(request_size) / 1048576.0, static_cast<double>(old_size) / 1048576.0,
+                 static_cast<double>(cached_size) / 1048576.0, static_cast<double>(cached_bytes) / 1048576.0,
+                 static_cast<double>(peak) / 1048576.0, static_cast<double>(op_ns) / 1.0e3,
+                 static_cast<double>(total_alloc_ns) / 1.0e6);
+  }
+
   static DeviceMemoryPool* Instance() {
     static DeviceMemoryPool instance;
     return &instance;
@@ -111,23 +186,31 @@ class DeviceMemoryPool {
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
     if (size == 0 || buf_loc >= MaxLocNum) return nullptr;
 
+    bool profile_mem_pool = env_params::Instance()->mem_pool != 0;
     auto it = dev_mem_ptr_map[buf_loc].find(key);
     if (it == dev_mem_ptr_map[buf_loc].end()) {
+      int64_t start_ns = profile_mem_pool ? profile_now_ns() : 0;
       auto newptr = allocate(size, q);
+      int64_t op_ns = profile_mem_pool ? profile_now_ns() - start_ns : 0;
       dev_mem_size_map[buf_loc][key] = size;
       dev_mem_ptr_map[buf_loc][key] = newptr;
+      if (profile_mem_pool) profile_mem_pool_record("alloc", buf_loc, key, size, 0, size, op_ns);
       return newptr;
     }
 
     auto old_size = dev_mem_size_map[buf_loc][key];
     if (old_size < size) {
+      int64_t start_ns = profile_mem_pool ? profile_now_ns() : 0;
       release(it->second, q);
       auto newptr = allocate(size, q);
+      int64_t op_ns = profile_mem_pool ? profile_now_ns() - start_ns : 0;
       dev_mem_size_map[buf_loc][key] = size;
       dev_mem_ptr_map[buf_loc][key] = newptr;
+      if (profile_mem_pool) profile_mem_pool_record("realloc", buf_loc, key, size, old_size, size, op_ns);
       return newptr;
     }
 
+    if (profile_mem_pool) profile_mem_pool_record("hit", buf_loc, key, size, old_size, old_size, 0);
     return it->second;
   }
 
