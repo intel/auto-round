@@ -344,14 +344,15 @@ class BaseOrchestrator(object):
             )
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        # Deprecated, default not to use torch.use_deterministic_algorithms
-        if not disable_deterministic_algorithms or enable_deterministic_algorithms:
-            if not disable_deterministic_algorithms:
-                logger.warning(
-                    "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-                    " please use enable_deterministic_algorithms instead. "
-                )
-
+        # Deprecated, default not to use strict torch deterministic algorithms.
+        if enable_deterministic_algorithms:
+            logger.info("Deterministic algorithms are enabled.")
+            torch.use_deterministic_algorithms(True, warn_only=False)
+        elif not disable_deterministic_algorithms:
+            logger.warning(
+                "disable_deterministic_algorithms=False is deprecated; "
+                "please use enable_deterministic_algorithms=True instead."
+            )
             torch.use_deterministic_algorithms(True, warn_only=False)
         else:
             torch.use_deterministic_algorithms(True, warn_only=True)

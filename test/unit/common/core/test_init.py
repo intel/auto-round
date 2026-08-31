@@ -3,6 +3,7 @@ import logging
 
 from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
+from auto_round.cli.main import _to_autoround_kwargs
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import MIN_ITERS_FOR_TORCH_COMPILE, BaseOrchestrator
 from auto_round.logger import logger
@@ -24,6 +25,51 @@ def test_cli_torch_compile_flags():
     assert parser.parse_args(["--model", "test-model"]).enable_torch_compile is None
     assert parser.parse_args(["--model", "test-model", "--enable_torch_compile"]).enable_torch_compile is True
     assert parser.parse_args(["--model", "test-model", "--disable_torch_compile"]).enable_torch_compile is False
+
+
+def test_cli_deterministic_algorithms_flags_are_forwarded():
+    for flag, expected in (
+        (None, (False, True)),
+        ("--enable_deterministic_algorithms", (True, True)),
+        ("--disable_deterministic_algorithms", (False, True)),
+    ):
+        argv = ["--model", "test-model"]
+        if flag is not None:
+            argv.append(flag)
+        args = build_quantize_parser().parse_args(argv)
+        kwargs = _to_autoround_kwargs(
+            args,
+            low_cpu_mem_usage=True,
+            enable_torch_compile=None,
+            layer_config={},
+        )
+
+        assert kwargs["enable_deterministic_algorithms"] is expected[0]
+        assert kwargs["disable_deterministic_algorithms"] is expected[1]
+
+
+def test_deterministic_algorithms_runtime_logging(monkeypatch, caplog, tiny_opt_model_path):
+    calls = []
+    monkeypatch.setattr("torch.use_deterministic_algorithms", lambda mode, warn_only: calls.append((mode, warn_only)))
+    monkeypatch.setattr(logger, "propagate", True)
+
+    with caplog.at_level(logging.INFO):
+        AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
+    assert calls[-1] == (True, True)
+    assert "disable_deterministic_algorithms is deprecated" not in caplog.text
+    assert "Deterministic algorithms are enabled." not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=0,
+            nsamples=1,
+            enable_deterministic_algorithms=True,
+        )
+    assert calls[-1] == (True, False)
+    assert "Deterministic algorithms are enabled." in caplog.text
 
 
 def test_cli_dataset_tracks_explicit_value():

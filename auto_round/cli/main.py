@@ -62,6 +62,8 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
         "enable_torch_compile": enable_torch_compile,
+        "disable_deterministic_algorithms": True,
+        "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
