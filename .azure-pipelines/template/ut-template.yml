@@ -1,7 +1,4 @@
 parameters:
-  - name: dockerConfigName
-    type: string
-    default: "commonDockerConfig"
   - name: repo
     type: string
     default: "https://github.com/intel/auto-round"
@@ -39,7 +36,6 @@ parameters:
 steps:
   - template: docker-template.yml
     parameters:
-      dockerConfigName: ${{ parameters.dockerConfigName }}
       repoName: ${{ parameters.imageName }}
       repoTag: ${{ parameters.imageTag }}
       dockerFileName: ${{ parameters.dockerFileName }}
