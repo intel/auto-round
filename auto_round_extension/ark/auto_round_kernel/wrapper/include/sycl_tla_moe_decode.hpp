@@ -1744,11 +1744,21 @@ void launch_fp8_by_mode(sycl::queue* q, const ScalarT* activations, const uint8_
 // process; call this to hand the memory back, or to drop a repack cached under
 // `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer is
 // freed. Safe to call at any time -- the next decode simply reallocates.
+//
+// The public `ark::moe_decode_release_scratch` entry point is emitted by the
+// generated `sycl_tla_moe_decode_int4.cpp` translation unit (MOE_SOURCE_MODE
+// 18) -- `ark.cpp` only sees `sycl_tla_common.hpp`, and pybind takes the
+// function's address, so it needs a real external definition rather than an
+// inline one. Both pools are `inline` accessors over function-local statics,
+// so every translation unit shares the same instance and releasing from mode
+// 18 drops the buffers used by the other decode TUs too.
 // ----------------------------------------------------------------------------
-inline void moe_decode_release_scratch() {
-  moe_decode_detail::int4_repack_pool().release_all();
-  moe_decode_detail::act_group_sum_pool().release_all();
+namespace moe_decode_detail {
+inline void release_scratch() {
+  int4_repack_pool().release_all();
+  act_group_sum_pool().release_all();
 }
+}  // namespace moe_decode_detail
 
 // ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_DPAS_S4` (default ON). When ON, int4-sym

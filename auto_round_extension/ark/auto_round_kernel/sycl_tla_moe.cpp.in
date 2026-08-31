@@ -844,6 +844,13 @@ void sycl_tla_moe_decode_int4(const MoeDecodeParams& params) {
   }
 }
 
+// Public entry point for the int4 decode scratch pools. It lives in this TU
+// because `ark.cpp` only includes `sycl_tla_common.hpp` and pybind takes the
+// function's address, so an inline definition in `sycl_tla_moe_decode.hpp`
+// would not be emitted anywhere. The pools are `inline` accessors over
+// function-local statics, so this releases the buffers for every decode TU.
+void moe_decode_release_scratch() { moe_decode_detail::release_scratch(); }
+
 }  // namespace ark
 
 #elif @MOE_SOURCE_MODE@ == 19
