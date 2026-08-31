@@ -26,60 +26,24 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
+_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
     global _builtin_algorithms_registered
     if _builtin_algorithms_registered:
         return
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
-    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
-    from auto_round.algorithms.transforms.awq.config import AWQConfig
-    from auto_round.algorithms.transforms.hadamard.config import RotationConfig
-    from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
-    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
-
-    register_algorithm("rtn", aliases=("rtn",), config_factory=RTNConfig, summary="Round-To-Nearest quantization.")
-    register_algorithm(
-        "auto_round",
-        aliases=("auto_round", "autoround", "sign_round", "signround"),
-        config_factory=SignRoundConfig,
-        summary="SignRound-style iterative block quantization.",
-    )
-    register_algorithm(
-        "awq",
-        aliases=("awq",),
-        config_factory=AWQConfig,
-        summary="Activation-Aware Weight Quantization (pre-processing).",
-    )
-    register_algorithm(
-        "svdquant",
-        aliases=("svdquant",),
-        config_factory=SVDQuantConfig,
-        summary="SVD low-rank decomposition before residual quantization.",
-    )
-    register_algorithm(
-        "hadamard",
-        aliases=("hadamard", "random_hadamard", "quarot_hadamard"),
-        config_factory=RotationConfig,
-        summary="Hadamard rotation/transform applied before quantization.",
-        alias_factories={
-            "random_hadamard": lambda: RotationConfig(hadamard_type="random_hadamard"),
-            "quarot_hadamard": lambda: RotationConfig(hadamard_type="quarot_hadamard"),
-        },
-    )
-    register_algorithm(
-        "quarot",
-        aliases=("quarot",),
-        config_factory=lambda: SpinQuantConfig(trainable_rotation=False, trainable_smooth=False),
-        summary="QuaRot fixed-Hadamard rotation (no training, no calibration data).",
-    )
-    register_algorithm(
-        "spinquant",
-        aliases=("spinquant",),
-        config_factory=lambda: SpinQuantConfig(trainable_rotation=True, trainable_smooth=True),
-        summary="SpinQuant trainable rotation (experimental).",
-    )
+    # Importing each config module triggers its own registration. Keeping the
+    # imports ordered preserves the help output and default algorithm order.
+    for module_name in (
+        "auto_round.algorithms.quantization.rtn.config",
+        "auto_round.algorithms.quantization.sign_round.config",
+        "auto_round.algorithms.transforms.awq.config",
+        "auto_round.algorithms.transforms.svdquant.config",
+        "auto_round.algorithms.transforms.hadamard.config",
+        "auto_round.algorithms.transforms.spinquant.preprocessor",
+    ):
+        importlib.import_module(module_name)
 
     _builtin_algorithms_registered = True
 
@@ -180,7 +144,9 @@ def get_algorithm_entry(name: str) -> AlgRegistryEntry:
 
 def iter_algorithm_entries() -> list[AlgRegistryEntry]:
     _ensure_builtin_algorithms_registered()
-    return list(_ALG_REGISTRY.values())
+    builtin = [_ALG_REGISTRY[name] for name in _BUILTIN_ALGORITHM_ORDER if name in _ALG_REGISTRY]
+    custom = [entry for name, entry in _ALG_REGISTRY.items() if name not in _BUILTIN_ALGORITHM_ORDER]
+    return builtin + custom
 
 
 def resolve_alg_config(alias: str) -> object:

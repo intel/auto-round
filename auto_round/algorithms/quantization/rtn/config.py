@@ -14,6 +14,7 @@
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
 
 
@@ -79,3 +80,11 @@ class RTNConfig(QuantizationConfig):
 
 class OptimizedRTNConfig(RTNConfig):
     need_calib = True
+
+
+register_algorithm(
+    "rtn",
+    aliases=("rtn",),
+    config_factory=RTNConfig,
+    summary="Round-To-Nearest quantization.",
+)

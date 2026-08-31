@@ -248,6 +248,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Algorithm Settings
 - **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
 
 - **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues.
 

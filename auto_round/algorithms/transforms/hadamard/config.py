@@ -39,6 +39,7 @@ from typing import Any, ClassVar, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from auto_round.algorithms.config import AlgorithmConfig, AlgorithmParameterRegistry
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.algorithms.transforms.base import BaseRotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
@@ -257,3 +258,15 @@ def normalize_rotation_config(
         return RotationConfig.model_validate(cfg_dict).model_dump()
     except Exception as exc:
         raise ValueError(f"Invalid RotationConfig: {exc}") from exc
+
+
+register_algorithm(
+    "hadamard",
+    aliases=("hadamard", "random_hadamard", "quarot_hadamard"),
+    config_factory=RotationConfig,
+    summary="Hadamard rotation/transform applied before quantization.",
+    alias_factories={
+        "random_hadamard": lambda: RotationConfig(hadamard_type="random_hadamard"),
+        "quarot_hadamard": lambda: RotationConfig(hadamard_type="quarot_hadamard"),
+    },
+)

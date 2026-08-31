@@ -775,9 +775,34 @@ class _CompressorBuilder(object):
 class AutoRound:
     """Unified AutoRound entry point.
 
-    alg_configs accepts an algorithm alias, one QuantizationConfig, or a
-    sequence of either. When omitted, SignRound is selected. AWQ-only
-    pipelines receive an RTN block quantizer by default.
+    ``alg_configs`` accepts an algorithm alias, one config object, or a
+    sequence of aliases and config objects. A sequence may combine a
+    preprocessor with one block quantizer, for example
+    ``["auto_round", "quarot"]``. Preprocessors execute in their listed
+    order; the block quantizer is always the final quantization stage,
+    regardless of its position in the sequence. When omitted, SignRound is
+    selected. AWQ-only pipelines receive an RTN block quantizer by default.
+
+    Args:
+        model: A model name/path or an already-loaded ``torch.nn.Module``.
+        tokenizer: Optional tokenizer used for calibration data.
+        scheme: Quantization scheme such as ``"W4A16"`` or ``"MXFP4"``.
+        alg_configs: Algorithm alias, config instance, or sequence of either.
+            Use config instances to provide algorithm-specific options, such
+            as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
+        layer_config: Optional per-layer quantization overrides.
+        dataset: Calibration dataset name, samples, or dataloader.
+        seqlen: Calibration sequence length.
+        nsamples: Number of calibration samples.
+        batch_size: Calibration batch size.
+        low_gpu_mem_usage: Enable lower-memory calibration at the cost of speed.
+        device_map: Device or device mapping used for quantization.
+        enable_torch_compile: Whether to use ``torch.compile`` where supported.
+        seed: Random seed used by calibration and tuning.
+        **kwargs: Additional compressor, model-type, evaluation, and legacy
+            compatibility options. Unsupported options are ignored with a
+            warning; algorithm-specific options should be placed in the
+            corresponding config object.
     """
 
     SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")

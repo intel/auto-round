@@ -15,6 +15,7 @@ from typing import Callable
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
 
 
@@ -276,3 +277,11 @@ class AdamRoundConfig(SignRoundConfig):
 
 class SignRoundV2Config(SignRoundConfig):
     pass
+
+
+register_algorithm(
+    "auto_round",
+    aliases=("auto_round", "autoround", "sign_round", "signround"),
+    config_factory=SignRoundConfig,
+    summary="SignRound-style iterative block quantization.",
+)

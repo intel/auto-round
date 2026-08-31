@@ -14,6 +14,7 @@
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
 
 
@@ -329,3 +330,11 @@ class AWQConfig(QuantizationConfig):
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"
         )
+
+
+register_algorithm(
+    "awq",
+    aliases=("awq",),
+    config_factory=AWQConfig,
+    summary="Activation-Aware Weight Quantization (pre-processing).",
+)

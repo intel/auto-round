@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.registry import register_algorithm
 
 
 class SVDQuantConfig(QuantizationConfig):
@@ -183,3 +184,11 @@ def _normalize_patterns(value):
     if isinstance(value, str):
         return [item.strip() for item in value.split(",") if item.strip()]
     return list(value)
+
+
+register_algorithm(
+    "svdquant",
+    aliases=("svdquant",),
+    config_factory=SVDQuantConfig,
+    summary="SVD low-rank decomposition before residual quantization.",
+)
