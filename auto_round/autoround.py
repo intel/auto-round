@@ -332,7 +332,6 @@ _ENTRY_KWARG_OWNERS = {
     "model_dtype": "base",
     "trust_remote_code": "base",
     "amp": "base",
-    "disable_deterministic_algorithms": "base",
     "enable_deterministic_algorithms": "base",
     "static_kv_dtype": "base",
     "static_attention_dtype": "base",
