@@ -72,7 +72,6 @@ stages:
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"

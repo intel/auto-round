@@ -39,18 +39,6 @@ stages:
       - job:
         displayName: Unit Test
         steps:
-          - task: Bash@3
-            inputs:
-              targetType: "inline"
-              script: |
-                docker ps -a
-                if [[ $(docker ps -a | grep -i 'AutoRoundUnitTest'$) ]]; then
-                    docker start AutoRoundUnitTest
-                    echo "remove left files through container ..."
-                    docker exec AutoRoundUnitTest bash -c "ls -a /auto-round && rm -fr /auto-round/* && rm -fr /auto-round/.* && ls -a /auto-round || true"
-                fi
-            displayName: "Docker clean up"
-
           - script: |
               rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
             displayName: "Clean workspace"

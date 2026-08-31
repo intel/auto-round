@@ -1,7 +1,4 @@
 parameters:
-  - name: dockerConfigName
-    type: string
-    default: "commonDockerConfig"
   - name: repoName
     type: string
     default: "auto-round"
@@ -18,43 +15,14 @@ parameters:
     default: "https://github.com/intel/auto-round"
 
 steps:
-  - task: Bash@3
-    inputs:
-      targetType: "inline"
-      script: |
-        docker ps -a
-        if [[ $(docker ps -a | grep -i '${{ parameters.containerName }}'$) ]]; then
-            docker start ${{ parameters.containerName }}
-            echo "remove left files through container ..."
-            docker exec ${{ parameters.containerName }} bash -c "ls -a /auto-round && rm -fr /auto-round/* && rm -fr /auto-round/.* && ls -a /auto-round || true"
-        fi
-    displayName: "Docker clean up"
+  - script: |
+      rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
+    displayName: "Clean workspace"
 
-  - ${{ if eq(parameters.dockerConfigName, 'commonDockerConfig') }}:
-      - script: |
-          rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
-        displayName: "Clean workspace"
-
-      - checkout: self
-        clean: true
-        fetchTags: true
-        displayName: "Checkout out Repo"
-
-  - ${{ if eq(parameters.dockerConfigName, 'gitCloneDockerConfig') }}:
-      - script: |
-          rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
-          mkdir ${BUILD_SOURCESDIRECTORY}
-          chmod 777 ${BUILD_SOURCESDIRECTORY}
-        displayName: "Clean workspace"
-
-      - checkout: none
-
-      - script: |
-          git clone ${{ parameters.repo }} ${BUILD_SOURCESDIRECTORY}
-          git config --global --add safe.directory ${BUILD_SOURCESDIRECTORY}
-          cd ${BUILD_SOURCESDIRECTORY}
-          git checkout main
-        displayName: "Checkout out main"
+  - checkout: self
+    clean: true
+    fetchTags: true
+    displayName: "Checkout out Repo"
 
   - script: |
       set -eo pipefail

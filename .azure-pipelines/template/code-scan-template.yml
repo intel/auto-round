@@ -14,7 +14,6 @@ parameters:
 steps:
   - template: docker-template.yml
     parameters:
-      dockerConfigName: "commonDockerConfig"
       repoName: "code-scan"
       repoTag: "1.0"
       dockerFileName: "DockerfileCodeScan"
