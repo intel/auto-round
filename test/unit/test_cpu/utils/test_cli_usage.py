@@ -474,3 +474,11 @@ def test_shared_layers_normalize():
         p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2", "--shared_layers", "l3,l4"]).shared_layers
     ) == [["l1", "l2"], ["l3", "l4"]]
     assert p.parse_args(["--model", "dummy"]).shared_layers is None
+
+
+def test_parse_max_shard_size():
+    from auto_round.cli.parser import build_quantize_parser
+
+    parser = build_quantize_parser()
+    assert parser.parse_args([]).max_shard_size is None
+    assert parser.parse_args(["--max_shard_size", "1GB"]).max_shard_size == "1GB"
