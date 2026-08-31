@@ -139,7 +139,7 @@ function run_unit_test() {
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
 
         pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
+            --cov=auto_round --cov-report= --cov-append -vs --junitxml="${ut_log_name%.log}.xml" \
             ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done

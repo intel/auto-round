@@ -142,7 +142,9 @@ function collect_log() {
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
     if [ -f .coverage ]; then
-        cp .coverage "${LOG_DIR}/.coverage"
+        # Suffix with the matrix part so the nightly Coverage stage can combine
+        # the parts without the artifacts overwriting each other.
+        cp .coverage "${LOG_DIR}/.coverage.${UT_MODE:-base}"
         python -m coverage xml -o "${LOG_DIR}/coverage.xml"
         python -m coverage html -d "${LOG_DIR}/htmlcov"
     else

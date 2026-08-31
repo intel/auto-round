@@ -262,7 +262,13 @@ function run_unit_test_vllm() {
 
 function merge_coverage() {
     echo "-----[VAL INFO] merging coverage data -----"
-    cd ${REPO_PATH}/test
+    # Must run from the repo root: the first entry of "[paths] source" in
+    # cuda.coveragerc is the relative path "auto_round", which coverage.py
+    # resolves against the current directory. From ${REPO_PATH}/test it would
+    # resolve to a non-existent "test/auto_round" and the site-packages paths
+    # recorded during the runs would never be remapped back to the sources.
+    cd ${REPO_PATH}
+    rm -f .coverage
 
     local coverage_files=$(find ${LOG_DIR} -maxdepth 1 -name ".coverage.*" 2>/dev/null)
     if [ -z "${coverage_files}" ]; then
