@@ -1,7 +1,10 @@
 #!/bin/bash
 set -e
 uv pip install coverage
-export COVERAGE_RCFILE=${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc
+
+# $1: hardware type used to pick the matching .coveragerc (defaults to cpu).
+HW_TYPE=${1:-cpu}
+export COVERAGE_RCFILE=${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/coveragerc/${HW_TYPE}.coveragerc
 coverage_log="${BUILD_SOURCESDIRECTORY}/log_dir/coverage_log"
 cd "${BUILD_SOURCESDIRECTORY}/log_dir"
 

@@ -34,7 +34,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/xpu.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}

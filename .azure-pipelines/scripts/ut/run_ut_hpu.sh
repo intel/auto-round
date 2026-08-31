@@ -18,7 +18,7 @@ function setup_environment() {
 
     export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/hpu.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}

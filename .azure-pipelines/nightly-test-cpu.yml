@@ -109,7 +109,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh cpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'
