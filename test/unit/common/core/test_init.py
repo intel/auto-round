@@ -1,6 +1,8 @@
 import inspect
 import logging
 
+import pytest
+
 from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
 from auto_round.cli.main import _to_autoround_kwargs
@@ -29,9 +31,8 @@ def test_cli_torch_compile_flags():
 
 def test_cli_deterministic_algorithms_flags_are_forwarded():
     for flag, expected in (
-        (None, (None, None)),
-        ("--enable_deterministic_algorithms", (True, None)),
-        ("--disable_deterministic_algorithms", (None, True)),
+        (None, None),
+        ("--enable_deterministic_algorithms", True),
     ):
         argv = ["--model", "test-model"]
         if flag is not None:
@@ -44,8 +45,13 @@ def test_cli_deterministic_algorithms_flags_are_forwarded():
             layer_config={},
         )
 
-        assert kwargs["enable_deterministic_algorithms"] is expected[0]
-        assert kwargs["disable_deterministic_algorithms"] is expected[1]
+        assert kwargs["enable_deterministic_algorithms"] is expected
+
+
+def test_deterministic_algorithms_rejects_legacy_flag():
+    parser = build_quantize_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--model", "test-model", "--disable_deterministic_algorithms"])
 
 
 def test_deterministic_algorithms_runtime_logging(monkeypatch, caplog, tiny_opt_model_path):
@@ -56,7 +62,6 @@ def test_deterministic_algorithms_runtime_logging(monkeypatch, caplog, tiny_opt_
     with caplog.at_level(logging.INFO):
         AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
     assert calls == []
-    assert "disable_deterministic_algorithms is deprecated" not in caplog.text
     assert "Deterministic algorithms are enabled." not in caplog.text
 
     caplog.clear()

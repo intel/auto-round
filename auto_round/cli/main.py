@@ -62,7 +62,6 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
         "enable_torch_compile": enable_torch_compile,
-        "disable_deterministic_algorithms": args.disable_deterministic_algorithms,
         "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
         "layer_config": layer_config,
@@ -321,12 +320,6 @@ def tune(args):
 
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
-
-    if args.disable_deterministic_algorithms:
-        logger.warning(
-            "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-            " please use enable_deterministic_algorithms instead. "
-        )
 
     from auto_round.utils import parse_layer_config_arg
 
