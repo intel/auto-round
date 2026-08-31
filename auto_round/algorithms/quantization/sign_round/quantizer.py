@@ -424,9 +424,7 @@ class SignRoundQuantizer(BaseQuantizer):
         )
 
         if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
-            )
+            lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.iters, eta_min=0.0)
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
@@ -650,9 +648,7 @@ class SignRoundQuantizer(BaseQuantizer):
             optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
 
         if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
-            )
+            lr_schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.iters, eta_min=0.0)
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
         nsamples = len(fp_inputs)
