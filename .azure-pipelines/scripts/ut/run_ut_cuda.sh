@@ -1,4 +1,6 @@
 #!/bin/bash
+# This script used for weekly unit test on CUDA environment, and will not be triggered by PR or CI pipeline. 
+# CI related cuda UT could be found in .azure-pipelines/scripts/cuda_unit_test. 
 set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
@@ -106,7 +108,7 @@ function run_unit_test() {
     export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
 
     # run unit tests individually with separate logs
-    for test_file in $(find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
+    for test_file in $(find ./unit/test_cuda ./unit/common -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
         echo "Running ${test_file}..."

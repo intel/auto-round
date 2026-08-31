@@ -11,8 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import importlib
 import re
+import sys
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
@@ -1059,12 +1062,32 @@ register_ignore_layers(
     ],
 )
 
-# glm5
+# GLM-5.3-Flash family: ``glm_moe_dsa`` (text) and ``glm5_next`` (multimodal).
+#
+# Both keep their whole DSA indexer out of quantization:
+#   * ``{GlmMoeDsa,Glm5NextText}Indexer.forward`` is decorated with ``@torch.no_grad()``
+#     while owning three quantizable linears (``wq_b``, ``wk``, ``weights_proj``).
+#     Wrapping them makes the same compiled quant function run under both grad-disabled
+#     (indexer) and grad-enabled (rest of the block) modes. dynamo keys its cache by
+#     *code object* -- shared by every WrapperLinear -- so the AOTAutograd backward then
+#     fails with "cannot enter context: <Context ...> is already entered".
+#   * transformers marks ``indexer.weights_proj`` in ``_keep_in_fp32_modules``, i.e. it
+#     is not even supposed to leave FP32.
+# The indexer is tiny anyway (``weights_proj`` outputs ``index_n_heads``), so there is
+# no compression to gain here. ``get_glm_flash_ignore_layers`` additionally keeps the
+# leading dense MLPs in full precision to work around a vLLM loading issue.
 register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
     ],
-    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj", "indexer"],  # get_glm_flash_ignore_layers: vllm issue
+)
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"glm5_next", mode="full"),
+    ],
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj", "indexer"],  # get_glm_flash_ignore_layers: vllm issue
 )
 
 # step3p5
@@ -1153,6 +1176,65 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                 layers.append(name)
 
     return list(dict.fromkeys(layers))
+
+
+# ---------------------------------------------------------------------------
+# Architectures for which ``torch.compile`` is force-disabled during tuning.
+# ---------------------------------------------------------------------------
+@dataclass
+class PreDefinedTorchCompileOff:
+    """A rule that force-disables ``torch.compile`` for a family of models."""
+
+    matchers: list[Callable[[Any], bool]]
+    reason: str
+
+
+_PRE_DEFINED_TORCH_COMPILE_OFF: list[PreDefinedTorchCompileOff] = []
+
+
+def register_torch_compile_off(matchers: list[Callable[[Any], bool]], reason: str) -> None:
+    """Register an architecture family for which ``torch.compile`` must stay off.
+
+    Any matcher hitting is enough (``any``, not ``all``) so one rule can cover several
+    equivalent identifiers (model_type and architecture name).
+    """
+    _PRE_DEFINED_TORCH_COMPILE_OFF.append(PreDefinedTorchCompileOff(matchers, reason))
+
+
+def get_torch_compile_off_reason(model) -> str | None:
+    """Return why ``torch.compile`` must stay off for this model, else ``None``.
+
+    Accepts a model or anything exposing ``.config``.
+    """
+    if model is None:
+        return None
+    proxy = model if hasattr(model, "config") else SimpleNamespace(config=model)
+    for rule in _PRE_DEFINED_TORCH_COMPILE_OFF:
+        if any(matcher(proxy) for matcher in rule.matchers):
+            return rule.reason
+    return None
+
+
+# DeepSeek V2/V3/V3.2/V4 and the GLM-5.3-Flash family (``glm_moe_dsa`` text /
+# ``glm5_next`` multimodal) share a DSA indexer + fused MoE with shape-dependent
+# control flow. Compiling the tuning graph there hits dynamo's recompile_limit and
+# provides little benefit, so keep those runs in eager mode.
+register_torch_compile_off(
+    matchers=[
+        ModelTypeMatcher("deepseek", mode="in"),
+        ArchitectureMatcher("Deepseek", mode="in"),
+        ArchitectureMatcher("DeepSeek", mode="in"),
+    ],
+    reason="the DeepSeek architecture is incompatible with torch.compile during tuning",
+)
+register_torch_compile_off(
+    matchers=[
+        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+        ModelTypeMatcher(r"glm5_next", mode="full"),
+        ArchitectureMatcher(r"Glm5Next", mode="in"),
+    ],
+    reason="the GLM-5 architecture is incompatible with torch.compile during tuning",
+)
 
 
 def _attach_gemma4_rotary_emb(model):
@@ -1352,10 +1434,16 @@ def _get_cosmos3_multimodal_block(model, quant_vision=False):
 
 def _bypass_cosmos3_safety_checker():
     """Patch Cosmos3 safety checker so calibration does not require cosmos_guardrail."""
-    try:
-        import diffusers.pipelines.cosmos.pipeline_cosmos3_omni as pipeline_cosmos3_omni
-    except ImportError:
-        return
+    # Prefer an already-registered module.  Besides avoiding an unnecessary
+    # import, this makes the optional dependency easy to substitute in tests
+    # and in environments where diffusers lazily registers pipeline modules.
+    module_name = "diffusers.pipelines.cosmos.pipeline_cosmos3_omni"
+    pipeline_cosmos3_omni = sys.modules.get(module_name)
+    if pipeline_cosmos3_omni is None:
+        try:
+            pipeline_cosmos3_omni = importlib.import_module(module_name)
+        except ImportError:
+            return
 
     safety_checker = getattr(pipeline_cosmos3_omni, "CosmosSafetyChecker", None)
     if safety_checker is None or getattr(safety_checker, "_autoround_patched", False):
