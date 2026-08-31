@@ -55,6 +55,10 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     """
     import torch.distributed as dist
 
+    # The process group can be created and destroyed by individual tests or
+    # by successive launcher invocations.  Do not reuse a cached result from
+    # a previous process-group lifetime.
+    is_distributed.cache_clear()
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "unset")
 
     if not is_distributed():
@@ -109,6 +113,12 @@ def _move_block_to_device(module: torch.nn.Module, device):
 def _all_reduce_model_grads(module: torch.nn.Module):
     """All-reduce (AVG) gradients of all parameters in *module* across ranks."""
     import torch.distributed as dist
+
+    # Lightweight CUDA smoke tests can call this helper without creating a
+    # process group.  Synchronization is only meaningful for initialized
+    # distributed jobs; otherwise leave gradients unchanged.
+    if not dist.is_initialized() or dist.get_world_size() <= 1:
+        return
 
     comm_device = torch.cuda.current_device() if torch.cuda.is_available() else None
     if comm_device is not None:

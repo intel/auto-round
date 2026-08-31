@@ -22,7 +22,7 @@
 #endif
 
 #if ARK_SYCL_TLA
-#include "sycl_tla_dense_gemm.hpp"
+#include "sycl_tla_common.hpp"
 #endif
 
 #if ARK_XPU
@@ -70,7 +70,7 @@ class XpuWrapper {
 
   static inline size_t get_scalext_size(QuantParam* p) {
     using namespace bestla::utils;
-    if (env_params::Instance()->auto_s8 == 0) return 0;
+    if (env_params::Instance()->auto_s8 == 0 or !rescale(p)) return 0;
     size_t nblk = 1;
     if (env_params::Instance()->auto_s8 != -1) {
       nblk *= p->k / env_params::Instance()->auto_s8;
@@ -245,6 +245,7 @@ class XpuWrapper {
       auto st = p->scale_type;
       if (st == BTLA_DTYPE::F32) {
         using T = float;
+        const float weight_fullrange = get_weight_fullrange(p);
         auto ker2 = [&](sycl::handler& cgh) {
           cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
                            [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
@@ -260,7 +261,7 @@ class XpuWrapper {
                                for (int i = start_blk; i < end_blk; i += 1) {
                                  maxv = std::max(abs(sptr[i * n + g_1]), maxv);
                                }
-                               sxtptr[g_1 * newblks + j] = maxv * get_weight_fullrange(p) / 127.f;
+                               sxtptr[g_1 * newblks + j] = maxv * weight_fullrange / 127.f;
                              }
                            });
         };
@@ -268,6 +269,7 @@ class XpuWrapper {
       }
       if (st == BTLA_DTYPE::F16) {
         using T = sycl::half;
+        const float weight_fullrange = get_weight_fullrange(p);
         auto ker2 = [&](sycl::handler& cgh) {
           cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
                            [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
@@ -283,7 +285,7 @@ class XpuWrapper {
                                for (int i = start_blk; i < end_blk; i += 1) {
                                  maxv = std::max(abs((float)sptr[i * n + g_1]), maxv);
                                }
-                               sxtptr[g_1 * newblks + j] = maxv * get_weight_fullrange(p) / 127.f;
+                               sxtptr[g_1 * newblks + j] = maxv * weight_fullrange / 127.f;
                              }
                            });
         };
@@ -669,6 +671,7 @@ class XpuWrapper {
 
   static inline bool rescale(QuantParam* p) {
 #ifdef ARK_RESCALE
+    if (p->weight_type != BTLA_DTYPE::S2 && p->weight_type != BTLA_DTYPE::S4) return false;
     if (env_params::Instance()->auto_s8 == -1) return true;
     if (env_params::Instance()->auto_s8 > p->blocksize && p->k % env_params::Instance()->auto_s8 == 0) return true;
 #endif
@@ -677,6 +680,7 @@ class XpuWrapper {
 
   static inline int rescale_blocksize(QuantParam* p) {
 #ifdef ARK_RESCALE
+    if (!rescale(p)) return p->blocksize;
     if (env_params::Instance()->auto_s8 == 0) return p->blocksize;
     return env_params::Instance()->auto_s8 == -1 ? p->k : env_params::Instance()->auto_s8;
 #else

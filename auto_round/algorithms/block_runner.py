@@ -224,41 +224,36 @@ class BlockForwardRunner:
             if is_returned_list and self.batch_size != 1:  # split  it to 1
                 if batch_output_dict:
                     for key, value in batch_output_dict.items():
-                        output_dict.setdefault(key, []).extend(self.split_outputs(value))
+                        output_dict.setdefault(key, []).extend(
+                            item.to(out_device) for item in self.split_outputs(value)
+                        )
                 output = self.split_outputs(output)
             else:
                 if batch_output_dict:
                     for key, value in batch_output_dict.items():
-                        output_dict.setdefault(key, []).append(value)
+                        output_dict.setdefault(key, []).append(value.to(out_device))
                 output = [output]
-            outputs.extend(output)
+            outputs.extend(item.to(out_device) for item in output)
+            del raw_output, batch_output_dict, output, batch_inputs, batch_others
 
         if not outputs:
             raise RuntimeError("BlockForwardRunner.forward: no outputs collected.")
 
         if is_returned_list:
-            result = [o.to(out_device) for o in outputs]
+            result = outputs
             if output_dict:
-                self.last_output_dict = {key: [o.to(out_device) for o in values] for key, values in output_dict.items()}
+                self.last_output_dict = output_dict
                 self.last_output_dict["hidden_states"] = result
             return result
         else:
-            if self.batch_size == 1:
-                outputs = [output.unsqueeze(dim=self.batch_dim).to(out_device) for output in outputs]
-                if output_dict:
-                    output_dict = {
-                        key: [value.unsqueeze(dim=self.batch_dim).to(out_device) for value in values]
-                        for key, values in output_dict.items()
-                    }
-
-            outputs = torch.cat(outputs, dim=self.batch_dim).to(out_device)
+            outputs = torch.cat(outputs, dim=self.batch_dim)
             if output_dict:
                 self.last_output_dict = {
-                    key: torch.cat(values, dim=self.batch_dim).to(out_device) for key, values in output_dict.items()
+                    key: torch.cat(values, dim=self.batch_dim) for key, values in output_dict.items()
                 }
                 self.last_output_dict["hidden_states"] = outputs
 
-        return outputs.to(out_device)
+        return outputs
 
     # ── Input selection ──────────────────────────────────────────────────────
 
@@ -419,7 +414,10 @@ class BlockForwardRunner:
                 else:
                     selected_others[key] = torch.cat(batch_vals, dim=batch_dim)
             elif isinstance(val, torch.Tensor):
-                selected_others[key] = torch.index_select(val, batch_dim, indices)
+                # ``batch_indices`` are created on CPU by the sampler.  XPU
+                # (and other accelerator backends) require index tensors on
+                # the same device as the indexed value.
+                selected_others[key] = torch.index_select(val, batch_dim, indices.to(device=val.device))
             elif isinstance(val, (str, bool, type(None))):
                 selected_others[key] = val
             else:

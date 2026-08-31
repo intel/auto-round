@@ -89,6 +89,7 @@ class ModelContext(BaseContext):
         self.processor = None
         self.image_processor = None
         self.pipe = None
+        self.preloaded_diffusion_pipeline = False
 
         # AWQ weight-clip thresholds kept for downstream block quantizers.
         # Populated by AWQTransform when ``apply_clip`` is enabled; keyed by
@@ -154,7 +155,20 @@ class ModelContext(BaseContext):
         device_manager.device = value
 
     def _load_model(self):
-        if is_mllm_model(self.model, platform=self.platform):
+        if is_diffusion_model(self.model):
+            self.is_diffusion = True
+            self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
+            default_torch_dtype = "auto"
+            if self.amp and get_ar_device(self.device).supports_bf16():
+                default_torch_dtype = torch.bfloat16
+            self.pipe, self.model = diffusion_load_model(
+                self.model,
+                platform=self.platform,
+                device="cpu",
+                model_dtype=self.model_dtype,
+                default_torch_dtype=default_torch_dtype,
+            )
+        elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
                 # Multimodal checkpoints used to
@@ -193,11 +207,6 @@ class ModelContext(BaseContext):
                     self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
                         self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
                     )
-        elif is_diffusion_model(self.model):
-            self.is_diffusion = True
-            self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
-            )
         elif isinstance(self.model, str):
             config = self.config
             try:

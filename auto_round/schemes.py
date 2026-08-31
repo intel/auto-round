@@ -706,6 +706,18 @@ NVFP4 = QuantizationScheme.from_dict(
     }
 )
 
+NVFP4_E5M3 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "nvfp4_v2",
+        "act_bits": 4,
+        "act_data_type": "nvfp4_v2",
+        "act_group_size": 16,
+        "act_sym": True,
+    }
+)
+
 FPW8A16 = QuantizationScheme.from_dict(
     {
         "bits": 8,
@@ -802,6 +814,7 @@ PRESET_SCHEMES = {
     "MXFP8": MXFP8,
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
+    "NVFP4_E5M3": NVFP4_E5M3,
     "FPW8A16": FPW8A16,
     "W2A16G64": W2A16G64,
     "W2A16G32": W2A16G32,

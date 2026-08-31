@@ -18,7 +18,7 @@ import os
 import re
 from collections import UserDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import psutil
 import torch
@@ -289,6 +289,7 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=True):
@@ -318,6 +319,38 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
         else getattr(quant_config, "quant_method", "")
     )
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
+def _is_fp8_model(model_path, trust_remote_code=True):
+    """Check if a model is an FP8 quantized model supported for direct loading.
+
+    Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
+    adding zero overhead to non-FP8 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("4.56.0"):
+        return False
+
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except Exception:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _FP8_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "fp8" and model_type in _FP8_SUPPORTED_MODEL_TYPES
 
 
 def llm_load_model(
@@ -372,6 +405,14 @@ def llm_load_model(
         "device_map": "auto" if use_auto_mapping else None,
     }
     load_kwargs.update(kwargs)
+
+    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
+        is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_fp8 and "quantization_config" not in load_kwargs:
+            from transformers import FineGrainedFP8Config
+
+            load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
+            logger.info("Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading.")
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -832,6 +873,7 @@ def diffusion_load_model(
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
     model_dtype: str = None,
+    default_torch_dtype: Union[str, torch.dtype] = "auto",
     **kwargs,
 ):
     from functools import partial
@@ -847,8 +889,9 @@ def diffusion_load_model(
         )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
-    if device_str is not None and "hpu" in device_str:
+    if model_dtype is not None:
+        torch_dtype = convert_dtype_str2torch(model_dtype)
+    elif torch_dtype == "auto" and device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
     try:
@@ -866,6 +909,20 @@ def diffusion_load_model(
         pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
         return pipe, pipe.model
 
+    # A special case for Cosmos3: model_index.json _class_name may not match
+    # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    _model_index = None
+    if isinstance(pretrained_model_name_or_path, str):
+        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(_mi_path):
+            with open(_mi_path, "r", encoding="utf-8") as f:
+                _model_index = json.load(f)
+    _pipe_class = (_model_index or {}).get("_class_name", "")
+    if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
+        from auto_round.special_model_handler import load_cosmos3_diffusion
+
+        return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
+
     pipelines = LazyImport("diffusers.pipelines")
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
@@ -879,7 +936,12 @@ def diffusion_load_model(
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                    component_dtype = component_config.get("torch_dtype")
+                    if component_dtype is None or component_dtype == "auto":
+                        component_dtype = default_torch_dtype
+                    elif isinstance(component_dtype, str):
+                        component_dtype = convert_dtype_str2torch(component_dtype.removeprefix("torch."))
+                    torch_dtype[k] = component_dtype
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
@@ -900,8 +962,12 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    pipe = _to_model_dtype(pipe, model_dtype)
-    model = pipe.transformer
+    if hasattr(pipe, "unet"):
+        # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
+        model = pipe.unet
+    else:
+        # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
+        model = pipe.transformer
 
     # Attach custom pipeline function for models that need special API calls
     _attach_diffusion_pipeline_fn(pipe)
@@ -1747,6 +1813,19 @@ def unsupported_meta_device(model):
     return False
 
 
+def map_nested_tensors(value: Any, transform: Callable[[torch.Tensor], torch.Tensor]) -> Any:
+    """Apply ``transform`` to tensors in nested tuples, lists, and mappings."""
+    if torch.is_tensor(value):
+        return transform(value)
+    if isinstance(value, tuple):
+        return tuple(map_nested_tensors(item, transform) for item in value)
+    if isinstance(value, list):
+        return [map_nested_tensors(item, transform) for item in value]
+    if isinstance(value, (dict, UserDict)):
+        return type(value)({key: map_nested_tensors(item, transform) for key, item in value.items()})
+    return value
+
+
 def to_device(input, device=torch.device("cpu")):
     """Moves input data to the specified device.
 
@@ -1775,6 +1854,23 @@ def to_device(input, device=torch.device("cpu")):
             input_res = tuple(input_res)
         input = input_res
 
+    return input
+
+
+def move_to_device(input: Any, device=torch.device("cpu"), non_blocking: bool = False) -> Any:
+    """Return a nested tensor container moved to *device* without mutating it."""
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(device, non_blocking=non_blocking)
+    if isinstance(input, UserDict):
+        return type(input)({k: move_to_device(v, device, non_blocking) for k, v in input.items()})
+    if isinstance(input, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in input.items()}
+    if isinstance(input, tuple):
+        return tuple(move_to_device(v, device, non_blocking) for v in input)
+    if isinstance(input, list):
+        return [move_to_device(v, device, non_blocking) for v in input]
     return input
 
 
@@ -2540,6 +2636,16 @@ def is_model_free_route(
             return common_conditions and family == "mx_fp"
         return False
 
+    if fmt_first == "llm_compressor":
+        from auto_round.compressors.model_free import _apply_scheme_overrides
+        from auto_round.schemes import is_mx_fp as _is_mx_fp
+
+        try:
+            scheme_obj = _apply_scheme_overrides(scheme, kwargs)
+            scheme_is_mx_fp = _is_mx_fp(scheme_obj.data_type or "")
+        except Exception:
+            scheme_is_mx_fp = False
+        return common_conditions and scheme_is_mx_fp and is_model_free_supported_scheme(scheme, kwargs)
     if fmt_first != "auto_round":
         return False
     return common_conditions and is_model_free_supported_scheme(scheme, kwargs)

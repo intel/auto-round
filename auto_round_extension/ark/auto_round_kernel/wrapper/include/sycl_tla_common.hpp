@@ -34,13 +34,17 @@ namespace ark {
  */
 void moe_gemm(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs, BTLA_DTYPE dtype, int N,
               int K, int* num_tokens_per_expert, int num_experts);
+void sycl_tla_moe_gemm_f16(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs, int N, int K,
+                           int* num_tokens_per_expert, int num_experts);
+void sycl_tla_moe_gemm_bf16(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs, int N, int K,
+                            int* num_tokens_per_expert, int num_experts);
 
 /**
  * @brief MoE GEMV optimized for the decode phase (M per expert is typically
  * 1-2 tokens). Supports unquantized FP16/BF16 weights and int4 (S4_CLIP)
  * weights with group-wise scales and optional zero-points.
  *
- * Implementation is header-only in `sycl_tla_moe_decode.hpp`.
+ * Heavy template implementations are split across the decode family source files.
  *
  * @param q                       SYCL queue
  * @param activations             [total_tokens, K] in `act_dtype`
@@ -69,6 +73,48 @@ void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* sca
                      int* expert_id_per_token_buf, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                      int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym);
 
+struct MoeDecodeParams {
+    sycl::queue* q;
+    void* activations;
+    void* weights;
+    void* scales;
+    void* zeros;
+    void* outputs;
+    int* expert_id_per_token;
+    BTLA_DTYPE act_dtype;
+    BTLA_DTYPE weight_dtype;
+    int N;
+    int K;
+    int group_size;
+    int total_tokens;
+    bool asym;
+    // The int4-sym / FP8 DPAS grouped-GEMM fast paths are driven by the
+    // per-expert row counts instead of the per-token expert map, so they need
+    // the same two fields the prefill params carry.
+    int* num_tokens_per_expert;
+    int num_experts;
+};
+
+void sycl_tla_moe_decode_fill_expert_id(sycl::queue* q, int* expert_id_per_token,
+                                                                                const int* num_tokens_per_expert, int num_experts, int total_tokens);
+void sycl_tla_moe_decode_fp(const MoeDecodeParams& params);
+void sycl_tla_moe_decode_int4(const MoeDecodeParams& params);
+void sycl_tla_moe_decode_int8(const MoeDecodeParams& params);
+void sycl_tla_moe_decode_int2(const MoeDecodeParams& params);
+void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params);
+
+/**
+ * @brief Whether `sycl_tla_moe_decode_int4` / `sycl_tla_moe_decode_fp8` will
+ * take their DPAS grouped-GEMM fast path for these parameters.
+ *
+ * Those two fast paths consume `num_tokens_per_expert` directly and never read
+ * `expert_id_per_token`, so `moe_gemm_decode` uses these predicates to skip the
+ * `sycl_tla_moe_decode_fill_expert_id` launch. The dispatchers call the very
+ * same predicate, so the fill-skip and the routing decision cannot diverge.
+ */
+bool sycl_tla_moe_decode_int4_dpas_fastpath(const MoeDecodeParams& params);
+bool sycl_tla_moe_decode_fp8_dpas_fastpath(const MoeDecodeParams& params);
+
 /**
  * @brief MoE Grouped GEMM optimized for the prefill phase, supporting the
  * same set of weight encodings as `moe_gemm_decode` (FP16/BF16, INT8 sym/asym,
@@ -80,7 +126,7 @@ void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* sca
  * existing `moe_gemm` baseline. This guarantees numerical parity with the
  * decode path. Mainloop fusion is the follow-up perf-tuning step.
  *
- * Implementation is header-only in `sycl_tla_moe_mixed.hpp`.
+ * Heavy template implementations are split across the prefill family source files.
  *
  * Layout convention (matches `moe_gemm_decode`):
  *   - activations:           [total_tokens, K]      in act_dtype
@@ -96,6 +142,33 @@ void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* sc
                       void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                       int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym);
 
+struct MoePrefillParams {
+    sycl::queue* q;
+    void* activations;
+    void* weights;
+    void* scales;
+    void* zeros;
+    void* outputs;
+    void* dequant_workspace;
+    BTLA_DTYPE act_dtype;
+    BTLA_DTYPE weight_dtype;
+    int N;
+    int K;
+    int group_size;
+    int* num_tokens_per_expert;
+    int num_experts;
+    int total_tokens;
+    bool asym;
+};
+
+bool sycl_tla_moe_prefill_int8_dpas(const MoePrefillParams& params);
+bool sycl_tla_moe_prefill_s4_dpas(const MoePrefillParams& params);
+bool sycl_tla_moe_prefill_lowbit_int8_dpas(const MoePrefillParams& params);
+bool sycl_tla_moe_prefill_fp8_dpas(const MoePrefillParams& params);
+bool sycl_tla_moe_prefill_native_fp8(const MoePrefillParams& params);
+void sycl_tla_moe_prefill_dequant_f16(const MoePrefillParams& params);
+void sycl_tla_moe_prefill_dequant_bf16(const MoePrefillParams& params);
+
 /**
  * @brief MoE prefill Grouped GEMM -- FP8 per-tensor mixed-input DPAS
  * (Variant A of the vllm-xpu-kernels FP8 port).
@@ -109,7 +182,7 @@ void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* sc
  * `sycl_tla_moe_prefill_fp8_dpas.hpp` for the port's provenance & the
  * on-hardware TODOs.
  *
- * Implementation is header-only in `sycl_tla_moe_prefill_fp8_dpas.hpp`.
+ * The public entry point is implemented in `sycl_tla_moe_prefill_fp8_tensor.cpp`.
  */
 void moe_gemm_prefill_fp8_dpas(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs,
                                BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
@@ -133,11 +206,30 @@ void moe_gemm_prefill_fp8_dpas(sycl::queue* q, void* activations, void* weights,
  * `sycl_tla_moe_prefill_int_dpas.hpp` for the port's provenance & the
  * on-hardware TODOs.
  *
- * Implementation is header-only in `sycl_tla_moe_prefill_int_dpas.hpp`.
+ * The public entry point is implemented in `sycl_tla_moe_prefill_int_tensor.cpp`.
  */
 void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights, void* scales, void* outputs,
                                BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                                int* num_tokens_per_expert, int num_experts, int total_tokens);
+
+void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void* a, BTLA_DTYPE at, const void* b,
+                         BTLA_DTYPE bt, void* c, BTLA_DTYPE ct, const void* bias, bool BT);
+void sycl_tla_dense_gemm_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                             const void* bias);
+void sycl_tla_dense_gemm_f16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                             const void* bias);
+void sycl_tla_dense_gemm_bf16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                              const void* bias);
+
+void sycl_tla_igemm_s8s8_dequant(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                 BTLA_DTYPE ct, const void* scale_a, const void* scale_b, const void* bias,
+                                 int blocksize);
+void sycl_tla_igemm_s8s8_dequant_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                     const void* scale_a, const void* scale_b, const void* bias, int blocksize);
+void sycl_tla_igemm_s8s8_dequant_f16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                     const void* scale_a, const void* scale_b, const void* bias, int blocksize);
+void sycl_tla_igemm_s8s8_dequant_bf16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                      const void* scale_a, const void* scale_b, const void* bias, int blocksize);
 
 /**
  * @brief W4A8 MoE -- one-shot AUTO_S8 weight prepack.
@@ -153,8 +245,10 @@ void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights,
  * Use `moe_w4a8_rescale_block_size` to resolve the effective block size (and
  * therefore the `wscales` shape) before allocating.
  *
- * STATUS: NEEDS-HARDWARE-VALIDATION. Implementation is header-only in
- * `sycl_tla_moe_w4a8.hpp`.
+ * STATUS: NEEDS-HARDWARE-VALIDATION. The kernels live in
+ * `sycl_tla_moe_w4a8.hpp` (namespace `moe_w4a8_detail`); these `ark::` entry
+ * points are emitted by the generated `sycl_tla_moe_w4a8.cpp` translation unit
+ * (MOE_SOURCE_MODE 19).
  */
 void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weights_s8, void* wscales,
                       BTLA_DTYPE act_dtype, int num_experts, int N, int K, int group_size,
@@ -188,9 +282,10 @@ void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weig
  *        writing the unreduced `[total_tokens, N]` to `outputs`. Prefill only,
  *        and all four must be given together.
  *
- * STATUS: NEEDS-HARDWARE-VALIDATION. Implementation is header-only in
- * `sycl_tla_moe_w4a8.hpp`, which is also where the trailing optional
- * parameters get their defaults.
+ * STATUS: NEEDS-HARDWARE-VALIDATION. The kernels live in
+ * `sycl_tla_moe_w4a8.hpp` (namespace `moe_w4a8_detail`), which is also where
+ * the trailing optional parameters get their defaults; every caller of this
+ * `ark::` entry point passes all of them explicitly.
  */
 void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, void* wscales, void* outputs,
                    BTLA_DTYPE act_dtype, int N, int K, int rescale_block_size, int* num_tokens_per_expert,
@@ -212,25 +307,6 @@ void moe_w4a8_release_scratch();
 // ========================================================================
 // Public API
 // ========================================================================
-/**
- * @brief Flash Attention Prefill (FP16)
- *
- * @param q SYCL queue
- * @param Q_ptr  Pointer to Q tensor [B, Hq, Sq, D]
- * @param K_ptr  Pointer to K tensor [B, Hkv, Skv, D]
- * @param V_ptr  Pointer to V tensor [B, Hkv, Skv, D]
- * @param O_ptr  Pointer to output tensor [B, Hq, Sq, D], fp32
- * @param mask  Pointer to attention mask tensor [B, 1, Sq, Skv], uint8 (0 for valid, 1 for masked)
- * @param q_dtype  Q/K/V data type (FP16)
- * @param batch  Batch size
- * @param num_heads_q  Number of query heads
- * @param num_heads_kv Number of KV heads
- * @param seq_len_q  Query sequence length
- * @param seq_len_kv  KV sequence length
- * @param head_dim  Head dimension (64 or 128)
- * @param softmax_scale  Softmax scale factor
- * @param is_causal  Whether to apply causal mask
- */
 void sdpa_impl(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, BTLA_DTYPE q_dtype,
                int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d,
                int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s, int v_stride_h, int v_stride_b,

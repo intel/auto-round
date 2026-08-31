@@ -93,10 +93,18 @@ endif()
 list(APPEND libs bestla)
 
 file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(NOT ARK_XPU)
+    list(APPEND SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/sdpa.cpp
+    )
+endif()
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
+set(SYCL_TLA_GENERATED_SRCS)
 
 include_directories(wrapper/include)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 # Build flash_attn_wrapper as a separate static library with sycl-tla flags
 if(ARK_XPU AND ARK_SYCL_TLA)
@@ -111,9 +119,14 @@ if(ARK_XPU AND ARK_SYCL_TLA)
   )
 
   # Map target to device name for -Xs flag
-  set(DPCPP_SYCL_TARGET "intel_gpu_bmg_g21" CACHE STRING "SYCL target (intel_gpu_pvc, intel_gpu_bmg_g21)")
-  if(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g21" OR DPCPP_SYCL_TARGET STREQUAL "bmg")
-    set(SYCL_DEVICE_NAME "bmg_g21")
+  set(DPCPP_SYCL_TARGET "intel_gpu_bmg_g21" CACHE STRING "SYCL target (intel_gpu_pvc, intel_gpu_bmg_g31, intel_gpu_bmg_g21)")
+
+  if(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g21")
+    set(SYCL_DEVICE_NAME "bmg-g21")
+  elseif(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_bmg_g31")
+    set(SYCL_DEVICE_NAME "bmg-g31")
+  elseif(DPCPP_SYCL_TARGET STREQUAL "bmg")
+    set(SYCL_DEVICE_NAME "bmg-g21,bmg-g31")
   elseif(DPCPP_SYCL_TARGET STREQUAL "intel_gpu_pvc" OR DPCPP_SYCL_TARGET STREQUAL "pvc")
     set(SYCL_DEVICE_NAME "pvc")
   else()
@@ -149,12 +162,12 @@ if(ARK_XPU AND ARK_SYCL_TLA)
     ${CUTLASS_DIR}/examples/12_xe20_moe_gemm_cute_interface
   )
   include(${CMAKE_CURRENT_LIST_DIR}/sdpa_generation.cmake)
+  include(${CMAKE_CURRENT_LIST_DIR}/sycl_tla_generation.cmake)
 endif()
 
-pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS})
+pybind11_add_module(${PY_NAME} ${SRCS} ${HEADERS} ${SDPA_GENERATED_SRCS} ${SYCL_TLA_GENERATED_SRCS})
 target_compile_features(${PY_NAME} PRIVATE cxx_std_17)
 target_compile_definitions(${PY_NAME} PRIVATE PY_NAME=${PY_NAME} ${ARK_TYPE}=1)
-
 if(ARK_DNNL)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_DNNL=1)
 endif()

@@ -381,6 +381,11 @@ _AWQ_FIELDS = {
     "clip_n_grid",
     "clip_max_shrink",
     "clip_n_sample_token",
+    "awq_seqlen",
+    "smooth_batch_size",
+    "disable_opt_rtn",
+    "enable_opt_rtn",
+    "skip_moe",
     "mappings",
 }
 _ROTATION_FIELDS = {
@@ -430,6 +435,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
     from auto_round.algorithms.transforms import normalize_rotation_config
+    from auto_round.algorithms.transforms.awq.config import (
+        awq_disable_opt_rtn,
+        rtn_inherited_opt_kwargs,
+        sync_rtn_opt_rtn_from_awq,
+    )
     from auto_round.algorithms.transforms.base import BaseRotationConfig
 
     direct_kwargs = dict(direct_kwargs or {})
@@ -473,14 +483,25 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
         raw_configs = [alg_configs]
 
     configs = []
+    pending_rtn_indices = []
     for raw_config in raw_configs:
-        config = resolve_alg_config(raw_config) if isinstance(raw_config, str) else raw_config
+        if isinstance(raw_config, str) and raw_config == "rtn":
+            pending_rtn_indices.append(len(configs))
+            configs.append(None)
+            continue
+        else:
+            config = resolve_alg_config(raw_config) if isinstance(raw_config, str) else raw_config
         if not isinstance(config, (QuantizationConfig, BaseRotationConfig)):
             raise TypeError(
                 f"alg_configs entries must be algorithm or QuantizationConfig instances, "
                 f"got {type(config).__name__}."
             )
         configs.append(normalize_algorithm_config(config))
+
+    awq_opt_rtn_policy = awq_disable_opt_rtn(configs)
+    for index in pending_rtn_indices:
+        config = RTNConfig(**rtn_inherited_opt_kwargs(config_kwargs, awq_opt_rtn_policy))
+        configs[index] = normalize_algorithm_config(config)
 
     # ``iters=0`` has always selected RTN in the public entry and CLI. Apply
     # that rule after every input form has become a config so aliases, config
@@ -492,7 +513,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     for index, config in enumerate(configs):
         effective_iters = direct_iters if direct_iters is not None else getattr(config, "iters", None)
         if isinstance(config, SignRoundConfig) and effective_iters == 0:
-            rtn_config = RTNConfig(scheme=config.scheme.copy())
+            rtn_kwargs = rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn(configs))
+            rtn_config = RTNConfig(scheme=config.scheme.copy(), **rtn_kwargs)
             rtn_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
             configs[index] = normalize_algorithm_config(rtn_config)
 
@@ -509,11 +531,34 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
 
     preprocessors, block_configs = split_quantization_configs(configs)
     if preprocessors and not block_configs:
-        configs.append(normalize_algorithm_config(RTNConfig()))
+        fallback_rtn_kwargs = rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn(configs))
+        configs.append(normalize_algorithm_config(RTNConfig(**fallback_rtn_kwargs)))
 
     _, block_configs = split_quantization_configs(configs)
     for key, value in config_kwargs.items():
         if value is None:
+            continue
+        if key in ("disable_opt_rtn", "enable_opt_rtn"):
+            if key == "enable_opt_rtn" and not value:
+                continue
+            opt_rtn_value = False if key == "enable_opt_rtn" else value
+            targets = [config for config in configs if "disable_opt_rtn" in _config_fields(config)]
+            if not targets:
+                logger.warning_once(
+                    "RTN-specific parameter '%s' was provided, but RTN/AWQ is not enabled by alg_configs. "
+                    "The parameter is ignored.",
+                    key,
+                )
+                continue
+            for target in targets:
+                target.disable_opt_rtn = opt_rtn_value
+                if hasattr(target, "orig_disable_opt_rtn"):
+                    target.orig_disable_opt_rtn = opt_rtn_value
+            logger.warning(
+                "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
+                "'alg_configs=\"awq\"' or 'alg_configs=\"rtn\"'.",
+                key,
+            )
             continue
         if key in _SCHEME_FIELDS:
             targets = block_configs
@@ -542,18 +587,15 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             )
             continue
         target = targets[0]
-        if key in ("disable_opt_rtn", "enable_opt_rtn"):
-            if key == "disable_opt_rtn" or value:
-                target.disable_opt_rtn = False if key == "enable_opt_rtn" else value
-                target.orig_disable_opt_rtn = target.disable_opt_rtn
-        else:
-            setattr(target, key, value)
+        setattr(target, key, value)
+        recommended_config_name = type(target).__name__.replace("Config", "")
         logger.warning(
             "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
             "'alg_configs=%sConfig(...)'.",
             key,
-            type(targets[0]).__name__.replace("Config", ""),
+            recommended_config_name,
         )
+    sync_rtn_opt_rtn_from_awq(configs)
     return [normalize_algorithm_config(config) for config in configs]
 
 
@@ -631,6 +673,23 @@ class _CompressorBuilder(object):
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
+        if is_svdquant:
+            format = "svdquant_nunchaku"
+
+        # Any preprocessor that requires calibration data (e.g. AWQ, SVDQuant
+        # smoothing) must run on the regular model-loaded path; model-free RTN
+        # cannot replay their calibration.
+        calibration_preprocessors = [
+            type(config).__name__ for config in preprocessor_configs if getattr(config, "need_calib", False)
+        ]
+        has_calibration_preprocessor = bool(calibration_preprocessors)
+        if has_calibration_preprocessor and route_kwargs.get("model_free", False):
+            raise ValueError(
+                "model_free=True is not supported with calibration-based preprocessor algorithms "
+                f"({', '.join(calibration_preprocessors)}). "
+                "Use the regular flow so the model can be loaded for calibration."
+            )
 
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
@@ -640,6 +699,14 @@ class _CompressorBuilder(object):
         # route predicate; otherwise the fast path silently drops them and
         # cannot emit the required export metadata.
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
+        is_svdquant_rtn = type(quant_config) is RTNConfig and is_svdquant
+        if is_svdquant_rtn and not route_kwargs.get("model_free", False):
+            # SVDQuant must run before plain RTN on the regular blockwise path.
+            route_decision_kwargs["disable_model_free"] = True
+        if has_calibration_preprocessor:
+            # Calibration-based preprocessors need the model loaded for
+            # calibration; model-free RTN cannot apply their transforms.
+            route_decision_kwargs["disable_model_free"] = True
         route_scheme = (
             scheme
             if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
@@ -659,7 +726,12 @@ class _CompressorBuilder(object):
                 tokenizer,
                 device_map,
                 announced_via_flag=bool(route_kwargs.get("model_free", False)),
+                dataset=dataset,
+                nsamples=nsamples,
+                seqlen=seqlen,
+                seed=seed,
                 enable_torch_compile=enable_torch_compile,
+                disable_opt_rtn=model_free_disable_opt_rtn,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,

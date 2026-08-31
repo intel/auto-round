@@ -41,6 +41,7 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device_manager import device_manager
@@ -83,13 +84,6 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
-def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: bool) -> bool:
-    """Return whether every component participating in block replay supports compilation."""
-    if not user_enabled or not block_quantizer.can_compile_block_forward():
-        return False
-    return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
-
-
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -192,18 +186,22 @@ class AlgorithmComposer:
                 getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
-            can_compile_block_forward = _can_compile_block_forward(
-                self.block_quantizer, rotation_configs, user_torch_compile
-            )
-            if (
-                user_torch_compile
-                and not can_compile_block_forward
-                and any(not getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
-            ):
-                logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
+            blockers = []
+            if not self.block_quantizer.can_compile_block_forward():
+                blockers.append(type(self.block_quantizer).__name__)
+            for component in [*self.preprocessors, *rotation_configs]:
+                if not getattr(component, "can_compile_block_forward", lambda: True)():
+                    blockers.append(type(component).__name__)
+            can_compile_block_forward = user_torch_compile and not blockers
+            if user_torch_compile and blockers:
+                logger.info(
+                    "Block-forward torch.compile is disabled because %s is incompatible.",
+                    ", ".join(blockers),
+                )
 
-            if "nv_fp" in orchestrator.data_type:
+            if _has_nvfp4_layer(orchestrator):
                 can_compile_block_forward = False
+                logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
@@ -223,6 +221,7 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
+        from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
         is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
@@ -231,16 +230,18 @@ class AlgorithmComposer:
             input = input[0] if isinstance(input, (tuple, list)) else input
             if input.numel() == 0:
                 return
+            module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
+            is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else is_act_nv_fp
             input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max") or module.act_max.numel() == 0:
                 module.act_max = act_max
-                if is_act_nv_fp:
+                if is_module_act_nv_fp:
                     max_val = act_max.max()
                     module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
                 return
             act_max = act_max.to(module.act_max.device)
-            if is_act_nv_fp:
+            if is_module_act_nv_fp:
                 max_val = torch.max(act_max.max(), module.act_max.max())
                 module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
             else:

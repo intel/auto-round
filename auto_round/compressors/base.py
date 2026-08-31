@@ -33,7 +33,7 @@ from auto_round.compressors.config_resolution import (
     resolve_quantization_config,
     thaw_mapping,
 )
-from auto_round.compressors.layer_config import (
+from auto_round.compressors.layer_config_resolver import (
     apply_plan_to_model,
     extract_regex_config,
     has_quantized_layer_outside_blocks,
@@ -51,6 +51,7 @@ from auto_round.schemes import (
     get_gguf_scheme,
     parse_scheme,
     preset_name_to_scheme,
+    scheme_to_preset_name,
 )
 from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
@@ -79,6 +80,11 @@ from auto_round.utils.device import (
 )
 from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
 from auto_round.utils.offload import OffloadManager
+
+# ``torch.compile`` only pays for itself when the compiled quant function is
+# replayed many times.  Below this many SignRound iterations the one-off
+# compilation cost dominates, so compiling is pure overhead.
+MIN_ITERS_FOR_TORCH_COMPILE = 10
 
 
 @dataclass
@@ -361,20 +367,20 @@ class BaseOrchestrator(object):
 
         self.nblocks = nblocks
 
+        # ``None`` means "not set by the user", which is the only case where the
+        # algorithm-driven auto-disabling below may override the value.
+        self._torch_compile_user_specified = enable_torch_compile is not None
+        # Fallback explanation used by ``_log_torch_compile_state``.
+        self._torch_compile_default_off_reason = None if enable_torch_compile is None else "the user disabled it"
         if enable_torch_compile is None:
             enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
             if not enable_torch_compile:
-                if self.device == "xpu":
-                    logger.warning_once(
-                        "`torch.compile` is disabled by default on XPU for compatibility. "
-                        "Pass `enable_torch_compile=True` or use `--enable_torch_compile` to force enable it."
-                    )
-                else:
-                    logger.warning_once(
-                        "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
-                        "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
-                        "`--enable_torch_compile` to force enable it."
-                    )
+                self._torch_compile_default_off_reason = "it is off by default on Windows"
+                logger.warning_once(
+                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                    "`--enable_torch_compile` to force enable it."
+                )
         elif enable_torch_compile and sys.platform == "win32":
             logger.warning_once(
                 "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
@@ -482,10 +488,7 @@ class BaseOrchestrator(object):
                 self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
                 logger.info("Automatically selected code calibration dataset: %s", self.dataset)
             else:
-                logger.info(
-                    "No explicit code-specialization signal was found; using default calibration dataset %s.",
-                    self.dataset,
-                )
+                logger.info("Using default calibration dataset %s.", self.dataset)
             self.calibration_context.dataset = self.dataset
 
     def _check_need_calib(self) -> bool:
@@ -537,7 +540,57 @@ class BaseOrchestrator(object):
         ):
             return True
 
+        # Layer-level scheme overrides can request static-activation paths
+        # (e.g., global MXFP8 + local NVFP4 experts). Those still need
+        # calibration data even when top-level scheme looks dynamic.
+        if self._layer_config_needs_calibration(check_need_act_calibration):
+            return True
+
         return False
+
+    def _layer_config_needs_calibration(self, check_need_act_calibration) -> bool:
+        """Return True if any raw layer_config entry implies activation calibration."""
+        layer_cfg = self.layer_config
+        if not isinstance(layer_cfg, dict) or not layer_cfg:
+            return False
+
+        def _entry_needs_calibration(entry) -> bool:
+            if entry is None:
+                return False
+
+            candidates = []
+            if isinstance(entry, (str, QuantizationScheme)):
+                candidates.append(entry)
+            elif isinstance(entry, dict):
+                if "scheme" in entry:
+                    candidates.append(entry.get("scheme"))
+                candidates.append(entry)
+            else:
+                return False
+
+            for candidate in candidates:
+                if candidate is None:
+                    continue
+                try:
+                    _, _, attrs = parse_scheme(candidate, {})
+                except Exception:  # noqa: BLE001
+                    continue
+
+                cand_act_bits = attrs.get("act_bits")
+                cand_act_data_type = attrs.get("act_data_type")
+                cand_act_dynamic = attrs.get("act_dynamic")
+                is_cand_act_quant = cand_act_bits is not None and cand_act_bits <= 8
+                if is_cand_act_quant and check_need_act_calibration(
+                    cand_act_dynamic,
+                    cand_act_data_type,
+                    cand_act_bits if cand_act_bits is not None else 16,
+                    static_kv_dtype=self.static_kv_dtype,
+                    static_attention_dtype=self.static_attention_dtype,
+                ):
+                    return True
+            return False
+
+        return any(_entry_needs_calibration(v) for v in layer_cfg.values())
 
     # ── Convenience properties ────────────────────────────────────────────────
 
@@ -990,18 +1043,102 @@ class BaseOrchestrator(object):
         self.has_qlayer_outside_block = self.compression_plan.has_qlayer_outside_block
         apply_plan_to_model(self.model_context.model, self.compression_plan)
         if self.is_auto_scheme:
-            from auto_round.auto_scheme.utils import compute_avg_bits_for_model
+            self._log_auto_scheme_avg_bits()
 
-            ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
-            avg_bits, total_bits = compute_avg_bits_for_model(
-                self.model_context.model,
-                ignore_scale_zp_bits=ignore_scale_zp_bits,
+    def _log_auto_scheme_avg_bits(self) -> None:
+        """Report AutoScheme bit usage under two denominators.
+
+        ``avg_bits`` targets **only** the layers AutoScheme quantizes -- the set it was
+        given as ``quant_layer_names``, which is exactly what the bit-allocation DP
+        budgets. Layers outside that set (most notably a VLM's vision/audio tower, which
+        is peeled off and kept at 16 bit, or layers pinned via ``layer_config`` /
+        ``ignore_layers``) are not part of the target and are never compensated by the DP.
+
+        Two numbers are therefore reported:
+
+        * ``quant layers``: average over the quantized (budgeted) layers. This is the
+          metric the target constrains and it must be <= target.
+        * ``whole model``: average over every layer carrying quantization metadata, i.e.
+          the end-to-end footprint. Informational only -- it can legitimately sit above
+          the target when non-quantized towers are kept at high precision.
+        """
+        from auto_round.auto_scheme.utils import compute_layer_bits
+
+        model = self.model_context.model
+        ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
+        target_avg_bits = getattr(self.orig_scheme, "avg_bits", None)
+
+        scheme_generator = getattr(self, "scheme_generator", None)
+        quant_layer_names = set(getattr(scheme_generator, "quant_layer_names", None) or [])
+
+        quant_params = quant_bits = quant_count = 0
+        model_params = model_bits = model_count = 0
+        outside = []
+        for name, module in model.named_modules():
+            if not hasattr(module, "bits") or not hasattr(module, "weight"):
+                continue
+            n_param = module.weight.numel()
+            if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+                n_param = module._cached_weight_numel
+            if n_param == 0:
+                continue
+            layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
+
+            model_params += n_param
+            model_bits += layer_bits
+            model_count += 1
+
+            # Without a scheme generator (e.g. a reloaded plan) fall back to
+            # "actually quantized" as the definition of the quantized set.
+            in_quant_set = name in quant_layer_names if quant_layer_names else getattr(module, "bits", 16) < 16
+            if in_quant_set:
+                quant_params += n_param
+                quant_bits += layer_bits
+                quant_count += 1
+            else:
+                outside.append((name, getattr(module, "bits", 16), n_param, layer_bits))
+
+        quant_avg = quant_bits / quant_params if quant_params else float("nan")
+        model_avg = model_bits / model_params if model_params else float("nan")
+        has_target = isinstance(target_avg_bits, (int, float))
+
+        logger.info(
+            "AutoScheme final avg_bits: quant layers=%.4f (target=%.4f, %d layers, %d params, total_bits=%d); "
+            "whole model=%.4f (%d layers, %d params, total_bits=%d, informational only)",
+            quant_avg,
+            float(target_avg_bits) if has_target else float("nan"),
+            quant_count,
+            quant_params,
+            quant_bits,
+            model_avg,
+            model_count,
+            model_params,
+            model_bits,
+        )
+
+        # Only the quantized-layer average is bound by the target.
+        if has_target and quant_avg > float(target_avg_bits) + 1e-3:
+            logger.warning(
+                "AutoScheme quantized-layer avg_bits=%.4f exceeds target avg_bits=%.4f. "
+                "The bit-allocation budget was not met; please report this together with the "
+                "AutoScheme option/range logs above.",
+                quant_avg,
+                float(target_avg_bits),
             )
+
+        if outside:
+            outside_params = sum(item[2] for item in outside)
+            outside_bits = sum(item[3] for item in outside)
             logger.info(
-                "AutoScheme final effective avg_bits=%.4f, target avg_bits=%.4f, total_bits=%d",
-                avg_bits,
-                self.orig_scheme.avg_bits,
-                total_bits,
+                "AutoScheme: %d layer(s) (%d params, %d bits, avg=%.4f) are not AutoScheme quantization targets, "
+                "so they are excluded from the avg_bits target and only affect the whole-model number "
+                "(typically a VLM vision/audio tower kept at 16 bit, or layers pinned via "
+                "`layer_config`/`ignore_layers`): %s",
+                len(outside),
+                outside_params,
+                outside_bits,
+                outside_bits / outside_params if outside_params else float("nan"),
+                ", ".join(f"{n}(bits={b})" for n, b, _, _ in outside[:8]) + (" ..." if len(outside) > 8 else ""),
             )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1041,6 +1178,8 @@ class BaseOrchestrator(object):
             and not is_debug_mode()
             and not is_raw_nv_fp
             and not is_valid_act_static
+            and self._torch_compile_disabled_reason(ignore_user_override=True) is None
+            and self._torch_compile_unsupported_arch_reason() is None
             and self.need_calib
         ):
             logger.info(
@@ -1048,15 +1187,98 @@ class BaseOrchestrator(object):
                 "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
+    def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> Optional[str]:
+        """Return why torch.compile must stay off for the current algorithm, else None.
+
+        RTN and optimized RTN quantize each layer in a single pass, and very short
+        SignRound runs (``iters < MIN_ITERS_FOR_TORCH_COMPILE``) finish before the
+        compilation cost is amortized, so ``torch.compile`` only adds overhead there.
+
+        This only adjusts the *default*: when the user explicitly passed
+        ``enable_torch_compile``, their choice is always honored.  Pass
+        ``ignore_user_override=True`` to query the algorithm rules alone (used to
+        suppress the "you should enable torch.compile" hint).
+        """
+        if not ignore_user_override and getattr(self, "_torch_compile_user_specified", False):
+            return None
+
+        quantize_config = getattr(self, "quantize_config", None)
+        if quantize_config is None:
+            return None
+
+        # AutoScheme runs its own delta-loss pass on top of the block quantizer and
+        # relies on torch.compile to keep VRAM down, so the rules below don't apply.
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+        if getattr(self, "is_auto_scheme", False) or isinstance(getattr(self, "scheme", None), AutoScheme):
+            return None
+
+        # OptimizedRTNConfig subclasses RTNConfig, so this covers rtn and opt-rtn.
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        if isinstance(quantize_config, RTNConfig):
+            return "RTN/OPT-RTN quantizes each layer in a single pass"
+
+        iters = getattr(quantize_config, "iters", None)
+        if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
+            return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+
+        return None
+
+    def _torch_compile_unsupported_arch_reason(self) -> Optional[str]:
+        """Return why the model *architecture* forbids ``torch.compile``, else ``None``.
+
+        Rules live in :mod:`auto_round.special_model_handler` so a new architecture can
+        be registered in one place.
+        """
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        model = getattr(getattr(self, "model_context", None), "model", None)
+        if model is None:
+            model = getattr(self, "model", None)
+        return get_torch_compile_off_reason(model)
+
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
         self.enable_torch_compile = enable_torch_compile
+        # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
+        # incoming value is already False, keep the reason recorded by the earlier
+        # precheck pass instead of dropping it.
+        self._torch_compile_off_reason = (
+            None
+            if enable_torch_compile
+            else (
+                getattr(self, "_torch_compile_off_reason", None)
+                or getattr(self, "_torch_compile_default_off_reason", None)
+            )
+        )
         _, is_valid_act_static = self._get_torch_compile_guard_state()
 
         # On HPU, we rely on torch.compile to speed up the model execution.
         if self.enable_torch_compile and is_valid_act_static:
             self.enable_torch_compile = False
+            self._torch_compile_off_reason = "activation is static"
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
+
+        # Architecture-level hard block (DeepSeek / GLM-5.3-Flash DSA families). These
+        # hit dynamo's recompile_limit and cannot be overridden by an explicit
+        # ``enable_torch_compile=True``.
+        if self.enable_torch_compile:
+            arch_reason = self._torch_compile_unsupported_arch_reason()
+            if arch_reason is not None:
+                self.enable_torch_compile = False
+                self._torch_compile_off_reason = arch_reason
+                logger.warning_once("reset enable_torch_compile to `False` as %s", arch_reason)
+
+        if self.enable_torch_compile:
+            disabled_reason = self._torch_compile_disabled_reason()
+            if disabled_reason is not None:
+                self.enable_torch_compile = False
+                self._torch_compile_off_reason = disabled_reason
+                logger.warning_once(
+                    "reset enable_torch_compile to `False` as %s, " "so compilation cost would outweigh its benefit",
+                    disabled_reason,
+                )
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
@@ -1073,6 +1295,19 @@ class BaseOrchestrator(object):
         self._apply_torch_compile_constraints(requested_enable_torch_compile)
         if not requested_enable_torch_compile:
             self._maybe_log_torch_compile_default_hint()
+        self._log_torch_compile_state()
+
+    def _log_torch_compile_state(self) -> None:
+        """Always report the final torch.compile decision so a run is self-documenting."""
+        if self.enable_torch_compile:
+            logger.info("`torch.compile` is enabled")
+            return
+
+        reason = getattr(self, "_torch_compile_off_reason", None)
+        if reason is None:
+            logger.info("`torch.compile` is disabled")
+        else:
+            logger.info("`torch.compile` is disabled, as %s", reason)
 
     def _get_calibration_dataset(self) -> str:
         """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
@@ -1542,10 +1777,20 @@ class BaseOrchestrator(object):
             return
 
         formats = getattr(self, "formats", [])
+        if any(not format.is_supported_immediate_packing() for format in formats):
+            self.compress_context.is_immediate_packing = False
+        if any(not format.is_supported_immediate_saving() for format in formats):
+            self.compress_context.is_immediate_saving = False
+
         has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
         # GGUF supports per-block / per-layer immediate packing even when
         # full-model in-place rewriting is disabled by outside-block layers.
-        if len(formats) == 1 and not formats[0].is_fake() and (self.inplace or has_single_gguf_format):
+        if (
+            len(formats) == 1
+            and not formats[0].is_fake()
+            and formats[0].is_supported_immediate_packing()
+            and (self.inplace or has_single_gguf_format)
+        ):
             self.compress_context.is_immediate_packing = True
 
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
@@ -1811,6 +2056,7 @@ class BaseOrchestrator(object):
         self.compress_context.output_dir = output_dir
 
         # check and update the format based on the current configuration
+        used_default_format = format is None and self.formats is None
         if format and self.formats is None:
             self.formats = format
         if self.formats is None:
@@ -1827,6 +2073,8 @@ class BaseOrchestrator(object):
         # IMPORTANT: post_init() must run outside any @torch.inference_mode() context
         # because AutoScheme's delta-loss selection requires gradient tracking.
         self.post_init()
+        if used_default_format and scheme_to_preset_name(self.scheme_context) == "FP8_BLOCK":
+            logger.warning("--format fp8 is recommended for better compatibility with serving frameworks for now.")
         # If post_init() was called manually before quantize_and_save() (e.g. ar.post_init()
         # in tests), _resolve_formats saw formats=None and was a no-op.  Now that we have set
         # self.formats to a default string above, resolve it into OutputFormat objects so that

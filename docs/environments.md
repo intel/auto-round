@@ -30,6 +30,16 @@ export AR_LOG_LEVEL=DEBUG
 export AR_ENABLE_COMPILE_PACKING=1
 ```
 
+### AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE
+- **Description**: Makes fused NVFP4 weight projections use one shared weight global scale. This applies to `q_proj`/`k_proj`/`v_proj` and `gate_proj`/`up_proj`, as required by vLLM fused kernels.
+- **Default**: `True` (equivalent to `"1"`)
+- **Valid Values**: `"0"`, `"false"`, `"no"`, or `"off"` (case-insensitive) disable sharing; any other value enables it.
+- **Usage**: Disable only when exporting for a runtime that does not require fused projections to share a global scale.
+
+```bash
+export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
+```
+
 ### AR_USE_MODELSCOPE
 - **Description**: Controls whether to use ModelScope for model downloads
 - **Default**: `False`
@@ -141,6 +151,26 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_SEQLEN
+- **Description**: Controls the default calibration sequence length used by AutoScheme scoring when `AutoScheme.seqlen` is not explicitly set.
+- **Default**: unset → built-in heuristic applies (128 for MoE models, 256 otherwise)
+- **Valid Values**: any positive integer, e.g. `256`, `512`, `1024`
+- **Usage**: Set this to override the default sequence length for AutoScheme (2-bit schemes usually benefit from `1024`)
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
+### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
+- **Description**: Turn a parallel-scoring failure into a hard error instead of falling back to serial scoring. Useful when the serial pass is known to be unable to run (or would take workers-count times longer): completed schemes and batches are persisted in the per-scheme cache, so a rerun scores only the failed parts.
+- **Default**: unset -> parallel scoring failure falls back to serial
+- **Valid Values**: `1`, `true`, `yes`
+- **Usage**: Set this to fail fast on parallel scoring errors
+
+```bash
+export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **Description**: Stores persistent per-scheme AutoScheme scoring JSON files. This directory is independent of `AR_WORK_SPACE`, which is reserved for temporary working data.
 - **Default**: `~/.cache/auto_round`
@@ -159,6 +189,26 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 
 ```bash
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_SCHEME_MEM_INVENTORY
+- **Description**: When enabled, AutoScheme streaming scoring prints a live CUDA-tensor census (`[mem-inv]` lines) at block boundaries -- tensors grouped by (shape, dtype), largest first -- which makes unreleased module weights or retained autograd graphs visible as they accumulate. Independently of this variable, a richer census (live tensors, the retaining containers, and the failing op's traceback) is always attached to scoring-worker CUDA OOM errors.
+- **Default**: `False`
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
+- **Usage**: Enable when investigating VRAM growth during AutoScheme scoring
+
+```bash
+export AR_SCHEME_MEM_INVENTORY=1
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **Description**: Controls whether `NVFP4E5M3QuantLinear` caches a dequantized high-precision weight after the first forward pass, instead of dequantizing the packed FP4 weight on every call.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) enable caching; any other value disables caching
+- **Usage**: Enable this when repeated inference throughput matters more than memory footprint. The current implementation releases `weight_packed` and `weight_scale` after materializing the cached high-precision weight, so steady-state memory usage increases and the cache cannot be cleared back to packed storage.
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 ```
 
 ### AR_DISK_STREAM_MODEL

@@ -14,6 +14,7 @@ pr:
       - setup.py
       - requirements.txt
       - .azure-pipelines/scripts/cuda_unit_test
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
       - .azure-pipelines/unit-test-cuda.yml
 
     exclude:
@@ -35,6 +36,8 @@ parameters:
         PART: 0
       part1:
         PART: 1
+      part2:
+        PART: 2
 
 stages:
   - ${{ each pair in parameters.matrix }}:
@@ -140,6 +143,7 @@ stages:
 
               - script: |
                   export UV_NO_CACHE=0
+                  export FILTER_CHANGED_TESTS=true
                   bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
                     --test_case=ci \
                     --test_part=${{ pair.value.PART }}

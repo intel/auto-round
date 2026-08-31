@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict
 
@@ -76,6 +77,65 @@ class SafetensorsIndex:
         return [n for n in self.weight_map if n == prefix or n.startswith(dotted)]
 
 
+# Model-side module names sometimes differ from the checkpoint-side tensor
+# names.  Transformers already maintains the authoritative per-family renames
+# (``transformers/conversion_mapping.py``, checkpoint -> model direction);
+# the disk-stream materializers know only model-side names, so those entries
+# are inverted here.  A rename is applied only when the model-side name is
+# absent from the index AND the renamed candidate exists in it, so checkpoints
+# whose names already match the model are untouched.
+from functools import lru_cache
+
+
+@lru_cache(maxsize=None)
+def _reverse_renamings_for(model_type):
+    """Invert the checkpoint-conversion WeightRenaming entries for one family."""
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import WeightRenaming, get_checkpoint_conversion_mapping
+    except ImportError:  # pragma: no cover - transformers is a hard dep, guarded for safety
+        return ()
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+    renamings = []
+    for entry in mapping:
+        if not isinstance(entry, WeightRenaming):
+            # Other converter types (fusions, prefix moves) are not invertible
+            # by simple regex substitution and are skipped.
+            continue
+        for target in entry.target_patterns:
+            for source in entry.source_patterns:
+                renamings.append((target, source))
+    return tuple(renamings)
+
+
+@lru_cache(maxsize=None)
+def _index_model_type(index):
+    config_path = Path(index.checkpoint_dir) / "config.json"
+    try:
+        with open(config_path) as f:
+            return json.load(f).get("model_type")
+    except OSError:
+        return None
+
+
+def _resolve_checkpoint_name(index, full_name: str):
+    """Map a model-side parameter name to its checkpoint-side tensor name."""
+    if index.has_tensor(full_name):
+        return full_name
+    for target_pattern, source_replacement in _reverse_renamings_for(_index_model_type(index)):
+        # ``source_replacement`` arrives regex-escaped (``mlp\.router\.gate``);
+        # as a ``re.sub`` replacement those backslashes would land in the string
+        # verbatim, so unescape it to the plain checkpoint-side spelling.
+        replacement = re.sub(r"\\(.)", r"\1", source_replacement)
+        candidate = re.sub(target_pattern, lambda _m: replacement, full_name)
+        if candidate != full_name and index.has_tensor(candidate):
+            return candidate
+    return None
+
+
 def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIndex, device: str) -> None:
     """Populate `module`'s (currently meta) parameters/buffers with real data read
     directly from the checkpoint, onto `device`. `module_name` is `module`'s dotted
@@ -125,14 +185,15 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         if str(tensor.device) != "meta":
             continue  # already materialized (e.g. shared/tied weights)
         full_name = f"{module_name}.{name}".replace(".orig_layer.", ".")
-        if not index.has_tensor(full_name):
+        resolved_name = _resolve_checkpoint_name(index, full_name)
+        if resolved_name is None:
             sliced = _fused_lookup(full_name)
             if sliced is not None:
                 fused_targets.append((name, sliced))
                 continue
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
-        targets.append((name, full_name, tensor.dtype))
+        targets.append((name, resolved_name, tensor.dtype))
 
     for name, value in fused_targets:
         set_module_tensor_to_device(module, name, device, value=value, dtype=value.dtype)
@@ -208,6 +269,14 @@ def build_meta_model(model_name: str, trust_remote_code: bool = True):
             model = model_cls(config)
         else:
             model = AutoModelForCausalLM.from_config(config, trust_remote_code=trust_remote_code)
+    # Constructing from config does not tie weights (that happens in
+    # from_pretrained), so tied params such as lm_head.weight -- absent from
+    # the checkpoint by design -- stay separate meta tensors and later crash
+    # with "Cannot copy out of meta tensor" on the first device move. Tie
+    # here: the shared tensor materializes once from the checkpoint side it
+    # is stored under and both names become real together.
+    if getattr(model.config, "tie_word_embeddings", False):
+        model.tie_weights()
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
     index = SafetensorsIndex(model_name)
     return model, tokenizer, index
@@ -232,10 +301,11 @@ def materialize_non_block_params(
         if str(tensor.device) != "meta" or _in_block(name):
             continue
         full_name = name.replace(".orig_layer.", ".")
-        if not index.has_tensor(full_name):
+        resolved_name = _resolve_checkpoint_name(index, full_name)
+        if resolved_name is None:
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
-        targets.append((name, full_name))
+        targets.append((name, resolved_name))
 
     if not targets:
         return
@@ -245,6 +315,12 @@ def materialize_non_block_params(
         # is required so the checkpoint's real dtype wins over whatever the
         # meta skeleton happened to declare.
         set_module_tensor_to_device(model, name, device, value=values[full_name], dtype=values[full_name].dtype)
+    # set_module_tensor_to_device replaces parameter objects, which breaks
+    # weight tying: a tied lm_head still references the old (meta) parameter
+    # while the embedding points at the new real one. Re-tie so every tied
+    # name follows its checkpoint-backed source tensor.
+    if getattr(getattr(model, "config", None), "tie_word_embeddings", False):
+        model.tie_weights()
 
 
 class stream_block_forward:

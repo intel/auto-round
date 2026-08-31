@@ -2023,6 +2023,12 @@ inline void moe_w4a8_release_scratch() {
 
 }  // namespace moe_w4a8
 
+// The public `ark::` entry points below are thin wrappers emitted by the
+// generated `sycl_tla_moe_w4a8.cpp` translation unit (MOE_SOURCE_MODE
+// 19); they live in their own namespace here so the header stays free of
+// external definitions and only that one TU pays the kernel compile cost.
+namespace moe_w4a8_detail {
+
 // ---------------------------------------------------------------------------
 // Public entry point 1 -- one-shot AUTO_S8 prepack.
 //
@@ -2239,6 +2245,8 @@ inline int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_
 
 // Free the W4A8 activation-quantization / expert-map scratch slabs.
 inline void moe_w4a8_release_scratch() { moe_w4a8::moe_w4a8_release_scratch(); }
+
+}  // namespace moe_w4a8_detail
 
 }  // namespace ark
 
