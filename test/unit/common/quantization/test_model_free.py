@@ -119,6 +119,26 @@ def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
     assert compressor.disable_opt_rtn is False
 
 
+@pytest.mark.parametrize("default_enabled", [True, False])
+def test_model_free_core_uses_default_torch_compile_policy_when_unset(tmp_path, monkeypatch, default_enabled):
+    model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.default_enable_torch_compile", lambda _device: default_enabled
+    )
+
+    core = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="W4A16",
+        enable_torch_compile=None,
+    )
+
+    assert core.enable_torch_compile is default_enabled
+
+
 from ...envs import require_compressed_tensors
 
 # ---------------------------------------------------------------------------
@@ -1139,6 +1159,50 @@ class TestKimiK25Int4Source:
         assert os.path.isfile(os.path.join(output_dir, "tokenizer", "tokenizer.json"))
         assert os.path.isdir(os.path.join(output_dir, "tokenizer", "nested"))
         assert os.path.isfile(os.path.join(output_dir, "tokenizer", "nested", "vocab.txt"))
+
+    def test_replaces_source_quantization_metadata(self, tmp_path):
+        config = dict(_SIMPLE_CONFIG)
+        config["text_config"] = {
+            "quantization_config": {
+                "quant_method": "gptq",
+                "bits": 4,
+                "stale_source_field": True,
+            }
+        }
+        model_dir = _make_model_dir(tmp_path, config, _SIMPLE_TENSORS)
+        for filename in ("quantization_config.json", "quantize_config.json", "quant_config.json"):
+            with open(os.path.join(model_dir, filename), "w") as f:
+                json.dump({"quant_method": "gptq", "stale_source_field": True}, f)
+        with open(os.path.join(model_dir, "README.md"), "w") as f:
+            f.write("stale source quantization documentation")
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir)
+        with open(os.path.join(output_dir, "quantize_config.json"), "w") as f:
+            json.dump({"stale_output_field": True}, f)
+        with open(os.path.join(output_dir, "README.md"), "w") as f:
+            f.write("stale output quantization documentation")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        with open(os.path.join(output_dir, "config.json")) as f:
+            output_config = json.load(f)
+        with open(os.path.join(output_dir, "quantization_config.json")) as f:
+            standalone_config = json.load(f)
+
+        assert output_config["quantization_config"] == standalone_config
+        assert standalone_config["quant_method"] == "auto-round"
+        assert "stale_source_field" not in standalone_config
+        assert core.source_quantization_config["stale_source_field"] is True
+        assert "quantization_config" not in output_config["text_config"]
+        assert not os.path.exists(os.path.join(output_dir, "quantize_config.json"))
+        assert not os.path.exists(os.path.join(output_dir, "quant_config.json"))
+        assert not os.path.exists(os.path.join(output_dir, "README.md"))
 
     def test_diffusion_copies_subfolders(self, tmp_path):
         """Diffusion model: non-transformer subdirectories should be copied."""
