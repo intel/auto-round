@@ -10,7 +10,7 @@
 <h3> 面向 LLM 的先进量化算法</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.14.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -39,7 +39,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 * [2026/08] 感谢 Humming Kernel，AutoScheme WOQ 在 vLLM 上的部署已实验性恢复：[*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890)，[*示例模型*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound)。注意：共享层需按 vLLM 的融合模式进行配置。
 
-* [2026/07] 除 Windows 外默认启用 `torch.compile`，以加速量化。由于编译器优化，与未编译路径相比可能会出现细微的数值差异，这是符合预期的。如需关闭，可在 Python API 中传入 `enable_torch_compile=False`，或在命令行中使用 `--disable_torch_compile`。
+* [2026/07] 在大多数场景默认启用 `torch.compile`，以加速量化，代价是~10G的额外内存使用。由于编译器优化，与未编译路径相比可能会出现细微的数值差异，这是符合预期的。如需关闭，可在 Python API 中传入 `enable_torch_compile=False`，或在命令行中使用 `--disable_torch_compile`。
 
 * [2026/06] AutoScheme对gguf格式优化，精度有所提升。具体结果请参考[文档](docs/auto_scheme_acc.md)。不过这些精度提升是以更高的调优时间和计算开销为代价的。
 
