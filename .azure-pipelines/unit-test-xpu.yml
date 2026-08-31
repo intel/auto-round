@@ -69,7 +69,7 @@ stages:
             parameters:
               utScriptFileName: "run_ut_xpu"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "ut"
+              utArtifact: "ut-$(PART)"
               utTestMode: $(PART)
               imageTag: $(IMAGE_TAG)
               dockerFileName: $(DOCKERFILE_NAME)
