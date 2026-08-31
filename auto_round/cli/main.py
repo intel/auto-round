@@ -278,6 +278,15 @@ def tune(args):
         if fmt not in SUPPORTED_FORMATS:
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
 
+    if any("llm_compressor" in fmt for fmt in formats):
+        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+        try:
+            check_compressed_tensors_supported(raise_error=True)
+        except ImportError as error:
+            logger.error(str(error))
+            raise SystemExit(1) from None
+
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning(
             "the auto_gptq kernel has issues with asymmetric quantization. "
