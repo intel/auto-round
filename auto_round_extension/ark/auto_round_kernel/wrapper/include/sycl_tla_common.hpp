@@ -96,7 +96,7 @@ struct MoeDecodeParams {
 };
 
 void sycl_tla_moe_decode_fill_expert_id(sycl::queue* q, int* expert_id_per_token,
-                                                                                const int* num_tokens_per_expert, int num_experts, int total_tokens);
+                                        const int* num_tokens_per_expert, int num_experts, int total_tokens);
 void sycl_tla_moe_decode_fp(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_int4(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_int8(const MoeDecodeParams& params);
