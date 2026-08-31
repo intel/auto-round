@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+test_part=${UT_MODE}
+
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
@@ -153,12 +155,13 @@ function main() {
     setup_environment
     init_changed_tests
     scope_changed_tests "$(cd /auto-round && find test/unit/common test/unit/test_ark test/unit/test_xpu test/integration/test_xpu -name "test_*.py" 2>/dev/null)"
-    if [[ "${UT_MODE}" == "llmc" ]]; then
+    if [[ "$test_part" == "llmc" ]]; then
         run_unit_test_llmc
-    elif [[ "${UT_MODE}" == "ark" ]]; then
+    elif [[ "$test_part" == "ark" ]]; then
         run_unit_test_ark
-    else
+    elif [[ "$test_part" == "0" ]]; then
         run_common_unit_test
+    else
         run_unit_test
     fi
     collect_log
