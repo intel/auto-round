@@ -20,10 +20,21 @@ import torch
 from transformers import AutoModelForCausalLM, OPTConfig, OPTForCausalLM
 
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
+from auto_round.export.formats.backends.fake import (
+    _normalize_state_dict_keys,
+    _rewrite_saved_weights_without_orig_layer,
+)
 from auto_round.formats import FakeFormat
+from auto_round.inference.backend import get_layer_backend
 from auto_round.inference.convert_model import convert_hf_model
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.wrapper import WrapperWALayer
+
+
+def _assert_has_act_hook(layer):
+    assert isinstance(layer, FakeActQuantLinear)
+    assert hasattr(layer, "qdq_input")
+    assert callable(layer.qdq_input)
 
 
 class _WrappedLinear(WrapperWALayer):
@@ -56,7 +67,7 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     expected_weight = model.linear.orig_layer.weight.detach().clone()
     output_dir = str(tmp_path / "fake_model")
 
-    FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -69,18 +80,30 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
             "act_group_size": 16,
             "act_sym": True,
             "act_data_type": "nvfp4_v2",
+            "to_quant_block_names": ["block"],
             "supported_types": [torch.nn.Linear],
         },
     )
 
     state_dict = torch.load(os.path.join(output_dir, "pytorch_model.bin"), weights_only=True)
-    assert set(state_dict) == {"linear.weight", "linear.bias"}
+    assert set(state_dict) == {"linear.weight", "linear.bias", "linear.act_max_scale"}
     assert torch.equal(state_dict["linear.weight"], expected_weight)
-    assert hasattr(model.linear, "orig_layer")
+    # Save-time should keep in-memory wrappers unchanged; replacement happens on load.
+    assert hasattr(saved_model.linear, "orig_layer")
     with open(os.path.join(output_dir, "config.json")) as config_file:
         quantization_config = json.load(config_file)["quantization_config"]
     assert "supported_types" not in quantization_config
     assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["quant_method"] == "auto-round"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["block_name_to_quantize"] == ["block"]
+
+    loaded_model = _TinyLoadModel(SimpleNamespace(**quantization_config))
+    loaded_model, used_backends = convert_hf_model(loaded_model, target_device="cpu")
+    assert used_backends == ["auto_round:fake"]
+    _assert_has_act_hook(loaded_model.block.linear)
+    roundtrip_activation = torch.randn(2, 3, 16)
+    assert not torch.equal(loaded_model.block.linear.qdq_input(roundtrip_activation), roundtrip_activation)
 
 
 class _TinyLoadModel(torch.nn.Module):
@@ -117,7 +140,7 @@ def test_fake_config_replaces_linear_and_qdq_activation_on_load():
     model, used_backends = convert_hf_model(model, target_device="cpu")
 
     assert used_backends == ["auto_round:fake"]
-    assert isinstance(model.block.linear, FakeActQuantLinear)
+    _assert_has_act_hook(model.block.linear)
     assert torch.equal(model.block.linear.weight, original_weight)
     qdq_activation = model.block.linear.qdq_input(activation)
     assert not torch.equal(qdq_activation, activation)
@@ -183,6 +206,218 @@ def test_transformers_load_replaces_fake_linear(tmp_path):
     loaded_model = AutoModelForCausalLM.from_pretrained(model_dir, device_map="cpu")
 
     q_proj = loaded_model.model.decoder.layers[0].self_attn.q_proj
-    assert isinstance(q_proj, FakeActQuantLinear)
+    _assert_has_act_hook(q_proj)
     activation = torch.randn(1, 2, 16)
     assert not torch.equal(q_proj.qdq_input(activation), activation)
+
+
+def test_fake_format_keeps_woq_packing_format(tmp_path):
+    model = _SaveableModel()
+    output_dir = str(tmp_path / "woq_model")
+
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+        inplace=False,
+        serialization_dict={
+            "bits": 4,
+            "group_size": 128,
+            "sym": True,
+            "data_type": "int",
+            "quant_method": "auto-round",
+            "packing_format": "auto_round:auto_gptq",
+            "to_quant_block_names": ["block"],
+            "supported_types": [torch.nn.Linear],
+        },
+    )
+
+    with open(os.path.join(output_dir, "config.json")) as config_file:
+        quantization_config = json.load(config_file)["quantization_config"]
+
+    assert quantization_config["packing_format"] == "auto_round:auto_gptq"
+    assert "act_bits" not in quantization_config
+
+
+def test_fake_format_still_saves_when_env_disabled(tmp_path):
+    model = _SaveableModel()
+    output_dir = str(tmp_path / "save_model_even_when_env_disabled")
+
+    returned = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+        inplace=False,
+        serialization_dict={
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nvfp4_v2",
+            "act_bits": 4,
+            "act_group_size": 16,
+            "act_sym": True,
+            "act_data_type": "nvfp4_v2",
+            "to_quant_block_names": ["block"],
+            "supported_types": [torch.nn.Linear],
+        },
+    )
+    assert returned is not None
+    assert os.path.exists(output_dir)
+    assert os.path.exists(os.path.join(output_dir, "config.json"))
+
+
+def test_fake_backend_accepts_mxfp_roundtrip_config():
+    layer_backend = get_layer_backend(
+        "cpu",
+        "auto",
+        "auto_round:fake",
+        {
+            "bits": 4,
+            "group_size": 32,
+            "sym": True,
+            "data_type": "mx_fp",
+            "act_bits": 4,
+            "act_group_size": 32,
+            "act_sym": True,
+            "act_data_type": "mx_fp",
+            "act_dynamic": True,
+        },
+        32,
+        32,
+    )
+
+    assert layer_backend == "auto_round:fake"
+
+
+def test_fake_backend_accepts_mxfp8_roundtrip_config():
+    layer_backend = get_layer_backend(
+        "cpu",
+        "auto",
+        "auto_round:fake",
+        {
+            "bits": 8,
+            "group_size": 32,
+            "sym": True,
+            "data_type": "mx_fp",
+            "act_bits": 8,
+            "act_group_size": 32,
+            "act_sym": True,
+            "act_data_type": "mx_fp",
+            "act_dynamic": True,
+        },
+        32,
+        32,
+    )
+
+    assert layer_backend == "auto_round:fake"
+
+
+def test_fake_backend_accepts_nvfp_roundtrip_config():
+    layer_backend = get_layer_backend(
+        "cpu",
+        "auto",
+        "auto_round:fake",
+        {
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nv_fp",
+            "act_bits": 4,
+            "act_group_size": 16,
+            "act_sym": True,
+            "act_data_type": "nv_fp",
+            "act_dynamic": True,
+        },
+        16,
+        16,
+    )
+
+    assert layer_backend == "auto_round:fake"
+
+
+def test_fake_backend_fallback_for_woq_w4a8_dynamic():
+    """WOQ packing with unsupported act scheme should gracefully fallback to fake backend."""
+    layer_backend = get_layer_backend(
+        "cpu",
+        "auto",
+        "auto_round:auto_gptq",
+        {
+            "bits": 4,
+            "group_size": 128,
+            "sym": True,
+            "data_type": "int",
+            "act_bits": 8,
+            "act_group_size": 32,
+            "act_sym": True,
+            "act_data_type": "int",
+            "act_dynamic": True,
+        },
+        3072,
+        768,
+    )
+
+    assert layer_backend == "auto_round:fake"
+
+
+def test_fake_format_keeps_in_memory_wrapper_structure_on_save(tmp_path):
+    model = _SaveableModel()
+    output_dir = str(tmp_path / "fake_keep_wrapper_model")
+
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+        inplace=False,
+        serialization_dict={
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nvfp4_v2",
+            "act_bits": 4,
+            "act_group_size": 16,
+            "act_sym": True,
+            "act_data_type": "nvfp4_v2",
+            "to_quant_block_names": ["block"],
+        },
+    )
+
+    assert hasattr(saved_model.linear, "orig_layer")
+    assert not isinstance(saved_model.linear, FakeActQuantLinear)
+
+
+def test_normalize_state_dict_keys_strips_orig_layer_segment():
+    state = {
+        "model.layers.0.fc1.orig_layer.weight": torch.ones(1),
+        "model.layers.0.fc1.orig_layer.bias": torch.zeros(1),
+        "model.layers.0.fc2.weight": torch.randn(1),
+    }
+
+    normalized, changed = _normalize_state_dict_keys(state)
+
+    assert changed is True
+    assert "model.layers.0.fc1.weight" in normalized
+    assert "model.layers.0.fc1.bias" in normalized
+    assert "model.layers.0.fc1.orig_layer.weight" not in normalized
+    assert "model.layers.0.fc2.weight" in normalized
+
+
+def test_rewrite_saved_weights_without_orig_layer_for_safetensors(tmp_path):
+    from safetensors.torch import load_file as safe_load_file
+    from safetensors.torch import save_file as safe_save_file
+
+    ckpt_dir = tmp_path / "fake_ckpt"
+    ckpt_dir.mkdir(parents=True)
+    ckpt_path = ckpt_dir / "model.safetensors"
+
+    safe_save_file(
+        {
+            "model.layers.0.fc1.orig_layer.weight": torch.randn(2, 2),
+            "model.layers.0.fc1.orig_layer.bias": torch.randn(2),
+            "model.layers.0.fc2.weight": torch.randn(2, 2),
+        },
+        str(ckpt_path),
+    )
+
+    _rewrite_saved_weights_without_orig_layer(str(ckpt_dir))
+
+    rewritten = safe_load_file(str(ckpt_path))
+    assert "model.layers.0.fc1.orig_layer.weight" not in rewritten
+    assert "model.layers.0.fc1.weight" in rewritten
+    assert "model.layers.0.fc1.bias" in rewritten

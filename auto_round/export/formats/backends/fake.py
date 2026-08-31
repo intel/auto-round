@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import copy
+import glob
+import os
 from typing import Any, Callable, Union
 
 import torch
@@ -31,6 +33,51 @@ def _serialize_quantization_config_value(value):
     if isinstance(value, (list, tuple)):
         return [_serialize_quantization_config_value(item) for item in value]
     return value
+
+
+def _normalize_state_dict_keys(state_dict: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], bool]:
+    """Collapse wrapped-layer keys like ``*.orig_layer.weight`` to ``*.weight``."""
+    normalized = {}
+    changed = False
+    for key, value in state_dict.items():
+        new_key = key.replace(".orig_layer.", ".")
+        if new_key != key:
+            changed = True
+        # Prefer already-normalized keys if both happen to exist.
+        if new_key not in normalized:
+            normalized[new_key] = value
+    return normalized, changed
+
+
+def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
+    """Rewrite saved checkpoint shards in-place so no ``.orig_layer.`` keys remain."""
+    if not os.path.isdir(output_dir):
+        return
+
+    safetensor_files = sorted(glob.glob(os.path.join(output_dir, "*.safetensors")))
+    for file_path in safetensor_files:
+        try:
+            from safetensors.torch import load_file as safe_load_file
+            from safetensors.torch import save_file as safe_save_file
+
+            state = safe_load_file(file_path)
+            normalized, changed = _normalize_state_dict_keys(state)
+            if changed:
+                safe_save_file(normalized, file_path)
+        except Exception as exc:
+            logger.warning("Failed to normalize safetensors keys for %s: %s", file_path, exc)
+
+    bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")))
+    for file_path in bin_files:
+        try:
+            state = torch.load(file_path, weights_only=True)
+            if not isinstance(state, dict):
+                continue
+            normalized, changed = _normalize_state_dict_keys(state)
+            if changed:
+                torch.save(normalized, file_path)
+        except Exception as exc:
+            logger.warning("Failed to normalize pytorch checkpoint keys for %s: %s", file_path, exc)
 
 
 @OutputFormat.register("fake")
@@ -58,50 +105,41 @@ class FakeFormat(OutputFormat):
         serialization_dict: dict = None,
         **kwargs,
     ):
+        has_fake_act_quant = False
+        logger.warning(
+            "Saving fake-quantized model to disk. "
+            "Linear replacement is deferred to load-time (via auto_round:fake backend); "
+            "save-time now keeps the in-memory quantized model structure unchanged."
+        )
         has_meta_device = unsupported_meta_device(model)
         if not inplace and not has_meta_device:
             model = copy.deepcopy(model.to("cpu"))
 
-        from auto_round.utils.model import set_module
-        from auto_round.wrapper import WrapperLinear, WrapperWALayer
+        config_act_bits = (serialization_dict or {}).get("act_bits")
+        if config_act_bits is not None and config_act_bits <= 8:
+            has_fake_act_quant = True
 
-        if not has_meta_device:
-            wrapped_modules = [
-                (name, module)
-                for name, module in model.named_modules()
-                if name and isinstance(module, (WrapperLinear, WrapperWALayer))
-            ]
-            wrapped_names = {name for name, _ in wrapped_modules}
-            for name, module in wrapped_modules:
-                if any(name.startswith(f"{parent}.") for parent in wrapped_names if parent != name):
-                    continue
-                orig_layer = module.orig_layer
-                while isinstance(orig_layer, (WrapperLinear, WrapperWALayer)):
-                    orig_layer = orig_layer.orig_layer
-                for attr_name in ("act_min_scale", "act_max_scale", "act_scale"):
-                    orig_layer._parameters.pop(attr_name, None)
-                    orig_layer._buffers.pop(attr_name, None)
-                    if hasattr(orig_layer, attr_name):
-                        delattr(orig_layer, attr_name)
-                set_module(model, name, orig_layer.to("cpu"))
-
-        is_nvfp4_v2 = (serialization_dict or {}).get("data_type") == "nvfp4_v2"
-        if is_nvfp4_v2:
-            quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
-            quantization_config["quant_method"] = "auto-round"
+        quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
+        quantization_config["quant_method"] = "auto-round"
+        if has_fake_act_quant:
             quantization_config["packing_format"] = "auto_round:fake"
-            quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-            from auto_round.export.utils import filter_quantization_config
+        quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+        from auto_round.export.utils import filter_quantization_config
 
-            filter_quantization_config(quantization_config)
-            if hasattr(model, "config") and model.config is not None:
-                model.config.quantization_config = quantization_config
+        filter_quantization_config(quantization_config)
+        if hasattr(model, "config") and model.config is not None:
+            model.config.quantization_config = quantization_config
 
         if not has_meta_device:
             model = model.to("cpu")
             model.save_pretrained(output_dir)
         elif hasattr(model, "config") and model.config is not None:
             model.config.save_pretrained(output_dir)
+
+        # Some save flows write wrapper keys first; normalize to plain Linear keys
+        # so HF loading does not report UNEXPECTED/MISSING pairs.
+        if has_fake_act_quant:
+            _rewrite_saved_weights_without_orig_layer(output_dir)
 
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
