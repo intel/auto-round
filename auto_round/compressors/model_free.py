@@ -117,6 +117,7 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names
 from auto_round.utils.device import clear_memory, memory_monitor
+from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
     _LM_HEAD_PATTERNS,
     _apply_scheme_overrides,
@@ -535,12 +536,14 @@ class _ModelFreeCompressorCore:
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
-        # Model-free is always zero-shot RTN/opt-RTN (each layer is quantized in a
-        # single pass), so torch.compile only adds one-off compilation overhead.
-        # Keep it off by default, but honor an explicit user request.
+        # Keep default torch.compile policy consistent with standard compressor
+        # behavior, while still honoring explicit user overrides.
         if enable_torch_compile is None:
-            self.enable_torch_compile = False
-            logger.info("`torch.compile` is disabled, as RTN/OPT-RTN quantizes each layer in a single pass")
+            self.enable_torch_compile = default_enable_torch_compile(self.device)
+            logger.info(
+                "`torch.compile` is %s (default policy)",
+                "enabled" if self.enable_torch_compile else "disabled",
+            )
         else:
             self.enable_torch_compile = enable_torch_compile
             logger.info("`torch.compile` is %s", "enabled" if enable_torch_compile else "disabled")
