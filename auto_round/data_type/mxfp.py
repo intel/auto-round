@@ -265,7 +265,7 @@ def compute_mx_v_scale(scaled_tensor, ebits, mbits):
     return step.detach()
 
 
-def map_max_scale_to_power2(max_scale, step=0.25, min_exp=-1, max_exp=1):
+def map_max_scale_to_power2(max_scale, step=0.5, min_exp=-1, max_exp=1):
     """Map a linear `max_scale` (float or tensor) to a 2-step (power-of-two) ladder.
 
     By default this uses hard rounding (non-differentiable). When
