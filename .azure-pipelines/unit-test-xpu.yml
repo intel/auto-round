@@ -99,7 +99,7 @@ stages:
           - script: |
               cd ${BUILD_SOURCESDIRECTORY}
               pip install -U pip setuptools uv
-              uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+              uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts

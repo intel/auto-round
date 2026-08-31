@@ -136,12 +136,8 @@ function collect_log() {
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
     if [ -f .coverage ]; then
-        cp .coverage "${LOG_DIR}/.coverage"
-        python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-        python -m coverage html -d "${LOG_DIR}/htmlcov"
-    else
-        echo "No coverage data (no test selected), skip coverage report."
-        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
+        # Use a per-part name so the Coverage stage's `ut-*/.coverage.*` pattern matches.
+        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
     fi
 }
 
