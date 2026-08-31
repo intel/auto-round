@@ -33,8 +33,8 @@ def check_compressed_tensors_supported(raise_error: bool = False):
         return True
     except ImportError:
         msg = (
-            "The 'llm_compressor' output format requires the optional dependency 'compressed-tensors'. "
-            "Install it with: pip install compressed-tensors"
+            "Please `pip install compressed-tensors` since the 'llm_compressor' output format requires "
+            "the optional dependency 'compressed-tensors'."
         )
         if raise_error:
             raise ImportError(msg) from None
