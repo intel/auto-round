@@ -243,6 +243,26 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
         block: The ``nn.Module`` to load weights into.
     """
     model_dir = _resolve_model_dir(model_dir)
+
+    def _has_meta(module: torch.nn.Module) -> bool:
+        return any(tensor.device.type == "meta" for tensor in list(module.parameters()) + list(module.buffers()))
+
+    if _has_meta(block):
+        # A meta-skeleton block (disk-streamed model): resolve each parameter's
+        # checkpoint-side name (checkpoint-conversion renames, fused expert
+        # layouts) instead of raw prefix matching, which silently skips tensors
+        # whose checkpoint spelling differs (e.g. the router stored as
+        # ``mlp.router.gate`` behind a ``mlp.gate`` module) and leaves them on
+        # meta until a downstream ``.to(device)`` crashes.
+        try:
+            from auto_round.utils.disk_stream_util import SafetensorsIndex, materialize_module
+
+            materialize_module(block, block_name, SafetensorsIndex(model_dir), device="cpu")
+            if not _has_meta(block):
+                return
+        except FileNotFoundError:
+            pass  # non-safetensors checkpoint: fall through to prefix loading
+
     weight_map = _build_weight_map(model_dir)
 
     prefix = block_name + "."

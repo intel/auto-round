@@ -561,7 +561,7 @@ def _log_score_summary_by_block_and_nonblock(
     for name, avg_loss in rows_in_order:
         rank = rank_map.get(name, -1)
         ratio_pct = 0.0 if abs(total_avg_loss) < _ZERO_EPS else (avg_loss / total_avg_loss) * 100.0
-        logger.debug("AutoScheme | %d | %s | %.6f | %.2f%% |", rank, name, avg_loss, ratio_pct)
+        logger.debug("AutoScheme | %d | %s | %.3e | %.2f%% |", rank, name, avg_loss, ratio_pct)
 
     if head_name is not None and head_name not in scores_dict:
         logger.debug("AutoScheme | - | %s | N/A | N/A |", head_name)
@@ -569,7 +569,7 @@ def _log_score_summary_by_block_and_nonblock(
     if non_block_items:
         non_block_items.sort(key=lambda x: x[0])
         for layer_name, layer_loss in non_block_items:
-            logger.info("AutoScheme non_block=%s loss=%.6f", layer_name, layer_loss)
+            logger.info("AutoScheme non_block=%s loss=%.3e", layer_name, layer_loss)
 
 
 def _collect_current_scores(model):
@@ -611,7 +611,7 @@ def _log_batch_avg_loss(model, batch_idx: int, pbar=None, block_names=None, tota
     avg_loss = 0.0 if layer_cnt == 0 else total_loss / layer_cnt
     tag = f"[{scheme_tag}] " if scheme_tag else ""
     batch_str = f"{batch_idx}/{total_batches}" if total_batches is not None else str(batch_idx)
-    msg = f"AutoScheme {tag}cumulative batch {batch_str}  avg_loss={avg_loss:.6f} layers={layer_cnt}"
+    msg = f"AutoScheme {tag}cumulative batch {batch_str}  avg_loss={avg_loss:.3e} layers={layer_cnt}"
     if pbar is not None:
         pbar.write(msg)
     logger.debug(msg)

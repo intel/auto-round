@@ -53,7 +53,7 @@ def _extract_common_quantization_kwargs(args) -> dict:
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
     return {
         "platform": args.platform,
-        "format": args.format,
+        "format": getattr(args, "_api_format", args.format),
         "dataset": args.dataset,
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
@@ -225,12 +225,16 @@ def _print_algorithm_help(argv: list[str]) -> bool:
 def start(recipe="default", argv=None):
     recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
+    format_was_explicit = any(
+        arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
+    )
 
     if _print_algorithm_help(argv):
         return
 
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
+    args._api_format = args.format if format_was_explicit else None
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
@@ -402,7 +406,9 @@ def tune(args):
     )
 
     model, folders = autoround.quantize_and_save(
-        args.output_dir, format=args.format, max_shard_size=args.max_shard_size
+        args.output_dir,
+        format=getattr(args, "_api_format", args.format),
+        max_shard_size=args.max_shard_size,
     )  # pylint: disable=no-member
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()
