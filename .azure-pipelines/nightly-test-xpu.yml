@@ -88,7 +88,7 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: [Nightly_xpu_test]
-    condition: and(succeeded(Nightly_xpu_test), ne(variables['Build.Reason'], 'PullRequest'))
+    condition: and(succeeded('Nightly_xpu_test'), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
       - job: CollectDatafiles
         steps:
