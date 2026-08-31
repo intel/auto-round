@@ -19,7 +19,8 @@ parameters:
   - name: xpuTestParts
     type: object
     default:
-      - nightly
+      - 0
+      - ark
       - llmc
 
 schedules:
@@ -58,9 +59,16 @@ stages:
         timeoutInMinutes: 180
         strategy:
           matrix:
-            ${{ each part in parameters.xpuTestParts }}:
-              part_${{ part }}:
-                PART: ${{ part }}
+            # PR-triggered runs only cover ark/llmc; part 0 duplicates the fast PR unit-test pipeline.
+            ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+              part_ark:
+                PART: ark
+              part_llmc:
+                PART: llmc
+            ${{ else }}:
+              ${{ each part in parameters.xpuTestParts }}:
+                part_${{ part }}:
+                  PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:

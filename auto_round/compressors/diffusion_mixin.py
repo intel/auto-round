@@ -117,25 +117,31 @@ class DiffusionMixin:
 
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
-        if pipe is not None and model is not None:
-            is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-            if not is_nextstep:
-                self._align_pipeline_dtype(pipe, model.dtype)
+        if (
+            getattr(self.model_context, "preloaded_diffusion_pipeline", False)
+            and pipe is not None
+            and model is not None
+        ):
+            self._align_pipeline_dtype(pipe, model.dtype)
 
     @staticmethod
     def _align_pipeline_dtype(pipe, target_dtype) -> None:
-        """Align ordinary components while preserving declared FP32 modules."""
+        """Align a preloaded pipeline without casting declared FP32 tensors."""
+
         for component_name in pipe.components:
             component = getattr(pipe, component_name, None)
-            if (
-                not isinstance(component, torch.nn.Module)
-                or not hasattr(component, "dtype")
-                or component.dtype == target_dtype
-            ):
+            if not isinstance(component, torch.nn.Module):
                 continue
-            if getattr(component, "_keep_in_fp32_modules", None):
-                continue
-            component.to(dtype=target_dtype)
+
+            fp32_modules = getattr(component, "_keep_in_fp32_modules", None) or []
+            tensors = list(component.named_parameters()) + list(component.named_buffers())
+            for tensor_name, tensor in tensors:
+                if not tensor.is_floating_point():
+                    continue
+                keep_in_fp32 = any(module_name in tensor_name for module_name in fp32_modules)
+                desired_dtype = torch.float32 if keep_in_fp32 else target_dtype
+                if tensor.dtype != desired_dtype:
+                    tensor.data = tensor.data.to(dtype=desired_dtype)
 
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
@@ -165,15 +171,11 @@ class DiffusionMixin:
         return result
 
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
-        """Align safe component dtypes and dispatch a secondary transformer."""
+        """Dispatch a secondary transformer without changing component dtypes."""
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is None or model is None:
             return
-
-        is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-        if not is_nextstep:
-            self._align_pipeline_dtype(pipe, model.dtype)
 
         # Dispatch secondary transformer to GPU(s)
         device_map = getattr(self.compress_context, "device_map", None)
@@ -459,8 +461,8 @@ class DiffusionMixin:
             self.layer_config = {}
 
             # Get new block names for caching
-            if bool(self.quantizer.quant_block_list):
-                all_blocks = self.quantizer.quant_block_list
+            if bool(self.quant_block_list):
+                all_blocks = self.quant_block_list
             else:
                 all_blocks = get_block_names(self.model_context.model)
             if len(all_blocks) == 0:
@@ -498,7 +500,7 @@ class DiffusionMixin:
         self.compress_context.is_immediate_saving = orig_immediate_saving
         self.num_inference_steps = orig_steps
 
-        return self.model_context.model, self.quantizer.layer_config
+        return self.model_context.model, self.layer_config
 
     def save_quantized(
         self,

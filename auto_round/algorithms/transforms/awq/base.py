@@ -280,6 +280,10 @@ class AWQTransform(BasePreprocessor):
             )
             exit(-1)
 
+    def can_compile_block_forward(self) -> bool:
+        """AWQ installs per-block calibration hooks that trigger Dynamo recompiles."""
+        return False
+
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
@@ -321,7 +325,7 @@ class AWQTransform(BasePreprocessor):
             self._block_mappings.setdefault(key, []).append(m)
 
         if composer is not None:
-            self._qdq_tool.configure(composer)
+            self._qdq_tool.configure(composer, awq_config=self.config)
 
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",

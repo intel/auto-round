@@ -84,6 +84,43 @@ from auto_round.wrapper import WrapperLinear
 __all__ = ["gen_layer_config"]
 
 
+class _ScoreLinear(torch.autograd.Function):
+    """Linear for scoring passes whose weight lives in the wrapper's CPU cache.
+
+    Saves only the input activation: the dequantized weight is transferred
+    from the cache again wherever needed, so the block's autograd graph holds
+    no weight-shaped tensors. The weight score is accumulated from the
+    explicit gradient instead of a tensor hook.
+    """
+
+    @staticmethod
+    def forward(ctx, x, wrapper, bias):  # pylint: disable=arguments-differ
+        ctx.wrapper = wrapper
+        ctx.save_for_backward(x)
+        weight = wrapper._score_weight_for_device(x.device)
+        return torch.nn.functional.linear(x, weight, bias)
+
+    @staticmethod
+    def backward(ctx, grad_out):  # pylint: disable=arguments-differ
+        (x,) = ctx.saved_tensors
+        wrapper = ctx.wrapper
+        weight = wrapper._score_weight_for_device(x.device)
+        grad_x = None
+        if ctx.needs_input_grad[0]:
+            grad_x = torch.matmul(grad_out, weight)
+        if wrapper.grad_mode and wrapper.need_weight_grad:
+            grad_out_2d = grad_out.reshape(-1, grad_out.shape[-1])
+            x_2d = x.reshape(-1, x.shape[-1])
+            grad_w = torch.mm(grad_out_2d.t(), x_2d)
+            weight_ref = wrapper.orig_layer.weight
+            if weight_ref.device.type == "meta":
+                weight_ref = wrapper.orig_layer.get_weight().to(x.device)
+            w_diff = weight_ref.to(x.device) - weight
+            wrapper.weight_score += torch.abs(grad_w * w_diff).sum().item()
+            wrapper.mix_score = wrapper.weight_score + wrapper.act_score
+        return grad_x, None, None
+
+
 class AutoSchemeWrapperLinear(WrapperLinear):
 
     def __init__(
@@ -121,6 +158,12 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         self.grad_mode = False
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
+        # scoring cache: the dequantized weight, computed once per wrapper
+        # visit and stored on CPU; bounded to the block being replayed so
+        # parallel workers' caches stay within host RAM
+        self._score_qdq_cpu = None
+        # use the recompute-weight scoring forward (see _ScoreLinear)
+        self._custom_score_forward = True
 
     def _qdq_act(self, x, act_min_scale=1.0, act_max_scale=1.0, act_max=None):
         """Quant-dequant the activation and, in ``grad_mode``, register a backward hook that
@@ -161,38 +204,85 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 qdq_x.register_hook(save_grad)
         return qdq_x, scale, zp
 
+    def _ensure_score_cache(self):
+        """Build the per-visit CPU cache of the dequantized weight (scoring layers only)."""
+        if self._score_qdq_cpu is not None:
+            return
+        device = self.device
+        with torch.no_grad():
+            qdq_w, _, _ = super(AutoSchemeWrapperLinear, self)._qdq_weight(
+                torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
+            )
+        self._score_qdq_cpu = qdq_w.detach().to("cpu")
+
+    def _score_weight_for_device(self, device):
+        """Return the cached dequantized weight on ``device`` (transfers from the CPU cache)."""
+        self._ensure_score_cache()
+        return self._score_qdq_cpu.to(device)
+
+    def forward(self, x):
+        """In the scoring replay, run the linear through ``_ScoreLinear`` so the block's
+        autograd graph saves activations only; every other phase uses the base forward."""
+        if getattr(self, "_custom_score_forward", False) and self.grad_mode and torch.is_grad_enabled():
+            x = x.to(self.device)
+            for hook in self.orig_layer._forward_pre_hooks.values():
+                result = hook(self.orig_layer, (x,))
+                if result is not None:
+                    x = result[0] if isinstance(result, tuple) else result
+            bias = self.orig_layer.bias
+            if bias is not None and bias.device.type == "meta":
+                bias = self.orig_layer.get_bias().to(self.device)
+            output = _ScoreLinear.apply(x, self, bias)
+            for hook in self.orig_layer._forward_hooks.values():
+                hook_result = hook(self.orig_layer, (x,), output)
+                if hook_result is not None:
+                    output = hook_result
+            return output.to(self.output_device)
+        return super().forward(x)
+
     def _qdq_weight(self, value, min_scale, max_scale):
-        """Quant-dequant the weight and, in ``grad_mode``, register a backward hook that
-        accumulates ``weight_score`` from ``|grad * (weight - qdq_w)|``. Weight quantization
-        for the hook is only recomputed lazily inside the hook itself, so layers whose
-        forward never runs (e.g. unrouted MoE experts) never pay this cost.
+        """Quant-dequant the weight once per scoring pass, cache the result, and, in
+        ``grad_mode``, route the score hook through a scalar anchor.
+
+        The cached quantization is recomputed lazily on the first call, so layers
+        whose forward never runs (e.g. unrouted MoE experts) never pay this cost.
+        In ``grad_mode`` the anchor makes the returned tensor a graph node whose
+        gradient is exactly d(loss)/d(qdq_w): the score hook fires without building
+        the quant chain into the graph and without materializing weight-shaped
+        gradient buffers, which on expert-heavy blocks dominated replay VRAM.
         """
         device = self.device
-        if self.orig_layer.bits > 8 or not self.need_weight_grad:
-            qdq_w, scale, zp = super()._qdq_weight(
+        if self.orig_layer.bits > 8:
+            return super()._qdq_weight(
                 torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
             )
 
-            return qdq_w, 1.0, None
+        scoring = self.grad_mode and self.need_weight_grad
+        if not scoring:
+            # one-shot layers (capture pass, non-grad phases) never reuse the
+            # result, so do not grow a CPU-side cache for them
+            with torch.no_grad():
+                return super()._qdq_weight(
+                    torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
+                )
 
-        qdq_w, scale, zp = super()._qdq_weight(
-            torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
-        )
-
-        if self.grad_mode:
+        self._ensure_score_cache()
+        qdq_w = self._score_qdq_cpu.to(device)
+        if scoring:
+            anchor = torch.zeros((), dtype=qdq_w.dtype, device=qdq_w.device, requires_grad=True)
+            qdq_w = qdq_w + 0.0 * anchor
 
             def save_grad(grad):
                 """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
-                qdq_w, scale, zp = self.super_qdq_func(
-                    torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
-                )
-                w_diff = self.orig_layer.weight - qdq_w.to(self.orig_layer.weight.device)
-                self.weight_score += torch.abs((grad.to(w_diff.device) * w_diff)).sum().item()
+                weight = self.orig_layer.weight
+                if weight.device.type == "meta":
+                    weight = self.orig_layer.get_weight().to(grad.device)
+                w_diff = weight.to(grad.device) - self._score_qdq_cpu.to(grad.device)
+                self.weight_score += torch.abs(grad.to(w_diff.device) * w_diff).sum().item()
                 self.mix_score = self.weight_score + self.act_score
                 return None
 
-            if qdq_w.requires_grad:
-                qdq_w.register_hook(save_grad)
+            qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
 
 
@@ -240,6 +330,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
             group_size=orig_layer.group_size,
             iters=0,
         )
+        self._custom_score_forward = False
         self.post_init_qdqw(device)
 
     @torch.no_grad()
@@ -342,6 +433,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             need_weight_grad,
             **kwargs,
         )
+        self._custom_score_forward = False
         self.post_init_qdqw(device)
 
     @torch.no_grad()
@@ -400,6 +492,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
+        self._custom_score_forward = False
         self.post_init_qdqw(device)
 
     @torch.no_grad()
@@ -596,9 +689,12 @@ def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_dev
 
                 materialize_module(module, module_name, disk_index, device=major_device)
             move_module_to_tuning_device(module, major_device=major_device)
-            # for n,m in module.named_modules():
-            #     if hasattr(m, "post_init_qdqw"):
-            #         m.post_init_qdqw()
+            # The block now sits on major_device; its incoming tensors may have
+            # been emitted on another device (e.g. CPU-resident embeddings, or
+            # CPU-recorded replay inputs), so align them before the forward --
+            # a same-device .to() is a no-op reference return.
+            args = tuple(a.to(major_device) if isinstance(a, torch.Tensor) else a for a in args)
+            kwargs = {k: v.to(major_device) if isinstance(v, torch.Tensor) else v for k, v in kwargs.items()}
 
             # Call the original forward
             with torch.no_grad():
@@ -695,6 +791,34 @@ def model_forward(model, data, **forward_kwargs):
     return model(**prepared, **forward_kwargs), prepared
 
 
+def _clear_wrapper_score_caches(block_module):
+    """Drop the per-wrapper scoring caches of every layer in ``block_module`."
+
+    Wrappers persist for a whole scoring pass while their caches are only valid
+    while the owning layer's weights are materialized; without this the CPU-side
+    caches accumulate across blocks of the model.
+    """
+    for module in block_module.modules():
+        if getattr(module, "_score_qdq_cpu", None) is not None:
+            module._score_qdq_cpu = None
+
+
+def _replay_retain_graph(block_module) -> bool:
+    """Whether this block's backward must keep its autograd graph alive.
+
+    MX-family data types re-run quantization code inside backward hooks that
+    expect the block graph to still exist.  Every other data type frees the
+    graph per block: the reverse replay holds one block's saved activations at
+    a time, and retaining graphs across blocks accumulates them for the whole
+    pass, which is what pushes streamed scoring workers OOM mid-pass.
+    """
+    for _, module in block_module.named_modules():
+        data_type = getattr(module, "data_type", None)
+        if isinstance(data_type, str) and data_type.startswith("mx"):
+            return True
+    return False
+
+
 def _prepare_replay_input(block_input_args, block_input_kwargs, block_name):
     """Find the floating hidden-state tensor whose gradient feeds the preceding block."""
     candidates = []
@@ -709,7 +833,184 @@ def _prepare_replay_input(block_input_args, block_input_kwargs, block_name):
     raise RuntimeError(f"No floating replay input found for block {block_name}")
 
 
-def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, scheme_tag=None, disk_index=None):
+def _vram_inventory_text(top_k: int = 12) -> str:
+    """Return the live-CUDA-tensor census as text (see ``_vram_inventory``).
+
+    Grouped by (shape, dtype) signature, largest first -- block weight shapes
+    are recognizable, which is what makes an at-failure census actionable.
+    """
+    import gc as _gc
+    from collections import defaultdict
+
+    if not torch.cuda.is_available():
+        return "cuda unavailable; no census"
+    groups = defaultdict(lambda: [0, 0])
+    for obj in _gc.get_objects():
+        try:
+            if torch.is_tensor(obj) and obj.is_cuda:
+                key = (tuple(obj.shape), str(obj.dtype))
+                groups[key][0] += 1
+                groups[key][1] += obj.element_size() * obj.numel()
+        except Exception:  # noqa: BLE001
+            continue
+    ranked = sorted(groups.items(), key=lambda kv: -kv[1][1])[:top_k]
+    total = sum(v[1] for v in groups.values())
+    alloc = torch.cuda.memory_allocated() / 2**30
+    lines = [f"live tensors {total / 2**30:.2f} GiB (allocator {alloc:.2f} GiB)"]
+    for (shape, dtype), (cnt, nb) in ranked:
+        lines.append(f"  {nb / 2**30:6.2f} GiB x{cnt:<4} {dtype} {shape}")
+    # name the retaining objects for the largest group so the census points at
+    # the retainer, not only the retained shape
+    for rank, ((shape, dtype), _) in enumerate(ranked[:2]):
+        target = None
+        objs = _gc.get_objects()
+        for obj in objs:
+            try:
+                if torch.is_tensor(obj) and obj.is_cuda and tuple(obj.shape) == shape:
+                    target = obj
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        # The enumeration list itself references every object it yielded; drop
+        # it before asking for referrers or it shadows the real retainers.
+        del objs
+        if target is not None:
+            trace = _tensor_referrer_snippet(target)
+            if trace:
+                lines.append(f"  group#{rank} referrers {shape}:\n{trace}")
+    return "\n".join(lines)
+
+
+def _tensor_referrer_snippet(tensor, max_depth: int = 3, max_entries: int = 4) -> str:
+    """Describe what holds ``tensor`` alive, as a compact referrer chain.
+
+    Walks ``gc.get_referrers`` breadth-first, reporting container types (list /
+    dict sizes, module class names) so a retention census names the retaining
+    object rather than only the retained shape.
+    """
+    import gc as _gc
+
+    import torch.nn as _nn
+
+    def _describe(obj, refers_to=None):
+        if isinstance(obj, (list, tuple)):
+            return f"{type(obj).__name__}[{len(obj)}]"
+        if isinstance(obj, dict):
+            keys = list(obj.keys())[:max_entries]
+            shown = [k if isinstance(k, str) else type(k).__name__ for k in keys]
+            desc = "dict{" + ", ".join(map(str, shown)) + "}"
+            if refers_to is not None:
+                # name the holding attribute deterministically: identity-search
+                # the walked object among the dict's values, so the snippet does
+                # not depend on key order or gc traversal order across platforms
+                for key, value in obj.items():
+                    if value is refers_to and isinstance(key, str):
+                        return f"{desc}[holding {key!r}]"
+            return desc
+        if isinstance(obj, _nn.Module):
+            desc = f"module:{type(obj).__name__}"
+            if refers_to is not None:
+                for store_name in ("_parameters", "_buffers", "_modules"):
+                    store = getattr(obj, store_name, None)
+                    if isinstance(store, dict):
+                        for attr_name, value in store.items():
+                            if value is refers_to:
+                                return f"{desc}.{store_name}[{attr_name!r}]"
+                for attr_name, value in obj.__dict__.items():
+                    if value is refers_to:
+                        return f"{desc}.{attr_name}"
+            return desc
+        return type(obj).__name__
+
+    seen = {id(tensor)}
+    frontier = [tensor]
+    lines = []
+    for _depth in range(max_depth):
+        next_frontier = []
+        for obj in frontier:
+            try:
+                referrers = _gc.get_referrers(obj)
+            except Exception:  # noqa: BLE001
+                continue
+            for ref in referrers:
+                if id(ref) in seen:
+                    continue
+                seen.add(id(ref))
+                desc = _describe(ref)
+                if desc in ("frame", "builtin_function_or_method", "function"):
+                    continue
+                if isinstance(ref, (list, tuple)) and len(ref) > 10000:
+                    # giant containers at this depth are bookkeeping artifacts
+                    # (object registries, gc internals), not model state
+                    continue
+                lines.append(f"  depth{_depth + 1} <- {_describe(ref, refers_to=obj)}")
+                if isinstance(ref, (list, tuple, dict)):
+                    next_frontier.append(ref)
+            if len(lines) >= max_entries * 3:
+                break
+        frontier = next_frontier
+        if not frontier or len(lines) >= max_entries * 3:
+            break
+    return "\n".join(lines[: max_entries * 3]) if lines else "no external referrers found"
+
+
+def _annotate_worker_oom(worker_index, exc):
+    """Attach a live-tensor census and the failing op to a CUDA OOM in a worker."""
+    import traceback as _tb
+
+    try:
+        census = _vram_inventory_text(top_k=20)
+    except Exception:  # noqa: BLE001  the census must never mask the OOM
+        census = "census unavailable"
+    tb_lines = _tb.format_exc().splitlines()
+    tb_head = "\n".join(tb_lines[:4])
+    tb_tail = "\n".join(tb_lines[-8:])
+    return RuntimeError(
+        f"_score_scheme_worker[{worker_index}] CUDA OOM during scoring. "
+        f"Live-tensor census at failure:\n{census}\n\n"
+        f"Traceback head:\n{tb_head}\n...\nTraceback tail:\n{tb_tail}"
+        f"Original error: {exc}"
+    )
+
+
+def _vram_inventory(tag: str, top_k: int = 12):
+    """Env-gated (AR_SCHEME_MEM_INVENTORY=1) per-device live-tensor census:
+    resident CUDA tensors grouped by (shape, dtype) signature, largest first --
+    used to spot unreleased module weights or retained graphs during streamed
+    scoring (block shapes are recognizable: e.g. [5120, 17408] = mlp.down)."""
+    import gc as _gc
+    import os as _os
+    from collections import defaultdict
+
+    if _os.getenv("AR_SCHEME_MEM_INVENTORY", "0") != "1":
+        return
+    groups = defaultdict(lambda: [0, 0])
+    for obj in _gc.get_objects():
+        try:
+            if torch.is_tensor(obj) and obj.is_cuda:
+                key = (tuple(obj.shape), str(obj.dtype))
+                groups[key][0] += 1
+                groups[key][1] += obj.element_size() * obj.numel()
+        except Exception:  # noqa: BLE001
+            continue
+    ranked = sorted(groups.items(), key=lambda kv: -kv[1][1])[:top_k]
+    total = sum(v[1] for v in groups.values())
+    alloc = torch.cuda.memory_allocated() / 2**30
+    print(f"[mem-inv] {tag}: live tensors {total / 2**30:.2f} GiB " f"(allocator {alloc:.2f} GiB)", flush=True)
+    for (shape, dtype), (cnt, nb) in ranked:
+        print(f"[mem-inv]   {nb / 2**30:6.2f} GiB x{cnt:<4} {dtype} {shape}", flush=True)
+
+
+def model_forward_low_gpu(
+    model,
+    dataloader,
+    major_device="cuda",
+    pbar=None,
+    scheme_tag=None,
+    disk_index=None,
+    skip_batches=0,
+    batch_checkpoint=None,
+):
     """Run one full scoring pass (all calibration batches) in low-GPU-memory mode.
 
     For each batch: capture per-block inputs via ``prepare_model_low_gpu``, run a forward
@@ -741,6 +1042,12 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
         raise MyCustomError("Interrupt backward pass")
 
     for batch_idx, data in enumerate(dataloader, start=1):
+        if batch_idx <= skip_batches:
+            # resumed run: these batches' contributions are already in the
+            # restored accumulators; advance the loader and the progress bar only
+            if pbar is not None:
+                pbar.update(len(block_names) * 2)
+            continue
         captured_grad = None
         interrupted = False
         last_block_backward_hook = None
@@ -835,7 +1142,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
                 torch.autograd.backward(
                     tensors=main_output,
                     grad_tensors=current_grad,
-                    retain_graph=True,  # False may lead to zero gradients for some cases (e.g., MXFP4)
+                    retain_graph=_replay_retain_graph(block_module),
                 )
 
                 if replay_input.grad is None:
@@ -845,6 +1152,7 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
             finally:
                 for parameter in block_module.parameters():
                     parameter.grad = None
+                _clear_wrapper_score_caches(block_module)
                 if disk_index is not None and materialized:
                     from auto_round.utils.disk_stream_util import free_module
 
@@ -857,6 +1165,11 @@ def model_forward_low_gpu(model, dataloader, major_device="cuda", pbar=None, sch
 
             if pbar is not None:
                 pbar.update(1)
+
+        _vram_inventory(f"scheme={scheme_tag} batch={batch_idx}/{total_batches} post-replay")
+
+        if batch_checkpoint is not None:
+            batch_checkpoint(batch_idx, total_batches or -1)
 
         _log_batch_avg_loss(
             model,
@@ -877,6 +1190,8 @@ def get_score_for_scheme(
     ignore_scale_zp_bits=False,
     nsamples=16,
     seqlen=256,
+    skip_batches=0,
+    batch_checkpoint=None,
     pbar=None,
     shared_layers=None,
     need_weight_grad=False,
@@ -1114,7 +1429,14 @@ def get_score_for_scheme(
                     "Provide a `processor` and a multimodal `dataset`."
                 )
             model_forward_low_gpu(
-                model, mllm_loader, major_device=major_device, pbar=pbar, scheme_tag=scheme_tag, disk_index=disk_index
+                model,
+                mllm_loader,
+                major_device=major_device,
+                pbar=pbar,
+                scheme_tag=scheme_tag,
+                disk_index=disk_index,
+                skip_batches=skip_batches,
+                batch_checkpoint=batch_checkpoint,
             )
         else:
             try:
@@ -1126,6 +1448,8 @@ def get_score_for_scheme(
                     pbar=pbar,
                     scheme_tag=scheme_tag,
                     disk_index=disk_index,
+                    skip_batches=skip_batches,
+                    batch_checkpoint=batch_checkpoint,
                 )
             except Exception as exc:  # noqa: BLE001
                 if not is_vlm:
@@ -1636,6 +1960,57 @@ def _autoscheme_cache_path(cache_key, scheme_index):
     return os.path.join(cache_dir, f"scheme_{scheme_index:02d}_{cache_key}.json")
 
 
+def _extract_score_accumulators(model):
+    """Snapshot the additive per-layer scoring accumulators for mid-scheme resume."""
+    state = {}
+    for n, m in model.named_modules():
+        if hasattr(m, "mix_score"):
+            state[n] = [float(m.act_score), float(m.weight_score), float(m.act_cnt)]
+    return state
+
+
+def _inject_score_accumulators(model, state):
+    """Restore scoring accumulators snapshotted by ``_extract_score_accumulators``."""
+    for n, m in model.named_modules():
+        if n in state and hasattr(m, "mix_score"):
+            m.act_score, m.weight_score, m.act_cnt = state[n]
+
+
+def _partial_scores_path(cache_path):
+    return cache_path + ".partial"
+
+
+def _save_partial_scores(cache_path, batch_idx, total_batches, state):
+    """Atomically persist a batch-granularity scoring checkpoint (JSON)."""
+    payload = {
+        "version": 1,
+        "batches_done": batch_idx,
+        "total_batches": total_batches,
+        "scores_state": state,
+    }
+    tmp = _partial_scores_path(cache_path) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
+    os.replace(tmp, _partial_scores_path(cache_path))
+
+
+def _load_partial_scores(cache_path, expected_total_batches):
+    """Load a batch checkpoint if present and still applicable."""
+    path = _partial_scores_path(cache_path)
+    if cache_path is None or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("total_batches") != expected_total_batches:
+            return None
+        if not 0 < data.get("batches_done", 0) < expected_total_batches:
+            return None
+        return data
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _save_autoscheme_scores(
     cache_path,
     cache_key,
@@ -1786,6 +2161,21 @@ def _refresh_cached_layer_bits(
     return refreshed_scores
 
 
+def _parallel_scoring_must_raise(parallel_error: Exception) -> bool:
+    """Decide whether a parallel-scoring failure aborts instead of falling back to serial.
+
+    Set AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1 to fail fast: the serial fallback is
+    ~workers-count times slower and, on models where it cannot run at all, only
+    burns hours before crashing.  Schemes lost with their worker always raise
+    regardless of the env, since their scores are unrecoverable.
+    """
+    from auto_round import envs as _envs
+
+    if "was lost with its worker" in str(parallel_error):
+        return True
+    return bool(_envs.AR_AUTO_SCHEME_NO_SERIAL_FALLBACK)
+
+
 def _assign_scheme_worker_devices(worker_count, available_devices):
     """Assign workers round-robin within the devices selected by the caller."""
     if not available_devices:
@@ -1857,6 +2247,40 @@ def _get_scheme_worker_count(num_schemes, num_gpus):
     return num_schemes
 
 
+def _weights_span_multiple_gpus(devices) -> bool:
+    """Whether a device collection places weights on more than one GPU."""
+    cuda_devices = {str(device) for device in devices if str(device).startswith("cuda")}
+    return len(cuda_devices) > 1
+
+
+def _serial_scoring_device_safe(model, visible_cuda_devices=None) -> bool:
+    """Whether in-process (serial) full-model scoring can run on ``model``.
+
+    Serial scoring runs the whole-model forward through per-layer wrappers.
+    Two placement sources can spread work over several GPUs: live parameter
+    devices (a materialized model), and ``hf_device_map`` - which is what a
+    disk-stream (meta-skeleton) model consults when its blocks materialize
+    block-by-block during scoring. Either spanning more than one GPU makes
+    the first cross-device layer raise a tensor-device error mid-forward.
+
+    Additionally, a disk-stream (meta-skeleton) model scored serially with
+    more than one visible CUDA device is not considered safe: block
+    materialization and wrapper bookkeeping are only validated with a
+    single visible GPU, and workers pin one GPU each. Such models are
+    routed through disk-stream workers instead.
+    """
+    if _weights_span_multiple_gpus({parameter.device for parameter in model.parameters()}):
+        return False
+    hf_device_map = getattr(model, "hf_device_map", None)
+    if hf_device_map:
+        if _weights_span_multiple_gpus(set(hf_device_map.values())):
+            return False
+    if visible_cuda_devices is not None and len(visible_cuda_devices) > 1:
+        if getattr(model, "_disk_stream_index", None) is not None:
+            return False
+    return True
+
+
 def _can_parallel_scheme_scoring(
     parallel_enabled,
     model_id,
@@ -1866,16 +2290,26 @@ def _can_parallel_scheme_scoring(
     disk_stream_model,
     is_vlm,
     low_gpu_mem_usage=True,
+    force_mllm=False,
+    min_uncached=2,
 ):
-    """Return whether candidate schemes can be scored in separate workers."""
+    """Return whether candidate schemes can be scored in separate workers.
+
+    ``is_vlm`` is accepted for call-site compatibility; text-only scoring of a
+    VLM's language tower streams blocks just like a text model. Only vision
+    scoring (``force_mllm``) requires a full-model backward and is excluded
+    from the block-wise materialize/free path used by disk streaming.
+    ``min_uncached`` is the parallel-worthiness floor (2 by default); the call
+    site lowers it to 1 when serial scoring cannot run on the loaded model and
+    a disk-stream worker can."""
     return (
         parallel_enabled
         and low_gpu_mem_usage
         and model_id is not None
         and num_gpus >= 1
-        and uncached_count >= 2
+        and uncached_count >= min_uncached
         and not need_imatrix
-        and (not disk_stream_model or not is_vlm)
+        and (not disk_stream_model or not force_mllm)
     )
 
 
@@ -1895,6 +2329,15 @@ def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=Fal
     from auto_round.utils.disk_stream_util import build_meta_model
 
     model, tokenizer, disk_index = build_meta_model(model_name)
+    # The regular load pipeline applies custom replacements, among them the
+    # structural MoE unfusing that turns fused expert containers into per-expert
+    # Linear modules; the meta-skeleton build skips that pipeline.  Unfuse here
+    # so per-expert quant layers resolve -- weights stay on meta and are filled
+    # per-block from the checkpoint index during scoring.
+    from auto_round.modeling.fused_moe.replace_modules import _handle_moe_modules
+
+    unfused = _handle_moe_modules(model)
+    logger.info("disk-stream scoring worker: structural MoE unfuse produced %d unfused experts modules", len(unfused))
     if use_model_replacements:
         from auto_round.special_model_handler import _handle_special_model, update_module
 
@@ -1904,8 +2347,12 @@ def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=Fal
 
 
 def _prefer_disk_stream_scheme_worker(model_id, is_vlm, low_gpu_mem_usage):
-    """Prefer block-wise disk streaming whenever the worker scoring path supports it."""
-    return model_id is not None and not is_vlm and low_gpu_mem_usage
+    """Prefer block-wise disk streaming whenever the worker scoring path supports it.
+
+    Multimodal archs are covered: build_meta_model resolves the class from
+    config.architectures and the workers materialize non-block params (vision
+    tower included) via materialize_non_block_params."""
+    return model_id is not None and low_gpu_mem_usage
 
 
 def _score_scheme_worker(args):
@@ -1934,6 +2381,7 @@ def _score_scheme_worker(args):
         total_schemes,
         progress_queue,
         disk_stream_model,
+        worker_cache_path,
     ) = args
 
     from auto_round.auto_scheme.utils import _scheme_short_name as _short_name
@@ -1997,8 +2445,13 @@ def _score_scheme_worker(args):
     for layer_name in quant_layer_names:
         layer = _get_module(model, layer_name)
         if layer is None:
+            parent_name = layer_name.rsplit(".", 1)[0]
+            parent = _get_module(model, parent_name)
+            expert_containers = sum(1 for _, m in model.named_modules() if m.__class__.__name__ == "_ExpertContainer")
             raise RuntimeError(
-                f"_score_scheme_worker[{index}]: layer {layer_name!r} is missing after model preprocessing"
+                f"_score_scheme_worker[{index}]: layer {layer_name!r} is missing after model preprocessing "
+                f"(parent {parent_name!r} resolves to {type(parent).__name__ if parent is not None else None}; "
+                f"expert containers in model: {expert_containers}; disk-stream build: {disk_index is not None})"
             )
         if not hasattr(layer, "tuning_device"):
             layer.tuning_device = worker_device
@@ -2010,6 +2463,27 @@ def _score_scheme_worker(args):
         fixed_layer_scheme=fixed_layer_scheme,
         scheme=scheme,
     )
+
+    # mid-scheme resume: reload additive accumulators and skip completed batches
+    skip_batches = 0
+    if worker_cache_path is not None:
+        expected_total = max(1, math.ceil(nsamples / max(1, batch_size)))
+        partial = _load_partial_scores(worker_cache_path, expected_total)
+        if partial is not None:
+            _inject_score_accumulators(model, partial["scores_state"])
+            skip_batches = partial["batches_done"]
+            logger.info(
+                "_score_scheme_worker[%d]: resuming from batch checkpoint %d/%d",
+                index,
+                skip_batches,
+                expected_total,
+            )
+
+        def batch_checkpoint(batch_idx, total_batches):
+            _save_partial_scores(worker_cache_path, batch_idx, total_batches, _extract_score_accumulators(model))
+
+    else:
+        batch_checkpoint = None
 
     is_bf16 = isinstance(scheme, str) and scheme.upper() == "BF16"
     if isinstance(scheme, dict):
@@ -2025,29 +2499,36 @@ def _score_scheme_worker(args):
 
     from auto_round.auto_scheme.delta_loss import get_score_for_scheme
 
-    scores = get_score_for_scheme(
-        model,
-        tokenizer,
-        quant_layer_names,
-        fixed_layer_scheme,
-        dataset,
-        ignore_scale_zp_bits=ignore_scale_zp_bits,
-        pbar=_ProgressQueueProxy(progress_queue),
-        nsamples=nsamples,
-        seqlen=seqlen,
-        need_weight_grad=need_weight_grad,
-        enable_torch_compile=enable_torch_compile,
-        low_gpu_mem_usage=low_gpu_mem_usage,
-        major_device=worker_device,
-        batch_size=batch_size,
-        offload_context=None,
-        processor=processor,
-        is_vlm=is_vlm,
-        force_mllm=force_mllm,
-        model_name=model_name,
-        scheme_tag=f"{index + 1}/{total_schemes} {_short_name(scheme)}",
-        disk_index=disk_index,
-    )
+    try:
+        scores = get_score_for_scheme(
+            model,
+            tokenizer,
+            quant_layer_names,
+            fixed_layer_scheme,
+            dataset,
+            ignore_scale_zp_bits=ignore_scale_zp_bits,
+            pbar=_ProgressQueueProxy(progress_queue),
+            nsamples=nsamples,
+            seqlen=seqlen,
+            skip_batches=skip_batches,
+            batch_checkpoint=batch_checkpoint,
+            need_weight_grad=need_weight_grad,
+            enable_torch_compile=enable_torch_compile,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            major_device=worker_device,
+            batch_size=batch_size,
+            offload_context=None,
+            processor=processor,
+            is_vlm=is_vlm,
+            force_mllm=force_mllm,
+            model_name=model_name,
+            scheme_tag=f"{index + 1}/{total_schemes} {_short_name(scheme)}",
+            disk_index=disk_index,
+        )
+    except RuntimeError as exc:
+        if "out of memory" not in str(exc).lower():
+            raise
+        raise _annotate_worker_oom(index, exc) from exc
     return index, scores, _get_worker_memory_report(worker_device)
 
 
@@ -2256,7 +2737,11 @@ def _gen_layer_config(
         act_bits = scheme.get("act_bits", 16)
         if scheme.get("super_group_size"):
             need_imatrix = True
-        if bits <= 8 < act_bits:
+        # Weight scores must accumulate for every weight-quantized scheme, not
+        # only A16 ones: MX options (W4A4/W8A8) quantify weight error solely via
+        # the weight score, and skipping it zeroes every layer score, so the
+        # bit allocation collapses to the cheapest option.
+        if bits <= 8:
             need_weight_grad = True
         if not auto_scheme.low_gpu_mem_usage:
             pbar_cnt += nsamples
@@ -2403,6 +2888,10 @@ def _gen_layer_config(
         def _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores):
             if cache_key is None or cache_path is None:
                 return
+            try:
+                os.remove(_partial_scores_path(cache_path))
+            except OSError:
+                pass
             if isinstance(scheme, str):
                 scheme_dict = asdict(preset_name_to_scheme(scheme))
             elif isinstance(scheme, QuantizationScheme):
@@ -2469,6 +2958,46 @@ def _gen_layer_config(
         worker_disk_stream_model = _prefer_disk_stream_scheme_worker(
             _model_id_for_cache, is_vlm, auto_scheme.low_gpu_mem_usage
         )
+        # Serial scoring runs the full-model forward, which cannot cross GPUs on
+        # a manually sharded model. When that is the loaded configuration and a
+        # disk-stream worker is possible, lower the parallel floor to 1 so even
+        # a single uncached scheme is scored through a worker instead of the
+        # broken in-process pass.
+        serial_device_safe = _serial_scoring_device_safe(model, visible_cuda_devices=worker_device_pool)
+        min_uncached = 2
+        if not serial_device_safe and worker_disk_stream_model:
+            min_uncached = 1
+            logger.info(
+                "AutoScheme: serial in-process scoring is unsafe (multi-GPU weights, "
+                "hf_device_map, or a streamed model with several visible GPUs); "
+                "routing even a single uncached scheme through a disk-stream scoring worker."
+            )
+        elif not serial_device_safe and uncached_indices:
+            raise RuntimeError(
+                "AutoScheme serial scoring cannot run on a model whose weights span "
+                "multiple GPUs without accelerate dispatch (the full-model forward has "
+                "no cross-device activation transfer). Score via disk-stream workers: "
+                "point AR_DISK_STREAM_MODEL at a local checkpoint directory and keep "
+                "AR_ENABLE_AUTO_SCHEME_PARALLEL enabled, or load the model on a single "
+                "GPU / with device_map='auto'."
+            )
+        if __debug__:
+            from collections import Counter
+
+            _param_devs = Counter(str(p_.device) for p_ in model.parameters())
+            _hf_map = getattr(model, "hf_device_map", None)
+            _hf_devs = sorted({str(v_) for v_ in _hf_map.values()}) if _hf_map else None
+            logger.info(
+                "AutoScheme serial-safety census: serial_device_safe=%s "
+                "param_devices=%s hf_device_map_devices=%s disk_stream_index=%s meta_params=%d "
+                "cuda_visible=%s",
+                serial_device_safe,
+                dict(_param_devs),
+                _hf_devs,
+                getattr(model, "_disk_stream_index", None) is not None,
+                sum(1 for p_ in model.parameters() if p_.device.type == "meta"),
+                [str(d_) for d_ in worker_device_pool],
+            )
         # Vision scoring requires a full-model backward and therefore cannot use
         # the block-wise materialize/free path used by disk streaming.
         can_parallel = _can_parallel_scheme_scoring(
@@ -2480,6 +3009,8 @@ def _gen_layer_config(
             worker_disk_stream_model,
             is_vlm,
             low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
+            force_mllm=force_mllm,
+            min_uncached=min_uncached,
         )
         logger.info(
             "AutoScheme scoring mode: parallel_configured=%s, parallel_enabled=%s, disk_stream_enabled=%s",
@@ -2519,6 +3050,41 @@ def _gen_layer_config(
                     "AutoScheme: if parallel scoring runs out of RAM/VRAM or automatic serial fallback cannot "
                     "recover, set AR_ENABLE_AUTO_SCHEME_PARALLEL=0 and rerun."
                 )
+                # free the parent's GPU before spawning workers: non-block params
+                # (embed/lm_head/vision) parked on a device by earlier setup are
+                # dead weight during parallel scoring -- the parent never runs a
+                # forward, and each worker owns its private copy. A shared-GPU
+                # worker then gets the card's full budget.
+                _moved = 0
+                _parked = []
+                for _p in model.parameters():
+                    if _p.device.type == "cuda":
+                        _parked.append((_p, _p.device))
+                        _p.data = _p.data.to("cpu")
+                        _moved += 1
+                for _b in model.buffers():
+                    if _b.device.type == "cuda":
+                        _parked.append((_b, _b.device))
+                        _b.data = _b.data.to("cpu")
+
+                def _restore_parked_tensors():
+                    """Move tensors parked before spawning back to their devices.
+
+                    The serial fallback and the post-parallel phases run
+                    full-model forwards; leaving non-block params on CPU while
+                    ``model.device`` still reports the GPU crashes the first
+                    non-block module on a device mismatch (e.g. final norm)."""
+                    for _tensor, _device in _parked:
+                        if _tensor.device.type == "cpu" and _device.type != "cpu":
+                            _tensor.data = _tensor.data.to(_device)
+                    _parked.clear()
+
+                if _moved:
+                    logger.info("AutoScheme: parked %d parent-side GPU tensors on CPU before spawning workers", _moved)
+                    clear_memory()
+
+                _vram_inventory("parent pre-spawn")
+
                 spawn_context = multiprocessing.get_context("spawn")
                 with spawn_context.Manager() as manager:
                     progress_queue = manager.Queue()
@@ -2545,17 +3111,44 @@ def _gen_layer_config(
                             len(schemes),
                             progress_queue,
                             worker_disk_stream_model,
+                            scheme_cache_meta[index][1],  # cache_path for batch checkpoints
                         )
                         for slot, index in enumerate(uncached_indices)
                     ]
                     with spawn_context.Pool(processes=num_workers) as pool:
-                        async_results = pool.map_async(_score_scheme_worker, worker_args)
-                        while not async_results.ready():
-                            _drain_progress_queue(progress_queue, pbar)
-                            memory_monitor.update_cpu()
-                            async_results.wait(timeout=0.1)
+                        # incremental consumption: persist each scheme's scores to
+                        # the per-scheme cache as its worker returns, so a partial
+                        # failure (or serial-fallback crash) never discards
+                        # completed schemes -- the rerun picks them up from cache
+                        result_iter = pool.imap_unordered(_score_scheme_worker, worker_args)
+                        worker_results = []
+                        failed_workers = 0
+                        while True:
+                            try:
+                                worker_results.append(result_iter.next(timeout=0.5))
+                            except multiprocessing.TimeoutError:
+                                _drain_progress_queue(progress_queue, pbar)
+                                memory_monitor.update_cpu()
+                                continue
+                            except StopIteration:
+                                break
+                            except Exception as worker_error:  # noqa: BLE001
+                                # one worker's failure must not abort its siblings:
+                                # keep consuming their results (each already-saved
+                                # scheme survives in the per-scheme cache)
+                                failed_workers += 1
+                                logger.warning(
+                                    "AutoScheme: a scoring worker failed (%s); collecting remaining workers' results.",
+                                    worker_error,
+                                )
+                                _drain_progress_queue(progress_queue, pbar)
+                                continue
+                            index, scores, _report = worker_results[-1]
+                            cache_key, cache_path, _ = scheme_cache_meta[index]
+                            _save_per_op_scores(index, schemes[index], cache_key, cache_path, scores)
                         _drain_progress_queue(progress_queue, pbar)
-                        worker_results = async_results.get()
+                        if not worker_results:
+                            raise RuntimeError("all parallel scoring workers failed") from None
 
                     parallel_results = {index: scores for index, scores, _ in worker_results}
                     _merge_worker_memory_reports(memory_monitor, [report for _, _, report in worker_results])
@@ -2599,19 +3192,39 @@ def _gen_layer_config(
                         if not check_bf16_scheme(scheme):
                             pbar.update(pbar_cnt // effective_scheme_num if effective_scheme_num > 0 else 1)
                     else:
-                        per_op_scores = parallel_results[index]
-                        _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
+                        if index in parallel_results:
+                            per_op_scores = parallel_results[index]
+                            _save_per_op_scores(index, scheme, cache_key, cache_path, per_op_scores)
+                        else:
+                            # worker died for this scheme; siblings' results are saved.
+                            # Rerunning resumes/scores only the missing schemes.
+                            raise RuntimeError(
+                                f"AutoScheme: scheme {index} ({_scheme_short_name(scheme)}) was lost with its "
+                                "worker; completed schemes are persisted in the per-scheme cache -- rerun to "
+                                "score only the failed schemes."
+                            )
                     total_loss = _record_scheme_scores(index, per_op_scores)
                     logger.info(
-                        "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.6f)",
+                        "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.3e)",
                         index + 1,
                         len(schemes),
                         total_loss,
                     )
                 parallel_done = True
                 logger.info("AutoScheme: parallel scoring completed.")
+                _restore_parked_tensors()
                 post_scoring_started = time.perf_counter()
             except Exception as parallel_error:  # noqa: BLE001
+                _restore_parked_tensors()
+                if _parallel_scoring_must_raise(parallel_error):
+                    logger.error(
+                        "AutoScheme: keeping the parallel scoring failure as a hard error "
+                        "(AR_AUTO_SCHEME_NO_SERIAL_FALLBACK is set, or a scheme was lost with its worker); "
+                        "completed schemes and batches are persisted in the per-scheme cache -- "
+                        "rerun to score only the failed parts, e.g. with a smaller "
+                        "AR_AUTO_SCHEME_BATCH_SIZE / AR_AUTO_SCHEME_NSAMPLES."
+                    )
+                    raise
                 logger.warning(
                     "AutoScheme: parallel scoring failed, falling back to serial: %s. "
                     "If fallback cannot recover (for example after RAM/VRAM exhaustion), rerun with "
@@ -2701,7 +3314,7 @@ def _gen_layer_config(
 
                 total_loss = _record_scheme_scores(index, per_op_scores)
                 logger.info(
-                    "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.6f)",
+                    "AutoScheme transition: scheme %d/%d scoring finished (total_loss=%.3e)",
                     index + 1,
                     len(schemes),
                     total_loss,

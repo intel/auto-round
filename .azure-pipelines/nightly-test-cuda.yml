@@ -1,0 +1,221 @@
+# Nightly CUDA pipeline: runs the slower CUDA integration + e2e suites
+# (sglang, llmc, vllm) that are excluded from the fast PR unit-test pipeline
+# (unit-test-cuda.yml). Scheduled daily; can also be triggered manually from
+# the Azure DevOps UI.
+
+trigger: none
+
+pr:
+  autoCancel: true
+  drafts: false
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - auto_round
+      - auto_round_extension
+      - test/integration/test_cuda
+      - setup.py
+      - requirements.txt
+      - .azure-pipelines/scripts/cuda_unit_test
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
+      - .azure-pipelines/nightly-test-cuda.yml
+
+    exclude:
+      - "*.md"
+      - "**/*.md"
+      - auto_round_extension/ark
+
+schedules:
+  - cron: "0 18 * * *"   # 02:00 Asia/Shanghai every day
+    displayName: Daily CUDA nightly run
+    branches:
+      include:
+        - main
+    always: true
+
+variables:
+  - name: POOL_NAME
+    value: "RunPod-GPU-Pool"
+  - name: AGENT_NAME
+    value: "runpod-agent-$(Build.BuildId)"
+
+stages:
+  - stage: Start_Pod
+    displayName: "Start Pod"
+    dependsOn: []
+    jobs:
+      - job: Start_Pod_Job
+        displayName: "Launch Pod & Run CUDA Nightly Tests"
+        timeoutInMinutes: 60
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.13"
+            displayName: "Use Python 3.13"
+
+          - task: Bash@3
+            displayName: "Install dependencies"
+            inputs:
+              targetType: "inline"
+              script: |
+                pip install requests
+
+          - task: Bash@3
+            displayName: "Create RunPod Instance"
+            name: create_runpod
+            inputs:
+              targetType: "inline"
+              script: |
+                CUDA_VERSION="13.0"
+
+                python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
+                  --action create \
+                  --api_key $(RUNPOD_API_KEY) \
+                  --name "nightly-$(Build.BuildId)" \
+                  --container_disk_size "100" \
+                  --part 0 \
+                  --cuda_version "${CUDA_VERSION}" \
+                  --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)"
+            env:
+              PYTHONUNBUFFERED: '1'
+
+          - task: Bash@3
+            displayName: "Wait for Pod to be Online"
+            name: wait_for_pod
+            inputs:
+              targetType: "inline"
+              script: |
+                python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
+                  --action wait \
+                  --api_key $(RUNPOD_API_KEY) \
+                  --name "nightly-$(Build.BuildId)"
+            env:
+              PYTHONUNBUFFERED: '1'
+
+          - task: Bash@3
+            displayName: "Wait for Agent to be Online"
+            name: wait_for_agent
+            inputs:
+              targetType: "inline"
+              script: |
+                python .azure-pipelines/scripts/cuda_unit_test/azure_agent.py \
+                  --action wait \
+                  --url "$(System.CollectionUri)" \
+                  --pat "$(AZP_DEVOPS_PAT)" \
+                  --pool "$(POOL_NAME)" \
+                  --agent "$(AGENT_NAME)"
+            env:
+              PYTHONUNBUFFERED: '1'
+
+  - stage: GPU_Test
+    displayName: "GPU Nightly Test"
+    dependsOn: Start_Pod
+    jobs:
+      - job: GpuTests
+        timeoutInMinutes: 300
+        pool:
+          name: "$(POOL_NAME)"
+          demands: Agent.Name -equals runpod-agent-$(Build.BuildId)
+        steps:
+          - checkout: self
+            clean: true
+            displayName: "Checkout Repo"
+
+          - script: |
+              echo "Running on GPU Agent: $(Agent.Name)"
+              nvidia-smi
+              lscpu
+              cd .azure-pipelines/scripts/cuda_unit_test
+              nohup uv run monitor_gpu.py daemon > monitor.log 2>&1 &
+            displayName: "Verify GPU Access"
+
+          - script: |
+              echo "##[group]Installing Python dependencies..."
+              uv pip install -U "pytest-cov" "requests" "huggingface_hub"
+              hf auth login --token "$(HF_TOKEN)"
+              echo "##[endgroup]"
+            displayName: "Install Python Dependencies"
+
+          - script: |
+              export UV_NO_CACHE=0
+              export FILTER_CHANGED_TESTS=true
+              bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
+                --test_case=nightly \
+                --test_part=0
+            displayName: "Run GPU Nightly Tests"
+
+          - task: PublishPipelineArtifact@1
+            condition: succeeded()
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/log_dir
+              artifact: "ut-nightly_coverage"
+              publishLocation: "pipeline"
+            displayName: "Publish UT coverage artifact"
+
+          - script: |
+              cd .azure-pipelines/scripts/cuda_unit_test
+              uv run monitor_gpu.py stop
+            condition: always()
+            displayName: "GPU Monitor"
+
+  - stage: Cleanup_Verification
+    displayName: "Verify Pod Cleanup"
+    dependsOn:
+      - Start_Pod
+      - GPU_Test
+    condition: always()
+    jobs:
+      - job: Verify_Cleanup
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.13"
+            displayName: "Use Python 3.13"
+
+          - task: Bash@3
+            displayName: "Install dependencies"
+            condition: always()
+            inputs:
+              targetType: "inline"
+              script: |
+                pip install requests
+
+          - task: Bash@3
+            displayName: "Terminate RunPod Instance"
+            condition: always()
+            inputs:
+              targetType: "inline"
+              script: |
+                echo "Terminating Pod: nightly-$(Build.BuildId)"
+                python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
+                  --action terminate \
+                  --api_key $(RUNPOD_API_KEY) \
+                  --name "nightly-$(Build.BuildId)"
+            env:
+              PYTHONUNBUFFERED: '1'
+
+          - task: Bash@3
+            displayName: "Deregister Agent from Pool"
+            condition: always()
+            inputs:
+              targetType: "inline"
+              script: |
+                cd ${BUILD_SOURCESDIRECTORY}
+                python .azure-pipelines/scripts/cuda_unit_test/azure_agent.py \
+                  --action deregister \
+                  --url "$(System.CollectionUri)" \
+                  --pat "$(AZP_DEVOPS_PAT)" \
+                  --pool "$(POOL_NAME)" \
+                  --agent "$(AGENT_NAME)"
+            env:
+              PYTHONUNBUFFERED: '1'

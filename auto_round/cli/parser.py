@@ -126,6 +126,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--algorithms",
         "--alg",
         "--algs",
+        "--alg_config",
+        "--alg_configs",
         default=None,
         type=str,
         help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'.",

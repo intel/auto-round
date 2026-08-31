@@ -13,14 +13,23 @@
 # limitations under the License.
 import os
 import random
-import re
 from typing import Union
 
 import torch
 from torch.amp import autocast
 
 from auto_round.compressors.config_resolution import LayerConfigResolutionError
-from auto_round.logger import logger
+
+# Explicit compatibility exports for callers that historically imported GGUF and
+# ignore-layer helpers from compressors.utils.
+from auto_round.compressors.layer_config_resolver import get_fp_layer_names
+from auto_round.export.formats.backends.gguf import (
+    _apply_gguf_shape_fallback,
+    _infer_gguf_n_layers_from_model,
+    _resolve_gguf_n_layers,
+    get_layer_config_by_gguf_format,
+    gguf_type_fallback,
+)
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -261,7 +270,7 @@ def set_layer_config(
         ResolvedScheme,
         resolve_scheme_value,
     )
-    from auto_round.compressors.layer_config import (
+    from auto_round.compressors.layer_config_resolver import (
         apply_plan_to_model,
         extract_regex_config,
         has_quantized_layer_outside_blocks,
@@ -319,19 +328,6 @@ def set_layer_config(
         plan.has_qlayer_outside_block,
         {name: dict(config) for name, config in plan.regex_config.items()},
     )
-
-
-from auto_round.compressors.layer_config.resolver import get_fp_layer_names
-
-# Explicit compatibility exports for callers that historically imported GGUF and
-# ignore-layer helpers from compressors.utils.
-from auto_round.export.formats.backends.gguf import (
-    _apply_gguf_shape_fallback,
-    _infer_gguf_n_layers_from_model,
-    _resolve_gguf_n_layers,
-    get_layer_config_by_gguf_format,
-    gguf_type_fallback,
-)
 
 
 def get_shared_keys(model):
