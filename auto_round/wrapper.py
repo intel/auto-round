@@ -73,7 +73,7 @@ class WrapperLinear(torch.nn.Module):
         device (str): Device on which to run computations (e.g., 'cpu' or 'cuda').
     """
 
-    minmax_scale_bound = (0.0, 1.0)
+    minmax_scale_bound = (0.0, 2.0)
 
     def __init__(
         self,
