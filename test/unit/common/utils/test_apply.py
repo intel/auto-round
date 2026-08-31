@@ -15,7 +15,7 @@
 import torch.nn as nn
 
 from auto_round.compressors.config_resolution import ResolvedQuantizationConfig, ResolvedScheme
-from auto_round.compressors.layer_config import apply_plan_to_model
+from auto_round.compressors.layer_config_resolver import apply_plan_to_model
 from auto_round.schemes import QuantizationScheme
 
 
