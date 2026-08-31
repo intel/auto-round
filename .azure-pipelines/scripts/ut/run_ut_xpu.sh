@@ -145,8 +145,19 @@ function collect_log() {
         # Suffix with the matrix part so the nightly Coverage stage can combine
         # the parts without the artifacts overwriting each other.
         cp .coverage "${LOG_DIR}/.coverage.${UT_MODE:-base}"
-        python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-        python -m coverage html -d "${LOG_DIR}/htmlcov"
+        # The tests import auto_round from site-packages, so the raw data holds
+        # container-only paths. "[paths] source" rewrites those to repo-relative
+        # ones, but coverage.py applies it during "combine" only -- reporting on
+        # its own emits /home/hostuser/.venv/... which no agent can resolve, and
+        # PublishCodeCoverageResults then reports "file does not exist".
+        # Combine from the repo root so the relative "auto_round" entry matches.
+        (
+            cd /auto-round || exit 1
+            rm -f .coverage
+            python -m coverage combine --keep "${LOG_DIR}/.coverage.${UT_MODE:-base}"
+            python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+            python -m coverage html -d "${LOG_DIR}/htmlcov"
+        )
     else
         echo "No coverage data (no test selected), skip coverage report."
         echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
