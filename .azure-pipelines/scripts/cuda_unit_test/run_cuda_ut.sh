@@ -36,7 +36,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc"
 }
 
 function print_summary() {

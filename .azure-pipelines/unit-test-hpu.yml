@@ -129,3 +129,7 @@ stages:
             condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
               summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
+              # coverage.xml is produced inside the container, where the checkout
+              # lives at /auto-round, so its <sources> root does not exist on the
+              # agent. Point the task at the agent-side checkout instead.
+              pathToSources: $(Build.SourcesDirectory)
