@@ -15,7 +15,6 @@ Follow these steps in order. Stop and request changes at any gate that fails.
   pip install pre-commit
   pre-commit run --all-files
   ```
-  Prioritize `pre-commit` when checking syntax, spelling, formatting, or other issues covered by configured hooks. Use its results to guide fixes before continuing with manual review.
   Any failure → request changes.
 3. **Code quality gate** — run through the Code Quality checklist below. Any failure → request changes.
 4. **Quantization review** — if the PR touches `auto_round/` quantization logic, run the Quantization-Specific checklist. Any numerical stability concern → request changes.
