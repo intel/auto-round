@@ -9,8 +9,8 @@ REQUEST_TIMEOUT = 30
 RETRYABLE_STATUS_CODES = {429, 500, 501, 502, 503, 504}
 
 TARGET_GPUS = [
-    "NVIDIA RTX PRO 4500 Blackwell Server Edition",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
+    "NVIDIA RTX PRO 4500 Blackwell Server Edition",
     "NVIDIA RTX PRO 4500 Blackwell",
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX PRO 4000 Blackwell",
