@@ -1,7 +1,4 @@
 parameters:
-  - name: dockerConfigName
-    type: string
-    default: "commonDockerConfig"
   - name: repoName
     type: string
     default: "auto-round"
@@ -16,79 +13,41 @@ parameters:
   - name: repo
     type: string
     default: "https://github.com/intel/auto-round"
-  - name: imageSource
-    type: string
-    default: "build"
 
 steps:
-  - task: Bash@3
-    inputs:
-      targetType: "inline"
-      script: |
-        docker ps -a
-        if [[ $(docker ps -a | grep -i '${{ parameters.containerName }}'$) ]]; then
-            docker start ${{ parameters.containerName }}
-            echo "remove left files through container ..."
-            docker exec ${{ parameters.containerName }} bash -c "ls -a /auto-round && rm -fr /auto-round/* && rm -fr /auto-round/.* && ls -a /auto-round || true"
+  - script: |
+      rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
+    displayName: "Clean workspace"
+
+  - checkout: self
+    clean: true
+    fetchTags: true
+    displayName: "Checkout out Repo"
+
+  - script: |
+      set -eo pipefail
+
+      docker image prune -f || true
+      IMAGE="${{ parameters.repoName }}:${{ parameters.repoTag }}"
+      DOCKERFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/${{parameters.dockerFileName}}.devel"
+      CURRENT_HASH=$(md5sum "$DOCKERFILE" | awk '{print $1}')
+      NEED_BUILD=false
+      if [[ ! $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -Fx "$IMAGE") ]]; then
+        NEED_BUILD=true
+      else
+        EXISTING_HASH=$(docker inspect --format='{{index .Config.Labels "dockerfile.hash"}}' "$IMAGE" 2>/dev/null || echo "")
+        if [[ "$CURRENT_HASH" != "$EXISTING_HASH" ]]; then
+          echo "Dockerfile changed (old=$EXISTING_HASH, new=$CURRENT_HASH), rebuilding image..."
+          NEED_BUILD=true
         fi
-    displayName: "Docker clean up"
-
-  - ${{ if eq(parameters.dockerConfigName, 'commonDockerConfig') }}:
-      - script: |
-          rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
-        displayName: "Clean workspace"
-
-      - checkout: self
-        clean: true
-        fetchTags: true
-        displayName: "Checkout out Repo"
-
-  - ${{ if eq(parameters.dockerConfigName, 'gitCloneDockerConfig') }}:
-      - script: |
-          rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
-          mkdir ${BUILD_SOURCESDIRECTORY}
-          chmod 777 ${BUILD_SOURCESDIRECTORY}
-        displayName: "Clean workspace"
-
-      - checkout: none
-
-      - script: |
-          git clone ${{ parameters.repo }} ${BUILD_SOURCESDIRECTORY}
-          git config --global --add safe.directory ${BUILD_SOURCESDIRECTORY}
-          cd ${BUILD_SOURCESDIRECTORY}
-          git checkout main
-        displayName: "Checkout out main"
-
-  - ${{ if eq(parameters.imageSource, 'build') }}:
-      - script: |
-          set -eo pipefail
-          
-          docker image prune -f || true
-          IMAGE="${{ parameters.repoName }}:${{ parameters.repoTag }}"
-          DOCKERFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/${{parameters.dockerFileName}}.devel"
-          CURRENT_HASH=$(md5sum "$DOCKERFILE" | awk '{print $1}')
-          NEED_BUILD=false
-          if [[ ! $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -Fx "$IMAGE") ]]; then
-            NEED_BUILD=true
-          else
-            EXISTING_HASH=$(docker inspect --format='{{index .Config.Labels "dockerfile.hash"}}' "$IMAGE" 2>/dev/null || echo "")
-            if [[ "$CURRENT_HASH" != "$EXISTING_HASH" ]]; then
-              echo "Dockerfile changed (old=$EXISTING_HASH, new=$CURRENT_HASH), rebuilding image..."
-              NEED_BUILD=true
-            fi
-          fi
-          if [[ "$NEED_BUILD" == "true" ]]; then
-            docker build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) \
-             --label "dockerfile.hash=$CURRENT_HASH" \
-             -f "$DOCKERFILE" -t $IMAGE .
-          fi
-          docker images | grep -i ${{ parameters.repoName }}
-        displayName: "Build develop docker image"
-
-  - ${{ if eq(parameters.imageSource, 'pull') }}:
-      - script: |
-            docker pull vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
-        displayName: "Pull habana docker image"
+      fi
+      if [[ "$NEED_BUILD" == "true" ]]; then
+        docker build --build-arg USER_ID=$(id -u) --build-arg GROUP_ID=$(id -g) \
+         --label "dockerfile.hash=$CURRENT_HASH" \
+         -f "$DOCKERFILE" -t $IMAGE .
+      fi
+      docker images | grep -i ${{ parameters.repoName }}
+    displayName: "Build develop docker image"
 
   - script: |
       docker stop ${{ parameters.containerName }}
@@ -101,16 +60,9 @@ steps:
         inputs:
           targetType: "inline"
           script: |
-            if [[ "${{ parameters.imageSource }}" == "build" ]]; then
-                docker run -dit --disable-content-trust --privileged --name=${{ parameters.containerName }} --shm-size="2g" \
-                  -v ${BUILD_SOURCESDIRECTORY}:/auto-round -v /tf_dataset:/tf_dataset -v /tf_dataset2:/tf_dataset2 \
-                  ${{ parameters.repoName }}:${{ parameters.repoTag }}
-            else
-                docker run -dit --disable-content-trust --privileged --name=${{ parameters.containerName }} --shm-size="2g" \
-                  --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --net=host --ipc=host \
-                  -v ${BUILD_SOURCESDIRECTORY}:/auto-round vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
-                docker exec ${{ parameters.containerName }} bash -c "ln -sf \$(which python3) /usr/bin/python"
-            fi
+            docker run -dit --disable-content-trust --privileged --name=${{ parameters.containerName }} --shm-size="2g" \
+              -v ${BUILD_SOURCESDIRECTORY}:/auto-round -v /tf_dataset:/tf_dataset -v /tf_dataset2:/tf_dataset2 \
+              ${{ parameters.repoName }}:${{ parameters.repoTag }}
             echo "Show the container list after docker run ... "
             docker ps -a
         displayName: "Docker run - ${{ parameters.containerName }} Container"
