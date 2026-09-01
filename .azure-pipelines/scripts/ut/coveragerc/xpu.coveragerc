@@ -13,19 +13,9 @@ include =
  */auto_round/**
  */auto_round_extension/**
 omit =
- # Vendored from ggml-org/llama.cpp (see LLAMA_CPP_CONVERSION_COMMIT and
- # sync_llama_cpp_conversion.py). Third-party code, already excluded from every
- # lint/format hook in .pre-commit-config.yaml -- not auto-round's own logic.
  */auto_round/export/export_to_gguf/conversion/*
- # Maintenance-only CLI that re-downloads the files above from GitHub.
- # Never imported at runtime.
  */auto_round/export/export_to_gguf/sync_llama_cpp_conversion.py
- # Triton MXFP4 kernels. Their only importer is _triton_available() in
- # algorithms/transforms/hadamard/apply.py, which bails out unless
- # torch.cuda.is_available() -- unreachable on XPU. Kept measurable on CUDA.
  */auto_round/algorithms/transforms/hadamard/utils/triton/*
- # HPU-only transformers overrides. Their only importer is patch_finegrained_fp8()
- # in modeling/hpu_patch.py, which returns early unless is_hpex_available().
  */auto_round/modeling/finegrained_fp8_patch*.py
 exclude_lines =
  pragma: no cover
