@@ -29,6 +29,41 @@ from .helpers import (
     save_tiny_model,
 )
 
+_save_tiny_model = save_tiny_model
+
+
+def _reuse_tiny_models():
+    return os.getenv("AUTOROUND_REUSE_TINY_MODELS", "").lower() in {"1", "true", "yes"}
+
+
+def _tiny_model_path(path):
+    return os.path.join(os.path.dirname(__file__), path.removeprefix("./"))
+
+
+def _tiny_model_ready(path):
+    return os.path.isfile(os.path.join(_tiny_model_path(path), ".autoround_ready"))
+
+
+def _mark_tiny_model(path):
+    with open(os.path.join(_tiny_model_path(path), ".autoround_ready"), "w", encoding="utf-8") as marker:
+        marker.write("ready\n")
+
+
+def save_tiny_model(*args, **kwargs):
+    tiny_model_path = args[1] if len(args) > 1 else kwargs["tiny_model_path"]
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        return _tiny_model_path(tiny_model_path)
+
+    result = _save_tiny_model(*args, **kwargs)
+    if _reuse_tiny_models():
+        _mark_tiny_model(result)
+    return result
+
+
+def _cleanup_tiny_model(path):
+    if not _reuse_tiny_models():
+        shutil.rmtree(path, ignore_errors=True)
+
 
 # Create tiny model path fixtures for testing
 @pytest.fixture(scope="session")
@@ -37,7 +72,7 @@ def tiny_opt_model_path():
     tiny_model_path = "./tmp/tiny_opt_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -46,7 +81,7 @@ def tiny_lamini_model_path():
     tiny_model_path = "./tmp/tiny_lamini_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -55,7 +90,7 @@ def tiny_gptj_model_path():
     tiny_model_path = "./tmp/tiny_gptj_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -64,7 +99,7 @@ def tiny_phi2_model_path():
     tiny_model_path = "./tmp/tiny_phi2_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -75,7 +110,7 @@ def tiny_deepseek_v2_model_path():
         model_name_or_path, tiny_model_path, num_layers=2, trust_remote_code=False, use_config=True
     )
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -93,7 +128,7 @@ def tiny_deepseek_v2_model_path_cpu():
         config_overrides={"first_k_dense_replace": 0},
     )
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -102,7 +137,7 @@ def tiny_gemma_model_path():
     tiny_model_path = "./tmp/tiny_gemma_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -111,7 +146,7 @@ def tiny_qwen_model_path():
     tiny_model_path = "./tmp/tiny_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -123,7 +158,7 @@ def tiny_fp8_qwen_model_path():
         tiny_model_path = "./tmp/tiny_fp8_qwen_model_path"
         tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -147,7 +182,7 @@ def tiny_flux_model_path():
         },
     )
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -178,7 +213,7 @@ def tiny_z_image_model_path():
         },
     )
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -187,7 +222,7 @@ def tiny_untied_qwen_model_path():
     tiny_model_path = "./tmp/tiny_untied_qwen_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, force_untie=True)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -196,7 +231,7 @@ def tiny_qwen_moe_model_path():
     tiny_model_path = "./tmp/tiny_qwen_moe_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -205,7 +240,7 @@ def tiny_qwen_vl_model_path():
     tiny_model_path = "./tmp/tiny_qwen_vl_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=3, is_mllm=True)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -214,13 +249,16 @@ def tiny_qwen_2_5_vl_model_path():
     tiny_model_path = "./tmp/tiny_qwen_2_5_vl_model_path"
     tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=2, is_mllm=True)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
 def tiny_fp8_qwen_moe_model_path():
     with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
         tiny_model_path = "./tmp/tiny_fp8_qwen_moe_model_path"
+        if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+            yield _tiny_model_path(tiny_model_path)
+            return
         model_name = get_model_path("Qwen/Qwen3-30B-A3B-FP8")
         config = transformers.AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         config.num_experts, config.num_hidden_layers, config.vocab_size = 4, 2, 2048
@@ -256,13 +294,17 @@ def tiny_fp8_qwen_moe_model_path():
         model.save_pretrained(tiny_model_path)
         print(model)
         tokenizer.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
 def tiny_gpt_oss_model_path():
     tiny_model_path = "./tmp/tiny_gpt_oss"
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        yield _tiny_model_path(tiny_model_path)
+        return
     from transformers import GptOssForCausalLM
 
     model_name = get_model_path("unsloth/gpt-oss-20b")
@@ -274,13 +316,17 @@ def tiny_gpt_oss_model_path():
     model.save_pretrained(tiny_model_path)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     tokenizer.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
 def tiny_llama4_model_path():
     tiny_model_path = "./tmp/tiny_llama4"
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        yield _tiny_model_path(tiny_model_path)
+        return
     from transformers import Llama4ForConditionalGeneration
 
     model_name = get_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")
@@ -302,13 +348,17 @@ def tiny_llama4_model_path():
     tokenizer.save_pretrained(tiny_model_path)
     processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     processor.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
 def tiny_qwen3_vl_moe_model_path():
     tiny_model_path = "./tmp/tiny_qwen3_vl_moe"
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        yield _tiny_model_path(tiny_model_path)
+        return
     from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
 
     model_name = get_model_path("Qwen/Qwen3-VL-30B-A3B-Instruct")
@@ -323,13 +373,17 @@ def tiny_qwen3_vl_moe_model_path():
     tokenizer.save_pretrained(tiny_model_path)
     processor = transformers.AutoProcessor.from_pretrained(model_name)
     processor.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
 def tiny_qwen35_moe_model_path():
     tiny_model_path = "./tmp/tiny_qwen35_moe"
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        yield _tiny_model_path(tiny_model_path)
+        return
     from transformers import Qwen3_5MoeForConditionalGeneration
 
     model_name = get_model_path("Qwen/Qwen3.5-35B-A3B")
@@ -350,13 +404,17 @@ def tiny_qwen35_moe_model_path():
     tokenizer.save_pretrained(tiny_model_path)
     processor = transformers.AutoProcessor.from_pretrained(model_name)
     processor.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
 def tiny_tiny_llama_model_path():
     tiny_model_path = "./tmp/tiny_TinyLlama"
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        yield _tiny_model_path(tiny_model_path)
+        return
     model_name = get_model_path("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     config = transformers.AutoConfig.from_pretrained(model_name)
     config.num_hidden_layers = 4
@@ -364,8 +422,9 @@ def tiny_tiny_llama_model_path():
     model.save_pretrained(tiny_model_path)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
     tokenizer.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -392,7 +451,7 @@ def tiny_qwen2_5_omni_model_path():
     else:
         pytest.skip("Qwen2.5-Omni spk_dict.pt is not available locally")
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -411,7 +470,7 @@ def tiny_qwen3_omni_moe_model_path():
     tokenizer.save_pretrained(tiny_model_path)
     processor.save_pretrained(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 # Mock FP8 capability checks without letting the fake capability affect Inductor code generation.
@@ -428,6 +487,8 @@ def mock_fp8_capable_device():
 @pytest.fixture(autouse=True, scope="session")
 def clean_tmp_model_folder():
     yield
+    if _reuse_tiny_models():
+        return
     shutil.rmtree("./tmp", ignore_errors=True)  # unittest default workspace
     shutil.rmtree("./ar_work_space", ignore_errors=True)  # autoround default workspace
     shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default model output path
@@ -490,6 +551,9 @@ def tiny_stable_audio_pipe():
     from transformers import AutoTokenizer, T5Config, T5EncoderModel
 
     tiny_model_path = "./tmp/tiny_stable_audio_pipe"
+    if _reuse_tiny_models() and _tiny_model_ready(tiny_model_path):
+        yield _tiny_model_path(tiny_model_path)
+        return
 
     transformer = StableAudioDiTModel(
         sample_size=64,
@@ -527,8 +591,9 @@ def tiny_stable_audio_pipe():
         scheduler=scheduler,
     )
     pipe.save_pretrained(tiny_model_path, is_diffusers=True)
+    _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)
 
 
 @pytest.fixture(scope="session")
@@ -553,4 +618,4 @@ def tiny_mimo_audio_model_path():
     config.architectures = ["MiMoAudioModel"]
     config.save_pretrained(tiny_model_path)
     yield tiny_model_path
-    shutil.rmtree(tiny_model_path, ignore_errors=True)
+    _cleanup_tiny_model(tiny_model_path)

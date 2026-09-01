@@ -37,7 +37,18 @@ function setup_environment() {
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
+    export AUTOROUND_REUSE_TINY_MODELS=1
 }
+
+function cleanup_test_workspace() {
+    if [ "${AUTOROUND_REUSE_TINY_MODELS:-}" = "1" ]; then
+        rm -rf "${BUILD_SOURCESDIRECTORY}/test/tmp"
+        rm -rf "${BUILD_SOURCESDIRECTORY}/test/ar_work_space"
+        rm -rf "${BUILD_SOURCESDIRECTORY}/test/tmp_autoround"
+    fi
+}
+
+trap cleanup_test_workspace EXIT
 
 function print_summary() {
     python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
@@ -66,6 +77,8 @@ function setup_basic_test_env() {
     uv pip install -U transformers chardet
     uv pip install -U pytest-cov
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
+    uv pip uninstall torch torchvision
+    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
     echo "##[endgroup]"
 
@@ -136,8 +149,11 @@ function run_unit_test() {
         return 0
     fi
 
-    local ut_log_name="${LOG_DIR}/unittest_cuda_part${test_part}.log"
-    run_pytest "${selected_files}" "${ut_log_name}"
+    for test_file in ${selected_files}; do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
+        run_pytest "${test_file}" "${ut_log_name}"
+    done
 }
 
 function run_unit_test_llmc() {
