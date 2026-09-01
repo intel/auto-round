@@ -73,6 +73,16 @@ function setup_basic_test_env() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 }
 
+function run_pytest() {
+    local test_case=$1
+    local ut_log_name=$2
+
+    echo "##[group]Running ${test_case}..."
+    pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
+        --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
+    echo "##[endgroup]"
+}
+
 function run_common_group() {
     # Run a group of common test files together in a single pytest invocation.
     # $1: group name (used for log file), remaining args: test files
@@ -82,13 +92,8 @@ function run_common_group() {
     group_tests=$(filter_changed_tests "test" "$*")
 
     if [ -n "${group_tests}" ]; then
-        echo "##[group]Running common tests (${group_name})..."
         local ut_log_name="${LOG_DIR}/unittest_cuda_common_${group_name}.log"
-        pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append \
-            -vs --junitxml="${ut_log_name%.log}.xml" \
-            ${group_tests} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${group_tests}" "${ut_log_name}"
     fi
 }
 
@@ -132,11 +137,7 @@ function run_unit_test() {
     fi
 
     local ut_log_name="${LOG_DIR}/unittest_cuda_part${test_part}.log"
-    echo "##[group]Running CUDA tests for shard ${test_part}..."
-    pytest -m "not skip_ci" \
-        --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
-        ${selected_files} 2>&1 | tee "${ut_log_name}"
-    echo "##[endgroup]"
+    run_pytest "${selected_files}" "${ut_log_name}"
 }
 
 function run_unit_test_llmc() {
@@ -157,14 +158,9 @@ function run_unit_test_llmc() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs \
-            --junitxml="${ut_log_name%.log}.xml" \
-            ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
@@ -187,14 +183,9 @@ function run_unit_test_sglang() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs \
-            --junitxml="${ut_log_name%.log}.xml" \
-             ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
@@ -217,14 +208,9 @@ function run_unit_test_vllm() {
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= --cov-append -vs \
-            --junitxml="${ut_log_name%.log}.xml" \
-            ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
