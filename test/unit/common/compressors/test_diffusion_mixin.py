@@ -25,7 +25,7 @@ class TestDiffusionMixinProperties:
         sig = inspect.signature(DiffusionMixin.__init__)
         params = {k: v.default for k, v in sig.parameters.items() if v.default is not inspect.Parameter.empty}
         assert params.get("guidance_scale") == 7.5
-        assert params.get("num_inference_steps") is None
+        assert params.get("num_inference_steps") == 50
         assert params.get("calib_num_inference_steps") == 8
         assert params.get("generator_seed") is None
 

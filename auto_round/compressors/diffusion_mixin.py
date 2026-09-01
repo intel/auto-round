@@ -56,13 +56,13 @@ class DiffusionMixin:
         self,
         *args,
         guidance_scale: float = 7.5,
-        num_inference_steps: Optional[int] = None,
+        num_inference_steps: int = 50,
         calib_num_inference_steps: int = 8,
         generator_seed: Optional[int] = None,
         **kwargs,
     ) -> None:
-        if num_inference_steps is not None and num_inference_steps < 1:
-            raise ValueError("num_inference_steps must be a positive integer when provided.")
+        if num_inference_steps < 1:
+            raise ValueError("num_inference_steps must be a positive integer.")
         if calib_num_inference_steps < 1:
             raise ValueError("calib_num_inference_steps must be a positive integer.")
 
