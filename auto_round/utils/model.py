@@ -1314,9 +1314,7 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             if model_type == "nextstep":
                 return True
         except:
-            logger.warning(
-                f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
-            )
+            pass
         index_file = None
         if not os.path.isdir(model_or_path):
             try:
