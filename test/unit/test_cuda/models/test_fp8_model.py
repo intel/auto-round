@@ -19,6 +19,10 @@ from auto_round.utils.weight_handler import (
 DEVICE_CAPABILITY = torch.cuda.get_device_capability()
 
 
+@pytest.mark.skipif(
+    version.parse("5.16.0") <= transformers_version < version.parse("5.17.0"),
+    reason="fails with transformers 5.16.x",
+)
 class TestAutoRound:
 
     @pytest.fixture(autouse=True)
@@ -68,7 +72,6 @@ class TestAutoRound:
         model = convert_module_to_hp_if_necessary(model)
         assert type(model.model.layers[0].mlp.up_proj) is torch.nn.Linear, "FP8Linear layer was not converted to Linear"
 
-    @pytest.mark.skip_ci(reason="triton issue")  # https://github.com/intel/auto-round/issues/2048
     def test_small_model_rtn_generation(self, mock_fp8_capable_device, tiny_fp8_qwen_model_path):
         ar = AutoRound(tiny_fp8_qwen_model_path, iters=0, disable_opt_rtn=True)
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)

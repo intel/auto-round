@@ -103,7 +103,6 @@ import multiprocessing as mp
 import os
 import re
 import shutil
-import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
@@ -188,6 +187,48 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+
+# Standalone quantization metadata used by different source formats. Only the
+# newly generated quantization_config.json may remain in model-free output.
+_QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
+    "quantization_config.json",
+    "quantize_config.json",
+    "quant_config.json",
+)
+
+
+def _find_quantization_config(config: Any) -> dict:
+    """Return the first quantization_config found in a nested model config."""
+    if isinstance(config, dict):
+        quantization_config = config.get("quantization_config")
+        if isinstance(quantization_config, dict):
+            return quantization_config
+        for value in config.values():
+            nested = _find_quantization_config(value)
+            if nested:
+                return nested
+    elif isinstance(config, list):
+        for value in config:
+            nested = _find_quantization_config(value)
+            if nested:
+                return nested
+    return {}
+
+
+def _remove_quantization_configs(config: Any) -> None:
+    """Remove every quantization_config entry from a nested model config."""
+    if isinstance(config, dict):
+        config.pop("quantization_config", None)
+        for value in config.values():
+            _remove_quantization_configs(value)
+    elif isinstance(config, list):
+        for value in config:
+            _remove_quantization_configs(value)
+
+
+def _is_stale_quantization_metadata(filename: str) -> bool:
+    return filename in _QUANTIZATION_CONFIG_FILENAMES or filename.lower() == "readme.md"
+
 
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
@@ -500,11 +541,17 @@ class _ModelFreeCompressorCore:
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
-        self.enable_torch_compile = (
-            default_enable_torch_compile(device, platform_name=sys.platform)
-            if enable_torch_compile is None
-            else enable_torch_compile
-        )
+        # Keep default torch.compile policy consistent with standard compressor
+        # behavior, while still honoring explicit user overrides.
+        if enable_torch_compile is None:
+            self.enable_torch_compile = default_enable_torch_compile(self.device)
+            logger.info(
+                "`torch.compile` is %s (default policy)",
+                "enabled" if self.enable_torch_compile else "disabled",
+            )
+        else:
+            self.enable_torch_compile = enable_torch_compile
+            logger.info("`torch.compile` is %s", "enabled" if enable_torch_compile else "disabled")
         self.disable_opt_rtn = disable_opt_rtn
 
         # --- derived state populated during run() ---
@@ -513,6 +560,7 @@ class _ModelFreeCompressorCore:
         self.layer_config: dict = {}
         self.ignore_patterns: list[str] = []
         self.config: dict = {}
+        self.source_quantization_config: dict = {}
         self.fp8_block_size: list | None = None
         self.model_type: str = ""
         self.is_streaming: bool = False
@@ -693,6 +741,8 @@ class _ModelFreeCompressorCore:
                 )
             self.config = _load_config(self.source_dir)
 
+        self.source_quantization_config = copy.deepcopy(_find_quantization_config(self.config))
+
     def _check_conv1d_and_embedding(self) -> None:
         """Detect Conv1d and embedding layers and automatically add them to the ignore list."""
         local_dir = self.work_dir if self.is_streaming else self.source_dir
@@ -736,7 +786,7 @@ class _ModelFreeCompressorCore:
             self.ignore_patterns.extend(predefined)
 
     def _detect_fp8_source(self) -> None:
-        quant_config = self.config.get("quantization_config", {})
+        quant_config = self.source_quantization_config
         is_fp8 = (
             quant_config.get("quant_method") == "fp8"
             or quant_config.get("quantization_type") == "fp8"
@@ -963,7 +1013,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
-                        source_quantization_config=self.config.get("quantization_config", {}),
+                        source_quantization_config=self.source_quantization_config,
                         enable_torch_compile=self.enable_torch_compile,
                         disable_opt_rtn=self.disable_opt_rtn,
                         quant_output_dir=self._quant_output_dir,
@@ -1155,7 +1205,7 @@ class _ModelFreeCompressorCore:
                                 ignore_patterns=self.ignore_patterns,
                                 fp8_block_size=self.fp8_block_size,
                                 model_type=self.model_type,
-                                source_quantization_config=self.config.get("quantization_config", {}),
+                                source_quantization_config=self.source_quantization_config,
                                 quant_output_dir=self._quant_output_dir,
                                 total_shards=total_shards,
                                 enable_torch_compile=self.enable_torch_compile,
@@ -1204,6 +1254,17 @@ class _ModelFreeCompressorCore:
     def _write_index(self) -> None:
         _write_index_file(self._quant_output_dir, self.output_weight_map)
 
+    def _remove_stale_quantization_config_files(self) -> None:
+        """Remove source/output quantization metadata before writing the new config."""
+        for directory in {self.output_dir, self._quant_output_dir}:
+            if not os.path.isdir(directory):
+                continue
+            for filename in os.listdir(directory):
+                if _is_stale_quantization_metadata(filename):
+                    path = os.path.join(directory, filename)
+                    if os.path.isfile(path):
+                        os.remove(path)
+
     def _write_config_files(self) -> None:
         block_prefixes = []
         for layer_name in self.all_quantized_layers:
@@ -1225,6 +1286,8 @@ class _ModelFreeCompressorCore:
             format=self.format,
         )
 
+        self._remove_stale_quantization_config_files()
+        _remove_quantization_configs(self.config)
         self.config["quantization_config"] = quantization_config
         with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
@@ -1246,6 +1309,8 @@ class _ModelFreeCompressorCore:
             # copytree's ``not os.path.exists(dst)`` guard prevents
             # overwriting it.
             for fname in os.listdir(self.diffusion_root_dir):
+                if _is_stale_quantization_metadata(fname):
+                    continue
                 src = os.path.join(self.diffusion_root_dir, fname)
                 dst = os.path.join(self.output_dir, fname)
                 if os.path.isdir(src):
@@ -1256,7 +1321,7 @@ class _ModelFreeCompressorCore:
             return
 
         for fname in os.listdir(self.source_dir):
-            if _is_weight_shard(fname):
+            if _is_weight_shard(fname) or _is_stale_quantization_metadata(fname):
                 continue
             src = os.path.join(self.source_dir, fname)
             dst = os.path.join(self.output_dir, fname)

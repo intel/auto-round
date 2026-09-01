@@ -3060,7 +3060,7 @@ def _dequant_kimi_k25_int4_tensors(
     if not entries:
         return raw_tensors
 
-    default_group_size, default_sym = _resolve_kimi_k25_int4_params(source_quant_config)
+    default_group_size, _ = _resolve_kimi_k25_int4_params(source_quant_config)
     dequant_device = str(device or "cpu")
     shard_prefix = f"[{shard_name}] " if shard_name else ""
     logger.info(
@@ -3122,10 +3122,9 @@ def _dequant_kimi_k25_int4_tensors(
                 zp = zp[:, : q.shape[1]].to(torch.int16)
                 q = q - zp
             else:
-                if default_sym:
-                    q = torch.where(q >= 8, q - 16, q)
-                else:
-                    q = q - 8
+                # Kimi RAWINT4 stores signed values with a fixed bias of 8:
+                # logical_q = nibble - 8, not 4-bit two's-complement.
+                q = q - 8
 
             sc = sc.repeat_interleave(group_size, dim=1)[:, : q.shape[1]]
             return (q.to(torch.float32) * sc).to(torch.bfloat16)

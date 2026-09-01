@@ -89,6 +89,7 @@ class ModelContext(BaseContext):
         self.processor = None
         self.image_processor = None
         self.pipe = None
+        self.preloaded_diffusion_pipeline = False
 
         # AWQ weight-clip thresholds kept for downstream block quantizers.
         # Populated by AWQTransform when ``apply_clip`` is enabled; keyed by
@@ -156,8 +157,16 @@ class ModelContext(BaseContext):
     def _load_model(self):
         if is_diffusion_model(self.model):
             self.is_diffusion = True
+            self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
+            default_torch_dtype = "auto"
+            if self.amp and get_ar_device(self.device).supports_bf16():
+                default_torch_dtype = torch.bfloat16
             self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                self.model,
+                platform=self.platform,
+                device="cpu",
+                model_dtype=self.model_dtype,
+                default_torch_dtype=default_torch_dtype,
             )
         elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True

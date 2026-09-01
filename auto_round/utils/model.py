@@ -873,6 +873,7 @@ def diffusion_load_model(
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
     model_dtype: str = None,
+    default_torch_dtype: Union[str, torch.dtype] = "auto",
     **kwargs,
 ):
     from functools import partial
@@ -888,8 +889,9 @@ def diffusion_load_model(
         )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
-    if device_str is not None and "hpu" in device_str:
+    if model_dtype is not None:
+        torch_dtype = convert_dtype_str2torch(model_dtype)
+    elif torch_dtype == "auto" and device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
     try:
@@ -934,7 +936,12 @@ def diffusion_load_model(
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                    component_dtype = component_config.get("torch_dtype")
+                    if component_dtype is None or component_dtype == "auto":
+                        component_dtype = default_torch_dtype
+                    elif isinstance(component_dtype, str):
+                        component_dtype = convert_dtype_str2torch(component_dtype.removeprefix("torch."))
+                    torch_dtype[k] = component_dtype
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
@@ -955,7 +962,6 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    pipe = _to_model_dtype(pipe, model_dtype)
     if hasattr(pipe, "unet"):
         # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
         model = pipe.unet
@@ -1308,9 +1314,7 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             if model_type == "nextstep":
                 return True
         except:
-            logger.warning(
-                f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
-            )
+            pass
         index_file = None
         if not os.path.isdir(model_or_path):
             try:
