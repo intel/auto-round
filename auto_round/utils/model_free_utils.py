@@ -1454,9 +1454,7 @@ def _dequant_fp8_tensors(
                 scale.to(dequant_device, non_blocking=True),
                 block_size=block_size,
             ).to("cpu"),
-            on_cpu=lambda weight=weight, scale=scale: _dequant_fp8_linear_weight(
-                weight, scale, block_size=block_size
-            ),
+            on_cpu=lambda weight=weight, scale=scale: _dequant_fp8_linear_weight(weight, scale, block_size=block_size),
         )
         # ``weight`` still aliases the original FP8 storage after the dict slot
         # was rebound; release it (and the scale) before the next iteration.
