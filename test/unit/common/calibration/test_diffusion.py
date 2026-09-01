@@ -452,5 +452,5 @@ class TestDiffusionCalibrator:
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            with pytest.raises(ValueError, match="valid samples is less than batch_size"):
+            with pytest.raises(ValueError, match="valid sample count is less than batch_size"):
                 calibrator.calib(nsamples=3, bs=2)

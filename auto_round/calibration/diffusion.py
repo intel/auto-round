@@ -22,7 +22,6 @@ and customises:
 """
 
 import inspect
-from typing import Optional
 
 import torch
 from tqdm import tqdm
@@ -188,8 +187,8 @@ class DiffusionCalibrator(LLMCalibrator):
             )
             if total_cnt < self.batch_size:
                 raise ValueError(
-                    f"valid samples is less than batch_size({self.batch_size}),"
-                    " please adjust c.batch_size or seqlen."
+                    f"valid sample count is less than batch_size ({self.batch_size}); "
+                    "please reduce batch_size or provide more calibration samples."
                 )
             max_len = (total_cnt // self.batch_size) * self.batch_size
             for k, v in self.inputs.items():
