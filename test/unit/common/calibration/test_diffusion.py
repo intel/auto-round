@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from auto_round.calibration.diffusion import DiffusionCalibrator, _stratified_random_indices, _subset_scheduler_schedule
+from auto_round.calibration.diffusion import DiffusionCalibrator
 from auto_round.calibration.register import get_calibrator
 from auto_round.utils.device_manager import device_manager
 
@@ -120,6 +120,7 @@ class TestDiffusionCalibrator:
             calib_num_inference_steps=4,
             num_inference_steps=20,
             generator_seed=None,
+            pipeline_call_kwargs={},
             pipe=pipe,
             model=model,
             model_context=SimpleNamespace(
@@ -300,7 +301,7 @@ class TestDiffusionCalibrator:
         assert calls[0][0] == ["p1", "p2"]
         assert calls[0][1]["num_inference_steps"] == 4
 
-    def test_calib_samples_timesteps_from_full_scheduler_schedule(self, calibrator):
+    def test_calib_uses_scheduler_native_short_schedule(self, calibrator):
         calibrator.dataset = [("id0", ["p1"])]
         calibrator.pipe = SchedulerPipeline()
         calibrator._requires_calibration_image = lambda: False
@@ -308,12 +309,12 @@ class TestDiffusionCalibrator:
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
 
-        assert calibrator.pipe.seen_num_inference_steps == [20]
-        assert calibrator.pipe.scheduler.calls == [20]
-        assert calibrator.pipe.seen_timestep_batches == [[19, 10, 5, 0]]
+        assert calibrator.pipe.seen_num_inference_steps == [4]
+        assert calibrator.pipe.scheduler.calls == [4]
+        assert calibrator.pipe.seen_timestep_batches == [[3, 2, 1, 0]]
         assert len(calibrator.pipe.scheduler.sigmas) == 5
 
-    def test_calib_uses_different_reproducible_timestep_samples_per_batch(self, calibrator):
+    def test_calib_builds_native_short_schedule_for_each_batch(self, calibrator):
         calibrator.dataset = [("id0", ["p1"]), ("id1", ["p2"])]
         calibrator.pipe = SchedulerPipeline()
         calibrator._requires_calibration_image = lambda: False
@@ -321,42 +322,24 @@ class TestDiffusionCalibrator:
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=2, bs=1)
 
-        assert calibrator.pipe.seen_num_inference_steps == [20, 20]
-        assert calibrator.pipe.scheduler.calls == [20, 20]
+        assert calibrator.pipe.seen_num_inference_steps == [4, 4]
+        assert calibrator.pipe.scheduler.calls == [4, 4]
         assert calibrator.pipe.seen_timestep_batches == [
-            [19, 10, 5, 0],
-            [19, 14, 5, 0],
+            [3, 2, 1, 0],
+            [3, 2, 1, 0],
         ]
 
-    def test_calib_uses_pipeline_step_default_when_generation_steps_omitted(self, calibrator):
+    def test_calib_ignores_generation_steps_when_building_calibration_schedule(self, calibrator):
         calibrator.dataset = [("id0", ["p1"])]
         calibrator.pipe = DefaultStepsPipeline()
-        calibrator.num_inference_steps = None
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
 
-        assert calibrator.pipe.seen_num_inference_steps == [13]
-        assert calibrator.pipe.scheduler.calls == [13]
+        assert calibrator.pipe.seen_num_inference_steps == [4]
+        assert calibrator.pipe.scheduler.calls == [4]
         assert len(calibrator.pipe.seen_timestep_batches[0]) == 4
-
-    def test_scheduler_subset_leaves_schedule_unchanged_for_unknown_sigmas_shape(self):
-        scheduler = SimpleNamespace(
-            timesteps=torch.arange(9, -1, -1),
-            sigmas=torch.linspace(1.0, 0.0, steps=7),
-        )
-        original_timesteps = scheduler.timesteps.clone()
-        original_sigmas = scheduler.sigmas.clone()
-
-        _subset_scheduler_schedule(scheduler, calib_num_inference_steps=4, seed=0)
-
-        assert torch.equal(scheduler.timesteps, original_timesteps)
-        assert torch.equal(scheduler.sigmas, original_sigmas)
-
-    def test_timestep_sampling_changes_with_seed(self):
-        assert _stratified_random_indices(total=20, target=4, seed=0) == [0, 9, 14, 19]
-        assert _stratified_random_indices(total=20, target=4, seed=1) == [0, 5, 14, 19]
 
     def test_calib_passes_image_when_required(self, calibrator):
         seen_images = []
@@ -370,7 +353,7 @@ class TestDiffusionCalibrator:
 
         assert seen_images[0].shape == (1, 4, 64, 64)
 
-    def test_calib_not_implemented_error_is_swallowed(self, calibrator):
+    def test_calib_not_implemented_error_propagates(self, calibrator):
         def failing_pipe(*args, **kwargs):
             raise NotImplementedError("unsupported op")
 
@@ -379,9 +362,35 @@ class TestDiffusionCalibrator:
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+            with pytest.raises(NotImplementedError, match="unsupported op"):
+                calibrator.calib(nsamples=1, bs=1)
+
+    def test_calib_forwards_pipeline_call_kwargs(self, calibrator):
+        calls = []
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = FakePipeline(fn=lambda prompts, **kwargs: calls.append(kwargs))
+        calibrator.pipeline_call_kwargs = {"height": 512, "width": 768, "num_inference_steps": 999}
+        calibrator._requires_calibration_image = lambda: False
+
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
 
-        assert calibrator.inputs == {}
+        assert calls[0]["height"] == 512
+        assert calls[0]["width"] == 768
+        assert calls[0]["num_inference_steps"] == 4
+
+    def test_calib_forwards_pipeline_call_kwargs_to_custom_pipeline_fn(self, calibrator):
+        calls = []
+        calibrator.dataset = [("id0", ["p1"])]
+        calibrator.pipe = FakePipeline()
+        calibrator.pipe._autoround_pipeline_fn = lambda pipe, prompts, **kwargs: calls.append(kwargs)
+        calibrator.pipeline_call_kwargs = {"audio_end_in_s": 3.0}
+        calibrator._requires_calibration_image = lambda: False
+
+        with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
+            calibrator.calib(nsamples=1, bs=1)
+
+        assert calls[0]["audio_end_in_s"] == pytest.approx(3.0)
 
     def test_calib_other_exceptions_propagate(self, calibrator):
         def failing_pipe(*args, **kwargs):

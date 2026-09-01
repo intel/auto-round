@@ -22,7 +22,6 @@ and customises:
 """
 
 import inspect
-from contextlib import contextmanager
 from typing import Optional
 
 import torch
@@ -49,85 +48,6 @@ def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage:
     return None
 
 
-def _stratified_random_indices(total: int, target: int, seed: int) -> list[int]:
-    """Return reproducible stratified-random indices over ``range(total)``."""
-    if target >= total:
-        return list(range(total))
-    boundaries = torch.linspace(0, total, steps=target + 1).round().to(torch.long).tolist()
-    generator = torch.Generator(device="cpu").manual_seed(seed)
-    indices = []
-    for group_idx, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
-        if group_idx == 0:
-            indices.append(0)
-            continue
-        if group_idx == target - 1:
-            indices.append(total - 1)
-            continue
-        end = max(end, start + 1)
-        indices.append(int(torch.randint(start, end, (1,), generator=generator).item()))
-    return sorted(set(indices))
-
-
-def _take_sequence(sequence, indices: list[int]):
-    if isinstance(sequence, torch.Tensor):
-        return sequence[torch.tensor(indices, dtype=torch.long, device=sequence.device)]
-    if isinstance(sequence, tuple):
-        return tuple(sequence[i] for i in indices)
-    return [sequence[i] for i in indices]
-
-
-def _subset_scheduler_schedule(scheduler, calib_num_inference_steps: int, seed: int) -> None:
-    timesteps = getattr(scheduler, "timesteps", None)
-    if timesteps is None:
-        return
-    total = len(timesteps)
-    if calib_num_inference_steps >= total:
-        return
-
-    indices = _stratified_random_indices(total, calib_num_inference_steps, seed)
-    sampled_timesteps = _take_sequence(timesteps, indices)
-
-    sigmas = getattr(scheduler, "sigmas", None)
-    if sigmas is None:
-        scheduler.timesteps = sampled_timesteps
-        return
-    if len(sigmas) == total + 1:
-        sigma_indices = indices + [len(sigmas) - 1]
-    elif len(sigmas) == total:
-        sigma_indices = indices
-    else:
-        return
-    sampled_sigmas = _take_sequence(sigmas, sigma_indices)
-
-    scheduler.timesteps = sampled_timesteps
-    scheduler.sigmas = sampled_sigmas
-
-
-@contextmanager
-def _calibration_scheduler_subset(pipe, calib_num_inference_steps: int, seed: int):
-    """Temporarily downsample scheduler timesteps after the pipeline builds them."""
-    scheduler = getattr(pipe, "scheduler", None)
-    if scheduler is None:
-        nested_pipe = getattr(pipe, "diffusers_pipe", None)
-        scheduler = getattr(nested_pipe, "scheduler", None)
-    if scheduler is None or not hasattr(scheduler, "set_timesteps"):
-        yield False
-        return
-
-    original_set_timesteps = scheduler.set_timesteps
-
-    def set_timesteps_with_subset(*args, **kwargs):
-        result = original_set_timesteps(*args, **kwargs)
-        _subset_scheduler_schedule(scheduler, calib_num_inference_steps, seed)
-        return result
-
-    scheduler.set_timesteps = set_timesteps_with_subset
-    try:
-        yield True
-    finally:
-        scheduler.set_timesteps = original_set_timesteps
-
-
 @register_calibrator("diffusion")
 class DiffusionCalibrator(LLMCalibrator):
     """Calibrator for diffusion models (Stable Diffusion / FLUX / ...)."""
@@ -137,9 +57,9 @@ class DiffusionCalibrator(LLMCalibrator):
         super().__init__(compressor)
         self.pipe = compressor.pipe
         self.guidance_scale = compressor.guidance_scale
-        self.num_inference_steps = compressor.num_inference_steps
         self.calib_num_inference_steps = compressor.calib_num_inference_steps
         self.generator_seed = compressor.generator_seed  # make sure pass
+        self.pipeline_call_kwargs = dict(getattr(compressor, "pipeline_call_kwargs", {}) or {})
 
     def _wrap_block_forward(self, forward_fn):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
@@ -176,21 +96,12 @@ class DiffusionCalibrator(LLMCalibrator):
         image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
         return image_param is not None and image_param.default is inspect.Parameter.empty
 
-    def _base_num_inference_steps(self) -> int:
-        """Return the full schedule length used before calibration timestep sampling."""
-        if self.num_inference_steps is not None:
-            return self.num_inference_steps
-        step_param = inspect.signature(self.pipe.__call__).parameters.get("num_inference_steps")
-        if step_param is not None and isinstance(step_param.default, int):
-            return step_param.default
-        return 50
-
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the diffusion pipeline so block-forward hooks fire.
 
-        The pipeline builds its normal denoising schedule, then calibration
-        samples a smaller seed-controlled subset of scheduler timesteps.
+        The pipeline asks its scheduler to build a native schedule with
+        ``calib_num_inference_steps`` denoising steps.
         """
         from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 
@@ -237,52 +148,28 @@ class DiffusionCalibrator(LLMCalibrator):
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         # Check if this is an I2V pipeline (needs calibration image)
         requires_image = self._requires_calibration_image()
-        num_inference_steps = self._base_num_inference_steps()
-
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for ids, prompts in self.dataloader:
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
-                try:
-                    generator = (
-                        None
-                        if self.generator_seed is None
-                        else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
-                    )
-                    with _calibration_scheduler_subset(
-                        pipe,
-                        self.calib_num_inference_steps,
-                        self.seed + total_cnt,
-                    ) as uses_scheduler:
-                        steps = num_inference_steps if uses_scheduler else self.calib_num_inference_steps
-                        if requires_image:
-                            image = self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
-                            pipe(
-                                image,
-                                prompt=prompts,
-                                guidance_scale=self.guidance_scale,
-                                num_inference_steps=steps,
-                                generator=generator,
-                            )
-                        elif pipeline_fn is not None:
-                            pipeline_fn(
-                                pipe,
-                                prompts,
-                                guidance_scale=self.guidance_scale,
-                                num_inference_steps=steps,
-                                generator=generator,
-                            )
-                        else:
-                            pipe(
-                                prompts,
-                                guidance_scale=self.guidance_scale,
-                                num_inference_steps=steps,
-                                generator=generator,
-                            )
-                except NotImplementedError:
-                    pass
-                except Exception as error:
-                    raise error
+                generator = (
+                    None
+                    if self.generator_seed is None
+                    else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
+                )
+                call_kwargs = dict(self.pipeline_call_kwargs)
+                call_kwargs.update(
+                    guidance_scale=self.guidance_scale,
+                    num_inference_steps=self.calib_num_inference_steps,
+                    generator=generator,
+                )
+                if requires_image:
+                    image = self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
+                    pipe(image, prompt=prompts, **call_kwargs)
+                elif pipeline_fn is not None:
+                    pipeline_fn(pipe, prompts, **call_kwargs)
+                else:
+                    pipe(prompts, **call_kwargs)
                 step = len(prompts)
                 total_cnt += step
                 pbar.update(step)

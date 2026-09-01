@@ -36,10 +36,10 @@ autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently supports `coco2014` and user customized `.tsv` files.
-- `calib_num_inference_steps`: the number of denoising steps sampled from the full scheduler schedule with
-  seed-controlled stratified sampling to collect quantization calibration inputs.
-- `num_inference_steps`: the full denoising schedule length used as the sampling basis for diffusion
-  generation/evaluation.
+- `calib_num_inference_steps`: the number of inference steps requested when the scheduler builds its native
+  short calibration schedule. Higher-order schedulers may expand these into more internal timesteps.
+- `num_inference_steps`: the number of denoising steps used for diffusion generation/evaluation; it does not
+  control the calibration schedule.
 - `guidance_scale`: controls how much the image generation process follows the text prompt.
 - `generator_seed`: a seed that controls the initial noise from which an image is generated.
 
