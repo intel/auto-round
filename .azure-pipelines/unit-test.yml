@@ -52,8 +52,6 @@ parameters:
       - 0
       - 1
       - 2
-      - 3
-      - 4
 
 stages:
   - template: template/lib-build-template.yml
@@ -77,7 +75,6 @@ stages:
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"

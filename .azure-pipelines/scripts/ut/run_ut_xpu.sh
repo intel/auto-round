@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+test_part=${UT_MODE}
+
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
@@ -42,6 +44,17 @@ function setup_environment() {
     SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 }
 
+function run_pytest() {
+    local test_case=$1
+    local ut_log_name=$2
+
+    echo "##[group]Running ${test_case}..."
+    numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+        pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
+    echo "##[endgroup]"
+}
+
 function run_common_group() {
     # Run a group of common test files together in a single pytest invocation.
     # $1: group name (used for log file), remaining args: test files
@@ -51,12 +64,8 @@ function run_common_group() {
     group_tests=$(filter_changed_tests "test" "$*")
 
     if [ -n "${group_tests}" ]; then
-        echo "##[group]Running common tests (${group_name})..."
         local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${group_tests} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${group_tests}" "${ut_log_name}"
     fi
 }
 
@@ -81,13 +90,8 @@ function run_unit_test() {
 
     for test_file in ${xpu_tests}; do
         local test_basename=$(basename ${test_file} .py)
-
-        echo "##[group]Running xpu ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
@@ -97,13 +101,8 @@ function run_unit_test_ark() {
 
     for test_file in ${ark_tests}; do
         local test_basename=$(basename ${test_file} .py)
-
-        echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
@@ -122,13 +121,8 @@ function run_unit_test_llmc() {
 
     for test_file in ${llmc_tests}; do
         local test_basename=$(basename ${test_file} .py)
-
-        echo "##[group]Running xpu llmc ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
-                --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
@@ -174,13 +168,16 @@ function main() {
     setup_environment
     init_changed_tests
     scope_changed_tests "$(cd /auto-round && find test/unit/common test/unit/test_ark test/unit/test_xpu test/integration/test_xpu -name "test_*.py" 2>/dev/null)"
-    if [[ "${UT_MODE}" == "llmc" ]]; then
+    if [[ "$test_part" == "llmc" ]]; then
         run_unit_test_llmc
-    elif [[ "${UT_MODE}" == "ark" ]]; then
+    elif [[ "$test_part" == "ark" ]]; then
         run_unit_test_ark
-    else
+    elif [[ "$test_part" == "common" ]]; then
         run_common_unit_test
+    elif [[ "$test_part" == "base" ]]; then
         run_unit_test
+    else
+        echo "invalid name $test_part"
     fi
     collect_log
     print_coverage

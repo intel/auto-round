@@ -12,6 +12,7 @@ pr:
       - auto_round_extension
       - test/unit/test_ark
       - test/unit/test_xpu
+      - test/unit/common
       - setup.py
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/unit-test-xpu.yml
@@ -36,6 +37,13 @@ variables:
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
 
+parameters:
+  - name: unitTestParts
+    type: object
+    default:
+      - common
+      - base
+
 stages:
   - template: template/lib-build-template.yml
     parameters:
@@ -50,29 +58,69 @@ stages:
       BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
-        displayName: Unit Test
+        timeoutInMinutes: 60
+        strategy:
+          matrix:
+            ${{ each part in parameters.unitTestParts }}:
+              part_${{ part }}:
+                PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut_xpu"
               uploadPath: $(UPLOAD_PATH)
-              utArtifact: "ut"
+              utArtifact: "ut-$(PART)"
+              utTestMode: $(PART)
               imageTag: $(IMAGE_TAG)
               dockerFileName: $(DOCKERFILE_NAME)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
               filterChangedTests: true
 
-          - task: UseDotNet@2
-            displayName: 'Use .NET Core sdk 7.0.x'
+  - stage: Coverage
+    displayName: "Collect Coverage"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: [Unit_test]
+    jobs:
+      - job: CollectDatafiles
+        steps:
+          - task: DownloadPipelineArtifact@2
             inputs:
-              version: 7.0.x
+              artifact:
+              patterns: '*_coverage/.coverage.*'
+              path: $(DOWNLOAD_PATH)
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+            displayName: 'Use Python 3.12'
+
+          - script: |
+              cd ${BUILD_SOURCESDIRECTORY}
+              pip install -U pip setuptools uv
+              uv pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu
+              uv pip install .
+              pip list
+              cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
+              bash ut/collect_log.sh xpu
+            env:
+              PYTHONUNBUFFERED: '1'
+              UV_NO_PROGRESS: '1'
+              UV_SYSTEM_PYTHON: '1'
+            displayName: "Collect UT Coverage"
+
+          - task: PublishPipelineArtifact@1
+            condition: succeededOrFailed()
+            inputs:
+              targetPath: $(UPLOAD_PATH)/coverage_PR
+              artifact: $(ARTIFACT_NAME)
+              publishLocation: "pipeline"
 
           - task: PublishCodeCoverageResults@2
             condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
-              summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
+              summaryFileLocation: $(UPLOAD_PATH)/coverage_PR/coverage.xml
               # coverage.xml is produced inside the container, where the checkout
               # lives at /auto-round, so its <sources> root does not exist on the
               # agent. Point the task at the agent-side checkout instead.
