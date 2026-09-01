@@ -66,8 +66,6 @@ function setup_basic_test_env() {
     uv pip install -U transformers chardet
     uv pip install -U pytest-cov
     uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
-    uv pip uninstall torch torchvision
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
     echo "##[endgroup]"
 
@@ -133,16 +131,12 @@ function run_unit_test() {
         return 0
     fi
 
-    for test_file in ${selected_files}; do
-        echo "##[group]Running ${test_file}..."
-        local test_basename=$(basename ${test_file} .py)
-        local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
-
-        pytest -m "not skip_ci" \
-            --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
-            ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
-    done
+    local ut_log_name="${LOG_DIR}/unittest_cuda_part${test_part}.log"
+    echo "##[group]Running CUDA tests for shard ${test_part}..."
+    pytest -m "not skip_ci" \
+        --cov=auto_round --cov-report= -vs --junitxml="${ut_log_name%.log}.xml" \
+        ${selected_files} 2>&1 | tee "${ut_log_name}"
+    echo "##[endgroup]"
 }
 
 function run_unit_test_llmc() {
