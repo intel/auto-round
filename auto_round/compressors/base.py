@@ -309,7 +309,6 @@ class BaseOrchestrator(object):
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
         nblocks = kwargs.pop("nblocks", 1)
-        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
 
         self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", offload_dir_prefix="compressor")
@@ -344,17 +343,9 @@ class BaseOrchestrator(object):
             )
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        # Deprecated, default not to use torch.use_deterministic_algorithms
-        if not disable_deterministic_algorithms or enable_deterministic_algorithms:
-            if not disable_deterministic_algorithms:
-                logger.warning(
-                    "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-                    " please use enable_deterministic_algorithms instead. "
-                )
-
+        if enable_deterministic_algorithms:
+            logger.info("Deterministic algorithms are enabled.")
             torch.use_deterministic_algorithms(True, warn_only=False)
-        else:
-            torch.use_deterministic_algorithms(True, warn_only=True)
 
         # XPU SDPA workaround: drop pure causal masks so FLASH backend is used,
         # and set torch.use_deterministic_algorithms(False)
