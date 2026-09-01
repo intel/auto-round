@@ -42,7 +42,14 @@ class TestDiffusionMixinProperties:
         assert comp.num_inference_steps == 20
         assert comp.calib_num_inference_steps == 7
 
-    def test_rejects_non_positive_calibration_steps(self):
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"calib_num_inference_steps": 0}, "calib_num_inference_steps"),
+            ({"num_inference_steps": 0}, "num_inference_steps"),
+        ],
+    )
+    def test_rejects_non_positive_inference_steps(self, kwargs, match):
         class Parent:
             def __init__(self, *args, **kwargs):
                 self.model_context = SimpleNamespace(pipe=None, model=None)
@@ -50,19 +57,8 @@ class TestDiffusionMixinProperties:
         class MockCompressor(DiffusionMixin, Parent):
             pass
 
-        with pytest.raises(ValueError, match="calib_num_inference_steps"):
-            MockCompressor(calib_num_inference_steps=0)
-
-    def test_rejects_non_positive_generation_steps(self):
-        class Parent:
-            def __init__(self, *args, **kwargs):
-                self.model_context = SimpleNamespace(pipe=None, model=None)
-
-        class MockCompressor(DiffusionMixin, Parent):
-            pass
-
-        with pytest.raises(ValueError, match="num_inference_steps"):
-            MockCompressor(num_inference_steps=0)
+        with pytest.raises(ValueError, match=match):
+            MockCompressor(**kwargs)
 
     def test_get_calibrator_kind_returns_diffusion(self):
         # Create a minimal mock class
