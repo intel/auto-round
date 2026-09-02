@@ -158,13 +158,6 @@ function run_unit_test() {
 }
 
 function run_inc_unit_test() {
-    echo "##[group]set up INC UT env..."
-    INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
-    echo "##[endgroup]"
-
-    cd /auto-round/test/integration || exit 1
-    run_if_retry
-
     local selected_files
     selected_files=$(filter_changed_tests "test/integration" \
         "$(cd /auto-round/test/integration && find ./test_cpu -name "test_inc*.py" | sort)")
@@ -172,6 +165,13 @@ function run_inc_unit_test() {
         echo "No changed INC test file, skip."
         return 0
     fi
+
+    echo "##[group]set up INC UT env..."
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    echo "##[endgroup]"
+
+    cd /auto-round/test/integration || exit 1
+    run_if_retry
 
     for test_file in ${selected_files}; do
         local test_basename=$(basename ${test_file} .py)
@@ -181,6 +181,14 @@ function run_inc_unit_test() {
 }
 
 function run_llmc_unit_test() {
+    local selected_files
+    selected_files=$(filter_changed_tests "test/integration" \
+        "$(cd /auto-round/test/integration && find ./test_cpu -name "test_llmc*.py" | sort)")
+    if [ -z "${selected_files}" ]; then
+        echo "No changed LLMC test file, skip."
+        return 0
+    fi
+
     echo "##[group]set up LLMC UT env..."
     BUILD_TYPE="nightly" uv pip install -r /auto-round/test/integration/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     uv pip uninstall auto-round
@@ -189,14 +197,6 @@ function run_llmc_unit_test() {
 
     cd /auto-round/test/integration || exit 1
     run_if_retry
-
-    local selected_files
-    selected_files=$(filter_changed_tests "test/integration" \
-        "$(cd /auto-round/test/integration && find ./test_cpu -name "test_llmc*.py" | sort)")
-    if [ -z "${selected_files}" ]; then
-        echo "No changed LLMC test file, skip."
-        return 0
-    fi
 
     for test_file in ${selected_files}; do
         local test_basename=$(basename ${test_file} .py)
