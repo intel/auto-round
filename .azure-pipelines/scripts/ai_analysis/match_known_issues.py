@@ -44,10 +44,7 @@ def fetch_known_issues(repo: str, label: str, token: str) -> list[dict]:
     issues: list[dict] = []
     page = 1
     while True:
-        url = (
-            f"https://api.github.com/repos/{repo}/issues"
-            f"?labels={label}&state=open&per_page=100&page={page}"
-        )
+        url = f"https://api.github.com/repos/{repo}/issues" f"?labels={label}&state=open&per_page=100&page={page}"
         req = Request(url, headers=headers)
         with urlopen(req, timeout=20) as resp:
             batch = json.loads(resp.read().decode("utf-8"))

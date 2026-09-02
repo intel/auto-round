@@ -259,8 +259,7 @@ def stage_failed_logs(log_paths: list[Path], failed_dir: Path) -> None:
         "\n".join(failed_cases) + ("\n" if failed_cases else ""), encoding="utf-8"
     )
     print(
-        f"Staged {len(log_paths)} failed log(s) and {len(failed_cases)} case(s) "
-        f"into: {failed_dir.absolute()}",
+        f"Staged {len(log_paths)} failed log(s) and {len(failed_cases)} case(s) " f"into: {failed_dir.absolute()}",
         file=sys.stderr,
     )
 

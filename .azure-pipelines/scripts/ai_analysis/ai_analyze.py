@@ -71,9 +71,7 @@ def _call_copilot_cli(prompt: str, copilot_cmd: str, timeout: int) -> str:
         env.setdefault("GITHUB_TOKEN", ai_token)
         env.setdefault("GH_TOKEN", ai_token)
     try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, env=env, check=False
-        )
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, check=False)
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"Warning: Copilot CLI call failed: {e}", file=sys.stderr)
         return ""
