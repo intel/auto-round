@@ -267,15 +267,15 @@ class TestDiffusionCalibrator:
 
     def test_calib_passes_image_when_required(self, calibrator):
         seen_images = []
-        calibrator.dataset = [("id0", ["p1"])]
+        calibration_image = torch.randn(1, 4, 64, 64)
+        calibrator.dataset = [("id0", ["p1"], [calibration_image])]
         calibrator.pipe = ImagePipeline(fn=lambda image, prompt=None, **kwargs: seen_images.append(image))
         calibrator._requires_calibration_image = lambda: True
-        calibrator._get_calibration_image = lambda batch_size: torch.randn(batch_size, 4, 64, 64)
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
             calibrator.calib(nsamples=1, bs=1)
 
-        assert seen_images[0].shape == (1, 4, 64, 64)
+        assert seen_images[0] is calibration_image
 
     def test_calib_not_implemented_error_is_swallowed(self, calibrator):
         def failing_pipe(*args, **kwargs):
