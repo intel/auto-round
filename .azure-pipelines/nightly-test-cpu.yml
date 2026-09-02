@@ -22,8 +22,6 @@ parameters:
       - 0
       - 1
       - 2
-      - 3
-      - 4
       - inc
       - llmc
 
@@ -74,7 +72,6 @@ stages:
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"
@@ -88,6 +85,7 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: [Unit_test]
+    condition: and(succeeded('Unit_test'), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
       - job: CollectDatafiles
         steps:
@@ -109,7 +107,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh cpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'

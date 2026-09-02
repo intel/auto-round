@@ -33,6 +33,8 @@ from auto_round.utils import (
     revert_checkpoint_conversion_mapping,
 )
 
+DEFAULT_MAX_SHARD_SIZE = "5GB"
+
 
 class ShardWriter:
     """
@@ -62,21 +64,7 @@ class ShardWriter:
             return
         self.model = model
         self.lm_head_name = get_lm_head_name(self.model)
-        total_params = sum(p.numel() for p in self.model.parameters())
-        # Heuristic estimate of model size in GB used to choose a default max_shard_size:
-        # - total_params * rounder.bits       -> total number of bits in all parameters
-        # - // 8                              -> convert bits to bytes
-        # - // 1e9                            -> approx convert bytes to GB (1e9 bytes ~= 1 GB)
-        # - final // 10                       -> apply a safety margin so default shards are
-        #                                         smaller than the full model; this intentionally
-        #                                         underestimates size before clamping below.
-        max_split_num = 10
-        model_size = int(total_params * bits // 1e9 // 8 + max_split_num - 1) / max_split_num
-        model_size = max(1, min(int(model_size), 5))
-
-        # Configuration
-        max_shard_size = max_shard_size or f"{model_size}GB"
-        self.max_shard_size = self._parse_size(max_shard_size)
+        self.max_shard_size = self._parse_size(max_shard_size or DEFAULT_MAX_SHARD_SIZE)
         self.safe_serialization = safe_serialization
 
         # Internal State
@@ -297,11 +285,11 @@ class ShardWriter:
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
         tensor = tensor.detach().cpu()
-        # If single tensor exceeds limit, flush current, save it solo, then continue
+        # Keep an oversized tensor with any buffered tensors so it does not
+        # leave a tiny shard immediately before its own shard.
         if t_size > self.max_shard_size:
-            self._flush_shard()
             self.current_shard_tensors[name] = tensor
-            self.current_shard_size = t_size
+            self.current_shard_size += t_size
             self._flush_shard()
         # If adding exceeds limit, flush first
         elif self.current_shard_size + t_size > self.max_shard_size and self.current_shard_size > 0:
