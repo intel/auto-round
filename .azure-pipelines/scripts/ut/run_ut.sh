@@ -81,7 +81,7 @@ function retry_selection() {
 
 function run_if_retry() {
     if is_retry; then
-        cp ${LOG_DIR}/failed_logs/.coverage ./.coverage
+        cp ${LOG_DIR}/.coverage ./.coverage
         for test_file in $(retry_selection); do
             local test_basename=$(basename "${test_file}" .py)
             run_pytest "${test_file}" "${LOG_DIR}/unittest_${test_basename}.log"

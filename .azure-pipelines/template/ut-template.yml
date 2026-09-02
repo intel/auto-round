@@ -130,7 +130,7 @@ steps:
       targetPath: ${{ parameters.uploadPath }}/failed_logs
       artifact: "${{ parameters.utArtifact }}-$(System.JobAttempt)"
       publishLocation: "pipeline"
-    displayName: "Publish UT logs for debugging"
+    displayName: "Publish failed UT logs"
 
   - task: Bash@3
     condition: always()
