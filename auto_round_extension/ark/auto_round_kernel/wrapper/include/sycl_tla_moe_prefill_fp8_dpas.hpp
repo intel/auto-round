@@ -186,6 +186,12 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // lifetime already used by `EventManager`. The INT8 and S4 headers re-export
 // this helper rather than defining their own, so all three paths share one
 // slot -- also safe, for the same reason.
+//
+// Note that a reused slot enters the kernel holding the previous dispatch's
+// final count rather than fresh (uninitialised) USM, so correctness rests
+// entirely on the in-kernel `atm.store(0)` above. That was already true with
+// `sycl::malloc_device`, whose contents are equally undefined -- the reuse
+// changes what the pre-store garbage looks like, not whether it matters.
 // ---------------------------------------------------------------------------
 
 // Scratch-pool slot dedicated to the work-group counter. Slots 0-7 are already
