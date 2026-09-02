@@ -81,7 +81,10 @@ function retry_selection() {
 
 function run_if_retry() {
     if is_retry; then
-        cp ${LOG_DIR}/failed_logs/.coverage ./.coverage
+        # Seed coverage from the previous attempt so --cov-append accumulates.
+        if [ -f "${LOG_DIR}/.coverage" ]; then
+            cp "${LOG_DIR}/.coverage" ./.coverage
+        fi
         for test_file in $(retry_selection); do
             local test_basename=$(basename "${test_file}" .py)
             run_pytest "${test_file}" "${LOG_DIR}/unittest_${test_basename}.log"
@@ -215,7 +218,9 @@ function collect_log() {
     if [ -f .coverage ]; then
         cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
         # Keep .coverage in the failure artifact so a retry can accumulate onto it.
-        [ -d "${LOG_DIR}/failed_logs" ] && cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        if [ -d "${LOG_DIR}/failed_logs" ]; then
+            cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        fi
     fi
 }
 
