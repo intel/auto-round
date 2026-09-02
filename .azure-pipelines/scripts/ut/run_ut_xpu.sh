@@ -131,37 +131,29 @@ function print_summary() {
     exit $?
 }
 
+function check_storage_usage() {
+    echo "##[group]check storage usage..."
+    df -h
+    du -sh /auto-round || true
+    du -sh /home/hostuser/.cache/huggingface || true
+    du -sh /home/hostuser/.cache/huggingface/hub/* || true
+    du -sh /home/hostuser/.venv || true
+    echo "##[endgroup]"
+}
+
 function collect_log() {
     touch "${SUMMARY_LOG}"
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
-        --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
-    if [ -f .coverage ]; then
-        # Suffix with the matrix part so the nightly Coverage stage can combine
-        # the parts without the artifacts overwriting each other.
-        cp .coverage "${LOG_DIR}/.coverage.${UT_MODE:-base}"
-        # The tests import auto_round from site-packages, so the raw data holds
-        # container-only paths. "[paths] source" rewrites those to repo-relative
-        # ones, but coverage.py applies it during "combine" only -- reporting on
-        # its own emits /home/hostuser/.venv/... which no agent can resolve, and
-        # PublishCodeCoverageResults then reports "file does not exist".
-        # Combine from the repo root so the relative "auto_round" entry matches.
-        (
-            cd /auto-round || exit 1
-            rm -f .coverage
-            python -m coverage combine --keep "${LOG_DIR}/.coverage.${UT_MODE:-base}"
-            python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-            python -m coverage html -d "${LOG_DIR}/htmlcov"
-        )
-    else
-        echo "No coverage data (no test selected), skip coverage report."
-        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
-    fi
-}
+        --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} \
+        --summary-log ${SUMMARY_LOG} --failed-logs-dir "${LOG_DIR}/failed_logs"
 
-function print_coverage() {
-    echo "##[group]overall code coverage..."
-    [ -f .coverage ] && python -m coverage report || echo "No coverage data."
-    echo "##[endgroup]"
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+        # Keep .coverage in the failure artifact so a retry can accumulate onto it.
+        if [ -d "${LOG_DIR}/failed_logs" ]; then
+            cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        fi
+    fi
 }
 
 function main() {
@@ -180,7 +172,7 @@ function main() {
         echo "invalid name $test_part"
     fi
     collect_log
-    print_coverage
+    check_storage_usage
     print_summary
 }
 
