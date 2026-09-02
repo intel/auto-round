@@ -10,13 +10,19 @@ description: "Review or prepare a pull request for the AutoRound repository — 
 Follow these steps in order. Stop and request changes at any gate that fails.
 
 1. **Scope check** — read the PR description and diff summary. Confirm the PR does one thing and unrelated changes are absent. If scope is unclear, request changes before proceeding.
-2. **Code quality gate** — run through the Code Quality checklist below. Any failure → request changes.
-3. **Quantization review** — if the PR touches `auto_round/` quantization logic, run the Quantization-Specific checklist. Any numerical stability concern → request changes.
-4. **Registration audit** — if the PR adds a new feature type (data type, export format, VLM, backend, dataset, scheme), verify every registration point in the table below is updated. Missing registration → request changes.
-5. **Test verification** — confirm new functionality has tests in the correct backend directory with minimal iterations. Missing or misplaced tests → request changes.
-6. **Documentation & translation** — check README/docs updates and run the Chinese Translation Verification procedure below. Missing `_CN.md` updates for modified markdown → request changes.
-7. **Contributing requirements** — verify DCO sign-off, clean commits, and clear PR description.
-8. **Decision** — if all gates pass, approve. Otherwise, summarize all findings in a single review comment with specific file:line references.
+2. **Pre-commit validation** — install `pre-commit` if needed and run all configured checks:
+  ```bash
+  pip install pre-commit
+  pre-commit run --all-files
+  ```
+  Any failure → request changes.
+3. **Code quality gate** — run through the Code Quality checklist below. Any failure → request changes.
+4. **Quantization review** — if the PR touches `auto_round/` quantization logic, run the Quantization-Specific checklist. Any numerical stability concern → request changes.
+5. **Registration audit** — if the PR adds a new feature type (data type, export format, VLM, backend, dataset, scheme), verify every registration point in the table below is updated. Missing registration → request changes.
+6. **Test verification** — confirm new functionality has tests in the correct backend directory with minimal iterations. Missing or misplaced tests → request changes.
+7. **Documentation & translation** — check README/docs updates and run the Chinese Translation Verification procedure below. Missing `_CN.md` updates for modified markdown → request changes.
+8. **Contributing requirements** — verify DCO sign-off, clean commits, and clear PR description.
+9. **Decision** — if all gates pass, approve. Otherwise, summarize all findings in a single review comment with specific file:line references.
 
 ## Review Checklist
 
