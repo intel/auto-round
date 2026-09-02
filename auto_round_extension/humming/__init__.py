@@ -20,4 +20,3 @@ from auto_round_extension.humming.qlinear_humming import (
 )
 
 __all__ = ["QuantLinear", "QuantLinearAWQ", "QuantLinearGPTQ", "is_humming_available"]
-
