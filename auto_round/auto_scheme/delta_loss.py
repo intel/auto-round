@@ -2548,6 +2548,7 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
     disk_index=None,
+    w8_asym_allowed: bool = False,
 ):
     """Score every candidate scheme in ``auto_scheme.options`` against ``quant_layer_names``
     and return per-layer per-scheme losses used by the caller to pick a final bit-width
@@ -3501,6 +3502,13 @@ def _gen_layer_config(
 
     # print(best_loss, best_path)  # TODO better log
     layer_config = copy.deepcopy(fixed_layer_scheme)
+    # fixed pins (lm_head, MTP layer, ...) bypass the options-level sym rule
+    # in parse_scheme -- apply the same 8-bit-symmetric pinning here. The
+    # allowance comes from the compressor (format-derived + flag) via GenScheme
+    # or from the scheme object itself; both are ORed.
+    _enforce_w8_symmetric_entries(
+        layer_config, allow_w8_asym=w8_asym_allowed or getattr(auto_scheme, "allow_w8_asym", False)
+    )
     options = list(copy.deepcopy(auto_scheme.options))
     # Replace scheme preset names with actual QuantizationScheme objects
     for index in range(len(options)):
@@ -3547,6 +3555,47 @@ def _gen_layer_config(
     return layer_config
 
 
+def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = False) -> int:
+    """Enforce symmetric 8-bit int entries; returns how many were pinned.
+
+    Same rationale as the options-level rule in parse_scheme: formats without
+    a servable W8-asym path (native auto_round, auto_gptq, marlin) cannot use
+    8-bit asym, and fixed layer_config pins (lm_head, MTP layer, ...) bypass
+    options. Entries WITHOUT an explicit sym would silently inherit the global
+    --asym and are pinned; an EXPLICIT sym=False is refused up front -- there
+    is no point spending quantization time on a configuration that can never
+    be served. allow_w8_asym skips both -- set by the builder from the
+    explicit --allow_w8_asym flag OR from an export format whose serving
+    stack accepts W8 asym (llm_compressor).
+    """
+    if allow_w8_asym:
+        return 0
+    pinned = 0
+    for name, entry in layer_config.items():
+        if not (isinstance(entry, dict) and entry.get("bits") == 8 and entry.get("data_type", "int") == "int"):
+            continue
+        if entry.get("sym") is False:
+            raise ValueError(
+                f"layer_config entry '{name}' requests 8-bit asymmetric weight quantization, "
+                "which this format cannot serve (vLLM W8 GPTQ-format weights are "
+                "symmetric-only; Marlin supports zero points at 4 bits only). Use a "
+                "symmetric 8-bit entry, an asymmetric width of 7 bits or fewer, format "
+                "'auto_round:llm_compressor', or pass allow_w8_asym/--allow_w8_asym."
+            )
+        if "sym" not in entry:
+            entry["sym"] = True
+            pinned += 1
+    if pinned:
+        logger.info(
+            "AutoScheme: pinned %d fixed layer_config entr%s to symmetric 8-bit "
+            "(8-bit asym is not servable in the requested export format; llm_compressor "
+            "and allow_w8_asym are the escape hatches)",
+            pinned,
+            "y" if pinned == 1 else "ies",
+        )
+    return pinned
+
+
 # Supports model with gradient clearing between iterations
 @register_scheme_methods(("default", "DeltaLoss"))
 def gen_layer_config(
@@ -3561,6 +3610,7 @@ def gen_layer_config(
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
     processor=None,
+    w8_asym_allowed: bool = False,
     **kwargs,
 ):
     """Public AutoScheme entry.
@@ -3706,6 +3756,7 @@ def gen_layer_config(
             min_avg_bit_scheme=min_avg_bit_scheme,
             processor=processor,
             is_vlm=is_vlm,
+            w8_asym_allowed=w8_asym_allowed,
             disk_index=disk_index,
         )
     except torch.OutOfMemoryError:
@@ -3738,6 +3789,7 @@ def gen_layer_config(
             min_avg_bit_scheme=min_avg_bit_scheme,
             processor=processor,
             is_vlm=is_vlm,
+            w8_asym_allowed=w8_asym_allowed,
             disk_index=disk_index,
         )
 

@@ -40,6 +40,7 @@ class AutoScheme:
     enable_torch_compile: Optional[bool] = None
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
+    allow_w8_asym: bool = False
 
     def __post_init__(self):
         if isinstance(self.options, str):
@@ -98,8 +99,15 @@ class GenScheme:
         tokenizer=None,
         enable_torch_compile=True,
         processor=None,
+        w8_asym_allowed: bool = False,
     ):
         self.auto_scheme = auto_scheme
+        # Effective W8-asym allowance for this run: derived by the compressor
+        # from the export format (llm_compressor can serve it) and the
+        # allow_w8_asym flag, so fixed layer pins follow the format the run
+        # actually saves with -- including a format supplied only to
+        # quantize_and_save. Never written back onto the caller's AutoScheme.
+        self.w8_asym_allowed = w8_asym_allowed
         # Upstream unconditionally forced low_cpu_mem_usage=False here
         # (commit 0c9c5b1d, "reduce memory consumption... for gguf") because of an
         # acknowledged bug for mixed INT4/INT8 schemes under the old OffloadManager-
@@ -199,6 +207,7 @@ class GenScheme:
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
             min_avg_bit_scheme=self.min_avg_bit_scheme,
             processor=self.processor,
+            w8_asym_allowed=self.w8_asym_allowed,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config

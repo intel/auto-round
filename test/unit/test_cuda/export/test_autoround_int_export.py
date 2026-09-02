@@ -63,7 +63,34 @@ class TestAutoroundIntExportGpu:
         assert out.logits.shape[0] == 1
 
     @pytest.mark.timeout(180)
-    @pytest.mark.parametrize("bits", [4, 8])
+    @pytest.mark.parametrize("group_size", [128])
+    def test_w8_asym_flag_int_export_reload_forward(self, tiny_opt_model_path, group_size):
+        """allow_w8_asym skips the native-format refusal; the packed artifact
+        still reloads and forwards through transformers (serving is the user's
+        responsibility, hence the explicit opt-in flag)."""
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=8,
+            group_size=group_size,
+            sym=False,
+            iters=0,
+            disable_opt_rtn=True,
+            allow_w8_asym=True,
+            nsamples=1,
+            seqlen=16,
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+
+        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        assert isinstance(model, torch.nn.Module)
+        assert _has_packed_weight(model)
+        input_ids = torch.randint(0, 1000, (1, 16), device="cuda:0")
+        with torch.no_grad():
+            out = model(input_ids)
+        assert out.logits.shape[0] == 1
+
+    @pytest.mark.timeout(180)
+    @pytest.mark.parametrize("bits", [4])  # 8-bit asym is refused at construction
     @pytest.mark.parametrize("group_size", [32, 128])
     def test_asym_int_export_reload_forward(self, tiny_opt_model_path, bits, group_size):
         """Asymmetric integer export path."""

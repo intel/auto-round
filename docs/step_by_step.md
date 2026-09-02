@@ -123,10 +123,13 @@ AutoRound supports several Schemes:
 
 - **W4A16**(bits:4,group_size:128,sym:True,act_bits:16)
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
-- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16) — `mlx` format only
-- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16) — `mlx` format only
+- **W7A16**(bits:7,group_size:128,sym:True,act_bits:16) - `llm_compressor` format
+- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16) — `mlx` and `llm_compressor` formats
+- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16) — `mlx` and `llm_compressor` formats
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
+- **Group-size variants** `W{2..8}A16G64` / `W{2..8}A16G32` - `llm_compressor` (W2-W8); `auto_round` / `auto_gptq` (W2 only)
+- Asymmetric quantization (`--asym`) supports weight bits <= 7 for `auto_round` / `auto_gptq` / `auto_awq` exports: vLLM serves W8 GPTQ-format weights symmetric-only and Marlin supports zero points at 4 bits only. The `llm_compressor` format supports 8-bit asym - vLLM serves it via Machete (SM90+, group sizes 64/128/-1) or Conch (SM80+, group size 128 or channelwise). The rule applies uniformly to AutoScheme options and fixed layer pins (e.g. lm_head): a run exporting to `llm_compressor` keeps its 8-bit entries asymmetric, other formats pin them back to symmetric. `--allow_w8_asym` lifts the restriction for every format (for serving stacks beyond stock vLLM); artifacts produced with it may not load in vLLM.
 - **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 provided by llamacpp are supported)
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
@@ -169,7 +172,7 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 | Format                       | Supported Schemes                                                                                                                                                       |
 |:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **auto_round**               | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`         |
-| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK, W4A16, W2A16, W8A16, W2A16G64, W2A16G32,  W3A16                                                            |
+| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK, W2A16, W3A16, W4A16, W5A16, W6A16, W7A16, W8A16 and G64/G32 variants of W2-W8                                                            |
 | **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                                       |
 | **auto_awq**                 | W4A16, BF16                                                                                                                                                             |

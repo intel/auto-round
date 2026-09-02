@@ -47,6 +47,17 @@ def add_common_quantization_arguments(group) -> None:
         "--asym", default=False, action="store_true", help="Use asymmetric weight quantization instead of symmetric."
     )
     group.add_argument(
+        "--allow_w8_asym",
+        default=False,
+        action="store_true",
+        help=(
+            "Allow 8-bit asymmetric weights in every format, skipping the default refusal for "
+            "formats that cannot serve them. Without this flag, 8-bit asym is allowed for "
+            "llm_compressor (compressed-tensors serving in vLLM) and refused elsewhere. "
+            "Artifacts produced with the flag may not load in stock vLLM GPTQ-format serving."
+        ),
+    )
+    group.add_argument(
         "--data_type", "--dtype", default=None, type=str, help="Weight quantization data type, e.g. int, fp8."
     )
     group.add_argument("--act_bits", default=None, type=int, help="Activation quantization bit width.")

@@ -493,8 +493,33 @@ def _override_scheme_with_user_specify(
     return QuantizationScheme.from_dict(scheme_dict)
 
 
+def format_allows_w8_asym(format: str | None) -> bool:
+    """Whether an output format can represent and serve 8-bit asymmetric int weights.
+
+    ``llm_compressor`` (compressed-tensors pack-quantized) stores the zero point
+    as int8 with a signed-convention shift and vLLM serves it (which kernels
+    pick it up depends on GPU and group size -- see docs/step_by_step.md for
+    the current kernel matrix). ``fake`` is research-only by
+    declaration. The remaining formats (native ``auto_round``, ``auto_gptq``,
+    marlin, awq) cannot serve W8 asym today: their packed layouts have no
+    room for an 8-bit zero point and vLLM serves W8 GPTQ-format weights
+    symmetric-only.
+    """
+    if not format:
+        return False
+    # Multi-format requests are allowed only when EVERY requested format can
+    # serve W8 asym (a mixed "auto_round,llm_compressor" request would still
+    # produce a native artifact that stock vLLM cannot load - require the
+    # explicit --allow_w8_asym opt-in for that).
+    parts = str(format).split(",")
+    return all("llm_compressor" in p.split(":") or "fake" in p.split(":") for p in parts)
+
+
 def parse_scheme(
-    scheme: Union[str, dict, QuantizationScheme, "AutoScheme"], user_scheme_overrides: dict[str, Any]
+    scheme: Union[str, dict, QuantizationScheme, "AutoScheme"],
+    user_scheme_overrides: dict[str, Any],
+    format: str = None,
+    allow_w8_asym: bool = False,
 ) -> tuple[Union[str, QuantizationScheme], bool, dict[str, Any]]:
     """
     Parses the final scheme.
@@ -502,6 +527,10 @@ def parse_scheme(
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     is_auto_scheme = isinstance(scheme, AutoScheme)
+    # The flag may also ride on the scheme object itself (AutoScheme field,
+    # set by the CLI and by the AutoRound builder).
+    scheme_flag = bool(getattr(scheme, "allow_w8_asym", False))
+    w8_asym_ok = allow_w8_asym or scheme_flag or format_allows_w8_asym(format)
     if is_auto_scheme:
         if not scheme.options:
             raise ValueError("AutoScheme options cannot be empty")
@@ -513,6 +542,29 @@ def parse_scheme(
 
         # Map user overrides across all auto-scheme options
         scheme.options = [_override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options]
+
+        # --asym must never silently reach 8-bit options in formats that cannot
+        # serve W8 asym (native auto_round / auto_gptq / marlin): vLLM's
+        # GPTQ-format kernels are symmetric-only and Marlin's zero-point
+        # support is 4-bit only. Pin such options back to symmetric, loudly.
+        # llm_compressor exports (and --allow_w8_asym) keep asym.
+        import dataclasses
+
+        if not w8_asym_ok:
+            for opt_i, opt in enumerate(scheme.options):
+                if (
+                    isinstance(opt, QuantizationScheme)
+                    and opt.sym is False
+                    and opt.bits == 8
+                    and opt.data_type == "int"
+                ):
+                    scheme.options[opt_i] = dataclasses.replace(opt, sym=True)
+                    logger.info(
+                        "AutoScheme option %s stays symmetric: 8-bit asymmetric quantization is "
+                        "not servable in this format (--asym applies to sub-8-bit options only; "
+                        "use format llm_compressor or --allow_w8_asym to keep W8 asym)",
+                        opt_i,
+                    )
 
         # Select the primary scheme for attribute binding (skipping BF16)
         default_scheme = scheme.options[0]
@@ -532,6 +584,32 @@ def parse_scheme(
         final_attrs = asdict(final_attrs)
     else:
         final_attrs = asdict(default_scheme)
+
+    if not is_auto_scheme and final_attrs.get("data_type") == "int" and final_attrs.get("bits") == 8:
+        if final_attrs.get("sym") is False:
+            if not w8_asym_ok:
+                # Formats without a servable W8-asym path fail before any quantization
+                # work starts. llm_compressor exports and --allow_w8_asym are exempt.
+                raise ValueError(
+                    "8-bit asymmetric weight quantization is not supported for this format: "
+                    "vLLM serves W8 GPTQ-format weights symmetric-only and Marlin supports "
+                    "zero points at 4 bits only. Use a symmetric 8-bit scheme (drop --asym), "
+                    "an asymmetric width of 7 bits or fewer, format 'auto_round:llm_compressor' "
+                    "(compressed-tensors serves W8 asym), or pass allow_w8_asym/--allow_w8_asym "
+                    "to skip this check."
+                )
+            _group = final_attrs.get("group_size")
+            _fmt_parts = str(format or "").replace(",", ":").split(":")
+            # group_size 128 and 0/-1 (per-tensor/channelwise) are served
+            # broadly across current GPUs; other groups depend on kernel
+            # availability, so warn without pinning
+            if "llm_compressor" in _fmt_parts and _group not in (-1, 0, 128, None):
+                logger.warning_once(
+                    "8-bit asym with group_size %s under llm_compressor: current vLLM "
+                    "kernels serve 8-bit asym broadly only at group sizes 128/-1 "
+                    "(see docs for kernel/GPU availability)",
+                    _group,
+                )
     return default_scheme, is_auto_scheme, final_attrs
 
 
@@ -565,9 +643,9 @@ W6A16 = QuantizationScheme.from_dict(
     }
 )
 
-W2A16 = QuantizationScheme.from_dict(
+W7A16 = QuantizationScheme.from_dict(
     {
-        "bits": 2,
+        "bits": 7,
         "sym": True,
         "group_size": 128,
         "data_type": "int",
@@ -575,21 +653,11 @@ W2A16 = QuantizationScheme.from_dict(
     }
 )
 
-W2A16G64 = QuantizationScheme.from_dict(
+W2A16 = QuantizationScheme.from_dict(
     {
         "bits": 2,
         "sym": True,
-        "group_size": 64,
-        "data_type": "int",
-        "act_bits": 16,
-    }
-)
-
-W2A16G32 = QuantizationScheme.from_dict(
-    {
-        "bits": 2,
-        "sym": True,
-        "group_size": 32,
+        "group_size": 128,
         "data_type": "int",
         "act_bits": 16,
     }
@@ -801,12 +869,25 @@ BF16 = QuantizationScheme.from_dict(
     }
 )
 
+for _bits in (2, 3, 4, 5, 6, 7, 8):
+    for _g in (64, 32):
+        globals()[f"W{_bits}A16G{_g}"] = QuantizationScheme.from_dict(
+            {
+                "bits": _bits,
+                "sym": True,
+                "group_size": _g,
+                "data_type": "int",
+                "act_bits": 16,
+            }
+        )
+
 PRESET_SCHEMES = {
     "W4A16": W4A16,
     "W2A16": W2A16,
     "W3A16": W3A16,
     "W5A16": W5A16,
     "W6A16": W6A16,
+    "W7A16": W7A16,
     "W8A16": W8A16,
     "MXFP4": MXFP4,
     "MXFP6": MXFP6,
@@ -816,8 +897,14 @@ PRESET_SCHEMES = {
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
     "FPW8A16": FPW8A16,
-    "W2A16G64": W2A16G64,
-    "W2A16G32": W2A16G32,
+    # Group-size variants for the 2-8 bit int presets: the bare presets default
+    # to group_size 128; these finer-group variants allow per-layer group-size
+    # selection via --scheme/layer_config and mixed-group AutoScheme pools, e.g.
+    # options="W3A16,W4A16,W4A16G64,W4A16G32". 8-bit variants are symmetric
+    # presets: formats that cannot serve W8 asym pin it back (see
+    # parse_scheme), and the llm_compressor route keeps 8-bit asym through the
+    # bare preset + --asym, so no asymmetric variant is needed.
+    **{f"W{b}A16G{g}": globals()[f"W{b}A16G{g}"] for b in (2, 3, 4, 5, 6, 7, 8) for g in (64, 32)},
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,

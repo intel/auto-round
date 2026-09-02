@@ -638,7 +638,10 @@ def quantize_weight_rtn(
     # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
     # The auto_round:auto_gptq format (qlinear_torch_zp) adds +1 to zeros
     # after unpacking, so we must subtract 1 before packing to compensate.
-    zp -= 1
+    # The classic (zp-1) packing cannot represent zp=0: a -1 left-shifts into
+    # a negative word and corrupts every nibble sharing it. Clamp the stored
+    # value so only that zero-point degrades (decodes as +1).
+    zp = (zp - 1).clamp_(0, (1 << bits) - 1)
     zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
     del zp
     qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)

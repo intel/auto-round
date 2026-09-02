@@ -86,6 +86,24 @@ def test_model_free_preserves_explicit_scheme_overrides():
     assert compressor.default_scheme["sym"] is False
 
 
+def test_fallback_forwards_only_explicit_format():
+    """Only an explicitly requested construction format reaches the fallback.
+
+    The fallback compressor consumes quantize_and_save(format=...) only while
+    its formats are still unset, so forwarding the implicit "auto_round"
+    default would silently pin every fallback export to the native format
+    (regression: gguf, llm_compressor, auto_gptq and auto_awq save-time
+    formats were exported as native auto_round instead)."""
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    implicit = ModelFreeCompressor("unused-model-path", scheme="W4A16")
+    assert implicit.format == "auto_round"
+    assert "format" not in implicit._fallback_init_kwargs
+
+    explicit = ModelFreeCompressor("unused-model-path", scheme="W4A16", format="auto_round:llm_compressor")
+    assert explicit._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
+
+
 def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
     from auto_round import AutoRound
 

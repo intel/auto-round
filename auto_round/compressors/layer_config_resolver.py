@@ -158,7 +158,13 @@ def _get_safetensor_layer_names_not_in_model(model, all_module_names: list) -> l
 
 
 def _resolve_layer_config_presets(
-    layer_config, model, ignore_layers, default_scheme, default_scale_dtype, fill_default_value
+    layer_config,
+    model,
+    ignore_layers,
+    default_scheme,
+    default_scale_dtype,
+    fill_default_value,
+    w8_asym_allowed: bool = False,
 ) -> tuple[dict, dict, tuple[str, ...], set[str]]:
     """Steps 1-4 of layer-config resolution: ignore-layer parsing, normalization,
     bits-inference, and default-filling."""
@@ -213,6 +219,9 @@ def _resolve_layer_config_presets(
 
     # 2. normalize
     layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
+    # entries whose sym was set by the user (dict key or a QuantizationScheme
+    # object) rather than inherited from the default scheme below
+    explicit_sym = {name for name, cfg in layer_config.items() if "sym" in cfg}
 
     # 3. infer missing bits
     for cfg in layer_config.values():
@@ -246,6 +255,33 @@ def _resolve_layer_config_presets(
                     cfg.setdefault(key, copy.deepcopy(default_dict.get(key)))
                 else:
                     cfg.setdefault(key, None)
+
+    # 5. 8-bit asymmetric int entries are not servable in formats without a
+    # W8-asym path (vLLM GPTQ-format is symmetric-only, Marlin zp is 4-bit
+    # only). Refuse explicit requests up front; pin entries that would only
+    # inherit the global asym. llm_compressor exports (and --allow_w8_asym)
+    # are exempt: compressed-tensors serves W8 asym.
+    pinned_w8 = []
+    for name, cfg in layer_config.items():
+        if cfg.get("data_type") == "int" and cfg.get("bits") == 8 and cfg.get("sym") is False:
+            if not w8_asym_allowed:
+                if name in explicit_sym:
+                    raise ValueError(
+                        f"layer_config entry '{name}' requests 8-bit asymmetric weight quantization, "
+                        "which this format cannot serve (vLLM W8 GPTQ-format weights are "
+                        "symmetric-only; Marlin supports zero points at 4 bits only). Use a "
+                        "symmetric 8-bit entry, an asymmetric width of 7 bits or fewer, format "
+                        "'auto_round:llm_compressor', or pass allow_w8_asym/--allow_w8_asym."
+                    )
+                cfg["sym"] = True
+                pinned_w8.append(name)
+    if pinned_w8:
+        logger.info(
+            "layer_config: pinned %d 8-bit entry(s) to symmetric (inherited asym is not "
+            "servable at 8 bits in this format): %s",
+            len(pinned_w8),
+            ", ".join(sorted(pinned_w8)),
+        )
 
     return layer_config, default_dict, scheme_keys, ignore_layer_patterns
 
@@ -380,6 +416,8 @@ def resolve_layer_config(
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
     fill_default_value: bool = True,
+    format: str = None,
+    allow_w8_asym: bool = False,
 ) -> LayerConfig:
     """Resolve final per-layer configuration without writing model attributes."""
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
@@ -389,6 +427,9 @@ def resolve_layer_config(
     scheme_value = scheme.value
     gguf_name = scheme.preset_name if (scheme.preset_name or "").startswith("gguf:") else get_gguf_scheme(scheme_value)
 
+    from auto_round.schemes import format_allows_w8_asym
+
+    w8_asym_allowed = allow_w8_asym or format_allows_w8_asym(format)
     resolved, default_dict, scheme_keys, ignore_patterns = _resolve_layer_config_presets(
         layer_config,
         model,
@@ -396,6 +437,7 @@ def resolve_layer_config(
         scheme_value,
         scale_dtype,
         fill_default_value,
+        w8_asym_allowed=w8_asym_allowed,
     )
     resolved, _, embedding_names, supported_types = _traverse_and_expand_layer_config(
         resolved,
@@ -444,6 +486,8 @@ def extract_regex_config(
     inner_supported_types=None,
     ignore_layers: str = "",
     fill_default_value: bool = True,
+    format: str = None,
+    allow_w8_asym: bool = False,
 ) -> LayerConfig:
     """Resolve only the regex entries retained for export metadata."""
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
@@ -452,6 +496,12 @@ def extract_regex_config(
     )
     scheme_value = scheme.value
     gguf_name = scheme.preset_name if (scheme.preset_name or "").startswith("gguf:") else get_gguf_scheme(scheme_value)
+    from auto_round.schemes import format_allows_w8_asym
+
+    # Same allowance rule as resolve_layer_config: AutoScheme output can carry
+    # DP-selected W8-asym entries, which stay untouched only when the export
+    # format serves them (llm_compressor) or the flag is set.
+    w8_asym_allowed = allow_w8_asym or format_allows_w8_asym(format)
     normalized, _, scheme_keys, ignore_patterns = _resolve_layer_config_presets(
         layer_config,
         model,
@@ -459,6 +509,7 @@ def extract_regex_config(
         scheme_value,
         scale_dtype,
         fill_default_value,
+        w8_asym_allowed=w8_asym_allowed,
     )
     _, regex_config, _, _ = _traverse_and_expand_layer_config(
         normalized,

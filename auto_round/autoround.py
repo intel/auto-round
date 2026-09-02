@@ -73,7 +73,7 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
         return config_overrides
 
 
-def _eager_validate_scheme(config, scheme=None) -> None:
+def _eager_validate_scheme(config, scheme=None, format=None, allow_w8_asym: bool = False) -> None:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     """Eagerly validate scheme/config constraints at construction time.
@@ -91,7 +91,7 @@ def _eager_validate_scheme(config, scheme=None) -> None:
 
     user_overrides = _collect_config_scheme_overrides(config)
     try:
-        _, _, final_attrs = parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, user_overrides, format=format, allow_w8_asym=allow_w8_asym)
     except (ValueError, NotImplementedError):
         raise
     except Exception:
@@ -328,6 +328,7 @@ _ENTRY_KWARG_OWNERS = {
     "ignore_layers": "compressor",
     "quant_lm_head": "compressor",
     "to_quant_block_names": "compressor",
+    "allow_w8_asym": "compressor",
     "format": "base",
     "dataset": "base",
     "batch_size": "base",
@@ -707,6 +708,17 @@ class _CompressorBuilder(object):
             if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
             else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
         )
+        # Eagerly validate scheme constraints that do not require model info.
+        # This mirrors old-arch _check_configs() called at __init__ time so that
+        # callers get ValueError/NotImplementedError on construction, not deferred.
+        # Runs before the model-free early return so both routes enforce the
+        # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
+        _eager_validate_scheme(quant_config, scheme, format=format, allow_w8_asym=kwargs.get("allow_w8_asym", False))
+        # NOTE: the caller's AutoScheme is never mutated with an allowance
+        # here. The effective W8-asym flag for fixed layer pins is derived at
+        # generation time from the compressor's formats (which includes a
+        # format supplied only to quantize_and_save) plus the allow_w8_asym
+        # flag -- see BaseCompressor._gen_auto_scheme.
         if is_model_free_route(
             model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs
         ):
@@ -733,11 +745,6 @@ class _CompressorBuilder(object):
                 **diffusion_kwargs,
                 **route_kwargs,
             )
-
-        # Eagerly validate scheme constraints that do not require model info.
-        # This mirrors old-arch _check_configs() called at __init__ time so that
-        # callers get ValueError/NotImplementedError on construction, not deferred.
-        _eager_validate_scheme(quant_config, scheme)
 
         local_args = dict(
             model=model,
