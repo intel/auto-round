@@ -218,7 +218,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     add_common_quantization_arguments(quant_group)
     for name in canonical_names:
         alg_group = mini.add_argument_group(f"Algorithm: {name}")
-        AlgorithmHandler.get(name).register(alg_group)
+        AlgorithmHandler.add_group(name, alg_group)
     mini.print_help()
     return True
 
