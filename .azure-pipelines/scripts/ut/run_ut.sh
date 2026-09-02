@@ -215,7 +215,9 @@ function collect_log() {
     if [ -f .coverage ]; then
         cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
         # Keep .coverage in the failure artifact so a retry can accumulate onto it.
-        [ -d "${LOG_DIR}/failed_logs" ] && cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        if [ -d "${LOG_DIR}/failed_logs" ]; then
+            cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        fi
     fi
 }
 
