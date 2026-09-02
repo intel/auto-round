@@ -48,7 +48,7 @@ def build_header(clusters_data: dict, args) -> list[str]:
 def build_known_section(clusters: list[dict]) -> list[str]:
     known = [c for c in clusters if c.get("known") and c.get("issue")]
     if not known:
-        return ["_No failures matched a known issue._", ""]
+        return []
     lines = [
         f"<details><summary><b>Known issues ({len(known)})</b></summary>",
         "",
@@ -73,11 +73,9 @@ def build_known_section(clusters: list[dict]) -> list[str]:
 def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[str]:
     unknown = [c for c in clusters if not c.get("known")]
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
-    lines = [f"## Unknown issues ({len(unknown)}) — ranked by frequency", ""]
     if not unknown:
-        lines.append("_No unknown failures._")
-        lines.append("")
-        return lines
+        return []
+    lines = [f"## New CI issues ({len(unknown)}) — ranked by frequency", ""]
 
     for rank, c in enumerate(unknown, start=1):
         sig = _inline(c.get("signature", ""))

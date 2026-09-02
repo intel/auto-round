@@ -23,8 +23,9 @@ from pathlib import Path
 KEYWORDS = ("== FAILURES ==", "== ERRORS ==", "Traceback", "core dumped", "Killed")
 CRASH_MARKERS = ("core dumped", "killed", "segmentation fault", "aborted")
 
-# pytest section header of underscores wrapping a test id, e.g. "____ test_foo ____".
-_TEST_HEADER = re.compile(r"^_{5,}\s+(.+?)\s+_{5,}\s*$")
+# pytest per-test header of underscores wrapping a test id, e.g. "____ test_foo ____".
+# Long test names leave only a couple of underscores per side, so keep the bound low.
+_TEST_HEADER = re.compile(r"^_{2,}\s+(.+?)\s+_{2,}\s*$")
 # A trailing exception summary line, e.g. "ValueError: shapes do not match".
 _EXC_SUMMARY = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Warning|Failure|Exit)):?\s")
 # Similarity threshold above which two normalized signatures share a cluster.
