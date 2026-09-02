@@ -229,6 +229,69 @@ def test_xpu_s8_large_tile(m, n, k):
         torch.xpu.empty_cache()
 
 
+@pytest.mark.skipif(
+    os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
+    reason="Skipped because ARK_DNNL is not enabled in environment variables",
+)
+def test_xpu_woqgemm_graph_capture_uses_live_queue():
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    required = ("CUDAGraph", "Stream", "graph", "stream")
+    if any(not hasattr(torch.xpu, name) for name in required):
+        pytest.skip("torch.xpu graph APIs are not available")
+
+    with torch.no_grad():
+        m, n, k = 8, 256, 256
+        blocksize = 32
+        compute_type = "fp16"
+        weight_type = "int4"
+        scale_type = "fp16"
+        asym = False
+
+        raw_s8_wei = gen_weis8(weight_type, "xpu", k, n)
+        scale = torch.rand(k // blocksize, n, dtype=torch.float16, device="xpu") / 300 + 0.002
+        bias = torch.randn(1, n, dtype=torch.float16, device="xpu")
+        zp = torch.Tensor()
+        packw = ark.repack_quantized_weight(
+            raw_s8_wei, scale, zp, blocksize, compute_type, weight_type, scale_type, asym
+        )
+
+        def _woq_call(x):
+            return ark.woqgemm(x, packw, bias, n, k, blocksize, compute_type, weight_type, scale_type, asym)
+
+        eager_input = torch.randn(m, k, dtype=torch.float16, device="xpu") - 0.5
+        replay_input = torch.randn(m, k, dtype=torch.float16, device="xpu") + 0.25
+
+        # Warm up on the default queue to reproduce stale stream cache regressions.
+        _ = _woq_call(eager_input)
+        torch.xpu.synchronize()
+
+        graph_input = eager_input.clone()
+        capture_stream = torch.xpu.Stream()
+        graph = torch.xpu.CUDAGraph()
+
+        try:
+            with torch.xpu.stream(capture_stream):
+                with torch.xpu.graph(graph):
+                    graph_output = _woq_call(graph_input)
+        except RuntimeError as err:
+            pytest.skip(f"XPU graph capture is unavailable in this environment: {err}")
+
+        outputs = []
+        for current in (eager_input, replay_input):
+            graph_input.copy_(current)
+            graph.replay()
+            torch.xpu.synchronize()
+            replayed = graph_output.clone()
+            expected = _woq_call(current)
+            torch.xpu.synchronize()
+            assert torch.allclose(replayed, expected, rtol=0.1, atol=2.0)
+            outputs.append(replayed)
+
+        assert not torch.allclose(outputs[0], outputs[1], rtol=1e-3, atol=1e-3)
+        torch.xpu.empty_cache()
+
+
 @pytest.mark.parametrize("m", [1, 1024])
 @pytest.mark.parametrize("n, k", [(1024, 768)])
 @pytest.mark.parametrize("blocksize", [32, 128])

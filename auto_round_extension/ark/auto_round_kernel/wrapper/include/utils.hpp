@@ -16,10 +16,13 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #if ARK_DNNL
 #include <dnnl.hpp>
@@ -210,52 +213,56 @@ class DnnlContext {
   }
 
   dnnl::engine* get_eng(sycl::queue* q) {
-    auto key = check_dnnl_device(q);
-    return &dev_engine_map[key];
-  }
-
-  dnnl::stream* get_stream(sycl::queue* q) {
-    auto key = check_dnnl_device(q);
-    return &dev_stream_map[key];
-  }
-
-  size_t check_dnnl_device(sycl::queue* q) {
-    size_t key = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
 
     if (q == nullptr) {
-      if (dev_engine_map.find(key) == dev_engine_map.end()) {
-        dev_engine_map[key] = dnnl::engine(dnnl::engine::kind::cpu, 0);
-        dev_stream_map[key] = dnnl::stream(dev_engine_map[key]);
+      if (!cpu_engine_) {
+        cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
       }
-      return key;
+      return cpu_engine_.get();
     }
 
 #if ARK_XPU
-    key = DeviceMemoryPool::Instance()->get_device_key(q);
-    if (dev_engine_map.find(key) == dev_engine_map.end()) {
-      sycl::device dev = q->get_device();
-      sycl::context ctx = q->get_context();
-      dev_engine_map[key] = dnnl::sycl_interop::make_engine(dev, ctx);
-      dev_stream_map[key] = dnnl::sycl_interop::make_stream(dev_engine_map[key], *q);
+    auto [dev_key, ctx_id] = get_device_context_ids_locked(q);
+    for (auto& entry : xpu_engines_) {
+      if (entry.device_key == dev_key && entry.context_id == ctx_id) {
+        return entry.engine.get();
+      }
     }
+    auto dev = q->get_device();
+    auto ctx = q->get_context();
+    xpu_engines_.push_back(
+        {dev_key, ctx_id, std::make_unique<dnnl::engine>(dnnl::sycl_interop::make_engine(dev, ctx))});
+    return xpu_engines_.back().engine.get();
 #else
-    if (dev_engine_map.find(key) == dev_engine_map.end()) {
-      dev_engine_map[key] = dnnl::engine(dnnl::engine::kind::cpu, 0);
-      dev_stream_map[key] = dnnl::stream(dev_engine_map[key]);
+    if (!cpu_engine_) {
+      cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
     }
+    return cpu_engine_.get();
 #endif
+  }
 
-    return key;
+  dnnl::stream get_stream(sycl::queue* q) {
+    auto* eng = get_eng(q);
+    if (q == nullptr) {
+      return dnnl::stream(*eng);
+    }
+#if ARK_XPU
+    return dnnl::sycl_interop::make_stream(*eng, *q);
+#else
+    return dnnl::stream(*eng);
+#endif
   }
 
   dnnl::memory get_scratch_mem(dnnl::memory::desc md, sycl::queue* q) {
-    auto key = check_dnnl_device(q);
+    auto key = get_dnnl_key(q);
     auto ptr = DeviceMemoryPool::Instance()->get_scratch_ptr(md.get_size(), 0, q, key);
-    return dnnl::memory(md, dev_engine_map[key], ptr);
+    return dnnl::memory(md, *get_eng(q), ptr);
   }
 
   void* get_scratch_mem(size_t size, size_t buf_loc, sycl::queue* q) {
-    return DeviceMemoryPool::Instance()->get_scratch_mem(size, buf_loc, q);
+    auto key = get_dnnl_key(q);
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
   }
 
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
@@ -263,8 +270,53 @@ class DnnlContext {
   }
 
  private:
-  std::unordered_map<size_t, dnnl::engine> dev_engine_map;
-  std::unordered_map<size_t, dnnl::stream> dev_stream_map;
+  size_t get_dnnl_key(sycl::queue* q) {
+    if (q == nullptr) return 0;
+#if ARK_XPU
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto [dev_key, ctx_id] = get_device_context_ids_locked(q);
+    return dev_key ^ (ctx_id + 0x9e3779b97f4a7c15ULL + (dev_key << 6) + (dev_key >> 2));
+#else
+    return 0;
+#endif
+  }
+
+#if ARK_XPU
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  std::pair<size_t, size_t> get_device_context_ids_locked(sycl::queue* q) {
+    auto dev_key = DeviceMemoryPool::Instance()->get_device_key(q);
+    auto ctx_id = get_context_id_locked(q->get_context());
+    return {dev_key, ctx_id};
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+
+  struct EngineEntry {
+    size_t device_key;
+    size_t context_id;
+    std::unique_ptr<dnnl::engine> engine;
+  };
+
+  std::vector<ContextEntry> context_ids_;
+  std::vector<EngineEntry> xpu_engines_;
+  size_t next_context_id_ = 1;
+#endif
+
+  std::unique_ptr<dnnl::engine> cpu_engine_;
+  std::mutex mutex_;
 };
 
 #endif  // ARK_DNNL
