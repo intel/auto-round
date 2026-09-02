@@ -29,17 +29,15 @@ def build_header(clusters_data: dict, args) -> list[str]:
     known = clusters_data.get("known_count", 0)
     unknown = clusters_data.get("unknown_count", cluster_count - known)
     lines = [
-        "# CI Failure Analysis Report",
+        f"# CI Failure Analysis Report ({args.pipeline or 'N/A'})",
         "",
-        f"- **Pipeline:** {args.pipeline or 'N/A'}",
-        f"- **PR:** {('#' + args.pr) if args.pr else 'N/A'}",
         f"- **Commit:** {args.commit or 'N/A'}",
     ]
     if args.run_url:
         lines.append(f"- **Run:** {args.run_url}")
     lines.append(
         f"- **Totals:** {total_failed} failed test(s), {cluster_count} cluster(s) "
-        f"({known} known / {unknown} unknown)"
+        f"({known} known / {unknown} new)"
     )
     lines.append("")
     return lines
