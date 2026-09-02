@@ -309,7 +309,6 @@ class BaseOrchestrator(object):
         kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
         nblocks = kwargs.pop("nblocks", 1)
-        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
 
         self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", offload_dir_prefix="compressor")
@@ -344,17 +343,9 @@ class BaseOrchestrator(object):
             )
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        # Deprecated, default not to use torch.use_deterministic_algorithms
-        if not disable_deterministic_algorithms or enable_deterministic_algorithms:
-            if not disable_deterministic_algorithms:
-                logger.warning(
-                    "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-                    " please use enable_deterministic_algorithms instead. "
-                )
-
+        if enable_deterministic_algorithms:
+            logger.info("Deterministic algorithms are enabled.")
             torch.use_deterministic_algorithms(True, warn_only=False)
-        else:
-            torch.use_deterministic_algorithms(True, warn_only=True)
 
         # XPU SDPA workaround: drop pure causal masks so FLASH backend is used,
         # and set torch.use_deterministic_algorithms(False)
@@ -1860,7 +1851,7 @@ class BaseOrchestrator(object):
     def _ensure_shard_writer(self):
         """Lazily create ShardWriter if it hasn't been created yet."""
         if self.shard_writer is None and self.formats is not None:
-            self.shard_writer = ShardWriter(self.model, bits=8)
+            self.shard_writer = ShardWriter(self.model, bits=8, max_shard_size=getattr(self, "max_shard_size", None))
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -1875,6 +1866,7 @@ class BaseOrchestrator(object):
         format: Union[str, list[OutputFormat]] = None,
         inplace: bool = True,
         return_folders: bool = False,
+        max_shard_size: Union[int, str] = None,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
@@ -1883,11 +1875,14 @@ class BaseOrchestrator(object):
             output_dir (str, optional): The directory to save the quantized model. Defaults to None.
             format (str, optional): The format in which to save the model. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            max_shard_size (int or str, optional): Maximum size of each safetensors shard. Defaults to 5GB.
             **kwargs: Additional keyword arguments specific to the export format.
 
         Returns:
             object: The compressed model object.
         """
+        if max_shard_size is not None:
+            self.max_shard_size = max_shard_size
         self.output_dir = output_dir
         if output_dir is not None:
             self.compress_context.output_dir = output_dir
@@ -2027,7 +2022,12 @@ class BaseOrchestrator(object):
         )
 
     def quantize_and_save(
-        self, output_dir: str = "tmp_autoround", format: str = None, inplace: bool = True, **kwargs
+        self,
+        output_dir: str = "tmp_autoround",
+        format: str = None,
+        inplace: bool = True,
+        max_shard_size: Union[int, str] = None,
+        **kwargs,
     ) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantizes the model and saves it in the specified format(s).
 
@@ -2042,6 +2042,7 @@ class BaseOrchestrator(object):
                 by commas if multiple. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place if only
                 one format is used. Defaults to True.
+            max_shard_size (int or str, optional): Maximum size of each safetensors shard. Defaults to 5GB.
             **kwargs: Additional arguments for the quantization and saving process.
 
         Returns:
@@ -2051,6 +2052,8 @@ class BaseOrchestrator(object):
         Raises:
             ValueError: If an unsupported format is specified.
         """
+        if max_shard_size is not None:
+            self.max_shard_size = max_shard_size
         # Validate and process the specified formats
         self.output_dir = output_dir
         self.compress_context.output_dir = output_dir

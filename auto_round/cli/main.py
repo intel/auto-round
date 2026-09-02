@@ -62,6 +62,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
         "enable_torch_compile": enable_torch_compile,
+        "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
@@ -217,7 +218,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     add_common_quantization_arguments(quant_group)
     for name in canonical_names:
         alg_group = mini.add_argument_group(f"Algorithm: {name}")
-        AlgorithmHandler.get(name).register(alg_group)
+        AlgorithmHandler.add_group(name, alg_group)
     mini.print_help()
     return True
 
@@ -277,6 +278,15 @@ def tune(args):
         if fmt not in SUPPORTED_FORMATS:
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
 
+    if any("llm_compressor" in fmt for fmt in formats):
+        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+        try:
+            check_compressed_tensors_supported(raise_error=True)
+        except ImportError as error:
+            logger.error(str(error))
+            raise SystemExit(1) from None
+
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning(
             "the auto_gptq kernel has issues with asymmetric quantization. "
@@ -319,12 +329,6 @@ def tune(args):
 
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
-
-    if args.disable_deterministic_algorithms:
-        logger.warning(
-            "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-            " please use enable_deterministic_algorithms instead. "
-        )
 
     from auto_round.utils import parse_layer_config_arg
 
@@ -406,7 +410,9 @@ def tune(args):
     )
 
     model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
-        args.output_dir, format=getattr(args, "_api_format", args.format)
+        args.output_dir,
+        format=getattr(args, "_api_format", args.format),
+        max_shard_size=args.max_shard_size,
     )
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()

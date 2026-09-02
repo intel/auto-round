@@ -10,7 +10,7 @@
 <h3> 面向 LLM 的先进量化算法</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.14.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -240,6 +240,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 算法相关设置
 
 - ​**​`enable_alg_ext`​**​（bool）：[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
+- **`alg_configs`**（str | Config | list）：选择一个或多个算法，例如 `"awq"`、`"auto_round"` 或 `['auto_round', 'quarot']`。预处理算法按照列表顺序执行，block quantizer 始终最后执行。算法专用参数可以通过对应的 config 对象传入，例如 `SignRoundConfig(iters=50)`。
 - ​**​`disable_opt_rtn`​**​（bool | None）：是否对特定方案（如 GGUF 与权重量化方案）禁用优化的 RTN 模式。优化的 RTN 模式需要标定数据和更多的算力来提升精度。默认值为 `None`：在大多数情况下，为提升精度，算法会自动采用优化的 RTN 模式（即 `False`）；仅在已知存在兼容性问题时，才会自动禁用（即 `True`）
 
 
