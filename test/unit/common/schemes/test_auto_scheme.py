@@ -139,7 +139,7 @@ def test_get_layer_config_supports_avg_bits_list(monkeypatch):
     generator.enable_torch_compile = False
     generator.min_avg_bit_scheme = "W2A16"
     generator.processor = None
-    generator.w8_asym_allowed = False
+    generator.export_format = None
 
     def method_func(auto_scheme, *args, **kwargs):
         return {"layer": {"bits": auto_scheme.avg_bits}}
@@ -1518,7 +1518,7 @@ def test_asym_override_never_applies_to_8bit_options():
     format the policy is conservative and pins 8-bit options back to sym
     (native int8-packed formats cannot represent the 8-bit zero point), while
     sub-8-bit options keep the asym override. The llm_compressor format and
-    allow_w8_asym keep 8-bit options asym (see test_w8_asym_policy)."""
+    the AR_ALLOW_W8_ASYM env keep 8-bit options asym (see test_w8_asym_policy)."""
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.schemes import parse_scheme
 
@@ -1570,9 +1570,8 @@ def test_fixed_layer_scheme_w8_entries_pinned_symmetric():
 
 def test_fixed_layer_scheme_w8_entries_kept_asym_when_allowed():
     """When the export format can serve W8 asym (llm_compressor) or the
-    allow_w8_asym flag is set, the builder marks the AutoScheme accordingly
-    and _enforce_w8_symmetric_entries must neither pin nor refuse the fixed
-    8-bit entries."""
+    AR_ALLOW_W8_ASYM opt-in is set, _enforce_w8_symmetric_entries must
+    neither pin nor refuse the fixed 8-bit entries."""
     from auto_round.auto_scheme.delta_loss import _enforce_w8_symmetric_entries
 
     layer_config = {
@@ -1586,25 +1585,20 @@ def test_fixed_layer_scheme_w8_entries_kept_asym_when_allowed():
 
 
 def test_w8_asym_allowance_derived_at_generation_time():
-    """The effective W8-asym allowance for AutoScheme fixed pins is derived at
-    layer-config generation time from the compressor's formats (so a format
-    supplied only to quantize_and_save is honored) and the caller's AutoScheme
-    is never mutated by the builder."""
+    """The export-format context for the AutoScheme fixed-pin policy is
+    threaded to layer-config generation time (so a format supplied only to
+    quantize_and_save is honored); the W8-asym opt-in itself is the
+    AR_ALLOW_W8_ASYM env, read at the policy gates."""
     import inspect
 
-    import auto_round.autoround as ar
     from auto_round.auto_scheme.gen_auto_scheme import GenScheme
     from auto_round.compressors import base as compressor_base
 
-    builder_src = inspect.getsource(ar)
-    assert (
-        "scheme.allow_w8_asym = True" not in builder_src
-    ), "the builder must not mutate the caller-owned AutoScheme (leaks into later runs)"
     base_src = inspect.getsource(compressor_base.BaseOrchestrator._gen_auto_scheme)
-    assert "w8_asym_allowed=(" in base_src, "GenScheme must receive the format-derived allowance"
+    assert "export_format=" in base_src, "GenScheme must receive the export-format context"
     sig = inspect.signature(GenScheme.__init__)
-    assert "w8_asym_allowed" in sig.parameters
+    assert "export_format" in sig.parameters
     gen_sig = inspect.signature(
         __import__("auto_round.auto_scheme.delta_loss", fromlist=["gen_layer_config"]).gen_layer_config
     )
-    assert "w8_asym_allowed" in gen_sig.parameters
+    assert "export_format" in gen_sig.parameters

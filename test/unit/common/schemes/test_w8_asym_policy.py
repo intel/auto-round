@@ -52,19 +52,20 @@ class TestParseSchemeW8AsymPolicy:
         _, _, attrs = parse_scheme("W8A16", dict(W8_ASYM_OVERRIDES), format="fake")
         assert attrs["sym"] is False
 
-    def test_flag_overrides_native_refusal(self):
-        _, _, attrs = parse_scheme("W8A16", dict(W8_ASYM_OVERRIDES), format="auto_round", allow_w8_asym=True)
+    def test_env_overrides_native_refusal(self, monkeypatch):
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+        _, _, attrs = parse_scheme("W8A16", dict(W8_ASYM_OVERRIDES), format="auto_round")
         assert attrs["sym"] is False
 
-    def test_scheme_object_flag_is_honored(self):
-        # AutoRound(scheme=QuantizationScheme(bits=8, sym=False)) with the flag
-        # riding on... the scheme object only carries it for AutoScheme; the
-        # uniform-object spelling is covered by the API flag. Here: object
-        # without flag still refuses, with flag passes.
+    def test_scheme_object_env_is_honored(self, monkeypatch):
+        # AutoRound(scheme=QuantizationScheme(bits=8, sym=False)): without the
+        # opt-in env the uniform-object spelling still refuses for native
+        # formats; with the env or an llm_compressor format it passes.
         obj = QuantizationScheme.from_dict(dict(W8_ASYM_OVERRIDES))
         with pytest.raises(ValueError, match="8-bit asymmetric"):
             parse_scheme(obj, {}, format="auto_round")
-        _, _, attrs = parse_scheme(obj, {}, format="auto_round", allow_w8_asym=True)
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+        _, _, attrs = parse_scheme(obj, {}, format="auto_round")
         assert attrs["sym"] is False
         _, _, attrs = parse_scheme(obj, {}, format="llm_compressor")
         assert attrs["sym"] is False
@@ -84,17 +85,19 @@ class TestAutoSchemeW8AsymPolicy:
         return [o for o in scheme.options if getattr(o, "bits", None) == 8][0]
 
     @pytest.mark.parametrize(
-        "fmt,flag,expect_sym",
+        "fmt,opt_in,expect_sym",
         [
             (None, False, True),  # default: pinned
             ("auto_round", False, True),  # native: pinned
             ("llm_compressor", False, False),  # llmc: kept asym
-            (None, True, False),  # flag: kept asym
+            (None, True, False),  # env opt-in: kept asym
         ],
     )
-    def test_option_pinning_matrix(self, fmt, flag, expect_sym):
+    def test_option_pinning_matrix(self, monkeypatch, fmt, opt_in, expect_sym):
+        if opt_in:
+            monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
         scheme = self._scheme()
-        parse_scheme(scheme, {"sym": False}, format=fmt, allow_w8_asym=flag)
+        parse_scheme(scheme, {"sym": False}, format=fmt)
         assert self._w8_option(scheme).sym is expect_sym
 
     def test_fixed_entries_flag_skips_pinning(self):
@@ -141,17 +144,16 @@ class TestResolverW8AsymPolicy:
         )
         assert resolved["0"]["sym"] is False
 
-    def test_explicit_entry_flag_allowed(self):
-        resolved = self._resolve(
-            {"0": {"bits": 8, "sym": False, "data_type": "int", "group_size": 128}},
-            allow_w8_asym=True,
-        )
+    def test_explicit_entry_env_allowed(self, monkeypatch):
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+        resolved = self._resolve({"0": {"bits": 8, "sym": False, "data_type": "int", "group_size": 128}})
         assert resolved["0"]["sym"] is False
 
     def test_inherited_entry_pinned_by_default(self):
         resolved = self._resolve({"0": {"bits": 8, "data_type": "int", "group_size": 128}})
         assert resolved["0"]["sym"] is True
 
-    def test_inherited_entry_kept_asym_under_flag(self):
-        resolved = self._resolve({"0": {"bits": 8, "data_type": "int", "group_size": 128}}, allow_w8_asym=True)
+    def test_inherited_entry_kept_asym_under_env(self, monkeypatch):
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+        resolved = self._resolve({"0": {"bits": 8, "data_type": "int", "group_size": 128}})
         assert resolved["0"].get("sym") is not True

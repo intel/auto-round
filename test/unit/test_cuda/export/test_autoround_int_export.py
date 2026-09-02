@@ -64,10 +64,11 @@ class TestAutoroundIntExportGpu:
 
     @pytest.mark.timeout(180)
     @pytest.mark.parametrize("group_size", [128])
-    def test_w8_asym_flag_int_export_reload_forward(self, tiny_opt_model_path, group_size):
-        """allow_w8_asym skips the native-format refusal; the packed artifact
-        still reloads and forwards through transformers (serving is the user's
-        responsibility, hence the explicit opt-in flag)."""
+    def test_w8_asym_env_int_export_reload_forward(self, tiny_opt_model_path, group_size, monkeypatch):
+        """AR_ALLOW_W8_ASYM=1 skips the native-format refusal; the packed
+        artifact still reloads and forwards through transformers (serving is
+        the user's responsibility, hence the explicit opt-in env)."""
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
         autoround = AutoRound(
             tiny_opt_model_path,
             bits=8,
@@ -75,7 +76,6 @@ class TestAutoroundIntExportGpu:
             sym=False,
             iters=0,
             disable_opt_rtn=True,
-            allow_w8_asym=True,
             nsamples=1,
             seqlen=16,
         )

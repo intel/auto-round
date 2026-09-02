@@ -365,7 +365,7 @@ def test_w8_asymmetric_refused_on_both_routes(tiny_opt_model_path):
     """8-bit asym is refused at construction on both the model-free and the
     regular route: both default to native int8-packed export formats, which
     cannot represent the 8-bit zero point (vLLM serves W8 asym only via
-    compressed-tensors; see allow_w8_asym).
+    compressed-tensors; see AR_ALLOW_W8_ASYM).
     """
     from auto_round import AutoRound
 

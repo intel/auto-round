@@ -48,7 +48,6 @@ from auto_round.logger import logger
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
-    format_allows_w8_asym,
     get_gguf_scheme,
     parse_scheme,
     preset_name_to_scheme,
@@ -204,7 +203,6 @@ class BaseOrchestrator(object):
     to_quant_block_names = None
     ignore_layers: str = ""
     quant_lm_head: bool = False
-    allow_w8_asym: bool = False
     _scheme_resolved: bool = False
     scheme_generator = None
     _scheme_context_fields = set(QuantizationScheme.get_attributes())
@@ -246,7 +244,6 @@ class BaseOrchestrator(object):
         scale_dtype: Optional[Union[str, torch.dtype]] = None,
         ignore_layers: str = "",
         quant_lm_head: bool = False,
-        allow_w8_asym: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
         dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         **kwargs,
@@ -296,10 +293,7 @@ class BaseOrchestrator(object):
                         block_size = kwargs["group_size"]
                     else:
                         block_size = parse_scheme(
-                            scheme,
-                            {},
-                            format=_formats_policy_string_of(getattr(self, "formats", None)),
-                            allow_w8_asym=self._w8_asym_flag(),
+                            scheme, {}, format=_formats_policy_string_of(getattr(self, "formats", None))
                         )[2]["group_size"]
                     _cfg.block_size = block_size  # TODO not robust
                 self.rotation_configs.append(_cfg)
@@ -313,7 +307,6 @@ class BaseOrchestrator(object):
         self.scale_dtype = scale_dtype
         self.ignore_layers = ignore_layers
         self.quant_lm_head = quant_lm_head
-        self.allow_w8_asym = allow_w8_asym
         self.to_quant_block_names = to_quant_block_names
         # ``post_init()`` may run before ``quantize_and_save()`` in tests and
         # compatibility paths, so seed the same default used by
@@ -550,7 +543,6 @@ class BaseOrchestrator(object):
             self.scheme,
             {},
             format=_formats_policy_string_of(getattr(self, "formats", None)),
-            allow_w8_asym=getattr(self, "allow_w8_asym", False),
         )
         act_bits = final_attrs["act_bits"]
         act_data_type = final_attrs["act_data_type"]
@@ -743,7 +735,6 @@ class BaseOrchestrator(object):
             self.scheme,
             user_scheme_overrides,
             format=_formats_policy_string_of(getattr(self, "formats", None)),
-            allow_w8_asym=getattr(self, "allow_w8_asym", False),
         )
 
         self.scheme_context = QuantizationScheme.from_dict(final_attrs)
@@ -856,7 +847,6 @@ class BaseOrchestrator(object):
             enable_gguf_official_mixed=False,
             is_mllm=self.model_context.is_mllm,
             format=self._formats_policy_string(),
-            allow_w8_asym=self._w8_asym_flag(),
         )
         regex_config = extract_regex_config(
             model=self.model_context.model,
@@ -867,7 +857,6 @@ class BaseOrchestrator(object):
             inner_supported_types=self.inner_supported_types,
             ignore_layers=self.ignore_layers,
             format=self._formats_policy_string(),
-            allow_w8_asym=self._w8_asym_flag(),
         )
         discovery_plan = resolve_quantization_config(
             (
@@ -952,9 +941,7 @@ class BaseOrchestrator(object):
             tokenizer=self.model_context.tokenizer,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             processor=self.model_context.processor,
-            w8_asym_allowed=(
-                format_allows_w8_asym(_formats_policy_string_of(self.formats)) or getattr(self, "allow_w8_asym", False)
-            ),
+            export_format=_formats_policy_string_of(self.formats),
         )
         layer_config = self.scheme_generator.get_layer_config()
         # Re-attach vision/audio-tower layers we peeled off earlier so the
@@ -1051,7 +1038,6 @@ class BaseOrchestrator(object):
             is_mllm=self.model_context.is_mllm,
             fill_default_value=fill_default_value,
             format=self._formats_policy_string(),
-            allow_w8_asym=self._w8_asym_flag(),
         )
         regex_config = extract_regex_config(
             model=self.model_context.model,
@@ -1063,7 +1049,6 @@ class BaseOrchestrator(object):
             ignore_layers=self.ignore_layers,
             fill_default_value=fill_default_value,
             format=self._formats_policy_string(),
-            allow_w8_asym=self._w8_asym_flag(),
         )
         # ``resolved_layer_config`` already descends from (and fully subsumes)
         # ``format_resolution.layer_config_patch`` -- ``source_layer_config`` above was
@@ -2075,24 +2060,16 @@ class BaseOrchestrator(object):
         """Comma-joined format names for policy checks (8-bit asym scoping)."""
         return _formats_policy_string_of(self.formats)
 
-    def _w8_asym_flag(self) -> bool:
-        """Effective allow_w8_asym flag: the compressor kwarg OR the field set
-        directly on a caller-owned AutoScheme (parse_scheme and the
-        generation-time gate honor the same field; the resolver family must
-        too, or a direct-API run crashes after expensive scoring)."""
-        return bool(getattr(self, "allow_w8_asym", False)) or bool(
-            getattr(getattr(self, "scheme", None), "allow_w8_asym", False)
-        )
-
     def _assert_w8_asym_exportable(self) -> None:
         """Re-check the 8-bit asym policy once the export format is final.
 
         Construction-time validation runs before ``quantize_and_save(format=...)``
         may supply the format, so it is conservative (native semantics). Re-check
         here with the actual format: llm_compressor exports keep W8 asym."""
+        from auto_round import envs
         from auto_round.schemes import format_allows_w8_asym
 
-        if self.allow_w8_asym or format_allows_w8_asym(self._formats_policy_string()):
+        if envs.AR_ALLOW_W8_ASYM or format_allows_w8_asym(self._formats_policy_string()):
             return
         if getattr(self, "data_type", None) == "int" and getattr(self, "bits", None) == 8:
             if getattr(self, "sym", None) is False:
@@ -2102,7 +2079,7 @@ class BaseOrchestrator(object):
                     "symmetric-only and Marlin supports zero points at 4 bits only. Use a "
                     "symmetric 8-bit scheme (drop --asym), an asymmetric width of 7 bits or "
                     "fewer, format 'auto_round:llm_compressor' (compressed-tensors serves W8 "
-                    "asym), or pass allow_w8_asym/--allow_w8_asym to skip this check."
+                    "asym), or set AR_ALLOW_W8_ASYM=1 to skip this check."
                 )
 
     def quantize_and_save(

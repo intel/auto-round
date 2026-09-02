@@ -2548,7 +2548,7 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
     disk_index=None,
-    w8_asym_allowed: bool = False,
+    export_format: str = None,
 ):
     """Score every candidate scheme in ``auto_scheme.options`` against ``quant_layer_names``
     and return per-layer per-scheme losses used by the caller to pick a final bit-width
@@ -3504,10 +3504,13 @@ def _gen_layer_config(
     layer_config = copy.deepcopy(fixed_layer_scheme)
     # fixed pins (lm_head, MTP layer, ...) bypass the options-level sym rule
     # in parse_scheme -- apply the same 8-bit-symmetric pinning here. The
-    # allowance comes from the compressor (format-derived + flag) via GenScheme
-    # or from the scheme object itself; both are ORed.
+    # allowance comes from the export format (llm_compressor serves W8 asym)
+    # or the AR_ALLOW_W8_ASYM opt-in.
+    from auto_round import envs
+    from auto_round.schemes import format_allows_w8_asym
+
     _enforce_w8_symmetric_entries(
-        layer_config, allow_w8_asym=w8_asym_allowed or getattr(auto_scheme, "allow_w8_asym", False)
+        layer_config, allow_w8_asym=envs.AR_ALLOW_W8_ASYM or format_allows_w8_asym(export_format)
     )
     options = list(copy.deepcopy(auto_scheme.options))
     # Replace scheme preset names with actual QuantizationScheme objects
@@ -3564,9 +3567,8 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
     options. Entries WITHOUT an explicit sym would silently inherit the global
     --asym and are pinned; an EXPLICIT sym=False is refused up front -- there
     is no point spending quantization time on a configuration that can never
-    be served. allow_w8_asym skips both -- set by the builder from the
-    explicit --allow_w8_asym flag OR from an export format whose serving
-    stack accepts W8 asym (llm_compressor).
+    be served. The AR_ALLOW_W8_ASYM opt-in or an export format whose serving
+    stack accepts W8 asym (llm_compressor) skips both.
     """
     if allow_w8_asym:
         return 0
@@ -3580,7 +3582,7 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
                 "which this format cannot serve (vLLM W8 GPTQ-format weights are "
                 "symmetric-only; Marlin supports zero points at 4 bits only). Use a "
                 "symmetric 8-bit entry, an asymmetric width of 7 bits or fewer, format "
-                "'auto_round:llm_compressor', or pass allow_w8_asym/--allow_w8_asym."
+                "'auto_round:llm_compressor', or set AR_ALLOW_W8_ASYM=1."
             )
         if "sym" not in entry:
             entry["sym"] = True
@@ -3589,7 +3591,7 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
         logger.info(
             "AutoScheme: pinned %d fixed layer_config entr%s to symmetric 8-bit "
             "(8-bit asym is not servable in the requested export format; llm_compressor "
-            "and allow_w8_asym are the escape hatches)",
+            "and AR_ALLOW_W8_ASYM are the escape hatches)",
             pinned,
             "y" if pinned == 1 else "ies",
         )
@@ -3610,7 +3612,7 @@ def gen_layer_config(
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
     processor=None,
-    w8_asym_allowed: bool = False,
+    export_format: str = None,
     **kwargs,
 ):
     """Public AutoScheme entry.
@@ -3756,7 +3758,7 @@ def gen_layer_config(
             min_avg_bit_scheme=min_avg_bit_scheme,
             processor=processor,
             is_vlm=is_vlm,
-            w8_asym_allowed=w8_asym_allowed,
+            export_format=export_format,
             disk_index=disk_index,
         )
     except torch.OutOfMemoryError:
@@ -3789,7 +3791,7 @@ def gen_layer_config(
             min_avg_bit_scheme=min_avg_bit_scheme,
             processor=processor,
             is_vlm=is_vlm,
-            w8_asym_allowed=w8_asym_allowed,
+            export_format=export_format,
             disk_index=disk_index,
         )
 

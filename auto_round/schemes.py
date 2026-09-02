@@ -510,7 +510,7 @@ def format_allows_w8_asym(format: str | None) -> bool:
     # Multi-format requests are allowed only when EVERY requested format can
     # serve W8 asym (a mixed "auto_round,llm_compressor" request would still
     # produce a native artifact that stock vLLM cannot load - require the
-    # explicit --allow_w8_asym opt-in for that).
+    # explicit AR_ALLOW_W8_ASYM=1 opt-in for that).
     parts = str(format).split(",")
     return all("llm_compressor" in p.split(":") or "fake" in p.split(":") for p in parts)
 
@@ -519,18 +519,17 @@ def parse_scheme(
     scheme: Union[str, dict, QuantizationScheme, "AutoScheme"],
     user_scheme_overrides: dict[str, Any],
     format: str = None,
-    allow_w8_asym: bool = False,
 ) -> tuple[Union[str, QuantizationScheme], bool, dict[str, Any]]:
     """
     Parses the final scheme.
     """
+    from auto_round import envs
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     is_auto_scheme = isinstance(scheme, AutoScheme)
-    # The flag may also ride on the scheme object itself (AutoScheme field,
-    # set by the CLI and by the AutoRound builder).
-    scheme_flag = bool(getattr(scheme, "allow_w8_asym", False))
-    w8_asym_ok = allow_w8_asym or scheme_flag or format_allows_w8_asym(format)
+    # W8 asym is allowed for formats that can serve it, or via the explicit
+    # AR_ALLOW_W8_ASYM=1 opt-in for serving stacks beyond stock vLLM.
+    w8_asym_ok = envs.AR_ALLOW_W8_ASYM or format_allows_w8_asym(format)
     if is_auto_scheme:
         if not scheme.options:
             raise ValueError("AutoScheme options cannot be empty")
@@ -547,7 +546,7 @@ def parse_scheme(
         # serve W8 asym (native auto_round / auto_gptq / marlin): vLLM's
         # GPTQ-format kernels are symmetric-only and Marlin's zero-point
         # support is 4-bit only. Pin such options back to symmetric, loudly.
-        # llm_compressor exports (and --allow_w8_asym) keep asym.
+        # llm_compressor exports (and AR_ALLOW_W8_ASYM) keep asym.
         import dataclasses
 
         if not w8_asym_ok:
@@ -562,7 +561,7 @@ def parse_scheme(
                     logger.info(
                         "AutoScheme option %s stays symmetric: 8-bit asymmetric quantization is "
                         "not servable in this format (--asym applies to sub-8-bit options only; "
-                        "use format llm_compressor or --allow_w8_asym to keep W8 asym)",
+                        "use format llm_compressor or AR_ALLOW_W8_ASYM=1 to keep W8 asym)",
                         opt_i,
                     )
 
@@ -589,13 +588,13 @@ def parse_scheme(
         if final_attrs.get("sym") is False:
             if not w8_asym_ok:
                 # Formats without a servable W8-asym path fail before any quantization
-                # work starts. llm_compressor exports and --allow_w8_asym are exempt.
+                # work starts. llm_compressor exports and AR_ALLOW_W8_ASYM are exempt.
                 raise ValueError(
                     "8-bit asymmetric weight quantization is not supported for this format: "
                     "vLLM serves W8 GPTQ-format weights symmetric-only and Marlin supports "
                     "zero points at 4 bits only. Use a symmetric 8-bit scheme (drop --asym), "
                     "an asymmetric width of 7 bits or fewer, format 'auto_round:llm_compressor' "
-                    "(compressed-tensors serves W8 asym), or pass allow_w8_asym/--allow_w8_asym "
+                    "(compressed-tensors serves W8 asym), or set AR_ALLOW_W8_ASYM=1 "
                     "to skip this check."
                 )
             _group = final_attrs.get("group_size")

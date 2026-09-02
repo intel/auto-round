@@ -151,10 +151,10 @@ class TestAutoRoundAsym:
         _, out = ar.quantize_and_save(format="auto_round:llm_compressor", output_dir=self.save_dir)
         assert out
 
-    def test_w8_asym_flag_overrides_native_refusal(self, tiny_opt_model_path):
-        """--allow_w8_asym (API: allow_w8_asym=True) skips the native-format
-        refusal; the user opts into artifacts that stock vLLM GPTQ serving
-        may reject."""
+    def test_w8_asym_env_overrides_native_refusal(self, tiny_opt_model_path, monkeypatch):
+        """AR_ALLOW_W8_ASYM=1 skips the native-format refusal; the user opts
+        into artifacts that stock vLLM GPTQ serving may reject."""
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
         ar = AutoRound(
             tiny_opt_model_path,
             bits=8,
@@ -162,30 +162,30 @@ class TestAutoRoundAsym:
             sym=False,
             iters=0,
             disable_opt_rtn=True,
-            allow_w8_asym=True,
             seqlen=2,
             nsamples=1,
         )
-        assert ar.allow_w8_asym is True
+        assert type(ar).__name__ == "ModelFreeCompressor"
 
-    def test_w8_asym_scheme_object_spellings_regular_flow(self, tiny_opt_model_path):
+    def test_w8_asym_scheme_object_spellings_regular_flow(self, tiny_opt_model_path, monkeypatch):
         """A QuantizationScheme OBJECT with sym=False must take the same
-        format/flag policy as the kwargs spelling on the regular flow."""
+        format/env policy as the kwargs spelling on the regular flow."""
         from auto_round.schemes import QuantizationScheme
 
         obj = QuantizationScheme(bits=8, sym=False, data_type="int", group_size=128, act_bits=16)
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
         ar = AutoRound(
             tiny_opt_model_path,
             scheme=obj,
             iters=0,
             disable_opt_rtn=True,
             disable_model_free=True,
-            allow_w8_asym=True,
             amp=False,
             seqlen=2,
             nsamples=1,
         )
-        assert ar.allow_w8_asym is True
+        assert type(ar).__name__ == "CompressionOrchestrator"
+        monkeypatch.delenv("AR_ALLOW_W8_ASYM")
         ar2 = AutoRound(
             tiny_opt_model_path,
             scheme=obj,
@@ -197,7 +197,7 @@ class TestAutoRoundAsym:
             seqlen=2,
             nsamples=1,
         )
-        assert getattr(ar2, "allow_w8_asym", False) is False  # llmc needs no flag
+        assert type(ar2).__name__ == "CompressionOrchestrator"  # llmc needs no env
 
     def test_w8_asym_llm_compressor_recheck_at_save(self, tiny_opt_model_path, tmp_path):
         """A W8-asym scheme that slipped past construction without format
@@ -216,10 +216,10 @@ class TestAutoRoundAsym:
         )
         assert mf2.format == "llm_compressor"
 
-    def test_w8_asym_flag_survives_model_free_fallback(self, tiny_opt_model_path, tmp_path):
-        """The model-free fallback to the regular flow must forward the flag
-        (the fallback re-constructs AutoRound internally), and the forwarded
-        kwargs must actually carry it -- not just the core attribute."""
+    def test_w8_asym_env_survives_model_free_fallback(self, tiny_opt_model_path, tmp_path):
+        """The W8-asym opt-in is a process-wide environment variable, so the
+        model-free fallback (which re-constructs AutoRound internally) reads
+        the same opt-in without any kwarg forwarding."""
         from auto_round.compressors.model_free import ModelFreeCompressor
 
         mf = ModelFreeCompressor(
@@ -228,13 +228,9 @@ class TestAutoRoundAsym:
             sym=False,
             bits=8,
             group_size=128,
-            allow_w8_asym=True,
             output_dir=str(tmp_path / "mf_w8"),
         )
-        assert mf.allow_w8_asym is True
-        assert (
-            mf._fallback_init_kwargs.get("allow_w8_asym") is True
-        ), "the fallback must forward the flag to the regular AutoRound flow"
+        assert "allow_w8_asym" not in mf._fallback_init_kwargs
 
     # ------------------------------------------------------------------
     # Tuning path (iters=1): exercises the real sign-gradient tuning loop.

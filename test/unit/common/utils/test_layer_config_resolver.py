@@ -81,7 +81,7 @@ def test_explicit_w8_asym_layer_config_entry_raises():
 def test_inherited_w8_asym_layer_config_entry_pinned_symmetric():
     """An 8-bit entry without an explicit sym only inherits the global asym;
     pin it symmetric instead of failing the whole run (conservative default;
-    the llm_compressor format and allow_w8_asym are the escape hatches)."""
+    the llm_compressor format and AR_ALLOW_W8_ASYM are the escape hatches)."""
     model = nn.Sequential(nn.Linear(32, 32))
     scheme = ResolvedScheme.from_scheme(QuantizationScheme(bits=4, sym=False, act_bits=16, act_data_type="float"))
 
@@ -96,7 +96,7 @@ def test_inherited_w8_asym_layer_config_entry_pinned_symmetric():
     assert resolved["0"]["sym"] is True
 
 
-def test_extract_regex_config_honors_format_allowance():
+def test_extract_regex_config_honors_format_allowance(monkeypatch):
     """AutoScheme output can carry DP-selected W8-asym entries; extract_regex_config
     (the post-scoring export-metadata pass) must keep them under llm_compressor and
     still refuse them for native formats."""
@@ -134,7 +134,8 @@ def test_extract_regex_config_honors_format_allowance():
             format="auto_round",
         )
 
-    # flag exempts native formats too
+    # the opt-in env exempts native formats too
+    monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
     extract_regex_config(
         model=model,
         scheme=scheme,
@@ -142,5 +143,4 @@ def test_extract_regex_config_honors_format_allowance():
         supported_types=(nn.Linear,),
         inner_supported_types=(),
         format="auto_round",
-        allow_w8_asym=True,
     )

@@ -241,7 +241,11 @@ def pack_layer(name, model, device=None):
     # clamp(round(w/s) + zp - 2^(b-1)) reproduces q - 2^(b-1) for the
     # quantizer's own q in [0, 2^b-1], and (q_ct - zp_ct) * s == (q - zp) * s.
     # FLOAT schemes (fp8/mxfp) keep CT's native zp convention: no shift.
-    zp_shift = (1 << (scheme.weights.num_bits - 1)) if scheme.weights.type == QuantizationType.INT else 0
+    # QuantizationType is a str-Enum, but coerce defensively so the check
+    # holds whether ``type`` is the enum member or its plain string value.
+    zp_shift = (
+        (1 << (scheme.weights.num_bits - 1)) if QuantizationType(scheme.weights.type) == QuantizationType.INT else 0
+    )
     num_bits = scheme.weights.num_bits
     if not isinstance(layer.zp, torch.Tensor):
         zp_val = 0 if layer.sym else float(layer.zp)

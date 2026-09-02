@@ -525,7 +525,6 @@ class _ModelFreeCompressorCore:
         quant_nontext_module: bool = False,
         enable_torch_compile: Optional[bool] = None,
         disable_opt_rtn: bool = False,
-        allow_w8_asym: bool = False,
     ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
@@ -544,7 +543,6 @@ class _ModelFreeCompressorCore:
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
-        self.allow_w8_asym = allow_w8_asym
         # Keep default torch.compile policy consistent with standard compressor
         # behavior, while still honoring explicit user overrides.
         if enable_torch_compile is None:
@@ -1510,7 +1508,6 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         low_cpu_mem_usage: bool = True,
         enable_torch_compile: Optional[bool] = None,
         disable_opt_rtn: bool = False,
-        allow_w8_asym: bool = False,
         **kwargs,
     ) -> None:
         import copy
@@ -1546,7 +1543,6 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             quant_nontext_module=quant_nontext_module,
             enable_torch_compile=enable_torch_compile,
             disable_opt_rtn=disable_opt_rtn,
-            allow_w8_asym=allow_w8_asym,
         )
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
@@ -1583,12 +1579,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # Scheme fields are consumed above from ``kwargs``. Preserve them when
         # a later format check falls back to the regular AutoRound flow.
         fallback_init.update(self.user_scheme_overrides)
-        # Preserve the 8-bit-asym policy opt-in and the requested format so the
-        # regular-flow construction does not re-raise what the flag suppressed.
-        # The format is forwarded only when explicitly requested at construction;
-        # the fallback honors a format passed later to quantize_and_save().
-        if getattr(self, "allow_w8_asym", False):
-            fallback_init["allow_w8_asym"] = True
+        # Forward the construction format only when explicitly requested; the
+        # fallback honors a format passed later to quantize_and_save() (the
+        # 8-bit-asym opt-in is the AR_ALLOW_W8_ASYM env, read by parse_scheme
+        # on every route).
         if getattr(self, "_format_explicit", False) and self.format:
             fallback_init["format"] = self.format
 
@@ -1805,12 +1799,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # conservative when the format is not yet known). parse_scheme owns the
         # policy and the message; the scheme is still unresolved here, so pass
         # the raw inputs instead of self.default_scheme.
-        parse_scheme(
-            self.scheme_input,
-            dict(self.user_scheme_overrides or {}),
-            format=format,
-            allow_w8_asym=getattr(self, "allow_w8_asym", False),
-        )
+        parse_scheme(self.scheme_input, dict(self.user_scheme_overrides or {}), format=format)
         # Early fallback gate for model-free + AutoScheme: avoid running
         # costly delta-loss selection when format is known incompatible.
         if self._precheck_auto_scheme_fallback(format):

@@ -87,7 +87,6 @@ def _build_entry_compressor_kwargs(args) -> dict:
         "ignore_layers": args.ignore_layers,
         "quant_lm_head": args.quant_lm_head,
         "to_quant_block_names": args.to_quant_block_names,
-        "allow_w8_asym": args.allow_w8_asym,
     }
 
 
@@ -391,7 +390,6 @@ def tune(args):
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
-            allow_w8_asym=args.allow_w8_asym,
         )
 
     common_kwargs = _extract_common_quantization_kwargs(args)
