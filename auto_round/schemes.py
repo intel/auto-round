@@ -576,7 +576,6 @@ W7A16 = QuantizationScheme.from_dict(
 )
 
 W2A16 = QuantizationScheme.from_dict(
-
     {
         "bits": 2,
         "sym": True,

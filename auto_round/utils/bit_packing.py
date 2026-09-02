@@ -246,4 +246,3 @@ def infer_packed_bits(num_values: int, num_words: int) -> Optional[int]:
         return None
     bits = num_words * 32 // num_values
     return bits if bits in SUPPORTED_PACKING_BITS and num_values * bits == num_words * 32 else None
-
