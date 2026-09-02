@@ -24,6 +24,8 @@ from auto_round.cli.parser import (
     build_quantize_parser,
     build_root_parser,
 )
+from auto_round.compressors.config_resolution import ConfigResolutionError
+from auto_round.logger import logger
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -51,7 +53,7 @@ def _extract_common_quantization_kwargs(args) -> dict:
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
     return {
         "platform": args.platform,
-        "format": args.format,
+        "format": getattr(args, "_api_format", args.format),
         "dataset": args.dataset,
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
@@ -60,10 +62,15 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
         "enable_torch_compile": enable_torch_compile,
+        "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
         "trust_remote_code": not args.disable_trust_remote_code,
+        "static_kv_dtype": args.static_kv_dtype,
+        "static_kv_granularity": args.static_kv_granularity,
+        "static_attention_dtype": args.static_attention_dtype,
+        "static_attention_granularity": args.static_attention_granularity,
     }
 
 
@@ -142,7 +149,7 @@ RECIPES = {
 def list_item(argv=None):
     args = build_list_parser().parse_args(argv)
     if args.item in {"format", "formats"}:
-        from auto_round.formats import OutputFormat
+        from auto_round.export.formats import OutputFormat
 
         print("AutoRound supported output formats and quantization scheme:")
         print(OutputFormat.get_support_matrix())
@@ -211,7 +218,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     add_common_quantization_arguments(quant_group)
     for name in canonical_names:
         alg_group = mini.add_argument_group(f"Algorithm: {name}")
-        AlgorithmHandler.get(name).register(alg_group)
+        AlgorithmHandler.add_group(name, alg_group)
     mini.print_help()
     return True
 
@@ -219,12 +226,16 @@ def _print_algorithm_help(argv: list[str]) -> bool:
 def start(recipe="default", argv=None):
     recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
+    format_was_explicit = any(
+        arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
+    )
 
     if _print_algorithm_help(argv):
         return
 
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
+    args._api_format = args.format if format_was_explicit else None
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
@@ -267,6 +278,15 @@ def tune(args):
         if fmt not in SUPPORTED_FORMATS:
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
 
+    if any("llm_compressor" in fmt for fmt in formats):
+        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+        try:
+            check_compressed_tensors_supported(raise_error=True)
+        except ImportError as error:
+            logger.error(str(error))
+            raise SystemExit(1) from None
+
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning(
             "the auto_gptq kernel has issues with asymmetric quantization. "
@@ -280,19 +300,16 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
-    if args.enable_torch_compile:
-        logger.info(
-            "`torch.compile` is enabled to reduce tuning costs. "
-            "If it causes issues, you can disable it by removing `--enable_torch_compile` argument."
-        )
+    if args.enable_torch_compile is False:
+        logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
     model_name = args.model
     if model_name[-1] == "/":
         model_name = model_name[:-1]
     logger.info(f"start to quantize {model_name}")
 
-    from auto_round.compressors.base import BaseCompressor
-    from auto_round.compressors.entry import AutoRound as PipelineAutoRound
+    from auto_round import AutoRound
+    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
 
     if "bloom" in model_name:
         args.low_gpu_mem_usage = False
@@ -305,19 +322,13 @@ def tune(args):
                     f"{fmt} is not supported for lm-head quantization, please change to {auto_round_formats}"
                 )
 
-    enable_torch_compile = True if "--enable_torch_compile" in sys.argv else False
+    enable_torch_compile = args.enable_torch_compile
     scheme = args.scheme.upper()
 
     from auto_round.schemes import PRESET_SCHEMES
 
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
-
-    if args.disable_deterministic_algorithms:
-        logger.warning(
-            "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-            " please use enable_deterministic_algorithms instead. "
-        )
 
     from auto_round.utils import parse_layer_config_arg
 
@@ -332,13 +343,45 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
+    # Normalize --options: accepts both space-separated (nargs="+" list) and comma-separated string.
+    # Examples: --options W4A16 W8A16  OR  --options W4A16,W8A16
+    if args.options is not None:
+        flat = ",".join(args.options)  # handles list; each element may itself contain commas
+        args.options = ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+    # Normalize --shared_layers: supports three forms per invocation:
+    #   - all bare tokens (no commas): treated as one group
+    #     e.g. --shared_layers l1 l2       → [['l1', 'l2']]
+    #   - comma-containing tokens: each token is its own group
+    #     e.g. --shared_layers l1,l2 l3,l4 → [['l1','l2'], ['l3','l4']]
+    #   - single comma token: one group
+    #     e.g. --shared_layers l1,l2       → [['l1', 'l2']]
+    # Multiple --shared_layers flags always produce multiple groups (one per flag when each flag
+    # yields exactly one group, or more if a flag contains comma-tokens).
+    if args.shared_layers is not None:
+        normalized_groups = []
+        for invocation in args.shared_layers:
+            # invocation is a list of tokens from one --shared_layers flag (nargs="+")
+            if any("," in token for token in invocation):
+                # at least one comma token → each token becomes its own group
+                for token in invocation:
+                    group = [p.strip() for p in token.split(",") if p.strip()]
+                    if group:
+                        normalized_groups.append(group)
+            else:
+                # all bare names → bundle into a single group
+                group = [p.strip() for p in invocation if p.strip()]
+                if group:
+                    normalized_groups.append(group)
+        args.shared_layers = normalized_groups or None
+
     if args.avg_bits is not None:
         if args.options is None:
             raise ValueError("please set --options for auto scheme")
-        if enable_torch_compile:
+        if enable_torch_compile is False:
             logger.warning(
-                "`enable_torch_compile=True` with AutoScheme may cause compile errors "
-                "on some models. If so, try removing `--enable_torch_compile`."
+                "`torch.compile` is disabled with AutoScheme. "
+                "Enabling it (the default) is strongly recommended to save VRAM."
             )
         scheme = AutoScheme(
             options=args.options,
@@ -354,10 +397,10 @@ def tune(args):
 
     from auto_round.utils import clear_memory
 
-    autoround: BaseCompressor = PipelineAutoRound(
+    autoround: BaseCompressor = AutoRound(
         model_name,
-        scheme,
-        alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        scheme=scheme,
+        alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -366,7 +409,11 @@ def tune(args):
         ),
     )
 
-    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=no-member
+    model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
+        args.output_dir,
+        format=getattr(args, "_api_format", args.format),
+        max_shard_size=args.max_shard_size,
+    )
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()
 
@@ -395,6 +442,8 @@ def run_eval(argv=None):
 
     if args.model is None:
         args.model = args.model_name
+    if args.model_name is None:
+        args.model_name = args.model
     if "llama" in args.model.lower() and not args.add_bos_token:
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
@@ -411,6 +460,9 @@ def run_eval(argv=None):
             trust_remote_code=not args.disable_trust_remote_code,
             eval_model_dtype=args.eval_model_dtype,
             add_bos_token=args.add_bos_token,
+            num_fewshot=args.num_fewshot,
+            gen_kwargs=args.eval_gen_kwargs,
+            fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
     else:
         eval(args)
@@ -450,20 +502,24 @@ def _print_help(topic=None):
 
 
 def run():
-    argv = list(sys.argv[1:])
-    command, command_argv = _normalize_cli_invocation(argv)
+    try:
+        argv = list(sys.argv[1:])
+        command, command_argv = _normalize_cli_invocation(argv)
 
-    if command == "help":
-        root_args = build_root_parser().parse_args(argv)
-        _print_help(root_args.topic)
-        return
-    if command == "list":
-        list_item(command_argv)
-        return
-    if command == "eval":
-        run_eval(command_argv)
-        return
-    start(argv=command_argv)
+        if command == "help":
+            root_args = build_root_parser().parse_args(argv)
+            _print_help(root_args.topic)
+            return
+        if command == "list":
+            list_item(command_argv)
+            return
+        if command == "eval":
+            run_eval(command_argv)
+            return
+        start(argv=command_argv)
+    except ConfigResolutionError as error:
+        logger.error(str(error))
+        raise SystemExit(2) from error
 
 
 def run_best():

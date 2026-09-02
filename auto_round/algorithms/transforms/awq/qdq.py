@@ -63,24 +63,31 @@ class QDQTool:
         self.use_v2_scale_search: bool = False
 
     # ── runtime wiring ────────────────────────────────────────────────────────
-    def configure(self, compressor) -> None:
+    @staticmethod
+    def _block_quantizer_config(block_quantizer_or_composer):
+        """Return the terminal block-quantizer config from new or legacy hosts."""
+        block_quantizer = getattr(block_quantizer_or_composer, "block_quantizer", block_quantizer_or_composer)
+        config = getattr(block_quantizer, "config", None)
+        if config is not None:
+            return config
+        return getattr(block_quantizer_or_composer, "quantize_config", None)
+
+    def configure(self, composer, awq_config=None) -> None:
         """Derive QDQ behaviour from the run's block quantizer."""
-        block_config = getattr(compressor, "quantize_config", None)
-        self.disable_opt_rtn = bool(getattr(block_config, "disable_opt_rtn", False))
-        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(compressor)
+        block_config = self._block_quantizer_config(composer)
+        awq_disable_opt_rtn = getattr(awq_config, "disable_opt_rtn", None)
+        if awq_disable_opt_rtn is None:
+            awq_disable_opt_rtn = getattr(block_config, "disable_opt_rtn", False)
+        self.disable_opt_rtn = bool(awq_disable_opt_rtn)
+        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer)
 
     @staticmethod
-    def _block_quantizer_is_signroundv2(compressor) -> bool:
+    def _block_quantizer_is_signroundv2(block_quantizer_or_composer) -> bool:
         """Return ``True`` if the terminal block quantizer is SignRoundV2."""
-        block_config = getattr(compressor, "quantize_config", None)
-        if block_config is None:
-            return False
-        from auto_round.algorithms.registry import resolve_pipeline_member
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
 
-        try:
-            return resolve_pipeline_member(block_config).__name__ == "SignRoundV2Quantizer"
-        except Exception:
-            return False
+        config = QDQTool._block_quantizer_config(block_quantizer_or_composer)
+        return isinstance(config, SignRoundV2Config)
 
     # ── per-layer scheme resolution + dispatch ────────────────────────────────
     def _layer_config_for(self, layer: torch.nn.Module) -> dict:
@@ -173,6 +180,7 @@ class QDQTool:
             )
             if init_scale is not None:
                 quant_kwargs["init_scale"] = init_scale
+                quant_kwargs["imatrix"] = imatrix if isinstance(imatrix, torch.Tensor) else torch.ones_like(weight)
                 active_quant_func = opt_quant_func
 
         qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)

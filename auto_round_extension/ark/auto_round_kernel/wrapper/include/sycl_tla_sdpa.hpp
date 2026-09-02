@@ -87,6 +87,7 @@ struct Options {
   int v_stride_d = 1, v_stride_s = 0, v_stride_h = 0, v_stride_b = 0;
   int o_stride_s = 0, o_stride_d = 1, o_stride_h = 0, o_stride_b = 0;
   float softmax_scale = 0.0f;
+  float* lse = nullptr;  // LSE output buffer (null = skip)
   bool persistent = false;
 
   void print(std::ostream& os = std::cout) const {
@@ -313,6 +314,7 @@ struct KernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<FMHAKernel::ElementQ*>(options.mask),
          options.use_paged_kv ? options.page_table : nullptr, options.use_paged_kv ? options.page_size : 0,
@@ -362,7 +364,7 @@ struct FMHAConfig {
       cute::conditional_t<is_void_v<SubgroupLayoutPV_>,
                           decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{})), SubgroupLayoutPV_>;
 
-  template <bool isVarLen, bool CachedKV, bool PagedKV, class Scheduler>
+  template <bool HasMask, bool isVarLen, bool CachedKV, bool PagedKV, class Scheduler>
   static int run(const Options& options) {
     //
     // Run examples
@@ -418,7 +420,7 @@ struct FMHAConfig {
 
       CUTLASS_CHECK(runner.run(options, hw_info));
     } else {
-      if (options.mask) {
+      if constexpr (HasMask) {
         // Mainloop
         using CollectiveMainloop =
             cutlass::fmha::collective::SDPAFwdMainloop<MainloopDispatchPolicy, Causal, true, CachedKV, PagedKV,
@@ -470,8 +472,8 @@ struct FMHAConfig {
     return 0;
   }
 
+  template <bool HasMask, bool IsVarLen>
   static int run(const Options& options) {
-    bool cached_kv = options.seq_len_kv_cache > 0;
     if constexpr (persistent) {
       if (options.use_paged_kv || options.seq_len_kv_cache > 0) {
         std::cerr
@@ -479,23 +481,13 @@ struct FMHAConfig {
             << std::endl;
         return -1;
       }
-      return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualPersistentTileScheduler>(options);
-    } else if (options.use_paged_kv && !options.varlen) {
-      throw std::runtime_error("Paged KV without varlen is not supported yet");
-      // return run<false, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
-    } else if (!options.use_paged_kv && options.varlen && !cached_kv) {
-      return run<true, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
-    } else if (!options.use_paged_kv && !options.varlen && !cached_kv) {
-      return run<false, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
-    } else if (!options.use_paged_kv && options.varlen && cached_kv) {
-      throw std::runtime_error("Varlen with cached KV but without paged KV is not supported yet");
-      // return run<true, true, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
-    } else if (!options.use_paged_kv && !options.varlen && cached_kv) {
-      throw std::runtime_error("Cached KV without varlen is not supported yet");
-      // return run<false, true, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      return run<HasMask, false, false, false, cutlass::fmha::kernel::XeFHMAIndividualPersistentTileScheduler>(
+          options);
     } else {
-      throw std::runtime_error("The combination of options is not supported yet");
-      // return run<true, true, true, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
+      if (options.use_paged_kv || options.seq_len_kv_cache > 0) {
+        throw std::runtime_error("Paged or cached KV is not supported yet");
+      }
+      return run<HasMask, IsVarLen, false, false, cutlass::fmha::kernel::XeFHMAIndividualTileScheduler>(options);
     }
   }
 };
@@ -669,6 +661,7 @@ struct SageKernelRunner {
             stride_K_cache,
             static_cast<const FMHAKernel::ElementV*>(options.block_V),
             stride_V_cache,
+            static_cast<float*>(options.lse),
         },
         {options.softmax_scale, static_cast<float*>(options.mask), options.scale_block_size,
          static_cast<const float*>(options.qscale), static_cast<const float*>(options.kscale),
@@ -856,7 +849,8 @@ struct SageConfig {
 // Prefill Kernel Launch
 // ========================================================================
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
   constexpr int PipelineStages1 = 2;
@@ -868,10 +862,14 @@ inline int launch_prefill_kernel_128(Options const& options) {
   using ShapePV1 = Shape<_256, _32, _32>;
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/false, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages1,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/false, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(options);
+  } else {
+    return FMHAConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages1,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
 template <typename ElementQ, typename ElementK, typename ElementV, typename ElementO = ElementV, bool UseInt8PV = false,
@@ -914,7 +912,8 @@ inline int launch_sage_prefill_kernel_64(Options const& options) {
                           /*persistent=*/false, ElementQ, ElementK, ElementV, ElementO>::run(options);
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_prefill_kernel_64(Options const& options) {
   constexpr int PipelineStages = 1;
   using ShapeQK = Shape<_256, _64, _32>;
@@ -925,39 +924,54 @@ inline int launch_prefill_kernel_64(Options const& options) {
   using ShapePV1 = Shape<_128, _32, _64>;
   using ShapeOut1 = Shape<_128, _64>;
   using SubgroupLayoutQK1 = Layout<Shape<_8, _1, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/false, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/false, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(options);
+  } else {
+    return FMHAConfig<false, ShapeQK1, ShapePV1, ShapeOut1, SubgroupLayoutQK1, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_prefill_kernel_192(Options const& options) {
   constexpr int PipelineStages = 2;
   using ShapeQK = Shape<_256, _64, _32>;
   using ShapePV = Shape<_256, _32, _64>;
   using ShapeOut = Shape<_256, _192>;
   using SubgroupLayoutQK = Layout<Shape<_32, _1, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/false, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/false, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(options);
+  } else {
+    return FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_prefill_kernel_96(Options const& options) {
   constexpr int PipelineStages = 2;
   using ShapeQK = Shape<_128, _64, _32>;
   using ShapePV = Shape<_128, _32, _64>;
   using ShapeOut = Shape<_128, _96>;
   using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/false, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/false, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(options);
+  } else {
+    return FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_decode_kernel_128(Options const& options) {
   constexpr int PipelineStages = 1;
   using NUM_SG = std::conditional_t<persistent, _16, _8>;
@@ -966,13 +980,19 @@ inline int launch_decode_kernel_128(Options const& options) {
   using ShapePV = Shape<_1, _32, KV_TILE_SIZE>;
   using ShapeOut = Shape<_1, _128>;
   using SubgroupLayoutQK = Layout<Shape<_1, NUM_SG, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  } else {
+    return FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_decode_kernel_64(Options const& options) {
   constexpr int PipelineStages = 1;
   using NUM_SG = std::conditional_t<persistent, _16, _8>;
@@ -981,13 +1001,19 @@ inline int launch_decode_kernel_64(Options const& options) {
   using ShapePV = Shape<_1, _32, KV_TILE_SIZE>;
   using ShapeOut = Shape<_1, _64>;
   using SubgroupLayoutQK = Layout<Shape<_1, NUM_SG, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  } else {
+    return FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_decode_kernel_96(Options const& options) {
   constexpr int PipelineStages = 1;
   using NUM_SG = std::conditional_t<persistent, _16, _8>;
@@ -996,13 +1022,19 @@ inline int launch_decode_kernel_96(Options const& options) {
   using ShapePV = Shape<_1, _32, KV_TILE_SIZE>;
   using ShapeOut = Shape<_1, _96>;
   using SubgroupLayoutQK = Layout<Shape<_1, NUM_SG, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  } else {
+    return FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
-template <typename ElementQ, typename ElementK, typename ElementV, bool persistent = false>
+template <bool Causal, bool HasMask, bool IsVarLen, typename ElementQ, typename ElementK, typename ElementV,
+          bool persistent = false>
 inline int launch_decode_kernel_192(Options const& options) {
   constexpr int PipelineStages = 1;
   using NUM_SG = std::conditional_t<persistent, _16, _8>;
@@ -1011,10 +1043,15 @@ inline int launch_decode_kernel_192(Options const& options) {
   using ShapePV = Shape<_1, _32, KV_TILE_SIZE>;
   using ShapeOut = Shape<_1, _192>;
   using SubgroupLayoutQK = Layout<Shape<_1, NUM_SG, _1>>;
-  return options.is_causal ? FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options)
-                           : FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
-                                        /*persistent=*/persistent, ElementQ, ElementK, ElementV>::run(options);
+  if constexpr (Causal) {
+    return FMHAConfig<true, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  } else {
+    return FMHAConfig<false, ShapeQK, ShapePV, ShapeOut, SubgroupLayoutQK, void, PipelineStages,
+              /*persistent=*/persistent, ElementQ, ElementK, ElementV>::template run<HasMask, IsVarLen>(
+      options);
+  }
 }
 
 }  // namespace detail

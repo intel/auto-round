@@ -10,7 +10,7 @@
 <h3> 面向 LLM 的先进量化算法</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.13.1-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -35,6 +35,11 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
+* [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
+
+* [2026/08] 感谢 Humming Kernel，AutoScheme WOQ 在 vLLM 上的部署已实验性恢复：[*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890)，[*示例模型*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound)。注意：共享层需按 vLLM 的融合模式进行配置。
+
+* [2026/07] 在大多数场景默认启用 `torch.compile`，以加速量化，代价是~10G的额外内存使用。由于编译器优化，与未编译路径相比可能会出现细微的数值差异，这是符合预期的。如需关闭，可在 Python API 中传入 `enable_torch_compile=False`，或在命令行中使用 `--disable_torch_compile`。
 
 * [2026/06] AutoScheme对gguf格式优化，精度有所提升。具体结果请参考[文档](docs/auto_scheme_acc.md)。不过这些精度提升是以更高的调优时间和计算开销为代价的。
 
@@ -134,6 +139,8 @@ pip install auto-round
 
 ## 模型量化（CPU / Intel GPU / Gaudi / CUDA）
 
+> 如果在量化过程中遇到问题，可尝试启动纯 RTN 模式，具体是指将 `iters` 设置为 `0` 并打开 `disable_opt_rtn=True`。另外，使用 `group_size=32` 或混合比特也有助于提升效果。
+
 ### CLI 用法
 
 终端运行 `auto-round -h` 可以查看 auto-round 完整的参数列表。
@@ -155,7 +162,7 @@ auto-round \
   <summary>其他方案</summary>
 
   ```bash
-# 最佳精度，速度慢 3 倍，low_gpu_mem_usage 可节省 ~20G 显存，但会慢 ~30%
+# 最佳精度，速度慢 3 倍，low_gpu_mem_usage 可节省 ~20G 显存，但会慢 ~30%-100%
 auto-round-best \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" \
@@ -233,6 +240,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 算法相关设置
 
 - ​**​`enable_alg_ext`​**​（bool）：[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
+- **`alg_configs`**（str | Config | list）：选择一个或多个算法，例如 `"awq"`、`"auto_round"` 或 `['auto_round', 'quarot']`。预处理算法按照列表顺序执行，block quantizer 始终最后执行。算法专用参数可以通过对应的 config 对象传入，例如 `SignRoundConfig(iters=50)`。
 - ​**​`disable_opt_rtn`​**​（bool | None）：是否对特定方案（如 GGUF 与权重量化方案）禁用优化的 RTN 模式。优化的 RTN 模式需要标定数据和更多的算力来提升精度。默认值为 `None`：在大多数情况下，为提升精度，算法会自动采用优化的 RTN 模式（即 `False`）；仅在已知存在兼容性问题时，才会自动禁用（即 `True`）
 
 
@@ -247,14 +255,15 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 标定数据集
 
 - ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
+- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AUTO_ROUND_CACHE` 后则缓存在 `$AUTO_ROUND_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
 - ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
 - ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
 
 ##### 设备 / 速度配置
 
-- ​**​`enable_torch_compile`​**（bool）：通常建议设为 `True` 来提升量化速度、降低资源消耗，但是有极小概率会触发异常，建议使用最新的 tiron 版本。
-- ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 20% 的时间（默认 `False`）。
-- ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `False`）。
+- ​**​`enable_torch_compile`​**（bool）：启用 `torch.compile` 可能提升量化速度，但编译开销会改变峰值内存，某些模型或量化方案的峰值内存可能增加。除 Windows 外默认开启；Windows 上默认关闭，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。在 Windows 上可通过 Python 参数 `enable_torch_compile=True` 或命令行参数 `--enable_torch_compile` 强制开启；其他平台可使用 `enable_torch_compile=False` 或 `--disable_torch_compile` 关闭。
+- ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
+- ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 若要减少内存占用，可以设为 `True` 来启用即时保存（默认 `True`）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
 
 </details>
@@ -306,9 +315,6 @@ ar.quantize_and_save()
 </details>
 
 ### 视觉语言模型（VLM）的 API 调用方法
-
-如果在量化过程中遇到问题可尝试启动 RTN 模式，具体是指将 `iters` 设置为 `0` 并打开 `disable_opt_rtn`。另外可以将 `group_size` 设为 `32` 可以提升RTN模型的精度，副作用是有一定的性能下降。
-
 
 <details>
   <summary>点击展开</summary>

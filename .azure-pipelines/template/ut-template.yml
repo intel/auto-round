@@ -1,7 +1,4 @@
 parameters:
-  - name: dockerConfigName
-    type: string
-    default: "commonDockerConfig"
   - name: repo
     type: string
     default: "https://github.com/intel/auto-round"
@@ -17,9 +14,6 @@ parameters:
   - name: utContainerName
     type: string
     default: "AutoRoundUnitTest"
-  - name: imageSource
-    type: string
-    default: "build"
   - name: imageName
     type: string
     default: "auto-round"
@@ -32,18 +26,21 @@ parameters:
   - name: buildARKWheel
     type: string
     default: "false"
+  # Opt-in: on PR builds only run the test files touched by the PR. Off by
+  # default so the fast PR unit-test pipeline keeps running the full suite.
+  - name: filterChangedTests
+    type: boolean
+    default: false
 
 
 steps:
   - template: docker-template.yml
     parameters:
-      dockerConfigName: ${{ parameters.dockerConfigName }}
       repoName: ${{ parameters.imageName }}
       repoTag: ${{ parameters.imageTag }}
       dockerFileName: ${{ parameters.dockerFileName }}
       containerName: ${{ parameters.utContainerName }}
       repo: ${{ parameters.repo }}
-      imageSource: ${{ parameters.imageSource }}
 
   - task: DownloadPipelineArtifact@2
     condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
@@ -53,56 +50,49 @@ steps:
       path: $(Build.SourcesDirectory)/ark_wheel
     displayName: "Download ark wheel"
 
-  - ${{ if eq(parameters.imageSource, 'build') }}:
-    - script: |
-        set -eo pipefail
+  - script: |
+      set -eo pipefail
 
-        if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
-          ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
-        else
-          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --pre --no-deps"
-        fi
+      if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
+        ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
+      else
+        ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --pre --no-deps"
+      fi
 
-        if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
-          docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install -r auto_round_extension/ark/requirements.txt \
-            && ${ARK_WHEEL_INSTALL} \
-            && uv pip install -r requirements.txt \
-            && uv pip install -r test/test_ark/requirements.txt \
-            && uv pip install -r test/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && cd /auto-round && uv pip install . \
-            && uv pip list"
-        else 
-          docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install -r auto_round_extension/ark/requirements.txt \
-            && ${ARK_WHEEL_INSTALL} \
-            && uv pip install -r requirements.txt \
-            && uv pip install -r requirements-cpu.txt \
-            && uv pip install -r test/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip list"
-        fi
-      displayName: "Env Setup"
-
-  - ${{ if eq(parameters.imageSource, 'pull') }}:
-    - script: |
-        set -eo pipefail
-
+      if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install build \
-          && BUILD_HPU_ONLY=1 python -m build \
-          && pip install dist/*.whl \
-          && pip install -r test/test_hpu/requirements.txt \
-          && pip list"
-      displayName: "HPU Env Setup"
+          && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+          && uv pip install -r auto_round_extension/ark/requirements.txt \
+          && ${ARK_WHEEL_INSTALL} \
+          && uv pip install -r requirements.txt \
+          && uv pip install -r test/unit/test_ark/requirements.txt \
+          && uv pip install -r test/unit/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+          && cd /auto-round && uv pip install . \
+          && uv pip list"
+      else
+        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+          && uv pip install -r auto_round_extension/ark/requirements.txt \
+          && ${ARK_WHEEL_INSTALL} \
+          && uv pip install -r requirements.txt \
+          && uv pip install -r requirements-cpu.txt \
+          && uv pip install -r test/unit/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+          && uv pip list"
+      fi
+    displayName: "Env Setup"
 
   - script: |
       set -eo pipefail
 
-      docker exec -e NUMA_NODE=${NUMA_NODE} -e NUMA_CPUSET=${NUMA_CPUSET} -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} ${{ parameters.utContainerName }} \
-      bash -c "cd /auto-round/.azure-pipelines/scripts \
-        && bash ut/${{ parameters.utScriptFileName }}.sh ${{ parameters.utTestMode }}"
+      docker exec -e NUMA_NODE=${NUMA_NODE} \
+        -e NUMA_CPUSET=${NUMA_CPUSET} \
+        -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} \
+        -e UT_MODE=${{ parameters.utTestMode }} \
+        -e BUILD_REASON=${BUILD_REASON} \
+        -e SYSTEM_PULLREQUEST_TARGETBRANCH=${SYSTEM_PULLREQUEST_TARGETBRANCH} \
+        -e FILTER_CHANGED_TESTS=${{ lower(parameters.filterChangedTests) }} \
+        ${{ parameters.utContainerName }} \
+        bash -c "cd /auto-round/.azure-pipelines/scripts && bash ut/${{ parameters.utScriptFileName }}.sh"
     displayName: "Run UT"
 
   - task: PublishPipelineArtifact@1

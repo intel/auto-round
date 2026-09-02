@@ -34,6 +34,14 @@ from auto_round.utils import to_device
 class MLLMCalibrator(LLMCalibrator):
     """Calibrator for multimodal (vision-language) models."""
 
+    def __init__(self, compressor):
+        super().__init__(compressor)
+        self.processor = compressor.processor
+        self.image_processor = compressor.image_processor
+        self.template = compressor.template
+        self.quant_nontext_module = compressor.quant_nontext_module
+        self.extra_data_dir = compressor.extra_data_dir
+
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the multimodal model so block-forward hooks fire.
@@ -47,128 +55,124 @@ class MLLMCalibrator(LLMCalibrator):
         from auto_round.special_model_handler import MISTRAL_3_2_MODELS, NOT_SUPPORT_ONLY_TEXT_MODELS
         from auto_round.utils.model import resolve_model_type
 
-        c = self.compressor
-        mc = c.model_context
-        processor = mc.processor
-        image_processor = mc.image_processor
-        tokenizer = mc.tokenizer
-
+        image_processor = self.image_processor
+        tokenizer = self.tokenizer
         # Handle template selection
-        if isinstance(mc.model, PreTrainedModel):
-            model_type = getattr(mc.model.config, "model_type", None)
-            if model_type == "llava" and c.template is None:
-                c.template = "default"
+        if isinstance(self.model, PreTrainedModel):
+            model_type = getattr(self.model.config, "model_type", None)
+            if model_type == "llava" and self.template is None:
+                self.template = "default"
 
-        if hasattr(mc.model, "name_or_path"):
-            name = mc.model.name_or_path
+        if hasattr(self.model, "name_or_path"):
+            name = self.model.name_or_path
             if any([m in name for m in MISTRAL_3_2_MODELS]):
-                c.template = "mistral3_2"
+                self.template = "mistral3_2"
 
-        template_name = c.template
+        template_name = self.template
         if template_name is None:
-            template_name = resolve_model_type(mc.model) or getattr(mc.model.config, "model_type", None)
+            template_name = resolve_model_type(self.model) or getattr(self.model.config, "model_type", None)
         if template_name is None:
             template_name = "default"
 
-        c.template_obj = get_template(
+        template_obj = get_template(
             template_name,
-            model=mc.model,
+            model=self.model,
             tokenizer=tokenizer,
-            processor=processor,
+            processor=self.processor,
             image_processor=image_processor,
-            use_rtn=getattr(c.quantize_config, "iters", None) == 0,
-            quiet=not c.quant_nontext_module,
+            quiet=not self.quant_nontext_module,
         )
 
         logger.info(f"Using MLLM template: {template_name}")
 
-        dataset = c.dataset.replace(" ", "") if isinstance(c.dataset, str) else c.dataset
+        dataset = self.dataset.replace(" ", "") if isinstance(self.dataset, str) else self.dataset
         if dataset is None:
-            dataset = c.template_obj.default_dataset
+            dataset = template_obj.default_dataset
 
-        if isinstance(c.dataset, str):
-            dataset = c.dataset.replace(" ", "")
+        if isinstance(dataset, str):
+            dataset = dataset.replace(" ", "")
             # Switch text-only dataset to MLLM dataset when quant_nontext_module=True,
             # as text datasets cannot calibrate vision modules.
             from auto_round.calib_dataset import CALIB_DATASETS
 
-            if c.quant_nontext_module and dataset in CALIB_DATASETS:
+            if self.quant_nontext_module and dataset in CALIB_DATASETS:
                 logger.warning(
                     "Text only dataset cannot be used for calibrating non-text modules,"
                     " switching to liuhaotian/llava_conv_58k"
                 )
                 dataset = "liuhaotian/llava_conv_58k"
-            elif dataset in CALIB_DATASETS and c.template_obj.model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
+            elif dataset in CALIB_DATASETS and template_obj.model_type in NOT_SUPPORT_ONLY_TEXT_MODELS:
                 logger.warning(
-                    f"{getattr(mc.model.config, 'model_type', c.template_obj.model_type)}"
+                    f"{getattr(self.model.config, 'model_type', template_obj.model_type)}"
                     f" does not support for {dataset},"
                     " will use liuhaotian/llava_conv_58k with default config as an alternative."
                 )
                 dataset = "liuhaotian/llava_conv_58k"
+            orig_bs = self.batch_size
             (
-                c.dataloader,
-                c.batch_size,
-                c.seqlen,
-                c.gradient_accumulate_steps,
+                self.dataloader,
+                self.batch_size,
+                self.seqlen,
             ) = get_mllm_dataloader(
-                template=c.template_obj,
-                model=mc.model,
+                template=template_obj,
+                model=self.model,
                 tokenizer=tokenizer,
-                processor=processor,
+                processor=self.processor,
                 image_processor=image_processor,
                 dataset=dataset,
-                extra_data_dir=c.extra_data_dir,
-                seqlen=c.seqlen,
+                extra_data_dir=self.extra_data_dir,
+                seqlen=self.seqlen,
                 bs=bs,
-                seed=c.seed,
+                seed=self.seed,
                 nsamples=nsamples,
-                gradient_accumulate_steps=c.gradient_accumulate_steps,
-                quant_nontext_module=c.quant_nontext_module,
+                quant_nontext_module=self.quant_nontext_module,
             )
+            if orig_bs != 1 and self.batch_size == 1:
+                self.is_only_supported_bs1 = True
         else:
-            c.dataloader = c.dataset
+            self.dataloader = self.dataset
 
         # Process data through the model for calibration
         total_cnt = 0
-        for data in c.dataloader:
+        for data in self.dataloader:
             if data is None:
                 continue
 
             try:
                 if isinstance(data, str):
                     # List-of-strings dataset: process through template → model inputs
-                    processed = c.template_obj.processor.get_input(
-                        text=data, images=None, max_length=c.seqlen, squeeze=False
+                    processed = template_obj.processor.get_input(
+                        text=data, images=None, max_length=self.seqlen, squeeze=False
                     )
-                    data_new = {k: to_device(v, mc.model.device) for k, v in processed.items()}
+                    data_new = {k: to_device(v, self.model.device) for k, v in processed.items()}
                 elif isinstance(data, dict) and "text" in data:
                     # FakeDataLoader-style {"text": ..., "image": ...}: process through template
                     text = data["text"]
                     if isinstance(text, dict):
                         text = [text]
-                    input_text = c.template_obj._encode(text)
-                    processed = c.template_obj.processor.get_input(
+                    input_text = template_obj._encode(text)
+                    processed = template_obj.processor.get_input(
                         text=input_text,
                         images=data.get("image", None),
-                        max_length=c.seqlen,
+                        max_length=self.seqlen,
                         squeeze=False,
                     )
                     data_new = {}
                     for key, value in processed.items():
                         tensor_val = value if isinstance(value, torch.Tensor) else torch.as_tensor(value)
-                        data_new[key] = to_device(tensor_val, mc.model.device)
+                        data_new[key] = to_device(tensor_val, self.model.device)
                 elif isinstance(data, dict):
                     data_new = {
-                        key: value.to(mc.model.device) if isinstance(value, torch.Tensor) else value
+                        key: value.to(self.model.device) if isinstance(value, torch.Tensor) else value
                         for key, value in data.items()
                     }
                 else:
                     data_new = data
 
                 if isinstance(data_new, dict):
-                    mc.model(**data_new)
+                    self.model(**data_new)
                 else:
-                    mc.model(data_new)
+                    self.model(data_new)
             except NotImplementedError:
                 pass
             except Exception as e:

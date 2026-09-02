@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 import time
+from functools import wraps
 from pathlib import Path
 
 import requests
@@ -40,6 +41,23 @@ from auto_round.utils import (
 TMP_DIR_NAME = "tmp_dir"
 
 gguf = LazyImport("gguf")
+
+
+def _clear_gguf_model_instances():
+    globals().pop("gguf_model_instance_global", None)
+
+
+def _clear_gguf_model_instances_on_error(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            _clear_gguf_model_instances()
+            raise
+
+    return wrapper
+
 
 FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
     "f32": gguf.LlamaFileType.ALL_F32,
@@ -74,6 +92,23 @@ def _set_mmproj_output_path(model_instance):
     return model_instance
 
 
+def _create_conversion_model(model_class, hparams, **kwargs):
+    if not getattr(model_class, "supports_mtp_export", False):
+        return model_class(hparams=hparams, **kwargs)
+
+    # AutoRound exports the target model only; unlike llama.cpp's CLI, it does not
+    # provide a separate MTP export mode. Conversion filters read this flag from
+    # the concrete class, so restore it immediately after constructing the instance.
+    original_no_mtp = model_class.no_mtp
+    try:
+        model_class.no_mtp = True
+        model_instance = model_class(hparams=hparams, **kwargs)
+        model_instance.no_mtp = True
+        return model_instance
+    finally:
+        model_class.no_mtp = original_no_mtp
+
+
 def create_model_class(
     output_dir,
     model,
@@ -83,6 +118,7 @@ def create_model_class(
     model_type=ModelType.TEXT,
     device="cpu",
     quant_nontext_module: bool = False,
+    is_auto_scheme: bool = False,
 ):
     tmp_work_dir = model.name_or_path
     os.makedirs(output_dir, exist_ok=True)
@@ -111,12 +147,13 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         hparams.pop("quantization_config", None)
-        model_instance = model_class(
+        model_instance = _create_conversion_model(
+            model_class,
+            hparams,
             dir_model=Path(tmp_work_dir),
             ftype=output_type,
             fname_out=Path(output_dir),
             is_big_endian=False,
-            hparams=hparams,
             model_name=model_name,
             split_max_tensors=False,
             split_max_size=0,
@@ -134,12 +171,14 @@ def create_model_class(
                 low_cpu_mem_usage=low_cpu_mem_usage,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
+                is_auto_scheme=is_auto_scheme,
             )
         model_instance = handle_special_model(model_instance, model_architecture)
     return model_instance
 
 
 @torch.inference_mode()
+@_clear_gguf_model_instances_on_error
 def pack_gguf_layer(
     name,
     model,
@@ -152,6 +191,7 @@ def pack_gguf_layer(
     model_type=ModelType.TEXT,
     device="cpu",
     quant_nontext_module=False,
+    is_auto_scheme=False,
 ):
     """Export the model to gguf format."""
     global gguf_model_instance_global
@@ -166,6 +206,7 @@ def pack_gguf_layer(
                 model_type=ModelType.TEXT,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
+                is_auto_scheme=is_auto_scheme,
             )
         ]
         if model_type == ModelType.MMPROJ:
@@ -179,6 +220,7 @@ def pack_gguf_layer(
                     model_type=ModelType.MMPROJ,
                     device=device,
                     quant_nontext_module=quant_nontext_module,
+                    is_auto_scheme=is_auto_scheme,
                 )
             )
 
@@ -236,6 +278,7 @@ def save_quantized_as_gguf(
     mllm=False,
     device="cpu",
     quant_nontext_module=False,
+    is_auto_scheme=False,
     **kwargs,
 ):
     """Export the model to gguf format."""
@@ -252,6 +295,7 @@ def save_quantized_as_gguf(
                 model_type=ModelType.TEXT,
                 device=device,
                 quant_nontext_module=quant_nontext_module,
+                is_auto_scheme=is_auto_scheme,
             )
         ]
         if mllm:
@@ -264,15 +308,18 @@ def save_quantized_as_gguf(
                     model_type=ModelType.MMPROJ,
                     device=device,
                     quant_nontext_module=quant_nontext_module,
+                    is_auto_scheme=is_auto_scheme,
                 )
             )
 
-    for gguf_model in gguf_model_instance_global:
-        model_kind = "mmproj" if gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ else "text"
-        logger.info("Start writing %s GGUF model to %s", model_kind, gguf_model.fname_out)
-        gguf_model.write()
-        rt = time.time() - st
-        logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")
-    del gguf_model_instance_global
+    try:
+        for gguf_model in gguf_model_instance_global:
+            model_kind = "mmproj" if gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ else "text"
+            logger.info("Start writing %s GGUF model to %s", model_kind, gguf_model.fname_out)
+            gguf_model.write()
+            rt = time.time() - st
+            logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")
+    finally:
+        _clear_gguf_model_instances()
 
     return model

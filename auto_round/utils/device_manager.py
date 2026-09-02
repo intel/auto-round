@@ -48,6 +48,7 @@ import contextlib
 import functools
 import gc
 import re
+import sys
 from typing import Optional, Union
 
 import torch
@@ -60,6 +61,7 @@ __all__ = [
     "device_manager",
     "normalize_default_device_map",
     "get_ar_device",
+    "default_enable_torch_compile",
     "get_current_device_manager",
     "get_current_device_type",
     "is_device_available",
@@ -410,9 +412,35 @@ class ARDevice:
         return _DeviceIndexContext(self, index)
 
     def total_memory(self, index: int = 0) -> int:
-        fn = getattr(self._module, "get_memory_info", None)
+        return self.mem_get_info(index)[1]
 
-        return fn(index)[1] if callable(fn) else None  # pylint: disable=E1102
+    def mem_get_info(self, index: int = 0) -> tuple[int, int]:
+        """Return ``(free_bytes, total_bytes)`` for ``index``."""
+        modules = (self._module, self.get_device_module(self.type))
+        for module in dict.fromkeys(modules):
+            if module is None:
+                continue
+            for name in ("get_memory_info", "mem_get_info"):
+                fn = getattr(module, name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    free, total = fn(index)  # pylint: disable=E1102
+                    if int(total) > 0:
+                        return int(free), int(total)
+                except Exception:
+                    continue
+
+        module = self.get_device_module(self.type)
+        get_properties = getattr(module, "get_device_properties", None)
+        if callable(get_properties):
+            try:
+                total = int(get_properties(index).total_memory)
+                if total > 0:
+                    return max(0, total - self.memory_reserved(index)), total
+            except Exception:
+                pass
+        return 0, 0
 
     def memory_reserved(self, index: int = 0) -> int:
         if self._module is None:
@@ -431,17 +459,6 @@ class ARDevice:
             return int(fn(index)) if callable(fn) else 0  # pylint: disable=E1102
         except Exception:
             return 0
-
-    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-    #     """Return ``(free_bytes, total_bytes)`` for ``index``.
-    #
-    #     Falls back to ``total - reserved`` when the backend lacks a native
-    #     ``mem_get_info`` implementation.
-    #     """
-    #     module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
-    #     fn = getattr(module, "get_memory_info", None)
-    #
-    #     return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
 
     # -- numeric format / mixed-precision policy ---------------------------
     def supports_bf16(self) -> bool:
@@ -877,6 +894,13 @@ def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> AR
     return device_manager.get_ar_device(device_type)
 
 
+def default_enable_torch_compile(
+    device: Union[None, str, int, torch.device] = None, platform_name: str | None = None
+) -> bool:
+    """Return the safe torch.compile default for a backend."""
+    return (platform_name or sys.platform) != "win32"
+
+
 def get_current_device_manager() -> ARDevice:
     """Return the :class:`Device` handle for the active backend (or CPU)."""
     return device_manager.current()
@@ -1055,7 +1079,15 @@ def get_device_memory(i: int = 0) -> int:
     dev_mgr = get_current_device_manager()
     if not dev_mgr.is_available() or dev_mgr.type == "cpu":
         raise RuntimeError("No supported device found (CUDA/XPU/HPU/...).")
-    return dev_mgr.total_memory(i) / 1024 / 1024 / 1024
+
+    total_memory = dev_mgr.total_memory(i)
+    if total_memory is None:
+        raise RuntimeError(f"Failed to query total memory for device index {i} on backend {dev_mgr.type}.")
+    if total_memory <= 0:
+        raise RuntimeError(
+            f"Detected non-positive total memory ({total_memory}) for device index {i} on backend {dev_mgr.type}."
+        )
+    return total_memory / 1024**3
 
 
 def _clear_memory_for_cpu_and_cuda(
@@ -1121,7 +1153,17 @@ def _clear_memory_for_cpu_and_cuda(
 class ClearMemory:
 
     def __init__(self, device_list: Union[list, tuple, None] = None):
-        self.device_list = device_list
+        self._device_list = device_list
+
+    @property
+    def device_list(self):
+        if self._device_list is None:
+            return device_manager.device_list
+        return self._device_list
+
+    @device_list.setter
+    def device_list(self, value):
+        self._device_list = value
 
     def __call__(
         self,
@@ -1132,6 +1174,12 @@ class ClearMemory:
         from auto_round.utils.device import _force_trim_malloc, is_hpex_available, memory_monitor
 
         if is_hpex_available():
+            if device_list is not None:
+                self.device_list = device_list
+            final_device_list = self.device_list
+            # Keep peak accounting consistent with non-HPU path: sample first,
+            # then release memory so post-clear values do not hide true peaks.
+            memory_monitor.update_hpu(final_device_list)
             # Clear CPU-side references so Python can reclaim them.
             if isinstance(tensor, list):
                 for i in range(len(tensor)):
@@ -1139,7 +1187,6 @@ class ClearMemory:
             tensor = None
             gc.collect()
             _force_trim_malloc()
-            memory_monitor.update_hpu(device_list)
             return
         else:
             if device_list is not None:
@@ -1149,4 +1196,4 @@ class ClearMemory:
             _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
 
 
-clear_memory = torch._dynamo.disable()(ClearMemory(device_list=[0]))
+clear_memory = torch._dynamo.disable()(ClearMemory(device_list=None))

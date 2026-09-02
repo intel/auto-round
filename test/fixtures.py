@@ -79,6 +79,24 @@ def tiny_deepseek_v2_model_path():
 
 
 @pytest.fixture(scope="session")
+def tiny_deepseek_v2_model_path_cpu():
+    """Reduced fixture for CPU-only tests (2 MoE layers, 8 experts)."""
+    model_name_or_path = deepseek_v2_name_or_path
+    tiny_model_path = "./tmp/tiny_deepseek_v2_model_path_cpu"
+    tiny_model_path = save_tiny_model(
+        model_name_or_path,
+        tiny_model_path,
+        num_layers=2,
+        num_experts=8,
+        trust_remote_code=False,
+        use_config=True,
+        config_overrides={"first_k_dense_replace": 0},
+    )
+    yield tiny_model_path
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
 def tiny_gemma_model_path():
     model_name_or_path = gemma_name_or_path
     tiny_model_path = "./tmp/tiny_gemma_model_path"
@@ -322,6 +340,10 @@ def tiny_qwen35_moe_model_path():
     config.num_hidden_layers = 1
     config.text_config.layer_types = config.text_config.layer_types[: config.text_config.num_hidden_layers]
     config.text_config.use_cache = False
+    # This tiny model doesn't materialize the MTP block, so keep block_count aligned
+    # with the actual number of exported layers to avoid a gguf tensor mismatch
+    # (e.g. missing "blk.N.attn_norm.weight") when loading with llama.cpp.
+    config.text_config.mtp_num_hidden_layers = 0
     model = Qwen3_5MoeForConditionalGeneration(config)
     model.save_pretrained(tiny_model_path)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
@@ -354,17 +376,21 @@ def tiny_qwen2_5_omni_model_path():
     tests while still exercising the real config structure.
     Skipped automatically when the model path does not exist locally.
     """
-    from huggingface_hub import hf_hub_download
-
-    model_name = qwen2_5_omni_name_or_path
+    model_name_or_path = get_model_path(qwen2_5_omni_name_or_path)
+    if not os.path.isdir(model_name_or_path):
+        pytest.skip("Qwen2.5-Omni fixture is not available locally")
     tiny_model_path = "./tmp/tiny_qwen2_5_omni_model_path"
-    tiny_model_path = save_tiny_model(model_name, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
     tokenizer.save_pretrained(tiny_model_path)
     processor.save_pretrained(tiny_model_path)
     # Copy model-specific files required for from_pretrained (e.g. spk_dict.pt for token2wav)
-    file_path = hf_hub_download(repo_id="Qwen/Qwen2.5-Omni-3B", filename="spk_dict.pt", local_dir=tiny_model_path)
+    local_spk_dict = os.path.join(model_name_or_path, "spk_dict.pt")
+    if os.path.exists(local_spk_dict):
+        shutil.copy(local_spk_dict, tiny_model_path)
+    else:
+        pytest.skip("Qwen2.5-Omni spk_dict.pt is not available locally")
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
@@ -377,23 +403,25 @@ def tiny_qwen3_omni_moe_model_path():
     still exercising the real config structure.
     Skipped automatically when the model path does not exist locally.
     """
-    model_name = qwen3_omni_name_or_path
+    model_name_or_path = get_model_path(qwen3_omni_name_or_path)
     tiny_model_path = "./tmp/tiny_qwen3_omni_moe_model_path"
-    tiny_model_path = save_tiny_model(model_name, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    processor = transformers.AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
     tokenizer.save_pretrained(tiny_model_path)
     processor.save_pretrained(tiny_model_path)
     yield tiny_model_path
     shutil.rmtree(tiny_model_path, ignore_errors=True)
 
 
-# Mock torch.cuda.get_device_capability to always return (9, 0) like H100
+# Mock FP8 capability checks without letting the fake capability affect Inductor code generation.
 @pytest.fixture()
 def mock_fp8_capable_device():
     from unittest.mock import patch
 
-    with patch("torch.cuda.get_device_capability", return_value=(9, 0)):
+    with patch("torch.cuda.get_device_capability", return_value=(9, 0)), patch(
+        "torch.compile", side_effect=lambda function, *args, **kwargs: function
+    ):
         yield
 
 
@@ -401,7 +429,10 @@ def mock_fp8_capable_device():
 def clean_tmp_model_folder():
     yield
     shutil.rmtree("./tmp", ignore_errors=True)  # unittest default workspace
-    shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default workspace
+    shutil.rmtree("./ar_work_space", ignore_errors=True)  # autoround default workspace
+    shutil.rmtree("./tmp_autoround", ignore_errors=True)  # autoround default model output path
+    # autoround default AutoScheme cache path
+    shutil.rmtree(os.path.expanduser("~/.cache/auto_round"), ignore_errors=True)
 
 
 # Create objective fixtures for testing

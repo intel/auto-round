@@ -34,10 +34,12 @@ Two implementation backends share this one schema (method B):
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from auto_round.algorithms.config import AlgorithmConfig, AlgorithmParameterRegistry
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.algorithms.transforms.base import BaseRotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.utils import logger
@@ -56,7 +58,7 @@ HADAMARD_TYPES: frozenset[str] = frozenset(
 _SUPPORTED_BACKENDS: frozenset[str] = frozenset({"auto", "inplace", "transform"})
 
 
-class RotationConfig(BaseModel, BaseRotationConfig):
+class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
     """Unified configuration for Hadamard rotation/transform applied to a model.
 
     See the module docstring for a description of the three backends.
@@ -83,6 +85,51 @@ class RotationConfig(BaseModel, BaseRotationConfig):
     # for random hadamard (transform path)
     random_seed: bool = Field(default=False, exclude=True)
 
+    cli_include_common_args: ClassVar[bool] = False
+
+    @classmethod
+    def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        registry.add_argument(
+            "--rotation_type",
+            "--rotation-hadamard-type",
+            field="hadamard_type",
+            dest="rotation_hadamard_type",
+            default=None,
+            fallback="hadamard",
+            choices=["hadamard", "random_hadamard", "quarot_hadamard"],
+            help="Hadamard transform variant.",
+        )
+        registry.add_argument(
+            "--rotation_backend",
+            field="backend",
+            dest="rotation_backend",
+            default="auto",
+            choices=["auto", "inplace", "transform"],
+            help="Rotation backend to use.",
+        )
+        registry.add_argument(
+            "--rotation_block_size",
+            field="block_size",
+            dest="rotation_block_size",
+            default=None,
+            type=int,
+            help="Grouped Hadamard block size.",
+        )
+        registry.add_argument(
+            "--fuse_online_to_weight",
+            field="fuse_online_to_weight",
+            default=None,
+            action="boolean_optional",
+            help="Fuse online Hadamard rotation into weights.",
+        )
+        registry.add_argument(
+            "--allow_online_rotation",
+            field="allow_online_rotation",
+            default=True,
+            action="boolean_optional",
+            help="Allow online activation rotation.",
+        )
+
     model_config = {"arbitrary_types_allowed": True}
 
     def __init__(self, **data: Any) -> None:
@@ -105,6 +152,10 @@ class RotationConfig(BaseModel, BaseRotationConfig):
             **data: Additional Pydantic field values forwarded to BaseModel.
         """
         super().__init__(**data)
+
+    def can_compile_block_forward(self) -> bool:
+        """Hadamard may install online hooks that are not Dynamo compatible."""
+        return False
 
     @field_validator("backend")
     @classmethod
@@ -207,3 +258,15 @@ def normalize_rotation_config(
         return RotationConfig.model_validate(cfg_dict).model_dump()
     except Exception as exc:
         raise ValueError(f"Invalid RotationConfig: {exc}") from exc
+
+
+register_algorithm(
+    "hadamard",
+    aliases=("hadamard", "random_hadamard", "quarot_hadamard"),
+    config_factory=RotationConfig,
+    summary="Hadamard rotation/transform applied before quantization.",
+    alias_factories={
+        "random_hadamard": lambda: RotationConfig(hadamard_type="random_hadamard"),
+        "quarot_hadamard": lambda: RotationConfig(hadamard_type="quarot_hadamard"),
+    },
+)

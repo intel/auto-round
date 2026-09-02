@@ -34,6 +34,8 @@ Usage:
 import torch
 from torch import nn
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
+from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
 
@@ -216,51 +218,66 @@ def linear_loop_experts_forward(
     num_tokens = hidden_states.size(0)
     num_experts = self.num_experts
 
-    # Reshape for easier indexing
-    # S is the number of selected token-expert pairs (S = num_tokens * num_top_k)
-    token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, num_top_k).reshape(-1)  # (S,)
-    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
-    expert_ids = top_k_index.reshape(-1)  # (S,)
+    def _run_experts_with_routes(route_indices: torch.Tensor, route_weights: torch.Tensor) -> torch.Tensor:
+        # Reshape for easier indexing
+        # S is the number of selected token-expert pairs (S = num_tokens * num_top_k)
+        token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, num_top_k).reshape(-1)  # (S,)
+        sample_weights = route_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
+        expert_ids = route_indices.reshape(-1)  # (S,)
 
-    # Get current hidden states for selected samples
-    selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
+        # Get current hidden states for selected samples
+        selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
 
-    # Allocate output tensor
-    out_per_sample = torch.zeros(token_idx.size(0), hidden_dim, device=device, dtype=hidden_states.dtype)
+        out_per_sample = torch.zeros_like(selected_hidden_states)
+        for expert_idx in range(num_experts):
+            sample_idx = torch.nonzero(expert_ids == expert_idx, as_tuple=False).squeeze(-1)
+            if sample_idx.numel() == 0:
+                continue
+            expert_input = selected_hidden_states.index_select(0, sample_idx)
 
-    # Process each expert
-    for expert_idx in range(num_experts):
-        # Find samples routed to this expert
-        mask = expert_ids == expert_idx
-        if not mask.any():
-            continue
+            # Get this expert's container with its projection layers
+            expert = getattr(self, str(expert_idx))
+            gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
+            up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
 
-        expert_input = selected_hidden_states[mask]  # (num_samples_for_expert, hidden_dim)
+            # Apply gating
+            if hasattr(self, "_apply_gate"):
+                gate_up_out = torch.cat([gate_out, up_out], dim=-1)
+                gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
+            else:
+                gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
 
-        # Get this expert's container with its projection layers
-        expert = getattr(self, str(expert_idx))
-        gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
-        up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
+            # Down projection
+            expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
 
-        # Apply gating
-        if hasattr(self, "_apply_gate"):
-            gate_up_out = torch.cat([gate_out, up_out], dim=-1)
-            gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
-        else:
-            gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
+            out_per_sample.index_copy_(0, sample_idx, expert_out.to(out_per_sample.dtype))
 
-        # Down projection
-        expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
+        # Apply routing weights
+        out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
 
-        # Store results
-        out_per_sample[mask] = expert_out.to(out_per_sample.dtype)
+        # Accumulate results using deterministic reshape+sum instead of index_add_
+        # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
+        return out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
 
-    # Apply routing weights
-    out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
+    # Main output path: always preserve original router selection.
+    final_hidden_states = _run_experts_with_routes(top_k_index, top_k_weights)
 
-    # Accumulate results using deterministic reshape+sum instead of index_add_
-    # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
-    final_hidden_states = out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+    # Auxiliary coverage path: when enabled, run forced-routing once to trigger
+    # expert hooks/stat collection, but discard this output to avoid changing
+    # model semantics.
+    if force_all_experts_routing_enabled():
+        forced_indices, forced_weights = build_forced_routing(
+            module=self,
+            routing_scores=None,
+            top_k=num_top_k,
+            num_experts=num_experts,
+            dtype=hidden_states.dtype,
+            num_tokens=num_tokens,
+            device=device,
+            normalize=True,
+        )
+        with torch.no_grad():
+            _ = _run_experts_with_routes(forced_indices, forced_weights)
 
     # Reshape back to original format if input was [batch_size, seq_len, hidden_dim]
     if batch_size is not None:
@@ -519,6 +536,13 @@ def _unfuse_experts_weights_inplace(
         dim1, dim2 = first_param.shape[1], first_param.shape[2]
         is_transposed = dim1 < dim2
 
+    fusion_spec = build_standard_moe_fusion_spec(
+        detected_projections={name: config.copy() for name, config in detected_projections.items()},
+        num_experts=num_experts,
+        checkpoint_transposed=is_transposed,
+        module=module,
+    )
+
     dtype = first_param.dtype
     target_device = first_param.device if first_param.device.type != "meta" else "cpu"
 
@@ -590,6 +614,8 @@ def _unfuse_experts_weights_inplace(
     # Ensure num_experts is set
     if not hasattr(module, "num_experts"):
         module.num_experts = num_experts
+
+    register_moe_fusion_spec(module, fusion_spec)
 
     # Mark as unfused for detection during save
     module._unfused_experts = True

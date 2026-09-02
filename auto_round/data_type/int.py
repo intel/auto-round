@@ -112,7 +112,7 @@ def quant_tensor_opt_rtn_sym(tensor, bits=4, group_size=-1, v=0, q_scale_thresh=
         imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
         imatrix = imatrix.reshape(tensor.shape)
 
-        imatrix = _imatrix_handle_zero(imatrix, tensor, bits)
+        imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
 
     scale = search_scales(tensor, bits, qw=imatrix)
     scale = torch.where(scale < 0, torch.clamp(scale, max=-q_scale_thresh), torch.clamp(scale, min=q_scale_thresh))
@@ -221,6 +221,9 @@ def quant_tensor_sym(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
 
     wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
     wmax_abs = wmax_tmp * max_scale
@@ -274,6 +277,9 @@ def quant_tensor_asym(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
@@ -331,6 +337,9 @@ def quant_tensor_sym_gptq(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
@@ -394,6 +403,9 @@ def quant_tensor_asym_wo_round(
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale

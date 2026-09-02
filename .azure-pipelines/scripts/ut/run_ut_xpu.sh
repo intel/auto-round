@@ -1,16 +1,30 @@
 #!/bin/bash
 set -e
 
+test_part=${UT_MODE}
+
 source /auto-round/.azure-pipelines/scripts/change_color.sh
+source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
+
+TIMEOUT=30
+SESSION_TIMEOUT=600
 
 function setup_environment() {
     echo "##[group]set up UT env..."
     uv pip install pytest-cov
+    uv pip install -U chardet
     uv pip list
     echo "##[endgroup]"
 
+    # Keep the GGUF conversion helpers in sync with the model conversion code.
+    # The common GGUF tests exercise MODEL_ARCH entries that are only available
+    # in the current llama.cpp master branch.
+    cd ~ || exit 1
+    git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git \
+        && cd llama.cpp/gguf-py \
+        && uv pip install .
+
     git config --global --add safe.directory /auto-round
-    rm -rf /auto-round/auto_round
     cd /auto-round/test || exit 1
 
     echo "##[group]check xpu env..."
@@ -22,7 +36,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/xpu.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}
@@ -30,90 +44,144 @@ function setup_environment() {
     SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 }
 
-function run_unit_test() {
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+function run_pytest() {
+    local test_case=$1
+    local ut_log_name=$2
 
-    for test_file in $(find ./test_ark -name "test*.py" | sort); do
-        local test_basename=$(basename ${test_file} .py)
+    echo "##[group]Running ${test_case}..."
+    numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
+        pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
+    echo "##[endgroup]"
+}
 
-        echo "##[group]Running ark ${test_file}..."
-        local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
-    done
+function run_common_group() {
+    # Run a group of common test files together in a single pytest invocation.
+    # $1: group name (used for log file), remaining args: test files
+    local group_name=$1
+    shift
+    local group_tests
+    group_tests=$(filter_changed_tests "test" "$*")
 
-    for test_file in $(find ./test_xpu -name "test*.py" ! -name "test_llmc_integration.py" | sort); do
-        local test_basename=$(basename ${test_file} .py)
+    if [ -n "${group_tests}" ]; then
+        local ut_log_name="${LOG_DIR}/unittest_common_${group_name}.log"
+        run_pytest "${group_tests}" "${ut_log_name}"
+    fi
+}
 
-        echo "##[group]Running xpu ${test_file}..."
-        local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+function run_common_unit_test() {
+    # common test case for cpu/gpu/xpu
+    # Group cases by the first-level folder under unit/common; a single test
+    # file placed directly under unit/common (e.g. test_main.py) runs on its own.
+    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+        if [ -d "${entry}" ]; then
+            local group_name=$(basename "${entry}")
+            run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
+        elif [[ "$(basename "${entry}")" == test*.py ]]; then
+            local group_name=$(basename "${entry}" .py)
+            run_common_group "${group_name}" "${entry}"
+        fi
     done
 }
 
-function run_unit_test_vllm() {
-    echo "##[group]set up vllm UT env..."
-    BUILD_TYPE="nightly" uv pip install -r ./test_xpu/requirements_llmc.txt
+function run_unit_test() {
+    local xpu_tests
+    xpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_xpu -name "test*.py" | sort)")
+
+    for test_file in ${xpu_tests}; do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
+        run_pytest "${test_file}" "${ut_log_name}"
+    done
+}
+
+function run_unit_test_ark() {
+    local ark_tests
+    ark_tests=$(filter_changed_tests "test" "$(find ./unit/test_ark -name "test*.py" | sort)")
+
+    for test_file in ${ark_tests}; do
+        local test_basename=$(basename ${test_file} .py)
+        local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
+        run_pytest "${test_file}" "${ut_log_name}"
+    done
+}
+
+function run_unit_test_llmc() {
+    local llmc_tests
+    llmc_tests=$(filter_changed_tests "test" "$(find ./integration/test_xpu -name "test_llmc_integration.py" | sort)")
+    if [ -z "${llmc_tests}" ]; then
+        echo "No changed XPU LLMC test file, skip."
+        return 0
+    fi
+
+    echo "##[group]set up llmc UT env..."
+    BUILD_TYPE="nightly" uv pip install -r ./integration/test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
 
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-
-    for test_file in $(find ./test_xpu -name "test_llmc_integration.py" | sort); do
+    for test_file in ${llmc_tests}; do
         local test_basename=$(basename ${test_file} .py)
-
-        echo "##[group]Running xpu vLLM ${test_file}..."
-        local ut_log_name="${LOG_DIR}/unittest_xpu_${test_basename}.log"
-        numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-            pytest --cov="${auto_round_path}" --cov-report= --cov-append -vs --disable-warnings \
-            ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        local ut_log_name="${LOG_DIR}/unittest_${test_basename}.log"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python /auto-round/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function collect_log() {
+    touch "${SUMMARY_LOG}"
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
-    cp .coverage "${LOG_DIR}/.coverage"
-    python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-    python -m coverage html -d "${LOG_DIR}/htmlcov"
+    if [ -f .coverage ]; then
+        # Suffix with the matrix part so the nightly Coverage stage can combine
+        # the parts without the artifacts overwriting each other.
+        cp .coverage "${LOG_DIR}/.coverage.${UT_MODE:-base}"
+        # The tests import auto_round from site-packages, so the raw data holds
+        # container-only paths. "[paths] source" rewrites those to repo-relative
+        # ones, but coverage.py applies it during "combine" only -- reporting on
+        # its own emits /home/hostuser/.venv/... which no agent can resolve, and
+        # PublishCodeCoverageResults then reports "file does not exist".
+        # Combine from the repo root so the relative "auto_round" entry matches.
+        (
+            cd /auto-round || exit 1
+            rm -f .coverage
+            python -m coverage combine --keep "${LOG_DIR}/.coverage.${UT_MODE:-base}"
+            python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+            python -m coverage html -d "${LOG_DIR}/htmlcov"
+        )
+    else
+        echo "No coverage data (no test selected), skip coverage report."
+        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
+    fi
 }
 
 function print_coverage() {
     echo "##[group]overall code coverage..."
-    python -m coverage report
+    [ -f .coverage ] && python -m coverage report || echo "No coverage data."
     echo "##[endgroup]"
 }
 
 function main() {
     setup_environment
-    run_unit_test
-    run_unit_test_vllm
+    init_changed_tests
+    scope_changed_tests "$(cd /auto-round && find test/unit/common test/unit/test_ark test/unit/test_xpu test/integration/test_xpu -name "test_*.py" 2>/dev/null)"
+    if [[ "$test_part" == "llmc" ]]; then
+        run_unit_test_llmc
+    elif [[ "$test_part" == "ark" ]]; then
+        run_unit_test_ark
+    elif [[ "$test_part" == "common" ]]; then
+        run_common_unit_test
+    elif [[ "$test_part" == "base" ]]; then
+        run_unit_test
+    else
+        echo "invalid name $test_part"
+    fi
     collect_log
     print_coverage
     print_summary
 }
 
-main
+main "$@"

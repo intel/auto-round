@@ -23,29 +23,57 @@ pip install --no-build-isolation .
 
 ## Testing
 
+Tests are split into three tiers under `test/`: `unit/` (fast, runs in PR CI),
+`integration/` (third-party frameworks, runs nightly), and `e2e/` (full models /
+real inference engines, runs weekly). Each tier is further split by hardware
+(`test_cpu/`, `test_cuda/`, `test_hpu/`, `test_xpu/`, `test_ark/`, `test_mlx/`).
+
 ```bash
-# CPU tests (most common during development)
-pytest test/test_cpu/ -x -q
+# CPU unit tests (most common during development)
+pytest test/unit/test_cpu/ -x -q
 
 # Single test
-pytest test/test_cpu/ -k "test_name" -x -q
+pytest test/unit/test_cpu/ -k "test_name" -x -q
 
-# Hardware-specific
-pytest test/test_cuda/
-pytest test/test_hpu/ --mode=lazy   # or --mode=compile
-pytest test/test_xpu/
+# Hardware-specific unit tests
+pytest test/unit/test_cuda/
+pytest test/unit/test_hpu/ --mode=lazy   # or --mode=compile
+pytest test/unit/test_xpu/
+
+# Slower suites (nightly / weekly)
+pytest test/integration/test_cpu/
+pytest test/e2e/test_cpu/
 ```
 
 Test fixtures create tiny models (OPT-125M, Qwen-0.6B) at session scope — first run downloads them.
 
-## Code Style
+## Code Quality & Pre-commit
 
-- **Line length: 120** (non-default) — enforced by black, isort, ruff, pylint
-- **Formatter: black** (profile used by isort)
-- **Import sorting: isort** with `profile=black`, first-party: `auto_round`, `auto_round_extension`
-- **Linter: ruff** — rules `E4, E7, E9, F, NPY, FURB`; E501/E402/F401/F403 are intentionally ignored
-- **License header**: Apache 2.0 auto-inserted into `.py/.yaml/.yml/.sh` under `auto_round/` and `auto_round_extension/`
-- Pre-commit config: `.pre-commit-config.yaml`
+All syntax, formatting, licensing, spelling, and linting checks are enforced via `.pre-commit-config.yaml`.
+
+### Execution Rules for Agents
+
+1. **Always run pre-commit after editing files**:
+   - For focused changes (preferred):
+     ```bash
+     pre-commit run --files <changed_file1> <changed_file2>
+     ```
+   - For a specific hook/tool (e.g., `ruff`, `black`, `codespell`):
+     ```bash
+     pre-commit run <hook_id> --files <changed_file>
+     ```
+   - For repository-wide checks (recommended for extensive changes or initial runs; fast and lightweight):
+     ```bash
+     pre-commit run --all-files
+     ```
+2. **Rerun until clean**: Tools like `ruff` and `codespell` automatically fix issues but will exit with non-zero on first modification (`--exit-non-zero-on-fix`). Keep changes and rerun the command until all checks pass.
+3. **Manual fixes**: Only make manual changes if a check fails and cannot be auto-fixed (e.g., `bandit` security findings, `check-json`, or complex syntax errors).
+
+### Automated Checks Summary
+
+- **Auto-fixing hooks**: `black` (line length 120), `isort` (imports), `ruff` (lint fixes), `insert-license` (Apache 2.0 header), `codespell` (typos), `mixed-line-ending` (LF).
+- **Check-only hooks**: `bandit` (security issues under `auto_round/`), `typos`, `check-yaml`/`check-json`, `markdown-link-check`.
+- *Note*: `auto_round/export/export_to_gguf/conversion/` is intentionally excluded from most hooks.
 
 ## Commit & PR Conventions
 
@@ -63,11 +91,11 @@ Test fixtures create tiny models (OPT-125M, Qwen-0.6B) at session scope — firs
 
 - `auto_round/` — core library (AutoRound class, sign-SGD, exporters, eval, data types)
 - `auto_round_extension/` — hardware backends (CUDA, HPU, IPEX/XPU, Triton, ARK, vLLM)
-- `test/` — tests organized by hardware: `test_cpu/`, `test_cuda/`, `test_hpu/`, `test_xpu/`
+- `test/` — tests organized by tier then hardware: `unit/` (PR CI), `integration/` (nightly), `e2e/` (weekly), each with `test_cpu/`, `test_cuda/`, ...
 - `examples/` — usage examples for different model types
 
 ## Gotchas
 
 - `setup.py` forces `CC=CXX=g++` at import time
 - Version is computed dynamically from git tags — untagged commits produce dev versions
-- Some test dependencies (AutoAWQ, GPTQModel, llama-cpp) require manual git installs — see comments in `test/test_cuda/requirements.txt`
+- Some test dependencies (AutoAWQ, GPTQModel, llama-cpp) require manual git installs — see comments in `test/unit/test_cuda/requirements.txt`

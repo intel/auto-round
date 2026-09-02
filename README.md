@@ -7,10 +7,10 @@
 </p>
 
 
-<h3> Advanced Quantization Algorithm for LLMs</h3>
+<h3> Advanced Quantization Toolkit for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.13.1-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -36,6 +36,11 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+* [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.
+
+* [2026/08] AutoScheme WOQ deployment on vLLM is experimentally restored, thanks to Humming Kernel: [*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890), [*Example Model*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound). Note: shared layers must be configured per vLLM's fusion patterns.
+
+* [2026/07] `torch.compile` is enabled in most scenarios to accelerate quantization, at the cost of ~10G extra RAM usage.  Minor numerical differences compared with the non-compiled path are expected due to compiler optimizations. To disable it, pass `enable_torch_compile=False` to the Python API or use `--disable_torch_compile` on the CLI.
 
 * [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
 
@@ -166,7 +171,7 @@ We offer another two recipes, `auto-round-best` and `auto-round-light`, designed
   <summary>Other Recipes</summary>
 
   ```bash
-# Best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30% slower
+# Best accuracy, 3X slower, low_gpu_mem_usage could save ~20G but ~30%-100% slower
 auto-round-best \
     --model Qwen/Qwen3-0.6B \
     --scheme "W4A16" \
@@ -221,7 +226,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(model_name_or_path, scheme="W4A16")
 
 # Highest accuracy (4–5× slower).
-# `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30% slower.
+# `low_gpu_mem_usage=True` saves ~20GB VRAM but runs ~30%-100% slower.
 # ar = AutoRound(model_name_or_path, nsamples=512, iters=1000, low_gpu_mem_usage=True)
 
 # Faster quantization (2–3× speedup) with slight accuracy drop at W4G128.
@@ -243,6 +248,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Algorithm Settings
 - **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
 
 - **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues.
 
@@ -254,12 +260,13 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
+- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 
 ##### Device/Speed Configuration
-- **`enable_torch_compile` (bool)**: If no exception is raised, typically we recommend setting it to True for faster quantization with lower resource.
-- **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~20% more tuning time (default is `False`).
+- **`enable_torch_compile` (bool)**: Enabling `torch.compile` may speed up quantization, but compilation overhead can change peak memory and may increase it for some models or quantization schemes. It is enabled by default except on Windows, where it is disabled because TorchInductor requires the MSVC `cl.exe` compiler. On Windows, pass `enable_torch_compile=True` in Python or `--enable_torch_compile` on the CLI to force enable it. On other platforms, use `enable_torch_compile=False` or `--disable_torch_compile` to opt out.
+- **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~30%-100% more tuning time (default is `False`).
 - **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `True`).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
 
@@ -415,4 +422,3 @@ Special thanks to open-source low precision libraries such as AutoGPTQ, AutoAWQ,
 
 ## 🌟 Support Us
 If you find AutoRound helpful, please ⭐ star the repo and share it with your community!
-

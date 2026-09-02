@@ -19,67 +19,105 @@ for i in "$@"; do
 done
 
 source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/change_color.sh
+# Change-based test selection helpers. REPO_DIR points the detector at the
+# agent checkout instead of the container default (/auto-round).
+REPO_DIR="${BUILD_SOURCESDIRECTORY}"
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
-LOG_DIR="${BUILD_SOURCESDIRECTORY}/ut_log_dir"
+LOG_DIR="${BUILD_SOURCESDIRECTORY}/log_dir"
 mkdir -p "${LOG_DIR}"
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+# print_summary reads this file unconditionally; a matrix part that selects no
+# test never writes it, so make sure it always exists.
+touch "${SUMMARY_LOG}"
 
 function setup_environment() {
     export TZ='Asia/Shanghai'
     export TQDM_MININTERVAL=120
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
+    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc"
 }
 
 function print_summary() {
-    local status=0
-    while IFS= read -r line; do
-        if [[ "$line" == *"FAILED"* ]]; then
-            $LIGHT_RED && echo "$line" && $RESET
-            status=1
-        elif [[ "$line" == *"PASSED"* ]]; then
-            $LIGHT_GREEN && echo "$line" && $RESET
-        elif [[ "$line" == *"NO_TESTS"* ]]; then
-            $LIGHT_YELLOW && echo "$line" && $RESET
-        else
-            echo "$line"
-        fi
-    done < "${SUMMARY_LOG}"
-    exit $status
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
 }
 
 function check_storage_usage() {
     echo "##[group]check storage usage..."
     df -h
-    du -sh "${BUILD_SOURCESDIRECTORY}"
-    du -sh /root/.cache/huggingface
-    du -sh /root/.cache/huggingface/hub/*
-    du -sh /root/.venv
+    du -sh "${BUILD_SOURCESDIRECTORY}" || true
+    du -sh /root/.cache/huggingface || true
+    du -sh /root/.cache/huggingface/hub/* || true
+    du -sh /root/.venv || true
     echo "##[endgroup]"
 }
 
-function run_unit_test() {
-    # install unit test dependencies
-    echo "##[group]set up UT env..."
+function setup_basic_test_env() {
+    echo "##[group]Setting up test environment..."
+
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
-    uv pip install -r test/test_cuda/requirements.txt
-    uv pip install -r test/test_cuda/requirements_diffusion.txt
+    uv pip install -r test/unit/test_cuda/requirements.txt
+    uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
-    uv pip install kernels==0.12.3 # For sm120: https://github.com/huggingface/transformers/blob/v5.12.1/setup.py#L94
+    uv pip install -U pytest-cov
+    uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
     uv pip uninstall torch torchvision
-    uv pip install torch==2.12.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
     echo "##[endgroup]"
 
     uv pip list
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
-
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
+}
 
-    find ./test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
+function run_pytest() {
+    local test_case=$1
+    local ut_log_name=$2
+
+    echo "##[group]Running ${test_case}..."
+    pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
+        --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
+    echo "##[endgroup]"
+}
+
+function run_common_group() {
+    # Run a group of common test files together in a single pytest invocation.
+    # $1: group name (used for log file), remaining args: test files
+    local group_name=$1
+    shift
+    local group_tests
+    group_tests=$(filter_changed_tests "test" "$*")
+
+    if [ -n "${group_tests}" ]; then
+        local ut_log_name="${LOG_DIR}/unittest_cuda_common_${group_name}.log"
+        run_pytest "${group_tests}" "${ut_log_name}"
+    fi
+}
+
+function run_common_unit_test() {
+    # common test case for cpu/gpu/xpu
+    # Group cases by the first-level folder under unit/common; a single test
+    # file placed directly under unit/common (e.g. test_main.py) runs on its own.
+    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+        if [ -d "${entry}" ]; then
+            local group_name=$(basename "${entry}")
+            run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
+        elif [[ "$(basename "${entry}")" == test*.py ]]; then
+            local group_name=$(basename "${entry}" .py)
+            run_common_group "${group_name}" "${entry}"
+        fi
+    done
+}
+
+
+function run_unit_test() {
+    # run ci cuda ut scope 
+    find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
@@ -93,17 +131,18 @@ function run_unit_test() {
     fi
     end_line=$(( start_line + chunk_size - 1 ))
     selected_files=$(sed -n "${start_line},${end_line}p" all_tests.txt)
+    selected_files=$(filter_changed_tests "test" "${selected_files}")
+
+    if [ -z "${selected_files}" ]; then
+        echo "No changed CUDA unit test file in part ${test_part}, skip."
+        return 0
+    fi
 
     for test_file in ${selected_files}; do
-        echo "##[group]Running ${test_file}..."
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_${test_basename}.log
-
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA Unit Tests" --log-pattern "unittest_cuda_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_llmc() {
@@ -113,7 +152,7 @@ function run_unit_test_llmc() {
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
-        -r test/test_cuda/requirements_llmc.txt \
+        -r test/integration/test_cuda/requirements_llmc.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     uv pip install -U chardet
@@ -123,17 +162,11 @@ function run_unit_test_llmc() {
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
-
-    for test_file in $(find ./test_cuda -name "test_llmc*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
+    for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_llmc_${test_basename}.log
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA LLMC Tests" --log-pattern "unittest_cuda_llmc_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_sglang() {
@@ -142,7 +175,7 @@ function run_unit_test_sglang() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
-    uv pip install -r test/test_cuda/requirements_sglang.txt \
+    uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
@@ -153,17 +186,12 @@ function run_unit_test_sglang() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_sglang*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_sglang_${test_basename}.log
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
-
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA SGLang Tests" --log-pattern "unittest_cuda_sglang_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
 }
 
 function run_unit_test_vllm() {
@@ -172,7 +200,7 @@ function run_unit_test_vllm() {
     rm -rf /root/.venv
     uv venv --python=3.12 /root/.venv
     uv pip install -U pytest-cov
-    uv pip install -r test/test_cuda/requirements_vllm.txt \
+    uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
     local flashinfer_version=$(uv pip show flashinfer-python 2>/dev/null | grep -i "^Version" | awk '{print $2}')
@@ -183,35 +211,48 @@ function run_unit_test_vllm() {
     echo "##[endgroup]"
 
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
-    export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coverage"
 
-    for test_file in $(find ./test_cuda -name "test_vllm*.py" | sort); do
-        echo "##[group]Running ${test_file}..."
+    for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
         local test_basename=$(basename ${test_file} .py)
         local ut_log_name=${LOG_DIR}/unittest_cuda_vllm_${test_basename}.log
-        pytest -m "not skip_ci" -vs --disable-warnings ${test_file} 2>&1 | tee ${ut_log_name}
-        echo "##[endgroup]"
+        run_pytest "${test_file}" "${ut_log_name}"
     done
+}
 
-    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py --test-type "CUDA VLLM Tests" --log-pattern "unittest_cuda_vllm_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+function collect_log() {
+    touch "${SUMMARY_LOG}"
+    python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py \
+        --test-type "Unit Tests" --log-pattern "unittest_cuda_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+    fi
 }
 
 function main() {
     setup_environment
-    if [ "${test_case}" == "vlm" ]; then
-        run_unit_test_vlm
-    elif [ "${test_case}" == "specific" ]; then
+    init_changed_tests
+    if [ "${test_case}" == "nightly" ]; then
         run_unit_test_sglang
         run_unit_test_llmc
         run_unit_test_vllm
-    elif [ "${test_case}" == "all" ]; then
-        run_unit_test
+    elif [ "${test_case}" == "ci" ]; then
+        # Mirror the selection below: tests excluded from the ci run (vlms,
+        # llmc, sglang, vllm, multiple_card) must not enable filtering.
+        scope_changed_tests "$(cd "${BUILD_SOURCESDIRECTORY}" && find test/unit/common test/unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card")"
+        setup_basic_test_env
+        if [ "${test_part}" == "0" ]; then
+            run_common_unit_test
+        else
+            run_unit_test
+        fi
     else
-        echo "##[error]Invalid test case specified: ${test_case}. Please use 'vlm', 'specific', or 'all'."
+        echo "##[error]Invalid test case specified: ${test_case}. Please use 'nightly' or 'ci'."
         exit 1
     fi
+    collect_log
     check_storage_usage
     print_summary
 }
 
-main
+main "$@"

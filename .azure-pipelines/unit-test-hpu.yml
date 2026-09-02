@@ -10,12 +10,12 @@ pr:
     include:
       - auto_round
       - auto_round_extension
-      - test/test_hpu
+      - test/unit/test_hpu
       - setup.py
       - requirements-hpu.txt
       - .azure-pipelines/scripts/ut/run_ut_hpu.sh
-      - .azure-pipelines/template/docker-template.yml
-      - .azure-pipelines/template/ut-template.yml
+      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
+      - .azure-pipelines/unit-test-hpu.yml
     exclude:
       - auto_round/export/export_to_autogptq
       - auto_round/export/export_to_awq
@@ -39,13 +39,86 @@ stages:
       - job:
         displayName: Unit Test
         steps:
-          - template: template/ut-template.yml
-            parameters:
-              imageSource: "pull"
-              dockerConfigName: "commonDockerConfig"
-              utScriptFileName: "run_ut_hpu"
-              uploadPath: $(UPLOAD_PATH)
-              utArtifact: "ut"
+          - script: |
+              rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
+            displayName: "Clean workspace"
+
+          - checkout: self
+            clean: true
+            fetchTags: true
+            displayName: "Checkout out Repo"
+
+          - script: |
+              docker pull vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
+            displayName: "Pull habana docker image"
+
+          - script: |
+              docker stop AutoRoundUnitTest
+              docker rm -vf AutoRoundUnitTest || true
+              env | sort
+            displayName: "Clean docker container"
+
+          - task: Bash@3
+            inputs:
+              targetType: "inline"
+              script: |
+                docker run -dit --disable-content-trust --privileged --name=AutoRoundUnitTest --shm-size="2g" \
+                  --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --net=host --ipc=host \
+                  -v ${BUILD_SOURCESDIRECTORY}:/auto-round vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
+                docker exec AutoRoundUnitTest bash -c "ln -sf \$(which python3) /usr/bin/python"
+                echo "Show the container list after docker run ... "
+                docker ps -a
+            displayName: "Docker run - AutoRoundUnitTest Container"
+
+          - script: |
+              set -eo pipefail
+
+              docker exec AutoRoundUnitTest bash -c "cd /auto-round \
+                && pip install build \
+                && BUILD_HPU_ONLY=1 python -m build \
+                && pip install dist/*.whl \
+                && pip install -r test/unit/test_hpu/requirements.txt \
+                && pip list"
+            displayName: "HPU Env Setup"
+
+          - script: |
+              set -eo pipefail
+
+              docker exec -e NUMA_NODE=${NUMA_NODE} \
+                -e NUMA_CPUSET=${NUMA_CPUSET} \
+                -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} \
+                -e UT_MODE=coverage \
+                -e BUILD_REASON=${BUILD_REASON} \
+                -e SYSTEM_PULLREQUEST_TARGETBRANCH=${SYSTEM_PULLREQUEST_TARGETBRANCH} \
+                -e FILTER_CHANGED_TESTS=true \
+                AutoRoundUnitTest \
+                bash -c "cd /auto-round/.azure-pipelines/scripts && bash ut/run_ut_hpu.sh"
+            displayName: "Run UT"
+
+          - task: PublishPipelineArtifact@1
+            condition: succeeded()
+            inputs:
+              targetPath: $(UPLOAD_PATH)
+              artifact: ut_coverage
+              publishLocation: "pipeline"
+            displayName: "Publish UT coverage artifact"
+
+          - task: PublishPipelineArtifact@1
+            condition: failed()
+            inputs:
+              targetPath: $(UPLOAD_PATH)
+              artifact: "ut-$(System.JobAttempt)"
+              publishLocation: "pipeline"
+            displayName: "Publish UT logs for debugging"
+
+          - task: Bash@3
+            condition: always()
+            inputs:
+              targetType: "inline"
+              script: |
+                docker stop AutoRoundUnitTest
+                docker rm -vf AutoRoundUnitTest || true
+            displayName: "Docker clean up"
 
           - task: UseDotNet@2
             displayName: 'Use .NET Core sdk 7.0.x'
@@ -53,5 +126,10 @@ stages:
               version: 7.0.x
 
           - task: PublishCodeCoverageResults@2
+            condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
               summaryFileLocation: $(UPLOAD_PATH)/coverage.xml
+              # coverage.xml is produced inside the container, where the checkout
+              # lives at /auto-round, so its <sources> root does not exist on the
+              # agent. Point the task at the agent-side checkout instead.
+              pathToSources: $(Build.SourcesDirectory)

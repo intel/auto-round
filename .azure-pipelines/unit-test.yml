@@ -21,14 +21,18 @@ pr:
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/template/docker-template.yml
     exclude:
-      - test/test_hpu
-      - test/test_ark
-      - test/test_xpu
-      - test/test_cuda
+      - test/unit/test_hpu
+      - test/unit/test_ark
+      - test/unit/test_xpu
+      - test/unit/test_cuda
+      - test/unit/test_mlx
+      - test/integration
+      - test/e2e
       - "*.md"
       - "**/*.md"
-      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
+      - .azure-pipelines/scripts/ut/run_ark_ut.sh
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
+      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
 pool: INTEL-CPU
@@ -40,6 +44,14 @@ variables:
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
+
+parameters:
+  - name: unitTestParts
+    type: object
+    default:
+      - 0
+      - 1
+      - 2
 
 stages:
   - template: template/lib-build-template.yml
@@ -54,29 +66,22 @@ stages:
       BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
-        timeoutInMinutes: 120
+        timeoutInMinutes: 60
         strategy:
           matrix:
-            part1:
-              PART: 1
-            part2:
-              PART: 2
-            part3:
-              PART: 3
-            part4:
-              PART: 4
-            part5:
-              PART: 5
+            ${{ each part in parameters.unitTestParts }}:
+              part_${{ part }}:
+                PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
               buildARKWheel: $(BUILD_ARK_WHEEL)
+              filterChangedTests: true
 
   - stage: Coverage
     displayName: "Collect Coverage"
@@ -104,7 +109,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh cpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'
@@ -128,6 +133,8 @@ stages:
       vmImage: "ubuntu-latest"
     dependsOn: [Coverage]
     condition: and(succeeded('Coverage'), eq(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - group: auto-round-bot-secrets
     jobs:
       - job: CommentCudaTrigger
         displayName: "Comment to trigger CUDA CI"
@@ -135,7 +142,7 @@ stages:
           - task: Bash@3
             displayName: "Post /azp run comment to PR"
             env:
-              GITHUB_TOKEN: $(GITHUB_TOKEN)
+              GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
             inputs:
               targetType: "inline"
               script: |

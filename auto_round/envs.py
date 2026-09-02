@@ -24,6 +24,16 @@ if TYPE_CHECKING:
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     LLAMA_CPP_ROOT: Optional[str] = None
+    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
+    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+    AR_AUTO_SCHEME_CACHE: Optional[str] = None
+    AR_AUTO_SCHEME_NO_SERIAL_FALLBACK: bool = False
+    AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
+    AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
+    AR_DISK_STREAM_MODEL: bool = False
+    AR_RESUME_DIR: Optional[str] = None
+    AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
+    AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -53,6 +63,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
+    # Device for the disk-streamed calibration forward pass in
+    # LLMCalibrator.collect()'s calibrate_on_cpu branch (targeted block
+    # re-quantization). Unset = upstream behavior (cpu). Set to e.g. "cuda:0"
+    # to run the whole pass on GPU -- see el_requantize_blocks.py.
+    "AR_CALIB_STREAM_DEVICE": lambda: os.getenv("AR_CALIB_STREAM_DEVICE", None),
     "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
     "AR_ENABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_ENABLE_ACT_MINMAX_TUNING", "0").lower()
     in ("1", "true", "yes"),
@@ -75,6 +90,52 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
     in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
+    # Controls the default number of calibration samples used by AutoScheme scoring
+    # when ``AutoScheme.nsamples`` is not explicitly set.
+    # When unset, AutoScheme uses 16.
+    "AR_AUTO_SCHEME_NSAMPLES": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_NSAMPLES"),
+    # Controls the default batch size used by AutoScheme scoring
+    # when ``AutoScheme.batch_size`` is not explicitly set.
+    # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
+    "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Controls the default calibration sequence length used by AutoScheme scoring
+    # when ``AutoScheme.seqlen`` is not explicitly set.
+    # When unset, AutoScheme uses its built-in heuristic (128 for MoE models, 256 otherwise).
+    "AR_AUTO_SCHEME_SEQLEN": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_SEQLEN"),
+    # Stores persistent AutoScheme scoring results independently from AR_WORK_SPACE,
+    # whose contents are temporary working data and may be cleaned after a run.
+    "AR_AUTO_SCHEME_CACHE": lambda: os.getenv("AR_AUTO_SCHEME_CACHE", None),
+    "AR_AUTO_SCHEME_NO_SERIAL_FALLBACK": lambda: os.getenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", "0").lower()
+    in ("1", "true", "yes"),
+    # Enables AutoScheme to score schemes in parallel. Enabled by default;
+    # set it to 0 when workers could exhaust host RAM or device memory.
+    "AR_ENABLE_AUTO_SCHEME_PARALLEL": lambda: os.getenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "1").lower()
+    in ("1", "true", "yes"),
+    # Controls whether NVFP4 E5M3 quant linear caches a dequantized high-
+    # precision weight after the first forward instead of dequantizing on
+    # every call. When enabled, the packed weight buffers are released after
+    # the cache is materialized, trading lower runtime overhead for higher
+    # steady-state memory usage.
+    "AR_NVFP4_E5M3_CACHE_HP_WEIGHT": lambda: os.getenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", "0").lower()
+    in ("1", "true", "yes", "on"),
+    # When set, the model is built as a meta-device skeleton and streamed
+    # block-by-block from disk during quantization instead of being fully
+    # materialized on CPU RAM up front.
+    "AR_DISK_STREAM_MODEL": lambda: os.getenv("AR_DISK_STREAM_MODEL", "0").lower() in ("1", "true", "yes"),
+    # When set to a directory path, the per-block tuning loop checkpoints its
+    # progress there after each completed block, and resumes from the first
+    # not-yet-completed block on a fresh run against the same directory --
+    # instead of restarting the whole tuning pass from block 0 after a
+    # crash/kill. See auto_round/utils/resume.py.
+    "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
+    # When enabled, MoE routing can be overridden in selected model wrappers
+    # to rotate token assignments across all experts for calibration coverage.
+    "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
+    in ("1", "true", "yes"),
+    # vLLM fused kernels require q/k/v and gate/up projections to use one
+    # weight global scale. Disable only for runtimes without that requirement.
+    "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
+    not in ("0", "false", "no", "off"),
 }
 
 
