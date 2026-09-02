@@ -164,9 +164,11 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // global work-group counter (`atomicAdd`). The kernel self-initialises it to 0
 // at launch (group 0 / lane 0 does `atm.store(0)`), so the host never has to
 // reset it between calls. Allocating it per dispatch with `sycl::malloc_device`
-// and releasing it with `sycl::free` costs two queue synchronizations, which is
-// pure overhead on the decode hot path where the GEMM itself is only tens of
-// microseconds.
+// and releasing it with `sycl::free` costs two queue synchronizations. That is
+// only noise at prefill sizes, but it dominates on the decode hot path where
+// the GEMM itself is only tens of microseconds and one call is issued per
+// generated token -- so every dispatch, prefill and decode alike, takes the
+// counter from here instead.
 //
 // `DeviceMemoryPool` (`utils.hpp`) already provides exactly this: one cached
 // allocation per (slot, device), grown on demand and reused across calls, which
@@ -181,8 +183,9 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // is safe under the same host-side serialization the pool itself already
 // assumes (its maps are unguarded, and every ark entry point is reached with
 // the GIL held). The buffer lives until process exit, matching the singleton
-// lifetime already used by `EventManager`. The S4 header re-exports this
-// helper rather than defining its own, so both paths share one slot.
+// lifetime already used by `EventManager`. The INT8 and S4 headers re-export
+// this helper rather than defining their own, so all three paths share one
+// slot -- also safe, for the same reason.
 // ---------------------------------------------------------------------------
 
 // Scratch-pool slot dedicated to the work-group counter. Slots 0-7 are already
@@ -1004,18 +1007,12 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch_policy(
       reinterpret_cast<const ElementA*>(activations);
   auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_fp8_dpas(per-tensor): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
   MoEGEMMLauncher<'R', 'R', Policy, ScaleMode::kPerTensor>(
       *q, activations_ca, reinterpret_cast<const ElementB*>(weights_KN),
       scales_e, static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
       num_tokens_per_expert, E, /*group_size=*/0, atomic_buffer);
-
-  sycl::free(atomic_buffer, *q);
 }
 
 template <typename ScalarT, bool IsE4M3>
@@ -1038,11 +1035,7 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_fp8_dpas(per-tensor): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_PT_LAUNCH(policy)                                             \
   MoEGEMMLauncher<'R', 'R', policy, ScaleMode::kPerTensor>(                    \
@@ -1058,8 +1051,6 @@ void moe_prefill_fp8_dpas_per_tensor_dispatch(
     ARK_DPAS_PT_LAUNCH(dpas_w8a16_policy);
   }
 #undef ARK_DPAS_PT_LAUNCH
-
-  sycl::free(atomic_buffer, *q);
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,18 +1083,12 @@ void moe_prefill_fp8_dpas_per_group_dispatch_policy(
   const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
   auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_fp8_dpas(per-group): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
   MoEGEMMLauncher<'R', 'C', Policy, ScaleMode::kPerGroup>(
       *q, activations_ca, reinterpret_cast<const ElementB*>(weights_NK),
       scales_ca, static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
       num_tokens_per_expert, E, group_size, atomic_buffer);
-
-  sycl::free(atomic_buffer, *q);
 }
 
 template <typename ScalarT, bool IsE4M3>
@@ -1131,11 +1116,7 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_fp8_dpas(per-group): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_PG_LAUNCH(policy)                                             \
   MoEGEMMLauncher<'R', 'C', policy, ScaleMode::kPerGroup>(                     \
@@ -1151,8 +1132,6 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
     ARK_DPAS_PG_LAUNCH(dpas_w8a16_policy);
   }
 #undef ARK_DPAS_PG_LAUNCH
-
-  sycl::free(atomic_buffer, *q);
 }
 
 // ---------------------------------------------------------------------------
@@ -1160,8 +1139,7 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 //
 // Same math, same mainloop and same weight/scale layout as
 // `moe_prefill_fp8_dpas_per_group_dispatch` above -- only the tile selection
-// and the atomic-buffer lifetime differ, for two reasons that are specific to
-// the decode regime (a handful of tokens spread over many experts):
+// differs, because decode sees a handful of tokens spread over many experts:
 //
 //   1. Finer small-M ladder. The reference `w8a16` dispatch in
 //      vllm-xpu-kernels bottoms out at the 16-row tile (`m_16`), while its
@@ -1172,10 +1150,6 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 //      is purely a `WGTile`/`SGLayout` shape (8x64x32) -- so the FP8 mainloop
 //      reuses it verbatim, closing that gap. This mirrors what the S4 decode
 //      dispatch already does.
-//   2. Pooled atomic counter. The prefill dispatch allocates and frees the
-//      work-group counter per call; each of those forces a queue sync. At
-//      prefill sizes that is noise, at decode sizes it is a large fraction of
-//      the total. Use the `DeviceMemoryPool` scratch slot instead.
 //
 // The upper rungs are pulled in to match the S4 decode ladder
 // (`m_8` -> `m_16` -> `m_32` -> wide) rather than the prefill one, whose
