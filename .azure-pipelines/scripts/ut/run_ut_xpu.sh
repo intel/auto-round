@@ -12,18 +12,21 @@ SESSION_TIMEOUT=600
 
 function setup_environment() {
     echo "##[group]set up UT env..."
+    echo "Install unit report dependencies ..."
     uv pip install pytest-cov
     uv pip install -U chardet
-    uv pip list
-    echo "##[endgroup]"
 
     # Keep the GGUF conversion helpers in sync with the model conversion code.
     # The common GGUF tests exercise MODEL_ARCH entries that are only available
     # in the current llama.cpp master branch.
+    echo "Install latest gguf for ut test ..."
     cd ~ || exit 1
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git \
         && cd llama.cpp/gguf-py \
         && uv pip install .
+    echo "List final dependencies ..."
+    uv pip list
+    echo "##[endgroup]"
 
     git config --global --add safe.directory /auto-round
     cd /auto-round/test || exit 1

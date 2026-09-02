@@ -22,24 +22,24 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 
-    # install latest gguf for ut test
+    echo "Install latest gguf for ut test ..."
     cd ~ || exit 1
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
-    # install unit report dependencies
+    echo "Install unit report dependencies ..."
     uv pip install pytest-cov
     uv pip install -U chardet
-    uv pip list
 
-    # install auto-round for unit tests
+    echo "Install auto-round for unit tests ..."
     cd /auto-round && uv pip install .
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
     export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/cpu.coveragerc
-    echo "##[endgroup]"
-
+    
+    echo "List final dependencies ..."
     uv pip list
+    echo "##[endgroup]"
 }
 
 function print_summary() {
