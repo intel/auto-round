@@ -81,11 +81,9 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -99,6 +97,10 @@
 // grf_size_properties extension are present, so no new CMake work is
 // required for this header.
 #include "sycl_tla_moe.hpp"
+
+// `DeviceMemoryPool`, the extension-wide device scratch allocator that serves
+// the grouped-GEMM work-group counter (see `get_atomic_scratch_buffer` below).
+#include "utils.hpp"
 
 // Additional cutlass-sycl bits used only by the DPAS launcher / scheduler.
 // If any of these paths differ in the auto-round build, adjust here.
@@ -156,7 +158,7 @@ template <typename ScalarT>
 using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 
 // ---------------------------------------------------------------------------
-// Persistent per-queue atomic work-group counter.
+// Work-group counter served from the shared device scratch pool.
 //
 // The grouped-GEMM launchers below need a single `int32_t` device slot as a
 // global work-group counter (`atomicAdd`). The kernel self-initialises it to 0
@@ -166,25 +168,33 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // pure overhead on the decode hot path where the GEMM itself is only tens of
 // microseconds.
 //
-// Instead, hand out one persistent buffer per queue and reuse it across calls.
-// This is safe because every launcher call is synchronous (`event.wait()` in
-// `MoEGEMMLauncher`), so two launches can never share the buffer concurrently.
-// Buffers live until process exit (one `int32_t` per queue), matching the
-// singleton lifetime already used by `EventManager`. The S4 header re-exports
-// this helper rather than defining its own, so both paths share one cache.
+// `DeviceMemoryPool` (`utils.hpp`) already provides exactly this: one cached
+// allocation per (slot, device), grown on demand and reused across calls, which
+// is what the rest of the ark extension uses for its scratch buffers. Reusing
+// it here keeps every scratch allocation in the extension under one pool
+// instead of a second bespoke cache.
+//
+// Sharing one counter across calls is safe because every launcher call is
+// synchronous (`event.wait()` in `MoEGEMMLauncher`), so two launches can never
+// share the buffer concurrently. The pool keys buffers by device, so queues on
+// the same device share a slot -- also safe for the same reason. The buffer
+// lives until process exit, matching the singleton lifetime already used by
+// `EventManager`. The S4 header re-exports this helper rather than defining its
+// own, so both paths share one slot.
 // ---------------------------------------------------------------------------
-inline int32_t* get_persistent_atomic_buffer(sycl::queue* q) {
-  static std::mutex mtx;
-  static std::unordered_map<sycl::queue*, int32_t*> cache;
-  std::lock_guard<std::mutex> lock(mtx);
-  auto it = cache.find(q);
-  if (it != cache.end()) return it->second;
-  int32_t* buf = sycl::malloc_device<int32_t>(1, *q);
+
+// Scratch-pool slot dedicated to the work-group counter. Slots 0-7 are already
+// claimed by the dnnl / xpu / sycl-s8 / cpu wrappers and the SDPA kernels, so
+// the counter takes its own rather than aliasing a live scratch buffer.
+inline constexpr size_t kAtomicScratchLoc = 8;
+
+inline int32_t* get_atomic_scratch_buffer(sycl::queue* q) {
+  auto* buf = static_cast<int32_t*>(DeviceMemoryPool::Instance()->get_scratch_mem(
+      sizeof(int32_t), kAtomicScratchLoc, q));
   if (buf == nullptr) {
     throw std::runtime_error(
-        "moe_dpas_fp8: failed to allocate persistent atomic buffer");
+        "moe_dpas_fp8: failed to acquire the atomic scratch buffer");
   }
-  cache.emplace(q, buf);
   return buf;
 }
 
@@ -1160,10 +1170,10 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 //      is purely a `WGTile`/`SGLayout` shape (8x64x32) -- so the FP8 mainloop
 //      reuses it verbatim, closing that gap. This mirrors what the S4 decode
 //      dispatch already does.
-//   2. Persistent atomic counter. The prefill dispatch allocates and frees the
+//   2. Pooled atomic counter. The prefill dispatch allocates and frees the
 //      work-group counter per call; each of those forces a queue sync. At
 //      prefill sizes that is noise, at decode sizes it is a large fraction of
-//      the total. Use the per-queue persistent slot instead.
+//      the total. Use the `DeviceMemoryPool` scratch slot instead.
 //
 // The upper rungs are pulled in to match the S4 decode ladder
 // (`m_8` -> `m_16` -> `m_32` -> wide) rather than the prefill one, whose
@@ -1198,7 +1208,7 @@ void moe_decode_fp8_dpas_per_group_dispatch(
 
   const int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_DECODE_PG_LAUNCH(policy)                                      \
   MoEGEMMLauncher<'R', 'C', policy, ScaleMode::kPerGroup>(                     \

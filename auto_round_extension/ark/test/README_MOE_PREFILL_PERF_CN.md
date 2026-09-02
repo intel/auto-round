@@ -553,15 +553,16 @@ FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch �
 上面几档对齐的是 S4 的 *decode* 阶梯,而不是 FP8 prefill 的那条 ——
 后者的 `≤ 512 → m_32` 档是按 prefill 规模的 batch 调过的。
 
-*常驻 atomic 计数器。* prefill dispatch 每次调用都用 `sycl::malloc_device`
+*池化 atomic 计数器。* prefill dispatch 每次调用都用 `sycl::malloc_device`
 分配 work-group 计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列
 同步。在 prefill 规模下这只是噪声,但在 decode 规模下 —— GEMM 本身只有几十
 微秒、且每生成一个 token 就要发一次调用 —— 它占总时间的比例相当可观。
-decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffer`,
-现已与 S4 头文件共享,两条路径共用一份 cache)。走上这条快路径时还会跳过
-`fill_expert_id_per_token` 前置 pass,因为 DPAS dispatch 直接消费
-`num_tokens_per_expert` —— decode 时间线上少一次 kernel 启动。
-**状态:NEEDS-HARDWARE-VALIDATION**(该头文件是未经硬件验证的移植)。
+decode dispatch 改从扩展全局的设备 scratch 池中取该计数器
+(`get_atomic_scratch_buffer`,它是 `DeviceMemoryPool::get_scratch_mem` 在一个
+专用 slot 上的薄封装,并与 S4 头文件共享,两条路径每个设备共用一份分配)。
+走上这条快路径时还会跳过 `fill_expert_id_per_token` 前置 pass,因为 DPAS
+dispatch 直接消费 `num_tokens_per_expert` —— decode 时间线上少一次 kernel
+启动。**状态:NEEDS-HARDWARE-VALIDATION**(该头文件是未经硬件验证的移植)。
 
 **占用率门控 —— 真实 decode batch 仍走 scalar GEMV。** 理由与 int4-sym
 相同:decode 阶梯能选到的最小 tile 每个专家处理 8 行 token,所以平均每专家

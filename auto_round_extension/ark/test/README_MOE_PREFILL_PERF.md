@@ -675,18 +675,20 @@ shape — so the FP8 mainloop reuses it verbatim, closing that gap:
 The upper rungs match the S4 *decode* ladder rather than the FP8 prefill
 one, whose `≤ 512 → m_32` rung is tuned for prefill-sized batches.
 
-*Persistent atomic counter.* The prefill dispatch allocates the
+*Pooled atomic counter.* The prefill dispatch allocates the
 work-group counter with `sycl::malloc_device` and releases it with
 `sycl::free` on every call; each of those forces a queue synchronization.
 At prefill sizes that is noise, at decode sizes — where the GEMM itself is
 only tens of microseconds and one call is issued per generated token — it
-is a large fraction of the total. The decode dispatch uses a persistent
-per-queue slot instead (`get_persistent_atomic_buffer`, now shared with the
-S4 header so both paths use one cache). Taking the fast path also skips the
-`fill_expert_id_per_token` pre-pass, since the DPAS dispatch consumes
-`num_tokens_per_expert` directly — one fewer kernel launch on the decode
-timeline. **Status: NEEDS-HARDWARE-VALIDATION** (this header is an
-untested port).
+is a large fraction of the total. The decode dispatch serves the counter
+from the extension-wide device scratch pool instead
+(`get_atomic_scratch_buffer`, a thin wrapper over
+`DeviceMemoryPool::get_scratch_mem` on a dedicated slot, shared with the
+S4 header so both paths use one allocation per device). Taking the fast
+path also skips the `fill_expert_id_per_token` pre-pass, since the DPAS
+dispatch consumes `num_tokens_per_expert` directly — one fewer kernel
+launch on the decode timeline. **Status: NEEDS-HARDWARE-VALIDATION** (this
+header is an untested port).
 
 **Occupancy gate — real decode batches stay on the scalar GEMV.** Same
 reasoning as int4-sym: the smallest tile the decode ladder can pick

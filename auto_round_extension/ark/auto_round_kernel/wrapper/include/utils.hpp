@@ -132,7 +132,10 @@ class DeviceMemoryPool {
   }
 
  private:
-  static constexpr int MaxLocNum = 8;
+  // Slots 0-7 are claimed by the dnnl / xpu / sycl-s8 / cpu wrappers and the
+  // SDPA kernels; slot 8 is the MoE DPAS grouped-GEMM work-group counter
+  // (`moe_dpas_fp8::kAtomicScratchLoc`).
+  static constexpr int MaxLocNum = 9;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 
