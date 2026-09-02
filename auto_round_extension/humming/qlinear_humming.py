@@ -44,6 +44,9 @@ import torch.nn as nn
 
 logger = getLogger(__name__)
 
+# humming ships only as a git repo (distribution name ``humming-kernels``).
+HUMMING_INSTALL_SPEC = "git+https://github.com/inclusionAI/humming.git"
+
 # humming's weight transform asserts ``padded_shape_n % 64 == 0`` and
 # ``padded_shape_k % (2 * 256 // act_bits) == 0`` (32 for fp16/bf16 activations).
 PAD_N_TO_MULTIPLE = 64
@@ -145,8 +148,9 @@ class QuantLinear(nn.Module):
             from humming.layer import HummingLayer  # pylint: disable=E0401
         except Exception as e:  # pragma: no cover - depends on the local environment
             raise ImportError(
-                "The humming backend requires the humming kernels, install them with: "
-                "`pip install git+https://github.com/inclusionAI/humming.git`"
+                "The humming kernels are required for this backend "
+                "(and are the only real kernels for 5/6/7-bit weights). Install them with:\n"
+                f"    pip install {HUMMING_INSTALL_SPEC}"
             ) from e
 
         device = self.qweight.device

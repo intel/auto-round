@@ -188,14 +188,23 @@ humming_feature_checker = functools.partial(
 )
 
 
+# humming is published only as a git repo (distribution name ``humming-kernels``),
+# so it cannot be expressed as a PEP 440 requirement string like the other backends.
+HUMMING_INSTALL_SPEC = "git+https://github.com/inclusionAI/humming.git"
+
+
 def humming_available_checker():
-    """Requirement hook: humming needs both the package and a CUDA device."""
+    """Requirement hook: humming needs both the package and a CUDA device.
+
+    Returns ``(is_available, install_spec)``; the spec is fed to ``pip install`` in the
+    "better backend found" hint, so it must be the git URL rather than a version spec.
+    """
     try:
         from auto_round_extension.humming.qlinear_humming import is_humming_available
 
-        return is_humming_available(), "humming"
+        return is_humming_available(), HUMMING_INSTALL_SPEC
     except Exception:  # pragma: no cover - depends on the local environment
-        return False, "humming"
+        return False, HUMMING_INSTALL_SPEC
 
 
 def fp8_static_scheme_checker(
@@ -1343,6 +1352,13 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
     # Filter requirements
     missing_requirements = []
     for req in requirements:
+        # Callable requirements (e.g. humming) report their own availability and
+        # return the spec to hand to `pip install`.
+        if callable(req):
+            available, install_spec = req()
+            if not available and install_spec:
+                missing_requirements.append(install_spec)
+            continue
         try:
             require_version(req)
         except:
