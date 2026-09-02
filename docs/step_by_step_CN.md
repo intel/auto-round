@@ -921,7 +921,7 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 
 旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀、对量化更友好。它对 MXFP4、NVFP4、W4A4 等激进的低比特方案最为有效。
 
-AutoRound 通过 `rotation_config` 参数应用旋转。推荐在大多数场景中使用 `"quarot"` 预设——确定性 Hadamard 旋转（QuaRot / SpinQuant），无需训练、无需校准数据。
+AutoRound 通过 `alg_configs`（与量化算法一起传入）应用旋转。推荐在大多数场景中使用 `"quarot"` 预设——确定性 Hadamard 旋转（QuaRot / SpinQuant），无需训练、无需校准数据。
 
 #### API 用法
 
@@ -931,7 +931,7 @@ from auto_round import AutoRound
 model_name = "Qwen/Qwen3-0.6B"
 
 # QuaRot 预设：确定性 Hadamard，无需训练
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", "quarot"])
 ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
 

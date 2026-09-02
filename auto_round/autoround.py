@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
@@ -348,51 +350,50 @@ _ENTRY_KWARG_OWNERS = {
 }
 
 _SCHEME_FIELDS = set(QuantizationScheme.get_attributes())
-_SIGNROUND_FIELDS = {
-    "iters",
-    "lr",
-    "minmax_lr",
-    "lr_scheduler",
-    "momentum",
-    "nblocks",
-    "enable_minmax_tuning",
-    "enable_norm_bias_tuning",
-    "gradient_accumulate_steps",
-    "enable_alg_ext",
-    "not_use_best_mse",
-    "dynamic_max_gap",
-    "enable_quanted_input",
-    "optimizer",
-    "enable_adam",
-    "enable_lfq",
-}
-_RTN_FIELDS = {"disable_opt_rtn", "enable_opt_rtn"}
-_AWQ_FIELDS = {
-    "duo_scaling",
-    "n_grid",
-    "seqlen",
-    "nsamples",
-    "batch_size",
-    "apply_smooth",
-    "smooth_iters",
-    "apply_clip",
-    "clip_as_init",
-    "clip_n_grid",
-    "clip_max_shrink",
-    "clip_n_sample_token",
-    "awq_seqlen",
-    "smooth_batch_size",
-    "disable_opt_rtn",
-    "enable_opt_rtn",
-    "skip_moe",
-    "mappings",
-}
-_ROTATION_FIELDS = {
-    "hadamard_type",
-    "block_size",
-    "fuse_online_to_weight",
-    "allow_online_rotation",
-}
+
+
+def _iter_registered_alg_configs() -> list[tuple[str, type]]:
+    """Return each registered algorithm's canonical name and config class."""
+    from auto_round.algorithms.registry import iter_algorithm_entries
+
+    result = []
+    seen = set()
+    for entry in iter_algorithm_entries():
+        factory = entry.config_factory
+        if factory is None:
+            continue
+        config_cls = factory if isinstance(factory, type) else type(factory())
+        if config_cls not in seen:
+            seen.add(config_cls)
+            result.append((entry.name, config_cls))
+    return result
+
+
+@functools.lru_cache(maxsize=None)
+def _discover_alg_config_fields(config_cls: type) -> frozenset:
+    """Discover accepted config fields without maintaining per-algorithm lists."""
+    from pydantic import BaseModel
+
+    if issubclass(config_cls, BaseModel):
+        return frozenset(config_cls.model_fields.keys())
+
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.quantization.config import QuantizationConfig
+
+    fields = set()
+    for klass in config_cls.__mro__:
+        if klass in (QuantizationConfig, AlgorithmConfig, object):
+            break
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        for name, parameter in inspect.signature(init).parameters.items():
+            if name != "self" and parameter.kind not in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                fields.add(name)
+    return frozenset(fields)
 
 
 def _filter_supported_entry_kwargs(kwargs, *, context="AutoRound"):
@@ -415,17 +416,11 @@ def _split_entry_kwargs(kwargs, *, context="AutoRound"):
 
 
 def _config_fields(config):
-    fields = set(_SCHEME_FIELDS)
-    name = type(config).__name__.lower()
-    if "awq" in name:
-        fields.update(_AWQ_FIELDS)
-    elif "rtn" in name:
-        fields.update(_RTN_FIELDS)
-    elif "signround" in name or "adamround" in name:
-        fields.update(_SIGNROUND_FIELDS)
-    elif "rotation" in name:
-        fields.update(_ROTATION_FIELDS)
-    return fields
+    return set(_SCHEME_FIELDS) | set(_discover_alg_config_fields(type(config)))
+
+
+def _owning_algorithm_names(field_name: str) -> list[str]:
+    return [cls.__name__ for _, cls in _iter_registered_alg_configs() if field_name in _discover_alg_config_fields(cls)]
 
 
 def _normalize_alg_configs(alg_configs, direct_kwargs=None):
@@ -569,7 +564,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             # ignored algorithm-specific error after selecting RTN.
             if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
                 continue
-            owner = "AWQ" if key in _AWQ_FIELDS else "the selected algorithm"
+            owners = _owning_algorithm_names(key)
+            owner = "/".join(owners) if owners else "the selected algorithm"
             logger.error(
                 "%s-specific parameter '%s' was provided, but %s is not enabled by alg_configs. "
                 "The parameter is ignored.",
@@ -778,9 +774,34 @@ class _CompressorBuilder(object):
 class AutoRound:
     """Unified AutoRound entry point.
 
-    alg_configs accepts an algorithm alias, one QuantizationConfig, or a
-    sequence of either. When omitted, SignRound is selected. AWQ-only
-    pipelines receive an RTN block quantizer by default.
+    ``alg_configs`` accepts an algorithm alias, one config object, or a
+    sequence of aliases and config objects. A sequence may combine a
+    preprocessor with one block quantizer, for example
+    ``["auto_round", "quarot"]``. Preprocessors execute in their listed
+    order; the block quantizer is always the final quantization stage,
+    regardless of its position in the sequence. When omitted, SignRound is
+    selected. AWQ-only pipelines receive an RTN block quantizer by default.
+
+    Args:
+        model: A model name/path or an already-loaded ``torch.nn.Module``.
+        tokenizer: Optional tokenizer used for calibration data.
+        scheme: Quantization scheme such as ``"W4A16"`` or ``"MXFP4"``.
+        alg_configs: Algorithm alias, config instance, or sequence of either.
+            Use config instances to provide algorithm-specific options, such
+            as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
+        layer_config: Optional per-layer quantization overrides.
+        dataset: Calibration dataset name, samples, or dataloader.
+        seqlen: Calibration sequence length.
+        nsamples: Number of calibration samples.
+        batch_size: Calibration batch size.
+        low_gpu_mem_usage: Enable lower-memory calibration at the cost of speed.
+        device_map: Device or device mapping used for quantization.
+        enable_torch_compile: Whether to use ``torch.compile`` where supported.
+        seed: Random seed used by calibration and tuning.
+        **kwargs: Additional compressor, model-type, evaluation, and legacy
+            compatibility options. Unsupported options are ignored with a
+            warning; algorithm-specific options should be placed in the
+            corresponding config object.
     """
 
     SKIP_ARGS = ("local_args", "kwargs", "cls", "model_cls", "dynamic_compressor", "alg_configs")
