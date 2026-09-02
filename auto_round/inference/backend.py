@@ -181,6 +181,22 @@ mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
 
 ark_feature_checker = functools.partial(in_feature_checker_group_size)
 
+# humming repacks weights with ``padded_shape_n % 64 == 0`` / ``padded_shape_k % 32 == 0``.
+# Requiring the layer to already satisfy that keeps the repack a no-op pad.
+humming_feature_checker = functools.partial(
+    feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=64
+)
+
+
+def humming_available_checker():
+    """Requirement hook: humming needs both the package and a CUDA device."""
+    try:
+        from auto_round_extension.humming.qlinear_humming import is_humming_available
+
+        return is_humming_available(), "humming"
+    except Exception:  # pragma: no cover - depends on the local environment
+        return False, "humming"
+
 
 def fp8_static_scheme_checker(
     in_feature: int,
@@ -452,7 +468,7 @@ BackendInfos["auto_round:torch"] = BackendInfo(
     compute_dtype=["float16", "bfloat16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    bits=[2, 3, 4, 8],
+    bits=[2, 3, 4, 5, 6, 7, 8],
     priority=0,
     checkers=[exllamav2_feature_checker],
     alias=["auto_round", "torch"],
@@ -467,11 +483,60 @@ BackendInfos["auto_round:torch_zp"] = BackendInfo(
     compute_dtype=["float16", "bfloat16"],
     data_type=["int"],
     act_bits=WOQ_DEFAULT_ACT_BITS,
-    bits=[2, 3, 4, 8],
+    bits=[2, 3, 4, 5, 6, 7, 8],
     priority=0,
     checkers=[exllamav2_feature_checker],
     alias=["torch", "torch_zp"],
     requirements=["auto-round>=0.5.1"],
+)
+
+# humming: JIT-compiled CUDA GEMM kernels covering every weight bit-width from
+# 2 to 8. This is the only fast path for 5/6/7-bit checkpoints, and it is also
+# faster than the Triton kernels for the classic 2/3/4/8-bit ones. Priority is
+# set above tritonv2 (2) but below marlin (6) so that existing 4-bit defaults
+# keep using marlin where it is available.
+BackendInfos["auto_round:humming"] = BackendInfo(
+    device=["cuda"],
+    sym=[True, False],
+    packing_format=GPTQ_FORMAT_NO_ZP,
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    bits=[2, 3, 4, 5, 6, 7, 8],
+    priority=4,
+    checkers=[humming_feature_checker],
+    alias=["humming"],
+    requirements=[humming_available_checker],
+)
+
+BackendInfos["auto_round:humming_zp"] = BackendInfo(
+    device=["cuda"],
+    # asym `auto_round:auto_gptq` stores ``zp - 1``, which humming does not model;
+    # only the symmetric variant (where the zero point is implicit) is supported.
+    sym=[True],
+    packing_format=GPTQ_FORMAT,
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    bits=[2, 3, 4, 5, 6, 7, 8],
+    priority=4,
+    checkers=[humming_feature_checker],
+    alias=["humming", "humming_zp"],
+    requirements=[humming_available_checker],
+)
+
+BackendInfos["auto_round:humming_awq"] = BackendInfo(
+    device=["cuda"],
+    sym=[True, False],
+    packing_format=AWQ_FORMAT,
+    compute_dtype=["float16", "bfloat16"],
+    data_type=["int"],
+    act_bits=WOQ_DEFAULT_ACT_BITS,
+    bits=[2, 3, 4, 5, 6, 7, 8],
+    priority=4,
+    checkers=[humming_feature_checker],
+    alias=["humming", "humming_awq"],
+    requirements=[humming_available_checker],
 )
 
 BackendInfos["gptqmodel:marlin"] = BackendInfo(
@@ -852,6 +917,23 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         return ar_qmodules.NVFP4QuantLinear
     if "auto_round:fake" in backend:
         return ar_qmodules.FakeActQuantLinear
+
+    if "humming" in backend:
+        try:
+            import humming  # noqa: F401  # pylint: disable=E0401
+        except Exception as e:
+            raise ImportError(
+                "Please install the humming kernels to use this backend, e.g.: "
+                "`pip install git+https://github.com/inclusionAI/humming.git`"
+            ) from e
+        import auto_round_extension.humming.qlinear_humming as humming_qlinear
+
+        if "awq" in backend:
+            return humming_qlinear.QuantLinearAWQ
+        elif "zp" in backend:
+            return humming_qlinear.QuantLinearGPTQ
+        else:  # plain auto_round packing must be checked last
+            return humming_qlinear.QuantLinear
 
     if "auto_round_kernel" in backend or "ark" in backend:
         try:

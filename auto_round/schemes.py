@@ -565,7 +565,18 @@ W6A16 = QuantizationScheme.from_dict(
     }
 )
 
+W7A16 = QuantizationScheme.from_dict(
+    {
+        "bits": 7,
+        "sym": True,
+        "group_size": 128,
+        "data_type": "int",
+        "act_bits": 16,
+    }
+)
+
 W2A16 = QuantizationScheme.from_dict(
+
     {
         "bits": 2,
         "sym": True,
@@ -807,6 +818,7 @@ PRESET_SCHEMES = {
     "W3A16": W3A16,
     "W5A16": W5A16,
     "W6A16": W6A16,
+    "W7A16": W7A16,
     "W8A16": W8A16,
     "MXFP4": MXFP4,
     "MXFP6": MXFP6,

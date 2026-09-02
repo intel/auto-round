@@ -21,12 +21,17 @@ import torch.nn as nn
 import transformers
 
 from auto_round.utils import get_packing_device
-from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+from auto_round.utils.bit_packing import requires_generic_bit_packing, unpack_bitstream
+from auto_round_extension.torch.qlinear_torch import (
+    SUPPORTED_BITS,
+    GenericBitPackingMixin,
+    get_wf_3bits_tensor,
+)
 
 logger = getLogger(__name__)
 
 
-class QuantLinear(nn.Module):
+class QuantLinear(GenericBitPackingMixin, nn.Module):
     """
     Torch quantized linear layer.
     """
@@ -35,8 +40,8 @@ class QuantLinear(nn.Module):
 
     def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False, **kwargs):
         super().__init__()
-        if bits not in [2, 3, 4, 8]:
-            raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+        if bits not in SUPPORTED_BITS:
+            raise NotImplementedError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
@@ -77,14 +82,18 @@ class QuantLinear(nn.Module):
         self.trainable = trainable
 
         # is performed by unpacking the weights and using torch.matmul
-        if self.bits in [2, 4, 8]:
+        self.use_generic_bit_packing = requires_generic_bit_packing(self.bits)
+        if self.use_generic_bit_packing:
+            # 5/6/7-bit values straddle int32 word boundaries; use the generic helper.
+            self.wf = None
+        elif self.bits in [2, 4, 8]:
             self.wf = torch.tensor(
                 list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qweight.device
             ).unsqueeze(0)
         else:  ## bits == 3
             self.wf = get_wf_3bits_tensor(device=self.qweight.device)
 
-        self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
+        self.dequant_dtype = torch.int16 if self.bits > 7 else torch.int8
 
     def post_init(self):
         pass
@@ -267,15 +276,22 @@ class QuantLinear(nn.Module):
             return self.pack_248_bits(linear, scales, zeros, g_idx, device)
         elif self.bits in [3]:
             return self.pack_3bits(linear, scales, zeros, g_idx, device)
+        elif self.use_generic_bit_packing:
+            # GPTQ stores ``zp - 1``; reuse the shared generic packer with that offset.
+            return self.pack_generic_bits(linear, scales, zeros, g_idx, device, zp_offset=-1)
         else:
-            raise ValueError("Only 2,3,4,8 bits are supported.")
+            raise ValueError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
 
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype
 
-        if self.bits in [2, 4, 8]:
+        if self.use_generic_bit_packing:
+            # Generic bit-stream layout: unpack straight into 2-D tensors.
+            zeros = unpack_bitstream(self.qzeros, self.bits, dim=1).reshape(self.scales.shape)
+            weight = unpack_bitstream(self.qweight, self.bits, dim=0)
+        elif self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
                 self.wf = torch.tensor(
                     list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qzeros.device
@@ -317,7 +333,8 @@ class QuantLinear(nn.Module):
             weight = weight & 0x7
             weight = torch.cat([weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1)
         zeros += 1
-        weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
+        if weight.dim() == 3:
+            weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         if hasattr(self, "g_idx"):
             num_itr = self.g_idx.shape[0] // x.shape[-1]
             num_dim = self.g_idx.shape[0] // num_itr
