@@ -61,10 +61,33 @@ function run_pytest() {
     local ut_log_name=$2
 
     echo "##[group]Running ${test_case}..."
+    # Record the test targets so a retry can rerun exactly these cases.
+    printf '%s\n' ${test_case} > "${ut_log_name%.log}.list"
     numactl --physcpubind="${NUMA_CPUSET:-0-15}" --membind="${NUMA_NODE:-0}" \
         pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
     echo "##[endgroup]"
+}
+
+# A retry is any job attempt after the first; failed_tests.list is downloaded
+# from the previous attempt before this script runs (clean environment).
+function is_retry() {
+    [ "${SYSTEM_JOBATTEMPT:-1}" -gt 1 ] && [ -s "${LOG_DIR}/failed_tests.list" ]
+}
+
+function retry_selection() {
+    is_retry && sort -u "${LOG_DIR}/failed_tests.list"
+}
+
+function run_if_retry() {
+    if is_retry; then
+        cp ${LOG_DIR}/failed_logs/.coverage ./.coverage
+        for test_file in $(retry_selection); do
+            local test_basename=$(basename "${test_file}" .py)
+            run_pytest "${test_file}" "${LOG_DIR}/unittest_${test_basename}.log"
+        done
+        return 0
+    fi
 }
 
 function run_common_group() {
@@ -83,6 +106,7 @@ function run_common_group() {
 
 function run_common_unit_test() {
     cd /auto-round/test || exit 1
+    run_if_retry
 
     # common test case for cpu/gpu/xpu
     # Group cases by the first-level folder under unit/common; a single test
@@ -100,6 +124,7 @@ function run_common_unit_test() {
 
 function run_unit_test() {
     cd /auto-round/test || exit 1
+    run_if_retry
 
     # Split cpu specific test files into 4 parts.
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
@@ -133,6 +158,13 @@ function run_unit_test() {
 }
 
 function run_inc_unit_test() {
+    echo "##[group]set up INC UT env..."
+    INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    echo "##[endgroup]"
+
+    cd /auto-round/test/integration || exit 1
+    run_if_retry
+
     local selected_files
     selected_files=$(filter_changed_tests "test/integration" \
         "$(cd /auto-round/test/integration && find ./test_cpu -name "test_inc*.py" | sort)")
@@ -140,12 +172,6 @@ function run_inc_unit_test() {
         echo "No changed INC test file, skip."
         return 0
     fi
-
-    echo "##[group]set up INC UT env..."
-    INC_PT_ONLY=1 uv pip install -r /auto-round/test/integration/test_cpu/requirements_inc.txt --extra-index-url https://download.pytorch.org/whl/cpu
-    echo "##[endgroup]"
-
-    cd /auto-round/test/integration || exit 1
 
     for test_file in ${selected_files}; do
         local test_basename=$(basename ${test_file} .py)
@@ -155,14 +181,6 @@ function run_inc_unit_test() {
 }
 
 function run_llmc_unit_test() {
-    local selected_files
-    selected_files=$(filter_changed_tests "test/integration" \
-        "$(cd /auto-round/test/integration && find ./test_cpu -name "test_llmc*.py" | sort)")
-    if [ -z "${selected_files}" ]; then
-        echo "No changed LLMC test file, skip."
-        return 0
-    fi
-
     echo "##[group]set up LLMC UT env..."
     BUILD_TYPE="nightly" uv pip install -r /auto-round/test/integration/test_cpu/requirements_llmc.txt --extra-index-url https://download.pytorch.org/whl/cpu
     uv pip uninstall auto-round
@@ -170,6 +188,15 @@ function run_llmc_unit_test() {
     echo "##[endgroup]"
 
     cd /auto-round/test/integration || exit 1
+    run_if_retry
+
+    local selected_files
+    selected_files=$(filter_changed_tests "test/integration" \
+        "$(cd /auto-round/test/integration && find ./test_cpu -name "test_llmc*.py" | sort)")
+    if [ -z "${selected_files}" ]; then
+        echo "No changed LLMC test file, skip."
+        return 0
+    fi
 
     for test_file in ${selected_files}; do
         local test_basename=$(basename ${test_file} .py)
@@ -180,11 +207,15 @@ function run_llmc_unit_test() {
 
 function collect_log() {
     touch "${SUMMARY_LOG}"
+    # collect_result.py also stages only the failed logs for the AI-analysis stage.
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
-        --test-type "Unit Tests" --log-pattern "unittest_test_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+        --test-type "Unit Tests" --log-pattern "unittest_test_*.log" --log-dir ${LOG_DIR} \
+        --summary-log ${SUMMARY_LOG} --failed-logs-dir "${LOG_DIR}/failed_logs"
 
     if [ -f .coverage ]; then
         cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+        # Keep .coverage in the failure artifact so a retry can accumulate onto it.
+        [ -d "${LOG_DIR}/failed_logs" ] && cp .coverage "${LOG_DIR}/failed_logs/.coverage"
     fi
 }
 

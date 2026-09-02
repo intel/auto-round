@@ -13,6 +13,7 @@ as FAILED.
 """
 
 import argparse
+import shutil
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ class TestResult:
     status: TestStatus
     duration: str
     counts: TestCounts
+    log_path: Path | None = None
 
 
 class XmlAnalyzer:
@@ -89,6 +91,7 @@ class XmlAnalyzer:
             status=self._determine_status(counts, xml_file),
             duration=duration,
             counts=counts if counts is not None else TestCounts(),
+            log_path=log_file,
         )
 
     def _extract_test_name(self, path: Path) -> str:
@@ -229,12 +232,46 @@ class ReportGenerator:
         )
 
 
+def failed_log_paths(results: list[TestResult]) -> list[Path]:
+    """Return the log paths of the failed tests."""
+    return [r.log_path for r in results if r.status == TestStatus.FAILED and r.log_path and r.log_path.is_file()]
+
+
+def stage_failed_logs(log_paths: list[Path], failed_dir: Path) -> None:
+    """Copy the failed test logs into ``failed_dir`` and assemble failed_tests.list.
+
+    ``failed_tests.list`` records the test targets of every failed log (read from
+    the sibling ``.list`` files) so a clean-environment retry can rerun exactly
+    those cases. Centralized here so every hardware UT runner behaves the same.
+    """
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    failed_cases: list[str] = []
+    seen: set[str] = set()
+    for log_path in log_paths:
+        shutil.copy2(log_path, failed_dir / log_path.name)
+        list_file = log_path.with_suffix(".list")
+        if list_file.is_file():
+            for case in list_file.read_text(encoding="utf-8").split():
+                if case not in seen:
+                    seen.add(case)
+                    failed_cases.append(case)
+    (failed_dir / "failed_tests.list").write_text(
+        "\n".join(failed_cases) + ("\n" if failed_cases else ""), encoding="utf-8"
+    )
+    print(
+        f"Staged {len(log_paths)} failed log(s) and {len(failed_cases)} case(s) "
+        f"into: {failed_dir.absolute()}",
+        file=sys.stderr,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze JUnit XML reports and generate summary")
     parser.add_argument("--test-type", required=True, help="Type of tests")
     parser.add_argument("--log-dir", required=True, type=Path, help="Directory with logs/reports")
     parser.add_argument("--summary-log", required=True, type=Path, help="Output file")
     parser.add_argument("--log-pattern", default="*.log", help="Glob pattern for log files")
+    parser.add_argument("--failed-logs-dir", type=Path, help="Optional dir to stage only the failed test logs into")
 
     args = parser.parse_args()
 
@@ -261,6 +298,9 @@ def main():
             f"Done: {stats['total']} tests, {stats['passed']} passed, "
             f"{stats['failed']} failed, {stats['skipped']} skipped"
         )
+
+        if args.failed_logs_dir is not None and failed > 0:
+            stage_failed_logs(failed_log_paths(results), args.failed_logs_dir)
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
