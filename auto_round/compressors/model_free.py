@@ -1595,18 +1595,27 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self._auto_scheme_resolved = False
         self._auto_scheme_family: Optional[str] = None
 
-    def _fallback_to_base_compressor(self):
+    def _fallback_to_base_compressor(self, save_format: Optional[str] = None):
         from auto_round.autoround import AutoRound
 
         logger.info(
-            "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
+            "Model-free mode cannot export this request directly; "
+            "constructing the regular AutoRound compressor (requested format: '%s').",
             self.format,
         )
+        # The fallback exists to serve a quantize_and_save(format=...) call: when
+        # no explicit construction format was forwarded, the save-time format
+        # must reach the fallback construction so eager validation (format-scoped
+        # policies such as the 8-bit asym rule) judges the format actually being
+        # saved. An explicitly requested construction format always wins.
+        init_kwargs = dict(self._fallback_init_kwargs)
+        if save_format is not None:
+            init_kwargs.setdefault("format", save_format)
         logger.info(
             "fallbacked_init_kwargs: %s",
-            self._fallback_init_kwargs,
+            init_kwargs,
         )
-        compressor = AutoRound(**self._fallback_init_kwargs, disable_model_free=True)
+        compressor = AutoRound(**init_kwargs, disable_model_free=True)
         self._fallback_compressor = compressor
 
     def _fallback_to_quantize_and_save(
@@ -1616,7 +1625,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         inplace: bool,
         **kwargs,
     ):
-        self._fallback_to_base_compressor()
+        self._fallback_to_base_compressor(save_format=format)
         return self._fallback_compressor.quantize_and_save(  # pylint: disable=E1101
             output_dir=output_dir, format=format, inplace=inplace, **kwargs
         )

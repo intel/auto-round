@@ -104,6 +104,60 @@ def test_fallback_forwards_only_explicit_format():
     assert explicit._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
 
 
+def test_model_free_entry_forwards_explicit_format(monkeypatch):
+    """An explicit construction format must reach the model-free compressor.
+
+    The compressor builder consumes ``format`` as its own parameter, so the
+    model-free branch must pass it explicitly. Without it a W8A16 asym request
+    with an llm_compressor format built a model-free compressor with the
+    implicit default, forwarded nothing to the fallback, and the fallback
+    AutoRound was constructed without any format - its eager validation then
+    refused the scheme it was built to export."""
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    from auto_round import AutoRound
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    ar = AutoRound(
+        "unused-model-path",
+        scheme="W8A16",
+        sym=False,
+        iters=0,
+        model_free=True,
+        format="auto_round:llm_compressor",
+    )
+    assert isinstance(ar, ModelFreeCompressor)
+    assert ar.format == "auto_round:llm_compressor"
+    assert ar._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
+
+
+def test_fallback_construction_sees_save_format_when_no_construction_format(monkeypatch):
+    """The fallback exists to serve a quantize_and_save(format=...) call.
+
+    When no explicit construction format was forwarded, the save-time format
+    must reach the fallback construction so eager validation judges the format
+    actually being saved (an explicitly requested construction format still
+    wins)."""
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    captured = {}
+
+    class _FakeAutoRound:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr("auto_round.autoround.AutoRound", _FakeAutoRound)
+
+    mf = ModelFreeCompressor("unused-model-path", scheme="W4A16")  # no explicit format
+    mf._fallback_to_base_compressor(save_format="gguf:q8_0")
+    assert captured.get("format") == "gguf:q8_0"
+    assert captured.get("disable_model_free") is True
+
+    explicit = ModelFreeCompressor("unused-model-path", scheme="W4A16", format="auto_round:llm_compressor")
+    explicit._fallback_to_base_compressor(save_format="gguf:q8_0")
+    assert captured.get("format") == "auto_round:llm_compressor"
+
+
 def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
     from auto_round import AutoRound
 

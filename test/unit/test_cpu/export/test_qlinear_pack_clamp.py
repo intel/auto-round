@@ -199,7 +199,9 @@ def test_missing_tensors_gptq_pack_clamps_zero_zero_point():
     torch.manual_seed(0)
     bits, group = 4, 32
     w = torch.rand(16, 64) + 0.1  # strictly positive -> asym zp = 0 per group
-    qweight, qzeros, scales = quantize_weight_rtn(w, bits=bits, group_size=group, sym=False)
+    qweight, qzeros, scales = quantize_weight_rtn(
+        w, bits=bits, group_size=group, sym=False, packing="auto_round:auto_gptq"
+    )
 
     npk = 32 // bits
     maxq = 2**bits - 1
