@@ -175,12 +175,14 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // instead of a second bespoke cache.
 //
 // Sharing one counter across calls is safe because every launcher call is
-// synchronous (`event.wait()` in `MoEGEMMLauncher`), so two launches can never
-// share the buffer concurrently. The pool keys buffers by device, so queues on
-// the same device share a slot -- also safe for the same reason. The buffer
-// lives until process exit, matching the singleton lifetime already used by
-// `EventManager`. The S4 header re-exports this helper rather than defining its
-// own, so both paths share one slot.
+// synchronous (`event.wait()` in `MoEGEMMLauncher`), so a dispatch never
+// returns with the counter still in use. The pool keys buffers by device
+// rather than by queue, so two queues on the same device share one slot; that
+// is safe under the same host-side serialization the pool itself already
+// assumes (its maps are unguarded, and every ark entry point is reached with
+// the GIL held). The buffer lives until process exit, matching the singleton
+// lifetime already used by `EventManager`. The S4 header re-exports this
+// helper rather than defining its own, so both paths share one slot.
 // ---------------------------------------------------------------------------
 
 // Scratch-pool slot dedicated to the work-group counter. Slots 0-7 are already
