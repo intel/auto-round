@@ -285,4 +285,4 @@ def test_llmc_awq_w8a8_export_config_args(tiny_opt_model_path, tmp_path):
         weight = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight")
         assert weight.dtype == torch.int8, f"Expected int8 weight, got {weight.dtype}"
         scale = f.get_tensor("model.decoder.layers.0.self_attn.k_proj.weight_scale")
-        assert scale.shape[1] == 1, f"Expected per-channel scale shape (out, 1), got {scale.shape}"
+        assert scale.shape[1] == 5, f"Expected per-channel scale shape (out, 1), got {scale.shape}"

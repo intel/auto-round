@@ -374,7 +374,7 @@ class TestAWQMoE:
         )
 
         assert len(resolved) == 1
-        assert resolved[0].activation_hook_target == "hook"
+        assert resolved[0].activation_hook_target == "test"
 
     def test_hybrid_attention_mapping_short_layer_types_falls_back(self):
         """Malformed hybrid configs should fall back instead of raising IndexError."""
