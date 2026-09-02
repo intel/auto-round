@@ -18,9 +18,6 @@ function run_if_retry() {
     if [ -f "${LOG_DIR}/.coverage" ]; then
         cp "${LOG_DIR}/.coverage" ./.coverage
     fi
-    for test_file in $(retry_selection); do
-        local test_basename=$(basename "${test_file}" .py)
-        run_pytest "${test_file}" "${LOG_DIR}/unittest_${test_basename}.log"
-    done
+    run_pytest "$(retry_selection)" "${LOG_DIR}/unittest_job_attempt_${SYSTEM_JOBATTEMPT}.log"
     return 0
 }
