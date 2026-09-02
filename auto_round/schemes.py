@@ -628,6 +628,19 @@ MXFP4 = QuantizationScheme.from_dict(
     }
 )
 
+MXFP4_EVEN = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 32,
+        "data_type": "mx_fp",
+        "act_bits": 4,
+        "act_data_type": "mx_fp_even",
+        "act_group_size": 32,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
+
 MXFP6 = QuantizationScheme.from_dict(
     {
         "bits": 6,
@@ -661,6 +674,19 @@ MXFP8 = QuantizationScheme.from_dict(
         "data_type": "mx_fp",
         "act_bits": 8,
         "act_data_type": "mx_fp",
+        "act_group_size": 32,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
+
+MXFP8_EVEN = QuantizationScheme.from_dict(
+    {
+        "bits": 8,
+        "group_size": 32,
+        "data_type": "mx_fp",
+        "act_bits": 8,
+        "act_data_type": "mx_fp_even",
         "act_group_size": 32,
         "act_sym": True,
         "act_dynamic": True,
@@ -811,8 +837,10 @@ PRESET_SCHEMES = {
     "MXFP4": MXFP4,
     "MXFP6": MXFP6,
     "MXFP4_RCEIL": MXFP4_RCEIL,
+    "MXFP4_EVEN": MXFP4_EVEN,
     "MXFP8": MXFP8,
     "MXFP8_RCEIL": MXFP8_RCEIL,
+    "MXFP8_EVEN": MXFP8_EVEN,
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
     "FPW8A16": FPW8A16,

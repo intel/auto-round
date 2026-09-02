@@ -406,11 +406,66 @@ def quant_mx_rceil_v2(
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
+def quant_mx_even(
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+):
+    """Quantize using MXFP format with 0.75-threshold E8M0 shared exponent rounding.
+
+    Rounds up the shared exponent when the float mantissa fraction of max_val >= 0.75,
+    equivalent to the CUDA kernel:
+        rounded_bits = (float_as_uint(max_val) + (1 << 21)) & 0xFF800000
+        scale_exp = biased_exp(rounded_bits) - emax
+    This threshold corresponds to floor(log2(max_val) + 0.193) where 0.193 = 1 - log2(1.75),
+    and results in ~25% of groups clipping (mantissa in [0.5, 0.75)), compared to 50% for
+    the standard floor approach and 0% for rceil.
+
+    Args:
+        tensor (torch.Tensor): Input tensor to quantize.
+        bits (int): Bit width for quantization.
+        group_size (int): Group size for shared scale.
+        data_type (str): MXFP format key (e.g. 'mx_fp4').
+        v (float): Adjustment value added after scaling.
+        max_scale (float or torch.Tensor): Max scale applied to tensor.
+        mantissa_rounding (str): Rounding method for mantissa.
+
+    Returns:
+        tuple: (quantized tensor, shared_exp, None)
+    """
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    data_type = data_type if data_type in MXFP_FORMAT_CACHE else "mx_fp" + str(bits)
+    ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
+    orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
+    max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    if isinstance(max_scale, torch.Tensor):
+        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+    else:
+        max_val *= max_scale
+
+    # Round up exponent when mantissa >= 0.75, equivalent to floor(log2(max_val / 0.875))
+    # where 0.875 = 7/8. This matches the CUDA kernel: (bits + (1<<21)) & 0xFF800000.
+    log2_val = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val / 0.875))
+    shared_exp = floor_ste(log2_val)
+    scale_emax = 2.0 ** float(8 - 1) - 1
+    shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
+
+    scale = torch.pow(2.0, shared_exp.float())
+    tensor = tensor / scale + v
+    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
+
+    tensor = tensor * scale
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
+    return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
+
+
 for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
     QUANT_FUNC_WITH_DTYPE[key + "_rceil"] = quant_mx_rceil
+    QUANT_FUNC_WITH_DTYPE[key + "_even"] = quant_mx_even
     QUANT_FUNC_WITH_DTYPE["opt_rtn_" + key] = quant_mx_opt_rtn
 QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
+QUANT_FUNC_WITH_DTYPE["mx_fp_even"] = quant_mx_even
 QUANT_FUNC_WITH_DTYPE["mx_fp4_rceil_v2"] = quant_mx_rceil_v2
 QUANT_FUNC_WITH_DTYPE["opt_rtn_mx_fp"] = quant_mx_opt_rtn
 
