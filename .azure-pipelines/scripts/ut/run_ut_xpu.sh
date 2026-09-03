@@ -36,7 +36,7 @@ function setup_environment() {
     export TQDM_MININTERVAL=60
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/xpu.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}
@@ -136,8 +136,25 @@ function collect_log() {
     python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
     if [ -f .coverage ]; then
-        # Use a per-part name so the Coverage stage's `ut-*/.coverage.*` pattern matches.
-        cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+        # Suffix with the matrix part so the nightly Coverage stage can combine
+        # the parts without the artifacts overwriting each other.
+        cp .coverage "${LOG_DIR}/.coverage.${UT_MODE:-base}"
+        # The tests import auto_round from site-packages, so the raw data holds
+        # container-only paths. "[paths] source" rewrites those to repo-relative
+        # ones, but coverage.py applies it during "combine" only -- reporting on
+        # its own emits /home/hostuser/.venv/... which no agent can resolve, and
+        # PublishCodeCoverageResults then reports "file does not exist".
+        # Combine from the repo root so the relative "auto_round" entry matches.
+        (
+            cd /auto-round || exit 1
+            rm -f .coverage
+            python -m coverage combine --keep "${LOG_DIR}/.coverage.${UT_MODE:-base}"
+            python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+            python -m coverage html -d "${LOG_DIR}/htmlcov"
+        )
+    else
+        echo "No coverage data (no test selected), skip coverage report."
+        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
     fi
 }
 
@@ -155,10 +172,12 @@ function main() {
         run_unit_test_llmc
     elif [[ "$test_part" == "ark" ]]; then
         run_unit_test_ark
-    elif [[ "$test_part" == "0" ]]; then
+    elif [[ "$test_part" == "common" ]]; then
         run_common_unit_test
-    else
+    elif [[ "$test_part" == "base" ]]; then
         run_unit_test
+    else
+        echo "invalid name $test_part"
     fi
     collect_log
     print_coverage

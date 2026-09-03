@@ -41,8 +41,8 @@ parameters:
   - name: unitTestParts
     type: object
     default:
-      - 0
-      - 1
+      - common
+      - base
 
 stages:
   - template: template/lib-build-template.yml
@@ -90,7 +90,7 @@ stages:
               artifact:
               patterns: '*_coverage/.coverage.*'
               path: $(DOWNLOAD_PATH)
-          
+
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '3.12'
@@ -103,7 +103,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh xpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'
@@ -118,6 +118,10 @@ stages:
               publishLocation: "pipeline"
 
           - task: PublishCodeCoverageResults@2
+            condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
-              summaryFileLocation: $(Build.SourcesDirectory)/log_dir/coverage_PR/coverage.xml
-
+              summaryFileLocation: $(UPLOAD_PATH)/coverage_PR/coverage.xml
+              # coverage.xml is produced inside the container, where the checkout
+              # lives at /auto-round, so its <sources> root does not exist on the
+              # agent. Point the task at the agent-side checkout instead.
+              pathToSources: $(Build.SourcesDirectory)
