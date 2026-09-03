@@ -362,7 +362,6 @@ def apply_replacements(
         if auto_detect_moe and is_transformers_version_greater_or_equal_5():
             _handle_moe_modules(model)
 
-
     return model
 
 

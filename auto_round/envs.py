@@ -128,8 +128,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # (fused 3D experts must be split into per-expert Linear to be quantizable, and doing
     # that on real tensors costs ~2x one experts module on top of a fully resident model).
     # Set this to fall back to the old behavior of loading the whole model on CPU first.
-    "AR_DISABLE_AUTO_META_LOAD": lambda: os.getenv("AR_DISABLE_AUTO_META_LOAD", "0").lower()
-    in ("1", "true", "yes"),
+    "AR_DISABLE_AUTO_META_LOAD": lambda: os.getenv("AR_DISABLE_AUTO_META_LOAD", "0").lower() in ("1", "true", "yes"),
     # When set to a directory path, the per-block tuning loop checkpoints its
     # progress there after each completed block, and resumes from the first
     # not-yet-completed block on a fresh run against the same directory --

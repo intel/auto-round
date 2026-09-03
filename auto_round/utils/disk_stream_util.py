@@ -104,7 +104,7 @@ def _reverse_renamings_for(model_type):
 
     ``transformers`` owns the checkpoint->model renames, so reversing them is best left to
     ``WeightTransform.reverse_transform()``: it handles capturing groups and the
-    ``PrefixChange`` special cases correctly. Naively re-using a ``target_pattern`` as a
+    ``PrefixChange`` special cases correctly. Naively reusing a ``target_pattern`` as a
     regex pattern does not -- the targets are *replacement* strings and a ``\\1``
     backreference in one (e.g. ``model.language_model.\\1``) raises
     ``re.PatternError: invalid group reference``.
@@ -366,7 +366,6 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         if declared_dtype == torch.float32 and values[full_name].dtype != torch.float32:
             target_dtype = values[full_name].dtype
         set_module_tensor_to_device(module, name, device, value=values[full_name], dtype=target_dtype)
-
 
 
 def free_module(module: nn.Module) -> None:
