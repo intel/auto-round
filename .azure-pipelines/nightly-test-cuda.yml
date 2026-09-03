@@ -56,8 +56,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: "3.13"
-            displayName: "Use Python 3.13"
+              versionSpec: "3.14"
+            displayName: "Use Python 3.14"
 
           - task: Bash@3
             displayName: "Install dependencies"
@@ -176,8 +176,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: "3.13"
-            displayName: "Use Python 3.13"
+              versionSpec: "3.14"
+            displayName: "Use Python 3.14"
 
           - task: Bash@3
             displayName: "Install dependencies"
