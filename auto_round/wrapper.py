@@ -197,6 +197,14 @@ class WrapperLinear(torch.nn.Module):
             orig_layer.group_size,
             iters=orig_layer.iters,
         )
+        # Keep the uncompiled callable around. Callers that quantize a *batch* of layers in
+        # one shot (the grouped MoE experts backend) must not go through the compiled
+        # wrapper: its dynamo cache is keyed by the traced code object and shared by every
+        # WrapperLinear, so a differently shaped input would add cache entries -- and a
+        # batched shape depends on how many experts were routed, i.e. on the calibration
+        # sample. The batched call is one large kernel anyway, where compilation buys much
+        # less than it does for the small per-layer one.
+        self.weight_quant_func_eager = self.weight_quant_func
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 

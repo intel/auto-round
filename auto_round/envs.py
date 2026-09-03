@@ -139,6 +139,33 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # to rotate token assignments across all experts for calibration coverage.
     "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
     in ("1", "true", "yes"),
+    # Experts forward used for AutoRound's unfused per-expert nn.Linear MoE layout:
+    #   "auto"           - (default) same as "linear_grouped"
+    #   "linear_grouped" - sort the routed (token, expert) pairs once and run one grouped
+    #                      GEMM over the sorted batch. Avoids the per-expert
+    #                      nonzero()/numel() device syncs of the loop backend, which
+    #                      dominate MoE tuning time on models with many experts.
+    #   "linear_loop"    - legacy per-expert Python loop.
+    # The grouped backend validates the layer and transparently falls back to the loop
+    # when the layer is not eligible (Conv1D experts, forward hooks, static/per-tensor
+    # activation quantization, mixed devices, ...).
+    "AR_MOE_EXPERTS_IMPL": lambda: os.getenv("AR_MOE_EXPERTS_IMPL", "auto").lower(),
+    # Whether the "linear_grouped" experts backend uses torch's native grouped GEMM
+    # (torch.nn.functional.grouped_mm / torch._grouped_mm) instead of the default
+    # per-expert F.linear loop over contiguous slices. Set to "1" to opt in.
+    # Both paths are numerically identical (gradients included, verified bit-exact on
+    # A100); this is purely a performance knob. The loop is the default because once
+    # WrapperLinear's fake-quant is in the picture it measures faster in every
+    # AutoRound-relevant mode -- see the note in modeling/fused_moe/grouped_experts.py.
+    "AR_MOE_GROUPED_MM": lambda: os.getenv("AR_MOE_GROUPED_MM", "0").lower(),
+    # How many experts the "linear_grouped" backend fake-quantizes in one fused call.
+    #   "auto" - (default) 16. Fusing every active expert at once builds a working set
+    #            that grows with the expert count; past a point that costs peak memory on
+    #            GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
+    #            calibration throughput, and doubled the GPU calibration peak).
+    #   <int>  - force a fixed group size; 0 or negative means "fuse everything".
+    # Results are identical either way -- rows stay independent.
+    "AR_MOE_QDQ_CHUNK": lambda: os.getenv("AR_MOE_QDQ_CHUNK", "auto").lower(),
     # vLLM fused kernels require q/k/v and gate/up projections to use one
     # weight global scale. Disable only for runtimes without that requirement.
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()

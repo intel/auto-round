@@ -122,6 +122,9 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         self.data_type = data_type
         if hasattr(layer, "imatrix"):
             del layer.imatrix
+        # See WrapperLinear._init_tuning_params_and_quant_func: batched callers need the
+        # uncompiled function so their (differently shaped) input never reaches dynamo.
+        self.weight_quant_func_eager = self.weight_quant_func
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
