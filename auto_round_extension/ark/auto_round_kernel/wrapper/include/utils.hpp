@@ -269,18 +269,50 @@ class DnnlContext {
   }
 
  private:
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
   size_t get_dnnl_key(sycl::queue* q) {
     if (q == nullptr) return 0;
 #if ARK_XPU
     std::lock_guard<std::mutex> lock(mutex_);
-    auto [dev_key, ctx_id] = get_device_context_ids_locked(q);
-    return dev_key ^ (ctx_id + 0x9e3779b97f4a7c15ULL + (dev_key << 6) + (dev_key >> 2));
+    auto key = get_device_context_key_locked(q);
+    auto it = dnnl_scratch_domain_ids_.find(key);
+    if (it != dnnl_scratch_domain_ids_.end()) {
+      return it->second;
+    }
+    const size_t new_id = next_dnnl_scratch_domain_id_++;
+    dnnl_scratch_domain_ids_.emplace(key, new_id);
+    return new_id;
 #else
     return 0;
 #endif
   }
 
 #if ARK_XPU
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
   size_t get_context_id_locked(const sycl::context& ctx) {
     for (const auto& entry : context_ids_) {
       if (entry.context == ctx) {
@@ -293,9 +325,8 @@ class DnnlContext {
   }
 
   std::pair<size_t, size_t> get_device_context_ids_locked(sycl::queue* q) {
-    auto dev_key = DeviceMemoryPool::Instance()->get_device_key(q);
-    auto ctx_id = get_context_id_locked(q->get_context());
-    return {dev_key, ctx_id};
+    auto key = get_device_context_key_locked(q);
+    return {UUIDHasher{}(key.device_uuid), key.context_id};
   }
 
   struct ContextEntry {
@@ -317,7 +348,9 @@ class DnnlContext {
     }
   };
 
+  std::unordered_map<DeviceContextKey, size_t, DeviceContextKeyHasher> dnnl_scratch_domain_ids_;
   std::unordered_map<EngineKey, std::unique_ptr<dnnl::engine>, EngineKeyHash> xpu_engines_;
+  size_t next_dnnl_scratch_domain_id_ = 1;
   size_t next_context_id_ = 1;
 #endif
 
