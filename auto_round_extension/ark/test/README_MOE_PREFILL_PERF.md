@@ -651,11 +651,10 @@ clamped to `num_experts - 1`); set `ARK_MOE_VALIDATE_ROUTING=1` to restore
 the eager check when debugging a router. Host-side (CPU) routing tables are
 still checked unconditionally, since summing those is free.
 
-**FP8 DPAS decode dispatch.** `moe_decode_fp8_dpas_per_group_dispatch`
-(`sycl_tla_moe_prefill_fp8_dpas.hpp`, `ARK_MOE_DECODE_DPAS_FP8` default ON)
-is the FP8 twin of the S4 decode dispatch: same mainloop, same `[E, N, K]`
-FP8 bytes + `[E, N, K/group]` scales, no repack. It differs from the
-prefill dispatch in two decode-specific ways.
+**FP8 DPAS decode dispatch.** The FP8 decode path (`ARK_MOE_DECODE_DPAS_FP8`
+default ON) is the FP8 twin of the S4 decode dispatch: same mainloop, same
+`[E, N, K]` FP8 bytes + `[E, N, K/group]` scales, no repack. It differs from
+the prefill dispatch in two decode-specific ways.
 
 *Finer small-M ladder.* The reference `w8a16` dispatch in vllm-xpu-kernels
 bottoms out at the 16-row tile, while its `w4a16` dispatch has an extra
@@ -674,6 +673,18 @@ shape — so the FP8 mainloop reuses it verbatim, closing that gap:
 
 The upper rungs match the S4 *decode* ladder rather than the FP8 prefill
 one, whose `≤ 512 → m_32` rung is tuned for prefill-sized batches.
+
+Like S4, the rungs are *not* instantiated inside `sycl_tla_moe_decode_fp8.cpp`.
+Each one lives in its own generated translation unit
+(`sycl_tla_moe_prefill_fp8_{f16,bf16}_{e4m3,e5m2}[_tiny|_mid|_large].cpp`,
+declared in `sycl_tla_moe_prefill_fp8_helpers.hpp`), and the decode TU only
+picks a rung host-side and calls the corresponding `moe_prefill_fp8_detail::
+dispatch_*` function. Expanding the whole ladder in one TU means
+2 dtypes × 2 formats × 4 policies × 4 group sizes = 64 cutlass grouped-GEMM
+instantiations, which measured **~14.4 GiB peak compiler RSS** for that single
+file; splitting keeps each TU to one policy. `sycl_tla_moe_decode_fp8.cpp` no
+longer includes `sycl_tla_moe_prefill_fp8_dpas.hpp` at all — its shape gate
+goes through the light `moe_prefill_fp8_detail::shape_ok` declaration.
 
 *Pooled atomic counter.* Allocating the work-group counter with
 `sycl::malloc_device` and releasing it with `sycl::free` on every call

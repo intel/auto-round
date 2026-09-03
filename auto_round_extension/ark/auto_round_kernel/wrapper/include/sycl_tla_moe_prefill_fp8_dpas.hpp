@@ -1165,6 +1165,13 @@ void moe_prefill_fp8_dpas_per_group_dispatch(
 // geometry changes, so `test_moe_prefill_accuracy.py::test_accuracy_fp8`
 // tolerances apply unchanged. Inherits this header's
 // NEEDS-HARDWARE-VALIDATION status.
+//
+// NOTE: the generated decode TU (`sycl_tla_moe_decode_fp8.cpp`) does NOT call
+// this template. Instantiating the whole ladder in one TU costs ~14GB of
+// compiler memory, so that TU selects the rung host-side and calls the
+// per-policy `moe_prefill_fp8_detail::dispatch_*` functions, each instantiated
+// in its own translation unit. Keep the thresholds here in sync with that
+// ladder. The S4 header carries the same arrangement.
 // ---------------------------------------------------------------------------
 
 template <typename ScalarT, bool IsE4M3>

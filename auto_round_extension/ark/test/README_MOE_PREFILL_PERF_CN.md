@@ -530,11 +530,10 @@ benchmark 的计时区间内,因为记录计时 event 时队列正好是空的�
 `num_experts - 1`);调试 router 时可设置 `ARK_MOE_VALIDATE_ROUTING=1` 恢复
 即时校验。位于 host(CPU)上的路由表仍然始终校验,因为对它们求和是免费的。
 
-**FP8 DPAS decode dispatch。** `moe_decode_fp8_dpas_per_group_dispatch`
-(`sycl_tla_moe_prefill_fp8_dpas.hpp`,`ARK_MOE_DECODE_DPAS_FP8` 默认 ON)
-是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的 `[E, N, K]`
-FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch 有
-两点 decode 专属的差异。
+**FP8 DPAS decode dispatch。** FP8 decode 路径(`ARK_MOE_DECODE_DPAS_FP8`
+默认 ON)是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的
+`[E, N, K]` FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill
+dispatch 有两点 decode 专属的差异。
 
 *更细的 small-M 阶梯。* vllm-xpu-kernels 的参考 `w8a16` dispatch 最小只到
 16 行 tile,而它的 `w4a16` dispatch 多一个 8 行档位。decode 的 `A_avg_M`
@@ -552,6 +551,17 @@ FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch �
 
 上面几档对齐的是 S4 的 *decode* 阶梯,而不是 FP8 prefill 的那条 ——
 后者的 `≤ 512 → m_32` 档是按 prefill 规模的 batch 调过的。
+
+和 S4 一样,这些档位**并不**在 `sycl_tla_moe_decode_fp8.cpp` 内实例化。每一档
+各自位于一个生成的翻译单元中
+(`sycl_tla_moe_prefill_fp8_{f16,bf16}_{e4m3,e5m2}[_tiny|_mid|_large].cpp`,
+声明在 `sycl_tla_moe_prefill_fp8_helpers.hpp`),decode TU 只在 host 侧选档并
+调用对应的 `moe_prefill_fp8_detail::dispatch_*` 函数。若把整条阶梯展开在同一个
+TU 里,就是 2 dtype × 2 format × 4 policy × 4 group size = 64 个 cutlass
+grouped-GEMM 实例化,实测该单文件**峰值编译内存约 14.4 GiB**;拆分后每个 TU 只
+含一个 policy。`sycl_tla_moe_decode_fp8.cpp` 现在完全不再 include
+`sycl_tla_moe_prefill_fp8_dpas.hpp` —— 它的形状门控改走轻量的
+`moe_prefill_fp8_detail::shape_ok` 声明。
 
 *池化 atomic 计数器。* 每次调用都用 `sycl::malloc_device` 分配 work-group
 计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列同步。在 prefill
