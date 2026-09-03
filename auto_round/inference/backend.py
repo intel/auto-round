@@ -1361,7 +1361,7 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
             continue
         try:
             require_version(req)
-        except:
+        except Exception:
             missing_requirements.append(req)
 
     gptq_req = next((f'"{req}"' for req in missing_requirements if "gptqmodel" in req), None)
