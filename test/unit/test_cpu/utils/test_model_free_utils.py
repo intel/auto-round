@@ -139,18 +139,23 @@ class TestAddRoutedExpertsIfMoe:
         result = _add_routed_experts_if_moe(targets, layers)
         assert "RoutedExperts" in result
 
+    def test_expert_path_not_under_mlp_triggers(self):
+        targets = ["Linear"]
+        layers = ["model.layers.0.moe.experts.0.gate_proj.weight"]
+        result = _add_routed_experts_if_moe(targets, layers)
+        assert "RoutedExperts" in result
+
+    def test_generic_projection_name_triggers(self):
+        targets = ["Linear"]
+        layers = ["model.layers.0.mlp.experts.0.proj.weight"]
+        result = _add_routed_experts_if_moe(targets, layers)
+        assert "RoutedExperts" in result
+
     def test_non_moe_no_change(self):
         targets = ["Linear"]
         layers = ["model.layers.0.mlp.down_proj.weight", "model.layers.0.mlp.up_proj.weight"]
         result = _add_routed_experts_if_moe(targets, layers)
         assert result == ["Linear"]
-        assert "RoutedExperts" not in result
-
-    def test_w2_alone_does_not_trigger(self):
-        """w2 (down-projection) alone should not trigger RoutedExperts."""
-        targets = ["Linear"]
-        layers = ["model.layers.0.mlp.experts.0.w2.weight"]
-        result = _add_routed_experts_if_moe(targets, layers)
         assert "RoutedExperts" not in result
 
     def test_already_present_not_duplicated(self):

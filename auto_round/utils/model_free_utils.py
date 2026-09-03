@@ -1997,24 +1997,36 @@ def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
 # TODO: Remove when the issue is fixed
 # https://github.com/vllm-project/llm-compressor/issues/3069
 def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
-    """Append ``"RoutedExperts"`` to *targets* when *layer_names* indicates a MoE model.
+    """Append ``"RoutedExperts"`` for routed expert layouts that llm-compressor misses.
 
-    LLM-Compressor has a known bug where MoE expert projections (e.g. ``w1``/
-    ``w3`` or layers inside ``block_sparse_moe``) are not matched by the generic
-    ``"Linear"`` target and require the explicit ``"RoutedExperts"`` target to be
-    present in the config group.  This helper detects that situation and injects
-    the extra target so quantization is applied correctly.
-
-    A model is considered MoE if any layer name contains:
-
-    * ``.w1`` or ``.w3`` (typical Mixtral / DeepSeek gating projections), or
-    * ``block_sparse_moe`` (Mixtral-style naming).
+    The generic ``"Linear"`` target does not cover all expert layouts.  Keep the
+    safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj`` and
+    ), but trigger for non-standard expert paths and for any routed
+    expert structure that lives outside the standard ``mlp.experts`` naming.
     """
     if "RoutedExperts" in targets:
         return targets
-    moe_re = re.compile(r"\.w[13](?:\.|$)|block_sparse_moe")
-    if any(moe_re.search(name) for name in layer_names):
+
+    def _projection_name(name: str) -> str:
+        # Eg. '...experts.0.gate_proj.weight' -> ['...', 'experts', '0', 'gate_proj', 'weight']
+        parts = name.split(".")
+        if len(parts) >= 2:
+            return parts[-2]
+        return parts[-1]
+
+    for name in layer_names:
+        lname = name.lower()
+        if "block_sparse_moe" in lname or ".moe." in lname or ".feed_forward." in lname:
+            return list(targets) + ["RoutedExperts"]
+
+        if ".experts." not in lname:
+            continue
+
+        projection = _projection_name(name)
+        if projection in {"gate_proj", "up_proj", "down_proj"}:
+            continue
         return list(targets) + ["RoutedExperts"]
+
     return targets
 
 
