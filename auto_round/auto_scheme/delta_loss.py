@@ -2328,16 +2328,11 @@ def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=Fal
     """Build an isolated meta model and checkpoint index for a scoring worker."""
     from auto_round.utils.disk_stream_util import build_meta_model
 
+    # ``build_meta_model`` already performs the structural MoE unfuse (fused 3D expert
+    # params -> per-expert Linear) while everything is still on meta, so per-expert quant
+    # layers resolve; weights stay on meta and are filled per-block from the checkpoint
+    # index during scoring.
     model, tokenizer, disk_index = build_meta_model(model_name)
-    # The regular load pipeline applies custom replacements, among them the
-    # structural MoE unfusing that turns fused expert containers into per-expert
-    # Linear modules; the meta-skeleton build skips that pipeline.  Unfuse here
-    # so per-expert quant layers resolve -- weights stay on meta and are filled
-    # per-block from the checkpoint index during scoring.
-    from auto_round.modeling.fused_moe.replace_modules import _handle_moe_modules
-
-    unfused = _handle_moe_modules(model)
-    logger.info("disk-stream scoring worker: structural MoE unfuse produced %d unfused experts modules", len(unfused))
     if use_model_replacements:
         from auto_round.special_model_handler import _handle_special_model, update_module
 

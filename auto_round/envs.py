@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
     AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
     AR_DISK_STREAM_MODEL: bool = False
+    AR_DISABLE_AUTO_META_LOAD: bool = False
+    AR_DISK_STREAM_WORKERS: int = 1
     AR_RESUME_DIR: Optional[str] = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
@@ -122,6 +124,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # block-by-block from disk during quantization instead of being fully
     # materialized on CPU RAM up front.
     "AR_DISK_STREAM_MODEL": lambda: os.getenv("AR_DISK_STREAM_MODEL", "0").lower() in ("1", "true", "yes"),
+    # AutoRound builds a meta skeleton automatically for transformers>=5 MoE checkpoints
+    # (fused 3D experts must be split into per-expert Linear to be quantizable, and doing
+    # that on real tensors costs ~2x one experts module on top of a fully resident model).
+    # Set this to fall back to the old behavior of loading the whole model on CPU first.
+    "AR_DISABLE_AUTO_META_LOAD": lambda: os.getenv("AR_DISABLE_AUTO_META_LOAD", "0").lower()
+    in ("1", "true", "yes"),
+    # Threads used to copy tensors out of the checkpoint when materializing a block from a
+    # meta skeleton. Defaults to 1: an unfused MoE block asks for hundreds of small
+    # per-expert tensors, and on a local NVMe / warm page cache the copy is pure memcpy, so
+    # threading only adds scheduling overhead. Raise it when the checkpoint lives on
+    # high-latency storage (network/NFS/object store), where overlapping reads does pay off.
+    "AR_DISK_STREAM_WORKERS": lambda: int(os.getenv("AR_DISK_STREAM_WORKERS", "1")),
     # When set to a directory path, the per-block tuning loop checkpoints its
     # progress there after each completed block, and resumes from the first
     # not-yet-completed block on a fresh run against the same directory --

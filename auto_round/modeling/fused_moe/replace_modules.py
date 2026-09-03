@@ -35,9 +35,9 @@ BUILTIN_MODULES = {
     "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
     # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
     "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
-    # Qwen3.5 MoE uses block-local materialization to avoid eagerly unfusing the full model.
-    "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
-    "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    # # Qwen3.5 MoE uses block-local materialization to avoid eagerly unfusing the full model.
+    # "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
+    # "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
     # Qwen3-Omni MoE: thinker (no shared expert)

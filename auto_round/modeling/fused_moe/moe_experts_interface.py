@@ -482,6 +482,40 @@ def _unfuse_single_projection(
 _logged_memory_before_replacement = False  # To ensure we only log memory once before replacements
 
 
+def _log_unfuse_diagnostics(module: nn.Module, detected_projections: dict[str, dict]) -> None:
+    """Report where the fused expert weights live before the first unfuse.
+
+    Unfusing is only free when the parameters are still on ``meta``. On a real device the
+    fused tensor and the per-expert copies must coexist for the duration of the split, so
+    the peak is inherently ~2x one experts module -- if this logs a non-meta device, that
+    is where the RAM spike comes from, and the fix is to build the model as a meta
+    skeleton (``AR_DISK_STREAM_MODEL=1``) so experts are read per-expert from disk.
+    """
+    devices, total_bytes = set(), 0
+    for proj_name in detected_projections:
+        param = getattr(module, proj_name, None)
+        if not isinstance(param, nn.Parameter):
+            continue
+        devices.add(param.device.type)
+        if param.device.type != "meta":
+            total_bytes += param.numel() * param.element_size()
+
+    if devices == {"meta"}:
+        logger.info("[MoE Prep] fused expert weights are on meta -> unfusing is allocation-free")
+        return
+
+    logger.warning(
+        "[MoE Prep] fused expert weights are on %s (%.2f GB for '%s' alone), not meta. "
+        "Splitting them in memory needs the fused tensor and its per-expert copies at the "
+        "same time, so expect a peak of roughly 2x one experts module on top of the model. "
+        "To avoid it entirely, build the model as a meta skeleton (AR_DISK_STREAM_MODEL=1 "
+        "with a local checkpoint directory) so each expert is read straight from disk.",
+        "/".join(sorted(devices)),
+        total_bytes / 1024**3,
+        module.__class__.__name__,
+    )
+
+
 def _unfuse_experts_weights_inplace(
     module: nn.Module,
     check_decorator: bool = True,
@@ -521,6 +555,7 @@ def _unfuse_experts_weights_inplace(
     global _logged_memory_before_replacement
     if not _logged_memory_before_replacement:
         _logged_memory_before_replacement = True
+        _log_unfuse_diagnostics(module, detected_projections)
         memory_monitor.update()
         memory_monitor.log_summary("Before applying custom replacements")
 
@@ -697,3 +732,84 @@ def prepare_model_for_moe_quantization(
 def is_linear_loop_available() -> bool:
     """Check if linear_loop experts implementation is available."""
     return HAS_EXPERTS_INTERFACE
+
+
+def _config_model_types(config) -> list[str]:
+    """Collect ``model_type`` from a config and every nested sub-config.
+
+    A VLM keeps the MoE rules on the text sub-config
+    (``text_config.model_type == 'qwen3_5_moe_text'``), so the top-level type alone is
+    not enough. Uses ``sub_configs``/``get_text_config`` when available (the supported
+    transformers API) and falls back to scanning ``__dict__`` for config-like values.
+    """
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def _walk(node) -> None:
+        if node is None or id(node) in seen:
+            return
+        seen.add(id(node))
+
+        model_type = getattr(node, "model_type", None)
+        if isinstance(model_type, str) and model_type not in found:
+            found.append(model_type)
+
+        children = []
+        # Preferred: the declared sub-config names (transformers >= 4.4x).
+        for name in getattr(type(node), "sub_configs", None) or ():
+            children.append(getattr(node, name, None))
+        get_text_config = getattr(node, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                children.append(get_text_config())
+            except Exception:  # pragma: no cover - defensive
+                pass
+        # Fallback for plain/duck-typed configs.
+        for value in (vars(node).values() if hasattr(node, "__dict__") else ()):
+            if getattr(value, "model_type", None) is not None:
+                children.append(value)
+
+        for child in children:
+            if child is not None and child is not node:
+                _walk(child)
+
+    _walk(config)
+    return found
+
+
+def config_has_fused_moe_experts(config) -> bool:
+    """Whether loading this config would build fused 3D expert parameters.
+
+    ``transformers>=5`` describes such models with a ``WeightConverter`` that stacks the
+    checkpoint's per-expert 2D tensors into one fused parameter (``MergeModulelist``).
+    That converter is exactly the signal we care about: its presence means
+    ``from_pretrained`` would produce a fused ``nn.Parameter`` that AutoRound then has to
+    split back into per-expert ``nn.Linear`` -- the expensive case worth building on meta
+    for. MoE models that already ship as ``ModuleList`` of ``Linear`` have no such
+    converter and are deliberately left on the ordinary load path.
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import MergeModulelist, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return False
+
+    for model_type in _config_model_types(config):
+        mapping = get_checkpoint_conversion_mapping(model_type)
+        if not mapping:
+            continue
+        for entry in mapping:
+            if not isinstance(entry, WeightConverter):
+                continue
+            if not any(isinstance(op, MergeModulelist) for op in entry.operations):
+                continue
+            if any("experts" in pattern for pattern in entry.source_patterns):
+                logger.debug(
+                    "[MoE Prep] '%s' merges per-expert checkpoint tensors into a fused parameter (%s)",
+                    model_type,
+                    entry.target_patterns,
+                )
+                return True
+    return False
+
+

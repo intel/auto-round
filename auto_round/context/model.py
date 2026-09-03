@@ -18,6 +18,7 @@ import os
 from typing import Any, Callable, Optional, Union
 
 import torch
+import transformers
 from packaging import version
 from transformers import AutoConfig
 
@@ -183,7 +184,7 @@ class ModelContext(BaseContext):
                 # __init__, exactly like the text path. Falls back to the
                 # full mllm_load_model on any failure.
                 loaded_via_meta = False
-                if envs.AR_DISK_STREAM_MODEL and os.path.isdir(self.model):
+                if self._should_use_meta_skeleton(self._peek_config()):
                     try:
                         self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
                             self.disk_stream_model_dir
@@ -197,8 +198,8 @@ class ModelContext(BaseContext):
                         loaded_via_meta = True
                     except Exception:
                         logger.warning(
-                            "AR_DISK_STREAM_MODEL requested but building a multimodal meta "
-                            "skeleton for %s failed; falling back to a full CPU load.",
+                            "Building a multimodal meta skeleton for %s failed; "
+                            "falling back to a full CPU load.",
                             self.disk_stream_model_dir,
                             exc_info=True,
                         )
@@ -224,7 +225,6 @@ class ModelContext(BaseContext):
             self.is_model_patched = apply_model_monkey_patches(
                 model_name=self.model, trust_remote_code=self.trust_remote_code
             )
-            import transformers
 
             if (
                 not self.is_model_patched
@@ -248,15 +248,14 @@ class ModelContext(BaseContext):
             gc.collect()
             _force_trim_malloc()
 
-            if envs.AR_DISK_STREAM_MODEL:
+            if self._should_use_meta_skeleton(config):
                 try:
                     self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
                         self.disk_stream_model_dir
                     )
                 except Exception:
                     logger.warning(
-                        "AR_DISK_STREAM_MODEL requested but building a meta skeleton for %s failed; "
-                        "falling back to a normal full CPU load.",
+                        "Building a meta skeleton for %s failed; falling back to a normal full CPU load.",
                         self.disk_stream_model_dir,
                         exc_info=True,
                     )
@@ -289,6 +288,90 @@ class ModelContext(BaseContext):
         for m in self.model.modules():
             if hasattr(m, "tuning_device"):
                 delattr(m, "tuning_device")
+
+    def _peek_config(self):
+        """Best-effort config lookup before the model object exists."""
+        if self.config is not None:
+            return self.config
+        if not isinstance(self.model, str):
+            return getattr(self.model, "config", None)
+        try:
+            return AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+        except Exception as exc:
+            logger.debug("could not peek the config of %s: %s", self.model, exc)
+            return None
+
+    def _should_use_meta_skeleton(self, config) -> bool:
+        """Whether to build a meta skeleton instead of a full CPU load.
+
+        Deliberately narrow: this only targets ``transformers>=5`` models whose experts are
+        stored as a *fused* 3D ``nn.Parameter``. For those, the checkpoint holds one 2D
+        tensor per expert, ``from_pretrained`` stacks them into the fused parameter, and
+        AutoRound then has to split it back into per-expert ``nn.Linear`` to quantize it --
+        and splitting real tensors needs the fused tensor and its per-expert copies alive
+        at once, i.e. ~2x one experts module on top of an already fully resident model.
+
+        Building on meta makes that unfuse allocation-free and lets the tuning loop
+        materialize one block at a time from the checkpoint. Every other model (dense, or
+        a MoE that already ships as ``ModuleList`` of ``Linear``) has nothing to gain and
+        keeps the ordinary load path. ``AR_DISK_STREAM_MODEL=1`` forces this on for any
+        model; ``AR_DISABLE_AUTO_META_LOAD=1`` turns the automatic choice off.
+        """
+        if envs.AR_DISK_STREAM_MODEL:
+            return True
+        if envs.AR_DISABLE_AUTO_META_LOAD:
+            return False
+        if not isinstance(self.model, str):
+            return False
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            return False
+        if config is None:
+            return False
+
+        from auto_round.modeling.fused_moe.moe_experts_interface import config_has_fused_moe_experts
+        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+
+        if not config_has_fused_moe_experts(config):
+            return False
+        # Families with a dedicated replacement drive their own (already memory-aware)
+        # materialization; do not reroute them through the meta skeleton.
+        model_type = getattr(config, "model_type", None)
+        if model_type in BUILTIN_MODULES:
+            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", model_type)
+            return False
+
+        checkpoint_dir = self._resolve_local_checkpoint_dir()
+        if checkpoint_dir is None:
+            logger.debug("meta-skeleton load skipped: %s is not addressable as a local directory", self.model)
+            return False
+        self.disk_stream_model_dir = checkpoint_dir
+        logger.info(
+            "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
+            "(set AR_DISABLE_AUTO_META_LOAD=1 to load the whole model on CPU instead)."
+        )
+        return True
+
+    def _resolve_local_checkpoint_dir(self) -> Optional[str]:
+        """Return a local directory holding the checkpoint shards, or ``None``.
+
+        ``SafetensorsIndex`` reads shards by path, so a hub repo id has to be resolved to
+        a local snapshot first. Only the metadata + weights are fetched, and nothing is
+        read into memory here -- ``from_pretrained`` would have downloaded the same files.
+        """
+        if os.path.isdir(self.model):
+            return self.model
+        if envs.AR_USE_MODELSCOPE:
+            return None
+        try:
+            from huggingface_hub import snapshot_download
+
+            return snapshot_download(
+                self.model,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json", "*.txt", "*.model"],
+            )
+        except Exception as exc:
+            logger.debug("could not resolve %s to a local snapshot: %s", self.model, exc)
+            return None
 
     def _build_disk_stream_model(self, model_name: str):
         """Build an all-meta skeleton instead of
