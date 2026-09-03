@@ -326,33 +326,48 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
     This function scans the module for any 3D nn.Parameter attributes.
     It first checks known projection names, then discovers any unknown 3D parameters.
 
+    Reads ``module._parameters`` directly instead of ``getattr``/``dir()``. This runs once
+    per module in the model, and after unfusing a large MoE that is tens of thousands of
+    modules: ``dir()`` on an ``nn.Module`` is expensive, and every miss goes through
+    ``nn.Module.__getattr__``, which searches three dicts before raising. A parameter is
+    always registered in ``_parameters``, so the cheap membership test is equivalent.
+
     Returns:
         Dict mapping projection names to their config, only for projections that exist
         as 3D nn.Parameter in the module.
     """
+    parameters = getattr(module, "_parameters", None)
+    if not parameters:
+        return {}
+
+    # Fast reject: an experts module owns at least one 3D parameter. Almost every module
+    # in the model (Linear, norms, containers) fails here in a single dict scan.
+    three_dim = {
+        name: param
+        for name, param in parameters.items()
+        if param is not None and not name.startswith("_") and param.dim() == 3
+    }
+    if not three_dim:
+        return {}
+
     detected = {}
 
     # First, check known projection patterns
     for proj_name, config in KNOWN_PROJECTION_PATTERNS.items():
-        param = getattr(module, proj_name, None)
-        if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
+        if proj_name in three_dim:
             detected[proj_name] = config
 
-    # If no known patterns found, scan for any 3D Parameter (future-proofing),
-    # but exclude known non-expert 3D parameters that exist on some transformer
-    # architectures (e.g. scale_shift_table on WanTransformer3DModel).
+    # If no known patterns found, take any 3D parameter (future-proofing), but exclude
+    # known non-expert 3D parameters that exist on some transformer architectures
+    # (e.g. scale_shift_table on WanTransformer3DModel).
     _NON_EXPERT_3D_PARAMS = frozenset(["scale_shift_table"])
     if not detected:
-        for attr_name in dir(module):
-            if attr_name.startswith("_"):
+        for name in three_dim:
+            if name in _NON_EXPERT_3D_PARAMS:
                 continue
-            if attr_name in _NON_EXPERT_3D_PARAMS:
-                continue
-            param = getattr(module, attr_name, None)
-            if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
-                # Use default config for unknown projections
-                logger.debug(f"Discovered unknown 3D projection: {attr_name}")
-                detected[attr_name] = {"is_input_proj": True, "output_multiplier": 1}
+            # Use default config for unknown projections
+            logger.debug(f"Discovered unknown 3D projection: {name}")
+            detected[name] = {"is_input_proj": True, "output_multiplier": 1}
 
     return detected
 
@@ -383,6 +398,27 @@ def _infer_dimensions(param: nn.Parameter, config: dict, is_transposed: bool) ->
         out_features = out_features // multiplier * multiplier  # ensure divisible
 
     return in_features, out_features
+
+
+def _new_meta_linear(in_features: int, out_features: int, has_bias: bool, dtype: torch.dtype) -> nn.Linear:
+    """Build an ``nn.Linear`` shell on meta without running its initializer.
+
+    ``nn.Linear.__init__`` calls ``reset_parameters`` -> ``kaiming_uniform_``, whose result
+    is always discarded here: the weight is either left on meta for the checkpoint loader
+    to fill, or replaced with a checkpoint slice on the very next line. With hundreds of
+    experts per layer (256 x 3 projections x 40 layers for Qwen3.5-MoE) that initializer
+    dominates the unfuse, so construct the module directly instead.
+    """
+    linear = nn.Linear.__new__(nn.Linear)
+    nn.Module.__init__(linear)
+    linear.in_features = in_features
+    linear.out_features = out_features
+    linear.weight = nn.Parameter(torch.empty((out_features, in_features), dtype=dtype, device="meta"))
+    if has_bias:
+        linear.bias = nn.Parameter(torch.empty(out_features, dtype=dtype, device="meta"))
+    else:
+        linear.register_parameter("bias", None)
+    return linear
 
 
 def _unfuse_single_projection(
@@ -456,7 +492,7 @@ def _unfuse_single_projection(
     linears = []
     for i in range(num_experts):
         # meta device: creates the module structure without allocating weight storage
-        linear = nn.Linear(in_features, out_features, bias=has_bias, dtype=dtype, device="meta")
+        linear = _new_meta_linear(in_features, out_features, has_bias, dtype)
 
         if not is_meta:
             # Direct parameter assignment — no copy, just references the CPU tensor slice
@@ -482,35 +518,28 @@ def _unfuse_single_projection(
 _logged_memory_before_replacement = False  # To ensure we only log memory once before replacements
 
 
-def _log_unfuse_diagnostics(module: nn.Module, detected_projections: dict[str, dict]) -> None:
-    """Report where the fused expert weights live before the first unfuse.
+def _warn_if_unfusing_allocates(module: nn.Module, detected_projections: dict[str, dict]) -> None:
+    """Warn when the fused expert weights are not on meta.
 
-    Unfusing is only free when the parameters are still on ``meta``. On a real device the
-    fused tensor and the per-expert copies must coexist for the duration of the split, so
-    the peak is inherently ~2x one experts module -- if this logs a non-meta device, that
-    is where the RAM spike comes from, and the fix is to build the model as a meta
-    skeleton (``AR_DISK_STREAM_MODEL=1``) so experts are read per-expert from disk.
+    Unfusing is free on meta. On a real device the fused tensor and the per-expert copies
+    must coexist for the duration of the split, so the peak is inherently ~2x one experts
+    module on top of an already resident model.
     """
-    devices, total_bytes = set(), 0
-    for proj_name in detected_projections:
-        param = getattr(module, proj_name, None)
-        if not isinstance(param, nn.Parameter):
-            continue
-        devices.add(param.device.type)
-        if param.device.type != "meta":
-            total_bytes += param.numel() * param.element_size()
-
-    if devices == {"meta"}:
-        logger.info("[MoE Prep] fused expert weights are on meta -> unfusing is allocation-free")
+    params = [
+        param
+        for param in (getattr(module, name, None) for name in detected_projections)
+        if isinstance(param, nn.Parameter) and param.device.type != "meta"
+    ]
+    if not params:
         return
 
+    total_bytes = sum(param.numel() * param.element_size() for param in params)
     logger.warning(
         "[MoE Prep] fused expert weights are on %s (%.2f GB for '%s' alone), not meta. "
         "Splitting them in memory needs the fused tensor and its per-expert copies at the "
-        "same time, so expect a peak of roughly 2x one experts module on top of the model. "
-        "To avoid it entirely, build the model as a meta skeleton (AR_DISK_STREAM_MODEL=1 "
-        "with a local checkpoint directory) so each expert is read straight from disk.",
-        "/".join(sorted(devices)),
+        "same time. AutoRound normally avoids this by building a meta skeleton and reading "
+        "each expert from disk; that requires a local checkpoint directory.",
+        params[0].device.type,
         total_bytes / 1024**3,
         module.__class__.__name__,
     )
@@ -555,7 +584,7 @@ def _unfuse_experts_weights_inplace(
     global _logged_memory_before_replacement
     if not _logged_memory_before_replacement:
         _logged_memory_before_replacement = True
-        _log_unfuse_diagnostics(module, detected_projections)
+        _warn_if_unfusing_allocates(module, detected_projections)
         memory_monitor.update()
         memory_monitor.log_summary("Before applying custom replacements")
 

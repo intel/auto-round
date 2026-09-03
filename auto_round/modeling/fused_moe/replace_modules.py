@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, Type
 
@@ -121,13 +122,46 @@ def is_custom_model(model: torch.nn.Module) -> bool:
     return False
 
 
-def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
-    """Log the first experts module found in the model for debugging."""
+def _find_first_moe_block(model: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[None, None]:
+    """Return ``(name, module)`` of the first experts-like module, or ``(None, None)``."""
     for name, module in model.named_modules():
         if name.endswith(".experts") or name.endswith(".moe"):
-            logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
-            return True
-    return False
+            return name, module
+    return None, None
+
+
+def _describe_moe_block(model: torch.nn.Module, name: str) -> str | None:
+    """Render the experts module at ``name`` for the before/after comparison."""
+    try:
+        module = model.get_submodule(name)
+    except AttributeError:
+        return None
+    return f"({module.__class__.__name__}):\n{module}"
+
+
+@contextmanager
+def log_moe_block_transition(model: torch.nn.Module, label: str = "replacement"):
+    """Log the first experts module before and after a structural change.
+
+    The structural unfuse happens in one of two places depending on how the model was
+    built: on the meta skeleton (``build_meta_model``) or during ``apply_replacements``.
+    Both wrap themselves in this so the transition is reported wherever it actually
+    occurs, and only when something really changed -- printing an identical before/after
+    pair (which is what the other path sees, since it then has nothing left to do) is
+    just noise.
+    """
+    name, _ = _find_first_moe_block(model)
+    before = _describe_moe_block(model, name) if name is not None else None
+    try:
+        yield
+    finally:
+        if name is not None:
+            after = _describe_moe_block(model, name)
+            if after is not None and after != before:
+                logger.info(f"Experts (before {label}) [{name}] {before}")
+                logger.info(f"Experts (after {label}) [{name}] {after}")
+            else:
+                logger.debug(f"Experts [{name}] left unchanged by {label} {before}")
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -319,25 +353,15 @@ def apply_replacements(
         The model with modules replaced.
     """
     _import_required_replacements(model)
-    _raw_expert_is_logged = False
 
-    # Custom replacements first
-    if is_custom_model(model):
+    with log_moe_block_transition(model, "replacement"):
+        # Custom replacements first
+        if is_custom_model(model):
+            _apply_custom_replacements(model, gguf_export=gguf_export)
 
-        if not _raw_expert_is_logged:
-            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
+        if auto_detect_moe and is_transformers_version_greater_or_equal_5():
+            _handle_moe_modules(model)
 
-        _apply_custom_replacements(model, gguf_export=gguf_export)
-
-    if auto_detect_moe and is_transformers_version_greater_or_equal_5():
-
-        if not _raw_expert_is_logged:
-            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-
-        _handle_moe_modules(model)
-
-    if _raw_expert_is_logged:
-        _log_first_moe_block(model, "after replacement/skip")
 
     return model
 

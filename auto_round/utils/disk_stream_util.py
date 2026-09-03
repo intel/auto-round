@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict
@@ -23,8 +21,6 @@ import torch
 import torch.nn as nn
 from accelerate.utils import set_module_tensor_to_device
 from safetensors import safe_open
-
-from auto_round import envs
 
 logger = logging.getLogger(__name__)
 
@@ -62,42 +58,19 @@ class SafetensorsIndex:
 
     def read_tensors(self, names: list[str], device: str = "cpu") -> Dict[str, torch.Tensor]:
         """Read several tensors, grouped by shard file so each shard is opened and
-        closed (unmapped) once regardless of how many tensors are pulled from it.
-
-        Reads are issued from a small thread pool. Unfused MoE blocks ask for hundreds of
-        small per-expert tensors at a time (256 experts x 3 projections), and issuing those
-        copies one after another leaves the device queue idle between requests -- the
-        checkpoint bytes are the same either way, but a cold block takes far longer. The
-        safetensors reader releases the GIL during ``get_tensor``, so this actually
-        overlaps. Each worker opens its own handle and closes it before returning, so the
-        no-cached-mmap guarantee above still holds.
-        """
-        if not names:
-            return {}
-
+        closed (unmapped) once regardless of how many tensors are pulled from it."""
         by_shard: Dict[str, list[str]] = {}
         for name in names:
             by_shard.setdefault(self.weight_map[name], []).append(name)
 
-        workers = max(1, int(envs.AR_DISK_STREAM_WORKERS))
         result: Dict[str, torch.Tensor] = {}
-
         for shard_name, shard_tensor_names in by_shard.items():
-            # One handle per shard: opening is not free (the header of a large shard lists
-            # every tensor in it), so re-opening per worker would cost more than the
-            # overlap buys. The handle is closed before moving on, keeping the
-            # no-cached-mmap guarantee documented above.
             with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
-
-                def _read(name: str):
+                for name in shard_tensor_names:
                     tensor = f.get_tensor(name)
-                    return name, (tensor.to(device) if device != "cpu" else tensor)
-
-                if workers <= 1 or len(shard_tensor_names) <= 1:
-                    result.update(dict(_read(name) for name in shard_tensor_names))
-                else:
-                    with ThreadPoolExecutor(max_workers=min(workers, len(shard_tensor_names))) as pool:
-                        result.update(dict(pool.map(_read, shard_tensor_names)))
+                    if device != "cpu":
+                        tensor = tensor.to(device)
+                    result[name] = tensor
         return result
 
     def tensor_names_with_prefix(self, prefix: str) -> list[str]:
@@ -213,10 +186,9 @@ _MODEL_PROJ_TO_FUSED = {
     "down_proj": ("down_proj", 0),
 }
 
-_MODEL_SIDE_EXPERT_RE = re.compile(r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$")
-
-# Report the first block materialization at INFO (see `materialize_module`).
-_logged_first_materialize = False
+_MODEL_SIDE_EXPERT_RE = re.compile(
+    r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$"
+)
 
 
 @lru_cache(maxsize=None)
@@ -354,7 +326,6 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
 
     targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
-    _t_start = time.perf_counter()
     for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
         if str(tensor.device) != "meta":
             continue  # already materialized (e.g. shared/tied weights)
@@ -368,7 +339,6 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
         targets.append((name, resolved_name, tensor.dtype))
-    _t_resolve = time.perf_counter()
 
     for name, value in fused_targets:
         set_module_tensor_to_device(module, name, device, value=value, dtype=value.dtype)
@@ -377,7 +347,6 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
     if not targets:
         return
     values = index.read_tensors([full_name for _, full_name, _ in targets], device=device)
-    _t_read = time.perf_counter()
     for name, full_name, declared_dtype in targets:
         # Prefer the meta parameter's already-declared dtype: it reflects
         # whatever compute dtype the caller already promoted the (still-meta)
@@ -398,27 +367,6 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
             target_dtype = values[full_name].dtype
         set_module_tensor_to_device(module, name, device, value=values[full_name], dtype=target_dtype)
 
-    _t_assign = time.perf_counter()
-    total_bytes = sum(t.numel() * t.element_size() for t in values.values())
-    # The first block is the interesting one: it pays the cold-cache read plus any
-    # one-off setup, and is what makes the first `Quantizing layers.0` step look slow
-    # compared to a fully-resident model. Report it at INFO so it needs no debug logging,
-    # then drop to DEBUG for the remaining blocks.
-    global _logged_first_materialize
-    log = logger.debug if _logged_first_materialize else logger.info
-    _logged_first_materialize = True
-    log(
-        "materialize %s: %d tensors / %.2f GB in %.2fs "
-        "(resolve %.2fs, read %.2fs @ %.0f MB/s, assign %.2fs)",
-        module_name,
-        len(targets),
-        total_bytes / 1024**3,
-        _t_assign - _t_start,
-        _t_resolve - _t_start,
-        _t_read - _t_resolve,
-        (total_bytes / 1024**2) / max(_t_read - _t_resolve, 1e-6),
-        _t_assign - _t_read,
-    )
 
 
 def free_module(module: nn.Module) -> None:
@@ -462,7 +410,11 @@ def unfuse_meta_moe_(model: nn.Module) -> list[str]:
     Returns the list of unfused module names (empty when there is nothing to do).
     """
     try:
-        from auto_round.modeling.fused_moe.replace_modules import _handle_moe_modules, is_custom_model
+        from auto_round.modeling.fused_moe.replace_modules import (
+            _handle_moe_modules,
+            is_custom_model,
+            log_moe_block_transition,
+        )
     except ImportError:  # pragma: no cover - transformers < 5 or partial install
         return []
 
@@ -478,7 +430,11 @@ def unfuse_meta_moe_(model: nn.Module) -> list[str]:
         return []
 
     try:
-        unfused = _handle_moe_modules(model)
+        # This is where the structural change actually happens for a meta-built model, so
+        # report the before/after here rather than in `apply_replacements` (which by then
+        # has nothing left to do).
+        with log_moe_block_transition(model, "unfuse"):
+            unfused = _handle_moe_modules(model)
     except Exception:  # pragma: no cover - never block the meta build on this
         logger.warning("Structural MoE unfuse on the meta skeleton failed", exc_info=True)
         return []
@@ -552,31 +508,58 @@ def materialize_non_block_params(
     def _in_block(name: str) -> bool:
         return any(name == p or name.startswith(p + ".") for p in block_prefixes)
 
+    # Tied output embeddings (lm_head.weight tied to embed_tokens.weight) are absent from
+    # the checkpoint by design -- the tie is re-established below, which makes them real.
+    # Do not warn about those, or every tied model reports a scary "leaving on meta" line
+    # for a parameter that is fine a few statements later.
+    tied_keys = set(getattr(model, "_tied_weights_keys", None) or ())
+
+    def _is_tied(name: str) -> bool:
+        return name in tied_keys or any(name.startswith(key.rstrip("*")) for key in tied_keys if key.endswith("*"))
+
     targets = []  # (param_name, full_checkpoint_name)
+    deferred_tied = []
     for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
         if str(tensor.device) != "meta" or _in_block(name):
             continue
         full_name = name.replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
         if resolved_name is None:
-            logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
+            if _is_tied(name):
+                deferred_tied.append(name)
+            else:
+                logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
         targets.append((name, resolved_name))
 
-    if not targets:
-        return
-    values = index.read_tensors([full_name for _, full_name in targets], device=device)
-    for name, full_name in targets:
-        # See the matching comment in materialize_module() -- explicit dtype=
-        # is required so the checkpoint's real dtype wins over whatever the
-        # meta skeleton happened to declare.
-        set_module_tensor_to_device(model, name, device, value=values[full_name], dtype=values[full_name].dtype)
+    if targets:
+        values = index.read_tensors([full_name for _, full_name in targets], device=device)
+        for name, full_name in targets:
+            # See the matching comment in materialize_module() -- explicit dtype=
+            # is required so the checkpoint's real dtype wins over whatever the
+            # meta skeleton happened to declare.
+            set_module_tensor_to_device(model, name, device, value=values[full_name], dtype=values[full_name].dtype)
+
     # set_module_tensor_to_device replaces parameter objects, which breaks
     # weight tying: a tied lm_head still references the old (meta) parameter
     # while the embedding points at the new real one. Re-tie so every tied
     # name follows its checkpoint-backed source tensor.
     if getattr(getattr(model, "config", None), "tie_word_embeddings", False):
         model.tie_weights()
+
+    # Anything declared tied that the re-tie did not actually make real is a genuine
+    # problem (quantizing it would fail on a meta tensor), so surface it now.
+    still_meta = [name for name in deferred_tied if _param_or_buffer(model, name) is None]
+    if still_meta:
+        logger.warning("No checkpoint tensor found for tied %s, leaving on meta", ", ".join(still_meta))
+
+
+def _param_or_buffer(model: nn.Module, name: str):
+    """Return the named parameter/buffer when it is materialized, else ``None``."""
+    for candidate_name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
+        if candidate_name == name:
+            return None if tensor.device.type == "meta" else tensor
+    return None
 
 
 class stream_block_forward:
