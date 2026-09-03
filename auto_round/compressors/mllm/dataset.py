@@ -106,7 +106,9 @@ class LlavaDataset(Dataset):
                 logger.info(f"use dataset {dataset_name}, downloading...")
                 self.questions = self._download_questions(dataset_name)
             else:
-                raise KeyError(f"{dataset_path} is not support, we support {list(self.LLAVA_DATASET_FILES.keys())}.")
+                raise KeyError(
+                    f"{dataset_path} is not supported; supported datasets: {', '.join(self.LLAVA_DATASET_FILES.keys())}."
+                )
 
         self.seqlen = seqlen
         self.questions = self.check(self.questions, self.seqlen, nsamples)
