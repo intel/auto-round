@@ -36,9 +36,14 @@ class LLMCompressorFormat(OutputFormat):
         "INT8_W8A8",
         "FP8_BLOCK",
         "W4A16",
+        "W5A16",
+        "W6A16",
+        "W7A16",
         "W8A16",
-        "W2A16G32",
-        "W2A16G64",
+        # group-size variants for mixed int pools (CT pack-quantized handles
+        # any width/group); 8-bit variants are symmetric presets -- this format
+        # also serves 8-bit asym via --asym, unlike the native formats
+        *[f"W{b}A16G{g}" for b in (2, 3, 4, 5, 6, 7, 8) for g in (64, 32)],
         "W2A16",
         "W3A16",
     ]
@@ -99,13 +104,13 @@ class LLMCompressorFormat(OutputFormat):
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
         error_logs = []
-        if scheme.bits not in [2, 3, 4, 8, 16]:
+        if scheme.bits not in [2, 3, 4, 5, 6, 7, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
         if not re.search("mxfp|fp|nvfp|int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
         if scheme.data_type == "fp" and scheme.bits != 8:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
-        if scheme.data_type == "int" and scheme.bits not in [2, 3, 4, 8]:
+        if scheme.data_type == "int" and scheme.bits not in [2, 3, 4, 5, 6, 7, 8]:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")

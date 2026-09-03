@@ -117,10 +117,13 @@ pip install auto-round
 AutoRound 支持多种量化配置：
 - **W4A16**（bits:4, group_size:128, sym:True, act_bits:16）  # 4位权重，分组大小为128，对称量化，16位激活，
 - **W8A16**（bits:8, group_size:128, sym:True, act_bits:16）  
-- **W6A16**（bits:6, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
-- **W5A16**（bits:5, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
+- **W7A16**（bits:7, group_size:128, sym:True, act_bits:16） - 仅 `llm_compressor` 格式
+- **W6A16**（bits:6, group_size:128, sym:True, act_bits:16） — `mlx` 与 `llm_compressor` 格式
+- **W5A16**（bits:5, group_size:128, sym:True, act_bits:16） — `mlx` 与 `llm_compressor` 格式
 - **W3A16**（bits:3, group_size:128, sym:True, act_bits:16）  
 - **W2A16**（bits:2, group_size:128, sym:True, act_bits:16）  
+- **分组大小变体** `W{2..8}A16G64` / `W{2..8}A16G32` - `llm_compressor`（W2-W8）；`auto_round` / `auto_gptq`（仅 W2）
+- 非对称量化（`--asym`）在 `auto_round` / `auto_gptq` / `auto_awq` 导出下仅支持权重位数 <= 7：vLLM 的 W8 GPTQ 格式仅支持对称量化，且 Marlin 仅支持 4 位零点。`llm_compressor` 格式支持 8 位非对称——vLLM 可通过 Machete（SM90+，分组 64/128/-1）或 Conch（SM80+，仅分组 128 或逐通道）为其提供服务。该规则统一适用于 AutoScheme 选项与固定层配置（如 lm_head）：导出到 `llm_compressor` 的运行会保留其 8 位非对称条目，其他格式会将其回退为对称。设置环境变量 `AR_ALLOW_W8_ASYM=1` 可解除所有格式的该限制（用于 vLLM 之外的推理框架）；使用该变量产出的模型可能无法在 vLLM 中加载。
 - **GGUF:Q4_K_M**（支持 llamacpp 提供的所有 Q*_K、Q*_0、Q*_1 量化类型）
 - **混合bit**: （实验性功能）请使用 AutoScheme 接口或者使用 API 中的 `layer_config` 参数自己自定义
 - **NVFP4**（实验性功能）推荐导出为`llm_compressor`格式，参数：data_type=nvfp4, act_data_type=nvfp4, static_global_scale, group_size=16
@@ -162,7 +165,7 @@ AutoRound 支持多种量化配置：
 |:-------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **auto_round**                       | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`           |
 | **gguf**                             | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0 |
-| **llm_compressor**                   | NVFP4、W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、FP8_BLOCK 、  `MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                         |
+| **llm_compressor**                   | NVFP4、W2A16、W3A16、W4A16、W5A16、W6A16、W7A16、W8A16 及 W2-W8 的 G64/G32 变体、FP8_BLOCK、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                         |
 | **auto_awq**                         | W4A16、BF16                                                                                                                                                  |
 | **auto_gptq**                        | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                              |
 | **mlx** / **auto_round:mlx** (实验性功能) | W2A16、W3A16、W4A16、W5A16、W6A16、W8A16、BF16、混合 bit / 混合 group_size（仅 Apple Silicon）                                                                            |

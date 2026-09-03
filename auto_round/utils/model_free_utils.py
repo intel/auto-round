@@ -497,6 +497,21 @@ def _pack_weight_nvfp4_e5m3(
     }
 
 
+def _declared_int_packing(sym: bool) -> str:
+    """Packing format model-free int artifacts declare, by symmetry.
+
+    Single source shared by the packing call (``_quantize_single_tensor``) and
+    the config builder (``_build_quantization_config``) so the written bytes and
+    the declared packing_format can never disagree: symmetric int artifacts are
+    declared ``auto_round:auto_gptq`` (qlinear_torch_zp, zero points packed as
+    zp - 1), asymmetric int artifacts are declared ``auto_round`` (plain
+    qlinear_torch, zero points packed directly).
+    """
+    from auto_round.inference.backend import GPTQ_FORMAT, GPTQ_FORMAT_NO_ZP
+
+    return GPTQ_FORMAT[0] if sym else GPTQ_FORMAT_NO_ZP[0]
+
+
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
@@ -584,6 +599,9 @@ def _quantize_single_tensor(
             sym=sym,
             device=device,
             disable_opt_rtn=True,
+            # The packing convention must match the declared packing_format:
+            # see _declared_int_packing (single source for bytes and config).
+            packing=_declared_int_packing(sym),
         )
 
         out: dict[str, torch.Tensor] = {
@@ -2027,12 +2045,16 @@ def _build_quantization_config(
     from auto_round.version import __version__
 
     scheme_keys = [f.name for f in fields(QuantizationScheme)]
+    # The packing must match this declaration: "auto_round" bytes use the
+    # qlinear_torch zero-point convention (nibble stores zp directly), while
+    # "auto_round:auto_gptq" bytes use qlinear_torch_zp (nibble stores zp - 1,
+    # unpacked with +1). _declared_int_packing keeps both sides in sync.
     # vllm only support auto_round:auto_gptq, but transformers cannot load it correctly when sym=False.
     # So we keep auto_round for asymmetric quantization to maintain compatibility with both.
     if data_type == _NVFP4_E5M3_DATA_TYPE:
         packing_format = "auto_round:fake" if format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
     else:
-        packing_format = "auto_round:auto_gptq" if default_scheme.get("sym", True) else "auto_round"
+        packing_format = _declared_int_packing(default_scheme.get("sym", True))
 
     qconfig = {
         "quant_method": "auto-round",
