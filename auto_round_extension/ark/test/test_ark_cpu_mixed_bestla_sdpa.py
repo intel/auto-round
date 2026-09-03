@@ -53,6 +53,7 @@ def _kernel_view_kv(k, v, seq_q):
     if (
         k.dtype == torch.float16
         and seq_q > 1
+        and auto_round_kernel._cpu_public_packed_kv_available()
         and getattr(auto_round_kernel.cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE", False)
     ):
         k = k.to(dtype=torch.bfloat16)
@@ -74,7 +75,7 @@ def test_mixed_dtype_sdpa_routes_to_mixed_path():
 
     out = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
-    atol, rtol = _TOL[torch.float16]
+    atol, rtol = _TOL[k_ref.dtype]
     assert out.dtype == torch.float32
     torch.testing.assert_close(out, expected, atol=atol, rtol=rtol)
 
@@ -101,7 +102,7 @@ def test_bestla_mixed_sdpa_matches_torch(kv_dtype, is_causal, layout):
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(_to_hnd(actual, layout), expected_hnd, atol=atol, rtol=rtol)
 
@@ -127,7 +128,7 @@ def test_bestla_mixed_sdpa_gqa_ratio(kv_dtype, gqa_ratio):
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
@@ -201,7 +202,7 @@ def test_mixed_batched_gqa_prefill_runs_repeatedly(kv_dtype):
     for _ in range(20):
         actual = _mixed_sdpa(q, k, v, scale, True, "HND")
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
@@ -250,6 +251,6 @@ def test_mixed_llm_shape_accuracy(label, batch, heads_q, heads_kv, head_dim, seq
         route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW
     ), f"{label}: expected mixed route, got {route}"
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
