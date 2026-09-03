@@ -112,6 +112,8 @@ stages:
       - stage: GPU_Test_${{ pair.key }}
         displayName: "GPU Test ${{ pair.value.PART }}"
         dependsOn: Start_Pod_${{ pair.key }}
+        variables:
+          - group: auto-round-bot-secrets
         jobs:
           - job: GpuTests
             timeoutInMinutes: 60

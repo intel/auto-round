@@ -113,6 +113,8 @@ stages:
   - stage: GPU_Test
     displayName: "GPU Nightly Test"
     dependsOn: Start_Pod
+    variables:
+      - group: auto-round-bot-secrets
     jobs:
       - job: GpuTests
         timeoutInMinutes: 300
