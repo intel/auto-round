@@ -91,7 +91,7 @@ detect_changed_tests() {
         echo "##[endgroup]" >&2
         return 1
     fi
-    
+
     printf '%s\n' "${test_changed}"
     return 0
 }
