@@ -165,7 +165,7 @@ class LlavaDataset(Dataset):
                 if attempt < cls.DOWNLOAD_RETRIES:
                     logger.warning(
                         f"failed to download dataset '{dataset_name}' from {url}"
-                        f" ({type(e).__name__}: {e}), retrying ({attempt}/{cls.DOWNLOAD_RETRIES - 1})..."
+                        f" ({type(e).__name__}: {e}), retrying (attempt {attempt + 1}/{cls.DOWNLOAD_RETRIES})..."
                     )
 
         details = "\n  ".join(errors)
