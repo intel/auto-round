@@ -139,6 +139,7 @@ def test_get_layer_config_supports_avg_bits_list(monkeypatch):
     generator.enable_torch_compile = False
     generator.min_avg_bit_scheme = "W2A16"
     generator.processor = None
+    generator.export_format = None
 
     def method_func(auto_scheme, *args, **kwargs):
         return {"layer": {"bits": auto_scheme.avg_bits}}
@@ -419,15 +420,18 @@ class TestAutoScheme:
         target_bits = 3.5
         model_name = tiny_opt_model_path
         scheme = AutoScheme(avg_bits=target_bits, options=("W2A16", "W4A16", "BF16"))
-        user_layer_config = {"model.decoder.layers.1.fc1": {"bits": 8, "group_size": 32, "sym": False}}
+        # 8-bit entries must be symmetric (asymmetric 8-bit is refused during
+        # layer-config resolution); the entry still exercises per-layer
+        # override propagation at a non-pool bit width and group size.
+        user_layer_config = {"model.decoder.layers.1.fc1": {"bits": 8, "group_size": 32, "sym": True}}
         ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1, layer_config=user_layer_config)
         model, layer_config = ar.quantize()
         assert layer_config["model.decoder.layers.1.fc1"]["bits"] == 8
-        assert layer_config["model.decoder.layers.1.fc1"]["sym"] is False
+        assert layer_config["model.decoder.layers.1.fc1"]["sym"] is True
         assert layer_config["model.decoder.layers.1.fc1"]["group_size"] == 32
         layer = get_module(model, "model.decoder.layers.1.fc1")
         assert layer.bits == 8
-        assert layer.sym is False
+        assert layer.sym is True
         assert layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
@@ -1507,3 +1511,94 @@ def test_serial_scoring_device_safe():
     assert (
         _weights_span_multiple_gpus([torch.device("cuda:0"), torch.device("cuda:1")]) is True
     )  # the unsafe case _serial_scoring_device_safe keys on
+
+
+def test_asym_override_never_applies_to_8bit_options():
+    """--asym maps to sym=False across AutoScheme options. Without an export
+    format the policy is conservative and pins 8-bit options back to sym
+    (native int8-packed formats cannot represent the 8-bit zero point), while
+    sub-8-bit options keep the asym override. The llm_compressor format and
+    the AR_ALLOW_W8_ASYM env keep 8-bit options asym (see test_w8_asym_policy)."""
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+    from auto_round.schemes import parse_scheme
+
+    scheme = AutoScheme(avg_bits=4.0, options=("W4A16", "W8A16"))
+    _, is_auto, _ = parse_scheme(scheme, {"sym": False})
+    assert is_auto is True
+    sym_flags = {opt.bits: opt.sym for opt in scheme.options}
+    assert sym_flags[4] is False, "sub-8-bit options keep the asym override"
+    assert sym_flags[8] is True, "8-bit options must stay symmetric"
+
+
+def test_uniform_w8_asym_raises_before_quantization():
+    """A uniform 8-bit asymmetric request is refused up front when no export
+    format is given (conservative default: native int8-packed formats cannot
+    represent the 8-bit zero point and vLLM GPTQ-format W8 kernels are
+    symmetric-only; compressed-tensors on llm_compressor does serve it)."""
+    from auto_round.schemes import parse_scheme
+
+    with pytest.raises(ValueError, match="symmetric"):
+        parse_scheme("W8A16", {"sym": False})
+    # symmetric 8-bit and sub-8-bit asym stay valid
+    _, _, attrs = parse_scheme("W8A16", {})
+    assert attrs["bits"] == 8 and attrs["sym"] is not False
+    _, _, attrs = parse_scheme("W4A16", {"sym": False})
+    assert attrs["bits"] == 4 and attrs["sym"] is False
+
+
+def test_fixed_layer_scheme_w8_entries_pinned_symmetric():
+    """fixed_layer_scheme entries (e.g. lm_head pinned to W8) bypass the
+    options override, so the 8-bit-sym rule must also apply where the
+    AutoScheme layer_config is assembled."""
+    from auto_round.auto_scheme.delta_loss import _enforce_w8_symmetric_entries
+
+    layer_config = {
+        # explicit 8-bit asym request: refused -- the export could never be served
+        "lm_head.weight": {"bits": 8, "sym": False, "data_type": "int", "group_size": 128},
+        # no sym key: would silently inherit the global --asym -> pinned
+        "model.layers.80.mlp.up_proj": {"bits": 8, "data_type": "int", "group_size": 128},
+        "model.layers.5.mlp.up_proj": {"bits": 4, "sym": False, "data_type": "int", "group_size": 128},
+    }
+    with pytest.raises(ValueError, match="8-bit asymmetric"):
+        _enforce_w8_symmetric_entries(layer_config)
+
+    del layer_config["lm_head.weight"]
+    _enforce_w8_symmetric_entries(layer_config)
+    assert layer_config["model.layers.80.mlp.up_proj"]["sym"] is True, "implicit asym inheritance gets pinned"
+    assert layer_config["model.layers.5.mlp.up_proj"]["sym"] is False, "sub-8-bit entries keep asym"
+
+
+def test_fixed_layer_scheme_w8_entries_kept_asym_when_allowed():
+    """When the export format can serve W8 asym (llm_compressor) or the
+    AR_ALLOW_W8_ASYM opt-in is set, _enforce_w8_symmetric_entries must
+    neither pin nor refuse the fixed 8-bit entries."""
+    from auto_round.auto_scheme.delta_loss import _enforce_w8_symmetric_entries
+
+    layer_config = {
+        "lm_head.weight": {"bits": 8, "sym": False, "data_type": "int", "group_size": 128},
+        "model.layers.80.mlp.up_proj": {"bits": 8, "data_type": "int", "group_size": 128},
+        "model.layers.5.mlp.up_proj": {"bits": 4, "sym": False, "data_type": "int", "group_size": 128},
+    }
+    snapshot = {k: dict(v) for k, v in layer_config.items()}
+    assert _enforce_w8_symmetric_entries(layer_config, allow_w8_asym=True) == 0
+    assert layer_config == snapshot, "allowed runs must leave every fixed W8 entry untouched"
+
+
+def test_w8_asym_allowance_derived_at_generation_time():
+    """The export-format context for the AutoScheme fixed-pin policy is
+    threaded to layer-config generation time (so a format supplied only to
+    quantize_and_save is honored); the W8-asym opt-in itself is the
+    AR_ALLOW_W8_ASYM env, read at the policy gates."""
+    import inspect
+
+    from auto_round.auto_scheme.gen_auto_scheme import GenScheme
+    from auto_round.compressors import base as compressor_base
+
+    base_src = inspect.getsource(compressor_base.BaseOrchestrator._gen_auto_scheme)
+    assert "export_format=" in base_src, "GenScheme must receive the export-format context"
+    sig = inspect.signature(GenScheme.__init__)
+    assert "export_format" in sig.parameters
+    gen_sig = inspect.signature(
+        __import__("auto_round.auto_scheme.delta_loss", fromlist=["gen_layer_config"]).gen_layer_config
+    )
+    assert "export_format" in gen_sig.parameters

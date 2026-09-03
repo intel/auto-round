@@ -13,8 +13,10 @@ as FAILED.
 """
 
 import argparse
+import os
 import shutil
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -243,6 +245,9 @@ def stage_failed_logs(log_paths: list[Path], failed_dir: Path) -> None:
     ``failed_tests.list`` records the test targets of every failed log (read from
     the sibling ``.list`` files) so a clean-environment retry can rerun exactly
     those cases. Centralized here so every hardware UT runner behaves the same.
+
+    ``failed_tests.list`` is written atomically (temp file + rename) so an
+    interruption cannot leave a partial list that would shrink the retry scope.
     """
     failed_dir.mkdir(parents=True, exist_ok=True)
     failed_cases: list[str] = []
@@ -255,13 +260,31 @@ def stage_failed_logs(log_paths: list[Path], failed_dir: Path) -> None:
                 if case not in seen:
                     seen.add(case)
                     failed_cases.append(case)
-    (failed_dir / "failed_tests.list").write_text(
-        "\n".join(failed_cases) + ("\n" if failed_cases else ""), encoding="utf-8"
+    _atomic_write_text(
+        failed_dir / "failed_tests.list",
+        "\n".join(failed_cases) + ("\n" if failed_cases else ""),
     )
     print(
         f"Staged {len(log_paths)} failed log(s) and {len(failed_cases)} case(s) " f"into: {failed_dir.absolute()}",
         file=sys.stderr,
     )
+
+
+def _atomic_write_text(target: Path, text: str) -> None:
+    """Write ``text`` to ``target`` atomically via a temp file in the same dir."""
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def main():
