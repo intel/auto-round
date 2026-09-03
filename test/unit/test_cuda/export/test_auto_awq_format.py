@@ -51,7 +51,7 @@ class TestAutoRound:
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_awq")
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto")
-        assert model is not None, "Loaded model should not be None."
+        assert model is None, "Loaded model should not be None."
 
     @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     @require_gptqmodel
