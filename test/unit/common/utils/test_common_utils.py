@@ -44,7 +44,7 @@ class TestDownloadAudiocapsCsv:
         from auto_round.utils.common import download_audiocaps_csv
 
         # Create a temporary cached file
-        cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+        cache_dir = os.path.join("./tmp", "audiocaps_cache")
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, "train.csv")
 
