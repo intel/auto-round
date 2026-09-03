@@ -255,6 +255,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 标定数据集
 
 - ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
+- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AUTO_ROUND_CACHE` 后则缓存在 `$AUTO_ROUND_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
 - ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
 - ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
 
