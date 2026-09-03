@@ -240,15 +240,21 @@ class WQLinear_GEMM(nn.Module):
             awq_linear.bias = linear.bias.clone().half()
 
         pack_num = 32 // awq_linear.w_bit
+        maxq = 2**awq_linear.w_bit - 1
         repeat_size = group_size if group_size != -1 else linear.in_features
         repeat_scales = scales.to(device).t().repeat_interleave(repeat_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).t().repeat_interleave(repeat_size, 1)
+            # clamp into [0, maxq]: the searched (scale, zp) grid may leave
+            # round(W/s + zp) outside the level range (the search evaluates
+            # the clamped loss); an unclamped value shifts bits into the
+            # neighboring packed nibble and silently corrupts it.
             intweight = (
                 torch.round(
                     linear.weight.to(device) / repeat_scales[:, : linear.weight.shape[1]]
                     + repeat_zeros[:, : linear.weight.shape[1]]
                 )
+                .clamp_(0, maxq)
                 .to(torch.int)
                 .t()
                 .contiguous()
@@ -258,6 +264,7 @@ class WQLinear_GEMM(nn.Module):
             repeat_zeros = zeros
             intweight = (
                 torch.round(linear.weight.to(device) / repeat_scales[:, : linear.weight.shape[1]] + repeat_zeros)
+                .clamp_(0, maxq)
                 .to(torch.int)
                 .t()
                 .contiguous()
