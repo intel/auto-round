@@ -41,12 +41,16 @@ parameters:
 
 stages:
   - ${{ each pair in parameters.matrix }}:
-      - stage: Start_Pod_${{ pair.key }}
-        displayName: "Start Pod ${{ pair.value.PART }}"
+      # Pod creation, GPU tests and cleanup live in ONE stage as three jobs so a
+      # "Rerun failed stage" reruns every job (including Start_Pod_Job) and thus
+      # recreates the ephemeral pod. Separate stages would leave the already
+      # succeeded Start_Pod stage un-rerun, so the retry would find no agent.
+      - stage: GPU_Test_${{ pair.key }}
+        displayName: "GPU Test ${{ pair.value.PART }}"
         dependsOn: []
         jobs:
           - job: Start_Pod_Job
-            displayName: "Launch Pod & Run CUDA Tests"
+            displayName: "Launch Pod ${{ pair.value.PART }}"
             timeoutInMinutes: 60
             pool:
               vmImage: "ubuntu-latest"
@@ -71,15 +75,12 @@ stages:
                 inputs:
                   targetType: "inline"
                   script: |
-                    CUDA_VERSION="13.0"
-
                     python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                       --action create \
                       --api_key $(RUNPOD_API_KEY) \
                       --name "ci-$(Build.BuildId)-${{ pair.value.PART }}" \
                       --container_disk_size "100" \
                       --part ${{ pair.value.PART }} \
-                      --cuda_version "${CUDA_VERSION}" \
                       --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)-part${{ pair.value.PART }}"
                 env:
                   PYTHONUNBUFFERED: '1'
@@ -112,11 +113,8 @@ stages:
                 env:
                   PYTHONUNBUFFERED: '1'
 
-      - stage: GPU_Test_${{ pair.key }}
-        displayName: "GPU Test ${{ pair.value.PART }}"
-        dependsOn: Start_Pod_${{ pair.key }}
-        jobs:
           - job: GpuTests
+            dependsOn: Start_Pod_Job
             timeoutInMinutes: 60
             pool:
               name: "$(POOL_NAME)"
@@ -141,6 +139,43 @@ stages:
                   echo "##[endgroup]"
                 displayName: "Install Python Dependencies"
 
+              # On a "Rerun failed jobs" retry the container is a clean environment, so pull
+              # the previous attempt's failed_tests.list to rerun only the failed cases.
+              # A cancelled previous attempt never publishes its failed-logs artifact, so
+              # probe for it first and skip the download when absent.
+              - task: Bash@3
+                condition: gt(variables['System.JobAttempt'], 1)
+                displayName: "Check previous attempt artifact exists"
+                env:
+                  SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    set -eo pipefail
+                    prev_attempt=$((SYSTEM_JOBATTEMPT - 1))
+                    echo "##vso[task.setvariable variable=prevAttempt]${prev_attempt}"
+                    artifact="ut-${{ pair.value.PART }}-${prev_attempt}"
+                    url="${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECT}/_apis/build/builds/${BUILD_BUILDID}/artifacts?api-version=7.1"
+                    resp=$(curl -fsS -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "${url}" || echo "")
+                    if echo "${resp}" | grep -q "\"name\":\"${artifact}\""; then
+                      echo "Found previous artifact ${artifact}."
+                      echo "##vso[task.setvariable variable=prevArtifactExists]true"
+                    else
+                      echo "Previous artifact ${artifact} not found, skip retry download."
+                      echo "##vso[task.setvariable variable=prevArtifactExists]false"
+                    fi
+
+              - task: DownloadPipelineArtifact@2
+                condition: and(gt(variables['System.JobAttempt'], 1), eq(variables['prevArtifactExists'], 'true'))
+                continueOnError: true
+                inputs:
+                  artifact: "ut-${{ pair.value.PART }}-$(prevAttempt)"
+                  patterns: |
+                    failed_tests.list
+                    .coverage
+                  path: $(Build.SourcesDirectory)/log_dir
+                displayName: "Download previous failed_tests.list and coverage (retry)"
+
               - script: |
                   export UV_NO_CACHE=0
                   export FILTER_CHANGED_TESTS=true
@@ -157,20 +192,28 @@ stages:
                   publishLocation: "pipeline"
                 displayName: "Publish UT coverage artifact"
 
+              # Publish only the failed logs (and seeded .coverage) so the next
+              # retry attempt can download and rerun exactly those cases.
+              - task: PublishPipelineArtifact@1
+                condition: failed()
+                inputs:
+                  targetPath: $(Build.SourcesDirectory)/log_dir/failed_logs
+                  artifact: "ut-${{ pair.value.PART }}-$(System.JobAttempt)"
+                  publishLocation: "pipeline"
+                displayName: "Publish failed UT logs"
+
               - script: |
                   cd .azure-pipelines/scripts/cuda_unit_test
                   uv run monitor_gpu.py stop
                 condition: always()
                 displayName: "GPU Monitor"
 
-      - stage: Cleanup_Verification_${{ pair.key }}
-        displayName: "Verify Pod Cleanup ${{ pair.value.PART }}"
-        dependsOn:
-          - Start_Pod_${{ pair.key }}
-          - GPU_Test_${{ pair.key }}
-        condition: always()
-        jobs:
           - job: Verify_Cleanup
+            displayName: "Verify Pod Cleanup ${{ pair.value.PART }}"
+            dependsOn:
+              - Start_Pod_Job
+              - GpuTests
+            condition: always()
             pool:
               vmImage: "ubuntu-latest"
             steps:
@@ -226,7 +269,6 @@ stages:
     dependsOn:
       - ${{ each pair in parameters.matrix }}:
           - GPU_Test_${{ pair.key }}
-          - Cleanup_Verification_${{ pair.key }}
     variables:
       UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
       DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir

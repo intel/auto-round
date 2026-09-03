@@ -5,6 +5,7 @@ test_part=${UT_MODE}
 
 source /auto-round/.azure-pipelines/scripts/change_color.sh
 source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
+source /auto-round/.azure-pipelines/scripts/ut/retry_failed_tests.sh
 
 LOG_DIR=/auto-round/log_dir
 mkdir -p "${LOG_DIR}"
@@ -21,24 +22,24 @@ function setup_environment() {
     export TQDM_MININTERVAL=120
     export HF_HUB_DISABLE_PROGRESS_BARS=1
 
-    # install latest gguf for ut test
+    echo "Install latest gguf for ut test ..."
     cd ~ || exit 1
     git clone -b master --quiet --single-branch https://github.com/ggml-org/llama.cpp.git && cd llama.cpp/gguf-py && uv pip install .
 
-    # install unit report dependencies
+    echo "Install unit report dependencies ..."
     uv pip install pytest-cov
     uv pip install -U chardet
-    uv pip list
 
-    # install auto-round for unit tests
+    echo "Install auto-round for unit tests ..."
     cd /auto-round && uv pip install .
 
     export LD_LIBRARY_PATH=${HOME}/.venv/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
     export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/cpu.coveragerc
-    echo "##[endgroup]"
-
+    
+    echo "List final dependencies ..."
     uv pip list
+    echo "##[endgroup]"
 }
 
 function print_summary() {
@@ -109,7 +110,7 @@ function run_common_group() {
 
 function run_common_unit_test() {
     cd /auto-round/test || exit 1
-    run_if_retry
+    run_if_retry && return 0
 
     # common test case for cpu/gpu/xpu
     # Group cases by the first-level folder under unit/common; a single test
@@ -127,7 +128,7 @@ function run_common_unit_test() {
 
 function run_unit_test() {
     cd /auto-round/test || exit 1
-    run_if_retry
+    run_if_retry && return 0
 
     # Split cpu specific test files into 4 parts.
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
@@ -174,7 +175,7 @@ function run_inc_unit_test() {
     echo "##[endgroup]"
 
     cd /auto-round/test/integration || exit 1
-    run_if_retry
+    run_if_retry && return 0
 
     for test_file in ${selected_files}; do
         local test_basename=$(basename ${test_file} .py)
@@ -199,7 +200,7 @@ function run_llmc_unit_test() {
     echo "##[endgroup]"
 
     cd /auto-round/test/integration || exit 1
-    run_if_retry
+    run_if_retry && return 0
 
     for test_file in ${selected_files}; do
         local test_basename=$(basename ${test_file} .py)

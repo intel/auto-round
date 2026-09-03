@@ -106,12 +106,16 @@ class QuantLinear(nn.Module):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
-                torch.int32
-            )
+            # clamp into [0, maxq]: the searched (scale, zp) grid may leave
+            # round(W/s + zp) outside the level range (the search evaluates
+            # the clamped loss); an unclamped value shifts bits into the
+            # neighboring packed nibble and silently corrupts it.
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros)
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
 
         del repeat_scales
 
@@ -126,7 +130,11 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous().to(device)
-            zeros -= 1
+            # the classic (zp-1) packing cannot represent zp=0: -1 left-shifts
+            # into a negative word and corrupts every nibble sharing it.
+            # Clamp the stored value so only that one zero-point degrades
+            # (decodes as +1) instead of the whole packed word.
+            zeros = (zeros - 1).clamp_(0, self.maxq)
             # zeros = zeros.numpy().astype(np.uint32)
             qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device, dtype=torch.int32)
             i = 0
@@ -140,7 +148,12 @@ class QuantLinear(nn.Module):
                 col += 1
             self.qzeros = qzeros.cpu()
         else:
-            zeros -= 1
+            # classic (zp-1) packing cannot represent zp=0 (see the tensor
+            # branch above): clamp the scalar the same way so a zp of 0
+            # degrades to a decodable +1 instead of corrupting the word.
+            # Normalize to int like the 3-bit path: the bit-shift packing
+            # below cannot shift a float scalar.
+            zeros = int(min(max(zeros - 1, 0), self.maxq))
             shape = scales_t.shape
             value = 0
             for j in range(0, (32 // self.bits)):
@@ -164,12 +177,14 @@ class QuantLinear(nn.Module):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
-                torch.int32
-            )
+            # clamp into [0, maxq] -- see pack_248_bits for why unclamped
+            # levels corrupt the neighboring packed nibble
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros)
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
 
         del repeat_scales
 
@@ -210,7 +225,8 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous().to(torch.int32).to(device)
-            zeros -= 1
+            # classic (zp-1) packing cannot represent zp=0 (see pack_248_bits)
+            zeros = (zeros - 1).clamp_(0, self.maxq)
             qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device, dtype=torch.int32)
             i = 0
             col = 0
@@ -241,7 +257,12 @@ class QuantLinear(nn.Module):
                 col += 1
             self.qzeros = qzeros.cpu()
         else:
-            zeros -= 1
+            # classic (zp-1) packing cannot represent zp=0 (see pack_248_bits);
+            # clamp both ends like the tensor branch so zp=0 degrades to a
+            # decodable +1 and an oversized zero point cannot spill into
+            # neighboring packed fields. Normalize to int: the bit-shift
+            # packing below requires an integer scalar.
+            zeros = int(min(max(zeros - 1, 0), self.maxq))
             shape = scales_t.shape[0], scales_t.shape[1] // 32 * self.bits
             qzeros = torch.zeros(shape, dtype=torch.int32)
             zero_val = zeros
