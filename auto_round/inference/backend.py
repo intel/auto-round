@@ -182,9 +182,9 @@ mxfp_nvfp_feature_checker = functools.partial(in_feature_checker_group_size)
 ark_feature_checker = functools.partial(in_feature_checker_group_size)
 
 # humming repacks weights with ``padded_shape_n % 64 == 0`` / ``padded_shape_k % 32 == 0``.
-# Requiring the layer to already satisfy that keeps the repack a no-op pad.
+# humming can pad internally; requiring 32-multiples matches the checkpoint packing constraints.
 humming_feature_checker = functools.partial(
-    feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=64
+    feature_multiply_checker_group_size, in_feature_multiplier=32, out_feature_multiplier=32
 )
 
 
