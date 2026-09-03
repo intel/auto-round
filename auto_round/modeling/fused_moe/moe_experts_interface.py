@@ -840,5 +840,3 @@ def config_has_fused_moe_experts(config) -> bool:
                 )
                 return True
     return False
-
-

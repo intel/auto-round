@@ -198,8 +198,7 @@ class ModelContext(BaseContext):
                         loaded_via_meta = True
                     except Exception:
                         logger.warning(
-                            "Building a multimodal meta skeleton for %s failed; "
-                            "falling back to a full CPU load.",
+                            "Building a multimodal meta skeleton for %s failed; " "falling back to a full CPU load.",
                             self.disk_stream_model_dir,
                             exc_info=True,
                         )
