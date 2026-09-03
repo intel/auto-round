@@ -519,6 +519,19 @@ DRAM 峰值带宽的流式 GEMV,后者才是真正的瓶颈。代价是活跃的
 实测数据确定默认值。
 **状态:已在发布默认值(`NCOLS=2`)下通过硬件验证。**
 
+*按 mode 拆分翻译单元。* mode 阶梯与 `NCOLS` 阶梯是相乘的:2 dtype × 2 format
+× 3 解码 mode × (1 个普通 kernel + 3 个 `NCOLS` 因子) = 48 个 SYCL kernel。
+把它们全部实例化在 `sycl_tla_moe_decode_fp8.cpp` 里(直接调用
+`launch_fp8_by_mode` 就是这个效果),实测该单文件**峰值编译内存约 14.4 GiB**,
+而其它每个 decode TU 只有 4–8 个 kernel。因此每个 (dtype, format, mode) 三元组
+各自位于一个生成的
+`sycl_tla_moe_decode_fp8_{f16,bf16}_{e4m3,e5m2}_{word,lut,bits}.cpp` 中,声明在
+轻量的 `sycl_tla_moe_decode_fp8_helpers.hpp`,每个 TU 恰好 4 个 kernel。
+`sycl_tla_moe_decode_fp8.cpp` 自身现在**完全不实例化任何 kernel**:它在 host 侧
+读取 `fp8_decode_mode()` 并调用对应的 `moe_decode_fp8_detail::dispatch_*`,与原
+先的 `launch_fp8_by_mode` 完全一致。K-split 的选择仍然在选中的 TU 内、依据同样
+的输入做出,因此所有变体在数值上完全等价。
+
 **路由表校验(`ARK_MOE_VALIDATE_ROUTING`,默认 OFF)。** Python 入口原先
 在每次调用时都会检查 `sum(num_tokens_per_expert) == total_tokens`。当路由表
 本身就在设备上时,这个求和意味着一次 reduction kernel 外加一次**阻塞式**的

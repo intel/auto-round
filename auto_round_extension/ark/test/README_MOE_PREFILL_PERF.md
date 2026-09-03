@@ -638,6 +638,21 @@ previous kernel exactly. `test_perf_fp8_ksplit_ncols_sweep` prints all three
 factors per shape so the default can be set from measured data.
 **Status: hardware-validated at the shipped default (`NCOLS=2`).**
 
+*Per-mode translation units.* The mode and `NCOLS` ladders multiply out:
+2 dtypes × 2 formats × 3 decode modes × (one plain kernel + three `NCOLS`
+factors) = 48 SYCL kernels. Instantiating all of them inside
+`sycl_tla_moe_decode_fp8.cpp` — which is what calling `launch_fp8_by_mode`
+directly did — measured **~14.4 GiB peak compiler RSS** for that single file,
+against 4–8 kernels for every other decode TU. Each (dtype, format, mode)
+triple therefore lives in its own generated
+`sycl_tla_moe_decode_fp8_{f16,bf16}_{e4m3,e5m2}_{word,lut,bits}.cpp`, declared
+in the light `sycl_tla_moe_decode_fp8_helpers.hpp`, leaving exactly four
+kernels per TU. `sycl_tla_moe_decode_fp8.cpp` itself now instantiates **no
+kernels at all**: it reads `fp8_decode_mode()` on the host and calls the
+matching `moe_decode_fp8_detail::dispatch_*`, exactly as `launch_fp8_by_mode`
+used to. The K-split decision still happens inside the selected TU from the
+same inputs, so every variant stays numerically identical.
+
 **Routing-table validation (`ARK_MOE_VALIDATE_ROUTING`, default OFF).** The
 Python entry point used to check `sum(num_tokens_per_expert) == total_tokens`
 on every call. For a routing table that already lives on the device that
