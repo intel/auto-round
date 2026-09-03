@@ -27,17 +27,31 @@ void moe_gemm(sycl::queue* q, void* activations, void* weights, void* scales, vo
 #elif @MOE_SOURCE_MODE@ == 2
 
 #include "sycl_tla_common.hpp"
-#include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_gemm_helpers.hpp"
 
 namespace ark {
 
+// Host-side tile-policy dispatcher. The three work-group tile policies live in
+// their own translation units (`sycl_tla_moe_@MOE_DISPATCH_DTYPE@_n{64,128,256}.cpp`)
+// so that no cutlass grouped-GEMM template is instantiated here; see
+// `sycl_tla_moe_gemm_helpers.hpp` for why.
 void sycl_tla_moe_gemm_@MOE_DISPATCH_DTYPE@(sycl::queue* q, void* activations, void* weights, void* scales,
                                            void* outputs, int N, int K, int* num_tokens_per_expert,
                                            int num_experts) {
-  using Element = @MOE_DISPATCH_ELEMENT@;
-  moe_detail::moe_gemm_dispatch<Element>(
-      q, static_cast<const Element*>(activations), static_cast<const Element*>(weights),
-      static_cast<const Element*>(scales), static_cast<Element*>(outputs), N, K, num_tokens_per_expert, num_experts);
+  switch (moe_gemm_detail::select_tile_policy(N)) {
+    case moe_gemm_detail::TilePolicy::kN64:
+      moe_gemm_detail::dispatch_@MOE_DISPATCH_DTYPE@_n64(q, activations, weights, scales, outputs, N, K,
+                                                         num_tokens_per_expert, num_experts);
+      return;
+    case moe_gemm_detail::TilePolicy::kN256:
+      moe_gemm_detail::dispatch_@MOE_DISPATCH_DTYPE@_n256(q, activations, weights, scales, outputs, N, K,
+                                                          num_tokens_per_expert, num_experts);
+      return;
+    default:
+      moe_gemm_detail::dispatch_@MOE_DISPATCH_DTYPE@_n128(q, activations, weights, scales, outputs, N, K,
+                                                          num_tokens_per_expert, num_experts);
+      return;
+  }
 }
 
 }  // namespace ark
@@ -996,6 +1010,33 @@ void @MOE_FUNCTION_NAME@(const MoeDecodeParams& params) {
 }
 
 }  // namespace moe_decode_fp8_detail
+}  // namespace ark
+
+#elif @MOE_SOURCE_MODE@ == 20
+
+#include "sycl_tla_common.hpp"
+#include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_gemm_helpers.hpp"
+
+namespace ark {
+namespace moe_gemm_detail {
+
+// One bf16/fp16 grouped MoE GEMM tile policy per translation unit. Expanding
+// all three inside `sycl_tla_moe_<dtype>.cpp` put three full cutlass
+// grouped-GEMM instantiations in one TU (~2.2 GiB peak compiler RSS); every
+// other cutlass TU in this build instantiates exactly one policy. The policy is
+// selected on the host by `select_tile_policy()`, so this is numerically
+// identical to the fused dispatcher it replaces.
+void dispatch_@MOE_DISPATCH_DTYPE@_@MOE_TILE_SUFFIX@(sycl::queue* q, const void* activations, const void* weights,
+                                                     const void* scales, void* outputs, int N, int K,
+                                                     int* num_tokens_per_expert, int num_experts) {
+  using Element = @MOE_DISPATCH_ELEMENT@;
+  moe_detail::moe_gemm_dispatch<Element, TilePolicy::@MOE_TILE_POLICY@>(
+      q, static_cast<const Element*>(activations), static_cast<const Element*>(weights),
+      static_cast<const Element*>(scales), static_cast<Element*>(outputs), N, K, num_tokens_per_expert, num_experts);
+}
+
+}  // namespace moe_gemm_detail
 }  // namespace ark
 
 #endif

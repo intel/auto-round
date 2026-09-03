@@ -385,6 +385,25 @@ foreach(_moe_dispatch_dtype IN ITEMS f16 bf16)
   else()
     set(MOE_DISPATCH_ELEMENT cutlass::bfloat16_t)
   endif()
+  # The bf16/fp16 grouped MoE GEMM picks one of three work-group tile policies
+  # from N. Expanding all three in `sycl_tla_moe_<dtype>.cpp` put three full
+  # cutlass grouped-GEMM instantiations in one translation unit, measured at
+  # ~2219 MB peak compiler RSS; every other cutlass TU in this build carries
+  # exactly one policy and stays well under that. Give each policy its own TU
+  # and leave `sycl_tla_moe_<dtype>.cpp` as a pure host-side dispatcher.
+  foreach(_moe_tile IN ITEMS n64 n128 n256)
+    set(MOE_TILE_SUFFIX ${_moe_tile})
+    if(_moe_tile STREQUAL "n64")
+      set(MOE_TILE_POLICY kN64)
+    elseif(_moe_tile STREQUAL "n128")
+      set(MOE_TILE_POLICY kN128)
+    else()
+      set(MOE_TILE_POLICY kN256)
+    endif()
+    set(MOE_SOURCE_MODE 20)
+    generate_sycl_tla_source(sycl_tla_moe.cpp.in
+                             sycl_tla_moe_${_moe_dispatch_dtype}_${_moe_tile}.cpp)
+  endforeach()
   set(MOE_SOURCE_MODE 2)
   generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_${_moe_dispatch_dtype}.cpp)
 endforeach()

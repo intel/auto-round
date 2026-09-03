@@ -576,6 +576,20 @@ grouped-GEMM 实例化,实测该单文件**峰值编译内存约 14.4 GiB**;拆�
 `sycl_tla_moe_prefill_fp8_dpas.hpp` —— 它的形状门控改走轻量的
 `moe_prefill_fp8_detail::shape_ok` 声明。
 
+*bf16/fp16 grouped GEMM 的按 policy 拆分翻译单元。* 未量化的 `moe_gemm` 路径会
+根据输出宽度 `N` 从三个 work-group tile policy 中选一个(`≤ 64 → 256×64×32`
+8×1,`≤ 512 → 256×128×32` 8×2,`> 512 → 256×256×32` 8×4;设
+`ARK_MOE_GEMM_FIXED_TILE=1` 可固定回历史上的 8×2 tile)。把三个 policy 全部展开
+在 `sycl_tla_moe_{f16,bf16}.cpp` 内,等于把三个完整的 cutlass grouped-GEMM 实例
+化放进同一个 TU,实测这两个文件各自**峰值编译内存约 2219 MB**,而构建里其他所有
+含 cutlass 的 TU 都只带一个 policy。因此每个 policy 各自位于一个生成的
+`sycl_tla_moe_{f16,bf16}_{n64,n128,n256}.cpp` 中,声明在轻量的
+`sycl_tla_moe_gemm_helpers.hpp` 里。`sycl_tla_moe_{f16,bf16}.cpp` 不再 include
+`sycl_tla_moe.hpp`,并且**完全不实例化任何 kernel**:它在 host 侧调用
+`moe_gemm_detail::select_tile_policy(N)`(同一套启发式,原样搬进轻量头文件),
+再转发到对应的 `moe_gemm_detail::dispatch_*`。三个 policy 的 tile 形状保持不变,
+因而 SYCL kernel 名称也与拆分前一致,该拆分在数值和行为上都不可见。
+
 *池化 atomic 计数器。* 每次调用都用 `sycl::malloc_device` 分配 work-group
 计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列同步。在 prefill
 规模下这只是噪声,但在 decode 规模下 —— GEMM 本身只有几十微秒、且每生成一个

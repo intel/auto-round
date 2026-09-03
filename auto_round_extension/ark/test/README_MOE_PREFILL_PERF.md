@@ -701,6 +701,23 @@ file; splitting keeps each TU to one policy. `sycl_tla_moe_decode_fp8.cpp` no
 longer includes `sycl_tla_moe_prefill_fp8_dpas.hpp` at all — its shape gate
 goes through the light `moe_prefill_fp8_detail::shape_ok` declaration.
 
+*Per-policy translation units for the bf16/fp16 grouped GEMM.* The unquantized
+`moe_gemm` path picks one of three work-group tile policies from the output
+width `N` (`≤ 64 → 256×64×32` 8×1, `≤ 512 → 256×128×32` 8×2, `> 512 →
+256×256×32` 8×4; `ARK_MOE_GEMM_FIXED_TILE=1` pins the historical 8×2 tile).
+Expanding all three inside `sycl_tla_moe_{f16,bf16}.cpp` put three full cutlass
+grouped-GEMM instantiations in a single TU and measured **~2219 MB peak
+compiler RSS** for each of those two files, while every other cutlass TU in the
+build carries exactly one policy. Each policy therefore lives in its own
+generated `sycl_tla_moe_{f16,bf16}_{n64,n128,n256}.cpp`, declared in the light
+`sycl_tla_moe_gemm_helpers.hpp`. `sycl_tla_moe_{f16,bf16}.cpp` no longer
+includes `sycl_tla_moe.hpp` and instantiates **no kernels at all**: it calls
+`moe_gemm_detail::select_tile_policy(N)` on the host — the same heuristic,
+moved verbatim into the light header — and forwards to the matching
+`moe_gemm_detail::dispatch_*`. All three policies keep the same tile shapes and
+therefore the same SYCL kernel names as before, so the split is numerically and
+behaviourally invisible.
+
 *Pooled atomic counter.* Allocating the work-group counter with
 `sycl::malloc_device` and releasing it with `sycl::free` on every call
 forces two queue synchronizations per dispatch. At prefill sizes that is
