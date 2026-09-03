@@ -45,8 +45,8 @@ stages:
       # "Rerun failed stage" reruns every job (including Start_Pod_Job) and thus
       # recreates the ephemeral pod. Separate stages would leave the already
       # succeeded Start_Pod stage un-rerun, so the retry would find no agent.
-      - stage: GPU_CI_${{ pair.key }}
-        displayName: "GPU CI ${{ pair.value.PART }}"
+      - stage: GPU_Test_${{ pair.key }}
+        displayName: "GPU Test ${{ pair.value.PART }}"
         dependsOn: []
         jobs:
           - job: Start_Pod_Job
@@ -142,18 +142,10 @@ stages:
                   echo "##[endgroup]"
                 displayName: "Install Python Dependencies"
 
-              # On a "Rerun failed stage" retry the agent is a clean checkout, so
-              # pull the previous attempt's failed_tests.list to rerun only the
-              # failed cases (mirrors the CPU/XPU ut-template flow).
-              - task: Bash@3
-                condition: gt(variables['System.JobAttempt'], 1)
-                displayName: "Resolve previous attempt number"
-                inputs:
-                  targetType: "inline"
-                  script: echo "##vso[task.setvariable variable=prevAttempt]$((SYSTEM_JOBATTEMPT - 1))"
-
-              # A cancelled previous attempt never publishes its failed-logs
-              # artifact, so probe for it first and skip the download when absent.
+              # On a "Rerun failed jobs" retry the container is a clean environment, so pull
+              # the previous attempt's failed_tests.list to rerun only the failed cases.
+              # A cancelled previous attempt never publishes its failed-logs artifact, so
+              # probe for it first and skip the download when absent.
               - task: Bash@3
                 condition: gt(variables['System.JobAttempt'], 1)
                 displayName: "Check previous attempt artifact exists"
@@ -163,7 +155,9 @@ stages:
                   targetType: "inline"
                   script: |
                     set -eo pipefail
-                    artifact="ut-${{ pair.value.PART }}-$(prevAttempt)"
+                    prev_attempt=$((SYSTEM_JOBATTEMPT - 1))
+                    echo "##vso[task.setvariable variable=prevAttempt]${prev_attempt}"
+                    artifact="ut-${{ pair.value.PART }}-${prev_attempt}"
                     url="${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECT}/_apis/build/builds/${BUILD_BUILDID}/artifacts?api-version=7.1"
                     resp=$(curl -fsS -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "${url}" || echo "")
                     if echo "${resp}" | grep -q "\"name\":\"${artifact}\""; then
@@ -277,7 +271,7 @@ stages:
       vmImage: "ubuntu-latest"
     dependsOn:
       - ${{ each pair in parameters.matrix }}:
-          - GPU_CI_${{ pair.key }}
+          - GPU_Test_${{ pair.key }}
     variables:
       UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
       DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir

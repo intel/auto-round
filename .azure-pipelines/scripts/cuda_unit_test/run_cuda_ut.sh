@@ -71,9 +71,11 @@ function setup_basic_test_env() {
     uv pip uninstall torch torchvision
     uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
+
+    echo "List dependencies ..."
+    uv pip list
     echo "##[endgroup]"
 
-    uv pip list
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 }
 

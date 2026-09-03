@@ -83,15 +83,32 @@ steps:
 
   # On a "Rerun failed jobs" retry the container is a clean environment, so pull
   # the previous attempt's failed_tests.list to rerun only the failed cases.
+  # A cancelled previous attempt never publishes its failed-logs artifact, so
+  # probe for it first and skip the download when absent.
   - task: Bash@3
     condition: gt(variables['System.JobAttempt'], 1)
-    displayName: "Resolve previous attempt number"
+    displayName: "Check previous attempt artifact exists"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
     inputs:
       targetType: "inline"
-      script: echo "##vso[task.setvariable variable=prevAttempt]$((SYSTEM_JOBATTEMPT - 1))"
+      script: |
+        set -eo pipefail
+        prev_attempt=$((SYSTEM_JOBATTEMPT - 1))
+        echo "##vso[task.setvariable variable=prevAttempt]${prev_attempt}"
+        artifact="${{ parameters.utArtifact }}-${prev_attempt}"
+        url="${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECT}/_apis/build/builds/${BUILD_BUILDID}/artifacts?api-version=7.1"
+        resp=$(curl -fsS -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "${url}" || echo "")
+        if echo "${resp}" | grep -q "\"name\":\"${artifact}\""; then
+          echo "Found previous artifact ${artifact}."
+          echo "##vso[task.setvariable variable=prevArtifactExists]true"
+        else
+          echo "Previous artifact ${artifact} not found, skip retry download."
+          echo "##vso[task.setvariable variable=prevArtifactExists]false"
+        fi
 
   - task: DownloadPipelineArtifact@2
-    condition: gt(variables['System.JobAttempt'], 1)
+    condition: and(gt(variables['System.JobAttempt'], 1), eq(variables['prevArtifactExists'], 'true'))
     continueOnError: true
     inputs:
       artifact: "${{ parameters.utArtifact }}-$(prevAttempt)"
