@@ -31,13 +31,50 @@ from test.helpers import check_version
 import pytest
 import torch
 from transformers import (
+    AutoRoundConfig,
     AutoTokenizer,
     Qwen2_5OmniForConditionalGeneration,
-    Qwen3OmniMoeConfig,
     Qwen3OmniMoeForConditionalGeneration,
 )
 
 from auto_round import AutoRound
+
+
+def _calibration_data(seqlen):
+    return [
+        {
+            "input_ids": torch.ones((1, seqlen), dtype=torch.long),
+            "attention_mask": torch.ones((1, seqlen), dtype=torch.long),
+        }
+    ]
+
+
+def _make_text_only_autoround(model_path, tokenizer_path, scheme="W4A16"):
+    model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    return AutoRound(
+        model,
+        tokenizer=tokenizer,
+        # Pre-tokenized calibration bypasses processor encoding; reuse the serializable tokenizer for MLLM lifecycle.
+        processor=tokenizer,
+        dataset=_calibration_data(8),
+        scheme=scheme,
+        nsamples=1,
+        iters=1,
+        seqlen=8,
+        group_size=32,
+        # This smoke uses pre-tokenized text inputs; the Qwen3-Omni template and processor are covered in common tests.
+        template="default",
+        ignore_layers="self_attn,lm_head,mlp.gate",
+    )
+
+
+def _load_with_torch_backend(save_folder):
+    # Small smoke tensors can select a JIT backend; optimized backend selection has dedicated CUDA tests.
+    return Qwen3OmniMoeForConditionalGeneration.from_pretrained(
+        save_folder, quantization_config=AutoRoundConfig(backend="torch")
+    ).to("cuda")
+
 
 pytestmark = [
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available"),
@@ -97,44 +134,27 @@ class TestQwen3OmniMoeQuantization:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @pytest.mark.timeout(180)
-    def test_quantize_and_reload(self, tiny_qwen3_omni_moe_model_path):
-        """Quantize, save, reload, verify weights, and run inference."""
-        # Quantize
-        autoround = AutoRound(
-            tiny_qwen3_omni_moe_model_path,
-            nsamples=2,
-            iters=1,
-            seqlen=32,
-            ignore_layers="self_attn,lm_head,mlp.gate",
-        )
+    def test_quantize_and_reload(self, tiny_opt_model_path, tiny_qwen3_omni_moe_model_path):
+        """Quantize, save, reload, and run Qwen3-Omni's text-only thinker path."""
+        autoround = _make_text_only_autoround(tiny_qwen3_omni_moe_model_path, tiny_opt_model_path)
         quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=self.save_dir)
         assert quantized_model is not None, "Quantized model should not be None"
 
-        # Reload
-        loaded_model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(save_folder, device_map="cuda")
-
-        # Run inference on thinker
-        inp = torch.randint(0, 100, (1, 64)).to("cuda")
+        loaded_model = _load_with_torch_backend(save_folder)
+        inp = torch.randint(0, 100, (1, 8), device="cuda")
         with torch.inference_mode():
             output = loaded_model.thinker(input_ids=inp)
-        assert output is not None, "Inference failed on reloaded model (thinker)"
+        assert torch.isfinite(output.logits).all(), "Reloaded Qwen3-Omni thinker produced non-finite logits"
 
     @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all schemes in CI")
-    def test_quantize_mxfp4(self, tiny_qwen3_omni_moe_model_path):
+    def test_quantize_mxfp4(self, tiny_opt_model_path, tiny_qwen3_omni_moe_model_path):
         """Quantize with MXFP4 scheme and verify."""
-        autoround = AutoRound(
-            tiny_qwen3_omni_moe_model_path,
-            scheme="MXFP4",
-            nsamples=2,
-            iters=1,
-            seqlen=32,
-            ignore_layers="self_attn,lm_head,mlp.gate",
-        )
+        autoround = _make_text_only_autoround(tiny_qwen3_omni_moe_model_path, tiny_opt_model_path, scheme="MXFP4")
         quantized_model, save_folder = autoround.quantize_and_save(format="auto_round", output_dir=self.save_dir)
         assert quantized_model is not None, "MXFP4 quantized model should not be None"
 
         # Reload and inference
-        loaded_model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(save_folder, device_map="cuda")
+        loaded_model = _load_with_torch_backend(save_folder)
 
         inp = torch.randint(0, 100, (1, 64)).to("cuda")
         with torch.inference_mode():

@@ -18,10 +18,10 @@ from .helpers import (
     get_tiny_model,
     gptj_name_or_path,
     lamini_name_or_path,
+    make_tiny_qwen3_omni_moe_config,
     opt_name_or_path,
     phi2_name_or_path,
     qwen2_5_omni_name_or_path,
-    qwen3_omni_name_or_path,
     qwen_2_5_vl_name_or_path,
     qwen_moe_name_or_path,
     qwen_name_or_path,
@@ -389,6 +389,48 @@ def tiny_qwen35_moe_model_path():
 
 
 @pytest.fixture(scope="session")
+def tiny_qwen35_moe_text_model_path(tiny_opt_model_path):
+    """Small text-only Qwen3.5 MoE fixture for the PR CUDA smoke test."""
+    tiny_model_path = tiny_model_dir("tiny_qwen35_moe_text")
+    if _tiny_model_ready(tiny_model_path):
+        yield tiny_model_path
+        return
+
+    from transformers.models.qwen3_5_moe.configuration_qwen3_5_moe import Qwen3_5MoeTextConfig
+    from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeForCausalLM
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(tiny_opt_model_path)
+    config = Qwen3_5MoeTextConfig(
+        architectures=["Qwen3_5MoeForCausalLM"],
+        vocab_size=len(tokenizer),
+        hidden_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=32,
+        linear_key_head_dim=32,
+        linear_value_head_dim=32,
+        linear_num_key_heads=4,
+        linear_num_value_heads=4,
+        moe_intermediate_size=64,
+        shared_expert_intermediate_size=64,
+        num_experts=2,
+        num_experts_per_tok=2,
+        layer_types=["linear_attention", "full_attention"],
+        max_position_embeddings=64,
+        use_cache=False,
+        pad_token_id=tokenizer.pad_token_id,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+    model = Qwen3_5MoeForCausalLM(config)
+    model.save_pretrained(tiny_model_path)
+    tokenizer.save_pretrained(tiny_model_path)
+    _mark_tiny_model(tiny_model_path)
+    yield tiny_model_path
+
+
+@pytest.fixture(scope="session")
 def tiny_tiny_llama_model_path():
     tiny_model_path = tiny_model_dir("tiny_TinyLlama")
     if _tiny_model_ready(tiny_model_path):
@@ -436,22 +478,12 @@ def tiny_qwen2_5_omni_model_path():
 
 @pytest.fixture(scope="session")
 def tiny_qwen3_omni_moe_model_path():
-    """Tiny Qwen3-Omni-MoE model built from real config with reduced layers.
-
-    Uses random weights (no checkpoint loading) so it is fast for CI while
-    still exercising the real config structure.
-    Skipped automatically when the model path does not exist locally.
-    """
-    model_name_or_path = get_model_path(qwen3_omni_name_or_path)
-    tiny_model_path = tiny_model_dir("tiny_qwen3_omni_moe_model_path")
-    if _tiny_model_ready(tiny_model_path):
-        yield tiny_model_path
-        return
-    tiny_model_path = save_tiny_model(model_name_or_path, tiny_model_path, num_layers=1, is_mllm=True, from_config=True)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, trust_remote_code=True)
-    tokenizer.save_pretrained(tiny_model_path)
-    processor.save_pretrained(tiny_model_path)
+    """Self-contained tiny Qwen3-Omni-MoE model for CUDA smoke coverage."""
+    tiny_model_path = tiny_model_dir("tiny_qwen3_omni_moe_smoke_v2_model_path")
+    if not _tiny_model_ready(tiny_model_path):
+        model = transformers.Qwen3OmniMoeForConditionalGeneration(make_tiny_qwen3_omni_moe_config())
+        model.save_pretrained(tiny_model_path)
+        _mark_tiny_model(tiny_model_path)
     yield tiny_model_path
 
 

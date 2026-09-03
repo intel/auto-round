@@ -99,6 +99,9 @@ class TestAutoRound:
             assert all(tensor.tensor_type == gguf.GGMLQuantizationType.Q4_0 for tensor in tensors)
         return gguf_path
 
+    @pytest.mark.skip_ci(
+        reason="Architecture: Qwen3.5 fused-MoE GGUF export writes 3D expert tensors and requires a large fixture"
+    )
     @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     @require_gguf
@@ -223,6 +226,9 @@ class TestAutoRound:
         assert abs(file_size - 307) < 5.0
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(
+        reason="Architecture: Gemma VLM GGUF export validates mmproj output and requires a large multimodal fixture"
+    )
     @require_gguf
     @pytest.mark.timeout(120)
     def test_vlm_gguf(self):
@@ -298,6 +304,9 @@ class TestAutoRound:
 
         shutil.rmtree(saved_tiny_model_path, ignore_errors=True)
 
+    @pytest.mark.skip_ci(
+        reason="Matrix: The Q2_K_S first-eighth FFN-down dtype rule is covered by a dedicated GGUF dtype unit test"
+    )
     @require_gguf
     @pytest.mark.timeout(90)
     def test_q2_k_s_ffn_down_q4k(self):

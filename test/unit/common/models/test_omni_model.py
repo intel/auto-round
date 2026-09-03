@@ -24,58 +24,16 @@ Tests cover:
 
 import copy
 import shutil
-from test.helpers import check_version, transformers_version
+from test.helpers import check_version, make_tiny_qwen3_omni_moe_config, transformers_version
 
 import pytest
 import torch
-from transformers import Qwen2_5OmniForConditionalGeneration, Qwen3OmniMoeConfig, Qwen3OmniMoeForConditionalGeneration
+from transformers import Qwen2_5OmniForConditionalGeneration, Qwen3OmniMoeForConditionalGeneration
 
 pytestmark = pytest.mark.skipif(
     not check_version("transformers>=5.1.0"),
     reason="Qwen-Omni models require transformers >= 5.1.0",
 )
-
-
-# ---------------------------------------------------------------------------
-# Helper: create tiny Qwen3-Omni-MoE config (no real checkpoint needed for MoE)
-# ---------------------------------------------------------------------------
-def _make_tiny_qwen3_omni_moe_config():
-    config = Qwen3OmniMoeConfig()
-    # Thinker
-    config.thinker_config.text_config.num_hidden_layers = 1
-    config.thinker_config.text_config.hidden_size = 64
-    config.thinker_config.text_config.intermediate_size = 128
-    config.thinker_config.text_config.moe_intermediate_size = 32
-    config.thinker_config.text_config.num_attention_heads = 4
-    config.thinker_config.text_config.num_key_value_heads = 2
-    config.thinker_config.text_config.num_experts = 4
-    config.thinker_config.text_config.num_experts_per_tok = 2
-    config.thinker_config.vision_config.depth = 1
-    config.thinker_config.vision_config.embed_dim = 64
-    config.thinker_config.vision_config.hidden_size = 64
-    config.thinker_config.vision_config.num_heads = 4
-    config.thinker_config.audio_config.num_hidden_layers = 1
-    # Talker
-    config.talker_config.text_config.num_hidden_layers = 1
-    config.talker_config.text_config.hidden_size = 64
-    config.talker_config.text_config.intermediate_size = 128
-    config.talker_config.text_config.moe_intermediate_size = 32
-    config.talker_config.text_config.num_attention_heads = 4
-    config.talker_config.text_config.num_key_value_heads = 2
-    config.talker_config.text_config.num_experts = 4
-    config.talker_config.text_config.num_local_experts = 4
-    config.talker_config.text_config.num_experts_per_tok = 2
-    config.talker_config.text_config.shared_expert_intermediate_size = 64
-    config.talker_config.thinker_hidden_size = 64
-    config.talker_config.spatial_merge_size = 2
-    # Code2wav (minimal)
-    config.code2wav_config.hidden_size = 64
-    config.code2wav_config.num_hidden_layers = 1
-    config.code2wav_config.num_attention_heads = 4
-    config.code2wav_config.num_key_value_heads = 4
-    config.code2wav_config.intermediate_size = 128
-    config.initializer_range = 0.02  # Default initializer range for weight initialization
-    return config
 
 
 # ========================= Qwen2.5-Omni Tests =============================
@@ -169,7 +127,7 @@ class TestQwen3OmniMoeBlockNames:
         """Test that get_block_names returns thinker layers only by default."""
         from auto_round.utils import get_block_names
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         block_names = get_block_names(model, quant_vision=False)
@@ -184,7 +142,7 @@ class TestQwen3OmniMoeBlockNames:
         """Test that quant_vision adds visual and audio blocks."""
         from auto_round.utils import get_block_names
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         blocks_no_vision = get_block_names(model, quant_vision=False)
@@ -200,7 +158,7 @@ class TestQwen3OmniMoeForward:
         """Test that _handle_special_model patches the forward function."""
         from auto_round.special_model_handler import _handle_special_model
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         original_forward = model.forward
@@ -232,7 +190,7 @@ class TestQwen3OmniMoeReplacement:
         """Test that is_custom_model returns True for Qwen3-Omni-MoE."""
         from auto_round.modeling.fused_moe.replace_modules import is_custom_model
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
         assert is_custom_model(model)
 
@@ -240,7 +198,7 @@ class TestQwen3OmniMoeReplacement:
         """Test that only thinker MoE blocks are replaced; talker stays fused."""
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         original_talker_class = model.talker.model.layers[0].mlp.__class__.__name__
@@ -276,7 +234,7 @@ class TestQwen3OmniMoeReplacement:
         def assert_same_weights(actual: torch.Tensor, expected: torch.Tensor):
             torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         # Save original fused thinker weights
@@ -304,7 +262,7 @@ class TestQwen3OmniMoeReplacement:
         from auto_round.modeling.fused_moe.replace_modules import apply_replacements, materialize_model_
 
         torch.manual_seed(0)
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         x = torch.randn(1, 4, 64) * 0.1
@@ -348,7 +306,7 @@ class TestQwen3OmniMoeUtils:
     def test_is_moe_layer_thinker(self):
         from auto_round.utils.model import is_moe_layer
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
         moe_block = model.thinker.model.layers[0].mlp
         assert is_moe_layer(moe_block), f"Thinker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
@@ -356,7 +314,7 @@ class TestQwen3OmniMoeUtils:
     def test_is_moe_layer_talker(self):
         from auto_round.utils.model import is_moe_layer
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
         moe_block = model.talker.model.layers[0].mlp
         assert is_moe_layer(moe_block), f"Talker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
@@ -364,7 +322,7 @@ class TestQwen3OmniMoeUtils:
     def test_get_expert_linear_names(self):
         from auto_round.utils.model import get_expert_linear_names
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         thinker_mlp = model.thinker.model.layers[0].mlp
@@ -378,7 +336,7 @@ class TestQwen3OmniMoeUtils:
     def test_get_expert_input_proj_names(self):
         from auto_round.utils.model import get_expert_input_proj_names
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         thinker_mlp = model.thinker.model.layers[0].mlp
@@ -388,7 +346,7 @@ class TestQwen3OmniMoeUtils:
     def test_ignore_layers_registered(self):
         from auto_round.special_model_handler import get_predefined_ignore_layers
 
-        config = _make_tiny_qwen3_omni_moe_config()
+        config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         ignore_layers = get_predefined_ignore_layers(model)

@@ -169,8 +169,8 @@ class TestAutoRound:
         torch.cuda.empty_cache()
 
     @pytest.mark.timeout(120)
-    def test_fp8_block_fp8_format(self):
-        model_name = "Qwen/Qwen3-0.6B"
+    def test_fp8_block_fp8_format(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
 
         scheme = "FP8_BLOCK"
         autoround = AutoRound(
@@ -194,8 +194,8 @@ class TestAutoRound:
         # if is_cuda_support_fp8():
         #     eval_generated_prompt(quantized_model_path, device="cuda:0")
 
-    def test_fp8_block_autoround_format(self):
-        model_name = "Qwen/Qwen3-0.6B"
+    def test_fp8_block_autoround_format(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
 
         autoround = AutoRound(
             model_name,

@@ -16,7 +16,7 @@ import shutil
 
 import pytest
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoRoundConfig
 
 from auto_round import AutoRound
 
@@ -29,6 +29,22 @@ def _has_packed_weight(model):
         if hasattr(module, "qweight") or hasattr(module, "packed_weight"):
             return True
     return False
+
+
+def _load_with_torch_backend(quantized_model_path):
+    """Reload generic INT exports with the deterministic reference backend.
+
+    ``backend=auto`` can select Marlin, ExLlamaV2, or Triton and compile a
+    backend-specific kernel. Those paths are covered by the dedicated CUDA
+    backend tests; this parameter matrix verifies only export/reload/forward
+    compatibility and must not depend on an incidental optimized backend.
+    """
+    return AutoModelForCausalLM.from_pretrained(
+        quantized_model_path,
+        device_map="cuda:0",
+        trust_remote_code=True,
+        quantization_config=AutoRoundConfig(backend="torch"),
+    )
 
 
 class TestAutoroundIntExportGpu:
@@ -54,7 +70,7 @@ class TestAutoroundIntExportGpu:
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        model = _load_with_torch_backend(quantized_model_path)
         assert isinstance(model, torch.nn.Module)
         assert _has_packed_weight(model)
         input_ids = torch.randint(0, 1000, (1, 16), device="cuda:0")
@@ -79,7 +95,7 @@ class TestAutoroundIntExportGpu:
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        model = _load_with_torch_backend(quantized_model_path)
         assert isinstance(model, torch.nn.Module)
         assert _has_packed_weight(model)
         input_ids = torch.randint(0, 1000, (1, 16), device="cuda:0")
@@ -102,6 +118,6 @@ class TestAutoroundIntExportGpu:
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
+        model = _load_with_torch_backend(quantized_model_path)
         assert isinstance(model, torch.nn.Module)
         assert _has_packed_weight(model)
