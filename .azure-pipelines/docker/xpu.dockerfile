@@ -46,6 +46,7 @@ ENV VIRTUAL_ENV="/home/hostuser/.venv"
 ENV UV_NO_PROGRESS=1 \
     UV_LINK_MODE=copy
 
+RUN uv python install 3.14
 RUN uv venv --python=3.14 /home/hostuser/.venv
 RUN which python && python --version
 RUN uv pip install torch==2.14.0 torchvision==0.29.0 --extra-index-url https://download.pytorch.org/whl/xpu

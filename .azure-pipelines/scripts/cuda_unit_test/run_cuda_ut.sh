@@ -66,6 +66,8 @@ function setup_basic_test_env() {
     echo "##[group]Setting up test environment..."
 
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
+    rm -rf /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
@@ -73,7 +75,7 @@ function setup_basic_test_env() {
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip install -U pytest-cov
-    uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
+    uv pip install kernels==0.16.1 # For sm120: https://github.com/huggingface/transformers/blob/v5.16.1/setup.py#L93
     uv pip uninstall torch torchvision
     uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
