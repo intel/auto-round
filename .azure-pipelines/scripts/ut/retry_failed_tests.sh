@@ -18,6 +18,7 @@ function run_if_retry() {
     if [ -f "${LOG_DIR}/.coverage" ]; then
         cp "${LOG_DIR}/.coverage" ./.coverage
     fi
+    echo "Running test for retry attempt ${SYSTEM_JOBATTEMPT} with failed tests:"
     run_pytest "$(retry_selection)" "${LOG_DIR}/unittest_test_job_attempt_${SYSTEM_JOBATTEMPT}.log"
     return 0
 }
