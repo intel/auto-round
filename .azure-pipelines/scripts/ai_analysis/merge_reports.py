@@ -36,8 +36,7 @@ def build_header(clusters_data: dict, args) -> list[str]:
     if args.run_url:
         lines.append(f"- **Run:** {args.run_url}")
     lines.append(
-        f"- **Totals:** {total_failed} failed test(s), {cluster_count} cluster(s) "
-        f"({known} known / {unknown} new)"
+        f"- **Totals:** {total_failed} failed test(s), {cluster_count} cluster(s) " f"({known} known / {unknown} new)"
     )
     lines.append("")
     return lines
