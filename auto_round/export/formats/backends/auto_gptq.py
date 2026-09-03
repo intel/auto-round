@@ -33,9 +33,6 @@ class AutoGPTQFormat(OutputFormat):
         "W2A16G64",
         "W2A16G32",
         "W4A16_MIXED",
-        "W5A16",
-        "W6A16",
-        "W7A16",
     ]
     format_name = "auto_gptq"
 
@@ -65,7 +62,7 @@ class AutoGPTQFormat(OutputFormat):
     @classmethod
     def check_scheme_args(cls, scheme: QuantizationScheme) -> bool:
         error_logs = []
-        if scheme.bits not in [2, 3, 4, 5, 6, 7, 8, 16]:
+        if scheme.bits not in [2, 3, 4, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
         if not re.search("int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
