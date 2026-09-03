@@ -131,7 +131,7 @@ def _reverse_renamings_for(model_type):
 
     ``transformers`` owns the checkpoint->model renames, so reversing them is best left to
     ``WeightTransform.reverse_transform()``: it handles capturing groups and the
-    ``PrefixChange`` special cases correctly. Naively re-using a ``target_pattern`` as a
+    ``PrefixChange`` special cases correctly. Naively reusing a ``target_pattern`` as a
     regex pattern does not -- the targets are *replacement* strings and a ``\\1``
     backreference in one (e.g. ``model.language_model.\\1``) raises
     ``re.PatternError: invalid group reference``.
@@ -213,7 +213,9 @@ _MODEL_PROJ_TO_FUSED = {
     "down_proj": ("down_proj", 0),
 }
 
-_MODEL_SIDE_EXPERT_RE = re.compile(r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$")
+_MODEL_SIDE_EXPERT_RE = re.compile(
+    r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$"
+)
 
 # Report the first block materialization at INFO (see `materialize_module`).
 _logged_first_materialize = False
@@ -408,8 +410,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
     log = logger.debug if _logged_first_materialize else logger.info
     _logged_first_materialize = True
     log(
-        "materialize %s: %d tensors / %.2f GB in %.2fs "
-        "(resolve %.2fs, read %.2fs @ %.0f MB/s, assign %.2fs)",
+        "materialize %s: %d tensors / %.2f GB in %.2fs " "(resolve %.2fs, read %.2fs @ %.0f MB/s, assign %.2fs)",
         module_name,
         len(targets),
         total_bytes / 1024**3,
