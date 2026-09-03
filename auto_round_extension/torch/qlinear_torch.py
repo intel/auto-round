@@ -123,12 +123,16 @@ class QuantLinear(nn.Module):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
-                torch.int32
-            )
+            # clamp into [0, maxq]: the searched (scale, zp) grid may leave
+            # round(W/s + zp) outside the level range (the search evaluates
+            # the clamped loss); an unclamped value shifts bits into the
+            # neighboring packed nibble and silently corrupts it.
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros)
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
 
         del repeat_scales
 
@@ -183,12 +187,14 @@ class QuantLinear(nn.Module):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
-                torch.int32
-            )
+            # clamp into [0, maxq] -- see pack_248_bits for why unclamped
+            # levels corrupt the neighboring packed nibble
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros)
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
 
         del repeat_scales
 
