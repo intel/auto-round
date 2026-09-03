@@ -95,7 +95,8 @@ class AutoAWQFormat(OutputFormat):
             )
         if scheme.bits not in (4,) + self.EXTENDED_BITS:
             raise ValueError(
-                f"auto_awq format support quantization scheme with {self.support_schemes} but got bits={scheme.bits}"
+                f"{self.format_name} format support quantization scheme with {','.join(self.support_schemes)} "
+                f"but got bits={scheme.bits}, please have a check."
             )
 
         if self.backend is None:
