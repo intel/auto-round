@@ -224,16 +224,15 @@ class DnnlContext {
 
 #if ARK_XPU
     auto [dev_key, ctx_id] = get_device_context_ids_locked(q);
-    for (auto& entry : xpu_engines_) {
-      if (entry.device_key == dev_key && entry.context_id == ctx_id) {
-        return entry.engine.get();
-      }
+    auto engine_it = xpu_engines_.find(EngineKey{dev_key, ctx_id});
+    if (engine_it != xpu_engines_.end()) {
+      return engine_it->second.get();
     }
     auto dev = q->get_device();
     auto ctx = q->get_context();
-    xpu_engines_.push_back(
-        {dev_key, ctx_id, std::make_unique<dnnl::engine>(dnnl::sycl_interop::make_engine(dev, ctx))});
-    return xpu_engines_.back().engine.get();
+    auto insert_result = xpu_engines_.emplace(
+        EngineKey{dev_key, ctx_id}, std::make_unique<dnnl::engine>(dnnl::sycl_interop::make_engine(dev, ctx)));
+    return insert_result.first->second.get();
 #else
     if (!cpu_engine_) {
       cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
@@ -304,14 +303,21 @@ class DnnlContext {
     size_t context_id;
   };
 
-  struct EngineEntry {
+  struct EngineKey {
     size_t device_key;
     size_t context_id;
-    std::unique_ptr<dnnl::engine> engine;
+
+    bool operator==(const EngineKey& other) const { return device_key == other.device_key && context_id == other.context_id; }
   };
 
   std::vector<ContextEntry> context_ids_;
-  std::vector<EngineEntry> xpu_engines_;
+  struct EngineKeyHash {
+    size_t operator()(const EngineKey& key) const {
+      return key.device_key ^ (key.context_id + 0x9e3779b97f4a7c15ULL + (key.device_key << 6) + (key.device_key >> 2));
+    }
+  };
+
+  std::unordered_map<EngineKey, std::unique_ptr<dnnl::engine>, EngineKeyHash> xpu_engines_;
   size_t next_context_id_ = 1;
 #endif
 
