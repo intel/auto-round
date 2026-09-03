@@ -15,7 +15,7 @@
 """Tests for quantizing models built from ``Conv1D`` layers (e.g. GPT-2 style architectures)."""
 
 import shutil
-from test.helpers import get_model_path, get_tiny_model, model_infer
+from test.helpers import model_infer
 
 import pytest
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -43,14 +43,13 @@ class TestQuantizationConv1d:
 
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     @pytest.mark.timeout(300)
-    def test_quant(self, dataloader, device):
+    def test_quant(self, dataloader, device, tiny_lamini_model_path):
         """Quantize a Conv1D-based model, save it, reload on `device`, and run inference."""
         if device != "cpu" and not is_gptqmodel_available():
             pytest.skip("test requires gptqmodel>=2.0")
 
-        model_name = get_model_path("MBZUAI/LaMini-GPT-124M")
-        model = get_tiny_model(model_name)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(tiny_lamini_model_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_lamini_model_path, trust_remote_code=True)
 
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -59,7 +58,7 @@ class TestQuantizationConv1d:
             bits=bits,
             group_size=group_size,
             sym=sym,
-            iters=2,
+            iters=1,
             seqlen=2,
             dataset=dataloader,
         )

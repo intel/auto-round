@@ -1,4 +1,5 @@
 import copy
+import json
 import re
 import shutil
 from test.helpers import evaluate_accuracy, get_model_path, get_tiny_model
@@ -15,6 +16,15 @@ from auto_round.utils import get_module
 from ...envs import multi_card
 
 
+def _local_calibration_dataset(tmp_path):
+    dataset_path = tmp_path / "autoscheme_calibration.json"
+    dataset_path.write_text(
+        json.dumps(["AutoScheme local calibration text with enough tokens. " * 16]),
+        encoding="utf-8",
+    )
+    return str(dataset_path)
+
+
 class TestAutoScheme:
 
     @pytest.fixture(autouse=True)
@@ -29,10 +39,21 @@ class TestAutoScheme:
         shutil.rmtree("runs", ignore_errors=True)
 
     @pytest.mark.timeout(60)
-    def test_gguf_k_0(self, tiny_qwen_model_path):
+    def test_gguf_k_0(self, tiny_qwen_model_path, tmp_path, monkeypatch):
+        monkeypatch.setenv("AR_AUTO_SCHEME_NSAMPLES", "1")
+        monkeypatch.setenv("AR_AUTO_SCHEME_BATCH_SIZE", "1")
+        calibration_dataset = _local_calibration_dataset(tmp_path)
         target_bits = 5.5
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
-        ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
+        ar = AutoRound(
+            model=tiny_qwen_model_path,
+            scheme=scheme,
+            iters=1,
+            nsamples=1,
+            seqlen=8,
+            dataset=calibration_dataset,
+            enable_alg_ext=True,
+        )
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
 
     @pytest.mark.skip_ci(reason="Matrix: not necessary to test all options")

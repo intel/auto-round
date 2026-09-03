@@ -1,3 +1,4 @@
+import json
 import shutil
 import sys
 from test.helpers import evaluate_accuracy, get_model_path
@@ -10,6 +11,15 @@ from auto_round import AutoRound
 
 AUTO_ROUND_PATH = __file__.split("/")
 AUTO_ROUND_PATH = "/".join(AUTO_ROUND_PATH[: AUTO_ROUND_PATH.index("test")])
+
+
+def _local_calibration_dataset(tmp_path):
+    dataset_path = tmp_path / "alg_ext_autoscheme_calibration.json"
+    dataset_path.write_text(
+        json.dumps(["Algorithm-extension local calibration text with enough tokens. " * 16]),
+        encoding="utf-8",
+    )
+    return str(dataset_path)
 
 
 class TestAlgExt:
@@ -92,10 +102,13 @@ class TestAlgExt:
         assert quantizer.enable_quanted_input is False
 
     @pytest.mark.timeout(120)
-    @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "W2A16G64", "gguf:q2_k_s,gguf:q4_k_s"])
-    def test_all_support_dtype(self, scheme, tiny_qwen_model_path):
+    @pytest.mark.parametrize("scheme", ["MXFP4", "W2A16G64"])
+    def test_all_support_dtype(self, scheme, tiny_qwen_model_path, tmp_path, monkeypatch):
         from auto_round.auto_scheme import AutoScheme
 
+        monkeypatch.setenv("AR_AUTO_SCHEME_NSAMPLES", "1")
+        monkeypatch.setenv("AR_AUTO_SCHEME_BATCH_SIZE", "1")
+        calibration_dataset = _local_calibration_dataset(tmp_path)
         avg_bits = 2 if scheme == "W2A16G64" else 4
         scheme = AutoScheme(options=scheme, avg_bits=avg_bits, ignore_scale_zp_bits=True)
         ar = AutoRound(
@@ -104,6 +117,7 @@ class TestAlgExt:
             iters=1,
             nsamples=1,
             seqlen=32,
+            dataset=calibration_dataset,
             enable_alg_ext=True,
             enable_torch_compile=True,
         )

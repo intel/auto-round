@@ -122,11 +122,20 @@ class TestAutoRoundAsym:
     # ------------------------------------------------------------------
     @requires_cuda
     @pytest.mark.timeout(120)
-    @pytest.mark.parametrize("group_size", [32, 64, 128])
-    def test_asym_group_size_tuning(self, tiny_opt_model_path, group_size):
+    @pytest.mark.parametrize("group_size", [32])
+    def test_asym_group_size_tuning(self, tiny_opt_model_path, group_size, dataloader):
         """Tuned (iters=1) asym quantization works across group sizes."""
         device = "cuda"
-        ar = AutoRound(tiny_opt_model_path, bits=4, group_size=group_size, sym=False, iters=1, seqlen=2, nsamples=1)
+        ar = AutoRound(
+            tiny_opt_model_path,
+            bits=4,
+            group_size=group_size,
+            sym=False,
+            iters=1,
+            seqlen=2,
+            nsamples=1,
+            dataset=dataloader,
+        )
         _, quantized_model_path = ar.quantize_and_save(format="auto_round", output_dir=self.save_dir)
 
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map=device)

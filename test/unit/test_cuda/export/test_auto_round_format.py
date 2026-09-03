@@ -18,6 +18,15 @@ from ...envs import (
 )
 
 
+def _fp8_calibration_data():
+    return [
+        {
+            "input_ids": torch.ones((1, 2), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2), dtype=torch.long),
+        }
+    ]
+
+
 class TestAutoRound:
 
     @pytest.fixture(autouse=True, scope="class")
@@ -176,6 +185,8 @@ class TestAutoRound:
         autoround = AutoRound(
             model_name,
             scheme=scheme,
+            dataset=_fp8_calibration_data(),
+            nsamples=1,
             iters=2,
             seqlen=2,
         )
