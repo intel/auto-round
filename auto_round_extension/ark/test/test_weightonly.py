@@ -251,7 +251,7 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
         raw_s8_wei = gen_weis8(weight_type, "xpu", k, n)
         scale = torch.rand(k // blocksize, n, dtype=torch.float16, device="xpu") / 300 + 0.002
         bias = torch.randn(1, n, dtype=torch.float16, device="xpu")
-        zp = torch.Tensor()
+        zp = torch.empty(0, device=raw_s8_wei.device)
         packw = ark.repack_quantized_weight(
             raw_s8_wei, scale, zp, blocksize, compute_type, weight_type, scale_type, asym
         )
