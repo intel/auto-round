@@ -248,6 +248,42 @@ foreach(_moe_dtype IN ITEMS f16 bf16)
   generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_prefill_s4_${_moe_dtype}_${MOE_POLICY_SUFFIX}.cpp)
 endforeach()
 
+# The FP8 *decode* dispatch uses the same four-tier ladder as S4 (`_m_8` ->
+# `_m_16` -> `_m_32` -> wide), so it needs the same extra 8-row tile. Keeping
+# these instantiations in their own translation units (rather than expanding
+# the whole ladder inside `sycl_tla_moe_decode_fp8.cpp`) is what keeps peak
+# compiler RSS per TU bounded -- one policy per TU instead of all four.
+# `dpas_w4a16_policy_m_8` carries no 4-bit-specific types; it is purely a
+# `WGTile`/`SGLayout` shape, so the FP8 mainloop reuses it verbatim.
+set(MOE_POLICY_SUFFIX tiny)
+set(MOE_HELPER_HEADER sycl_tla_moe_prefill_fp8_helpers.hpp)
+set(MOE_DPAS_HEADER sycl_tla_moe_prefill_fp8_dpas.hpp)
+set(MOE_NAMESPACE moe_prefill_fp8_detail)
+set(MOE_DPAS_NAMESPACE moe_dpas_fp8)
+set(MOE_DISPATCH_FUNCTION moe_prefill_fp8_dpas_per_group_dispatch_policy)
+set(MOE_WEIGHT_TYPE uint8_t)
+set(MOE_DEFINE_FP8_HELPERS 0)
+set(MOE_DEFINE_INT8_HELPERS 0)
+set(MOE_DEFINE_S4_HELPERS 0)
+foreach(_moe_dtype IN ITEMS f16 bf16)
+  if(_moe_dtype STREQUAL "f16")
+    set(MOE_SCALAR_TYPE sycl::half)
+  else()
+    set(MOE_SCALAR_TYPE sycl::ext::oneapi::bfloat16)
+  endif()
+  foreach(_moe_format IN ITEMS e4m3 e5m2)
+    if(_moe_format STREQUAL "e4m3")
+      set(MOE_FORMAT_ARGUMENT true)
+    else()
+      set(MOE_FORMAT_ARGUMENT false)
+    endif()
+    set(MOE_POLICY_ARGS "${MOE_FORMAT_ARGUMENT}, moe_dpas_fp8::dpas_w4a16_policy_m_8")
+    set(MOE_FUNCTION_NAME dispatch_${_moe_dtype}_${_moe_format}_${MOE_POLICY_SUFFIX})
+    generate_sycl_tla_source(
+      sycl_tla_moe.cpp.in sycl_tla_moe_prefill_fp8_${_moe_dtype}_${_moe_format}_${MOE_POLICY_SUFFIX}.cpp)
+  endforeach()
+endforeach()
+
 set(MOE_SOURCE_MODE 9)
 foreach(_moe_dtype IN ITEMS f16 bf16)
   if(_moe_dtype STREQUAL "f16")

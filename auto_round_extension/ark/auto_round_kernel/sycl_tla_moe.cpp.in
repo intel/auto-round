@@ -149,12 +149,13 @@ void sycl_tla_moe_decode_fp(const MoeDecodeParams& params) {
 
 #include "sycl_tla_common.hpp"
 #include "sycl_tla_moe_decode.hpp"
-// FP8 per-group DPAS grouped GEMM. Unlike the S4 decode path, whose tile
-// policies are instantiated in the generated `sycl_tla_moe_prefill_s4_*`
-// translation units, the decode-phase FP8 dispatch (finer small-M ladder plus
-// the pooled atomic counter) is instantiated here, so this TU needs the
-// definitions and not just the shape-gate helpers.
-#include "sycl_tla_moe_prefill_fp8_dpas.hpp"
+// FP8 per-group DPAS grouped GEMM. Like the S4 decode path, the tile-policy
+// instantiations live in the generated `sycl_tla_moe_prefill_fp8_*` translation
+// units; this TU only needs the `dispatch_*` declarations and the env-flag /
+// shape gates. Instantiating the ladder here instead would pull four cutlass
+// grouped-GEMM policies x four group sizes into a single TU and push peak
+// compiler RSS into the tens of GiB.
+#include "sycl_tla_moe_prefill_fp8_helpers.hpp"
 
 namespace ark {
 
@@ -163,7 +164,7 @@ bool sycl_tla_moe_decode_fp8_dpas_applicable(const MoeDecodeParams& params) {
          (params.act_dtype == BTLA_DTYPE::F16 || params.act_dtype == BTLA_DTYPE::BF16) &&
          moe_decode_dpas_fp8_enabled() &&
          moe_decode_dpas_fp8_occupancy_ok(params.total_tokens, params.num_experts) &&
-         moe_dpas_fp8::moe_prefill_dpas_fp8_pergroup_shape_ok(params.N, params.K, params.group_size);
+         moe_prefill_fp8_detail::shape_ok(params.N, params.K, params.group_size);
 }
 
 void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params) {
@@ -181,30 +182,67 @@ void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params) {
   // `moe_gemm_decode` (which uses it to skip the `fill_expert_id` launch) so
   // the two decisions cannot diverge.
   if (sycl_tla_moe_decode_fp8_dpas_applicable(params)) {
+    const MoePrefillParams dpas_params{params.q,
+                                       params.activations,
+                                       params.weights,
+                                       params.scales,
+                                       params.zeros,
+                                       params.outputs,
+                                       nullptr,
+                                       params.act_dtype,
+                                       params.weight_dtype,
+                                       params.N,
+                                       params.K,
+                                       params.group_size,
+                                       params.num_tokens_per_expert,
+                                       params.num_experts,
+                                       params.total_tokens,
+                                       params.asym};
+    // Decode `A_avg_M` ladder (`_m_8` -> `_m_16` -> `_m_32` -> wide), matching
+    // the S4 decode ladder rather than the FP8 prefill one, whose
+    // `<= 512 -> m_32` rung is tuned for prefill-sized batches. The 8-row rung
+    // matters because decode `A_avg_M` is far below 16, so without it half of
+    // every M tile is padding and the bandwidth-bound FP8 weights are streamed
+    // for rows that contribute nothing.
+    const int average_tokens = params.num_experts > 0 ? params.total_tokens / params.num_experts : 0;
     if (params.act_dtype == BTLA_DTYPE::F16) {
       if (is_e4m3) {
-        moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<sycl::half, true>(
-            params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-            static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-            params.num_tokens_per_expert, params.num_experts, params.N, params.K, params.group_size,
-            params.total_tokens);
+        if (average_tokens <= 4) {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_tiny(dpas_params);
+        } else if (average_tokens <= 8) {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_small(dpas_params);
+        } else if (average_tokens <= 128) {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_mid(dpas_params);
+        } else {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_large(dpas_params);
+        }
+      } else if (average_tokens <= 4) {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_tiny(dpas_params);
+      } else if (average_tokens <= 8) {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_small(dpas_params);
+      } else if (average_tokens <= 128) {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_mid(dpas_params);
       } else {
-        moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<sycl::half, false>(
-            params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-            static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-            params.num_tokens_per_expert, params.num_experts, params.N, params.K, params.group_size,
-            params.total_tokens);
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_large(dpas_params);
       }
     } else if (is_e4m3) {
-      moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<BF, true>(
-          params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.num_tokens_per_expert,
-          params.num_experts, params.N, params.K, params.group_size, params.total_tokens);
+      if (average_tokens <= 4) {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_tiny(dpas_params);
+      } else if (average_tokens <= 8) {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_small(dpas_params);
+      } else if (average_tokens <= 128) {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_mid(dpas_params);
+      } else {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_large(dpas_params);
+      }
+    } else if (average_tokens <= 4) {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_tiny(dpas_params);
+    } else if (average_tokens <= 8) {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_small(dpas_params);
+    } else if (average_tokens <= 128) {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_mid(dpas_params);
     } else {
-      moe_dpas_fp8::moe_decode_fp8_dpas_per_group_dispatch<BF, false>(
-          params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.num_tokens_per_expert,
-          params.num_experts, params.N, params.K, params.group_size, params.total_tokens);
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_large(dpas_params);
     }
     return;
   }
