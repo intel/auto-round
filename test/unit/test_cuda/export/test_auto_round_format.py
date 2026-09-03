@@ -96,7 +96,7 @@ class TestAutoRound:
         )
         assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; Accuracy evaluation")
     @require_autogptq
     def test_mixed_precision(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -115,7 +115,7 @@ class TestAutoRound:
         eval_generated_prompt(quantized_model_path)
         evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
 
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; Accuracy evaluation")
     @require_gptqmodel
     def test_awq_backend(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -156,7 +156,7 @@ class TestAutoRound:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
 
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_bf16(self):
         model_name = get_model_path("OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc")

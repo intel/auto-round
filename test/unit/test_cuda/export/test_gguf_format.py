@@ -138,7 +138,7 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, format="gguf:q4_1")
 
-    @pytest.mark.skip_ci(reason="Time-consuming accuracy evaluation; covered by nightly")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming accuracy evaluation; covered by nightly")
     @require_gguf
     def test_q4_0_accuracy(self):
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
@@ -158,7 +158,7 @@ class TestAutoRound:
 
         evaluate_accuracy(model, autoround.tokenizer, threshold=0.54, batch_size=16, task="piqa")
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all options in CI")
     @require_gguf
     def test_q2_k_export(self, dataloader):
         bits, group_size, sym = 2, 16, False
@@ -185,7 +185,7 @@ class TestAutoRound:
         print(result)
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all options in CI")
     @require_gguf
     def test_all_format(self):
         for model_name in ["Qwen/Qwen3-8B", "meta-llama/Llama-3.2-3B"]:
@@ -201,7 +201,7 @@ class TestAutoRound:
 
                 shutil.rmtree(tiny_model_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test special models in CI")
+    @pytest.mark.skip_ci(reason="Architecture: Not necessary to test special models in CI")
     @require_gguf
     def test_special_model(self):
         from test.helpers import save_tiny_model
@@ -267,7 +267,7 @@ class TestAutoRound:
 
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all options in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all options in CI")
     def test_q2k_mixed(self):
         model_path = get_model_path("miromind-ai/MiroThinker-v1.5-30B")
         saved_tiny_model_path = save_tiny_model(
@@ -328,7 +328,7 @@ class TestAutoRound:
         assert ffn_down_type == "Q4_K", f"Expected Q4_K for blk.0.ffn_down.weight but got {ffn_down_type}"
         shutil.rmtree(tiny_model_path, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested for CI")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested for CI")
     def test_gguf_baseline(self):
         model_name = get_model_path("Qwen/Qwen2.5-1.5B-Instruct")
         autoround = AutoRound(

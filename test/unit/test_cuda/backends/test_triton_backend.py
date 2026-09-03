@@ -48,8 +48,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.19, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_4bits_asym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -80,8 +79,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.34, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_4bits_sym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -119,8 +117,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_8bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -149,8 +146,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_2bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)

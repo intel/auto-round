@@ -51,7 +51,7 @@ pytestmark = [
 # ========================= Qwen2.5-Omni Integration Tests ==================
 
 
-@pytest.mark.skip_ci(reason="Not necessary to test all cases in CI")
+@pytest.mark.skip_ci(reason="Matrix: Not necessary to test all cases in CI")
 class TestQwen2_5OmniQuantization:
     """End-to-end quantization test for Qwen2.5-Omni (dense model)."""
 
@@ -119,7 +119,7 @@ class TestQwen3OmniMoeQuantization:
             output = loaded_model.thinker(input_ids=inp)
         assert output is not None, "Inference failed on reloaded model (thinker)"
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all schemes in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all schemes in CI")
     def test_quantize_mxfp4(self, tiny_qwen3_omni_moe_model_path):
         """Quantize with MXFP4 scheme and verify."""
         autoround = AutoRound(

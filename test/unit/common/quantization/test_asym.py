@@ -133,7 +133,7 @@ class TestAutoRoundAsym:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
-    @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")
+    @pytest.mark.skip_ci(reason="Coverage: Not necessary since it's covered by backend tests")
     @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("bits", [2, 3, 8])
     def test_asym_bits_tuning(self, tiny_opt_model_path, bits, device):
@@ -145,7 +145,7 @@ class TestAutoRoundAsym:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
-    @pytest.mark.skip_ci(reason="Not necessary since it's covered by backend tests")
+    @pytest.mark.skip_ci(reason="Coverage: Not necessary since it's covered by backend tests")
     @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("format", _FORMATS)
     def test_asym_format_tuning(self, tiny_opt_model_path, format, device):

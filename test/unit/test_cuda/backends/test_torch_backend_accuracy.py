@@ -101,7 +101,7 @@ class TestTorchBackendAccuracy:
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Time-consuming; covered by the RTN accuracy check above")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; covered by the RTN accuracy check above")
     def test_torch_backend_accuracy_sym_tuning(self, dataloader):
         """Tuned (iters=1) 4-bit sym model meets the accuracy threshold."""
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)

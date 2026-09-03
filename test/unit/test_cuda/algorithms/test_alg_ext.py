@@ -109,7 +109,7 @@ class TestAlgExt:
         )
         ar.quantize()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
     @pytest.mark.skipif(reason="Time-consuming for accuracy evaluation")
     def test_2bits(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -123,7 +123,7 @@ class TestAlgExt:
         tokenizer = AutoTokenizer.from_pretrained(self.save_folder)
         evaluate_accuracy(model, tokenizer, threshold=0.22, batch_size=64)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test all case in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test all case in CI")
     def test_cli(self, tiny_opt_model_path):
         import os
 

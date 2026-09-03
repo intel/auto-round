@@ -37,15 +37,15 @@ function setup_environment() {
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/.coveragerc"
-    export AUTOROUND_REUSE_TINY_MODELS=1
 }
 
 function cleanup_test_workspace() {
-    if [ "${AUTOROUND_REUSE_TINY_MODELS:-}" = "1" ]; then
-        rm -rf "${BUILD_SOURCESDIRECTORY}/test/tmp"
-        rm -rf "${BUILD_SOURCESDIRECTORY}/test/ar_work_space"
-        rm -rf "${BUILD_SOURCESDIRECTORY}/test/tmp_autoround"
+    local tmp_root="${BUILD_SOURCESDIRECTORY}/test/tmp"
+    if [ -d "${tmp_root}" ]; then
+        find "${tmp_root}" -mindepth 1 -maxdepth 1 ! -name tiny_models -exec rm -rf {} +
     fi
+    rm -rf "${BUILD_SOURCESDIRECTORY}/test/ar_work_space"
+    rm -rf "${BUILD_SOURCESDIRECTORY}/test/tmp_autoround"
 }
 
 trap cleanup_test_workspace EXIT
