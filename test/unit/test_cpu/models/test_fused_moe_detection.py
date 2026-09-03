@@ -87,4 +87,3 @@ def test_detection_uses_real_transformers_configs():
 def test_families_with_a_dedicated_replacement_are_left_alone():
     """`ModelContext` excludes these; they drive their own memory-aware materialization."""
     assert set(BUILTIN_MODULES) == {"llama4", "deepseek_v2", "step3p5", "qwen3_omni_moe"}
-
