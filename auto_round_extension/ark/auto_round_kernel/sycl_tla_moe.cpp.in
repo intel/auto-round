@@ -155,6 +155,7 @@ void sycl_tla_moe_decode_fp(const MoeDecodeParams& params) {
 // shape gates. Instantiating the ladder here instead would pull four cutlass
 // grouped-GEMM policies x four group sizes into a single TU and push peak
 // compiler RSS into the tens of GiB.
+#include "sycl_tla_moe_decode_fp8_helpers.hpp"
 #include "sycl_tla_moe_prefill_fp8_helpers.hpp"
 
 namespace ark {
@@ -172,7 +173,6 @@ void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params) {
     throw std::invalid_argument("moe_gemm_decode(fp8): act_dtype must be FP16 or BF16");
   }
   const bool is_e4m3 = params.weight_dtype == BTLA_DTYPE::F8_E4M3;
-  using BF = sycl::ext::oneapi::bfloat16;
 
   // Fast path: FP8 through the decode-phase per-group DPAS grouped GEMM.
   // Falls back to the scalar GEMV when the env flag is off, when the batch is
@@ -247,33 +247,65 @@ void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params) {
     return;
   }
 
-  // Scalar GEMV fallback. `launch_fp8_by_mode` picks the byte-decode mode
-  // (`word` / `lut` / `bits`, `ARK_MOE_DECODE_FP8_MODE`) and the K-split vs
-  // legacy kernel structure; all variants are numerically equivalent.
+  // Scalar GEMV fallback. The kernels are not instantiated here: each
+  // (dtype, format, decode-mode) triple lives in its own generated
+  // `sycl_tla_moe_decode_fp8_*` translation unit, so this TU instantiates no
+  // SYCL kernels at all. Expanding them inline means 2 dtypes x 2 formats x 3
+  // modes x 4 kernels = 48 kernels in one TU, which measured ~14.4 GiB of peak
+  // compiler RSS. `fp8_decode_mode()` (`ARK_FP8_DECODE_MODE`) picks the
+  // byte-decode mode on the host exactly as `launch_fp8_by_mode` used to; the
+  // K-split vs legacy choice still happens inside the selected TU. All
+  // variants are numerically equivalent.
+  const moe_dequant::Fp8DecodeMode decode_mode = moe_dequant::fp8_decode_mode();
   if (params.act_dtype == BTLA_DTYPE::F16) {
     if (is_e4m3) {
-      moe_decode_detail::launch_fp8_by_mode<sycl::half, true>(
-          params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-          params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
-    } else {
-      moe_decode_detail::launch_fp8_by_mode<sycl::half, false>(
-          params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-          params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
+      switch (decode_mode) {
+        case moe_dequant::Fp8DecodeMode::kLut:
+          moe_decode_fp8_detail::dispatch_f16_e4m3_lut(params);
+          return;
+        case moe_dequant::Fp8DecodeMode::kBits:
+          moe_decode_fp8_detail::dispatch_f16_e4m3_bits(params);
+          return;
+        default:
+          moe_decode_fp8_detail::dispatch_f16_e4m3_word(params);
+          return;
+      }
     }
-    return;
+    switch (decode_mode) {
+      case moe_dequant::Fp8DecodeMode::kLut:
+        moe_decode_fp8_detail::dispatch_f16_e5m2_lut(params);
+        return;
+      case moe_dequant::Fp8DecodeMode::kBits:
+        moe_decode_fp8_detail::dispatch_f16_e5m2_bits(params);
+        return;
+      default:
+        moe_decode_fp8_detail::dispatch_f16_e5m2_word(params);
+        return;
+    }
   }
   if (is_e4m3) {
-    moe_decode_detail::launch_fp8_by_mode<BF, true>(
-        params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-        static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.expert_id_per_token,
-        params.total_tokens, params.N, params.K, params.group_size);
-  } else {
-    moe_decode_detail::launch_fp8_by_mode<BF, false>(
-        params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-        static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.expert_id_per_token,
-        params.total_tokens, params.N, params.K, params.group_size);
+    switch (decode_mode) {
+      case moe_dequant::Fp8DecodeMode::kLut:
+        moe_decode_fp8_detail::dispatch_bf16_e4m3_lut(params);
+        return;
+      case moe_dequant::Fp8DecodeMode::kBits:
+        moe_decode_fp8_detail::dispatch_bf16_e4m3_bits(params);
+        return;
+      default:
+        moe_decode_fp8_detail::dispatch_bf16_e4m3_word(params);
+        return;
+    }
+  }
+  switch (decode_mode) {
+    case moe_dequant::Fp8DecodeMode::kLut:
+      moe_decode_fp8_detail::dispatch_bf16_e5m2_lut(params);
+      return;
+    case moe_dequant::Fp8DecodeMode::kBits:
+      moe_decode_fp8_detail::dispatch_bf16_e5m2_bits(params);
+      return;
+    default:
+      moe_decode_fp8_detail::dispatch_bf16_e5m2_word(params);
+      return;
   }
 }
 
@@ -934,6 +966,36 @@ void sycl_tla_moe_decode_int4(const MoeDecodeParams& params) {
   }
 }
 
+}  // namespace ark
+
+#elif @MOE_SOURCE_MODE@ == 19
+
+#include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_decode.hpp"
+#include "sycl_tla_moe_decode_fp8_helpers.hpp"
+
+namespace ark {
+namespace moe_decode_fp8_detail {
+
+// One FP8 scalar-GEMV decode mode for one (dtype, format) pair. Instantiates
+// exactly four SYCL kernels -- the plain `MoEDecodeKernelFP8` plus the three
+// `MoEDecodeKernelFP8KSplit` column factors -- instead of the 48 that expanding
+// every dtype/format/mode combination inside `sycl_tla_moe_decode_fp8.cpp`
+// would produce. The body is `launch_fp8_by_mode` with `Mode` fixed at
+// configure time; the K-split decision is still made here, from the same
+// inputs, so behaviour is unchanged.
+void @MOE_FUNCTION_NAME@(const MoeDecodeParams& params) {
+  using ScalarT = @MOE_SCALAR_TYPE@;
+  const bool ksplit = moe_decode_detail::moe_decode_fp8_ksplit_enabled() &&
+                      moe_decode_detail::moe_decode_fp8_ksplit_shape_ok(params.N, params.K, params.group_size);
+  moe_decode_detail::launch_fp8_dispatch<ScalarT, @MOE_FORMAT_ARGUMENT@,
+                                         moe_dequant::Fp8DecodeMode::@MOE_FP8_DECODE_MODE@>(
+      params.q, static_cast<const ScalarT*>(params.activations), static_cast<const uint8_t*>(params.weights),
+      static_cast<const ScalarT*>(params.scales), static_cast<ScalarT*>(params.outputs), params.expert_id_per_token,
+      params.total_tokens, params.N, params.K, params.group_size, ksplit);
+}
+
+}  // namespace moe_decode_fp8_detail
 }  // namespace ark
 
 #endif

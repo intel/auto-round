@@ -284,6 +284,43 @@ foreach(_moe_dtype IN ITEMS f16 bf16)
   endforeach()
 endforeach()
 
+# FP8 scalar-GEMV decode kernels, one translation unit per
+# (dtype, format, byte-decode mode). `sycl_tla_moe_decode_fp8.cpp` used to
+# instantiate `launch_fp8_by_mode` for all four dtype/format pairs, and each of
+# those expands three decode modes x (one plain kernel + three K-split column
+# factors) -- 48 SYCL kernels in a single TU, measured at ~14.4 GiB peak
+# compiler RSS. Every other decode TU instantiates only four to eight kernels,
+# which is why this one file was the outlier. Splitting on the mode as well as
+# the dtype/format keeps each TU to exactly four kernels; the decode TU itself
+# is left with none.
+set(MOE_SOURCE_MODE 19)
+foreach(_moe_dtype IN ITEMS f16 bf16)
+  if(_moe_dtype STREQUAL "f16")
+    set(MOE_SCALAR_TYPE sycl::half)
+  else()
+    set(MOE_SCALAR_TYPE sycl::ext::oneapi::bfloat16)
+  endif()
+  foreach(_moe_format IN ITEMS e4m3 e5m2)
+    if(_moe_format STREQUAL "e4m3")
+      set(MOE_FORMAT_ARGUMENT true)
+    else()
+      set(MOE_FORMAT_ARGUMENT false)
+    endif()
+    foreach(_moe_fp8_mode IN ITEMS word lut bits)
+      if(_moe_fp8_mode STREQUAL "word")
+        set(MOE_FP8_DECODE_MODE kWord)
+      elseif(_moe_fp8_mode STREQUAL "lut")
+        set(MOE_FP8_DECODE_MODE kLut)
+      else()
+        set(MOE_FP8_DECODE_MODE kBits)
+      endif()
+      set(MOE_FUNCTION_NAME dispatch_${_moe_dtype}_${_moe_format}_${_moe_fp8_mode})
+      generate_sycl_tla_source(
+        sycl_tla_moe.cpp.in sycl_tla_moe_decode_fp8_${_moe_dtype}_${_moe_format}_${_moe_fp8_mode}.cpp)
+    endforeach()
+  endforeach()
+endforeach()
+
 set(MOE_SOURCE_MODE 9)
 foreach(_moe_dtype IN ITEMS f16 bf16)
   if(_moe_dtype STREQUAL "f16")
