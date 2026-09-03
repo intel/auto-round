@@ -70,30 +70,6 @@ function run_pytest() {
     echo "##[endgroup]"
 }
 
-# A retry is any job attempt after the first; failed_tests.list is downloaded
-# from the previous attempt before this script runs (clean environment).
-function is_retry() {
-    [ "${SYSTEM_JOBATTEMPT:-1}" -gt 1 ] && [ -s "${LOG_DIR}/failed_tests.list" ]
-}
-
-function retry_selection() {
-    is_retry && sort -u "${LOG_DIR}/failed_tests.list"
-}
-
-function run_if_retry() {
-    if is_retry; then
-        # Seed coverage from the previous attempt so --cov-append accumulates.
-        if [ -f "${LOG_DIR}/.coverage" ]; then
-            cp "${LOG_DIR}/.coverage" ./.coverage
-        fi
-        for test_file in $(retry_selection); do
-            local test_basename=$(basename "${test_file}" .py)
-            run_pytest "${test_file}" "${LOG_DIR}/unittest_${test_basename}.log"
-        done
-        return 0
-    fi
-}
-
 function run_common_group() {
     # Run a group of common test files together in a single pytest invocation.
     # $1: group name (used for log file), remaining args: test files
