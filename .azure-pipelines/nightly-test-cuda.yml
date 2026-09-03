@@ -146,6 +146,8 @@ stages:
                 --test_case=nightly \
                 --test_part=0
             displayName: "Run GPU Nightly Tests"
+            env:
+              GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
 
           - task: PublishPipelineArtifact@1
             condition: succeeded()

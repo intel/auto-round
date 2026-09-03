@@ -145,6 +145,8 @@ stages:
                     --test_case=ci \
                     --test_part=${{ pair.value.PART }}
                 displayName: "Run GPU Tests"
+                env:
+                  GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
 
               - task: PublishPipelineArtifact@1
                 condition: succeeded()

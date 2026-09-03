@@ -29,6 +29,11 @@ function create_conda_env() {
 
     # install AutoRound
     cd ${REPO_PATH}
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf"
+        export GIT_CONFIG_VALUE_0="https://github.com/"
+    fi
     if [ -d "/proc/driver/nvidia" ]; then
         export PATH=/usr/local/cuda/bin${PATH:+:${PATH}}
         export LD_LIBRARY_PATH=$(python -c "import site; print(site.getsitepackages()[0])")/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
@@ -96,7 +101,7 @@ function run_unit_test() {
 
     uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
-    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r unit/test_cuda/requirements.txt
     uv pip install -r unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
