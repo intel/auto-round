@@ -502,7 +502,7 @@ auto_round \
 #### API Usage
 ~~~
 avg_bits= 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64��, "W4A16","W8A16"))
+scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64", "W4A16", "W8A16"))
 ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
