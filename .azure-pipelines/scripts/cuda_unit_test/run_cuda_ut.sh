@@ -26,6 +26,8 @@ source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/detect_changed_test
 
 LOG_DIR="${BUILD_SOURCESDIRECTORY}/log_dir"
 mkdir -p "${LOG_DIR}"
+
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/retry_failed_tests.sh
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 # print_summary reads this file unconditionally; a matrix part that selects no
 # test never writes it, so make sure it always exists.
@@ -80,6 +82,8 @@ function run_pytest() {
     local ut_log_name=$2
 
     echo "##[group]Running ${test_case}..."
+    # Record the test targets so a retry can rerun exactly these cases.
+    printf '%s\n' ${test_case} > "${ut_log_name%.log}.list"
     pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
         --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
     echo "##[endgroup]"
@@ -100,6 +104,8 @@ function run_common_group() {
 }
 
 function run_common_unit_test() {
+    run_if_retry && return 0
+
     # common test case for cpu/gpu/xpu
     # Group cases by the first-level folder under unit/common; a single test
     # file placed directly under unit/common (e.g. test_main.py) runs on its own.
@@ -116,6 +122,8 @@ function run_common_unit_test() {
 
 
 function run_unit_test() {
+    run_if_retry && return 0
+
     # run ci cuda ut scope 
     find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
@@ -221,11 +229,17 @@ function run_unit_test_vllm() {
 
 function collect_log() {
     touch "${SUMMARY_LOG}"
+    # collect_result.py also stages only the failed logs so a retry can rerun them.
     python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py \
-        --test-type "Unit Tests" --log-pattern "unittest_cuda_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+        --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} \
+        --summary-log ${SUMMARY_LOG} --failed-logs-dir "${LOG_DIR}/failed_logs"
 
     if [ -f .coverage ]; then
         cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+        # Keep .coverage in the failure artifact so a retry can accumulate onto it.
+        if [ -d "${LOG_DIR}/failed_logs" ]; then
+            cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        fi
     fi
 }
 
