@@ -30,7 +30,11 @@ _CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
 
 # (bits, group_size) combinations exercised by the quant-param sweep below.
-_QUANT_PARAMS = [(4, 32), (4, 64), (4, 128), (2, 128), (8, 128)]
+# 8-bit asym is absent on purpose: this suite exports to native int8-packed
+# formats, which refuse 8-bit asym at construction (vLLM serves W8 asym only
+# via compressed-tensors on the llm_compressor format); see
+# test_w8_asym_refused_at_construction and test_w8_asym_llm_compressor_format_allowed.
+_QUANT_PARAMS = [(4, 32), (4, 64), (4, 128), (2, 128)]
 
 _FORMATS = [
     "auto_round",
@@ -114,6 +118,120 @@ class TestAutoRoundAsym:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
 
+    def test_w8_asym_refused_at_construction(self, tiny_opt_model_path):
+        """8-bit asym raises at AutoRound construction for the default native
+        export format, for both iters=0 and iters=1 (the llm_compressor format
+        keeps it; see test_w8_asym_llm_compressor_format_allowed)."""
+        for iters in (0, 1):
+            with pytest.raises(ValueError, match="8-bit asymmetric"):
+                AutoRound(
+                    tiny_opt_model_path,
+                    bits=8,
+                    group_size=128,
+                    sym=False,
+                    iters=iters,
+                    seqlen=2,
+                    nsamples=1,
+                )
+
+    def test_w8_asym_llm_compressor_format_allowed(self, tiny_opt_model_path):
+        """8-bit asym is servable via compressed-tensors, so the llm_compressor
+        format must accept it end-to-end (native formats still refuse)."""
+        ar = AutoRound(
+            tiny_opt_model_path,
+            bits=8,
+            group_size=128,
+            sym=False,
+            iters=0,
+            disable_opt_rtn=True,
+            format="auto_round:llm_compressor",
+            seqlen=2,
+            nsamples=1,
+        )
+        _, out = ar.quantize_and_save(format="auto_round:llm_compressor", output_dir=self.save_dir)
+        assert out
+
+    def test_w8_asym_env_overrides_native_refusal(self, tiny_opt_model_path, monkeypatch):
+        """AR_ALLOW_W8_ASYM=1 skips the native-format refusal; the user opts
+        into artifacts that stock vLLM GPTQ serving may reject."""
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+        ar = AutoRound(
+            tiny_opt_model_path,
+            bits=8,
+            group_size=128,
+            sym=False,
+            iters=0,
+            disable_opt_rtn=True,
+            seqlen=2,
+            nsamples=1,
+        )
+        assert type(ar).__name__ == "ModelFreeCompressor"
+
+    def test_w8_asym_scheme_object_spellings_regular_flow(self, tiny_opt_model_path, monkeypatch):
+        """A QuantizationScheme OBJECT with sym=False must take the same
+        format/env policy as the kwargs spelling on the regular flow."""
+        from auto_round.schemes import QuantizationScheme
+
+        obj = QuantizationScheme(bits=8, sym=False, data_type="int", group_size=128, act_bits=16)
+        monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+        ar = AutoRound(
+            tiny_opt_model_path,
+            scheme=obj,
+            iters=0,
+            disable_opt_rtn=True,
+            disable_model_free=True,
+            amp=False,
+            seqlen=2,
+            nsamples=1,
+        )
+        assert type(ar).__name__ == "CompressionOrchestrator"
+        monkeypatch.delenv("AR_ALLOW_W8_ASYM")
+        ar2 = AutoRound(
+            tiny_opt_model_path,
+            scheme=obj,
+            iters=0,
+            disable_opt_rtn=True,
+            disable_model_free=True,
+            format="auto_round:llm_compressor",
+            amp=False,
+            seqlen=2,
+            nsamples=1,
+        )
+        assert type(ar2).__name__ == "CompressionOrchestrator"  # llmc needs no env
+
+    def test_w8_asym_llm_compressor_recheck_at_save(self, tiny_opt_model_path, tmp_path):
+        """A W8-asym scheme that slipped past construction without format
+        knowledge (direct ModelFreeCompressor use) re-raises at save time for
+        non-servable formats; llm_compressor passes the re-check."""
+        from auto_round.compressors.model_free import ModelFreeCompressor
+        from auto_round.schemes import QuantizationScheme
+
+        obj = QuantizationScheme(bits=8, sym=False, data_type="int", group_size=128, act_bits=16)
+        mf = ModelFreeCompressor(tiny_opt_model_path, scheme=obj, output_dir=str(tmp_path / "mf_w8_save"))
+        with pytest.raises(ValueError, match="8-bit asymmetric"):
+            mf.quantize_and_save(format="auto_round")
+        # the llmc spelling passes the same re-check
+        mf2 = ModelFreeCompressor(
+            tiny_opt_model_path, scheme=obj, format="llm_compressor", output_dir=str(tmp_path / "mf_w8_save2")
+        )
+        assert mf2.format == "llm_compressor"
+
+    def test_w8_asym_env_survives_model_free_fallback(self, tiny_opt_model_path, tmp_path):
+        """The W8-asym opt-in is a process-wide environment variable, so the
+        model-free fallback (which re-constructs AutoRound internally) reads
+        the same opt-in without any kwarg forwarding."""
+        from auto_round.compressors.model_free import ModelFreeCompressor
+
+        mf = ModelFreeCompressor(
+            tiny_opt_model_path,
+            scheme="W8A16",
+            sym=False,
+            bits=8,
+            group_size=128,
+            output_dir=str(tmp_path / "mf_w8"),
+        )
+        assert "allow_w8_asym" not in mf._fallback_init_kwargs
+
     # ------------------------------------------------------------------
     # Tuning path (iters=1): exercises the real sign-gradient tuning loop.
     # This is genuinely slow (real gradient tuning), so it's cheaper in wall-clock
@@ -144,7 +262,7 @@ class TestAutoRoundAsym:
 
     @pytest.mark.skip_ci(reason="Coverage: Not necessary since it's covered by backend tests")
     @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
-    @pytest.mark.parametrize("bits", [2, 3, 8])
+    @pytest.mark.parametrize("bits", [2, 3])
     def test_asym_bits_tuning(self, tiny_opt_model_path, bits, device):
         """Tuned (iters=1) asym quantization works across bit-widths."""
         ar = AutoRound(tiny_opt_model_path, bits=bits, group_size=128, sym=False, iters=1, seqlen=2, nsamples=1)

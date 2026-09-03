@@ -5,7 +5,7 @@ Tests cover:
   - normalize_rotation_config dispatcher (string, dict, object)
   - BaseRotation registry integration
   - Hook lifecycle (registration, tagging, selective removal)
-  - Pipeline integration via AutoRound(rotation_config=...)
+  - Pipeline integration via AutoRound(alg_configs=[..., "quarot"/SpinQuantConfig(...)])
   - Rotation correctness: R1, R1+R2, R1+R2+R3+R4 produce valid logits
 """
 
@@ -299,7 +299,7 @@ class TestRotationCorrectness:
 
 
 class TestPipelineIntegration:
-    """Test AutoRound(rotation_config=...) pipeline integration."""
+    """Test AutoRound(alg_configs=[..., rotation config]) pipeline integration."""
 
     save_dir = "./saved_spinquant"
 
@@ -310,14 +310,14 @@ class TestPipelineIntegration:
 
     @pytest.mark.timeout(180)
     def test_pipeline_quarot_string(self):
-        """AutoRound(rotation_config='quarot') should work end-to-end."""
+        """AutoRound(alg_configs=["rtn", "quarot"]) should work end-to-end."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
         ar = AutoRound(
             model=model_name,
             iters=0,
             seqlen=2,
             scheme="W4A16",
-            rotation_config="quarot",
+            alg_configs=["rtn", "quarot"],
         )
         compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -327,7 +327,7 @@ class TestPipelineIntegration:
 
     @pytest.mark.timeout(90)
     def test_pipeline_spinquant_config(self):
-        """AutoRound(rotation_config=SpinQuantConfig(...)) should work."""
+        """AutoRound(alg_configs=["rtn", SpinQuantConfig(...)]) should work."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
         cfg = SpinQuantConfig(
             r1=True,
@@ -343,7 +343,7 @@ class TestPipelineIntegration:
             iters=0,
             seqlen=2,
             scheme="W4A16",
-            rotation_config=cfg,
+            alg_configs=["rtn", cfg],
         )
         compressed_model, quantized_model_path = ar.quantize_and_save(
             output_dir=self.save_dir + "_cfg", format="auto_round"
@@ -351,27 +351,27 @@ class TestPipelineIntegration:
         shutil.rmtree(self.save_dir + "_cfg", ignore_errors=True)
 
     @pytest.mark.skip_ci(
-        reason="Matrix: Dict normalization and SpinQuant config serialization have dedicated unit coverage; "
-        "the full pipeline is equivalent to the SpinQuantConfig-object pipeline"
+        reason="Matrix: The SpinQuantConfig-object pipeline is already covered by test_pipeline_spinquant_config"
     )
     @pytest.mark.timeout(90)
-    def test_pipeline_dict_config(self):
-        """Keep dict-form pipeline coverage outside PR CI."""
+    def test_pipeline_config_object(self):
+        """Building a SpinQuantConfig directly (instead of the dict shorthand) and passing
+        it via ``alg_configs`` should work."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
+        cfg = SpinQuantConfig(
+            r1=True,
+            r2=True,
+            r3=False,
+            r4=False,
+            trainable_rotation=False,
+            trainable_smooth=False,
+        )
         ar = AutoRound(
             model=model_name,
             iters=0,
             seqlen=2,
             scheme="W4A16",
-            rotation_config={
-                "algorithm": "spinquant",
-                "r1": True,
-                "r2": True,
-                "r3": False,
-                "r4": False,
-                "trainable_rotation": False,
-                "trainable_smooth": False,
-            },
+            alg_configs=["rtn", cfg],
         )
         compressed_model, quantized_model_path = ar.quantize_and_save(
             output_dir=self.save_dir + "_dict", format="auto_round"
