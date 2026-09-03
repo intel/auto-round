@@ -1210,6 +1210,9 @@ def get_score_for_scheme(
     """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
     forward(+backward, unless RTN-only) calibration over ``nsamples`` examples from
     ``dataset``/``dataloader``, then unwrap and return each layer's ``[bits, loss]``.
+
+    The caller has already applied one scheme to every layer, so each layer reports the
+    loss of that single scheme. Returns ``{name: [bits, loss]}``.
     """
     scores_dict = {}  # Key=name,Val=[quant_total_bits, loss]
     # Include the visual block(s) when scoring VLMs with ``--quant_nontext_module``
@@ -1575,6 +1578,7 @@ def get_score_for_scheme(
                     )
             layer_bits, _ = compute_layer_bits(m.orig_layer, ignore_scale_zp_bits=ignore_scale_zp_bits)
             scores_dict[n] = [layer_bits, m.mix_score]
+
     _fill_inactive_expert_scores(scores_dict, block_names)
     _log_score_summary_by_block_and_nonblock(
         scores_dict,
@@ -3490,9 +3494,31 @@ def _gen_layer_config(
     )
 
     dp_started = time.perf_counter()
-    best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+
+    # ------------------------------------------------------------------ #
+    # Bit allocation. Both solvers optimise the same objective over the same score
+    # table; they differ only in how the knapsack is solved. The DP is the historical
+    # default; the Lagrangian dual reaches the same allocation far faster because it
+    # needs no discretised state space.
+    # ------------------------------------------------------------------ #
+    if auto_scheme.solver == "lagrangian":
+        from auto_round.auto_scheme.solver import solve_lagrangian
+
+        assign = solve_lagrangian(total_scores, target_params_cnt)
+        if assign is None:
+            # Infeasible under the dual -- fall back to the DP so a solver problem can
+            # never make AutoScheme worse than before.
+            logger.warning("AutoScheme: Lagrangian solver found no feasible allocation; falling back to DP.")
+            best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+        else:
+            best_path = [(opt[3], opt[0]) for opt in assign.values()]
+            best_loss = sum(opt[2] for opt in assign.values())
+    else:
+        best_loss, best_path = choose_bits_per_layer_with_path(total_scores, target_params_cnt)
+
     logger.info(
-        "AutoScheme post-scoring: DP selection took %.2fs (layers=%d)",
+        "AutoScheme post-scoring: %s selection took %.2fs (layers=%d)",
+        auto_scheme.solver,
         time.perf_counter() - dp_started,
         len(total_scores),
     )
@@ -3618,7 +3644,7 @@ def gen_layer_config(
     """Public AutoScheme entry.
 
     This wrapper performs model loading/dispatch and environment preparation,
-    then delegates to `_gen_layer_config` for staged scoring + DP selection.
+    then delegates to `_gen_layer_config` for scoring + solver-based selection.
     """
     model_name = None
     is_vlm = False

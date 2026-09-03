@@ -390,6 +390,7 @@ def tune(args):
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
+            solver=getattr(args, "auto_scheme_solver", "dp"),
         )
 
     common_kwargs = _extract_common_quantization_kwargs(args)
