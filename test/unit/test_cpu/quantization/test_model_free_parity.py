@@ -90,9 +90,9 @@ _PLAIN_RTN_PARITY_SCHEMES = [
 
 _PLAIN_RTN_CONTRACT_SCHEMES = [
     # Asymmetric plain RTN keeps export-contract parity across the two paths,
-    # but the packed tensors are not bit-exact.
+    # but the packed tensors are not bit-exact. 8-bit asym is excluded: it is
+    # refused at construction on both routes (see the refusal test below).
     ("W2A16_ASYM", "W2A16", {"bits": 2, "group_size": 128, "sym": False}),
-    ("W8A16_ASYM", "W8A16", {"bits": 8, "group_size": 128, "sym": False}),
 ]
 
 # Note: W4A16 asym is excluded because the regular path uses
@@ -359,6 +359,31 @@ def test_plain_rtn_asymmetric_export_contract_parity(
     _, out_regular = regular.quantize_and_save(format=export_format, output_dir=out_regular)
 
     _assert_int_export_contract_parity(out_model_free, out_regular)
+
+
+def test_w8_asymmetric_refused_on_both_routes(tiny_opt_model_path):
+    """8-bit asym is refused at construction on both the model-free and the
+    regular route: both default to native int8-packed export formats, which
+    cannot represent the 8-bit zero point (vLLM serves W8 asym only via
+    compressed-tensors; see AR_ALLOW_W8_ASYM).
+    """
+    from auto_round import AutoRound
+
+    device = _device_str()
+    common = dict(
+        scheme="W8A16",
+        bits=8,
+        group_size=128,
+        sym=False,
+        iters=0,
+        disable_opt_rtn=True,
+        device_map=device,
+        enable_torch_compile=False,
+    )
+    with pytest.raises(ValueError, match="8-bit asymmetric"):
+        AutoRound(tiny_opt_model_path, model_free=True, **common)
+    with pytest.raises(ValueError, match="8-bit asymmetric"):
+        AutoRound(tiny_opt_model_path, disable_model_free=True, amp=False, **common)
 
 
 @pytest.mark.parametrize("scheme_name,scheme_preset,scheme_kwargs", _OPT_RTN_PARITY_SCHEMES)

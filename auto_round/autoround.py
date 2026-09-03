@@ -42,7 +42,7 @@ def _collect_config_scheme_overrides(config) -> dict:
     return {k: getattr(config, k) for k in config._scheme_fields if getattr(config, k, None) is not None}
 
 
-def _preview_resolved_attrs(config, scheme=None) -> dict:
+def _preview_resolved_attrs(config, scheme=None, format=None) -> dict:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     """Resolve scheme attributes without mutating config, for routing decisions.
@@ -57,7 +57,9 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
     callers read from the returned dict and never re-read raw ``config`` attrs.
     When the scheme cannot be previewed (``AutoScheme``, or a deferred parse
     error), the config's own explicitly-set scheme overrides are returned so the
-    values still reflect what the user passed.
+    values still reflect what the user passed. ``format`` must match the
+    authoritative parse so format-scoped policies (e.g. the 8-bit asym rule)
+    resolve identically here and never turn a refusal into fabricated defaults.
 
     Returns:
         dict: resolved scheme attributes (config overrides when preview is skipped).
@@ -67,13 +69,18 @@ def _preview_resolved_attrs(config, scheme=None) -> dict:
         # AutoScheme needs model info — cannot preview; fall back to raw config attrs.
         return config_overrides
     try:
-        _, _, final_attrs = parse_scheme(scheme, config_overrides)
+        _, _, final_attrs = parse_scheme(scheme, config_overrides, format=format)
         return final_attrs
-    except Exception:
+    except Exception as e:
+        logger.warning_once(
+            "Scheme preview failed (%s: %s); routing falls back to the config's explicit overrides.",
+            type(e).__name__,
+            e,
+        )
         return config_overrides
 
 
-def _eager_validate_scheme(config, scheme=None) -> None:
+def _eager_validate_scheme(config, scheme=None, format=None) -> None:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     """Eagerly validate scheme/config constraints at construction time.
@@ -91,7 +98,7 @@ def _eager_validate_scheme(config, scheme=None) -> None:
 
     user_overrides = _collect_config_scheme_overrides(config)
     try:
-        _, _, final_attrs = parse_scheme(scheme, user_overrides)
+        _, _, final_attrs = parse_scheme(scheme, user_overrides, format=format)
     except (ValueError, NotImplementedError):
         raise
     except Exception:
@@ -264,7 +271,7 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
     # resolution later; this preview only chooses the class). Computed once: neither
     # `quant_config`'s scheme fields nor `scheme` itself change within this function,
     # so the result is invariant across every use below — no need to recompute it.
-    resolved_attrs = _preview_resolved_attrs(quant_config, scheme)
+    resolved_attrs = _preview_resolved_attrs(quant_config, scheme, format=format)
 
     # Auto-disable rtn optimization for W8A16/W8A8-equivalent resolved schemes,
     # unless the user already set disable_opt_rtn explicitly.
@@ -705,8 +712,17 @@ class _CompressorBuilder(object):
         route_scheme = (
             scheme
             if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
-            else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme))
+            else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme, format=format))
         )
+        # Eagerly validate scheme constraints that do not require model info.
+        # This mirrors old-arch _check_configs() called at __init__ time so that
+        # callers get ValueError/NotImplementedError on construction, not deferred.
+        # Runs before the model-free early return so both routes enforce the
+        # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
+        _eager_validate_scheme(quant_config, scheme, format=format)
+        # NOTE: the W8-asym opt-in is the AR_ALLOW_W8_ASYM environment
+        # variable, read directly by parse_scheme and the generation-time
+        # gates; nothing is threaded through the compressor here.
         if is_model_free_route(
             model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs
         ):
@@ -727,17 +743,13 @@ class _CompressorBuilder(object):
                 seed=seed,
                 enable_torch_compile=enable_torch_compile,
                 disable_opt_rtn=model_free_disable_opt_rtn,
+                format=format,
                 **compressor_kwargs,
                 **base_kwargs,
                 **mllm_kwargs,
                 **diffusion_kwargs,
                 **route_kwargs,
             )
-
-        # Eagerly validate scheme constraints that do not require model info.
-        # This mirrors old-arch _check_configs() called at __init__ time so that
-        # callers get ValueError/NotImplementedError on construction, not deferred.
-        _eager_validate_scheme(quant_config, scheme)
 
         local_args = dict(
             model=model,
