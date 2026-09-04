@@ -47,6 +47,27 @@ def _mark_tiny_model(path):
         marker.write("ready\n")
 
 
+def _release_tiny_model_source_cache(model_name_or_path):
+    """Release the full source checkpoint after its tiny fixture is saved."""
+    if os.environ.get("AUTOROUND_REUSE_TINY_MODELS") != "1" or os.path.isdir(model_name_or_path):
+        return
+
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        cache_info = scan_cache_dir()
+        revisions = [
+            revision.commit_hash
+            for repo in cache_info.repos
+            if repo.repo_type == "model" and repo.repo_id == model_name_or_path
+            for revision in repo.revisions
+        ]
+        if revisions:
+            cache_info.delete_revisions(*revisions).execute()
+    except Exception:  # pragma: no cover - cache cleanup must not hide a test result
+        pass
+
+
 def save_tiny_model(*args, **kwargs):
     requested_path = args[1] if len(args) > 1 else kwargs["tiny_model_path"]
     tiny_model_path = tiny_model_dir(requested_path)
@@ -59,8 +80,10 @@ def save_tiny_model(*args, **kwargs):
     else:
         kwargs = dict(kwargs)
         kwargs["tiny_model_path"] = tiny_model_path
+    model_name_or_path = args[0] if args else kwargs["model_name_or_path"]
     result = _save_tiny_model(*args, **kwargs)
     _mark_tiny_model(result)
+    _release_tiny_model_source_cache(model_name_or_path)
     return result
 
 
