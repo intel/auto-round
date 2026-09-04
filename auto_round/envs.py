@@ -173,6 +173,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Results are identical either way -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
     "AR_MOE_QDQ_CHUNK": lambda: os.getenv("AR_MOE_QDQ_CHUNK", "16").lower(),
+    # Experts per native grouped_mm call for the "linear_grouped" + AR_MOE_GROUPED_MM=1
+    # path (memory tiling). When the qdq was chunked there is no free stacked weight view,
+    # so feeding the native kernel *all* active experts builds one big ``torch.stack``
+    # ``(E, out, in)`` copy on top of the per-expert dequant weights -- the native path's
+    # main peak-memory cost. Tiling the kernel over experts bounds that copy to this many
+    # experts at a time (forward peak roughly cut by one full stack), at the cost of more,
+    # smaller grouped_mm launches. Numerically identical; only kicks in when the qdq did not
+    # produce a free stacked view.
+    #   "-1"/"off" - (default) one grouped_mm over all active experts (no tiling).
+    #   "auto"     - derive the tile size from a working-set budget and the weight shape.
+    #   <int>      - fixed experts per grouped_mm call (>0 enables tiling; <=0 disables it).
+    # NOTE: bounds the forward stack copy only; backward still saves per-expert dequant
+    # weights. Full fwd+bwd bounding would additionally checkpoint the qdq.
+    "AR_MOE_GROUPED_MM_CHUNK": lambda: os.getenv("AR_MOE_GROUPED_MM_CHUNK", "-1").lower(),
     # vLLM fused kernels require q/k/v and gate/up projections to use one
     # weight global scale. Disable only for runtimes without that requirement.
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()

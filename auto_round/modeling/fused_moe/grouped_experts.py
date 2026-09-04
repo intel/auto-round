@@ -925,6 +925,70 @@ def _stack_weights(slot: _SlotWeights) -> torch.Tensor:
     return torch.stack(slot.weights, dim=0)
 
 
+def _stack_weights_range(slot: _SlotWeights, start: int, stop: int) -> torch.Tensor:
+    """``(E', out, in)`` operand for a slice of experts, as a view when the qdq was fused."""
+    if slot.stacked is not None:
+        return slot.stacked[start:stop]
+    return torch.stack(slot.weights[start:stop], dim=0)
+
+
+def _add_grouped_bias(out: torch.Tensor, slot: _SlotWeights, counts: list[int]) -> torch.Tensor:
+    """Add per-expert bias to a grouped output whose rows are in sorted-expert order."""
+    if slot.biases[0] is None:
+        return out
+    device = out.device
+    row_expert = torch.repeat_interleave(
+        torch.arange(len(counts), device=device),
+        torch.tensor(counts, device=device),
+    )
+    return out + torch.stack(slot.biases, dim=0)[row_expert]
+
+
+def _gemm_expert_chunk(num_experts: int, weight: torch.Tensor) -> int:
+    """Experts per native grouped_mm call. ``num_experts`` (the full count) disables tiling.
+
+    Reads ``AR_MOE_GROUPED_MM_CHUNK`` (default ``-1`` = off). ``-1``/``off``/any ``<=0`` or
+    non-numeric value disables tiling; ``auto`` or a positive int enables it. Tiling bounds
+    the ``torch.stack`` ``(E, out, in)`` operand the native kernel needs to ``chunk`` experts.
+    """
+    setting = envs.AR_MOE_GROUPED_MM_CHUNK
+    if setting == "auto":
+        per_expert = int(weight.shape[0]) * int(weight.shape[1]) * weight.element_size()
+        if per_expert <= 0:
+            return num_experts
+        return max(_DEFAULT_QDQ_CHUNK, min(num_experts, int(_QDQ_FUSED_WORKINGSET_BYTES // per_expert)))
+    try:
+        chunk = int(setting)
+    except ValueError:
+        # "off"/"" and any other non-numeric value: no tiling.
+        return num_experts
+    return num_experts if chunk <= 0 else min(chunk, num_experts)
+
+
+def _grouped_mm_tiled(x: torch.Tensor, slot: _SlotWeights, counts: list[int], chunk: int) -> torch.Tensor | None:
+    """Native grouped_mm tiled over experts, bounding the stacked weight to ``chunk`` experts.
+
+    ``x`` is sorted so each expert owns a contiguous row slice; a tile of ``chunk`` experts
+    owns the concatenation of their slices. Returns ``None`` (fall back to the sliced loop)
+    if any tile is not eligible for the native kernel. Bias is added by the caller.
+    """
+    num_experts = len(slot.weights)
+    outputs = []
+    row = 0
+    for start in range(0, num_experts, chunk):
+        stop = min(start + chunk, num_experts)
+        tile_counts = counts[start:stop]
+        rows = sum(tile_counts)
+        x_tile = x[row : row + rows]
+        row += rows
+        weight = _stack_weights_range(slot, start, stop).transpose(-2, -1)  # (E', in, out)
+        sub_offsets = torch.tensor(tile_counts, device=x.device, dtype=torch.int32).cumsum(0).to(torch.int32)
+        if not _native_grouped_mm_usable(x_tile, weight, sub_offsets):
+            return None
+        outputs.append(_native_grouped_mm(x_tile, weight, sub_offsets))
+    return torch.cat(outputs, dim=0)
+
+
 def _grouped_linear(
     x: torch.Tensor,
     slot: _SlotWeights,
@@ -939,17 +1003,20 @@ def _grouped_linear(
         return F.linear(x, slot.weights[0], slot.biases[0])  # pylint: disable=not-callable
 
     if _native_grouped_mm_available():
+        num_experts = len(slot.weights)
+        # Tile only when the qdq did not hand us a free stacked view: that is exactly the
+        # case where feeding all experts costs a full torch.stack copy.
+        chunk = num_experts if slot.stacked is not None else _gemm_expert_chunk(num_experts, slot.weights[0])
         try:
-            weight = _stack_weights(slot).transpose(-2, -1)  # (E, in, out)
-            if _native_grouped_mm_usable(x, weight, offsets):
-                out = _native_grouped_mm(x, weight, offsets)
-                if slot.biases[0] is not None:
-                    row_expert = torch.repeat_interleave(
-                        torch.arange(len(counts), device=x.device),
-                        torch.tensor(counts, device=x.device),
-                    )
-                    out = out + torch.stack(slot.biases, dim=0)[row_expert]
-                return out
+            if chunk >= num_experts:
+                weight = _stack_weights(slot).transpose(-2, -1)  # (E, in, out)
+                if _native_grouped_mm_usable(x, weight, offsets):
+                    out = _native_grouped_mm(x, weight, offsets)
+                    return _add_grouped_bias(out, slot, counts)
+            else:
+                out = _grouped_mm_tiled(x, slot, counts, chunk)
+                if out is not None:
+                    return _add_grouped_bias(out, slot, counts)
         except Exception as err:  # pragma: no cover - kernel/shape constraints vary
             _NATIVE_GROUPED_MM_DISABLED = True
             logger.warning_once(
