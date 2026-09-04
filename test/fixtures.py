@@ -31,6 +31,7 @@ from .helpers import (
 
 _save_tiny_model = save_tiny_model
 TINY_MODEL_ROOT = os.path.join(os.path.dirname(__file__), "tmp", "tiny_models")
+_source_model_ids = set()
 
 
 def tiny_model_dir(name):
@@ -47,9 +48,9 @@ def _mark_tiny_model(path):
         marker.write("ready\n")
 
 
-def _release_tiny_model_source_cache(model_name_or_path):
-    """Release the full source checkpoint after its tiny fixture is saved."""
-    if os.environ.get("AUTOROUND_REUSE_TINY_MODELS") != "1" or os.path.isdir(model_name_or_path):
+def _release_source_model_cache():
+    """Release source checkpoints after the pytest session has finished."""
+    if os.environ.get("AUTOROUND_REUSE_TINY_MODELS") != "1" or not _source_model_ids:
         return
 
     try:
@@ -59,7 +60,7 @@ def _release_tiny_model_source_cache(model_name_or_path):
         revisions = [
             revision.commit_hash
             for repo in cache_info.repos
-            if repo.repo_type == "model" and repo.repo_id == model_name_or_path
+            if repo.repo_type == "model" and repo.repo_id in _source_model_ids
             for revision in repo.revisions
         ]
         if revisions:
@@ -83,7 +84,8 @@ def save_tiny_model(*args, **kwargs):
     model_name_or_path = args[0] if args else kwargs["model_name_or_path"]
     result = _save_tiny_model(*args, **kwargs)
     _mark_tiny_model(result)
-    _release_tiny_model_source_cache(model_name_or_path)
+    if os.environ.get("AUTOROUND_REUSE_TINY_MODELS") == "1" and not os.path.isdir(model_name_or_path):
+        _source_model_ids.add(model_name_or_path)
     return result
 
 
@@ -524,6 +526,7 @@ def mock_fp8_capable_device():
 @pytest.fixture(autouse=True, scope="session")
 def clean_tmp_model_folder():
     yield
+    _release_source_model_cache()
     tmp_root = os.path.join(os.path.dirname(__file__), "tmp")
     tiny_model_cache = os.path.abspath(TINY_MODEL_ROOT)
     for entry in os.scandir(tmp_root) if os.path.isdir(tmp_root) else []:
