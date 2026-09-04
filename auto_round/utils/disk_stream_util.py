@@ -238,6 +238,54 @@ def _expert_projection_renames_for(model_type):
     return tuple(renames.items())
 
 
+@lru_cache(maxsize=None)
+def _concat_converters_for(model_type):
+    """Model-side params assembled by concatenating several checkpoint tensors.
+
+    Some families describe a single model-side parameter as the concatenation of
+    several separately-stored checkpoint tensors, via a ``WeightConverter`` whose
+    ``operations`` contain a ``Concatenate`` (and *no* ``MergeModulelist`` -- that is the
+    expert-fusion case, handled elsewhere). GLM-5.3-Flash (``glm5_next``) is the motivating
+    example: ``self_attn.conv1d.weight`` is ``cat([q_conv1d.weight, k_conv1d.weight,
+    v_conv1d.weight], dim=0)``. The meta skeleton only knows the fused model-side name, so
+    map it back to its checkpoint-side sources to materialize it.
+
+    Returns a tuple of ``(target_suffix, (source_suffixes...), concat_dim)`` triples, using
+    only literal (wildcard-free) patterns -- wildcard/expert converters are handled by the
+    expert-specific helpers.
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import Concatenate, MergeModulelist, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    converters = []
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        # Expert fusions (MergeModulelist) are handled by `_renamed_expert_candidates`
+        # and `materialize_module`'s fused lookup.
+        if any(isinstance(op, MergeModulelist) for op in entry.operations):
+            continue
+        concat = next((op for op in entry.operations if isinstance(op, Concatenate)), None)
+        if concat is None or len(entry.target_patterns) != 1:
+            continue
+        target = entry.target_patterns[0].rstrip("$")
+        sources = tuple(src.rstrip("$") for src in entry.source_patterns)
+        # Only literal patterns here; wildcard (`*`) converters are per-expert.
+        if "*" in target or any("*" in src for src in sources):
+            continue
+        converters.append((target, sources, getattr(concat, "dim", 0)))
+    return tuple(converters)
+
+
 def _renamed_expert_candidates(index, full_name: str):
     """Checkpoint-name candidates for an unfused per-expert parameter."""
     match = _MODEL_SIDE_EXPERT_RE.match(full_name)
@@ -324,6 +372,26 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         inter = fused.shape[0] // 2
         return (fused[:inter] if proj == "gate_proj" else fused[inter:]).contiguous()
 
+    def _concat_lookup(full_name: str):
+        """Assemble a model-side param that the checkpoint stores as several tensors
+        concatenated by a ``WeightConverter`` (e.g. GLM-5.3 ``q/k/v_conv1d`` ->
+        ``conv1d``). Returns the concatenated tensor, or ``None`` when no converter
+        applies or a source tensor is missing."""
+        for model_type in _index_model_types(index):
+            for target_suffix, source_suffixes, dim in _concat_converters_for(model_type):
+                if not full_name.endswith(target_suffix):
+                    continue
+                prefix = full_name[: -len(target_suffix)]
+                # Guard against a spurious mid-token match (require a clean boundary).
+                if prefix and not prefix.endswith("."):
+                    continue
+                source_names = [f"{prefix}{suffix}" for suffix in source_suffixes]
+                if not all(index.has_tensor(name) for name in source_names):
+                    continue
+                read = index.read_tensors(source_names, device=device)
+                return torch.cat([read[name] for name in source_names], dim=dim).contiguous()
+        return None
+
     targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
     for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
@@ -333,6 +401,8 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         resolved_name = _resolve_checkpoint_name(index, full_name)
         if resolved_name is None:
             sliced = _fused_lookup(full_name)
+            if sliced is None:
+                sliced = _concat_lookup(full_name)
             if sliced is not None:
                 fused_targets.append((name, sliced))
                 continue

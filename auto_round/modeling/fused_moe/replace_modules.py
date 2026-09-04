@@ -172,18 +172,27 @@ def materialize_model_(model: torch.nn.Module) -> None:
 
     model.apply(_materialize_module)
 
-    # check if any module on meta device remains
-    found_meta = False
-    for name, param in model.named_parameters():
-        if param.device.type == "meta":
-            logger.warning(f"Parameter {name} is still on meta device after materialization.")
-            found_meta = True
-    for name, buffer in model.named_buffers():
-        if buffer.device.type == "meta":
-            logger.warning(f"Buffer {name} is still on meta device after materialization.")
-            found_meta = True
-    if not found_meta:
-        logger.debug("All parameters and buffers have been materialized from meta device.")
+    # Any tensor still on meta after per-block materialization means the meta-skeleton
+    # loader could not resolve it from the checkpoint (e.g. a checkpoint-conversion
+    # layout AutoRound does not reverse yet). Leaving it on meta only defers the failure
+    # to a cryptic "Cannot copy out of meta tensor" crash on the next `.to(device)`, so
+    # fail fast with an actionable message.
+    still_meta = [name for name, param in model.named_parameters() if param.device.type == "meta"]
+    still_meta += [name for name, buffer in model.named_buffers() if buffer.device.type == "meta"]
+    if still_meta:
+        from auto_round import envs
+
+        preview = ", ".join(still_meta[:8]) + (f" (+{len(still_meta) - 8} more)" if len(still_meta) > 8 else "")
+        # The auto meta-skeleton is only enabled for fused-MoE checkpoints; an explicit
+        # AR_DISK_STREAM_MODEL=1 forces it for anything else. Point at whichever toggle
+        # actually turned it on so the hint stays correct (AR_DISABLE_AUTO_META_LOAD is
+        # the MoE-only auto path).
+        hint = "unset AR_DISK_STREAM_MODEL" if envs.AR_DISK_STREAM_MODEL else "set AR_DISABLE_AUTO_META_LOAD=1"
+        raise RuntimeError(
+            f"Failed to materialize {len(still_meta)} checkpoint tensor(s), still on meta: {preview}. "
+            f"To load the whole model on CPU instead, {hint} (uses more RAM)."
+        )
+    logger.debug("All parameters and buffers have been materialized from meta device.")
     release_original_module_(model)
 
 
