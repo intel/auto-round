@@ -740,3 +740,41 @@ class TestRRQPhase3:
             assert hasattr(block.proj, f"rrq_qweight_{plane_idx}")
             assert getattr(block.proj, f"rrq_qweight_{plane_idx}").dtype == torch.int32
         assert block.proj.rrq_total_planes == 4
+
+    def test_sign_sgd_accumulates_frozen_prefix(self):
+        """Each round's frozen prefix must include every earlier plane."""
+        from auto_round.algorithms.block_runner import BlockForwardRunner
+
+        class TinyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = _make_layer(out_features=64, in_features=128, group_size=32, sym=True)
+                self.proj.scale_dtype = torch.float16
+
+            def forward(self, hidden_states):
+                return self.proj(hidden_states)
+
+        torch.manual_seed(321)
+        block = TinyBlock()
+        original = block.proj.weight.detach().clone()
+        inputs = [torch.randn(1, 3, 128) for _ in range(2)]
+        runner = BlockForwardRunner(
+            batch_dim=0,
+            batch_size=1,
+            device="cpu",
+            cache_device="cpu",
+            amp=False,
+            enable_torch_compile=False,
+        )
+        with torch.no_grad():
+            outputs = [runner.forward(block, inputs, {}, torch.tensor([i]), "cpu") for i in range(2)]
+
+        quantizer = RRQSignRoundQuantizer(RRQConfig(group_size=32, sym=True, iters=2, lr=0.05))
+        quantizer._BaseAlgorithm__block_forward_runner = runner
+        quantizer._quantize_block_opt(block, inputs, {}, outputs, None)
+
+        reconstructed = block.proj.weight.detach().float()
+        for plane_idx in range(1, 4):
+            reconstructed += _plane_dequant(block.proj, plane_idx, original)
+        assert torch.isfinite(reconstructed).all()
+        assert (original - reconstructed).norm() < original.norm()
