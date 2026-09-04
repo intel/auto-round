@@ -22,6 +22,7 @@ from pathlib import Path
 import requests
 import torch
 
+from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.convert import is_mmproj_tensor_name, wrapper_model_instance
 from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
@@ -130,6 +131,12 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         hparams.pop("quantization_config", None)
+        if envs.AR_DISABLE_GGUF_MTP_EXPORT and getattr(model_class, "supports_mtp_export", False):
+            model_class = type(
+                f"AutoRound{model_class.__name__}",
+                (model_class,),
+                {"model_arch": model_class.model_arch, "no_mtp": True},
+            )
         model_instance = model_class(
             dir_model=Path(tmp_work_dir),
             ftype=output_type,

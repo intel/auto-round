@@ -113,7 +113,8 @@ def _make_mock_model(cls, hparams=None):
     return obj
 
 
-def test_qwen35_exports_mtp_tensors_by_default(monkeypatch, tmp_path):
+@pytest.mark.parametrize("disable_mtp_export", [False, True])
+def test_qwen35_gguf_mtp_export_control(monkeypatch, tmp_path, disable_mtp_export):
     from auto_round.export.export_to_gguf import export
     from auto_round.export.export_to_gguf.config import ModelType
     from auto_round.export.export_to_gguf.conversion.base import ModelBase as ConversionModelBase
@@ -122,7 +123,7 @@ def test_qwen35_exports_mtp_tensors_by_default(monkeypatch, tmp_path):
     hparams = {
         "architectures": ["Qwen3_5ForConditionalGeneration"],
         "num_hidden_layers": 32,
-        "mtp_num_hidden_layers": 1,
+        "mtp_num_hidden_layers": 0 if disable_mtp_export else 1,
     }
 
     class FakeModel:
@@ -148,11 +149,21 @@ def test_qwen35_exports_mtp_tensors_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(export, "get_conversion", lambda *_args, **_kwargs: FakeConversion)
     monkeypatch.setattr(export, "wrapper_model_instance", lambda model_instance, **_kwargs: model_instance)
     monkeypatch.setattr(export, "handle_special_model", lambda model_instance, _architecture: model_instance)
+    if disable_mtp_export:
+        monkeypatch.setenv("AR_DISABLE_GGUF_MTP_EXPORT", "1")
+    else:
+        monkeypatch.delenv("AR_DISABLE_GGUF_MTP_EXPORT", raising=False)
 
     model = export.create_model_class(tmp_path, FakeModel(), {}, model_type=ModelType.TEXT)
     item = ("mtp.layers.0.mlp.down_proj.weight", lambda: torch.ones(1, 1))
 
     filtered = model.filter_tensors(item)
+    if disable_mtp_export:
+        assert model.block_count == 32
+        assert filtered is None
+        assert Qwen3_5TextModel.no_mtp is False
+        return
+
     assert filtered is not None
     name, tensor_fn = filtered
 
