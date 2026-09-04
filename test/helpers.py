@@ -173,6 +173,84 @@ qwen3_omni_name_or_path = get_model_path("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
 
 
+def make_tiny_qwen3_omni_moe_config():
+    """Build a self-contained Qwen3-Omni-MoE config for unit-test smoke coverage."""
+    config = transformers.Qwen3OmniMoeConfig()
+
+    thinker = config.thinker_config
+    thinker_text = thinker.text_config
+    thinker_text.num_hidden_layers = 1
+    thinker_text.hidden_size = 64
+    thinker_text.intermediate_size = 128
+    thinker_text.moe_intermediate_size = 32
+    thinker_text.num_attention_heads = 4
+    thinker_text.num_key_value_heads = 2
+    thinker_text.num_experts = 4
+    thinker_text.num_experts_per_tok = 2
+    # The text-only forward still reads these multimodal sentinel ids when building positions.
+    thinker.audio_token_id = 151646
+    thinker.image_token_id = 151655
+    thinker.video_token_id = 151656
+    thinker.vision_start_token_id = 151652
+    thinker.audio_start_token_id = 151647
+
+    vision = thinker.vision_config
+    vision.depth = 1
+    vision.hidden_size = 64
+    vision.num_heads = 4
+
+    audio = thinker.audio_config
+    audio.num_hidden_layers = 1
+    audio.d_model = 64
+    audio.encoder_attention_heads = 4
+    audio.encoder_ffn_dim = 128
+    audio.output_dim = 64
+    audio.downsample_hidden_size = 32
+    audio.num_mel_bins = 16
+
+    talker = config.talker_config
+    talker_text = talker.text_config
+    talker_text.num_hidden_layers = 1
+    talker_text.hidden_size = 64
+    talker_text.intermediate_size = 128
+    talker_text.moe_intermediate_size = 32
+    talker_text.num_attention_heads = 4
+    talker_text.num_key_value_heads = 2
+    talker_text.num_experts = 4
+    talker_text.num_local_experts = 4
+    talker_text.num_experts_per_tok = 2
+    talker_text.shared_expert_intermediate_size = 64
+
+    predictor = talker.code_predictor_config
+    predictor.vocab_size = 64
+    predictor.hidden_size = 64
+    predictor.intermediate_size = 128
+    predictor.num_hidden_layers = 1
+    predictor.num_attention_heads = 4
+    predictor.num_key_value_heads = 2
+    predictor.head_dim = 16
+    predictor.num_code_groups = 2
+    predictor.layer_types = ["full_attention"]
+    talker.num_code_groups = 2
+    talker.thinker_hidden_size = 64
+    talker.spatial_merge_size = 2
+
+    code2wav = config.code2wav_config
+    code2wav.codebook_size = 64
+    code2wav.hidden_size = 64
+    code2wav.num_hidden_layers = 1
+    code2wav.num_attention_heads = 4
+    code2wav.num_key_value_heads = 4
+    code2wav.intermediate_size = 128
+    code2wav.num_quantizers = 2
+    code2wav.decoder_dim = 64
+    code2wav.upsample_rates = [2]
+    code2wav.upsampling_ratios = [2]
+
+    config.initializer_range = 0.02
+    return config
+
+
 # Slice model into tiny model for speedup
 def _reduce_config_layers(config, num_layers, num_experts=None):
     """Reduce num_layers and num_experts in a config object (in-place).

@@ -18,6 +18,15 @@ from ...envs import (
 )
 
 
+def _fp8_calibration_data():
+    return [
+        {
+            "input_ids": torch.ones((1, 2), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2), dtype=torch.long),
+        }
+    ]
+
+
 class TestAutoRound:
 
     @pytest.fixture(autouse=True, scope="class")
@@ -96,7 +105,7 @@ class TestAutoRound:
         )
         assert isinstance(model, torch.nn.Module), "Loaded model is not an instance of torch.nn.Module"
 
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; Accuracy evaluation")
     @require_autogptq
     def test_mixed_precision(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -115,7 +124,7 @@ class TestAutoRound:
         eval_generated_prompt(quantized_model_path)
         evaluate_accuracy(quantized_model_path, threshold=0.32, batch_size=16)
 
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; Accuracy evaluation")
     @require_gptqmodel
     def test_awq_backend(self):
         model_name = get_model_path("facebook/opt-125m")
@@ -156,7 +165,7 @@ class TestAutoRound:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         eval_generated_prompt(model, tokenizer)
 
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_bf16(self):
         model_name = get_model_path("OPEA/Meta-Llama-3.1-8B-Instruct-int4-sym-inc")
@@ -169,13 +178,15 @@ class TestAutoRound:
         torch.cuda.empty_cache()
 
     @pytest.mark.timeout(120)
-    def test_fp8_block_fp8_format(self):
-        model_name = "Qwen/Qwen3-0.6B"
+    def test_fp8_block_fp8_format(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
 
         scheme = "FP8_BLOCK"
         autoround = AutoRound(
             model_name,
             scheme=scheme,
+            dataset=_fp8_calibration_data(),
+            nsamples=1,
             iters=2,
             seqlen=2,
         )
@@ -194,8 +205,8 @@ class TestAutoRound:
         # if is_cuda_support_fp8():
         #     eval_generated_prompt(quantized_model_path, device="cuda:0")
 
-    def test_fp8_block_autoround_format(self):
-        model_name = "Qwen/Qwen3-0.6B"
+    def test_fp8_block_autoround_format(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
 
         autoround = AutoRound(
             model_name,

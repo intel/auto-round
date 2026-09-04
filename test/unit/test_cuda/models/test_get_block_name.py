@@ -19,7 +19,7 @@ from auto_round import AutoRound
 from auto_round.utils import get_block_names, is_pure_text_model
 
 
-@pytest.mark.skip_ci(reason="Only tiny model is suggested")
+@pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
 class TestAutoRound:
     @classmethod
     def setup_class(self):

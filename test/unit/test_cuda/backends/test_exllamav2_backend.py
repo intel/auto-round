@@ -65,8 +65,7 @@ class TestAutoRoundexllamaBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_autogptq
     @require_package_version_ut("torch", "<2.6.0")
     def test_gptq_exllamav2_4bits_sym(self, dataloader):
@@ -96,8 +95,7 @@ class TestAutoRoundexllamaBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_autogptq
     @require_package_version_ut("torch", "<2.6.0")
     @pytest.mark.parametrize("group_size", [-1, 32, 64, 128, 256, 1024])
@@ -128,7 +126,9 @@ class TestAutoRoundexllamaBackend:
         torch.cuda.empty_cache()
 
     @require_gptqmodel
-    @pytest.mark.skip_ci(reason="AWQ ExLlamaV2 matrix is covered in nightly; keep the native asym smoke in PR CI")
+    @pytest.mark.skip_ci(
+        reason="Backend/JIT: AWQ ExLlamaV2 matrix is covered in nightly; keep the native asym smoke in PR CI"
+    )
     @pytest.mark.timeout(90)
     def test_gptqmodel_awq_exllamav2_4bits_asym(self, dataloader):
         """Test AWQ quantization with gptqmodel:awq_exllamav2 backend (bfloat16 inference)."""
@@ -161,8 +161,7 @@ class TestAutoRoundexllamaBackend:
         torch.cuda.empty_cache()
 
     @require_gptqmodel
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     def test_gptqmodel_awq_exllamav2_4bits_sym(self, dataloader):
         """Test AWQ quantization with gptqmodel:awq_exllamav2 backend (bfloat16 inference, symmetric)."""
         model_path = get_model_path("facebook/opt-125m")
