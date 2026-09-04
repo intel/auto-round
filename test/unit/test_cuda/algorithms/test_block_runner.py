@@ -61,7 +61,7 @@ class TestBlockRunnerGpu:
             sym=False,
             iters=2,
             nsamples=2,
-            seqlen=16,
+            seqlen=8,
             dataset=dataloader,
         )
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
