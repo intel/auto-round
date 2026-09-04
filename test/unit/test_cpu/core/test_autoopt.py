@@ -41,6 +41,6 @@ class TestAutoRound:
             seqlen=2,
             batch_size=batch_size,
             dataset=dataloader,
-            to_quant_block_names=llm_block_names,
+            to_quant_block_names="",
         )
         adamround.quantize()
