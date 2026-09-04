@@ -35,6 +35,15 @@ Guidance:
 - Use the PR diff to judge whether this is a code regression introduced by the change.
 - If the error looks environmental/dependency-related and unrelated to the diff, say so.
 - If uncertain, set confidence to "low", leave suggested_fix and patch empty, and fill directions.
+- The excerpt below is truncated. The repository is checked out at ``{project_root}`` and the
+  complete raw failure logs are under ``{log_path}``. When you need more context, use your
+  shell/read/rg tools to inspect source files, git history, and the full logs before concluding.
+
+## Project source root
+{project_root}
+
+## Full failure logs directory
+{log_path}
 
 ## Error signature
 {signature}
@@ -139,18 +148,22 @@ def parse_model_json(text: str) -> "dict | None":
         return None
 
 
-def build_prompt(cluster: dict, diff: str, max_excerpt: int, max_diff: int) -> str:
+def build_prompt(cluster: dict, diff: str, max_excerpt: int, max_diff: int, project_root: str, log_path: str) -> str:
     return _PROMPT_TEMPLATE.format(
         signature=cluster.get("signature", ""),
         test_count=len(cluster.get("tests", [])),
         tests=", ".join(cluster.get("tests", [])) or "(unknown)",
         excerpt=(cluster.get("sample", "") or "")[:max_excerpt],
         diff=(diff or "(no diff available)")[:max_diff],
+        project_root=project_root or "(not provided)",
+        log_path=log_path or "(not provided)",
     )
 
 
 def analyze(cluster: dict, diff: str, args) -> dict:
-    prompt = build_prompt(cluster, diff, args.max_excerpt_chars, args.max_diff_chars)
+    prompt = build_prompt(
+        cluster, diff, args.max_excerpt_chars, args.max_diff_chars, args.project_root, args.log_dir
+    )
     raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
     parsed = parse_model_json(raw)
     result = {
@@ -205,6 +218,8 @@ def main():
     parser.add_argument("--timeout", type=int, default=300, help="Per-call timeout in seconds")
     parser.add_argument("--model", default="", help="Copilot model to use; empty uses the CLI default")
     parser.add_argument("--trace-file", default="", help="JSONL file logging each AI call for auditing")
+    parser.add_argument("--project-root", default="", help="Repository checkout root the AI may inspect")
+    parser.add_argument("--log-dir", default="", help="Directory holding the full raw failure logs")
     parser.add_argument("--max-excerpt-chars", type=int, default=4000)
     parser.add_argument("--max-diff-chars", type=int, default=12000)
     args = parser.parse_args()

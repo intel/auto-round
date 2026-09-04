@@ -86,7 +86,9 @@ steps:
           --top ${{ parameters.topUnknown }} \
           --enable-ai-analysis ${{ parameters.enableAiAnalysis }} \
           --backend copilot \
-          --trace-file "${work}/ai_trace.jsonl"
+          --trace-file "${work}/ai_trace.jsonl" \
+          --project-root "${base}" \
+          --log-dir "${work}/failed_logs"
 
   - task: Bash@3
     displayName: "Merge markdown report"
