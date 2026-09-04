@@ -895,7 +895,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 - 将 `seqlen` 降至 512（**可能会有精度损失**）
 
 #### 降低 CPU 内存占用
-- 开启 `low_cpu_mem_usage`（实验性功能）：仅支持**导出指定一种格式**。每个 block 量化封装完成后会立即保存，从而降低峰值内存占用。
+- `low_cpu_mem_usage`（实验性功能）默认开启；CLI 中可使用 `--disable_low_cpu_mem_usage` 关闭（`--low_cpu_mem_usage` 仅为兼容旧参数保留）。仅支持**导出指定一种格式**。每个 block 量化封装完成后会立即保存，从而降低峰值内存占用。
 - 触发立即封装：使用命令行或 `quantize_and_save` API 时，只要指定**单一导出格式**，就会自动触发即时打包，无需额外配置。
 
 #### 提升训练速度
