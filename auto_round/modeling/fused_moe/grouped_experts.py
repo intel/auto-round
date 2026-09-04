@@ -828,32 +828,39 @@ def _build_plan(module: nn.Module, active_ids: list[int]) -> _GroupedPlan | None
 #
 # Two ways to run the routed GEMM, plus one we deliberately avoid:
 #
-#   sliced loop  (default) one ``F.linear`` per *active* expert over a contiguous slice.
+#   sliced loop  one ``F.linear`` per *active* expert over a contiguous slice.
 #                Same kernels as transformers' ``grouped_mm_fallback``, but without its
 #                extra ``offs.tolist()`` sync -- we already hold the counts on the host.
-#   grouped_mm   ``torch.nn.functional.grouped_mm`` / ``torch._grouped_mm``: one kernel for
-#                all experts, driven by ``offsets``. Differentiable, and bit-identical to
-#                the loop (verified on A100). Opt in with ``AR_MOE_GROUPED_MM=1``.
+#                Enable with ``AR_MOE_GROUPED_MM=0``.
+#   grouped_mm   (default) ``torch.nn.functional.grouped_mm`` / ``torch._grouped_mm``: one
+#                kernel for all experts, driven by ``offsets``. Differentiable, and
+#                bit-identical to the loop (verified on A100). Disable with
+#                ``AR_MOE_GROUPED_MM=0``.
 #   batched_mm   transformers' ``_batched_linear``/``torch.bmm`` path gathers
 #                ``weight[expert_ids]`` into an ``(S, out, in)`` tensor -- one weight copy
 #                per routed token. That is a decode-time trick (S == top_k); at tuning
 #                shapes it is orders of magnitude slower (measured ~87x) and the gather
 #                alone would be hundreds of GB. Never used here.
 #
-# Why the loop is the default, even on CUDA where the grouped kernel exists: once the
-# weights go through ``WrapperLinear`` the fake-quant dominates and the kernel's advantage
-# inverts. Measured on A100 (sm80, bf16, 2048x768 experts, 4096 routed pairs), speedup over
-# ``linear_loop`` for 16/32/64/128/256 experts:
+# Why grouped_mm is the default: the winner depends on the number of routed (token, expert)
+# pairs, i.e. on the calibration batch. At realistic tuning sizes (batch=8, seqlen=2048 ->
+# ~131k pairs) the sliced loop issues ~num_experts separate grad GEMMs in backward, whose
+# launch pressure dominates; the single fused grouped_mm backward then wins by a wide margin
+# -- up to ~5x on a synthetic full Qwen3.5-MoE decoder layer (A100, sm80, bf16), with the
+# gap almost entirely in backward.
+#
+# The earlier, small-batch microbench below (only 4096 routed pairs, 2048x768 experts) is
+# where the two looked equal and the loop was historically preferred -- it under-represented
+# the backward launch count. Speedup over ``linear_loop`` for 16/32/64/128/256 experts:
 #
 #   forward+backward   grouped_mm 3.89 4.36 5.11 4.84 5.05  |  sliced 4.36 4.70 5.32 5.14 5.24
 #   forward (wrapped)  grouped_mm 2.57 2.99 3.21 3.30 3.28  |  sliced 3.13 3.44 3.69 3.80  -
 #   forward (plain fp) grouped_mm 2.07 2.53 2.76 2.99 2.93  |  sliced 1.90 2.21 2.29 2.42 2.39
 #
-# The kernel only wins on plain fp weights, where there is no fake-quant to hide the GEMM.
-# Both AutoRound-relevant modes favour the loop, which additionally needs no ``torch.stack``
-# copy (lower peak memory when the qdq was not fused) and has no dtype/alignment/compute-
-# capability constraints. torch's CPU ``grouped_mm`` loses even harder, so the rule is
-# device-independent.
+# grouped_mm needs a ``torch.stack`` copy when the qdq was not fused (higher peak memory)
+# and has dtype/alignment/compute-capability constraints, so it transparently falls back to
+# the sliced loop when the native kernel is not usable. torch's CPU ``grouped_mm`` loses, so
+# on CPU the loop still runs.
 #
 # Deciding whether the native kernel is *legal* is fiddly (torch version, device, compute
 # capability, dynamo, 16-byte alignment on CPU), so when it is requested we defer to
@@ -873,7 +880,7 @@ def _native_grouped_mm_available() -> bool:
 
 
 def _native_grouped_mm_preferred(device: torch.device) -> bool:
-    """Whether the native kernel is opted into. Off by default; see the note above."""
+    """Whether the native kernel is opted into. On by default; see the note above."""
     return envs.AR_MOE_GROUPED_MM == "1"
 
 

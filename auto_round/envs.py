@@ -151,21 +151,28 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # activation quantization, mixed devices, ...).
     "AR_MOE_EXPERTS_IMPL": lambda: os.getenv("AR_MOE_EXPERTS_IMPL", "auto").lower(),
     # Whether the "linear_grouped" experts backend uses torch's native grouped GEMM
-    # (torch.nn.functional.grouped_mm / torch._grouped_mm) instead of the default
-    # per-expert F.linear loop over contiguous slices. Set to "1" to opt in.
-    # Both paths are numerically identical (gradients included, verified bit-exact on
-    # A100); this is purely a performance knob. The loop is the default because once
-    # WrapperLinear's fake-quant is in the picture it measures faster in every
-    # AutoRound-relevant mode -- see the note in modeling/fused_moe/grouped_experts.py.
-    "AR_MOE_GROUPED_MM": lambda: os.getenv("AR_MOE_GROUPED_MM", "0").lower(),
+    # (torch.nn.functional.grouped_mm / torch._grouped_mm) instead of the per-expert
+    # F.linear loop over contiguous slices. Default "1" (on): the native kernel fuses
+    # all active experts' GEMMs into a single launch, which is markedly faster for the
+    # tuning forward+backward on many-expert MoEs -- up to ~5x on a synthetic full
+    # Qwen3.5-MoE decoder layer (batch=8, A100), with the gain almost entirely in
+    # backward (the sliced loop issues ~num_experts separate grad GEMMs). Set "0" to
+    # force the sliced per-expert loop. Both paths are numerically identical (gradients
+    # included, verified bit-exact on A100). The backend falls back to the sliced loop
+    # automatically when the native kernel is unavailable/ineligible (non-CUDA, pre-sm80,
+    # unsupported dtype/torch, alignment) -- see modeling/fused_moe/grouped_experts.py.
+    "AR_MOE_GROUPED_MM": lambda: os.getenv("AR_MOE_GROUPED_MM", "1").lower(),
     # How many experts the "linear_grouped" backend fake-quantizes in one fused call.
-    #   "auto" - (default) 16. Fusing every active expert at once builds a working set
-    #            that grows with the expert count; past a point that costs peak memory on
-    #            GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
-    #            calibration throughput, and doubled the GPU calibration peak).
-    #   <int>  - force a fixed group size; 0 or negative means "fuse everything".
-    # Results are identical either way -- rows stay independent.
-    "AR_MOE_QDQ_CHUNK": lambda: os.getenv("AR_MOE_QDQ_CHUNK", "auto").lower(),
+    #   <int>  - (default 16) force a fixed group size. Fusing every active expert at once
+    #            builds a working set that grows with the expert count; past a point that
+    #            costs peak memory on GPU and cache locality on CPU (measured: fusing 64
+    #            experts halved CPU calibration throughput, and doubled the GPU calibration
+    #            peak). 0 or negative means "fuse everything".
+    #   "auto" - derive the group size from a fixed working-set budget and the weight shape
+    #            (~16 on the shapes it was tuned on; more for small experts).
+    # Results are identical either way -- rows stay independent. A fixed count and "auto"
+    # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
+    "AR_MOE_QDQ_CHUNK": lambda: os.getenv("AR_MOE_QDQ_CHUNK", "16").lower(),
     # vLLM fused kernels require q/k/v and gate/up projections to use one
     # weight global scale. Disable only for runtimes without that requirement.
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
