@@ -236,7 +236,7 @@ void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights,
  * STATUS: NEEDS-HARDWARE-VALIDATION. The kernels live in
  * `sycl_tla_moe_w4a8.hpp` (namespace `moe_w4a8_detail`); these `ark::` entry
  * points are emitted by the generated `sycl_tla_moe_w4a8.cpp` translation unit
- * (MOE_SOURCE_MODE 19).
+ * (MOE_SOURCE_MODE 21).
  */
 void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weights_s8, void* wscales,
                       BTLA_DTYPE act_dtype, int num_experts, int N, int K, int group_size,
