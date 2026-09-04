@@ -211,7 +211,7 @@ GPTQ_FORMAT = ["auto_round:auto_gptq"]  # zp+-1
 GPTQ_FORMAT_NO_ZP = ["auto_round", "auto_round:gptqmodel"]
 AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
-FAKE_FORMAT = ["auto_round:fake"]
+FAKE_FORMAT = ["auto_round:fake", "auto_round:auto_gptq", "auto_round", "auto_round:auto_awq"]
 NVFP4_E5M3_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
@@ -351,17 +351,11 @@ BackendInfos["auto_round:torch_mxint4"] = BackendInfo(
 BackendInfos["auto_round:fake"] = BackendInfo(
     device=["xpu", "cuda", "cpu"],
     packing_format=FAKE_FORMAT,
-    sym=[True],
     compute_dtype=["float32", "float16", "bfloat16"],
-    data_type=["nvfp4_v2"],
-    group_size=[16],
-    bits=[4],
-    act_bits=[4],
-    act_group_size=[16],
-    act_sym=[True],
-    act_data_type=["nvfp4_v2"],
-    priority=0,
-    checkers=[mxfp_nvfp_feature_checker],
+    bits=[1, 2, 3, 4, 5, 6, 7, 8],
+    sym=[True, False],
+    # Keep fake backend as a fallback path; prefer real kernels when available.
+    priority=-1,
     alias=["auto_round", "torch"],
     requirements=["auto-round>0.12.0"],
 )
@@ -1269,7 +1263,7 @@ def process_requirement(requirements: list, target_device="cuda", logger_level="
     for req in requirements:
         try:
             require_version(req)
-        except:
+        except Exception:
             missing_requirements.append(req)
 
     gptq_req = next((f'"{req}"' for req in missing_requirements if "gptqmodel" in req), None)

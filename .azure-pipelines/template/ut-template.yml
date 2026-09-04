@@ -1,7 +1,4 @@
 parameters:
-  - name: dockerConfigName
-    type: string
-    default: "commonDockerConfig"
   - name: repo
     type: string
     default: "https://github.com/intel/auto-round"
@@ -17,9 +14,6 @@ parameters:
   - name: utContainerName
     type: string
     default: "AutoRoundUnitTest"
-  - name: imageSource
-    type: string
-    default: "build"
   - name: imageName
     type: string
     default: "auto-round"
@@ -42,13 +36,11 @@ parameters:
 steps:
   - template: docker-template.yml
     parameters:
-      dockerConfigName: ${{ parameters.dockerConfigName }}
       repoName: ${{ parameters.imageName }}
       repoTag: ${{ parameters.imageTag }}
       dockerFileName: ${{ parameters.dockerFileName }}
       containerName: ${{ parameters.utContainerName }}
       repo: ${{ parameters.repo }}
-      imageSource: ${{ parameters.imageSource }}
 
   - task: DownloadPipelineArtifact@2
     condition: and(succeeded(), eq(variables['BUILD_ARK_WHEEL'], 'true'))
@@ -58,49 +50,73 @@ steps:
       path: $(Build.SourcesDirectory)/ark_wheel
     displayName: "Download ark wheel"
 
-  - ${{ if eq(parameters.imageSource, 'build') }}:
-    - script: |
-        set -eo pipefail
+  - script: |
+      set -eo pipefail
 
-        if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
-          ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
-        else
-          ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --pre --no-deps"
-        fi
+      if [ "${{ parameters.buildARKWheel }}" == "true" ]; then
+        ARK_WHEEL_INSTALL="uv pip install /auto-round/ark_wheel/*.whl --no-deps"
+      else
+        ARK_WHEEL_INSTALL="uv pip install --index-url https://test.pypi.org/simple/ auto-round-lib --pre --no-deps"
+      fi
 
-        if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
-          docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && uv pip install -r auto_round_extension/ark/requirements.txt \
-            && ${ARK_WHEEL_INSTALL} \
-            && uv pip install -r requirements.txt \
-            && uv pip install -r test/unit/test_ark/requirements.txt \
-            && uv pip install -r test/unit/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
-            && cd /auto-round && uv pip install . \
-            && uv pip list"
-        else 
-          docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-            && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip install -r auto_round_extension/ark/requirements.txt \
-            && ${ARK_WHEEL_INSTALL} \
-            && uv pip install -r requirements.txt \
-            && uv pip install -r requirements-cpu.txt \
-            && uv pip install -r test/unit/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
-            && uv pip list"
-        fi
-      displayName: "Env Setup"
-
-  - ${{ if eq(parameters.imageSource, 'pull') }}:
-    - script: |
-        set -eo pipefail
-
+      if [ "${{ parameters.utScriptFileName }}" == "run_ut_xpu" ];then
         docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
-          && pip install build \
-          && BUILD_HPU_ONLY=1 python -m build \
-          && pip install dist/*.whl \
-          && pip install -r test/unit/test_hpu/requirements.txt \
-          && pip list"
-      displayName: "HPU Env Setup"
+          && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+          && uv pip install -r auto_round_extension/ark/requirements.txt \
+          && ${ARK_WHEEL_INSTALL} \
+          && uv pip install -r requirements.txt \
+          && uv pip install -r test/unit/test_ark/requirements.txt \
+          && uv pip install -r test/unit/test_xpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/xpu \
+          && cd /auto-round && uv pip install . \
+          && uv pip list"
+      else
+        docker exec ${{ parameters.utContainerName }} bash -c "cd /auto-round \
+          && uv pip install -r .azure-pipelines/scripts/ut/constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+          && uv pip install -r auto_round_extension/ark/requirements.txt \
+          && ${ARK_WHEEL_INSTALL} \
+          && uv pip install -r requirements.txt \
+          && uv pip install -r requirements-cpu.txt \
+          && uv pip install -r test/unit/test_cpu/requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu \
+          && uv pip list"
+      fi
+    displayName: "Env Setup"
+
+  # On a "Rerun failed jobs" retry the container is a clean environment, so pull
+  # the previous attempt's failed_tests.list to rerun only the failed cases.
+  # A cancelled previous attempt never publishes its failed-logs artifact, so
+  # probe for it first and skip the download when absent.
+  - task: Bash@3
+    condition: gt(variables['System.JobAttempt'], 1)
+    displayName: "Check previous attempt artifact exists"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    inputs:
+      targetType: "inline"
+      script: |
+        set -eo pipefail
+        prev_attempt=$((SYSTEM_JOBATTEMPT - 1))
+        echo "##vso[task.setvariable variable=prevAttempt]${prev_attempt}"
+        artifact="${{ parameters.utArtifact }}-${prev_attempt}"
+        url="${SYSTEM_COLLECTIONURI}${SYSTEM_TEAMPROJECT}/_apis/build/builds/${BUILD_BUILDID}/artifacts?api-version=7.1"
+        resp=$(curl -fsS -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" "${url}" || echo "")
+        if echo "${resp}" | grep -q "\"name\":\"${artifact}\""; then
+          echo "Found previous artifact ${artifact}."
+          echo "##vso[task.setvariable variable=prevArtifactExists]true"
+        else
+          echo "Previous artifact ${artifact} not found, skip retry download."
+          echo "##vso[task.setvariable variable=prevArtifactExists]false"
+        fi
+
+  - task: DownloadPipelineArtifact@2
+    condition: and(gt(variables['System.JobAttempt'], 1), eq(variables['prevArtifactExists'], 'true'))
+    continueOnError: true
+    inputs:
+      artifact: "${{ parameters.utArtifact }}-$(prevAttempt)"
+      patterns: |
+        failed_tests.list
+        .coverage
+      path: ${{ parameters.uploadPath }}
+    displayName: "Download previous failed_tests.list and coverage (retry)"
 
   - script: |
       set -eo pipefail
@@ -110,6 +126,7 @@ steps:
         -e ZE_AFFINITY_MASK=${ZE_AFFINITY_MASK} \
         -e UT_MODE=${{ parameters.utTestMode }} \
         -e BUILD_REASON=${BUILD_REASON} \
+        -e SYSTEM_JOBATTEMPT=${SYSTEM_JOBATTEMPT} \
         -e SYSTEM_PULLREQUEST_TARGETBRANCH=${SYSTEM_PULLREQUEST_TARGETBRANCH} \
         -e FILTER_CHANGED_TESTS=${{ lower(parameters.filterChangedTests) }} \
         ${{ parameters.utContainerName }} \
@@ -127,10 +144,10 @@ steps:
   - task: PublishPipelineArtifact@1
     condition: failed()
     inputs:
-      targetPath: ${{ parameters.uploadPath }}
+      targetPath: ${{ parameters.uploadPath }}/failed_logs
       artifact: "${{ parameters.utArtifact }}-$(System.JobAttempt)"
       publishLocation: "pipeline"
-    displayName: "Publish UT logs for debugging"
+    displayName: "Publish failed UT logs"
 
   - task: Bash@3
     condition: always()

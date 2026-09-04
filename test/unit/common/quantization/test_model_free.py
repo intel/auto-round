@@ -86,6 +86,78 @@ def test_model_free_preserves_explicit_scheme_overrides():
     assert compressor.default_scheme["sym"] is False
 
 
+def test_fallback_forwards_only_explicit_format():
+    """Only an explicitly requested construction format reaches the fallback.
+
+    The fallback compressor consumes quantize_and_save(format=...) only while
+    its formats are still unset, so forwarding the implicit "auto_round"
+    default would silently pin every fallback export to the native format
+    (regression: gguf, llm_compressor, auto_gptq and auto_awq save-time
+    formats were exported as native auto_round instead)."""
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    implicit = ModelFreeCompressor("unused-model-path", scheme="W4A16")
+    assert implicit.format == "auto_round"
+    assert "format" not in implicit._fallback_init_kwargs
+
+    explicit = ModelFreeCompressor("unused-model-path", scheme="W4A16", format="auto_round:llm_compressor")
+    assert explicit._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
+
+
+def test_model_free_entry_forwards_explicit_format(monkeypatch):
+    """An explicit construction format must reach the model-free compressor.
+
+    The compressor builder consumes ``format`` as its own parameter, so the
+    model-free branch must pass it explicitly. Without it a W8A16 asym request
+    with an llm_compressor format built a model-free compressor with the
+    implicit default, forwarded nothing to the fallback, and the fallback
+    AutoRound was constructed without any format - its eager validation then
+    refused the scheme it was built to export."""
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    from auto_round import AutoRound
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    ar = AutoRound(
+        "unused-model-path",
+        scheme="W8A16",
+        sym=False,
+        iters=0,
+        model_free=True,
+        format="auto_round:llm_compressor",
+    )
+    assert isinstance(ar, ModelFreeCompressor)
+    assert ar.format == "auto_round:llm_compressor"
+    assert ar._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
+
+
+def test_fallback_construction_sees_save_format_when_no_construction_format(monkeypatch):
+    """The fallback exists to serve a quantize_and_save(format=...) call.
+
+    When no explicit construction format was forwarded, the save-time format
+    must reach the fallback construction so eager validation judges the format
+    actually being saved (an explicitly requested construction format still
+    wins)."""
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    captured = {}
+
+    class _FakeAutoRound:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr("auto_round.autoround.AutoRound", _FakeAutoRound)
+
+    mf = ModelFreeCompressor("unused-model-path", scheme="W4A16")  # no explicit format
+    mf._fallback_to_base_compressor(save_format="gguf:q8_0")
+    assert captured.get("format") == "gguf:q8_0"
+    assert captured.get("disable_model_free") is True
+
+    explicit = ModelFreeCompressor("unused-model-path", scheme="W4A16", format="auto_round:llm_compressor")
+    explicit._fallback_to_base_compressor(save_format="gguf:q8_0")
+    assert captured.get("format") == "auto_round:llm_compressor"
+
+
 def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
     from auto_round import AutoRound
 
@@ -117,6 +189,26 @@ def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
 
     assert type(compressor).__name__ == "ModelFreeCompressor"
     assert compressor.disable_opt_rtn is False
+
+
+@pytest.mark.parametrize("default_enabled", [True, False])
+def test_model_free_core_uses_default_torch_compile_policy_when_unset(tmp_path, monkeypatch, default_enabled):
+    model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.default_enable_torch_compile", lambda _device: default_enabled
+    )
+
+    core = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="W4A16",
+        enable_torch_compile=None,
+    )
+
+    assert core.enable_torch_compile is default_enabled
 
 
 from ...envs import require_compressed_tensors
@@ -1139,6 +1231,50 @@ class TestKimiK25Int4Source:
         assert os.path.isfile(os.path.join(output_dir, "tokenizer", "tokenizer.json"))
         assert os.path.isdir(os.path.join(output_dir, "tokenizer", "nested"))
         assert os.path.isfile(os.path.join(output_dir, "tokenizer", "nested", "vocab.txt"))
+
+    def test_replaces_source_quantization_metadata(self, tmp_path):
+        config = dict(_SIMPLE_CONFIG)
+        config["text_config"] = {
+            "quantization_config": {
+                "quant_method": "gptq",
+                "bits": 4,
+                "stale_source_field": True,
+            }
+        }
+        model_dir = _make_model_dir(tmp_path, config, _SIMPLE_TENSORS)
+        for filename in ("quantization_config.json", "quantize_config.json", "quant_config.json"):
+            with open(os.path.join(model_dir, filename), "w") as f:
+                json.dump({"quant_method": "gptq", "stale_source_field": True}, f)
+        with open(os.path.join(model_dir, "README.md"), "w") as f:
+            f.write("stale source quantization documentation")
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir)
+        with open(os.path.join(output_dir, "quantize_config.json"), "w") as f:
+            json.dump({"stale_output_field": True}, f)
+        with open(os.path.join(output_dir, "README.md"), "w") as f:
+            f.write("stale output quantization documentation")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        with open(os.path.join(output_dir, "config.json")) as f:
+            output_config = json.load(f)
+        with open(os.path.join(output_dir, "quantization_config.json")) as f:
+            standalone_config = json.load(f)
+
+        assert output_config["quantization_config"] == standalone_config
+        assert standalone_config["quant_method"] == "auto-round"
+        assert "stale_source_field" not in standalone_config
+        assert core.source_quantization_config["stale_source_field"] is True
+        assert "quantization_config" not in output_config["text_config"]
+        assert not os.path.exists(os.path.join(output_dir, "quantize_config.json"))
+        assert not os.path.exists(os.path.join(output_dir, "quant_config.json"))
+        assert not os.path.exists(os.path.join(output_dir, "README.md"))
 
     def test_diffusion_copies_subfolders(self, tmp_path):
         """Diffusion model: non-transformer subdirectories should be copied."""

@@ -13,12 +13,11 @@ function setup_environment() {
     pip list
     echo "##[endgroup]"
 
-    rm -rf /auto-round/auto_round
     cd /auto-round/test || exit 1
 
     export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
     export FORCE_BF16=1
-    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/hpu.coveragerc
 
     LOG_DIR=/auto-round/log_dir
     mkdir -p ${LOG_DIR}
@@ -27,8 +26,6 @@ function setup_environment() {
 }
 
 function run_unit_test() {
-    auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
-
     local hpu_tests
     hpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_hpu -name "test*.py" | sort)")
     if [ -z "${hpu_tests}" ]; then
@@ -41,14 +38,14 @@ function run_unit_test() {
 
         echo "##[group]Running ${test_file} in HPU lazy mode..."
         local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
-        PT_HPU_LAZY_MODE=1 pytest --cov="${auto_round_path}" \
+        PT_HPU_LAZY_MODE=1 pytest --cov=auto_round \
             --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
 
         echo "##[group]Running ${test_file} in HPU compile mode..."
         local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
-        PT_HPU_LAZY_MODE=0 pytest --mode compile --cov="${auto_round_path}" \
+        PT_HPU_LAZY_MODE=0 pytest --mode compile --cov=auto_round \
             --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
@@ -66,8 +63,18 @@ function collect_log() {
         --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
     if [ -f .coverage ]; then
         cp .coverage "${LOG_DIR}/.coverage"
-        python -m coverage xml -o "${LOG_DIR}/coverage.xml"
-        python -m coverage html -d "${LOG_DIR}/htmlcov"
+        # "[paths] source" normalises the recorded install/checkout paths, but
+        # coverage.py applies it during "combine" only -- reporting on its own
+        # emits container-local absolute paths that no agent can resolve, and
+        # PublishCodeCoverageResults then reports "file does not exist".
+        # Combine from the repo root so the relative "auto_round" entry matches.
+        (
+            cd /auto-round || exit 1
+            rm -f .coverage
+            python -m coverage combine --keep "${LOG_DIR}/.coverage"
+            python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+            python -m coverage html -d "${LOG_DIR}/htmlcov"
+        )
     else
         echo "No coverage data (no test selected), skip coverage report."
         echo "##vso[task.setvariable variable=HAS_COVERAGE]false"

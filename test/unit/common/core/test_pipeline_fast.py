@@ -68,6 +68,24 @@ def test_pipeline_multiple_block_quantizers_rejected():
         AlgorithmComposer([RTNConfig(), SignRoundConfig()])
 
 
+@pytest.mark.parametrize(
+    "configs",
+    [
+        [RTNConfig(disable_opt_rtn=True), RotationConfig()],
+        [RotationConfig(), RTNConfig(disable_opt_rtn=True)],
+    ],
+)
+def test_block_quantizer_is_terminal_regardless_of_config_order(configs):
+    """The config list position must not move the terminal block quantizer."""
+    pipeline = AlgorithmComposer(configs)
+
+    members = pipeline.members()
+
+    assert members[:-1] == pipeline.preprocessors
+    assert members[-1] is pipeline.block_quantizer
+    assert isinstance(members[-1], RTNQuantizer)
+
+
 def test_hadamard_disables_only_block_forward_compile():
     hadamard = AlgorithmComposer([SignRoundConfig()], _compile_orchestrator(rotation_configs=(RotationConfig(),)))
     assert not hadamard.block_forward.enable_torch_compile
