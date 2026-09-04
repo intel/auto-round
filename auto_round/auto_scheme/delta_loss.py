@@ -2326,13 +2326,18 @@ def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_us
 
 def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=False):
     """Build an isolated meta model and checkpoint index for a scoring worker."""
+    from auto_round.modeling.fused_moe.replace_modules import _handle_moe_modules
     from auto_round.utils.disk_stream_util import build_meta_model
 
-    # ``build_meta_model`` already performs the structural MoE unfuse (fused 3D expert
-    # params -> per-expert Linear) while everything is still on meta, so per-expert quant
-    # layers resolve; weights stay on meta and are filled per-block from the checkpoint
-    # index during scoring.
+    # Build the meta skeleton, then structurally unfuse the fused ``transformers>=5`` MoE
+    # experts (fused 3D expert params -> per-expert ``nn.Linear``) while everything is
+    # still on meta, so per-expert quant layers resolve; weights stay on meta and are
+    # filled per-block from the checkpoint index during scoring. The unfuse must happen
+    # here in the worker: with the custom MoE replacements disabled, the meta-skeleton
+    # build no longer guarantees it, and leaving the experts fused makes the per-expert
+    # quant layers unresolvable during scoring.
     model, tokenizer, disk_index = build_meta_model(model_name)
+    _handle_moe_modules(model)
     if use_model_replacements:
         from auto_round.special_model_handler import _handle_special_model, update_module
 

@@ -169,12 +169,14 @@ def _model_types_for_dir(checkpoint_dir: str):
 
 
 def _index_model_type(index):
-    model_types = _model_types_for_dir(str(index.checkpoint_dir))
+    model_types = _model_types_for_dir(str(getattr(index, "checkpoint_dir", None)))
     return model_types[0] if model_types else None
 
 
 def _index_model_types(index):
-    return _model_types_for_dir(str(index.checkpoint_dir))
+    # Some lightweight/test indices carry no ``checkpoint_dir``; degrade to no
+    # known model types rather than raising AttributeError.
+    return _model_types_for_dir(str(getattr(index, "checkpoint_dir", None)))
 
 
 # Model-side per-expert projection -> (fused checkpoint projection, index within it).
@@ -258,6 +260,216 @@ def _renamed_expert_candidates(index, full_name: str):
             if len(suffix_attr) == 2:
                 suffix = f"{suffix_attr[0]}.{match['attr']}"
             yield f"{prefix}.{expert}.{suffix}"
+# On-disk layout of fused expert tensors, keyed by checkpoint ``model_type``.
+# Two axes vary between families:
+#   * ``checkpoint_transposed`` -- the per-expert 2-D slice is stored as
+#     ``[in_features, out_features]`` (matmul layout, ``x @ W``) instead of the
+#     ``nn.Linear`` ``[out_features, in_features]`` weight layout, so it must be
+#     transposed before being loaded into the unfused per-expert Linear.
+#   * ``gate_up_interleaved`` -- the fused ``gate_up_proj`` interleaves the gate
+#     and up columns (``gate = fused[..., 0::2]``, ``up = fused[..., 1::2]``)
+#     instead of storing them as two contiguous halves.
+# The transpose axis is normally inferred from the *target* parameter shape and
+# does not need this table; the table is only consulted (a) to pick the
+# interleave axis, which is invisible to shapes, and (b) as a tiebreak for the
+# rare square/ambiguous shapes where transposed and non-transposed slices share
+# the same shape. Families not listed here default to the non-transposed,
+# contiguous ``[N, 2*inter, hidden]`` layout (qwen3_moe / phimoe / mixtral-style).
+_FUSED_EXPERT_LAYOUTS = {
+    # model_type: (checkpoint_transposed, gate_up_interleaved)
+    "gpt_oss": (True, True),
+    "llama4": (True, False),
+}
+
+
+def _fused_expert_layout(index) -> tuple[bool, bool]:
+    """Return the ``(checkpoint_transposed, gate_up_interleaved)`` hint for ``index``.
+
+    The transpose flag is only a *hint* (shape inference takes precedence); the
+    interleave flag is authoritative since it cannot be recovered from shapes.
+    Unknown model types default to ``(False, False)``.
+    """
+    for model_type in _index_model_types(index):
+        if model_type in _FUSED_EXPERT_LAYOUTS:
+            return _FUSED_EXPERT_LAYOUTS[model_type]
+    return (False, False)
+
+
+def _slice_fused_expert(fused, proj, attr, is_gate_up, target_shape, transposed_hint, interleaved):
+    """Slice one unfused per-expert tensor out of a fused per-expert tensor.
+
+    ``fused`` is a single expert's slice of the fused checkpoint tensor (2-D for a
+    weight, 1-D for a bias). ``target_shape`` is the shape the unfused
+    ``nn.Linear`` parameter expects. Whether the checkpoint stores the weight
+    transposed is inferred from ``target_shape`` first; ``transposed_hint`` only
+    breaks ambiguous (square) ties, and ``interleaved`` selects the gate/up split
+    order. Returns ``None`` when no slice can produce ``target_shape`` (the caller
+    then leaves the parameter on meta and reports an actionable error).
+    """
+    if attr == "bias":
+        # 1-D per-expert bias; only gate/up need splitting.
+        if not is_gate_up:
+            return fused.contiguous()
+        if interleaved:
+            return (fused[0::2] if proj == "gate_proj" else fused[1::2]).contiguous()
+        half = fused.shape[0] // 2
+        return (fused[:half] if proj == "gate_proj" else fused[half:]).contiguous()
+
+    if fused.ndim != 2:
+        return None
+
+    if not is_gate_up:  # down_proj weight, target (out, in)
+        reversed_shape = (target_shape[1], target_shape[0])
+        if target_shape == reversed_shape:
+            transposed = transposed_hint  # square: shape can't decide
+        elif tuple(fused.shape) == target_shape:
+            transposed = False
+        elif tuple(fused.shape) == reversed_shape:
+            transposed = True
+        else:
+            return None
+        return fused.t().contiguous() if transposed else fused.contiguous()
+
+    # gate/up weight, target (out, in) = (inter, hidden)
+    out, in_features = target_shape
+    non_transposed = tuple(fused.shape) == (2 * out, in_features)
+    transposed = tuple(fused.shape) == (in_features, 2 * out)
+    if non_transposed and transposed:
+        transposed = transposed_hint  # square-ish (2*out == in): shape can't decide
+        non_transposed = not transposed
+    if non_transposed:
+        return (fused[:out] if proj == "gate_proj" else fused[out:]).contiguous()
+    if transposed:
+        # fused is [in_features, 2*out]; split along the 2*out dim, then transpose
+        # back to the [out, in_features] nn.Linear weight layout.
+        if interleaved:
+            sliced = fused[:, 0::2] if proj == "gate_proj" else fused[:, 1::2]
+        else:
+            sliced = fused[:, :out] if proj == "gate_proj" else fused[:, out:]
+        return sliced.t().contiguous()
+    return None
+
+
+_MODEL_SIDE_EXPERT_RE = re.compile(
+    r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$"
+)
+
+
+@lru_cache(maxsize=None)
+def _expert_projection_renames_for(model_type):
+    """Map a fused projection to the checkpoint-side per-expert projection names.
+
+    ``transformers`` describes MoE experts with a ``WeightConverter`` whose
+    ``source_patterns`` are the per-expert checkpoint keys and whose single
+    ``target_pattern`` is the fused model-side parameter, e.g. for phimoe::
+
+        source_patterns = [".experts.*.w1.weight", ".experts.*.w3.weight"]
+        target_patterns = ".experts.gate_up_proj"
+
+    After AutoRound unfuses the experts the model-side names are
+    ``experts.<i>.gate_proj.weight`` / ``experts.<i>.up_proj.weight``, so we need
+    ``(gate_up_proj, 0) -> "w1.weight"`` and ``(gate_up_proj, 1) -> "w3.weight"`` to find
+    the tensors back on disk. Returns a tuple of ``((fused, index), suffix)`` pairs.
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import MergeModulelist, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    renames: dict[tuple[str, int], str] = {}
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        # Only expert merges (`experts.*.<proj>` -> fused 3D) are relevant here.
+        if not any(isinstance(op, MergeModulelist) for op in entry.operations):
+            continue
+        if len(entry.target_patterns) != 1:
+            continue
+        fused = entry.target_patterns[0].rstrip("$").rsplit(".", 1)[-1]
+        for position, source_pattern in enumerate(entry.source_patterns):
+            # ".experts.*.w1.weight" -> "w1.weight"
+            _, star, suffix = source_pattern.partition("*.")
+            if not star:
+                continue
+            renames.setdefault((fused, position), suffix.rstrip("$"))
+    return tuple(renames.items())
+
+
+@lru_cache(maxsize=None)
+def _concat_converters_for(model_type):
+    """Model-side params assembled by concatenating several checkpoint tensors.
+
+    Some families describe a single model-side parameter as the concatenation of
+    several separately-stored checkpoint tensors, via a ``WeightConverter`` whose
+    ``operations`` contain a ``Concatenate`` (and *no* ``MergeModulelist`` -- that is the
+    expert-fusion case, handled elsewhere). GLM-5.3-Flash (``glm5_next``) is the motivating
+    example: ``self_attn.conv1d.weight`` is ``cat([q_conv1d.weight, k_conv1d.weight,
+    v_conv1d.weight], dim=0)``. The meta skeleton only knows the fused model-side name, so
+    map it back to its checkpoint-side sources to materialize it.
+
+    Returns a tuple of ``(target_suffix, (source_suffixes...), concat_dim)`` triples, using
+    only literal (wildcard-free) patterns -- wildcard/expert converters are handled by the
+    expert-specific helpers.
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import Concatenate, MergeModulelist, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    converters = []
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        # Expert fusions (MergeModulelist) are handled by `_renamed_expert_candidates`
+        # and `materialize_module`'s fused lookup.
+        if any(isinstance(op, MergeModulelist) for op in entry.operations):
+            continue
+        concat = next((op for op in entry.operations if isinstance(op, Concatenate)), None)
+        if concat is None or len(entry.target_patterns) != 1:
+            continue
+        target = entry.target_patterns[0].rstrip("$")
+        sources = tuple(src.rstrip("$") for src in entry.source_patterns)
+        # Only literal patterns here; wildcard (`*`) converters are per-expert.
+        if "*" in target or any("*" in src for src in sources):
+            continue
+        converters.append((target, sources, getattr(concat, "dim", 0)))
+    return tuple(converters)
+
+
+def _renamed_expert_candidates(index, full_name: str):
+    """Checkpoint-name candidates for an unfused per-expert parameter."""
+    match = _MODEL_SIDE_EXPERT_RE.match(full_name)
+    if match is None:
+        return
+
+    fused_position = _MODEL_PROJ_TO_FUSED.get(match["proj"])
+    if fused_position is None:
+        return
+    prefix, expert = match["prefix"], match["expert"]
+
+    for model_type in _index_model_types(index):
+        for key, suffix in _expert_projection_renames_for(model_type):
+            if key != fused_position:
+                continue
+            # "w1.weight" keeps the checkpoint's own attribute name; drop it for a bias.
+            suffix_attr = suffix.rsplit(".", 1)
+            if len(suffix_attr) == 2:
+                suffix = f"{suffix_attr[0]}.{match['attr']}"
+            yield f"{prefix}.{expert}.{suffix}"
 
 
 def _resolve_checkpoint_name(index, full_name: str):
@@ -305,24 +517,70 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
     # calibration/eval forwards) previously left those params on meta -- the
     # meta-ness then propagated silently until a crash far downstream. Map
     # each unfused name onto its fused on-disk tensor and slice.
-    _FUSED_RE = _re.compile(r"^(.*\.experts)\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$")
+    #
+    # The exact slicing depends on the family's fused layout: qwen3_moe stores
+    # ``[N, 2*inter, hidden]`` (contiguous halves, no transpose), while gpt_oss /
+    # llama4 store ``[N, hidden, 2*inter]`` (matmul layout, needs transpose) and
+    # gpt_oss additionally interleaves the gate/up columns. Rather than key the
+    # whole decision off ``model_type`` (which does not generalise to new
+    # families), the transpose is inferred from the *target* parameter shape and
+    # only the interleave axis (invisible to shapes) falls back to a small
+    # model_type hint table (see ``_slice_fused_expert``). Biases (gpt_oss) follow
+    # the same split as their weight.
+    _FUSED_RE = _re.compile(r"^(.*\.experts)\.(\d+)\.(gate_proj|up_proj|down_proj)\.(weight|bias)$")
     _fused_cache: dict = {}
+    _layout_cache: list = []  # lazily-resolved (transposed_hint, interleaved)
 
-    def _fused_lookup(full_name: str):
+    def _fused_lookup(full_name: str, target_shape):
         m = _FUSED_RE.match(full_name)
         if not m:
             return None
-        prefix, expert_idx, proj = m.group(1), int(m.group(2)), m.group(3)
-        fused_name = f"{prefix}.gate_up_proj" if proj in ("gate_proj", "up_proj") else f"{prefix}.down_proj"
+        prefix, expert_idx, proj, attr = m.group(1), int(m.group(2)), m.group(3), m.group(4)
+        is_gate_up = proj in ("gate_proj", "up_proj")
+        if is_gate_up:
+            fused_name = f"{prefix}.gate_up_proj" if attr == "weight" else f"{prefix}.gate_up_proj_bias"
+        else:
+            fused_name = f"{prefix}.down_proj" if attr == "weight" else f"{prefix}.down_proj_bias"
         if not index.has_tensor(fused_name):
             return None
         if fused_name not in _fused_cache:
             _fused_cache[fused_name] = index.read_tensors([fused_name], device=device)[fused_name]
         fused = _fused_cache[fused_name][expert_idx]
-        if proj == "down_proj":
-            return fused.contiguous()
-        inter = fused.shape[0] // 2
-        return (fused[:inter] if proj == "gate_proj" else fused[inter:]).contiguous()
+        # Resolve the model_type layout hint lazily and only once, and only when a
+        # fused expert tensor is actually being sliced -- reading the model type
+        # touches ``index.checkpoint_dir``/config, which cheap/fake indices used by
+        # non-fused (dense) materialization do not populate.
+        if not _layout_cache:
+            _layout_cache.append(_fused_expert_layout(index))
+        transposed_hint, interleaved = _layout_cache[0]
+        value = _slice_fused_expert(fused, proj, attr, is_gate_up, tuple(target_shape), transposed_hint, interleaved)
+        # Guard against a slice that does not match the destination parameter: it
+        # is safer to leave the param on meta (the caller then raises an
+        # actionable "fall back to a full CPU load" error) than to hand accelerate
+        # a mismatched tensor and crash with a cryptic ValueError.
+        if value is not None and tuple(value.shape) != tuple(target_shape):
+            return None
+        return value
+
+    def _concat_lookup(full_name: str):
+        """Assemble a model-side param that the checkpoint stores as several tensors
+        concatenated by a ``WeightConverter`` (e.g. GLM-5.3 ``q/k/v_conv1d`` ->
+        ``conv1d``). Returns the concatenated tensor, or ``None`` when no converter
+        applies or a source tensor is missing."""
+        for model_type in _index_model_types(index):
+            for target_suffix, source_suffixes, dim in _concat_converters_for(model_type):
+                if not full_name.endswith(target_suffix):
+                    continue
+                prefix = full_name[: -len(target_suffix)]
+                # Guard against a spurious mid-token match (require a clean boundary).
+                if prefix and not prefix.endswith("."):
+                    continue
+                source_names = [f"{prefix}{suffix}" for suffix in source_suffixes]
+                if not all(index.has_tensor(name) for name in source_names):
+                    continue
+                read = index.read_tensors(source_names, device=device)
+                return torch.cat([read[name] for name in source_names], dim=dim).contiguous()
+        return None
 
     targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
@@ -332,7 +590,9 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         full_name = f"{module_name}.{name}".replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
         if resolved_name is None:
-            sliced = _fused_lookup(full_name)
+            sliced = _fused_lookup(full_name, tensor.shape)
+            if sliced is None:
+                sliced = _concat_lookup(full_name)
             if sliced is not None:
                 fused_targets.append((name, sliced))
                 continue
@@ -341,7 +601,18 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         targets.append((name, resolved_name, tensor.dtype))
 
     for name, value in fused_targets:
-        set_module_tensor_to_device(module, name, device, value=value, dtype=value.dtype)
+        try:
+            set_module_tensor_to_device(module, name, device, value=value, dtype=value.dtype)
+        except (ValueError, RuntimeError) as exc:
+            # A fused-expert slice whose shape does not match its destination
+            # cannot be reconciled from the checkpoint; rather than surface the
+            # raw accelerate error, point the user at the non-meta fallback.
+            raise RuntimeError(
+                f"Failed to materialize fused MoE parameter '{module_name}.{name}' from the checkpoint "
+                f"(value shape {tuple(value.shape)}). This usually means the model's fused-expert layout "
+                "is not yet recognised by the meta-skeleton loader. Set AR_DISABLE_AUTO_META_LOAD=1 to load "
+                "the whole model on CPU instead (uses more RAM)."
+            ) from exc
     _fused_cache.clear()
 
     if not targets:
