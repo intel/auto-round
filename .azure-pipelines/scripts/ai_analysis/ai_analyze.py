@@ -12,9 +12,9 @@ the script emits the structured prompts only (no model call), which supports the
 """
 
 import argparse
+import datetime
 import json
 import os
-import shlex
 import subprocess
 import sys
 
@@ -50,7 +50,7 @@ Guidance:
 """
 
 
-def call_backend(prompt: str, backend: str, copilot_cmd: str, timeout: int) -> str:
+def call_backend(prompt: str, backend: str, timeout: int, model: str, trace_file: str, cluster_id) -> str:
     """Dispatch a prompt to the selected AI backend and return raw text output.
 
     Swap point: replace the ``copilot`` branch to change the inference provider.
@@ -58,26 +58,71 @@ def call_backend(prompt: str, backend: str, copilot_cmd: str, timeout: int) -> s
     if backend == "none":
         return ""
     if backend == "copilot":
-        return _call_copilot_cli(prompt, copilot_cmd, timeout)
+        return _call_copilot_cli(prompt, timeout, model, trace_file, cluster_id)
     raise ValueError(f"unknown backend: {backend}")
 
 
-def _call_copilot_cli(prompt: str, copilot_cmd: str, timeout: int) -> str:
-    argv = shlex.split(copilot_cmd) + [prompt]
+def _append_trace(trace_file: str, entry: dict) -> None:
+    """Append one AI-call record (JSONL) so the analysis process can be audited."""
+    if not trace_file:
+        return
+    try:
+        with open(trace_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"Warning: could not write trace file: {e}", file=sys.stderr)
+
+
+def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cluster_id) -> str:
+    argv = ["copilot", 
+            "-p", 
+            prompt,
+            "--allow-tool=shell(git:*)",
+            "--allow-tool=shell(python:*)",
+            "--allow-tool=shell(rg:*)",
+            "--allow-tool=read",
+            "--allow-tool=write",
+            "--no-ask-user",
+            ]
+    if model:
+        argv += ["--model", model]
     env = dict(os.environ)
     # Let the Copilot CLI authenticate with the dedicated token.
     ai_token = os.environ.get("AI_TOKEN", "")
     if ai_token:
         env.setdefault("GITHUB_TOKEN", ai_token)
         env.setdefault("GH_TOKEN", ai_token)
+    started = datetime.datetime.now(datetime.timezone.utc)
+    returncode = None
+    stderr = ""
+    raw = ""
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, check=False)
+        returncode = proc.returncode
+        stderr = proc.stderr.strip()
+        raw = proc.stdout.strip()
+        if returncode != 0:
+            print(f"Warning: Copilot CLI exited {returncode}: {stderr}", file=sys.stderr)
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"Warning: Copilot CLI call failed: {e}", file=sys.stderr)
-        return ""
-    if proc.returncode != 0:
-        print(f"Warning: Copilot CLI exited {proc.returncode}: {proc.stderr.strip()}", file=sys.stderr)
-    return proc.stdout.strip()
+        stderr = str(e)
+    ended = datetime.datetime.now(datetime.timezone.utc)
+    # ``argv`` omits the token; safe to record verbatim for auditing.
+    _append_trace(
+        trace_file,
+        {
+            "cluster_id": cluster_id,
+            "timestamp": started.isoformat(),
+            "duration_s": round((ended - started).total_seconds(), 3),
+            "model": model or "(cli default)",
+            "cmd": ["copilot", "-p", "<prompt>"] + (["--model", model] if model else []),
+            "returncode": returncode,
+            "prompt": prompt,
+            "response": raw,
+            "stderr": stderr,
+        },
+    )
+    return raw
 
 
 def parse_model_json(text: str) -> "dict | None":
@@ -106,7 +151,7 @@ def build_prompt(cluster: dict, diff: str, max_excerpt: int, max_diff: int) -> s
 
 def analyze(cluster: dict, diff: str, args) -> dict:
     prompt = build_prompt(cluster, diff, args.max_excerpt_chars, args.max_diff_chars)
-    raw = call_backend(prompt, args.backend, args.copilot_cmd, args.timeout)
+    raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
     parsed = parse_model_json(raw)
     result = {
         "cluster_id": cluster.get("id"),
@@ -157,8 +202,9 @@ def main():
         default="true",
         help="Set to a falsy value (false/0/no) to force the no-model 'none' backend",
     )
-    parser.add_argument("--copilot-cmd", default="copilot -p", help="Copilot CLI base command")
     parser.add_argument("--timeout", type=int, default=300, help="Per-call timeout in seconds")
+    parser.add_argument("--model", default="", help="Copilot model to use; empty uses the CLI default")
+    parser.add_argument("--trace-file", default="", help="JSONL file logging each AI call for auditing")
     parser.add_argument("--max-excerpt-chars", type=int, default=4000)
     parser.add_argument("--max-diff-chars", type=int, default=12000)
     args = parser.parse_args()

@@ -8,9 +8,6 @@ parameters:
   - name: knownIssueLabel
     type: string
     default: "CI-known-issue"
-  - name: copilotCmd
-    type: string
-    default: "copilot -p"
   # Opt-in: post the merged report as a PR comment (updates in place on reruns).
   - name: postComment
     type: boolean
@@ -89,7 +86,7 @@ steps:
           --top ${{ parameters.topUnknown }} \
           --enable-ai-analysis ${{ parameters.enableAiAnalysis }} \
           --backend copilot \
-          --copilot-cmd "${{ parameters.copilotCmd }}"
+          --trace-file "${work}/ai_trace.jsonl"
 
   - task: Bash@3
     displayName: "Merge markdown report"
@@ -109,8 +106,6 @@ steps:
           --clusters-json "${work}/annotated.json" \
           --ai-json "${work}/ai.json" \
           --output "${work}/report.md"
-        echo "===== report.md ====="
-        cat "${work}/report.md"
 
   - ${{ if eq(parameters.postComment, true) }}:
       - task: Bash@3

@@ -97,7 +97,7 @@ stages:
         steps:
           - template: template/ai-analysis-template.yml
             parameters:
-              enableAiAnalysis: false
+              enableAiAnalysis: true
               postComment: true
 
   - stage: Coverage
