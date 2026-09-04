@@ -63,4 +63,3 @@ def test_apply_plan_preserves_non_target_module_own_attributes():
     assert model[0].group_size == 128
     # The norm keeps its own group_size, untouched by the scheme-key reset.
     assert model[1].group_size == 8
-
