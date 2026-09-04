@@ -317,3 +317,276 @@ def save_rrq_base_model(
         safe_serialization=safe_serialization,
         **kwargs,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2: Generate residual from existing base model + FP weights
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _generate_residual_for_layer(
+    W_fp: torch.Tensor,
+    W_dequant_base: torch.Tensor,
+    bits: int,
+    group_size: int,
+    sym: bool,
+    num_planes: int,
+) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Generate 3 packed INT2 residual planes for a single layer.
+
+    Args:
+        W_fp: Original FP weight tensor, shape ``(out_features, in_features)``.
+        W_dequant_base: Dequantized base weight, shape ``(out_features, in_features)``.
+        bits: Bits per plane (always 2 for RRQ).
+        group_size: Quantization group size.
+        sym: Symmetric quantization flag.
+        num_planes: Total planes (4 = 1 base + 3 residual).
+
+    Returns:
+        List of ``(qweight, scales, qzeros)`` tuples for planes 1..K-1.
+    """
+    from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+    from auto_round.data_type.utils import get_quant_func
+
+    QuantLinear = _rrq_quant_linear_class(sym)
+    quant_func, _ = get_quant_func(
+        dtype="int",
+        bits=bits,
+        sym=sym,
+        disable_opt_rtn=True,
+        group_size=group_size,
+        iters=0,
+    )
+
+    out_features, in_features = W_fp.shape
+    scale_dtype = torch.float16
+
+    def _normalize(scale, zp):
+        if isinstance(scale, torch.Tensor):
+            scale = scale.reshape(out_features, -1).to(scale_dtype)
+        else:
+            scale = torch.tensor(scale, dtype=scale_dtype)
+        if isinstance(zp, torch.Tensor):
+            zp = zp.reshape(out_features, -1)
+        return scale, zp
+
+    def _pack(dequant, scale, zp):
+        scale_n, zp_n = _normalize(scale, zp)
+        ql = QuantLinear(bits, group_size, in_features, out_features, bias=False)
+        plane_linear = nn.Linear(in_features, out_features, bias=False)
+        plane_linear.weight.data = dequant.detach().clone().to(torch.float32)
+        ql.to("cpu")
+        ql.pack(plane_linear, scale_n, zp_n, None, device="cpu")
+        ql.to("cpu")
+        return ql.qweight.detach(), ql.scales.detach(), ql.qzeros.detach()
+
+    # Start from the residual after the base plane
+    residual = W_fp.to(torch.float32) - W_dequant_base.to(torch.float32)
+    accumulated = torch.zeros_like(residual)
+    planes = []
+
+    for plane_idx in range(1, num_planes):
+        quantized, scale, zp = quant_func(
+            residual,
+            bits=bits,
+            group_size=group_size,
+            scale_dtype=scale_dtype,
+            q_scale_thresh=1e-5,
+        )
+        quantized = quantized.to(torch.float32)
+        accumulated = accumulated + quantized
+        planes.append(_pack(quantized, scale, zp))
+        residual = residual - quantized
+
+    return planes
+
+
+def generate_rrq_residual(
+    base_model_dir: str,
+    raw_model: str,
+    output_dir: str,
+    group_size: int = 128,
+    sym: bool = False,
+    device: Union[str, torch.device] = "cpu",
+    safe_serialization: bool = True,
+):
+    """Generate an RRQ residual model from an existing INT2 base model + FP weights.
+
+    This is the Phase 2 entry point: for users who already have an INT2 quantized
+    model, generate the 3 residual planes without re-quantizing the base.
+
+    For each eligible layer:
+        1. Dequantize the base plane: ``W_dequant_base`` (from packed ``qweight``/``scales``/``qzeros``)
+        2. Load the original FP weight: ``W_fp``
+        3. Compute ``E_1 = W_fp - W_dequant_base``
+        4. Run 3 rounds of RTN INT2 quantization on the residual
+        5. Pack the results as ``auto_round:rrq``
+
+    Args:
+        base_model_dir: Path to the exported INT2 base model (standard ``auto_round`` format).
+        raw_model: Path (or HF name) to the original FP model weights.
+        output_dir: Output directory for the residual model.
+        group_size: Quantization group size (must match the base model).
+        sym: Symmetric quantization flag (must match the base model).
+        device: Device for computation.
+        safe_serialization: Use safetensors format (default True).
+    """
+    import glob
+    import json
+    import os
+
+    from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+
+    bits = 2  # fixed for RRQ
+    num_planes = 4  # 1 base + 3 residual
+
+    # Load base config to validate group_size/sym
+    base_config_path = os.path.join(base_model_dir, "config.json")
+    if not os.path.exists(base_config_path):
+        raise FileNotFoundError(f"config.json not found in {base_model_dir}")
+    with open(base_config_path, "r", encoding="utf-8") as f:
+        base_config = json.load(f)
+    base_quant = base_config.get("quantization_config", {})
+    base_bits = base_quant.get("bits", 2)
+    base_group_size = base_quant.get("group_size", group_size)
+    base_sym = base_quant.get("sym", sym)
+
+    if base_bits != bits:
+        raise ValueError(f"Base model bits={base_bits}, but RRQ requires bits={bits}.")
+    if base_group_size != group_size:
+        raise ValueError(f"Base model group_size={base_group_size}, but got group_size={group_size}.")
+    if base_sym != sym:
+        raise ValueError(f"Base model sym={base_sym}, but got sym={sym}.")
+
+    logger.info(
+        f"Generating RRQ residual from base={base_model_dir} + raw={raw_model} "
+        f"(group_size={group_size}, sym={sym}) -> {output_dir}"
+    )
+
+    # Load base state dict (packed INT2)
+    base_state: dict[str, torch.Tensor] = {}
+    for f in sorted(glob.glob(os.path.join(base_model_dir, "*.safetensors"))):
+        from safetensors.torch import load_file as _load_st
+        base_state.update(_load_st(f))
+    if not base_state:
+        for f in sorted(glob.glob(os.path.join(base_model_dir, "*.bin"))):
+            base_state.update(torch.load(f, map_location="cpu", weights_only=False))
+    if not base_state:
+        raise FileNotFoundError(f"No weight files found in {base_model_dir}")
+
+    # Load raw (FP) state dict
+    raw_state: dict[str, torch.Tensor] = {}
+    raw_path = os.path.expanduser(raw_model)
+    if os.path.isdir(raw_path):
+        for f in sorted(glob.glob(os.path.join(raw_path, "*.safetensors"))):
+            from safetensors.torch import load_file as _load_st
+            raw_state.update(_load_st(f))
+        if not raw_state:
+            for f in sorted(glob.glob(os.path.join(raw_path, "*.bin"))):
+                raw_state.update(torch.load(f, map_location="cpu", weights_only=False))
+    else:
+        # HF model name -- download via transformers
+        import transformers
+        from safetensors.torch import load_file as _load_st
+
+        hf_dir = transformers.AutoConfig.from_pretrained(raw_model)
+        # Use snapshot_download to get the local path
+        from huggingface_hub import snapshot_download
+        local_dir = snapshot_download(raw_model)
+        for f in sorted(glob.glob(os.path.join(local_dir, "*.safetensors"))):
+            raw_state.update(_load_st(f))
+        if not raw_state:
+            for f in sorted(glob.glob(os.path.join(local_dir, "*.bin"))):
+                raw_state.update(torch.load(f, map_location="cpu", weights_only=False))
+
+    if not raw_state:
+        raise FileNotFoundError(f"No weight files found for raw model: {raw_model}")
+
+    # Enumerate base layers (packed INT2 with .qweight keys)
+    base_layers = {}
+    for key, value in base_state.items():
+        if not key.endswith(".qweight") or not isinstance(value, torch.Tensor):
+            continue
+        if key.rsplit(".", 1)[1] != "qweight":
+            continue
+        layer_name = key.rsplit(".qweight", 1)[0]
+        if f"{layer_name}.scales" not in base_state:
+            continue
+        in_features = value.shape[0] * 32 // bits
+        out_features = value.shape[1]
+        base_layers[layer_name] = (in_features, out_features)
+
+    if not base_layers:
+        raise ValueError(f"No packed INT2 layers found in base model {base_model_dir}")
+
+    logger.info(f"Found {len(base_layers)} base layers to generate residual for.")
+
+    # Build residual state dict
+    residual_state: dict[str, torch.Tensor] = {}
+    processed = 0
+    for layer_name, (in_features, out_features) in base_layers.items():
+        # Check that the raw model has this layer's weight
+        if f"{layer_name}.weight" not in raw_state:
+            logger.warning(f"Layer {layer_name!r} not found in raw model; skipping.")
+            continue
+
+        W_fp = raw_state[f"{layer_name}.weight"].to(torch.float32)
+
+        # Dequantize the base plane to get W_dequant_base
+        qweight = base_state[f"{layer_name}.qweight"].to(torch.int32)
+        scales = base_state[f"{layer_name}.scales"].to(torch.float16)
+        qzeros = base_state.get(f"{layer_name}.qzeros")
+        if qzeros is None:
+            num_groups = (in_features + group_size - 1) // group_size
+            pack_factor = 32 // bits
+            qzeros = torch.zeros((num_groups, max(1, out_features // pack_factor)), dtype=torch.int32)
+        else:
+            qzeros = qzeros.to(torch.int32)
+
+        # Build QuantLinear and dequant
+        QuantLinear = _rrq_quant_linear_class(sym)
+        ql = QuantLinear(bits, group_size, in_features, out_features, bias=False)
+        ql.qweight.data = qweight
+        ql.scales.data = scales
+        ql.qzeros.data = qzeros
+        ql.to("cpu")
+
+        # Dequant by running forward on identity
+        identity = torch.eye(in_features, dtype=torch.float32)
+        with torch.no_grad():
+            out = ql.forward(identity)  # (in_features, out_features)
+        W_dequant_base = out.T.to(torch.float32)  # (out_features, in_features)
+
+        # Generate 3 residual planes
+        planes = _generate_residual_for_layer(
+            W_fp, W_dequant_base, bits, group_size, sym, num_planes
+        )
+
+        for k, (qw, sc, qz) in enumerate(planes, start=1):
+            residual_state[f"{layer_name}.qweight_{k}"] = qw
+            residual_state[f"{layer_name}.scales_{k}"] = sc
+            residual_state[f"{layer_name}.qzeros_{k}"] = qz
+        processed += 1
+
+        if processed % 50 == 0:
+            logger.info(f"  processed {processed}/{len(base_layers)} layers...")
+
+    if processed == 0:
+        raise ValueError(
+            f"No layers could be processed: no common layers found between "
+            f"base model ({len(base_layers)} layers) and raw model."
+        )
+
+    # Save
+    os.makedirs(output_dir, exist_ok=True)
+    _save_state_dict_sharded(residual_state, output_dir, safe_serialization)
+
+    # Write quantization config
+    quantization_config = build_rrq_quantization_config(num_planes, group_size, sym)
+    _write_quantization_config(quantization_config, output_dir)
+
+    logger.info(
+        f"RRQ residual model saved: {processed} layers, {num_planes - 1} planes each, "
+        f"to {output_dir}"
+    )
+    return residual_state
