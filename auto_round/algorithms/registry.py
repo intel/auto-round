@@ -26,7 +26,7 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
-_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
+_BUILTIN_ALGORITHM_ORDER = ("rtn", "rrq", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
@@ -37,6 +37,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     # imports ordered preserves the help output and default algorithm order.
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
+        "auto_round.algorithms.quantization.rrq.config",
         "auto_round.algorithms.quantization.sign_round.config",
         "auto_round.algorithms.transforms.awq.config",
         "auto_round.algorithms.transforms.svdquant.config",
@@ -54,6 +55,7 @@ def _ensure_pipeline_members_registered() -> None:
         return
     for module_name in (
         "auto_round.algorithms.quantization.rtn.quantizer",
+        "auto_round.algorithms.quantization.rrq.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
