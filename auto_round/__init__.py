@@ -50,18 +50,24 @@ __all__ = [
     "RotationConfig",
     "SpinQuantConfig",
     "load_rrq_model",
+    "generate_rrq_residual",
 ]
 
 
 def __getattr__(name):
     """Lazy import for heavy submodules to avoid import cycles / slow startup.
 
-    Currently exposes ``load_rrq_model`` (combined base + residual RRQ loading),
-    which lives in ``auto_round.inference.rrq_model`` and pulls in the full
-    export path.
+    Currently exposes RRQ-related entry points:
+    - ``load_rrq_model``: combined base + residual loading (``auto_round.inference.rrq_model``)
+    - ``generate_rrq_residual``: Phase 2 incremental residual generation
+      (``auto_round.export.export_to_autoround.export_to_rrq``)
     """
     if name == "load_rrq_model":
         from auto_round.inference.rrq_model import load_rrq_model
 
         return load_rrq_model
+    if name == "generate_rrq_residual":
+        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+
+        return generate_rrq_residual
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

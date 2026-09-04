@@ -20,6 +20,8 @@ each residual plane is stored in the stock single-plane INT2 AutoRound layout
 stock ``QuantLinear`` on an identity input.
 """
 
+import os
+
 import pytest
 import torch
 import torch.nn as nn
@@ -482,3 +484,187 @@ class TestRRQValidation:
         residual = self._residual_config(bits=2, group_size=128, sym=False, method="auto-round")
         with pytest.raises(ValueError, match="quant_method"):
             _validate_base_matches_residual(base, residual)
+
+
+class TestGenerateRRQResidual:
+    """Tests for Phase 2: generate_rrq_residual (incremental from existing base)."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        torch.manual_seed(42)
+        yield
+
+    def _make_base_and_raw(
+        self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True
+    ):
+        """Build a fake base model dir (packed INT2) + raw FP state dict.
+
+        Returns ``(base_dir, raw_dir)`` where:
+        - ``base_dir`` contains ``config.json`` + ``model.safetensors`` with
+          packed ``qweight``/``scales``/``qzeros`` for one layer.
+        - ``raw_dir`` contains ``model.safetensors`` with the FP ``.weight``.
+        """
+        import json
+        import os
+
+        from safetensors.torch import save_file
+
+        from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+        from auto_round.data_type.utils import get_quant_func
+
+        QuantLinear = _rrq_quant_linear_class(sym)
+
+        W = torch.randn(out_features, in_features) * 0.01
+
+        # RTN quantize to get scale/zp
+        quant_func, _ = get_quant_func(
+            dtype="int", bits=2, sym=sym,
+            disable_opt_rtn=True, group_size=group_size, iters=0,
+        )
+        _, scale, zp = quant_func(
+            W, bits=2, group_size=group_size,
+            scale_dtype=torch.float16, q_scale_thresh=1e-5,
+        )
+
+        # Normalize
+        scale_n = scale.reshape(out_features, -1).to(torch.float16)
+        if isinstance(zp, torch.Tensor):
+            zp_n = zp.reshape(out_features, -1)
+        else:
+            zp_n = zp
+
+        # Pack
+        plane_linear = nn.Linear(in_features, out_features, bias=False)
+        plane_linear.weight.data = W.clone()
+        plane_linear.to(torch.float32)
+        ql = QuantLinear(2, group_size, in_features, out_features, bias=False)
+        ql.pack(plane_linear, scale_n, zp_n, None, device="cpu")
+
+        # Write base model dir
+        base_dir = os.path.join(str(tmp_path), "base")
+        os.makedirs(base_dir, exist_ok=True)
+        base_state = {
+            "test_layer.qweight": ql.qweight.detach(),
+            "test_layer.scales": ql.scales.detach(),
+            "test_layer.qzeros": ql.qzeros.detach(),
+        }
+        save_file(base_state, os.path.join(base_dir, "model.safetensors"))
+        config = {
+            "quantization_config": {
+                "bits": 2,
+                "group_size": group_size,
+                "sym": sym,
+                "quant_method": "auto-round",
+            }
+        }
+        with open(os.path.join(base_dir, "config.json"), "w") as f:
+            json.dump(config, f)
+
+        # Write raw model dir
+        raw_dir = os.path.join(str(tmp_path), "raw")
+        os.makedirs(raw_dir, exist_ok=True)
+        raw_state = {"test_layer.weight": W.clone()}
+        save_file(raw_state, os.path.join(raw_dir, "model.safetensors"))
+
+        return base_dir, raw_dir
+
+    def test_output_structure(self, tmp_path):
+        """generate_rrq_residual produces 3 packed planes per layer."""
+        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path)
+        out_dir = str(tmp_path / "residual_out")
+
+        generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=True)
+
+        # Check output files exist
+        assert os.path.isdir(out_dir)
+        assert os.path.exists(os.path.join(out_dir, "quantization_config.json"))
+
+        from safetensors.torch import load_file
+        state = load_file(os.path.join(out_dir, "model.safetensors"))
+
+        # 3 planes × 3 tensors = 9
+        assert len(state) == 9, f"expected 9 tensors, got {len(state)}"
+        for k in (1, 2, 3):
+            assert f"test_layer.qweight_{k}" in state
+            assert f"test_layer.scales_{k}" in state
+            assert f"test_layer.qzeros_{k}" in state
+            assert state[f"test_layer.qweight_{k}"].dtype == torch.int32
+            assert state[f"test_layer.scales_{k}"].dtype == torch.float16
+            assert state[f"test_layer.qzeros_{k}"].dtype == torch.int32
+
+    def test_residual_norm_decreases(self, tmp_path):
+        """Successive residual planes should reduce the reconstruction error."""
+        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, out_features=64, in_features=128, group_size=32, sym=True)
+        out_dir = str(tmp_path / "residual_out2")
+
+        generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=True)
+
+        from safetensors.torch import load_file
+        state = load_file(os.path.join(out_dir, "model.safetensors"))
+
+        # Load raw weight
+        raw_state = load_file(os.path.join(raw_dir, "model.safetensors"))
+        W = raw_state["test_layer.weight"].to(torch.float32)
+
+        # Dequant base
+        from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+        QuantLinear = _rrq_quant_linear_class(True)
+        ql = QuantLinear(2, 32, 128, 64, bias=False)
+        ql.qweight.data = load_file(os.path.join(base_dir, "model.safetensors"))["test_layer.qweight"]
+        ql.scales.data = load_file(os.path.join(base_dir, "model.safetensors"))["test_layer.scales"]
+        ql.qzeros.data = load_file(os.path.join(base_dir, "model.safetensors"))["test_layer.qzeros"]
+        ql.to("cpu")
+        identity = torch.eye(128, dtype=torch.float32)
+        with torch.no_grad():
+            W_base = ql.forward(identity).T.to(torch.float32)
+
+        # Dequant each residual plane and accumulate
+        acc = W_base
+        norms = [(W - acc).norm().item()]
+        for k in range(1, 4):
+            from auto_round.inference.rrq_model import _build_quant_plane
+            plane = _build_quant_plane(
+                QuantLinear,
+                state[f"test_layer.qweight_{k}"],
+                state[f"test_layer.scales_{k}"],
+                state[f"test_layer.qzeros_{k}"],
+                2, 32, 128, 64, False, None, torch.device("cpu"),
+            )
+            identity = torch.eye(128, dtype=torch.float32)
+            with torch.no_grad():
+                acc = acc + plane.forward(identity).T.to(torch.float32)
+            norms.append((W - acc).norm().item())
+
+        for i in range(1, len(norms)):
+            assert norms[i] <= norms[i - 1] + 1e-4, (
+                f"Residual norm increased at plane {i}: {norms[i]} > {norms[i-1]}"
+            )
+
+    def test_config_mismatch_raises(self, tmp_path):
+        """Mismatched group_size should raise ValueError."""
+        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True)
+        out_dir = str(tmp_path / "residual_out3")
+
+        with pytest.raises(ValueError, match="group_size"):
+            generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=64, sym=True)
+
+    def test_sym_mismatch_raises(self, tmp_path):
+        """Mismatched sym flag should raise ValueError."""
+        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+
+        base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True)
+        out_dir = str(tmp_path / "residual_out4")
+
+        with pytest.raises(ValueError, match="sym"):
+            generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=False)
+
+    def test_top_level_export(self):
+        """generate_rrq_residual is accessible from auto_round top-level."""
+        from auto_round import generate_rrq_residual as gen
+        assert callable(gen)
