@@ -4,7 +4,7 @@
 - 分支：`feat/rrq-phase1`
 - 对照文档：[`rrq_rfc_CN.md`](./rrq_rfc_CN.md) / [`rrq_rfc.md`](./rrq_rfc.md)（英文版）
 - 状态来源：`ar-xpu` conda 环境（torch 2.14.0+xpu + 2× Arc Pro B60）内**实际运行验证**（单测 + Qwen3-0.6B 端到端 + lm-eval）
-- 本次更新：**Phase 2 完成** —— `generate_rrq_residual`（从已有 INT2 base 模型 + 原始 FP 权重增量生成 residual，无需重算 base）；Phase 1 端到端运行时验证全部通过
+- 本次更新：**Phase 3 完成** —— 每个 INT2 平面支持独立 AutoRound sign-SGD 调优，已在 Qwen3-0.6B 上完成校准、导出和组合加载验证
 
 ## 变更清单
 
@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `auto_round/__init__.py` | 修改 | 导出 `RRQConfig`；PEP 562 `__getattr__` 懒导出 `load_rrq_model` + `generate_rrq_residual` |
 | `auto_round/algorithms/registry.py` | 修改 | 注册 `rrq` alias 与 pipeline member（config + quantizer） |
-| `auto_round/algorithms/quantization/rrq/` | 新增 | `config.py` / `quantizer.py` / `__init__.py` |
+| `auto_round/algorithms/quantization/rrq/` | 新增 | `config.py` / `quantizer.py` / `__init__.py`；`RRQSignRoundQuantizer` 实现 Phase 3 |
 | `auto_round/inference/rrq_linear.py` | 新增 | `RRQLinear` = base + N 个 residual `QuantLinear` 子模块；`forward` 先算 base 再累加 residual；`set_rrq_bits` |
 | `auto_round/inference/rrq_model.py` | 新增 | **组合加载入口** `load_rrq_model`（从 base packed tensors 重建 base `QuantLinear` + residual `QuantLinear` → `RRQLinear`） |
 | `auto_round/export/export_to_autoround/export_to_rrq.py` | 新增 | **residual 导出** `save_quantized_rrq`（只落 3 个 packed INT2 plane 到单个 `auto_round:rrq` artifact）/ `save_rrq_base_model` / **Phase 2 `generate_rrq_residual`**（已有 base + FP 权重增量生成）+ `quantization_config` 构建 |
@@ -25,10 +25,10 @@
 | `auto_round/export/export_to_gguf/conversion/base.py` | 修改 | `auto-round-rrq` → fail-fast 拒绝 |
 | `auto_round/export/export_to_mlx/export.py` | 修改 | `auto-round-rrq` → fail-fast 拒绝 |
 | `docs/rrq_rfc_CN.md` / `rrq_rfc.md` / `rrq_progress_CN.md` | 新增 | RFC 草案 + 进度 |
-| `test/unit/test_cpu/algorithms/test_rrq.py` | 新增 | 单元测试（Phase 1 量化/导出/加载 + Phase 2 `generate_rrq_residual`），**28 个** |
+| `test/unit/test_cpu/algorithms/test_rrq.py` | 新增 | 单元测试（Phase 1 量化/导出/加载 + Phase 2 residual + Phase 3 tuning），**31 个** |
 | `test_rrq_qwen3_06b.py` / `test_rrq_lm_eval.py` | 新增 | Qwen3-0.6B 端到端量化+校验 / lm-eval 精度 benchmark 脚本 |
 
-**整体判断**：Phase 1 + Phase 2 核心算法、**导出/加载管线集成、ABI、组合 loader、非 RRQ 后端拒绝、packed-INT2 存储、增量生成** 均已落地，并在 `ar-xpu`（torch 2.14.0+xpu）环境**实跑验证通过**（28 单测 + Qwen3-0.6B 端到端 + HellaSwag 精度）。剩余：Phase 3（OPT sign-SGD 调优）。
+**整体判断**：Phase 1 + Phase 2 + Phase 3 核心算法、**导出/加载管线集成、ABI、组合 loader、非 RRQ 后端拒绝、packed-INT2 存储、增量生成、逐平面 sign-SGD 调优** 均已落地，并在 `ar-xpu`（torch 2.14.0+xpu）环境**实跑验证通过**（31 单测 + Qwen3-0.6B Phase 3 校准/导出/加载）。
 
 ---
 
@@ -51,8 +51,9 @@ RFC 要求 residual 用 **packed INT2**（`qweight_k`/`scales_k`/`qzeros_k`）�
 
 | RFC 条目 | 状态 | 说明 |
 | --- | --- | --- |
-| 1. `RRQConfig` + 注册 `rrq` alias + 从 `__init__` 导出 | ✅ | `config.py` 继承 `RTNConfig`，固定 `bits=2 / data_type=int / act_bits=16 / num_residual_planes=3`，覆盖时抛 `ValueError`；`registry.py` 已加 alias `"rrq"/"rrq_rtn"` 与 pipeline member；`__init__.py` 已导出 `RRQConfig` |
+| 1. `RRQConfig` + 注册 `rrq` alias + 从 `__init__` 导出 | ✅ | `config.py` 继承 `RTNConfig`，固定 `bits=2 / data_type=int / act_bits=16 / num_residual_planes=3`；支持 `iters/lr/minmax_lr/momentum`，`iters>0` 自动开启 calibration；覆盖固定值时抛 `ValueError`；`registry.py` 已加 alias `"rrq"/"rrq_rtn"` 与 pipeline member |
 | 2. `RRQRTNQuantizer` 4 轮顺序 RTN（`disable_opt_rtn=True`、无 calib） | ✅（packed） | `_quantize_layer_rrq` 实现 `W → 4 轮 QDQ 累加`；base 写入 `weight/scale/zp`（标准 INT2 layout），每个 residual plane 经 W2A16 `QuantLinear.pack`（sym/asym 各选类）打包成 `qweight_k/scales_k/qzeros_k` 存入 buffer |
+| 2.5. Phase 3 AutoRound sign-SGD 调优 | ✅ | `RRQSignRoundQuantizer` 按 4 个平面顺序优化；每轮使用 `value_k/min_scale_k/max_scale_k` STE 参数，已完成前缀 `detach` 冻结；复用 `SignSGD`、per-layer lr/minmax lr 和 calibration block loss；`iters=0` 仍走 RTN |
 | 3. 导出（residual + base 分开） | ✅（packed INT2） | `export_to_rrq.py`：`save_quantized_rrq` 只落 3 个 packed INT2 plane（`qweight_1..3/scales/qzeros`）到**单个** `auto_round:rrq` sharded artifact（不含 base/非 RRQ 参数），含 `quantization_config`（`quant_method="auto-round-rrq"`）；`save_rrq_base_model` 走标准 `auto_round` 路径。`RRQFormat` 已注册 `auto_round:rrq` |
 | 4. `RRQLinear` 推理参考模块 + `set_rrq_bits` | ✅ | `rrq_linear.py`：`RRQLinear` = base `QuantLinear` + N 个 residual `QuantLinear` 子模块，`forward` 先算 base 再累加 active residual（dequant 复用 stock `QuantLinear.forward`）；`set_rrq_bits`(2/4/6/8 → 1/2/3/4 平面)；被 `rrq_model.py` 使用 |
 | 5. 组合加载入口（base + residual → `RRQLinear`） | ✅ | `rrq_model.py::load_rrq_model`：校验 `bits/group_size/sym` 一致（fail-fast）；从 base packed tensors 重建 base `QuantLinear`、从 `qweight_k` 重建 residual `QuantLinear`（均按 `sym` 选类），将 eligible 层替换为 `RRQLinear`，按 `active_bits` 设置活跃 |
@@ -67,7 +68,7 @@ RFC 要求 residual 用 **packed INT2**（`qweight_k`/`scales_k`/`qzeros_k`）�
 1. ~~**端到端运行时验证**~~ ✅ **已完成**：`ar-xpu` 环境（torch 2.14.0+xpu）内实跑通过。`test_rrq.py` 28/28 单测通过；`test_rrq_qwen3_06b.py` 对 Qwen3-0.6B 完成量化 + base/residual 分块保存 + 文件布局/大小校验（PASS）；`load_rrq_model` 真实 HF 加载 + 2/4/6/8-bit forward 均正常（`--verify-load`）。
 2. ~~**base 加载路径**~~ ✅ **已完成**：`load_rrq_model` 在真实 Qwen3-0.6B 上验证：`from_pretrained` 加载架构 + 非量化权重，packed 层被手动重建为 `QuantLinear` 后替换（garbage 权重被丢弃），`set_module` 替换后 model 正常 forward + `generate` 可用。
 3. ~~**Phase 2（`generate_rrq_residual`）**~~ ✅ **已完成**：基于新 `auto_round:rrq` 布局实现增量生成（`export_to_rrq.py::generate_rrq_residual`）。流程：dequant base（`QuantLinear.forward(identity)`）→ `E_1 = W_fp − Ŵ_0` → 3 轮 RTN INT2 → packed 导出。支持本地目录 / HF 模型名；`group_size`/`sym`/`bits` 与 base 校验一致（fail-fast）；`from auto_round import generate_rrq_residual` 已暴露；5 个单测（结构/残差单调递减/配置 fail-fast/顶层导出）全部通过。
-4. **Phase 3（OPT sign-SGD）**：⏳ 未实现（`RRQSignRoundQuantizer`、`iters/lr/minmax_lr` 字段、每轮 sign-SGD 调优）。
+4. ~~**Phase 3（OPT sign-SGD）**~~ ✅ **已完成**：`RRQSignRoundQuantizer` 按轮次使用 calibration block loss 独立优化 4 个 INT2 平面；支持 `iters/lr/minmax_lr/momentum`，完成前缀冻结，导出布局与 Phase 1 相同。
 
 ---
 
@@ -88,8 +89,8 @@ RFC 要求 residual 用 **packed INT2**（`qweight_k`/`scales_k`/`qzeros_k`）�
 
 - **Phase 1**：核心算法 + **packed-INT2 residual 存储**（3 个 INT2 AutoRound model 打包到单个 `auto_round:rrq`）+ 导出/加载管线集成 + ABI（`quant_method="auto-round-rrq"`、`quantization_config`）+ 组合 loader（复用 W2A16 `QuantLinear.forward`）+ 非 RRQ 后端拒绝 + 单元测试 **均已落地并通过运行时验证**。Qwen3-0.6B 端到端验证通过（量化 + 分块保存 + `load_rrq_model` + 2/4/6/8-bit forward + HellaSwag 精度 6-bit≈fp32）。**✅ 已完成**。
 - **Phase 2**：✅ **已完成**。`generate_rrq_residual` 从已有 INT2 base 模型 + 原始 FP 权重增量生成 residual（无需重算 base），5 个单测通过，`from auto_round import generate_rrq_residual` 已暴露。
-- **Phase 3**：⏳ 未实现（OPT sign-SGD 调优）。
-- **验收标准**：单元层面 + `load_rrq_model` 真实加载 + 2/4/6/8-bit 输出 + HellaSwag 精度均已实跑验证（`ar-xpu` 环境）。Phase 3 验收待 OPT sign-SGD 落地后补充。
+- **Phase 3**：✅ **已完成**。`iters>0` 进入 calibration compressor；每个 block 执行 4 轮 sign-SGD，当前平面使用 STE，已完成前缀保持冻结，并写回与 Phase 1 相同的 packed INT2 ABI。
+- **验收标准**：31 个 RRQ 单测通过；Qwen3-0.6B 使用 `iters=2` 完成真实 calibration、196 层 × 4 平面调优、residual 导出及 `load_rrq_model` 组合加载验证。LM-eval 精度对比和 CUDA eager benchmark 仍待补充。
 
 ---
 
@@ -102,4 +103,4 @@ RFC 要求 residual 用 **packed INT2**（`qweight_k`/`scales_k`/`qzeros_k`）�
 5. ✅ **Packed-INT2 存储**：quantizer 用 W2A16 `QuantLinear.pack` 打包 residual（sym/asym 各选类），导出只落 3 个 packed plane 到单个 `auto_round:rrq`，`RRQLinear`/load 复用 stock `QuantLinear.forward`（已完成，待运行时验证）。
 6. ✅ **端到端验证**：`ar-xpu` 环境（torch 2.14.0+xpu）实跑通过。`test_rrq.py` 28/28；`test_rrq_qwen3_06b.py` 量化 + base/residual 分块保存 + `load_rrq_model` + 2/4/6/8-bit forward；HellaSwag 精度 6-bit≈fp32。
 7. ✅ Phase 2 `generate_rrq_residual`（基于新 `auto_round:rrq` 布局，从已有 base + FP 权重增量生成）。
-8. ⏳ Phase 3 OPT sign-SGD 调优（`RRQSignRoundQuantizer` + `iters/lr/minmax_lr`）。
+8. ✅ Phase 3 OPT sign-SGD 调优（`RRQSignRoundQuantizer` + `iters/lr/minmax_lr/momentum`，4 轮逐平面优化）。

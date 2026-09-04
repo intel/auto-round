@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
-from auto_round.algorithms.quantization.rrq.quantizer import RRQRTNQuantizer
+from auto_round.algorithms.quantization.rrq.quantizer import RRQRTNQuantizer, RRQSignRoundQuantizer, RRQPlaneWrapper
 from auto_round.data_type.int import quant_tensor_rtn_sym
 from auto_round.export.export_to_autoround.export_to_rrq import (
     RRQ_QUANT_METHOD,
@@ -113,6 +113,16 @@ class TestRRQConfig:
     def test_group_size_passthrough(self):
         config = RRQConfig(group_size=64)
         assert config.group_size == 64
+
+    def test_phase3_tuning_config(self):
+        from auto_round.algorithms.registry import resolve_pipeline_member
+
+        config = RRQConfig(group_size=32, sym=True, iters=4, lr=0.05, minmax_lr=0.01)
+        assert config.iters == 4
+        assert config.lr == 0.05
+        assert config.minmax_lr == 0.01
+        assert config.need_calib is True
+        assert resolve_pipeline_member(config) is RRQSignRoundQuantizer
 
 
 class TestRRQQuantization:
@@ -668,3 +678,65 @@ class TestGenerateRRQResidual:
         """generate_rrq_residual is accessible from auto_round top-level."""
         from auto_round import generate_rrq_residual as gen
         assert callable(gen)
+
+
+class TestRRQPhase3:
+    """Focused checks for the calibrated sign-SGD RRQ path."""
+
+    def test_plane_wrapper_has_ste_gradients(self):
+        from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper
+
+        layer = _make_layer(out_features=64, in_features=128, group_size=32, sym=True)
+        layer.scale_dtype = torch.float16
+        target = layer.weight.detach().clone()
+        wrapper = RRQPlaneWrapper(
+            layer,
+            target,
+            torch.zeros_like(target),
+            plane_idx=0,
+            enable_minmax_tuning=True,
+            iters=2,
+            device="cpu",
+        )
+        inputs = torch.randn(2, 128)
+        loss = wrapper(inputs).square().mean()
+        loss.backward()
+
+        assert wrapper.params["value_0"].grad is not None
+        assert wrapper.params["min_scale_0"].grad is not None
+        assert wrapper.params["max_scale_0"].grad is not None
+
+    def test_sign_sgd_produces_four_packed_planes(self):
+        from auto_round.algorithms.block_runner import BlockForwardRunner
+
+        class TinyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = _make_layer(out_features=64, in_features=128, group_size=32, sym=True)
+                self.proj.scale_dtype = torch.float16
+
+            def forward(self, hidden_states):
+                return self.proj(hidden_states)
+
+        torch.manual_seed(123)
+        block = TinyBlock()
+        inputs = [torch.randn(1, 3, 128) for _ in range(2)]
+        runner = BlockForwardRunner(
+            batch_dim=0,
+            batch_size=1,
+            device="cpu",
+            cache_device="cpu",
+            amp=False,
+            enable_torch_compile=False,
+        )
+        with torch.no_grad():
+            outputs = [runner.forward(block, inputs, {}, torch.tensor([i]), "cpu") for i in range(2)]
+
+        quantizer = RRQSignRoundQuantizer(RRQConfig(group_size=32, sym=True, iters=2, lr=0.05))
+        quantizer._BaseAlgorithm__block_forward_runner = runner
+        quantizer._quantize_block_opt(block, inputs, {}, outputs, None)
+
+        for plane_idx in range(1, 4):
+            assert hasattr(block.proj, f"rrq_qweight_{plane_idx}")
+            assert getattr(block.proj, f"rrq_qweight_{plane_idx}").dtype == torch.int32
+        assert block.proj.rrq_total_planes == 4

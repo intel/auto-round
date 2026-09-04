@@ -20,9 +20,10 @@ domain, so the accumulated representation at any prefix is the best
 achievable within that bit budget.
 
 Phase 1: RTN only (no sign-SGD tuning).
+Phase 3: per-plane sign-SGD tuning with a frozen prefix.
 """
 
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
-from auto_round.algorithms.quantization.rrq.quantizer import RRQRTNQuantizer
+from auto_round.algorithms.quantization.rrq.quantizer import RRQRTNQuantizer, RRQSignRoundQuantizer
 
-__all__ = ["RRQConfig", "RRQRTNQuantizer"]
+__all__ = ["RRQConfig", "RRQRTNQuantizer", "RRQSignRoundQuantizer"]
