@@ -491,7 +491,9 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
                 qdq, scale, zp = wrapper.qdq_from_params(params)
             planes[name] = (qdq.detach().cpu(), scale.detach().cpu(), zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp)
             set_module(block, name, wrapper.orig_layer)
-        return planes, {name: plane[0].to(device) for name, plane in planes.items()}
+        return planes, {
+            name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()
+        }
 
     @torch.no_grad()
     def _store_rrq_planes(self, layer, planes):
