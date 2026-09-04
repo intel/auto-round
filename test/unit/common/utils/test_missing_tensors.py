@@ -236,7 +236,9 @@ class TestQuantizeWeightRtn:
 
     def test_output_shapes_4bit_sym(self):
         out_f, in_f, bits, gs = 32, 64, 4, 32
-        qw, qz, sc = quantize_weight_rtn(torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=True)
+        qw, qz, sc = quantize_weight_rtn(
+            torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=True, packing="auto_round:auto_gptq"
+        )
         pf = 32 // bits
         ng = in_f // gs
         assert qw.shape == (in_f // pf, out_f)
@@ -247,27 +249,95 @@ class TestQuantizeWeightRtn:
 
     def test_output_shapes_4bit_asym(self):
         out_f, in_f, bits, gs = 32, 64, 4, 32
-        qw, qz, sc = quantize_weight_rtn(torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=False)
+        qw, qz, sc = quantize_weight_rtn(
+            torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=False, packing="auto_round:auto_gptq"
+        )
         assert qw.shape == (in_f // (32 // bits), out_f)
+
+    @staticmethod
+    def _unpack_4bit(qw, qz, sc):
+        """Unpack [q, z, s] with nibbles along the packed dims."""
+        shifts = torch.arange(8, dtype=torch.int32) * 4
+        q = (qw[:, None, :].to(torch.int64) >> shifts[None, :, None]) & 0xF
+        q = q.reshape(-1, qw.shape[1]).t().contiguous()  # [out, in]
+        z = (qz[:, :, None].to(torch.int64) >> shifts[None, None, :]) & 0xF
+        z = z.reshape(qz.shape[0], -1).t().contiguous()  # [out, groups]
+        s = sc.t().contiguous()  # [out, groups]
+        return q, z, s
+
+    def test_asym_auto_round_packing_stores_zp_directly(self):
+        """Asym packing for the declared "auto_round" format must store zp directly.
+
+        The model-free config labels asym int artifacts packing_format
+        "auto_round" (see _declared_int_packing), which consumers read
+        with the qlinear_torch convention: the qzeros nibble IS the zero point.
+        Storing zp - 1 there shifts every weight by +scale per group."""
+        torch.manual_seed(42)
+        w = torch.randn(8, 128) * 0.05
+        qw, qz, sc = quantize_weight_rtn(w, bits=4, group_size=128, sym=False, packing="auto_round")
+        q, z, s = self._unpack_4bit(qw, qz, sc)  # single group: [8,128], [8,1], [8,1]
+        w_rec = (q - z) * s
+        assert (w_rec - w).abs().max() <= 0.5 * s.max().float() + 1e-6
+        # decoding the same bytes with the +1 (gptq) bias must be measurably wrong
+        w_wrong = (q - (z + 1)) * s
+        assert (w_wrong - w).abs().mean() > 0.9 * s.float().mean()
+
+    def test_unknown_packing_format_raises(self):
+        """A packing string with no registered zero-point convention must fail
+        loudly before any quantization work, never silently pick a convention
+        (note "auto_round:gptqmodel" is a direct-zp family member, so substring
+        matching on "gptq" would be wrong)."""
+        with pytest.raises(ValueError, match="unsupported packing format"):
+            quantize_weight_rtn(torch.randn(8, 128), bits=4, group_size=128, sym=False, packing="made_up")
+        # direct-zp family member containing "gptq" as a substring
+        w = torch.randn(8, 128) * 0.05
+        torch.manual_seed(3)
+        w = torch.randn(8, 128) * 0.05
+        qw, qz, sc = quantize_weight_rtn(w, bits=4, group_size=128, sym=False, packing="auto_round:gptqmodel")
+        q, z, s = self._unpack_4bit(qw, qz, sc)
+        w_rec = (q - z) * s
+        assert (w_rec - w).abs().max() <= 0.5 * s.max().float() + 1e-6  # direct-zp convention round-trips
+
+    def test_asym_gptq_packing_stores_zp_minus_one(self):
+        """Gptq-family asym packing keeps the qlinear_torch_zp convention.
+
+        packing_format "auto_round:auto_gptq" consumers unpack zeros with +1,
+        so the nibble must store zp - 1 (existing behavior, back-compat)."""
+        torch.manual_seed(7)
+        w = torch.randn(8, 128) * 0.05
+        qw, qz, sc = quantize_weight_rtn(w, bits=4, group_size=128, sym=False, packing="auto_round:auto_gptq")
+        q, z, s = self._unpack_4bit(qw, qz, sc)
+        w_rec = (q - (z + 1)) * s
+        assert (w_rec - w).abs().max() <= 0.5 * s.max().float() + 1e-6
+
+    def test_sym_packing_stores_offset_binary_minus_one(self):
+        """Sym packing (declared auto_round:auto_gptq) stores the constant 8 as 7."""
+        qw, qz, sc = quantize_weight_rtn(
+            torch.randn(8, 128), bits=4, group_size=128, sym=True, packing="auto_round:auto_gptq"
+        )
+        z = (qz[:, :, None].to(torch.int64) >> (torch.arange(8, dtype=torch.int32) * 4)[None, None, :]) & 0xF
+        assert (z == 7).all()
 
     def test_output_shapes_8bit(self):
         out_f, in_f, bits, gs = 16, 128, 8, 128
-        qw, qz, sc = quantize_weight_rtn(torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=True)
+        qw, qz, sc = quantize_weight_rtn(
+            torch.randn(out_f, in_f), bits=bits, group_size=gs, sym=True, packing="auto_round:auto_gptq"
+        )
         pf = 32 // bits
         assert qw.shape == (in_f // pf, out_f)
 
     def test_outputs_on_cpu(self):
-        qw, qz, sc = quantize_weight_rtn(torch.randn(16, 64), bits=4, group_size=32)
+        qw, qz, sc = quantize_weight_rtn(torch.randn(16, 64), bits=4, group_size=32, packing="auto_round:auto_gptq")
         assert qw.device.type == "cpu"
         assert qz.device.type == "cpu"
         assert sc.device.type == "cpu"
 
     def test_raises_on_1d(self):
         with pytest.raises(AssertionError):
-            quantize_weight_rtn(torch.randn(64), bits=4, group_size=32)
+            quantize_weight_rtn(torch.randn(64), bits=4, group_size=32, packing="auto_round:auto_gptq")
 
     def test_in_features_padding(self):
-        qw, _, _ = quantize_weight_rtn(torch.randn(16, 70), bits=4, group_size=32)
+        qw, _, _ = quantize_weight_rtn(torch.randn(16, 70), bits=4, group_size=32, packing="auto_round:auto_gptq")
         assert qw.shape == (96 // (32 // 4), 16)  # padded to 96
 
 

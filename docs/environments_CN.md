@@ -221,6 +221,16 @@ export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 export AR_DISK_STREAM_MODEL=1
 ```
 
+### AR_ALLOW_W8_ASYM
+- **描述**：允许在所有导出格式下使用 8 位非对称权重量化，跳过对无法提供服务的格式（原生 `auto_round` / `auto_gptq` / `auto_awq` / marlin）的默认拒绝。未设置时，8 位非对称仅对 `llm_compressor` 格式（compressed-tensors，vLLM 可服务）开放，其他格式会被拒绝或回退为对称。使用该变量产出的模型可能无法在原生 vLLM GPTQ 格式服务中加载。
+- **默认值**：`0`（关闭）
+- **有效值**：`0` / `1`
+- **用法**：面向 vLLM 之外推理框架的显式逃生开关。
+
+```bash
+AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
+```
+
 ### AR_RESUME_DIR
 - **描述**：设置为目录路径后，逐块调优循环会在每完成一个块后将进度写入该目录，并在针对同一目录的新一次运行中从第一个未完成的块继续——而不是在崩溃或被杀死后从第 0 块重新开始整个调优过程。
 - **默认值**：未设置(不支持断点续跑)
