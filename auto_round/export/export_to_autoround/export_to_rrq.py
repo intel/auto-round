@@ -489,7 +489,6 @@ def generate_rrq_residual(
         import transformers
         from safetensors.torch import load_file as _load_st
 
-        hf_dir = transformers.AutoConfig.from_pretrained(raw_model)
         # Use snapshot_download to get the local path
         from huggingface_hub import snapshot_download
         local_dir = snapshot_download(raw_model)
