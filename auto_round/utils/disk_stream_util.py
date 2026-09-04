@@ -169,12 +169,14 @@ def _model_types_for_dir(checkpoint_dir: str):
 
 
 def _index_model_type(index):
-    model_types = _model_types_for_dir(str(index.checkpoint_dir))
+    model_types = _model_types_for_dir(str(getattr(index, "checkpoint_dir", None)))
     return model_types[0] if model_types else None
 
 
 def _index_model_types(index):
-    return _model_types_for_dir(str(index.checkpoint_dir))
+    # Some lightweight/test indices carry no ``checkpoint_dir``; degrade to no
+    # known model types rather than raising AttributeError.
+    return _model_types_for_dir(str(getattr(index, "checkpoint_dir", None)))
 
 
 # Model-side per-expert projection -> (fused checkpoint projection, index within it).
@@ -454,7 +456,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
     # the same split as their weight.
     _FUSED_RE = _re.compile(r"^(.*\.experts)\.(\d+)\.(gate_proj|up_proj|down_proj)\.(weight|bias)$")
     _fused_cache: dict = {}
-    _transposed_hint, _interleaved = _fused_expert_layout(index)
+    _layout_cache: list = []  # lazily-resolved (transposed_hint, interleaved)
 
     def _fused_lookup(full_name: str, target_shape):
         m = _FUSED_RE.match(full_name)
@@ -471,8 +473,15 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         if fused_name not in _fused_cache:
             _fused_cache[fused_name] = index.read_tensors([fused_name], device=device)[fused_name]
         fused = _fused_cache[fused_name][expert_idx]
+        # Resolve the model_type layout hint lazily and only once, and only when a
+        # fused expert tensor is actually being sliced -- reading the model type
+        # touches ``index.checkpoint_dir``/config, which cheap/fake indices used by
+        # non-fused (dense) materialization do not populate.
+        if not _layout_cache:
+            _layout_cache.append(_fused_expert_layout(index))
+        transposed_hint, interleaved = _layout_cache[0]
         value = _slice_fused_expert(
-            fused, proj, attr, is_gate_up, tuple(target_shape), _transposed_hint, _interleaved
+            fused, proj, attr, is_gate_up, tuple(target_shape), transposed_hint, interleaved
         )
         # Guard against a slice that does not match the destination parameter: it
         # is safer to leave the param on meta (the caller then raises an
