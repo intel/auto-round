@@ -742,10 +742,37 @@ def _to_restored_tensor(item):
 
 
 def filter_restored_tensor(cls, restored):
-    filtered = cls.filter_tensors((restored.checkpoint_name, restored.tensor_fn))
+    filtered = _call_filter_tensors(cls, (restored.checkpoint_name, restored.tensor_fn))
     if filtered is None:
         return None
     return RestoredTensor(filtered[0], filtered[1], restored.hf_names, restored.transform_kind, restored.moe_sources)
+
+
+def _call_filter_tensors(instance, item):
+    """Call ``instance.filter_tensors`` with the instance's own no_mtp/mtp_only in effect.
+
+    Several conversion classes implement ``filter_tensors`` as a ``@classmethod``
+    that reads ``cls.no_mtp``/``cls.mtp_only`` (mirroring upstream llama.cpp,
+    where these are process-global CLI flags set once before conversion).
+    AutoRound instead scopes them per export instance: it only exports the
+    target model, so it forces ``no_mtp`` on the concrete class just for
+    construction, then reverts the class attribute immediately afterwards
+    (see ``export._create_conversion_model``) while keeping the instance
+    attribute set. Tensor filtering runs later, at write time, so a plain
+    classmethod call would see the already-reverted (wrong) class-level
+    value. Mirror the instance's values onto the class only for the
+    duration of this call so classmethod-style filters stay correct.
+    """
+    model_class = type(instance)
+    original_no_mtp = model_class.no_mtp
+    original_mtp_only = model_class.mtp_only
+    model_class.no_mtp = instance.no_mtp
+    model_class.mtp_only = instance.mtp_only
+    try:
+        return instance.filter_tensors(item)
+    finally:
+        model_class.no_mtp = original_no_mtp
+        model_class.mtp_only = original_mtp_only
 
 
 def _gguf_writer_has_tensor(gguf_writer, tensor_name):
