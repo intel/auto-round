@@ -83,16 +83,17 @@ def _append_trace(trace_file: str, entry: dict) -> None:
 
 
 def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cluster_id) -> str:
-    argv = ["copilot", 
-            "-p", 
-            prompt,
-            "--allow-tool=shell(git:*)",
-            "--allow-tool=shell(python:*)",
-            "--allow-tool=shell(rg:*)",
-            "--allow-tool=read",
-            "--allow-tool=write",
-            "--no-ask-user",
-            ]
+    argv = [
+        "copilot",
+        "-p",
+        prompt,
+        "--allow-tool=shell(git:*)",
+        "--allow-tool=shell(python:*)",
+        "--allow-tool=shell(rg:*)",
+        "--allow-tool=read",
+        "--allow-tool=write",
+        "--no-ask-user",
+    ]
     if model:
         argv += ["--model", model]
     env = dict(os.environ)
@@ -161,9 +162,7 @@ def build_prompt(cluster: dict, diff: str, max_excerpt: int, max_diff: int, proj
 
 
 def analyze(cluster: dict, diff: str, args) -> dict:
-    prompt = build_prompt(
-        cluster, diff, args.max_excerpt_chars, args.max_diff_chars, args.project_root, args.log_dir
-    )
+    prompt = build_prompt(cluster, diff, args.max_excerpt_chars, args.max_diff_chars, args.project_root, args.log_dir)
     raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
     parsed = parse_model_json(raw)
     result = {
