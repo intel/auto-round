@@ -136,8 +136,14 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
     x_normal = x_masked[normal_mask]
     mantissa, exponent = torch.frexp(x_normal)
 
-    m3 = torch.clamp(torch.round((mantissa - 0.5) * 16), 0, 7).to(torch.uint8)
-    e5 = torch.clamp(exponent + 14, 0, 31).to(torch.uint8)  # 0 reserved for subnormal, 31 reserved for NaN
+    # RNE on the 3-bit mantissa may produce 8; fold it into exponent carry.
+    m3_rounded = torch.round((mantissa - 0.5) * 16).to(torch.int32)
+    m3_carry = m3_rounded == 8
+    m3_rounded = torch.where(m3_carry, torch.zeros_like(m3_rounded), m3_rounded)
+    m3 = torch.clamp(m3_rounded, 0, 7).to(torch.uint8)
+    e5 = torch.clamp(exponent + 14 + m3_carry.to(exponent.dtype), 0, 31).to(
+        torch.uint8
+    )  # 0 reserved for subnormal, 31 reserved for NaN
 
     e5m3_vals = ((e5 << 3) | m3).to(torch.uint8)
 
