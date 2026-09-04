@@ -960,6 +960,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         q_input: Union[torch.Tensor, dict, None] = None,
         device: Union[str, torch.device] = "cpu",
         auto_offload: bool = True,
+        reference_output=None,
     ) -> Any:
         """Quantize a single decoded block of the model (public API for LLM-Compressor).
 
@@ -983,6 +984,11 @@ class CompressionOrchestrator(BaseOrchestrator):
             device: Target device for quantization (e.g. ``"cuda:0"``).
             auto_offload: When *True*, use the device-map-aware offloading path;
                 otherwise move ``block`` directly to ``device``.
+            reference_output: Optional pre-computed FP16 reference outputs (list of
+                tensors, one per calibration sample). When provided, the internal
+                collect_reference forward pass is skipped, saving significant peak
+                CPU RAM on large models. Supplied by LLM-Compressor's SequentialPipeline
+                via ``AutoRoundModifier.set_fp_ref_outputs()``. Requires auto-round ≥ 0.14.2.
 
         Returns:
             tuple: ``(q_outputs, reference_output)`` where *q_outputs* is the
@@ -1109,6 +1115,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             input_others,
             block_ctx=ctx,
             q_inputs=q_input,
+            reference_output=reference_output,
         )
 
         # ── Cleanup ───────────────────────────────────────────────────────────
