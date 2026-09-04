@@ -42,7 +42,7 @@ steps:
         echo "PR diff bytes: $(wc -c < "$out" 2>/dev/null || echo 0)"
 
   - task: Bash@3
-    displayName: "Cluster failures + match known issues"
+    displayName: "Cluster failures and match known issues"
     env:
       AUTO_ROUND_BOT_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
     inputs:
@@ -75,9 +75,13 @@ steps:
       targetType: "inline"
       script: |
         set -uo pipefail
-        if [ "${{ parameters.enableAiAnalysis }}" = "true" ]; then
+        if [ "${{ parameters.enableAiAnalysis }}" = "True" ]; then
             echo "Installing Copilot CLI for AI analysis..."
             curl -fsSL https://gh.io/copilot-install | bash
+            # Non-root install lands in $HOME/.local/bin, which the installer does
+            # not add to PATH non-interactively; export it so the python subprocess
+            # below can find the copilot binary.
+            export PATH="$HOME/.local/bin:$PATH"
             copilot --version
         fi
         base="$(Build.SourcesDirectory)"
