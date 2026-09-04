@@ -445,6 +445,18 @@ class CompressionOrchestrator(BaseOrchestrator):
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
 
+                # ── Infrastructure: reload from disk when streaming ───────
+                # Fused-MoE checkpoints (and explicit `AR_DISK_STREAM_MODEL=1`)
+                # build an all-meta skeleton to reduce RAM: each decoder block
+                # starts on the meta device and its real weights must be read
+                # back from the checkpoint before quantization. The data-driven
+                # path does this same reload; without it here the zero-shot
+                # (RTN) path leaves the block on meta and `layer.to(device)`
+                # crashes with "Cannot copy out of meta tensor".
+                disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
+                if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
+                    self._offloader.reload(self.model, block_name)
+
                 # ── Infrastructure: materialize ───────────────────────────
                 materialize_model_(block)
 
