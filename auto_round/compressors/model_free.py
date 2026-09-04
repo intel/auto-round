@@ -519,7 +519,7 @@ class _ModelFreeCompressorCore:
         scheme: Union[str, QuantizationScheme] = "W4A16",
         layer_config: Optional[dict] = None,
         ignore_layers: str = "",
-        format: str = "auto_round",
+        format: Optional[str] = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
@@ -533,6 +533,13 @@ class _ModelFreeCompressorCore:
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
         self.format = format or "auto_round"
+        # Whether the caller explicitly requested an output format at construction.
+        # Only an explicit request may be forwarded to the fallback compressor: the
+        # fallback consumes the quantize_and_save(format=...) argument only while
+        # its formats are still unset, so forwarding the implicit "auto_round"
+        # default would silently pin every fallback export to the native format
+        # (overriding e.g. save-time "gguf:q*_1" or "llm_compressor").
+        self._format_explicit = format is not None
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
@@ -1491,7 +1498,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         scheme: Union[str, QuantizationScheme] = "W4A16",
         layer_config: Optional[dict] = None,
         ignore_layers: str = "",
-        format: str = "auto_round",
+        format: Optional[str] = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
@@ -1572,6 +1579,12 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # Scheme fields are consumed above from ``kwargs``. Preserve them when
         # a later format check falls back to the regular AutoRound flow.
         fallback_init.update(self.user_scheme_overrides)
+        # Forward the construction format only when explicitly requested; the
+        # fallback honors a format passed later to quantize_and_save() (the
+        # 8-bit-asym opt-in is the AR_ALLOW_W8_ASYM env, read by parse_scheme
+        # on every route).
+        if getattr(self, "_format_explicit", False) and self.format:
+            fallback_init["format"] = self.format
 
         self._fallback_init_kwargs = fallback_init
         if quant_nontext_module:
@@ -1582,18 +1595,27 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self._auto_scheme_resolved = False
         self._auto_scheme_family: Optional[str] = None
 
-    def _fallback_to_base_compressor(self):
+    def _fallback_to_base_compressor(self, save_format: Optional[str] = None):
         from auto_round.autoround import AutoRound
 
         logger.info(
-            "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
+            "Model-free mode cannot export this request directly; "
+            "constructing the regular AutoRound compressor (requested format: '%s').",
             self.format,
         )
+        # The fallback exists to serve a quantize_and_save(format=...) call: when
+        # no explicit construction format was forwarded, the save-time format
+        # must reach the fallback construction so eager validation (format-scoped
+        # policies such as the 8-bit asym rule) judges the format actually being
+        # saved. An explicitly requested construction format always wins.
+        init_kwargs = dict(self._fallback_init_kwargs)
+        if save_format is not None:
+            init_kwargs.setdefault("format", save_format)
         logger.info(
             "fallbacked_init_kwargs: %s",
-            self._fallback_init_kwargs,
+            init_kwargs,
         )
-        compressor = AutoRound(**self._fallback_init_kwargs, disable_model_free=True)
+        compressor = AutoRound(**init_kwargs, disable_model_free=True)
         self._fallback_compressor = compressor
 
     def _fallback_to_quantize_and_save(
@@ -1603,7 +1625,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         inplace: bool,
         **kwargs,
     ):
-        self._fallback_to_base_compressor()
+        self._fallback_to_base_compressor(save_format=format)
         return self._fallback_compressor.quantize_and_save(  # pylint: disable=E1101
             output_dir=output_dir, format=format, inplace=inplace, **kwargs
         )
@@ -1780,6 +1802,13 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
+        from auto_round.schemes import parse_scheme
+
+        # Re-check the 8-bit asym policy with the final format (construction is
+        # conservative when the format is not yet known). parse_scheme owns the
+        # policy and the message; the scheme is still unresolved here, so pass
+        # the raw inputs instead of self.default_scheme.
+        parse_scheme(self.scheme_input, dict(self.user_scheme_overrides or {}), format=format)
         # Early fallback gate for model-free + AutoScheme: avoid running
         # costly delta-loss selection when format is known incompatible.
         if self._precheck_auto_scheme_fallback(format):

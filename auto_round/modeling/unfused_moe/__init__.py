@@ -178,7 +178,7 @@ def pre_check_config(model_name: str | torch.nn.Module, trust_remote_code: bool 
             for key in model_keys:
                 if "gate_up_proj" in key:
                     return False
-    except:
+    except Exception:
         return True
     return True
 
