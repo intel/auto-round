@@ -25,17 +25,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.utils import logger
 
-
-def check_compressed_tensors_supported(raise_error: bool = False):  # pragma: no cover
+def check_compressed_tensors_supported(raise_error: bool = False):
     try:
         import compressed_tensors  # noqa: F401
 
         return True
     except ImportError:
-        msg = "Please install compressed-tensors via 'pip install compressed-tensors' to save as llm-compressor format"
-        logger.error(msg)
+        msg = (
+            "Please `pip install compressed-tensors` since the 'llm_compressor' output format requires "
+            "the optional dependency 'compressed-tensors'."
+        )
         if raise_error:
             raise ImportError(msg) from None
         return False

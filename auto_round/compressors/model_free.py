@@ -117,6 +117,7 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names
 from auto_round.utils.device import clear_memory, memory_monitor
+from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
     _LM_HEAD_PATTERNS,
     _apply_scheme_overrides,
@@ -186,6 +187,48 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+
+# Standalone quantization metadata used by different source formats. Only the
+# newly generated quantization_config.json may remain in model-free output.
+_QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
+    "quantization_config.json",
+    "quantize_config.json",
+    "quant_config.json",
+)
+
+
+def _find_quantization_config(config: Any) -> dict:
+    """Return the first quantization_config found in a nested model config."""
+    if isinstance(config, dict):
+        quantization_config = config.get("quantization_config")
+        if isinstance(quantization_config, dict):
+            return quantization_config
+        for value in config.values():
+            nested = _find_quantization_config(value)
+            if nested:
+                return nested
+    elif isinstance(config, list):
+        for value in config:
+            nested = _find_quantization_config(value)
+            if nested:
+                return nested
+    return {}
+
+
+def _remove_quantization_configs(config: Any) -> None:
+    """Remove every quantization_config entry from a nested model config."""
+    if isinstance(config, dict):
+        config.pop("quantization_config", None)
+        for value in config.values():
+            _remove_quantization_configs(value)
+    elif isinstance(config, list):
+        for value in config:
+            _remove_quantization_configs(value)
+
+
+def _is_stale_quantization_metadata(filename: str) -> bool:
+    return filename in _QUANTIZATION_CONFIG_FILENAMES or filename.lower() == "readme.md"
+
 
 # Multimodal keywords kept in full precision by default.
 _NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
@@ -476,7 +519,7 @@ class _ModelFreeCompressorCore:
         scheme: Union[str, QuantizationScheme] = "W4A16",
         layer_config: Optional[dict] = None,
         ignore_layers: str = "",
-        format: str = "auto_round",
+        format: Optional[str] = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
@@ -490,15 +533,24 @@ class _ModelFreeCompressorCore:
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
         self.format = format or "auto_round"
+        # Whether the caller explicitly requested an output format at construction.
+        # Only an explicit request may be forwarded to the fallback compressor: the
+        # fallback consumes the quantize_and_save(format=...) argument only while
+        # its formats are still unset, so forwarding the implicit "auto_round"
+        # default would silently pin every fallback export to the native format
+        # (overriding e.g. save-time "gguf:q*_1" or "llm_compressor").
+        self._format_explicit = format is not None
         self.device = device
         self.quant_lm_head = quant_lm_head
         self.quant_nontext_module = quant_nontext_module
-        # Model-free is always zero-shot RTN/opt-RTN (each layer is quantized in a
-        # single pass), so torch.compile only adds one-off compilation overhead.
-        # Keep it off by default, but honor an explicit user request.
+        # Keep default torch.compile policy consistent with standard compressor
+        # behavior, while still honoring explicit user overrides.
         if enable_torch_compile is None:
-            self.enable_torch_compile = False
-            logger.info("`torch.compile` is disabled, as RTN/OPT-RTN quantizes each layer in a single pass")
+            self.enable_torch_compile = default_enable_torch_compile(self.device)
+            logger.info(
+                "`torch.compile` is %s (default policy)",
+                "enabled" if self.enable_torch_compile else "disabled",
+            )
         else:
             self.enable_torch_compile = enable_torch_compile
             logger.info("`torch.compile` is %s", "enabled" if enable_torch_compile else "disabled")
@@ -510,6 +562,7 @@ class _ModelFreeCompressorCore:
         self.layer_config: dict = {}
         self.ignore_patterns: list[str] = []
         self.config: dict = {}
+        self.source_quantization_config: dict = {}
         self.fp8_block_size: list | None = None
         self.model_type: str = ""
         self.is_streaming: bool = False
@@ -690,6 +743,8 @@ class _ModelFreeCompressorCore:
                 )
             self.config = _load_config(self.source_dir)
 
+        self.source_quantization_config = copy.deepcopy(_find_quantization_config(self.config))
+
     def _check_conv1d_and_embedding(self) -> None:
         """Detect Conv1d and embedding layers and automatically add them to the ignore list."""
         local_dir = self.work_dir if self.is_streaming else self.source_dir
@@ -733,7 +788,7 @@ class _ModelFreeCompressorCore:
             self.ignore_patterns.extend(predefined)
 
     def _detect_fp8_source(self) -> None:
-        quant_config = self.config.get("quantization_config", {})
+        quant_config = self.source_quantization_config
         is_fp8 = (
             quant_config.get("quant_method") == "fp8"
             or quant_config.get("quantization_type") == "fp8"
@@ -960,7 +1015,7 @@ class _ModelFreeCompressorCore:
                         ignore_patterns=self.ignore_patterns,
                         fp8_block_size=self.fp8_block_size,
                         model_type=self.model_type,
-                        source_quantization_config=self.config.get("quantization_config", {}),
+                        source_quantization_config=self.source_quantization_config,
                         enable_torch_compile=self.enable_torch_compile,
                         disable_opt_rtn=self.disable_opt_rtn,
                         quant_output_dir=self._quant_output_dir,
@@ -1152,7 +1207,7 @@ class _ModelFreeCompressorCore:
                                 ignore_patterns=self.ignore_patterns,
                                 fp8_block_size=self.fp8_block_size,
                                 model_type=self.model_type,
-                                source_quantization_config=self.config.get("quantization_config", {}),
+                                source_quantization_config=self.source_quantization_config,
                                 quant_output_dir=self._quant_output_dir,
                                 total_shards=total_shards,
                                 enable_torch_compile=self.enable_torch_compile,
@@ -1201,6 +1256,17 @@ class _ModelFreeCompressorCore:
     def _write_index(self) -> None:
         _write_index_file(self._quant_output_dir, self.output_weight_map)
 
+    def _remove_stale_quantization_config_files(self) -> None:
+        """Remove source/output quantization metadata before writing the new config."""
+        for directory in {self.output_dir, self._quant_output_dir}:
+            if not os.path.isdir(directory):
+                continue
+            for filename in os.listdir(directory):
+                if _is_stale_quantization_metadata(filename):
+                    path = os.path.join(directory, filename)
+                    if os.path.isfile(path):
+                        os.remove(path)
+
     def _write_config_files(self) -> None:
         block_prefixes = []
         for layer_name in self.all_quantized_layers:
@@ -1222,6 +1288,8 @@ class _ModelFreeCompressorCore:
             format=self.format,
         )
 
+        self._remove_stale_quantization_config_files()
+        _remove_quantization_configs(self.config)
         self.config["quantization_config"] = quantization_config
         with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
@@ -1243,6 +1311,8 @@ class _ModelFreeCompressorCore:
             # copytree's ``not os.path.exists(dst)`` guard prevents
             # overwriting it.
             for fname in os.listdir(self.diffusion_root_dir):
+                if _is_stale_quantization_metadata(fname):
+                    continue
                 src = os.path.join(self.diffusion_root_dir, fname)
                 dst = os.path.join(self.output_dir, fname)
                 if os.path.isdir(src):
@@ -1253,7 +1323,7 @@ class _ModelFreeCompressorCore:
             return
 
         for fname in os.listdir(self.source_dir):
-            if _is_weight_shard(fname):
+            if _is_weight_shard(fname) or _is_stale_quantization_metadata(fname):
                 continue
             src = os.path.join(self.source_dir, fname)
             dst = os.path.join(self.output_dir, fname)
@@ -1428,7 +1498,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         scheme: Union[str, QuantizationScheme] = "W4A16",
         layer_config: Optional[dict] = None,
         ignore_layers: str = "",
-        format: str = "auto_round",
+        format: Optional[str] = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
@@ -1509,6 +1579,12 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         # Scheme fields are consumed above from ``kwargs``. Preserve them when
         # a later format check falls back to the regular AutoRound flow.
         fallback_init.update(self.user_scheme_overrides)
+        # Forward the construction format only when explicitly requested; the
+        # fallback honors a format passed later to quantize_and_save() (the
+        # 8-bit-asym opt-in is the AR_ALLOW_W8_ASYM env, read by parse_scheme
+        # on every route).
+        if getattr(self, "_format_explicit", False) and self.format:
+            fallback_init["format"] = self.format
 
         self._fallback_init_kwargs = fallback_init
         if quant_nontext_module:
@@ -1519,18 +1595,27 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         self._auto_scheme_resolved = False
         self._auto_scheme_family: Optional[str] = None
 
-    def _fallback_to_base_compressor(self):
+    def _fallback_to_base_compressor(self, save_format: Optional[str] = None):
         from auto_round.autoround import AutoRound
 
         logger.info(
-            "Format '%s' is not supported by model-free mode; falling back to the regular AutoRound flow.",
+            "Model-free mode cannot export this request directly; "
+            "constructing the regular AutoRound compressor (requested format: '%s').",
             self.format,
         )
+        # The fallback exists to serve a quantize_and_save(format=...) call: when
+        # no explicit construction format was forwarded, the save-time format
+        # must reach the fallback construction so eager validation (format-scoped
+        # policies such as the 8-bit asym rule) judges the format actually being
+        # saved. An explicitly requested construction format always wins.
+        init_kwargs = dict(self._fallback_init_kwargs)
+        if save_format is not None:
+            init_kwargs.setdefault("format", save_format)
         logger.info(
             "fallbacked_init_kwargs: %s",
-            self._fallback_init_kwargs,
+            init_kwargs,
         )
-        compressor = AutoRound(**self._fallback_init_kwargs, disable_model_free=True)
+        compressor = AutoRound(**init_kwargs, disable_model_free=True)
         self._fallback_compressor = compressor
 
     def _fallback_to_quantize_and_save(
@@ -1540,7 +1625,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         inplace: bool,
         **kwargs,
     ):
-        self._fallback_to_base_compressor()
+        self._fallback_to_base_compressor(save_format=format)
         return self._fallback_compressor.quantize_and_save(  # pylint: disable=E1101
             output_dir=output_dir, format=format, inplace=inplace, **kwargs
         )
@@ -1717,6 +1802,13 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         **kwargs,
     ) -> Any:
         """Quantize and save — AutoRound compressor entry point."""
+        from auto_round.schemes import parse_scheme
+
+        # Re-check the 8-bit asym policy with the final format (construction is
+        # conservative when the format is not yet known). parse_scheme owns the
+        # policy and the message; the scheme is still unresolved here, so pass
+        # the raw inputs instead of self.default_scheme.
+        parse_scheme(self.scheme_input, dict(self.user_scheme_overrides or {}), format=format)
         # Early fallback gate for model-free + AutoScheme: avoid running
         # costly delta-loss selection when format is known incompatible.
         if self._precheck_auto_scheme_fallback(format):

@@ -120,6 +120,9 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
     )
+    rt.add_argument(
+        "--max_shard_size", default=None, type=str, help="Maximum size of each safetensors shard. Defaults to 5GB."
+    )
     # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
         "--algorithm",
@@ -252,13 +255,9 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     compat.add_argument("--disable_amp", action="store_true", help="Disable AMP during tuning.")
     compat.add_argument(
-        "--disable_deterministic_algorithms",
-        action="store_true",
-        help="Deprecated flag to disable deterministic algorithms.",
-    )
-    compat.add_argument(
         "--enable_deterministic_algorithms",
         action="store_true",
+        default=None,
         help="Enable deterministic algorithms for reproducible runs.",
     )
     compat.add_argument("--model_free", action="store_true", help="Force model-free quantization mode.")

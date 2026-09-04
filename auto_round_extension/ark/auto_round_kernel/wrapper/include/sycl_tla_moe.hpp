@@ -45,6 +45,7 @@
 #endif  // ARK_SYCL_TLA
 
 #include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_gemm_helpers.hpp"
 
 namespace ark {
 
@@ -54,6 +55,8 @@ namespace moe_detail {
 
 using namespace cute;
 using namespace MoE;
+
+using moe_gemm_detail::TilePolicy;
 
 // Helper to choose TiledMMA for a given work-group tile / sub-group layout.
 //
@@ -123,68 +126,47 @@ void moe_gemm_launcher(sycl::queue* q, const ElementA* activations, const Elemen
                      'R'>(activations, weights, scales, outputs, mma, num_rows_per_expert_device, num_experts, gemm_n,
                           gemm_k, scheduler_params);
       });
-
-  EventManager::getInstance().addEvent(event);
-  event.wait();
 }
 
-// Whether the N-based tile-policy heuristic is enabled (default on).
+// Work-group tile / sub-group layout for each ``TilePolicy``.
 //
-// Set ``ARK_MOE_GEMM_FIXED_TILE`` to a truthy value ("1"/"true"/"on"/"yes")
-// to always use the historical fixed 256x128 (8x2) tile regardless of N.
-// This provides an escape hatch should a specific device regress with the
-// wider tiles.
-inline bool moe_gemm_fixed_tile() {
-  const char* env = std::getenv("ARK_MOE_GEMM_FIXED_TILE");
-  if (env == nullptr) {
-    return false;
-  }
-  std::string v(env);
-  for (auto& c : v) {
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  }
-  return !(v == "0" || v == "false" || v == "off" || v == "no" || v.empty());
-}
+// The policy is chosen on the host by
+// ``moe_gemm_detail::select_tile_policy()`` (see
+// ``sycl_tla_moe_gemm_helpers.hpp``) and passed here as a non-type template
+// argument, so each translation unit instantiates exactly one policy. All
+// three share the same per-sub-group tile (32x64x32), so the copy atoms in
+// ``moe_gemm_launcher`` remain valid for every one of them.
+template <TilePolicy Policy>
+struct MoeGemmTileTraits;
 
-// Select the work-group tile policy from the output width ``N`` and dispatch,
-// mirroring the ``w16a16`` large-M heuristic in vllm-xpu-kernels grouped GEMM:
-//
-//   * N <= 64  -> 256x64x32,  SGLayout 8x1
-//   * N <= 512 -> 256x128x32, SGLayout 8x2 (historical default)
-//   * N >  512 -> 256x256x32, SGLayout 8x4
-//
-// Prefill routes many tokens per expert (large M), so the taller/wider N tile
-// increases sub-group utilization and reduces the number of work-group tiles
-// launched for the large-N up/down projections. All three policies share the
-// same per-sub-group tile (32x64x32), so the copy atoms in
-// ``moe_gemm_launcher`` remain valid.
-template <typename Element>
+template <>
+struct MoeGemmTileTraits<TilePolicy::kN64> {
+  using WGTile = Shape<_256, _64, _32>;
+  using SGLayout = Layout<Shape<_8, _1, _1>, Stride<_1, _1, _0>>;
+};
+
+template <>
+struct MoeGemmTileTraits<TilePolicy::kN128> {
+  using WGTile = Shape<_256, _128, _32>;
+  using SGLayout = Layout<Shape<_8, _2, _1>, Stride<_2, _1, _0>>;
+};
+
+template <>
+struct MoeGemmTileTraits<TilePolicy::kN256> {
+  using WGTile = Shape<_256, _256, _32>;
+  using SGLayout = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+};
+
+// Launch the grouped MoE GEMM with a single, statically selected tile policy.
+template <typename Element, TilePolicy Policy>
 void moe_gemm_dispatch(sycl::queue* q, const Element* activations, const Element* weights, const Element* scales,
                        Element* outputs, const int gemm_n, const int gemm_k, int* num_rows_per_expert_device,
                        const int num_experts) {
-  using N64 = Shape<_256, _64, _32>;
-  using SG64 = Layout<Shape<_8, _1, _1>, Stride<_1, _1, _0>>;
-  using N128 = Shape<_256, _128, _32>;
-  using SG128 = Layout<Shape<_8, _2, _1>, Stride<_2, _1, _0>>;
-  using N256 = Shape<_256, _256, _32>;
-  using SG256 = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+  using WGTile = typename MoeGemmTileTraits<Policy>::WGTile;
+  using SGLayout = typename MoeGemmTileTraits<Policy>::SGLayout;
 
-  if (moe_gemm_fixed_tile()) {
-    moe_gemm_launcher<'R', 'R', N128, SG128, Element, Element, Element, Element>(
-        q, activations, weights, scales, outputs, gemm_n, gemm_k, num_rows_per_expert_device, num_experts);
-    return;
-  }
-
-  if (gemm_n <= 64) {
-    moe_gemm_launcher<'R', 'R', N64, SG64, Element, Element, Element, Element>(
-        q, activations, weights, scales, outputs, gemm_n, gemm_k, num_rows_per_expert_device, num_experts);
-  } else if (gemm_n <= 512) {
-    moe_gemm_launcher<'R', 'R', N128, SG128, Element, Element, Element, Element>(
-        q, activations, weights, scales, outputs, gemm_n, gemm_k, num_rows_per_expert_device, num_experts);
-  } else {
-    moe_gemm_launcher<'R', 'R', N256, SG256, Element, Element, Element, Element>(
-        q, activations, weights, scales, outputs, gemm_n, gemm_k, num_rows_per_expert_device, num_experts);
-  }
+  moe_gemm_launcher<'R', 'R', WGTile, SGLayout, Element, Element, Element, Element>(
+      q, activations, weights, scales, outputs, gemm_n, gemm_k, num_rows_per_expert_device, num_experts);
 }
 
 }  // namespace moe_detail

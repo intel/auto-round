@@ -146,14 +146,15 @@ using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
 
 // ---------------------------------------------------------------------------
-// Persistent per-queue atomic work-group counter.
+// Work-group counter served from the shared device scratch pool.
 //
-// Shared with the FP8 path -- see `moe_dpas_fp8::get_persistent_atomic_buffer`
-// for the rationale (one `int32_t` device slot per queue reused across calls,
-// instead of a `sycl::malloc_device` / `sycl::free` pair per dispatch, each of
-// which forces a queue synchronization on the decode hot path).
+// Shared with the FP8 path -- see `moe_dpas_fp8::get_atomic_scratch_buffer` for
+// the rationale (one `int32_t` slot handed out by `DeviceMemoryPool` and reused
+// across calls, instead of a `sycl::malloc_device` / `sycl::free` pair per
+// dispatch, each of which forces a queue synchronization on the decode hot
+// path).
 // ---------------------------------------------------------------------------
-using ::ark::moe_dpas_fp8::get_persistent_atomic_buffer;
+using ::ark::moe_dpas_fp8::get_atomic_scratch_buffer;
 
 // ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
@@ -652,18 +653,14 @@ void moe_prefill_s4_dpas_per_group_dispatch_policy(
   const auto* weights_i4 =
       reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_s4_dpas(per-group): failed to allocate atomic buffer");
-  }
+  // Pooled work-group counter (self-zeroed by the kernel); avoids a
+  // malloc_device/free (each a queue sync) on every dispatch call.
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
   MoEGEMMLauncher_s4<'R', 'C', Policy>(
       *q, activations_ca, weights_i4, scales_ca,
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
       num_tokens_per_expert, E, group_size, atomic_buffer);
-
-  sycl::free(atomic_buffer, *q);
 }
 
 template <typename ScalarT>
@@ -700,9 +697,9 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  // Reusable per-queue work-group counter (self-zeroed by the kernel); avoids
-  // a malloc_device/free (each a queue sync) on every dispatch call.
-  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
+  // Pooled work-group counter (self-zeroed by the kernel); avoids a
+  // malloc_device/free (each a queue sync) on every dispatch call.
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_S4_PG_LAUNCH_SYM(policy)                                      \
   MoEGEMMLauncher_s4<'R', 'C', policy>(                                        \
@@ -801,7 +798,7 @@ void moe_decode_s4_dpas_per_group_dispatch(
   const auto* weights_i4 =
       reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
 
-  int32_t* atomic_buffer = get_persistent_atomic_buffer(q);
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
   // Legacy opt-in path (`ARK_MOE_DECODE_S4_DPAS_M8=1`): hard-pin the 8-row
   // tile. Kept for A/B comparison against the default `A_avg_M` ladder above.

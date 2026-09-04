@@ -359,9 +359,9 @@ The mid-size `32×64` tile now covers `A_avg_M` up to 128 (previously it
 jumped to the wide tile at 33), which avoids padding waste on the
 common chunked-prefill batch sizes.
 
-**S4 DPAS decode path** — the *decode* phase (`sycl_tla_moe_decode.hpp`,
-int4-sym / `S4_CLIP`, `!asym`, `ARK_MOE_DECODE_DPAS_S4` default ON) has
-its own dedicated dispatch, `moe_decode_s4_dpas_per_group_dispatch`,
+**S4 DPAS decode path** — the *decode* phase (int4-sym / `S4_CLIP`,
+`!asym`, `ARK_MOE_DECODE_DPAS_S4` default ON) has its own dedicated
+dispatch in the generated `sycl_tla_moe_decode_int4.cpp` translation unit,
 mirroring vLLM-xpu-kernels' `w4a16` decode dispatch. It selects the DPAS
 tile from the same `A_avg_M` ladder as prefill (`_m_8` → `_m_16` → `_m_32`
 → wide): the 8-row tile is used only for the tiny-batch tail (`A_avg_M ≤
@@ -464,12 +464,27 @@ used to be a transient USM allocation that had to be freed behind a
 blocking `queue::wait()` on *every* decode call — and decode issues one
 call per generated token, so that allocation plus sync was on the order of
 the GEMV itself. Both the repack buffer and the activation-sum table now
-come from a persistent per-queue, grow-on-demand slab
-(`DeviceScratchPool`), so steady-state decode performs no allocation and
-introduces no host-side synchronization; ordering between the producer
-kernels and the GEMV is already guaranteed by the in-order queue.
-`ark.moe_decode_release_scratch()` (pybind `moe_decode_release_scratch`)
-hands the memory back.
+come from a persistent, grow-on-demand slab, so steady-state decode
+performs no allocation and introduces no host-side synchronization;
+ordering between the producer kernels and the GEMV is already guaranteed
+by the in-order queue. `ark.moe_decode_release_scratch()` (pybind
+`moe_decode_release_scratch`) hands the memory back.
+
+The slabs are served from the extension-wide `DeviceMemoryPool` (slots 9
+and 10), the same manager the dnnl/xpu wrappers, the SDPA kernels and the
+DPAS work-group counter use. It keys on the *device UUID*, so slab
+identity follows the device rather than a raw `sycl::queue*` — which
+means a slab can no longer outlive the queue it was keyed on, a recycled
+queue address can no longer be handed someone else's slab, and two
+wrappers around one device no longer allocate two slabs. The bookkeeping
+lives in `sycl_tla_moe_decode_scratch.cpp` so the module holds exactly one
+instance of it (`sycl_tla_moe_decode_scratch.hpp` declares the API only),
+and `release_decode_scratch()` detaches the slabs from the pool under its
+lock and then runs `queue::wait()`/`sycl::free()` *after* releasing it, so
+no unbounded device sync happens inside the lock. The flip side of keying
+by device is that two queues on the same device now share a slab, so these
+entry points must not be driven concurrently from two queues on one
+device.
 
 The repack *kernel* still runs on every call by default. Setting
 `ARK_MOE_DECODE_INT4_REPACK_CACHE=1` reuses the previous repack when the
@@ -480,6 +495,8 @@ tensor can land on the same address (torch's caching allocator makes this
 common in test loops), and a stale repack would silently produce wrong
 results. Callers that enable it must call
 `ark.moe_decode_release_scratch()` before dropping the weight tensor.
+Growing the slab also drops the cached repack, since the reallocated
+bytes are undefined.
 
 | Env var | Default | Effect |
 | ------- | ------- | ------ |
@@ -638,6 +655,21 @@ previous kernel exactly. `test_perf_fp8_ksplit_ncols_sweep` prints all three
 factors per shape so the default can be set from measured data.
 **Status: hardware-validated at the shipped default (`NCOLS=2`).**
 
+*Per-mode translation units.* The mode and `NCOLS` ladders multiply out:
+2 dtypes × 2 formats × 3 decode modes × (one plain kernel + three `NCOLS`
+factors) = 48 SYCL kernels. Instantiating all of them inside
+`sycl_tla_moe_decode_fp8.cpp` — which is what calling `launch_fp8_by_mode`
+directly did — measured **~14.4 GiB peak compiler RSS** for that single file,
+against 4–8 kernels for every other decode TU. Each (dtype, format, mode)
+triple therefore lives in its own generated
+`sycl_tla_moe_decode_fp8_{f16,bf16}_{e4m3,e5m2}_{word,lut,bits}.cpp`, declared
+in the light `sycl_tla_moe_decode_fp8_helpers.hpp`, leaving exactly four
+kernels per TU. `sycl_tla_moe_decode_fp8.cpp` itself now instantiates **no
+kernels at all**: it reads `fp8_decode_mode()` on the host and calls the
+matching `moe_decode_fp8_detail::dispatch_*`, exactly as `launch_fp8_by_mode`
+used to. The K-split decision still happens inside the selected TU from the
+same inputs, so every variant stays numerically identical.
+
 **Routing-table validation (`ARK_MOE_VALIDATE_ROUTING`, default OFF).** The
 Python entry point used to check `sum(num_tokens_per_expert) == total_tokens`
 on every call. For a routing table that already lives on the device that
@@ -651,11 +683,10 @@ clamped to `num_experts - 1`); set `ARK_MOE_VALIDATE_ROUTING=1` to restore
 the eager check when debugging a router. Host-side (CPU) routing tables are
 still checked unconditionally, since summing those is free.
 
-**FP8 DPAS decode dispatch.** `moe_decode_fp8_dpas_per_group_dispatch`
-(`sycl_tla_moe_prefill_fp8_dpas.hpp`, `ARK_MOE_DECODE_DPAS_FP8` default ON)
-is the FP8 twin of the S4 decode dispatch: same mainloop, same `[E, N, K]`
-FP8 bytes + `[E, N, K/group]` scales, no repack. It differs from the
-prefill dispatch in two decode-specific ways.
+**FP8 DPAS decode dispatch.** The FP8 decode path (`ARK_MOE_DECODE_DPAS_FP8`
+default ON) is the FP8 twin of the S4 decode dispatch: same mainloop, same
+`[E, N, K]` FP8 bytes + `[E, N, K/group]` scales, no repack. It differs from
+the prefill dispatch in two decode-specific ways.
 
 *Finer small-M ladder.* The reference `w8a16` dispatch in vllm-xpu-kernels
 bottoms out at the 16-row tile, while its `w4a16` dispatch has an extra
@@ -675,18 +706,49 @@ shape — so the FP8 mainloop reuses it verbatim, closing that gap:
 The upper rungs match the S4 *decode* ladder rather than the FP8 prefill
 one, whose `≤ 512 → m_32` rung is tuned for prefill-sized batches.
 
-*Persistent atomic counter.* The prefill dispatch allocates the
-work-group counter with `sycl::malloc_device` and releases it with
-`sycl::free` on every call; each of those forces a queue synchronization.
-At prefill sizes that is noise, at decode sizes — where the GEMM itself is
-only tens of microseconds and one call is issued per generated token — it
-is a large fraction of the total. The decode dispatch uses a persistent
-per-queue slot instead (`get_persistent_atomic_buffer`, now shared with the
-S4 header so both paths use one cache). Taking the fast path also skips the
-`fill_expert_id_per_token` pre-pass, since the DPAS dispatch consumes
-`num_tokens_per_expert` directly — one fewer kernel launch on the decode
-timeline. **Status: NEEDS-HARDWARE-VALIDATION** (this header is an
-untested port).
+Like S4, the rungs are *not* instantiated inside `sycl_tla_moe_decode_fp8.cpp`.
+Each one lives in its own generated translation unit
+(`sycl_tla_moe_prefill_fp8_{f16,bf16}_{e4m3,e5m2}[_tiny|_mid|_large].cpp`,
+declared in `sycl_tla_moe_prefill_fp8_helpers.hpp`), and the decode TU only
+picks a rung host-side and calls the corresponding `moe_prefill_fp8_detail::
+dispatch_*` function. Expanding the whole ladder in one TU means
+2 dtypes × 2 formats × 4 policies × 4 group sizes = 64 cutlass grouped-GEMM
+instantiations, which measured **~14.4 GiB peak compiler RSS** for that single
+file; splitting keeps each TU to one policy. `sycl_tla_moe_decode_fp8.cpp` no
+longer includes `sycl_tla_moe_prefill_fp8_dpas.hpp` at all — its shape gate
+goes through the light `moe_prefill_fp8_detail::shape_ok` declaration.
+
+*Per-policy translation units for the bf16/fp16 grouped GEMM.* The unquantized
+`moe_gemm` path picks one of three work-group tile policies from the output
+width `N` (`≤ 64 → 256×64×32` 8×1, `≤ 512 → 256×128×32` 8×2, `> 512 →
+256×256×32` 8×4; `ARK_MOE_GEMM_FIXED_TILE=1` pins the historical 8×2 tile).
+Expanding all three inside `sycl_tla_moe_{f16,bf16}.cpp` put three full cutlass
+grouped-GEMM instantiations in a single TU and measured **~2219 MB peak
+compiler RSS** for each of those two files, while every other cutlass TU in the
+build carries exactly one policy. Each policy therefore lives in its own
+generated `sycl_tla_moe_{f16,bf16}_{n64,n128,n256}.cpp`, declared in the light
+`sycl_tla_moe_gemm_helpers.hpp`. `sycl_tla_moe_{f16,bf16}.cpp` no longer
+includes `sycl_tla_moe.hpp` and instantiates **no kernels at all**: it calls
+`moe_gemm_detail::select_tile_policy(N)` on the host — the same heuristic,
+moved verbatim into the light header — and forwards to the matching
+`moe_gemm_detail::dispatch_*`. All three policies keep the same tile shapes and
+therefore the same SYCL kernel names as before, so the split is numerically and
+behaviourally invisible.
+
+*Pooled atomic counter.* Allocating the work-group counter with
+`sycl::malloc_device` and releasing it with `sycl::free` on every call
+forces two queue synchronizations per dispatch. At prefill sizes that is
+noise, at decode sizes — where the GEMM itself is only tens of
+microseconds and one call is issued per generated token — it is a large
+fraction of the total. Every DPAS dispatch, prefill and decode alike,
+therefore serves the counter from the extension-wide device scratch pool
+instead (`get_atomic_scratch_buffer`, a thin wrapper over
+`DeviceMemoryPool::get_scratch_mem` on a dedicated slot, shared by the
+FP8, INT8 and S4 headers so all three use one allocation per device).
+Taking the fast path also skips the `fill_expert_id_per_token` pre-pass,
+since the DPAS dispatch consumes `num_tokens_per_expert` directly — one
+fewer kernel launch on the decode timeline. **Status:
+NEEDS-HARDWARE-VALIDATION** (this header is an untested port).
 
 **Occupancy gate — real decode batches stay on the scalar GEMV.** Same
 reasoning as int4-sym: the smallest tile the decode ladder can pick

@@ -86,13 +86,10 @@ struct MoeDecodeParams {
     int N;
     int K;
     int group_size;
-    int total_tokens;
-    bool asym;
-    // The int4-sym / FP8 DPAS grouped-GEMM fast paths are driven by the
-    // per-expert row counts instead of the per-token expert map, so they need
-    // the same two fields the prefill params carry.
     int* num_tokens_per_expert;
     int num_experts;
+    int total_tokens;
+    bool asym;
 };
 
 void sycl_tla_moe_decode_fill_expert_id(sycl::queue* q, int* expert_id_per_token,
@@ -103,30 +100,26 @@ void sycl_tla_moe_decode_int8(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_int2(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params);
 
-/**
- * @brief Whether `sycl_tla_moe_decode_int4` / `sycl_tla_moe_decode_fp8` will
- * take their DPAS grouped-GEMM fast path for these parameters.
- *
- * Those two fast paths consume `num_tokens_per_expert` directly and never read
- * `expert_id_per_token`, so `moe_gemm_decode` uses these predicates to skip the
- * `sycl_tla_moe_decode_fill_expert_id` launch. The dispatchers call the very
- * same predicate, so the fill-skip and the routing decision cannot diverge.
- */
-bool sycl_tla_moe_decode_int4_dpas_fastpath(const MoeDecodeParams& params);
-bool sycl_tla_moe_decode_fp8_dpas_fastpath(const MoeDecodeParams& params);
+// Whether the int4 / FP8 decode call will be served by the per-group DPAS
+// grouped GEMM instead of the scalar GEMV. Those kernels consume
+// `num_tokens_per_expert` directly and never read `expert_id_per_token`, so
+// `moe_gemm_decode` uses these predicates to skip the
+// `sycl_tla_moe_decode_fill_expert_id` launch on the decode hot path. The
+// per-dtype dispatchers re-use the same predicates, so the "skip the fill" and
+// "take the DPAS path" decisions cannot diverge.
+bool sycl_tla_moe_decode_int4_dpas_applicable(const MoeDecodeParams& params);
+bool sycl_tla_moe_decode_fp8_dpas_applicable(const MoeDecodeParams& params);
 
-/**
- * @brief Release the device scratch buffers the int4 decode fallbacks hold
- * (the N-tiled weight repack and the activation-sum table).
- *
- * Both are grow-on-demand per-queue slabs normally kept for the process
- * lifetime; call this to hand the memory back, or to drop a repack cached
- * under `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer
- * is freed. Safe to call at any time -- the next decode simply reallocates.
- *
- * Defined by the generated `sycl_tla_moe_decode_int4.cpp` translation unit
- * (MOE_SOURCE_MODE 18); the pools are shared across every decode TU.
- */
+// Release every device scratch buffer the int4 decode fallbacks hold (the
+// N-tiled weight repack and the activation-sum table). Both are served from
+// grow-on-demand per-device slabs that are normally kept for the lifetime of
+// the process; call this to hand the memory back, or to drop a repack cached
+// under `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer
+// is freed. The next decode simply reallocates.
+//
+// Must not overlap a decode call on the same device: this frees the slabs a
+// concurrent call may already be holding a pointer into. Call it from the same
+// thread that drives decode, between calls.
 void moe_decode_release_scratch();
 
 /**
@@ -226,25 +219,6 @@ void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights,
                                BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                                int* num_tokens_per_expert, int num_experts, int total_tokens);
 
-void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void* a, BTLA_DTYPE at, const void* b,
-                         BTLA_DTYPE bt, void* c, BTLA_DTYPE ct, const void* bias, bool BT);
-void sycl_tla_dense_gemm_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                             const void* bias);
-void sycl_tla_dense_gemm_f16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                             const void* bias);
-void sycl_tla_dense_gemm_bf16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                              const void* bias);
-
-void sycl_tla_igemm_s8s8_dequant(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                                 BTLA_DTYPE ct, const void* scale_a, const void* scale_b, const void* bias,
-                                 int blocksize);
-void sycl_tla_igemm_s8s8_dequant_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                                     const void* scale_a, const void* scale_b, const void* bias, int blocksize);
-void sycl_tla_igemm_s8s8_dequant_f16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                                     const void* scale_a, const void* scale_b, const void* bias, int blocksize);
-void sycl_tla_igemm_s8s8_dequant_bf16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                                      const void* scale_a, const void* scale_b, const void* bias, int blocksize);
-
 /**
  * @brief W4A8 MoE -- one-shot AUTO_S8 weight prepack.
  *
@@ -317,6 +291,25 @@ int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_size);
  * @brief Release the W4A8 activation-quantization / expert-map scratch slabs.
  */
 void moe_w4a8_release_scratch();
+
+void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void* a, BTLA_DTYPE at, const void* b,
+                         BTLA_DTYPE bt, void* c, BTLA_DTYPE ct, const void* bias, bool BT);
+void sycl_tla_dense_gemm_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                             const void* bias);
+void sycl_tla_dense_gemm_f16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                             const void* bias);
+void sycl_tla_dense_gemm_bf16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                              const void* bias);
+
+void sycl_tla_igemm_s8s8_dequant(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                 BTLA_DTYPE ct, const void* scale_a, const void* scale_b, const void* bias,
+                                 int blocksize);
+void sycl_tla_igemm_s8s8_dequant_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                     const void* scale_a, const void* scale_b, const void* bias, int blocksize);
+void sycl_tla_igemm_s8s8_dequant_f16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                     const void* scale_a, const void* scale_b, const void* bias, int blocksize);
+void sycl_tla_igemm_s8s8_dequant_bf16(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
+                                      const void* scale_a, const void* scale_b, const void* bias, int blocksize);
 
 // ========================================================================
 // Public API

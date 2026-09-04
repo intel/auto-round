@@ -581,8 +581,8 @@ static void moe_gemm_w4a8_wrapper(torch_ptr stream, torch_ptr activations, torch
                      (const float*)routing_weights, (float*)fused_out, fused_batch);
 }
 
-static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output,
-                               torch_ptr scale_out, int num_rows, int head_dim, int block_size) {
+static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
+                               int num_rows, int head_dim, int block_size) {
   auto* q = (sycl::queue*)stream;
   auto* in_ptr = (sycl::half*)input;
   auto* bias_ptr = bias ? (sycl::half*)bias : nullptr;

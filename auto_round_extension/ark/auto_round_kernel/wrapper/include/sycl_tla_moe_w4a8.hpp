@@ -102,8 +102,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -112,11 +116,11 @@
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 
 // Pulls in the cutlass-sycl / CuTe include set, the `dpas_policy_base` policy
-// root, `make_moe_tensor`, and `get_persistent_atomic_buffer` (via the FP8
+// root, `make_moe_tensor`, and `get_atomic_scratch_buffer` (via the FP8
 // header it includes).
 #include "sycl_tla_moe_prefill_int_dpas.hpp"
-// `DeviceScratchPool`, `env_flag_enabled`, `fill_expert_id_per_token`,
-// `SG_SIZE` / `N_TILE`, and the shared nibble decoders.
+// `env_flag_enabled`, `fill_expert_id_per_token`, `SG_SIZE` / `N_TILE`, and
+// the shared nibble decoders.
 #include "sycl_tla_moe_decode.hpp"
 
 namespace ark {
@@ -124,7 +128,6 @@ namespace moe_w4a8 {
 
 using namespace cute;
 
-using moe_decode_detail::DeviceScratchPool;
 using moe_decode_detail::N_TILE;
 using moe_decode_detail::SG_SIZE;
 using moe_dequant::decode_int4_octet;
@@ -170,19 +173,94 @@ class MoEW4A8GemmName;
 //
 // The activation-quantization buffers (`[total_tokens, K]` int8 +
 // `[total_tokens]` fp32) and the decode expert map (`[total_tokens]` int32)
-// are recomputed on every call, so they come from persistent per-queue slabs
-// instead of a hot-path `malloc_device`. Same lifetime contract as
-// `moe_decode_detail::int4_repack_pool` -- released explicitly through
-// `moe_w4a8_release_scratch`, never from a static destructor.
+// are recomputed on every call, so they come from persistent slabs instead of
+// a hot-path `malloc_device`.
+//
+// The slabs are served from the extension-wide `DeviceMemoryPool`, which keys
+// on the device UUID rather than on a `sycl::queue*`: a slab therefore follows
+// the device and is immune to the caller destroying its queue and to a later
+// queue landing on the same address. This mirrors how the int4 decode scratch
+// is managed in `sycl_tla_moe_decode_scratch.{hpp,cpp}`.
+//
+// Slabs are intentionally never freed from a static destructor -- the SYCL
+// context may already be torn down by then. `moe_w4a8_release_scratch`
+// provides the explicit teardown (exposed to Python under the same name).
+//
+// Sharing one slab per device means these entry points must not be driven
+// concurrently from two queues on one device, which matches every other
+// `DeviceMemoryPool` slot.
 // ---------------------------------------------------------------------------
-inline DeviceScratchPool& qact_pool() {
-  static DeviceScratchPool pool;
-  return pool;
+
+// `DeviceMemoryPool` slots owned by the W4A8 path. Slots 0-7 belong to the
+// dnnl / xpu / sycl-s8 / cpu wrappers and the SDPA kernels, slot 8 to the DPAS
+// work-group counter, and slots 9-10 to the int4 decode scratch.
+inline constexpr size_t kW4A8QactScratchLoc = 11;
+inline constexpr size_t kW4A8ExpertMapScratchLoc = 12;
+
+struct W4A8ScratchState {
+  std::mutex mu;
+  // Device key (`DeviceMemoryPool::get_device_key`) -> a queue handle on that
+  // device, held *by value*: a `sycl::queue` is a reference-counted handle, so
+  // keeping a copy guarantees the queue outlives the memory allocated against
+  // it.
+  std::map<size_t, sycl::queue> queues;
+};
+
+// Intentionally leaked, see above.
+inline W4A8ScratchState& w4a8_scratch_state() {
+  static W4A8ScratchState* s = new W4A8ScratchState();
+  return *s;
 }
 
-inline DeviceScratchPool& expert_map_pool() {
-  static DeviceScratchPool pool;
-  return pool;
+// Acquire a slab from the shared pool, synchronizing first when the request
+// grows it: `DeviceMemoryPool` frees the old pointer in place when it grows a
+// slot, and in-flight kernels may still be reading the old slab, so the wait
+// has to happen before the call rather than after.
+//
+// The caller must hold `W4A8ScratchState::mu`.
+inline void* acquire_w4a8_slab(sycl::queue* q, size_t bytes, size_t buf_loc) {
+  auto* pool = DeviceMemoryPool::Instance();
+  const size_t held = pool->get_scratch_size(buf_loc, q);
+  if (held != 0 && held < bytes) {
+    q->wait();
+  }
+  void* ptr = pool->get_scratch_mem(bytes, buf_loc, q);
+  if (ptr == nullptr) {
+    // The pool records the slot before checking the result, so a failed
+    // allocation leaves a {bytes, nullptr} entry behind that would satisfy
+    // every later request of this size or smaller without ever retrying.
+    // Drop it so the next call allocates again.
+    pool->detach_scratch_mem(buf_loc, q);
+    throw std::runtime_error("moe_gemm_w4a8: failed to allocate device scratch buffer");
+  }
+  auto& st = w4a8_scratch_state();
+  const size_t key = pool->get_device_key(q);
+  if (st.queues.find(key) == st.queues.end()) {
+    st.queues.emplace(key, *q);
+  }
+  return ptr;
+}
+
+// Quantized activations + per-token scales.
+inline uint8_t* acquire_qact_scratch(sycl::queue* q, size_t bytes) {
+  if (q == nullptr) {
+    throw std::invalid_argument("moe_gemm_w4a8: device scratch requires a non-null SYCL queue");
+  }
+  if (bytes == 0) return nullptr;
+  auto& st = w4a8_scratch_state();
+  std::lock_guard<std::mutex> lock(st.mu);
+  return static_cast<uint8_t*>(acquire_w4a8_slab(q, bytes, kW4A8QactScratchLoc));
+}
+
+// Decode expert map (`[total_tokens]` int32).
+inline int* acquire_expert_map_scratch(sycl::queue* q, size_t bytes) {
+  if (q == nullptr) {
+    throw std::invalid_argument("moe_gemm_w4a8: device scratch requires a non-null SYCL queue");
+  }
+  if (bytes == 0) return nullptr;
+  auto& st = w4a8_scratch_state();
+  std::lock_guard<std::mutex> lock(st.mu);
+  return static_cast<int*>(acquire_w4a8_slab(q, bytes, kW4A8ExpertMapScratchLoc));
 }
 
 // ---------------------------------------------------------------------------
@@ -1553,7 +1631,7 @@ void moe_w4a8_prefill_dispatch(sycl::queue* q, const int8_t* qact, const float* 
   const bool allow_block_2d_store =
       store_2d_aligned && moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_STORE_2D", true);
   const int prefetch_dist = moe_w4a8_prefill_prefetch_dist();
-  int32_t* atomic_buffer = moe_dpas_fp8::get_persistent_atomic_buffer(q);
+  int32_t* atomic_buffer = moe_dpas_fp8::get_atomic_scratch_buffer(q);
 
 #define ARK_MOE_W4A8_LAUNCH(policy)                                                                        \
   MoEGEMMLauncher_w4a8<policy, ElementD>(*q, qact, weights, ascale, wscale, outputs, N, K,                  \
@@ -2017,15 +2095,38 @@ inline int moe_w4a8_decode_max_tokens() {
 }
 
 inline void moe_w4a8_release_scratch() {
-  qact_pool().release_all();
-  expert_map_pool().release_all();
+  auto& st = w4a8_scratch_state();
+
+  // Detach everything under the lock, then drop the lock before the device sync
+  // and the frees: `wait()` blocks for an unbounded time and must not be held
+  // across. Because the slabs are already out of the pool's tables, an acquire
+  // that races in behind us allocates fresh ones instead of handing back a
+  // pointer we are about to free.
+  std::vector<std::pair<sycl::queue, void*>> pending;
+  {
+    std::lock_guard<std::mutex> lock(st.mu);
+    auto* pool = DeviceMemoryPool::Instance();
+    for (auto& kv : st.queues) {
+      sycl::queue q = kv.second;
+      for (size_t loc : {kW4A8QactScratchLoc, kW4A8ExpertMapScratchLoc}) {
+        void* ptr = pool->detach_scratch_mem(loc, &q);
+        if (ptr != nullptr) pending.emplace_back(q, ptr);
+      }
+    }
+    st.queues.clear();
+  }
+
+  for (auto& item : pending) {
+    item.first.wait();
+    sycl::free(item.second, item.first);
+  }
 }
 
 }  // namespace moe_w4a8
 
 // The public `ark::` entry points below are thin wrappers emitted by the
 // generated `sycl_tla_moe_w4a8.cpp` translation unit (MOE_SOURCE_MODE
-// 19); they live in their own namespace here so the header stays free of
+// 21); they live in their own namespace here so the header stays free of
 // external definitions and only that one TU pays the kernel compile cost.
 namespace moe_w4a8_detail {
 
@@ -2167,7 +2268,7 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
     const size_t qact_bytes = static_cast<size_t>(total_tokens) * static_cast<size_t>(K);
     const size_t scale_offset = (qact_bytes + sizeof(float) - 1) / sizeof(float) * sizeof(float);
     const size_t slab_bytes = scale_offset + static_cast<size_t>(total_tokens) * sizeof(float);
-    uint8_t* slab = moe_w4a8::qact_pool().acquire(q, slab_bytes);
+    uint8_t* slab = moe_w4a8::acquire_qact_scratch(q, slab_bytes);
     qact_scratch = reinterpret_cast<int8_t*>(slab);
     ascale_scratch = reinterpret_cast<float*>(slab + scale_offset);
     qact = qact_scratch;
@@ -2182,8 +2283,7 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   // does not run at all, so decode falls back to the standalone scan.
   int* expert_map = nullptr;
   if (use_decode) {
-    expert_map = reinterpret_cast<int*>(
-        moe_w4a8::expert_map_pool().acquire(q, static_cast<size_t>(total_tokens) * sizeof(int)));
+    expert_map = moe_w4a8::acquire_expert_map_scratch(q, static_cast<size_t>(total_tokens) * sizeof(int));
   }
 
   if (prequantized) {

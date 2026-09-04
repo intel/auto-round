@@ -286,9 +286,9 @@ nibble 的 B 流字节量是 INT8 路径的一半,大 M tile 加宽到 `128×256
 中等大小的 `32×64` tile 现在覆盖 `A_avg_M` 至 128(此前在 33 就跳到大
 tile),避免了常见 chunked-prefill batch 大小下的 padding 浪费。
 
-**S4 DPAS decode 路径** — decode(生成)阶段(`sycl_tla_moe_decode.hpp`,
-int4-sym / `S4_CLIP`,`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)拥有
-独立的 dispatch `moe_decode_s4_dpas_per_group_dispatch`,对齐
+**S4 DPAS decode 路径** — decode(生成)阶段(int4-sym / `S4_CLIP`,
+`!asym`,`ARK_MOE_DECODE_DPAS_S4` 默认开启)在生成的
+`sycl_tla_moe_decode_int4.cpp` 翻译单元中拥有独立的 dispatch,对齐
 vLLM-xpu-kernels 的 `w4a16` decode dispatch。它与 prefill 使用相同的
 `A_avg_M` 阶梯选择 DPAS tile(`_m_8` → `_m_16` → `_m_32` → 大 tile):
 仅在极小 batch 尾部(`A_avg_M ≤ 4`)使用 8 行 tile,一旦平均每个专家
@@ -372,18 +372,29 @@ sym 解码出真正的有符号 nibble，不含 zero-point 项，因此只有在
 **用 scratch 池替代每次调用的 `malloc_device`。** repack 缓冲区原本是临时的 USM
 分配，每次 decode 调用都必须在一次阻塞的 `queue::wait()` 之后释放 —— 而 decode
 每生成一个 token 就调用一次，因此这次分配加同步的开销已经与 GEMV 本身同量级。
-现在 repack 缓冲区与激活求和表都取自按 queue 持有、按需增长的常驻 slab
-(`DeviceScratchPool`)，稳态 decode 不再有任何分配，也不引入主机侧同步；生产者
-kernel 与 GEMV 之间的顺序由 in-order queue 保证。
-`ark.moe_decode_release_scratch()`(pybind `moe_decode_release_scratch`)可将内存
-归还。
+现在 repack 缓冲区与激活求和表都取自按需增长的常驻 slab，稳态 decode 不再有任何
+分配，也不引入主机侧同步；生产者 kernel 与 GEMV 之间的顺序由 in-order queue
+保证。`ark.moe_decode_release_scratch()`(pybind `moe_decode_release_scratch`)
+可将内存归还。
+
+这些 slab 由 extension 级的 `DeviceMemoryPool`(槽位 9 与 10)提供 —— 与
+dnnl/xpu wrapper、SDPA kernel 以及 DPAS work-group 计数器所用的是同一个管理器。
+它以*设备 UUID* 为键，因此 slab 的身份跟随设备而非裸 `sycl::queue*`：slab 不会
+再比它所依附的 queue 活得更久，被复用的 queue 地址也不会再拿到别人的 slab，同一
+设备上的两个 wrapper 也不会再各分配一份。相关簿记放在
+`sycl_tla_moe_decode_scratch.cpp` 中，以保证模块内只有唯一实例
+(`sycl_tla_moe_decode_scratch.hpp` 只保留声明)；`release_decode_scratch()` 在持
+锁期间只把 slab 从池中摘除，`queue::wait()` 与 `sycl::free()` 都放在释放锁*之后*
+执行，因此锁内不会出现不可控的设备同步。以设备为键的代价是：同一设备上的两个
+queue 现在共享同一份 slab，因此这些入口不能被同一设备上的两个 queue 并发驱动。
 
 repack *kernel* 默认仍每次调用都执行。设置
 `ARK_MOE_DECODE_INT4_REPACK_CACHE=1` 可在权重缓冲区地址与形状不变时复用上一次的
 repack 结果 —— 这对权重固定的真实推理循环是成立的。它**默认关闭**，因为其 tag
 是指针身份：被释放后重新分配的权重张量可能落在同一地址(torch 的缓存分配器在
 测试循环中很容易出现这种情况)，此时陈旧的 repack 会静默产生错误结果。启用它的
-调用方必须在丢弃权重张量之前调用 `ark.moe_decode_release_scratch()`。
+调用方必须在丢弃权重张量之前调用 `ark.moe_decode_release_scratch()`。slab 增长
+同样会丢弃已缓存的 repack，因为重新分配得到的字节内容是未定义的。
 
 | 环境变量 | 默认值 | 作用 |
 | -------- | ------ | ---- |
@@ -519,6 +530,19 @@ DRAM 峰值带宽的流式 GEMV,后者才是真正的瓶颈。代价是活跃的
 实测数据确定默认值。
 **状态:已在发布默认值(`NCOLS=2`)下通过硬件验证。**
 
+*按 mode 拆分翻译单元。* mode 阶梯与 `NCOLS` 阶梯是相乘的:2 dtype × 2 format
+× 3 解码 mode × (1 个普通 kernel + 3 个 `NCOLS` 因子) = 48 个 SYCL kernel。
+把它们全部实例化在 `sycl_tla_moe_decode_fp8.cpp` 里(直接调用
+`launch_fp8_by_mode` 就是这个效果),实测该单文件**峰值编译内存约 14.4 GiB**,
+而其它每个 decode TU 只有 4–8 个 kernel。因此每个 (dtype, format, mode) 三元组
+各自位于一个生成的
+`sycl_tla_moe_decode_fp8_{f16,bf16}_{e4m3,e5m2}_{word,lut,bits}.cpp` 中,声明在
+轻量的 `sycl_tla_moe_decode_fp8_helpers.hpp`,每个 TU 恰好 4 个 kernel。
+`sycl_tla_moe_decode_fp8.cpp` 自身现在**完全不实例化任何 kernel**:它在 host 侧
+读取 `fp8_decode_mode()` 并调用对应的 `moe_decode_fp8_detail::dispatch_*`,与原
+先的 `launch_fp8_by_mode` 完全一致。K-split 的选择仍然在选中的 TU 内、依据同样
+的输入做出,因此所有变体在数值上完全等价。
+
 **路由表校验(`ARK_MOE_VALIDATE_ROUTING`,默认 OFF)。** Python 入口原先
 在每次调用时都会检查 `sum(num_tokens_per_expert) == total_tokens`。当路由表
 本身就在设备上时,这个求和意味着一次 reduction kernel 外加一次**阻塞式**的
@@ -530,11 +554,10 @@ benchmark 的计时区间内,因为记录计时 event 时队列正好是空的�
 `num_experts - 1`);调试 router 时可设置 `ARK_MOE_VALIDATE_ROUTING=1` 恢复
 即时校验。位于 host(CPU)上的路由表仍然始终校验,因为对它们求和是免费的。
 
-**FP8 DPAS decode dispatch。** `moe_decode_fp8_dpas_per_group_dispatch`
-(`sycl_tla_moe_prefill_fp8_dpas.hpp`,`ARK_MOE_DECODE_DPAS_FP8` 默认 ON)
-是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的 `[E, N, K]`
-FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch 有
-两点 decode 专属的差异。
+**FP8 DPAS decode dispatch。** FP8 decode 路径(`ARK_MOE_DECODE_DPAS_FP8`
+默认 ON)是 S4 decode dispatch 的 FP8 对应物:同一套 mainloop、同样的
+`[E, N, K]` FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill
+dispatch 有两点 decode 专属的差异。
 
 *更细的 small-M 阶梯。* vllm-xpu-kernels 的参考 `w8a16` dispatch 最小只到
 16 行 tile,而它的 `w4a16` dispatch 多一个 8 行档位。decode 的 `A_avg_M`
@@ -553,15 +576,41 @@ FP8 字节 + `[E, N, K/group]` scale、无需 repack。它与 prefill dispatch �
 上面几档对齐的是 S4 的 *decode* 阶梯,而不是 FP8 prefill 的那条 ——
 后者的 `≤ 512 → m_32` 档是按 prefill 规模的 batch 调过的。
 
-*常驻 atomic 计数器。* prefill dispatch 每次调用都用 `sycl::malloc_device`
-分配 work-group 计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列
-同步。在 prefill 规模下这只是噪声,但在 decode 规模下 —— GEMM 本身只有几十
-微秒、且每生成一个 token 就要发一次调用 —— 它占总时间的比例相当可观。
-decode dispatch 改用每队列常驻的一个 slot(`get_persistent_atomic_buffer`,
-现已与 S4 头文件共享,两条路径共用一份 cache)。走上这条快路径时还会跳过
-`fill_expert_id_per_token` 前置 pass,因为 DPAS dispatch 直接消费
-`num_tokens_per_expert` —— decode 时间线上少一次 kernel 启动。
-**状态:NEEDS-HARDWARE-VALIDATION**(该头文件是未经硬件验证的移植)。
+和 S4 一样,这些档位**并不**在 `sycl_tla_moe_decode_fp8.cpp` 内实例化。每一档
+各自位于一个生成的翻译单元中
+(`sycl_tla_moe_prefill_fp8_{f16,bf16}_{e4m3,e5m2}[_tiny|_mid|_large].cpp`,
+声明在 `sycl_tla_moe_prefill_fp8_helpers.hpp`),decode TU 只在 host 侧选档并
+调用对应的 `moe_prefill_fp8_detail::dispatch_*` 函数。若把整条阶梯展开在同一个
+TU 里,就是 2 dtype × 2 format × 4 policy × 4 group size = 64 个 cutlass
+grouped-GEMM 实例化,实测该单文件**峰值编译内存约 14.4 GiB**;拆分后每个 TU 只
+含一个 policy。`sycl_tla_moe_decode_fp8.cpp` 现在完全不再 include
+`sycl_tla_moe_prefill_fp8_dpas.hpp` —— 它的形状门控改走轻量的
+`moe_prefill_fp8_detail::shape_ok` 声明。
+
+*bf16/fp16 grouped GEMM 的按 policy 拆分翻译单元。* 未量化的 `moe_gemm` 路径会
+根据输出宽度 `N` 从三个 work-group tile policy 中选一个(`≤ 64 → 256×64×32`
+8×1,`≤ 512 → 256×128×32` 8×2,`> 512 → 256×256×32` 8×4;设
+`ARK_MOE_GEMM_FIXED_TILE=1` 可固定回历史上的 8×2 tile)。把三个 policy 全部展开
+在 `sycl_tla_moe_{f16,bf16}.cpp` 内,等于把三个完整的 cutlass grouped-GEMM 实例
+化放进同一个 TU,实测这两个文件各自**峰值编译内存约 2219 MB**,而构建里其他所有
+含 cutlass 的 TU 都只带一个 policy。因此每个 policy 各自位于一个生成的
+`sycl_tla_moe_{f16,bf16}_{n64,n128,n256}.cpp` 中,声明在轻量的
+`sycl_tla_moe_gemm_helpers.hpp` 里。`sycl_tla_moe_{f16,bf16}.cpp` 不再 include
+`sycl_tla_moe.hpp`,并且**完全不实例化任何 kernel**:它在 host 侧调用
+`moe_gemm_detail::select_tile_policy(N)`(同一套启发式,原样搬进轻量头文件),
+再转发到对应的 `moe_gemm_detail::dispatch_*`。三个 policy 的 tile 形状保持不变,
+因而 SYCL kernel 名称也与拆分前一致,该拆分在数值和行为上都不可见。
+
+*池化 atomic 计数器。* 每次调用都用 `sycl::malloc_device` 分配 work-group
+计数器、再用 `sycl::free` 释放,这两个操作各会强制一次队列同步。在 prefill
+规模下这只是噪声,但在 decode 规模下 —— GEMM 本身只有几十微秒、且每生成一个
+token 就要发一次调用 —— 它占总时间的比例相当可观。因此所有 DPAS dispatch
+(prefill 和 decode 一样)都改从扩展全局的设备 scratch 池中取该计数器
+(`get_atomic_scratch_buffer`,它是 `DeviceMemoryPool::get_scratch_mem` 在一个
+专用 slot 上的薄封装,由 FP8、INT8、S4 三个头文件共享,每个设备共用一份分配)。
+走上这条快路径时还会跳过 `fill_expert_id_per_token` 前置 pass,因为 DPAS
+dispatch 直接消费 `num_tokens_per_expert` —— decode 时间线上少一次 kernel
+启动。**状态:NEEDS-HARDWARE-VALIDATION**(该头文件是未经硬件验证的移植)。
 
 **占用率门控 —— 真实 decode batch 仍走 scalar GEMV。** 理由与 int4-sym
 相同:decode 阶梯能选到的最小 tile 每个专家处理 8 行 token,所以平均每专家

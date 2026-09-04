@@ -1394,6 +1394,25 @@ class TestFP8Source:
 
 
 class TestKimiK25Int4Source:
+    def test_kimi_k25_int4_dequant_uses_biased_signed_values(self):
+        nibbles = torch.arange(16, dtype=torch.int32).reshape(2, 8)
+        shifts = torch.arange(8, dtype=torch.int32) * 4
+        packed = (nibbles << shifts).sum(dim=1, keepdim=True).to(torch.int32)
+        raw = {
+            "layer.weight_packed": packed,
+            "layer.weight_scale": torch.full((2, 1), 0.5, dtype=torch.float16),
+        }
+
+        out = _handle_model_type_low_precision_source_tensors(
+            raw,
+            model_type="kimi_k25",
+            source_quant_config=None,
+            device="cpu",
+        )
+
+        expected = ((nibbles - 8).float() * 0.5).to(torch.bfloat16)
+        assert torch.equal(out["layer.weight"], expected)
+
     def test_kimi_k25_int4_dequant_helper(self):
         raw = {
             "layer.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
@@ -1413,12 +1432,14 @@ class TestKimiK25Int4Source:
 
     @require_compressed_tensors
     def test_kimi_k25_int4_to_mxfp4_via_model_free(self, tmp_path):
+        config = {key: value for key, value in _KIMI_K25_CFG.items() if key != "quantization_config"}
+        config["text_config"] = {"quantization_config": _KIMI_K25_CFG["quantization_config"]}
         tensors = {
             "model.layers.0.mlp.fc1.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
             "model.layers.0.mlp.fc1.weight_scale": torch.ones(128, 16, dtype=torch.float16),
             "lm_head.weight": torch.randn(1000, 128),
         }
-        model_dir = _make_model_dir(tmp_path, _KIMI_K25_CFG, tensors)
+        model_dir = _make_model_dir(tmp_path, config, tensors)
         output_dir = str(tmp_path / "output")
 
         _ModelFreeCompressorCore(
@@ -1431,6 +1452,9 @@ class TestKimiK25Int4Source:
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp4-pack-quantized"
         assert qc["quant_method"] == "compressed-tensors"
+        with open(os.path.join(output_dir, "config.json")) as f:
+            output_config = json.load(f)
+        assert "quantization_config" not in output_config["text_config"]
 
         found_scale_dtype = None
         found_packed_shape = None
