@@ -277,6 +277,7 @@ def _slice_fused_expert(fused, proj, attr, is_gate_up, target_shape, transposed_
         return sliced.t().contiguous()
     return None
 
+
 _MODEL_SIDE_EXPERT_RE = re.compile(
     r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$"
 )
@@ -480,9 +481,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
         if not _layout_cache:
             _layout_cache.append(_fused_expert_layout(index))
         transposed_hint, interleaved = _layout_cache[0]
-        value = _slice_fused_expert(
-            fused, proj, attr, is_gate_up, tuple(target_shape), transposed_hint, interleaved
-        )
+        value = _slice_fused_expert(fused, proj, attr, is_gate_up, tuple(target_shape), transposed_hint, interleaved)
         # Guard against a slice that does not match the destination parameter: it
         # is safer to leave the param on meta (the caller then raises an
         # actionable "fall back to a full CPU load" error) than to hand accelerate
