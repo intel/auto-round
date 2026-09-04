@@ -39,6 +39,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     # imports ordered preserves the help output and default algorithm order.
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
+        "auto_round.algorithms.quantization.rrq.config",
         "auto_round.algorithms.quantization.sign_round.config",
         "auto_round.algorithms.quantization.qad.config",
         "auto_round.algorithms.quantization.qat.config",
@@ -67,6 +68,7 @@ def _ensure_pipeline_members_registered() -> None:
         return
     for module_name in (
         "auto_round.algorithms.quantization.rtn.quantizer",
+        "auto_round.algorithms.quantization.rrq.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
         "auto_round.algorithms.quantization.qad.quantizer",
