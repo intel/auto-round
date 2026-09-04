@@ -7,11 +7,16 @@ source =
     */_work/*/s/auto_round
     */auto-round/auto_round
     */site-packages/auto_round/
+    */dist-packages/auto_round/
 
 [report]
 include =
  */auto_round/**
  */auto_round_extension/**
+omit =
+ */auto_round/export/export_to_gguf/conversion/*
+ */auto_round/export/export_to_gguf/sync_llama_cpp_conversion.py
+ */auto_round/algorithms/transforms/hadamard/utils/triton/*
 exclude_lines =
  pragma: no cover
  raise NotImplementedError

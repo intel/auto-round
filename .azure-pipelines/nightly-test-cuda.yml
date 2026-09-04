@@ -72,15 +72,12 @@ stages:
             inputs:
               targetType: "inline"
               script: |
-                CUDA_VERSION="13.0"
-
                 python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                   --action create \
                   --api_key $(RUNPOD_API_KEY) \
                   --name "nightly-$(Build.BuildId)" \
                   --container_disk_size "100" \
                   --part 0 \
-                  --cuda_version "${CUDA_VERSION}" \
                   --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)"
             env:
               PYTHONUNBUFFERED: '1'

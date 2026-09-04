@@ -41,8 +41,8 @@ parameters:
   - name: unitTestParts
     type: object
     default:
-      - 0
-      - 1
+      - common
+      - base
 
 stages:
   - template: template/lib-build-template.yml
@@ -90,7 +90,7 @@ stages:
               artifact:
               patterns: '*_coverage/.coverage.*'
               path: $(DOWNLOAD_PATH)
-          
+
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '3.12'
@@ -103,7 +103,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh xpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'

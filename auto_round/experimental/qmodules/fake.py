@@ -69,6 +69,10 @@ class FakeActQuantLinear(QModuleBase):
         return
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
+        # No activation quantization configured (e.g. weight-only GGUF-style schemes where
+        # act_bits defaults to 16 / act_data_type is None) -> skip activation fake-quant.
+        if self.config.act_data_type is None or (self.config.act_bits is not None and self.config.act_bits >= 16):
+            return activation
         quant_func, _ = get_quant_func(
             dtype=self.config.act_data_type,
             bits=self.config.act_bits,

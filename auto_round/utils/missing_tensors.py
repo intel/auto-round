@@ -541,6 +541,8 @@ def quantize_weight_rtn(
     sym: bool = True,
     device: Optional[torch.device] = None,
     disable_opt_rtn: bool = True,
+    *,
+    packing: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Quantize a 2-D weight tensor and pack into auto_gptq format.
 
@@ -555,6 +557,12 @@ def quantize_weight_rtn(
         search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
         candidates per group and picks the best MSE.  Defaults to True
         (plain RTN) to preserve backward-compatible behaviour.
+    packing : the packing_format the artifact will declare (required); the
+        zero-point convention follows the inference backend registry.  GPTQ_FORMAT
+        entries ("auto_round:auto_gptq", qlinear_torch_zp) store zp - 1 per
+        nibble and unpack with +1; GPTQ_FORMAT_NO_ZP entries ("auto_round",
+        "auto_round:gptqmodel", qlinear_torch) store the zero point directly.
+        Any other value raises.
 
     Returns
     -------
@@ -563,6 +571,17 @@ def quantize_weight_rtn(
     scales  : [num_groups,  out_features]                   float16
     """
     assert weight.dim() == 2, f"Expected 2-D weight, got {weight.dim()}-D"
+    from auto_round.inference.backend import GPTQ_FORMAT, GPTQ_FORMAT_NO_ZP
+
+    if packing in GPTQ_FORMAT:
+        zp_minus_one = True
+    elif packing in GPTQ_FORMAT_NO_ZP:
+        zp_minus_one = False
+    else:
+        raise ValueError(
+            f"unsupported packing format '{packing}': zero-point conventions are defined only for "
+            f"{GPTQ_FORMAT} (zp - 1, unpacked with +1) and {GPTQ_FORMAT_NO_ZP} (zp stored directly)"
+        )
     out_features, in_features = weight.shape
     if device is None:
         device = weight.device
@@ -655,9 +674,20 @@ def quantize_weight_rtn(
     del q_packed
 
     # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    # The auto_round:auto_gptq format (qlinear_torch_zp) adds +1 to zeros
-    # after unpacking, so we must subtract 1 before packing to compensate.
-    zp -= 1
+    # The zero-point convention is a property of the declared packing format
+    # (see the backend registry): the auto_round:auto_gptq format
+    # (qlinear_torch_zp) adds +1 to zeros after unpacking, so we subtract 1
+    # before packing to compensate. The (zp-1) packing cannot represent
+    # zp=0: a -1 left-shifts into a negative word and corrupts every nibble
+    # sharing it. Clamp the stored value so only that zero-point degrades
+    # (decodes as +1). Formats in GPTQ_FORMAT_NO_ZP (plain qlinear_torch)
+    # read the nibble as the zero point directly, so it is stored as-is
+    # (symmetric packing stores the offset-binary constant the same way:
+    # 7 for the gptq family, 8 for the direct family).
+    if zp_minus_one:
+        zp = (zp - 1).clamp_(0, (1 << bits) - 1)
+    else:
+        zp = zp.clamp_(0, (1 << bits) - 1)
     zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
     del zp
     qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
@@ -709,6 +739,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     global_bits = qconfig["bits"]
     global_group_size = qconfig["group_size"]
     global_sym = qconfig["sym"]
+    declared_packing = qconfig.get("packing_format", "auto_round:auto_gptq")
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
     extra_config: dict = qconfig.get("extra_config", {}) or {}
 
@@ -942,7 +973,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         base_name = layer_name
 
         try:
-            qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=effective_gs, sym=sym)
+            qweight, qzeros, scales = quantize_weight_rtn(
+                weight, bits=bits, group_size=effective_gs, sym=sym, packing=declared_packing
+            )
         except Exception as e:
             logger.warning(f"Failed to quantize {weight_key}: {e}, keeping original weight")
             continue
