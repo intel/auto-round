@@ -804,6 +804,22 @@ def is_linear_loop_available() -> bool:
     return HAS_EXPERTS_INTERFACE
 
 
+def is_grouped_experts_forward_active(model: nn.Module | None) -> bool:
+    """Whether this model will run the grouped-GEMM experts forward during tuning.
+
+    The grouped experts forward (:func:`grouped_linear_experts_forward`) is deliberately
+    opaque to dynamo -- its routing is data-dependent Python control flow, so it runs
+    eager. Compiling the *block* forward around it therefore buys nothing over the experts
+    region and only pays dynamo's routing recompiles, while the per-layer qdq
+    (``weight_quant_func``) stays compiled in its own right. Callers use this to keep the
+    block forward eager for grouped MoE while leaving qdq compilation on.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    return getattr(config, "_experts_implementation", None) == GROUPED_LINEAR_IMPL
+
+
 def _config_model_types(config) -> list[str]:
     """Collect ``model_type`` from a config and every nested sub-config.
 

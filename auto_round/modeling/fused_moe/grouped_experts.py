@@ -594,6 +594,33 @@ class _SlotWeights:
 # ``AR_MOE_QDQ_CHUNK`` overrides it; 0 or negative means "fuse everything".
 _DEFAULT_QDQ_CHUNK = 16
 
+# Target working set for one fused qdq call. The chunk is derived from this budget and the
+# per-expert weight size, instead of a flat count, so it adapts to the *shape* of the MoE:
+#
+#   * On the large experts the flat 16 was tuned on (4096x1536, bf16 -> ~38 MB/expert) the
+#     budget reproduces ~16, preserving those sweeps.
+#   * On small experts (e.g. 512-wide MoE, ~6 MB/expert) it fuses far more per call, so the
+#     compiled quant graph is launched a handful of times instead of ~16 -- which is what
+#     makes the batched qdq pay off once the block forward is eager under torch.compile.
+#
+# The tail below is fused into a single eager call, so a larger chunk never inflates the
+# per-expert launch count; it only shifts work from many compiled calls to a few big ones.
+_QDQ_FUSED_WORKINGSET_BYTES = 512 * 1024 * 1024
+
+
+def _auto_qdq_chunk(layers: list[nn.Module]) -> int:
+    """Experts-per-fused-call derived from a fixed working-set budget and the weight shape.
+
+    Shape-derived (not routing-derived), so it stays constant across steps and does not
+    break :func:`_static_shapes_required`.
+    """
+    weight = layers[0].weight
+    # bytes streamed per expert: the concatenated weight plus its fp32 tuning ``value``.
+    per_expert = int(weight.shape[0]) * int(weight.shape[1]) * (weight.element_size() + 4)
+    if per_expert <= 0:
+        return _DEFAULT_QDQ_CHUNK
+    return max(_DEFAULT_QDQ_CHUNK, int(_QDQ_FUSED_WORKINGSET_BYTES // per_expert))
+
 
 def _qdq_chunk_size(layers: list[nn.Module]) -> int:
     """Configured experts-per-fused-call. Not clamped to ``len(layers)``.
@@ -604,12 +631,12 @@ def _qdq_chunk_size(layers: list[nn.Module]) -> int:
     """
     setting = envs.AR_MOE_QDQ_CHUNK
     if setting in ("", "auto"):
-        return _DEFAULT_QDQ_CHUNK
+        return _auto_qdq_chunk(layers)
     try:
         chunk = int(setting)
     except ValueError:
         logger.warning_once(f"Ignoring AR_MOE_QDQ_CHUNK={setting!r}: expected 'auto' or an integer.")
-        return _DEFAULT_QDQ_CHUNK
+        return _auto_qdq_chunk(layers)
     return chunk
 
 
@@ -625,14 +652,16 @@ def _static_shapes_required(layer: nn.Module) -> bool:
 
 
 def _plan_qdq_groups(layers: list[nn.Module]) -> tuple[list[list[nn.Module]], list[nn.Module], bool]:
-    """Split the active experts into fused groups, a per-expert tail, and a "fixed size" flag.
+    """Split the active experts into fused groups, a remainder tail, and a "fixed size" flag.
 
     Without ``torch.compile`` every expert can be fused, the last group simply being
     smaller. With it, only whole ``chunk``-sized groups are fused so the fused shape is a
-    constant; the leftovers fall back to the per-expert path, whose shape is already in
-    dynamo's cache. The flag tells the caller whether the compiled quant function may be
-    used -- it may not when an explicit ``AR_MOE_QDQ_CHUNK=0`` asks to fuse everything,
-    since that group's size follows the router.
+    constant the compiled quant graph can cache; the router-sized remainder is returned as
+    the tail, which :func:`_slot_weights` fuses into a single *eager* call (its shape may
+    follow the router because eager needs no shape-keyed cache). The flag tells the caller
+    whether the compiled quant function may be used for the whole groups -- it may not when
+    an explicit ``AR_MOE_QDQ_CHUNK=0`` asks to fuse everything, since that group's size
+    follows the router.
     """
     chunk = _qdq_chunk_size(layers)
     total = len(layers)
@@ -649,19 +678,30 @@ def _slot_weights(layers: list[nn.Module], batched: bool) -> _SlotWeights:
     biases = [_effective_bias(layer) for layer in layers]
     if batched:
         groups, tail, allow_compiled = _plan_qdq_groups(layers)
-        if groups:
+        if groups or tail:
             weights: list[torch.Tensor] = []
             stacked = None
+            ok = True
             for group in groups:
                 result = _batched_qdq_weights(group, allow_compiled=allow_compiled)
                 if result is None:
-                    weights = []
+                    ok = False
                     break
                 if len(groups) == 1 and not tail:
                     stacked = result[0]  # free 3-D operand for the native kernel
                 weights.extend(result[1])
-            if weights:
-                weights.extend(_effective_weight_and_bias(layer)[0] for layer in tail)
+            if ok and tail:
+                # Fuse the router-sized remainder in a SINGLE eager qdq call. Its shape
+                # follows the routing, so it must stay off the compiled quant graph
+                # (``allow_compiled=False``), but batching it collapses up to ``chunk - 1``
+                # per-expert launches into one -- the launches torch.compile would
+                # otherwise hide inside the per-expert loop it competes with.
+                tail_result = _batched_qdq_weights(tail, allow_compiled=False) if len(tail) > 1 else None
+                if tail_result is not None:
+                    weights.extend(tail_result[1])
+                else:
+                    weights.extend(_effective_weight_and_bias(layer)[0] for layer in tail)
+            if ok and weights:
                 return _SlotWeights(weights=weights, biases=biases, stacked=stacked)
     weights = [_effective_weight_and_bias(layer)[0] for layer in layers]
     return _SlotWeights(weights=weights, biases=biases)
