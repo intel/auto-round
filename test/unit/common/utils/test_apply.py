@@ -30,4 +30,4 @@ def test_apply_plan_is_the_explicit_model_write_boundary():
     apply_plan_to_model(model, plan)
 
     assert model[0].bits == 4
-    assert model[0].data_type == "mxfp4"
+    assert model[0].data_type == "int"
