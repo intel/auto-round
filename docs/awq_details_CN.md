@@ -2,7 +2,7 @@
 
 本文总结了原生 AutoRound 流程与 AWQ 组合流程的实验对比。目标是评估在 `W4A16`、`MXFP4` 和 `INT8`（`W8A8`）方案下，在 RTN 或 AutoRound 之前加入 AWQ smoothing 是否能够提升准确率。
 
-所有表格结果均基于 AutoRound 0.15.0 release，使用 `--format fake` 测得，并在 `mmlu,gsm8k,piqa,hellaswag,winogrande` 上评估。这五个常用 LLM 基准覆盖互补的误差类型：MMLU 侧重事实知识与综合理解，GSM8K 侧重数学推理，PIQA 侧重物理常识，HellaSwag 侧重常识句子补全，Winogrande 侧重代词与指代消解。报告该任务集合的平均分，可以降低单个任务波动对结论的影响，并更稳定地反映量化引入的精度变化。结果已排除此前受 fake format in-place evaluation 问题影响的数据。除非特别说明，其余量化参数均采用 AutoRound 默认设置。
+所有表格结果均基于 AutoRound 0.15.0 release，使用 `--format fake` 测得，并在 `mmlu,gsm8k,piqa,hellaswag,winogrande` 上评估。这五个常用 LLM 基准覆盖互补的误差类型：MMLU 侧重事实知识与综合理解，GSM8K 侧重数学推理，PIQA 侧重物理常识，HellaSwag 侧重常识句子补全，Winogrande 侧重代词与指代消解。报告该任务集合的平均分，可以降低单个任务波动对结论的影响，并更稳定地反映量化引入的精度变化。除非特别说明，其余量化参数均采用 AutoRound 默认设置。
 
 ## AWQ 算法特点
 
@@ -48,7 +48,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
-表中 `AR2` 表示启用 `--enable_alg_ext` 的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用 `--enable_alg_ext` 的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。BF16 作为参考基线放在每个模型分组的第一行。每个模型在每个 scheme 下平均分最高的量化行使用粗体标出。
+表中 `AR2` 表示启用 `--enable_alg_ext` 的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用 `--enable_alg_ext` 的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。
 
 AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply_clip`，否则不包含 AWQ weight clipping。
 

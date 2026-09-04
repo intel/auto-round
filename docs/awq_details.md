@@ -2,7 +2,7 @@
 
 This document summarizes an experimental comparison between native AutoRound flows and AWQ-composed flows. The goal is to evaluate whether applying AWQ smoothing before RTN or AutoRound improves accuracy for `W4A16`, `MXFP4`, and `INT8` (`W8A8`) schemes.
 
-All table results are based on the AutoRound 0.15.0 release, measured with `--format fake`, and evaluated on `mmlu,gsm8k,piqa,hellaswag,winogrande`. These five widely used LLM benchmarks cover complementary error modes: MMLU for factual knowledge and broad understanding, GSM8K for mathematical reasoning, PIQA for physical commonsense, HellaSwag for commonsense sentence completion, and Winogrande for pronoun and coreference resolution. Reporting the average score across this task set reduces sensitivity to single-task variance and provides a more stable view of quantization-induced accuracy changes. The results exclude earlier fake-format measurements affected by in-place model mutation during evaluation. Unless noted otherwise, the remaining quantization settings follow the AutoRound defaults.
+All table results are based on the AutoRound 0.15.0 release, measured with `--format fake`, and evaluated on `mmlu,gsm8k,piqa,hellaswag,winogrande`. These five widely used LLM benchmarks cover complementary error modes: MMLU for factual knowledge and broad understanding, GSM8K for mathematical reasoning, PIQA for physical commonsense, HellaSwag for commonsense sentence completion, and Winogrande for pronoun and coreference resolution. Reporting the average score across this task set reduces sensitivity to single-task variance and provides a more stable view of quantization-induced accuracy changes. Unless noted otherwise, the remaining quantization settings follow the AutoRound defaults.
 
 ## AWQ Algorithm Characteristics
 
@@ -48,7 +48,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
-In the result tables, `AR2` denotes AutoRound with `--enable_alg_ext`, and `AWQ_AR2` denotes AWQ followed by AutoRound with `--enable_alg_ext`. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`. BF16 is included as the reference baseline at the top of each model group. The quantized row with the highest model-level AVG in each scheme is highlighted in bold.
+In the result tables, `AR2` denotes AutoRound with `--enable_alg_ext`, and `AWQ_AR2` denotes AWQ followed by AutoRound with `--enable_alg_ext`. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`.
 
 The AWQ rows use the default AWQ smoothing flow. They do not include AWQ weight clipping unless `--awq_apply_clip` is explicitly enabled.
 
