@@ -86,4 +86,15 @@ def test_detection_uses_real_transformers_configs():
 
 def test_families_with_a_dedicated_replacement_are_left_alone():
     """`ModelContext` excludes these; they drive their own memory-aware materialization."""
-    assert set(BUILTIN_MODULES) == {"llama4", "deepseek_v2", "step3p5", "qwen3_omni_moe"}
+    expected = {
+        "llama4",
+        "deepseek_v2",
+        "step3p5",
+        "qwen3_omni_moe",
+        "qwen3_5_moe",
+        "qwen3_5_moe_text",
+    }
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        # These two only get a dedicated replacement on the pre-5.0 linear_loop path.
+        expected |= {"qwen3_vl_moe", "gpt_oss"}
+    assert set(BUILTIN_MODULES) == expected
