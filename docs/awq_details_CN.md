@@ -50,6 +50,8 @@ auto-round --model <model> --scheme <scheme> --format fake \
 
 表中 `AR2` 表示启用 `--enable_alg_ext` 的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用 `--enable_alg_ext` 的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。BF16 作为参考基线放在每个模型分组的第一行。每个模型在每个 scheme 下平均分最高的量化行使用粗体标出。
 
+AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply_clip`，否则不包含 AWQ weight clipping。
+
 观察表中，`AVG Win Rate` 表示在当前 scheme 下所有可比较模型中，AWQ 组合方法 AVG 更高的比例；`Max AVG Delta Gain` 表示最大的 AVG 绝对提升（百分点）；`Max AVG Rel. Gain` 表示最大的 AVG 相对提升。对于 `AWQ_RTN`，当 `RTN` 和 `opt_rtn` 都存在时，会同时纳入这两个基线进行比较。
 
 ## MXFP4
@@ -64,7 +66,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
     <td>PIQA (%)</td>
     <td>WinoGrande (%)</td>
     <td>AVG (%)</td>
-    <td>Timecost</td>
+    <td>Time cost (s)</td>
     <td>RAM</td>
     <td>VRAM</td>
   </tr>
@@ -135,7 +137,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
     <td>PIQA (%)</td>
     <td>WinoGrande (%)</td>
     <td>AVG (%)</td>
-    <td>Timecost</td>
+    <td>Time cost (s)</td>
     <td>RAM</td>
     <td>VRAM</td>
   </tr>
@@ -205,7 +207,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
     <td>PIQA (%)</td>
     <td>WinoGrande (%)</td>
     <td>AVG (%)</td>
-    <td>Timecost</td>
+    <td>Time cost (s)</td>
     <td>RAM</td>
     <td>VRAM</td>
   </tr>
@@ -239,7 +241,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
     <td>-</td>
     <td>-</td>
   </tr>
-  <tr><td>RTN</td><td>87.49</td><td>56.93</td><td>72.53</td><td>63.95</td><td>76.01</td><td>71.38</td><td>88.00</td><td>7.58GB</td><td>0.75GB</td></tr>
+  <tr><td>RTN</td><td>87.49</td><td>56.93</td><td>72.53</td><td>76.01</td><td>63.95</td><td>71.38</td><td>88.00</td><td>7.58GB</td><td>0.75GB</td></tr>
   <tr><td><b>AR</b></td><td><b>88.10</b></td><td><b>56.74</b></td><td><b>72.46</b></td><td><b>76.06</b></td><td><b>68.11</b></td><td><b>72.29</b></td><td><b>905.88</b></td><td><b>21.83GB</b></td><td><b>12.37GB</b></td></tr>
   <tr><td>AWQ_RTN</td><td>86.58</td><td>57.05</td><td>72.57</td><td>76.77</td><td>68.35</td><td>72.26</td><td>1046.69</td><td>20.93GB</td><td>6.89GB</td></tr>
   <tr><td>AWQ_AR</td><td>86.81</td><td>56.77</td><td>72.58</td><td>76.61</td><td>68.11</td><td>72.18</td><td>2277.47</td><td>21.92GB</td><td>13.30GB</td></tr>

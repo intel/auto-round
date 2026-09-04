@@ -50,6 +50,8 @@ auto-round --model <model> --scheme <scheme> --format fake \
 
 In the result tables, `AR2` denotes AutoRound with `--enable_alg_ext`, and `AWQ_AR2` denotes AWQ followed by AutoRound with `--enable_alg_ext`. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`. BF16 is included as the reference baseline at the top of each model group. The quantized row with the highest model-level AVG in each scheme is highlighted in bold.
 
+The AWQ rows use the default AWQ smoothing flow. They do not include AWQ weight clipping unless `--awq_apply_clip` is explicitly enabled.
+
 In the observation tables, `AVG Win Rate` counts how often the AWQ-composed method improves model-level AVG accuracy for that scheme, `Max AVG Delta Gain` is the largest absolute AVG improvement in percentage points, and `Max AVG Rel. Gain` is the largest relative AVG improvement. For `AWQ_RTN`, the comparison includes both `RTN` and `opt_rtn` when both baselines are available.
 
 ## MXFP4
@@ -64,7 +66,7 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
     <td>PIQA (%)</td>
     <td>WinoGrande (%)</td>
     <td>AVG (%)</td>
-    <td>Timecost</td>
+    <td>Time cost (s)</td>
     <td>RAM</td>
     <td>VRAM</td>
   </tr>
@@ -289,7 +291,7 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
     <td>PIQA (%)</td>
     <td>WinoGrande (%)</td>
     <td>AVG (%)</td>
-    <td>Timecost</td>
+    <td>Time cost (s)</td>
     <td>RAM</td>
     <td>VRAM</td>
   </tr>
@@ -513,7 +515,7 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
     <td>PIQA (%)</td>
     <td>WinoGrande (%)</td>
     <td>AVG (%)</td>
-    <td>Timecost</td>
+    <td>Time cost (s)</td>
     <td>RAM</td>
     <td>VRAM</td>
   </tr>
@@ -596,8 +598,8 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
     <td>87.49</td>
     <td>56.93</td>
     <td>72.53</td>
-    <td>63.95</td>
     <td>76.01</td>
+    <td>63.95</td>
     <td>71.38</td>
     <td>88.00</td>
     <td>7.58GB</td>
