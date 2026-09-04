@@ -840,11 +840,12 @@ bool sycl_tla_moe_prefill_native_fp8(const MoePrefillParams& params) {
 
 namespace ark {
 
-// Both scratch pools released here are int4-decode-only, so this translation
-// unit owns the public entry point declared in `sycl_tla_common.hpp`.
+// Both scratch buffers released here are int4-decode-only, so this translation
+// unit owns the public entry point declared in `sycl_tla_common.hpp`. The
+// buffers themselves live in the extension-wide `DeviceMemoryPool`; see
+// `sycl_tla_moe_decode_scratch.hpp`.
 void moe_decode_release_scratch() {
-  moe_decode_detail::int4_repack_pool().release_all();
-  moe_decode_detail::act_group_sum_pool().release_all();
+  moe_decode_detail::release_decode_scratch();
 }
 
 bool sycl_tla_moe_decode_int4_dpas_applicable(const MoeDecodeParams& params) {

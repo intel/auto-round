@@ -57,6 +57,7 @@
 
 #include "bestla/bestla.h"
 #include "sycl_tla_moe_dequant.hpp"
+#include "sycl_tla_moe_decode_scratch.hpp"
 #include "sycl_tla_common.hpp"
 
 #ifdef ARK_XPU
@@ -272,7 +273,7 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
 }
 
 // ----------------------------------------------------------------------------
-// Persistent per-queue device scratch pool.
+// Device scratch for the int4 decode fallbacks.
 //
 // The int4 decode fallbacks need two device-side scratch buffers: the N-tiled
 // weight repack and the per-(token, K-group) activation-sum table. Allocating
@@ -280,91 +281,15 @@ void launch_fp(sycl::queue* q, const ScalarT* activations, const ScalarT* weight
 // path -- decode issues one call per generated token, and a USM allocation
 // (plus the `queue::wait()` that has to precede the matching `sycl::free`)
 // costs on the order of the GEMV itself. Instead each buffer is served from a
-// slab that is allocated once per queue and grown on demand, so steady-state
+// slab that is allocated once per device and grown on demand, so steady-state
 // decode performs no allocation and needs no host-side synchronization: the
 // in-order queue already serializes the producer kernel before the consumer,
 // which is the same ordering guarantee `fill_expert_id_per_token` relies on.
 //
-// A slab additionally carries an optional *tag* -- the address of the source
-// buffer it was derived from plus a caller-supplied key that must fold in
-// everything else the derived contents depend on (shape, layout parameters).
-// `acquire` reports whether the slab already holds the result for that exact
-// tag, which lets the caller skip regenerating it. This is only consulted when
-// the caller opts in (see `moe_decode_int4_repack_cache_enabled`), because the
-// address half of a tag is a pointer identity and a freed-then-reallocated
-// buffer can land on the same address.
-//
-// Slabs are intentionally never freed from a static destructor: the SYCL
-// context may already be torn down at that point. `release_all` provides
-// explicit teardown for callers that need it (exposed to Python as
-// `moe_decode_release_scratch`).
+// The slabs live in the extension-wide `DeviceMemoryPool` and the bookkeeping
+// lives in `sycl_tla_moe_decode_scratch.cpp`; see
+// `sycl_tla_moe_decode_scratch.hpp` for why neither is a header-local static.
 // ----------------------------------------------------------------------------
-class DeviceScratchPool {
- public:
-  uint8_t* acquire(sycl::queue* q, size_t bytes, const void* tag_ptr, size_t tag_key, bool use_tag,
-                   bool* tag_hit) {
-    std::lock_guard<std::mutex> lock(mu_);
-    Slab& slab = slabs_[q];
-    if (slab.ptr == nullptr || slab.bytes < bytes) {
-      if (slab.ptr != nullptr) {
-        // The old slab may still be referenced by in-flight kernels.
-        q->wait();
-        sycl::free(slab.ptr, *q);
-        slab = Slab{};
-      }
-      uint8_t* p = sycl::malloc_device<uint8_t>(bytes, *q);
-      if (p == nullptr) {
-        throw std::runtime_error("moe_gemm_decode: failed to allocate device scratch buffer");
-      }
-      slab.ptr = p;
-      slab.bytes = bytes;
-    }
-    const bool hit = use_tag && slab.tagged && slab.tag_ptr == tag_ptr && slab.tag_key == tag_key;
-    if (tag_hit != nullptr) *tag_hit = hit;
-    if (!hit) {
-      slab.tagged = use_tag;
-      slab.tag_ptr = tag_ptr;
-      slab.tag_key = tag_key;
-    }
-    return slab.ptr;
-  }
-
-  uint8_t* acquire(sycl::queue* q, size_t bytes) {
-    return acquire(q, bytes, nullptr, 0, false, nullptr);
-  }
-
-  void release_all() {
-    std::lock_guard<std::mutex> lock(mu_);
-    for (auto& kv : slabs_) {
-      if (kv.second.ptr != nullptr) {
-        kv.first->wait();
-        sycl::free(kv.second.ptr, *kv.first);
-      }
-    }
-    slabs_.clear();
-  }
-
- private:
-  struct Slab {
-    uint8_t* ptr = nullptr;
-    size_t bytes = 0;
-    bool tagged = false;
-    const void* tag_ptr = nullptr;
-    size_t tag_key = 0;
-  };
-  std::mutex mu_;
-  std::map<sycl::queue*, Slab> slabs_;
-};
-
-inline DeviceScratchPool& int4_repack_pool() {
-  static DeviceScratchPool pool;
-  return pool;
-}
-
-inline DeviceScratchPool& act_group_sum_pool() {
-  static DeviceScratchPool pool;
-  return pool;
-}
 
 // ----------------------------------------------------------------------------
 // Per-(token, K-group) activation sums (asym int4 only).
@@ -431,7 +356,7 @@ float* compute_act_group_sums(sycl::queue* q, const ScalarT* activations, int to
                               int group_size) {
   const int num_groups_k = K / group_size;
   const size_t bytes = static_cast<size_t>(total_tokens) * static_cast<size_t>(num_groups_k) * sizeof(float);
-  float* a_sums = reinterpret_cast<float*>(act_group_sum_pool().acquire(q, bytes));
+  float* a_sums = acquire_act_group_sum_scratch(q, bytes);
   launch_act_group_sums<ScalarT>(q, activations, a_sums, total_tokens, K, group_size);
   return a_sums;
 }
@@ -691,8 +616,9 @@ inline bool moe_decode_int4_repack_cache_enabled() {
 // prologue/epilogue around the vector stage, which reads the same layout one
 // byte at a time.
 //
-// The repack buffer comes from the persistent per-queue scratch pool
-// (`DeviceScratchPool`), so decode steady state performs no USM allocation and
+// The repack buffer comes from the persistent per-device scratch pool
+// (see `sycl_tla_moe_decode_scratch.hpp`), so decode steady state performs no
+// USM allocation and
 // -- unlike the previous transient allocation, which had to be freed behind a
 // blocking `queue::wait()` on every call -- introduces no host-side
 // synchronization. The repack kernel itself still runs per call unless the
@@ -742,8 +668,8 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
   const size_t repack_key = (static_cast<size_t>(num_experts) * 1000003u + static_cast<size_t>(N)) * 1000003u +
                             static_cast<size_t>(k_packed);
   bool repack_cached = false;
-  uint8_t* repacked = int4_repack_pool().acquire(q, repacked_bytes, weights, repack_key,
-                                                 moe_decode_int4_repack_cache_enabled(), &repack_cached);
+  uint8_t* repacked = acquire_int4_repack_scratch(q, repacked_bytes, weights, repack_key,
+                                                  moe_decode_int4_repack_cache_enabled(), &repack_cached);
 
   // Repack kernel: one work-item per (expert, column, packed-byte slot). The
   // write index places the 16 columns of a tile contiguously in chunks of 4
