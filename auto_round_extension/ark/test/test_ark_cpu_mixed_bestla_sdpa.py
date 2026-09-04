@@ -9,6 +9,7 @@ live in the separate internal-route test module.
 """
 
 import math
+import zlib
 
 import pytest
 import torch
@@ -231,7 +232,10 @@ LLM_SHAPES = [
 @pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
 def test_mixed_llm_shape_accuracy(label, batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, is_causal, kv_dtype):
     """Validate mixed-precision SDPA accuracy on real LLM attention shapes."""
-    torch.manual_seed(5020 + hash(label) % 1000)
+    # Builtin hash() is randomized per process (PYTHONHASHSEED), which made this
+    # test draw different random data on every run/machine and flake near the
+    # tolerance boundary; use a deterministic digest so it is reproducible.
+    torch.manual_seed(5020 + zlib.crc32(label.encode()) % 1000)
     scale = 1 / math.sqrt(head_dim)
     q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
     k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
