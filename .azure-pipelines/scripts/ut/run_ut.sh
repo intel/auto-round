@@ -109,7 +109,7 @@ function run_unit_test() {
     # Split cpu specific test files into 4 parts.
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
     # run in the nightly pipelines (see nightly-test.yml).
-    find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
+    find ./unit/test_cpu/core -name "test*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))
