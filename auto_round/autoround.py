@@ -694,7 +694,9 @@ class _CompressorBuilder(object):
             )
 
         # Model-free routing is now supported directly by the new entry path.
-        model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
+        # RRQConfig inherits RTNConfig but must use the regular calibrated
+        # path when Phase 3 tuning is enabled.
+        model_free_iters = 0 if type(quant_config) is RTNConfig else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
