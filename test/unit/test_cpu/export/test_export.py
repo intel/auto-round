@@ -556,7 +556,10 @@ class TestAutoRound:
             sym=True,
         )
         ar.post_init()
-        with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
+        with pytest.raises(
+            ValueError,
+            match="auto_awq format support quantization scheme with W4A16,W5A16,W6A16,W7A16 but got bits=2",
+        ):
             resolve_formats(
                 ResolvedScheme.from_scheme(ar.scheme_context),
                 format="auto_round:auto_awq",
