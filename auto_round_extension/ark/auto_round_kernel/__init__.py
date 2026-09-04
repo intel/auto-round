@@ -2146,10 +2146,12 @@ from .sparse_attention import (
     _sequence_mean_native_layout,
     _slice_sequence_native_layout,
     _to_hnd,
+    block_sparse_sdpa,
     sage_sparse,
     sparge_block_map_to_mask,
     sparge_preprocess_topk,
     sparge_sage2_attn_meansim_topk_xpu,
+    sparge_sage2_attn_meansim_topk_xpu_sdpa,
 )
 
 

@@ -1,5 +1,9 @@
 build
 xbuild
+ark-xbuild*
+ark-xbuild-builtin*
+xbuild_bf16*
 *.csv
 *.so
 *.pyc
+benchmarks/results/
