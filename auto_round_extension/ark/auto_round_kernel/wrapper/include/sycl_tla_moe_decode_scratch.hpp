@@ -63,7 +63,9 @@ uint8_t* acquire_int4_repack_scratch(sycl::queue* q, size_t bytes, const void* t
 float* acquire_act_group_sum_scratch(sycl::queue* q, size_t bytes);
 
 // Release both slabs for every device they were allocated on, dropping any
-// cached repack with them.
+// cached repack with them. Must not overlap an acquire on the same device: the
+// acquire entry points hand out a raw pointer, so a caller that is between the
+// acquire and its kernel submission would have the memory freed underneath it.
 void release_decode_scratch();
 
 }  // namespace moe_decode_detail

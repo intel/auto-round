@@ -464,12 +464,27 @@ used to be a transient USM allocation that had to be freed behind a
 blocking `queue::wait()` on *every* decode call — and decode issues one
 call per generated token, so that allocation plus sync was on the order of
 the GEMV itself. Both the repack buffer and the activation-sum table now
-come from a persistent per-queue, grow-on-demand slab
-(`DeviceScratchPool`), so steady-state decode performs no allocation and
-introduces no host-side synchronization; ordering between the producer
-kernels and the GEMV is already guaranteed by the in-order queue.
-`ark.moe_decode_release_scratch()` (pybind `moe_decode_release_scratch`)
-hands the memory back.
+come from a persistent, grow-on-demand slab, so steady-state decode
+performs no allocation and introduces no host-side synchronization;
+ordering between the producer kernels and the GEMV is already guaranteed
+by the in-order queue. `ark.moe_decode_release_scratch()` (pybind
+`moe_decode_release_scratch`) hands the memory back.
+
+The slabs are served from the extension-wide `DeviceMemoryPool` (slots 9
+and 10), the same manager the dnnl/xpu wrappers, the SDPA kernels and the
+DPAS work-group counter use. It keys on the *device UUID*, so slab
+identity follows the device rather than a raw `sycl::queue*` — which
+means a slab can no longer outlive the queue it was keyed on, a recycled
+queue address can no longer be handed someone else's slab, and two
+wrappers around one device no longer allocate two slabs. The bookkeeping
+lives in `sycl_tla_moe_decode_scratch.cpp` so the module holds exactly one
+instance of it (`sycl_tla_moe_decode_scratch.hpp` declares the API only),
+and `release_decode_scratch()` detaches the slabs from the pool under its
+lock and then runs `queue::wait()`/`sycl::free()` *after* releasing it, so
+no unbounded device sync happens inside the lock. The flip side of keying
+by device is that two queues on the same device now share a slab, so these
+entry points must not be driven concurrently from two queues on one
+device.
 
 The repack *kernel* still runs on every call by default. Setting
 `ARK_MOE_DECODE_INT4_REPACK_CACHE=1` reuses the previous repack when the
@@ -480,6 +495,8 @@ tensor can land on the same address (torch's caching allocator makes this
 common in test loops), and a stale repack would silently produce wrong
 results. Callers that enable it must call
 `ark.moe_decode_release_scratch()` before dropping the weight tensor.
+Growing the slab also drops the cached repack, since the reallocated
+bytes are undefined.
 
 | Env var | Default | Effect |
 | ------- | ------- | ------ |

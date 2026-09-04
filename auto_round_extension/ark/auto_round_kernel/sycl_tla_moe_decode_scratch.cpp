@@ -67,6 +67,11 @@ void* acquire_slab(sycl::queue* q, size_t bytes, size_t buf_loc, bool* reallocat
   }
   void* ptr = pool->get_scratch_mem(bytes, buf_loc, q);
   if (ptr == nullptr) {
+    // The pool records the slot before checking the result, so a failed
+    // allocation leaves a {bytes, nullptr} entry behind that would satisfy
+    // every later request of this size or smaller without ever retrying.
+    // Drop it so the next call allocates again.
+    pool->detach_scratch_mem(buf_loc, q);
     throw std::runtime_error("moe_gemm_decode: failed to allocate device scratch buffer");
   }
   if (reallocated != nullptr) *reallocated = grows;
