@@ -142,7 +142,6 @@ class TestMoEGemm:
             tokens_per_expert[exp_idx] = 16
 
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
         output = ark.moe_gemm(activations, weights, num_tokens_per_expert)
 
         assert output.shape == (total_tokens, N)
