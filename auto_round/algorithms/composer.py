@@ -204,6 +204,23 @@ class AlgorithmComposer:
                 can_compile_block_forward = False
                 logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
 
+            # Grouped MoE runs its experts forward eager (opaque to dynamo), so compiling
+            # the block around it gains nothing and only adds routing recompiles. Keep the
+            # block forward eager here; the per-layer qdq stays compiled via the wrappers'
+            # own ``enable_torch_compile`` (see the quantizer's ``wrapper_block`` call).
+            if can_compile_block_forward:
+                from auto_round.modeling.fused_moe.moe_experts_interface import is_grouped_experts_forward_active
+
+                grouped_model = getattr(getattr(orchestrator, "model_context", None), "model", None) or getattr(
+                    orchestrator, "model", None
+                )
+                if is_grouped_experts_forward_active(grouped_model):
+                    can_compile_block_forward = False
+                    logger.info(
+                        "Block-forward torch.compile is disabled because grouped MoE experts run eager; "
+                        "the per-layer qdq stays compiled."
+                    )
+
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
                 BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward)

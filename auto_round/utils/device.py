@@ -635,6 +635,95 @@ def set_non_auto_device_map(
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
 
+def _resolve_moe_chunk() -> int:
+    """The configured experts-per-chunk (``AR_MOE_CHUNK``), for device co-allocation.
+
+    ``auto`` / invalid -> the default fixed chunk (16); ``<=0`` means "whole container"
+    (fuse everything -> a container is only ever placed as a single device-local unit).
+    """
+    from auto_round import envs
+
+    try:
+        return int(str(envs.AR_MOE_CHUNK))
+    except (TypeError, ValueError):
+        return 16
+
+
+def _preassign_moe_experts(
+    layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
+) -> dict:
+    """Place a MoE experts container's experts device-locally so the grouped path stays on.
+
+    The grouped experts forward requires every active expert of a layer to sit on one device
+    (else it falls back to the slow per-expert loop). This pre-pass keeps them together:
+
+      * Tier 1 -- put the whole experts container on one device when it fits.
+      * Tier 2 -- otherwise place ``AR_MOE_CHUNK``-aligned expert groups, each group whole on
+        one device, so at least each chunk's grouped GEMM stays single-device.
+      * Tier 3 -- experts that do not fit even one chunk are left unassigned here and fall
+        through to the general load balancer (current behavior; grouped will loop-fallback).
+
+    Only placement is affected -- correctness is unchanged (the forward's device checks and
+    AlignDevicesHook handle whatever layout results). ``device_memory`` is decremented in
+    place for the layers this function assigns.
+
+    Returns a ``{layer_name: device}`` map for the experts it placed.
+    """
+    # Group expert projections by their container -> {expert_idx: [(name, mem_info), ...]}.
+    containers: dict[str, dict[int, list]] = {}
+    for name, info in layer_memory_dict.items():
+        if not info.get("is_moe_expert"):
+            continue
+        head, _, _slot = name.rpartition(".")  # ".../<container>.<idx>.<slot>"
+        container, _, idx_str = head.rpartition(".")
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            continue  # unexpected naming; leave it to the general balancer
+        containers.setdefault(container, {}).setdefault(idx, []).append((name, info))
+
+    assigned: dict[str, str] = {}
+    if not containers:
+        return assigned
+
+    def mem_of(items) -> float:
+        return sum(mem_info["param_memory"] * mem_per_param for _, mem_info in items)
+
+    def best_fit(required: float):
+        candidates = [d for d in gpu_devices if device_memory[d] >= required]
+        return max(candidates, key=lambda d: device_memory[d]) if candidates else None
+
+    def place(items, device) -> None:
+        for layer_name, _ in items:
+            assigned[layer_name] = device
+
+    chunk = _resolve_moe_chunk()
+    for container, by_idx in containers.items():
+        idxs = sorted(by_idx)
+        all_items = [item for i in idxs for item in by_idx[i]]
+
+        # Tier 1: whole container on a single device.
+        total = mem_of(all_items)
+        device = best_fit(total)
+        if device is not None:
+            place(all_items, device)
+            device_memory[device] -= total
+            continue
+
+        # Tier 2: chunk-aligned groups; Tier 3: unfitting groups fall through.
+        step = len(idxs) if chunk <= 0 else chunk
+        for start in range(0, len(idxs), step):
+            group_items = [item for i in idxs[start : start + step] for item in by_idx[i]]
+            group_mem = mem_of(group_items)
+            group_device = best_fit(group_mem)
+            if group_device is None:
+                continue  # Tier 3: leave for the general balancer
+            place(group_items, group_device)
+            device_memory[group_device] -= group_mem
+
+    return assigned
+
+
 def _allocate_layers_to_devices(
     layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
 ) -> tuple[dict, list]:
@@ -642,7 +731,9 @@ def _allocate_layers_to_devices(
     Allocates layers to devices using a load-balancing strategy.
 
     Strategy:
-    1. Sort layers by memory size (descending), preserve order for equal sizes
+    0. MoE pre-pass: keep each experts container's experts device-local (whole container, or
+       chunk-aligned groups) so the grouped experts forward stays single-device per group.
+    1. Sort remaining layers by memory size (descending), preserve order for equal sizes
     2. Assign largest N layers to higher-index devices (N = num_devices)
     3. Remaining layers use memory availability + layer continuity scorings
 
@@ -654,32 +745,20 @@ def _allocate_layers_to_devices(
 
     Returns:
         tuple[dict, list]: (device_map, names)
-
-    Example:
-        Input:
-            device_memory = {"cuda:0": 30.0, "cuda:1": 40.0, "cuda:2": 40.0}
-            layer_memory_dict = {
-                "q_proj": {"param_memory": 4.0}, "k_proj": {"param_memory": 1.0},
-                "v_proj": {"param_memory": 1.0}, "o_proj": {"param_memory": 4.0},
-                "gate_proj": {"param_memory": 11.0}, "up_proj": {"param_memory": 11.0},
-                "down_proj": {"param_memory": 11.0}
-            }
-            mem_per_param = 2.0
-
-        Result (allocation order by size):
-            1. gate_proj (22GB) -> cuda:2 (largest, prefer last device)
-            2. up_proj (22GB) -> cuda:1 (2nd largest, prefer 2nd last device)
-            3. down_proj (22GB) -> cuda:0 (3rd largest, cuda:0 has 30GB available)
-            4. q_proj (8GB) -> cuda:2 (neighbor of gate_proj, continuity bonus)
-            5. o_proj (8GB) -> cuda:2 (neighbor of q_proj, continuity bonus)
-            6. k_proj (2GB) -> cuda:1 (neighbor of q_proj via original order)
-            7. v_proj (2GB) -> cuda:1 (neighbor of k_proj, continuity bonus)
     """
     device_map = {}
     names = []
     layer_names_in_order = list(layer_memory_dict.keys())
     layer_order = {name: idx for idx, name in enumerate(layer_names_in_order)}
-    sorted_layers = sorted(layer_memory_dict.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
+
+    # Phase 0: keep MoE experts device-local so the grouped path is not forced to loop.
+    preassigned = _preassign_moe_experts(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
+    device_map.update(preassigned)
+    names.extend(preassigned.keys())
+
+    # The general balancer handles everything the pre-pass did not place.
+    remaining = {name: layer_memory_dict[name] for name in layer_names_in_order if name not in preassigned}
+    sorted_layers = sorted(remaining.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
     num_devices = len(gpu_devices)
 
     def find_best_device(layer_name, estimated_memory, layer_idx):
@@ -717,7 +796,7 @@ def _allocate_layers_to_devices(
         # Fallback: device with most available memory
         return best_device or max(gpu_devices, key=lambda d: device_memory[d])
 
-    # Allocate layers
+    # Allocate the remaining (non-preassigned) layers
     for layer_idx, (layer_name, mem_info) in enumerate(sorted_layers):
         names.append(layer_name)
         estimated_memory = mem_info["param_memory"] * mem_per_param

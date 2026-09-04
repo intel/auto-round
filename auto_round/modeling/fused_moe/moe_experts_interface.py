@@ -34,7 +34,9 @@ Usage:
 import torch
 from torch import nn
 
+from auto_round import envs
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
+from auto_round.modeling.fused_moe.grouped_experts import GROUPED_LINEAR_IMPL, grouped_linear_experts_forward
 from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
@@ -49,6 +51,34 @@ except ImportError:
 
 # Expert implementation name - change this if transformers want to use a different name
 LINEAR_LOOP_IMPL = "linear_loop"
+
+# Implementations AutoRound registers for its per-expert nn.Linear layout.
+AUTO_ROUND_EXPERTS_IMPLS = {
+    LINEAR_LOOP_IMPL: None,  # filled in below (avoids a forward reference to the function)
+    GROUPED_LINEAR_IMPL: grouped_linear_experts_forward,
+}
+
+
+def resolve_experts_implementation() -> str:
+    """Pick the experts forward used for AutoRound's unfused per-expert layout.
+
+    ``AR_MOE_EXPERTS_IMPL`` accepts ``auto`` (default), ``linear_grouped`` or
+    ``linear_loop``. ``auto`` selects the grouped-GEMM backend, which batches the routed
+    token/expert pairs into a single sorted GEMM instead of looping (and syncing) over
+    every expert; it self-checks the layer and falls back to the loop when the layer is
+    not eligible.
+    """
+    requested = str(envs.AR_MOE_EXPERTS_IMPL).lower()
+    if requested in ("", "auto"):
+        return GROUPED_LINEAR_IMPL
+    if requested in AUTO_ROUND_EXPERTS_IMPLS:
+        return requested
+    logger.warning(
+        f"Unknown AR_MOE_EXPERTS_IMPL='{requested}', expected one of "
+        f"{['auto', *AUTO_ROUND_EXPERTS_IMPLS]}. Falling back to '{LINEAR_LOOP_IMPL}'."
+    )
+    return LINEAR_LOOP_IMPL
+
 
 # Known expert projection patterns for reference
 # These are used as hints when auto-detection needs to infer projection properties
@@ -287,7 +317,10 @@ def linear_loop_experts_forward(
 
 
 def register_linear_loop_experts() -> bool:
-    """Register the linear_loop experts implementation with transformers.
+    """Register AutoRound's experts implementations with transformers.
+
+    Registers both ``linear_loop`` (per-expert Python loop) and ``linear_grouped``
+    (sorted grouped-GEMM over the routed token/expert pairs).
 
     Returns:
         True if registration was successful, False otherwise.
@@ -300,9 +333,11 @@ def register_linear_loop_experts() -> bool:
         )
         return False
 
-    if LINEAR_LOOP_IMPL not in ALL_EXPERTS_FUNCTIONS._global_mapping:
-        ALL_EXPERTS_FUNCTIONS._global_mapping[LINEAR_LOOP_IMPL] = linear_loop_experts_forward
-        logger.debug(f"Registered '{LINEAR_LOOP_IMPL}' experts implementation")
+    AUTO_ROUND_EXPERTS_IMPLS[LINEAR_LOOP_IMPL] = linear_loop_experts_forward
+    for impl_name, impl_fn in AUTO_ROUND_EXPERTS_IMPLS.items():
+        if impl_name not in ALL_EXPERTS_FUNCTIONS._global_mapping:
+            ALL_EXPERTS_FUNCTIONS._global_mapping[impl_name] = impl_fn
+            logger.debug(f"Registered '{impl_name}' experts implementation")
 
     return True
 
@@ -700,13 +735,13 @@ def _unfuse_experts_weights_inplace(
 
 def prepare_model_for_moe_quantization(
     model: nn.Module,
-    implementation: str = LINEAR_LOOP_IMPL,
+    implementation: str | None = None,
     skip_prefixes: list[str] | None = None,
 ) -> list[str]:
     """Prepare a model for MOE quantization using transformers' experts interface.
 
     This function:
-    1. Registers the linear_loop experts implementation with transformers
+    1. Registers AutoRound's experts implementations with transformers
     2. Sets model.config._experts_implementation = implementation
     3. Unfuses all fused MOE expert weights into per-expert containers of nn.Linear
 
@@ -715,7 +750,8 @@ def prepare_model_for_moe_quantization(
 
     Args:
         model: The model to prepare
-        implementation: The experts implementation to use (default: "linear_loop")
+        implementation: The experts implementation to use. Defaults to the one selected by
+            ``AR_MOE_EXPERTS_IMPL`` (``linear_grouped`` unless overridden).
         skip_prefixes: Module name prefixes to skip (e.g. ["talker."]).
             Modules under these prefixes stay in their original fused 3D format.
             ShardWriter handles the fused→per-expert conversion at save time.
@@ -728,6 +764,9 @@ def prepare_model_for_moe_quantization(
             "Failed to register linear_loop experts implementation. "
             "This requires transformers >= 5.0.0 with MOE integration support."
         )
+
+    if implementation is None:
+        implementation = resolve_experts_implementation()
 
     # Unfuse all fused experts modules (only those supporting @use_experts_implementation)
     unfused_modules = []
@@ -745,10 +784,13 @@ def prepare_model_for_moe_quantization(
         logger.info(f"[MoE Prep] Unfused {len(unfused_modules)} MOE experts modules")
         clear_memory()
 
-        # Set config for linear_loop forward
+        # Set config for the per-expert nn.Linear forward. A user-provided
+        # ``experts_implementation`` is only honored when it is one of ours: the fused
+        # backends (grouped_mm/batched_mm/...) index 3D parameters that no longer exist
+        # after unfusing.
         if hasattr(model, "config"):
             saved_impl = getattr(model.config, "experts_implementation", None)
-            impl_to_set = saved_impl or implementation
+            impl_to_set = saved_impl if saved_impl in AUTO_ROUND_EXPERTS_IMPLS else implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
 
@@ -761,6 +803,22 @@ def prepare_model_for_moe_quantization(
 def is_linear_loop_available() -> bool:
     """Check if linear_loop experts implementation is available."""
     return HAS_EXPERTS_INTERFACE
+
+
+def is_grouped_experts_forward_active(model: nn.Module | None) -> bool:
+    """Whether this model will run the grouped-GEMM experts forward during tuning.
+
+    The grouped experts forward (:func:`grouped_linear_experts_forward`) is deliberately
+    opaque to dynamo -- its routing is data-dependent Python control flow, so it runs
+    eager. Compiling the *block* forward around it therefore buys nothing over the experts
+    region and only pays dynamo's routing recompiles, while the per-layer qdq
+    (``weight_quant_func``) stays compiled in its own right. Callers use this to keep the
+    block forward eager for grouped MoE while leaving qdq compilation on.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    return getattr(config, "_experts_implementation", None) == GROUPED_LINEAR_IMPL
 
 
 def _config_model_types(config) -> list[str]:

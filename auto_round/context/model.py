@@ -346,7 +346,7 @@ class ModelContext(BaseContext):
         self.disk_stream_model_dir = checkpoint_dir
         logger.info(
             "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
-            "(set AR_DISABLE_AUTO_META_LOAD=1 to load the whole model on CPU instead)."
+            "(set `AR_DISABLE_AUTO_META_LOAD=1` to load the whole model on CPU instead)."
         )
         return True
 

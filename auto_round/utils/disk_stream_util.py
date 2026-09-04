@@ -188,6 +188,80 @@ _MODEL_PROJ_TO_FUSED = {
     "down_proj": ("down_proj", 0),
 }
 
+_MODEL_SIDE_EXPERT_RE = re.compile(
+    r"^(?P<prefix>.*\.experts)\.(?P<expert>\d+)\.(?P<proj>[A-Za-z0-9_]+)\.(?P<attr>weight|bias)$"
+)
+
+
+@lru_cache(maxsize=None)
+def _expert_projection_renames_for(model_type):
+    """Map a fused projection to the checkpoint-side per-expert projection names.
+
+    ``transformers`` describes MoE experts with a ``WeightConverter`` whose
+    ``source_patterns`` are the per-expert checkpoint keys and whose single
+    ``target_pattern`` is the fused model-side parameter, e.g. for phimoe::
+
+        source_patterns = [".experts.*.w1.weight", ".experts.*.w3.weight"]
+        target_patterns = ".experts.gate_up_proj"
+
+    After AutoRound unfuses the experts the model-side names are
+    ``experts.<i>.gate_proj.weight`` / ``experts.<i>.up_proj.weight``, so we need
+    ``(gate_up_proj, 0) -> "w1.weight"`` and ``(gate_up_proj, 1) -> "w3.weight"`` to find
+    the tensors back on disk. Returns a tuple of ``((fused, index), suffix)`` pairs.
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import MergeModulelist, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    renames: dict[tuple[str, int], str] = {}
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        # Only expert merges (`experts.*.<proj>` -> fused 3D) are relevant here.
+        if not any(isinstance(op, MergeModulelist) for op in entry.operations):
+            continue
+        if len(entry.target_patterns) != 1:
+            continue
+        fused = entry.target_patterns[0].rstrip("$").rsplit(".", 1)[-1]
+        for position, source_pattern in enumerate(entry.source_patterns):
+            # ".experts.*.w1.weight" -> "w1.weight"
+            _, star, suffix = source_pattern.partition("*.")
+            if not star:
+                continue
+            renames.setdefault((fused, position), suffix.rstrip("$"))
+    return tuple(renames.items())
+
+
+def _renamed_expert_candidates(index, full_name: str):
+    """Checkpoint-name candidates for an unfused per-expert parameter."""
+    match = _MODEL_SIDE_EXPERT_RE.match(full_name)
+    if match is None:
+        return
+
+    fused_position = _MODEL_PROJ_TO_FUSED.get(match["proj"])
+    if fused_position is None:
+        return
+    prefix, expert = match["prefix"], match["expert"]
+
+    for model_type in _index_model_types(index):
+        for key, suffix in _expert_projection_renames_for(model_type):
+            if key != fused_position:
+                continue
+            # "w1.weight" keeps the checkpoint's own attribute name; drop it for a bias.
+            suffix_attr = suffix.rsplit(".", 1)
+            if len(suffix_attr) == 2:
+                suffix = f"{suffix_attr[0]}.{match['attr']}"
+            yield f"{prefix}.{expert}.{suffix}"
+
+
 # On-disk layout of fused expert tensors, keyed by checkpoint ``model_type``.
 # Two axes vary between families:
 #   * ``checkpoint_transposed`` -- the per-expert 2-D slice is stored as
