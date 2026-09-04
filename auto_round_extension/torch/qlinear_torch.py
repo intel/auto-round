@@ -146,10 +146,10 @@ class QuantLinear(nn.Module):
         self.qweight = intweight.to("cpu")
 
         if isinstance(zeros, torch.Tensor):
-            zeros = zeros.t().contiguous().to(self.device)
+            zeros = zeros.t().contiguous().to(device)
             # zeros = zeros.numpy().astype(np.uint32)
             qzeros = torch.zeros(
-                (zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=self.device, dtype=torch.int32
+                (zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device, dtype=torch.int32
             )
             i = 0
             col = 0

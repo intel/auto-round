@@ -213,6 +213,7 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 FAKE_FORMAT = ["auto_round:fake", "auto_round:auto_gptq", "auto_round", "auto_round:auto_awq"]
 NVFP4_E5M3_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3"]
+RRQ_FORMAT = ["auto_round:rrq"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
 # CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot

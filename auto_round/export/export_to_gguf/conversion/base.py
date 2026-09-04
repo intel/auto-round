@@ -321,6 +321,14 @@ class ModelBase:
         if (quant_config := self.hparams.get("quantization_config")) and isinstance(quant_config, dict):
             quant_method = quant_config.get("quant_method")
 
+            if quant_method == "auto-round-rrq":
+                raise NotImplementedError(
+                    "GGUF export does not support RRQ residual models "
+                    "(quant_method='auto-round-rrq'). Use the standard INT2 base "
+                    "model (quant_method='auto-round') or a dedicated RRQ runtime instead. "
+                    "Residual planes cannot be silently dropped."
+                )
+
             def dequant_bitnet(weight: Tensor, scale: Tensor) -> Tensor:
                 weight = weight.view(torch.uint8)
                 orig_shape = weight.shape
