@@ -75,10 +75,12 @@ steps:
       targetType: "inline"
       script: |
         set -uo pipefail
+        if [ ${{ parameters.enableAiAnalysis }} == "true" ]; then
+            curl -fsSL https://gh.io/copilot-install | bash
+        fi
         base="$(Build.SourcesDirectory)"
         work="${base}/ai_analysis"
         scripts="${base}/.azure-pipelines/scripts/ai_analysis"
-        # Swap point: install/authenticate the inference CLI here when enabled.
         python "${scripts}/ai_analyze.py" \
           --clusters-json "${work}/annotated.json" \
           --output "${work}/ai.json" \
