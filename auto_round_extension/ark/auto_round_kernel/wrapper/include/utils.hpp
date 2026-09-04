@@ -99,8 +99,15 @@ class DeviceMemoryPool {
   size_t get_device_key(sycl::queue* q) {
 #if ARK_XPU
     if (q != nullptr) {
-      auto uuid = q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
-      return UUIDHasher{}(uuid);
+      std::lock_guard<std::mutex> lock(key_mutex_);
+      auto key = get_device_context_key_locked(q);
+      auto it = device_context_ids_.find(key);
+      if (it != device_context_ids_.end()) {
+        return it->second;
+      }
+      const size_t new_id = next_device_context_id_++;
+      device_context_ids_.emplace(key, new_id);
+      return new_id;
     }
 #endif
     return 0;
@@ -174,6 +181,50 @@ class DeviceMemoryPool {
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 
+#if ARK_XPU
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+#endif
+
   int8_t* allocate(size_t size, sycl::queue* q) {
 #if ARK_XPU
     if (q == nullptr) {
@@ -199,6 +250,13 @@ class DeviceMemoryPool {
 
   std::array<SizeMap, MaxLocNum> dev_mem_size_map;
   std::array<PtrMap, MaxLocNum> dev_mem_ptr_map;
+#if ARK_XPU
+  std::mutex key_mutex_;
+  std::vector<ContextEntry> context_ids_;
+  std::unordered_map<DeviceContextKey, size_t, DeviceContextKeyHasher> device_context_ids_;
+  size_t next_context_id_ = 1;
+  size_t next_device_context_id_ = 1;
+#endif
 };
 
 #if ARK_DNNL

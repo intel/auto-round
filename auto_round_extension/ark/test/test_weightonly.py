@@ -239,8 +239,51 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
     required = ("CUDAGraph", "Stream", "graph", "stream")
     if any(not hasattr(torch.xpu, name) for name in required):
         pytest.skip("torch.xpu graph APIs are not available")
+    xpu_lib = getattr(ark, "xpu_lib", None)
+    debug_required = (
+        "_debug_xpu_device_context_key",
+        "_debug_xpu_pool_scratch_ptr",
+        "_debug_xpu_dnnl_engine_ptr",
+        "_debug_xpu_dnnl_scratch_ptr",
+    )
+    if xpu_lib is None or any(not hasattr(xpu_lib, name) for name in debug_required):
+        pytest.skip("XPU debug probes for context-aware scratch/engine isolation are unavailable")
 
     with torch.no_grad():
+        default_stream = torch.xpu.current_stream()
+        capture_stream = torch.xpu.Stream()
+
+        def _on_stream(stream, fn, *args):
+            with torch.xpu.stream(stream):
+                return fn(torch.xpu.current_stream().sycl_queue, *args)
+
+        default_key = int(_on_stream(default_stream, xpu_lib._debug_xpu_device_context_key))
+        capture_key = int(_on_stream(capture_stream, xpu_lib._debug_xpu_device_context_key))
+        if default_key == capture_key:
+            pytest.skip("Unable to create two distinct SYCL contexts for this XPU runtime")
+
+        def _assert_pool_slot_isolated(slot, small_bytes, large_bytes):
+            ptr_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            ptr_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            assert ptr_a0 != 0 and ptr_a0 == ptr_a1
+            _ = _on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, large_bytes, slot)
+            ptr_a2 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            assert ptr_a2 == ptr_a0
+
+        for slot, small, large in ((8, 4, 64), (9, 4096, 8192), (10, 4096, 8192)):
+            _assert_pool_slot_isolated(slot, small, large)
+
+        eng_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
+        eng_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
+        eng_b = int(_on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
+        assert eng_a0 != 0 and eng_a0 == eng_a1
+        assert eng_b != 0 and eng_b != eng_a0
+
+        dnnl_scratch_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        _ = _on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 8192, 0)
+        dnnl_scratch_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        assert dnnl_scratch_a0 != 0 and dnnl_scratch_a1 == dnnl_scratch_a0
+
         m, n, k = 8, 256, 256
         blocksize = 32
         compute_type = "fp16"
@@ -265,9 +308,7 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
         # Warm up on the default queue to reproduce stale stream cache regressions.
         _ = _woq_call(eager_input)
         torch.xpu.synchronize()
-
         graph_input = eager_input.clone()
-        capture_stream = torch.xpu.Stream()
         graph = torch.xpu.CUDAGraph()
 
         try:

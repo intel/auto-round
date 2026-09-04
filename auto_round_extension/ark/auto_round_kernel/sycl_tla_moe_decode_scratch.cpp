@@ -3,7 +3,8 @@
 // The bookkeeping below is deliberately defined here rather than in a header so
 // that the module holds exactly one instance of it, and so that the buffers
 // themselves are owned by the extension-wide `DeviceMemoryPool` (keyed by
-// device UUID) instead of by a header-local static keyed by raw `sycl::queue*`.
+// device UUID + SYCL context) instead of by a header-local static keyed by raw
+// `sycl::queue*`.
 // See `sycl_tla_moe_decode_scratch.hpp` for the rationale.
 
 #include "sycl_tla_moe_decode_scratch.hpp"
@@ -32,8 +33,8 @@ struct RepackTag {
 
 struct ScratchState {
   std::mutex mu;
-  // Device key (`DeviceMemoryPool::get_device_key`) -> a queue handle on that
-  // device. The queue is held *by value*: a `sycl::queue` is a reference
+  // Device-context key (`DeviceMemoryPool::get_device_key`) -> a queue handle
+  // on that context. The queue is held *by value*: a `sycl::queue` is a reference
   // counted handle, so keeping a copy guarantees the queue outlives the device
   // memory we allocated against it. This is what makes the pool immune to the
   // caller destroying its queue, and to a later queue landing on the same

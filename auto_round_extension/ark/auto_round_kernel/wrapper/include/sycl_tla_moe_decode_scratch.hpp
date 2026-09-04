@@ -22,22 +22,19 @@ namespace moe_decode_detail {
 // putting an unbounded device sync inside the lock.
 //
 // Both buffers are therefore served from the extension-wide `DeviceMemoryPool`,
-// which keys on the device UUID rather than on a queue pointer, so slab
-// identity follows the device and is immune to queue lifetime and address
-// reuse. The bookkeeping below lives in `sycl_tla_moe_decode_scratch.cpp`, so
-// there is exactly one instance in the module; this header only declares it.
+// which keys on (device UUID, SYCL context) rather than on a queue pointer, so
+// slab identity follows the concrete execution context and is immune to queue
+// lifetime and address reuse. The bookkeeping below lives in
+// `sycl_tla_moe_decode_scratch.cpp`, so there is exactly one instance in the
+// module; this header only declares it.
 //
 // Slabs are intentionally never freed from a static destructor: the SYCL
 // context may already be torn down at that point. `release_decode_scratch`
 // provides explicit teardown for callers that need it (exposed to Python as
 // `moe_decode_release_scratch`).
 //
-// Keying on the device rather than on the queue is what removes the duplicate
-// slabs, but it also means two queues on the same device now share one slab
-// instead of getting one each. That matches how every other `DeviceMemoryPool`
-// slot already behaves, and the decode path runs on the device's current
-// queue, but it does mean these entry points must not be driven concurrently
-// from two queues on one device.
+// Keying on device+context rather than on queue pointer removes duplicate slabs
+// for the same context while keeping different contexts isolated.
 // ----------------------------------------------------------------------------
 
 // `DeviceMemoryPool` slots owned by the decode path. Slots 0-7 belong to the
