@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
+    AR_DISABLE_GGUF_MTP_EXPORT: bool = False
     LLAMA_CPP_ROOT: Optional[str] = None
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
@@ -89,6 +90,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_MODEL_FREE_SHARD_PARALLELISM": lambda: _get_optional_positive_int_env("AR_MODEL_FREE_SHARD_PARALLELISM"),
     "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
+    in ("1", "true", "yes", "on"),
+    "AR_DISABLE_GGUF_MTP_EXPORT": lambda: os.getenv("AR_DISABLE_GGUF_MTP_EXPORT", "0").lower()
     in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
     # Controls the default number of calibration samples used by AutoScheme scoring

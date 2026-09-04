@@ -312,7 +312,7 @@ def set_cuda_visible_devices(device: str):
             indices = [int(device) for device in devices]
             try:
                 pick_device = [current_visible_devices[i] for i in indices]
-            except:
+            except Exception:
                 raise ValueError(
                     "Invalid '--device' value: It must be smaller than the number of available devices."
                     " For example, with CUDA_VISIBLE_DEVICES=4,5, "
@@ -321,7 +321,9 @@ def set_cuda_visible_devices(device: str):
             visible_devices = ",".join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = device
+            # Use the cleaned/normalized device indices (no spaces, no type
+            # prefixes) when initially setting the environment variable.
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
 
 
 class override_cuda_device_capability(ContextDecorator):

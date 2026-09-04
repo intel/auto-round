@@ -79,6 +79,16 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_DISABLE_GGUF_MTP_EXPORT
+- **Description**: Disables multi-token prediction (MTP) layers when exporting GGUF models. By default, AutoRound follows the llama.cpp converter and includes MTP layers when the model provides them.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, or `"on"` (case-insensitive) disable MTP export; any other value keeps MTP export enabled
+- **Usage**: Enable this when exporting a checkpoint that uses an MTP-capable architecture but does not contain MTP tensors
+
+```bash
+export AR_DISABLE_GGUF_MTP_EXPORT=1
+```
+
 ### AR_ACT_SCALE
 - **Description**: Only for research. Controls the scaling factor applied to activation min/max values during activation quantization. A value less than 1.0 shrinks the clipping range, which can reduce outlier impact.
 - **Default**: `1.0`

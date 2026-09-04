@@ -111,6 +111,36 @@ class DeviceMemoryPool {
     return get_scratch_ptr(size, buf_loc, q, key);
   }
 
+  // Current size of the slab held for ``buf_loc`` on ``q``'s device, or 0 when
+  // no slab is held. Callers that must synchronize before an existing slab is
+  // freed (because in-flight kernels may still reference it) use this to detect
+  // the grow path in `get_scratch_ptr` ahead of time.
+  size_t get_scratch_size(size_t buf_loc, sycl::queue* q) {
+    if (buf_loc >= MaxLocNum) return 0;
+    auto key = get_device_key(q);
+    auto it = dev_mem_size_map[buf_loc].find(key);
+    return it == dev_mem_size_map[buf_loc].end() ? 0 : it->second;
+  }
+
+  // Detach the slab held for ``buf_loc`` on ``q``'s device and hand ownership to
+  // the caller, which becomes responsible for synchronizing and freeing it.
+  // Returns nullptr when no slab is held.
+  //
+  // Detaching rather than freeing in place lets a caller drop the entry while
+  // holding its own lock and then perform the (unbounded) `wait()` and
+  // `sycl::free()` outside that lock: a concurrent acquire that races in after
+  // the detach simply allocates a fresh slab instead of racing on this one.
+  void* detach_scratch_mem(size_t buf_loc, sycl::queue* q) {
+    if (buf_loc >= MaxLocNum) return nullptr;
+    auto key = get_device_key(q);
+    auto it = dev_mem_ptr_map[buf_loc].find(key);
+    if (it == dev_mem_ptr_map[buf_loc].end()) return nullptr;
+    int8_t* ptr = it->second;
+    dev_mem_ptr_map[buf_loc].erase(it);
+    dev_mem_size_map[buf_loc].erase(key);
+    return ptr;
+  }
+
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
     if (size == 0 || buf_loc >= MaxLocNum) return nullptr;
 
@@ -135,7 +165,12 @@ class DeviceMemoryPool {
   }
 
  private:
-  static constexpr int MaxLocNum = 8;
+  // Slots 0-7 are claimed by the dnnl / xpu / sycl-s8 / cpu wrappers and the
+  // SDPA kernels; slot 8 is the MoE DPAS grouped-GEMM work-group counter
+  // (`moe_dpas_fp8::kAtomicScratchLoc`); slots 9 and 10 are the int4 decode
+  // weight-repack and activation-sum buffers
+  // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`).
+  static constexpr int MaxLocNum = 11;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 

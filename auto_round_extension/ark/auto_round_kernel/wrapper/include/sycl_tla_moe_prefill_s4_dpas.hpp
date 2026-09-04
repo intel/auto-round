@@ -91,9 +91,11 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
@@ -129,10 +131,30 @@ using ::ark::moe_dpas_fp8::dpas_w16a16_policy;
 using ::ark::moe_dpas_fp8::dpas_w8a16_policy;
 using ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_16;
 using ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_32;
+// Dedicated 4-bit tile policies. The default (large-M) tile is 128x256x32
+// (halved packed-B stream lets a wider N tile pay off) and the m_8 bucket is
+// new; both mirror the reference `w4a16_policy*` in vllm-xpu-kernels. The
+// m_16 / m_32 buckets share the INT8 64-wide N tiles, so they are aliased to
+// the existing `dpas_w8a16_policy_m_16 / _m_32` shapes rather than duplicated.
+using ::ark::moe_dpas_fp8::dpas_w4a16_policy;
+using ::ark::moe_dpas_fp8::dpas_w4a16_policy_m_8;
+using dpas_w4a16_policy_m_16 = ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_16;
+using dpas_w4a16_policy_m_32 = ::ark::moe_dpas_fp8::dpas_w8a16_policy_m_32;
 using ::ark::moe_dpas_fp8::ScaleMode;
 using ::ark::moe_dpas_fp8::cute_scalar;
 using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
+
+// ---------------------------------------------------------------------------
+// Work-group counter served from the shared device scratch pool.
+//
+// Shared with the FP8 path -- see `moe_dpas_fp8::get_atomic_scratch_buffer` for
+// the rationale (one `int32_t` slot handed out by `DeviceMemoryPool` and reused
+// across calls, instead of a `sycl::malloc_device` / `sycl::free` pair per
+// dispatch, each of which forces a queue synchronization on the decode hot
+// path).
+// ---------------------------------------------------------------------------
+using ::ark::moe_dpas_fp8::get_atomic_scratch_buffer;
 
 // ---------------------------------------------------------------------------
 // Variant B -- per-K-group S4 (sym) mainloop.
@@ -548,8 +570,10 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
                                       SGLayout>::TiledMMA;
   auto mma = MMA{};
 
-  int sm_count =
-      cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
+  // Device SM count is a host-side driver query (Level Zero round-trip). The
+  // value is fixed for a given device, so cache it once instead of paying the
+  // round-trip on every launch -- the decode hot path calls this per step.
+  static const int sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
   auto MaxThreadsPerWorkgroup = size(mma);
 
   static constexpr int MaxThreadsPerSM = 512;
@@ -629,18 +653,14 @@ void moe_prefill_s4_dpas_per_group_dispatch_policy(
   const auto* weights_i4 =
       reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_s4_dpas(per-group): failed to allocate atomic buffer");
-  }
+  // Pooled work-group counter (self-zeroed by the kernel); avoids a
+  // malloc_device/free (each a queue sync) on every dispatch call.
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
   MoEGEMMLauncher_s4<'R', 'C', Policy>(
       *q, activations_ca, weights_i4, scales_ca,
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
       num_tokens_per_expert, E, group_size, atomic_buffer);
-
-  sycl::free(atomic_buffer, *q);
 }
 
 template <typename ScalarT>
@@ -677,11 +697,9 @@ void moe_prefill_s4_dpas_per_group_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_s4_dpas(per-group): failed to allocate atomic buffer");
-  }
+  // Pooled work-group counter (self-zeroed by the kernel); avoids a
+  // malloc_device/free (each a queue sync) on every dispatch call.
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_S4_PG_LAUNCH_SYM(policy)                                      \
   MoEGEMMLauncher_s4<'R', 'C', policy>(                                        \
@@ -689,16 +707,105 @@ void moe_prefill_s4_dpas_per_group_dispatch(
       static_cast<const ElementA*>(nullptr), outputs_ca, N, K,                 \
       num_tokens_per_expert, E, group_size, atomic_buffer);
 
-  if (A_avg_M <= 8) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
+  // Four-tier bucketing on the average tokens-per-expert, matching the
+  // reference `w4a16` dispatch in vllm-xpu-kernels
+  // (`grouped_gemm_xe2_interface.hpp`): tiny M uses an 8-row tile, and the
+  // 32-row tile now covers M up to 128 (instead of jumping to the wide
+  // large-M tile at 33) so mid-size chunked-prefill batches avoid the
+  // padding waste of the 128-row tile.
+  if (A_avg_M <= 4) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_8);
+  } else if (A_avg_M <= 8) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_16);
+  } else if (A_avg_M <= 128) {
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy_m_32);
   } else {
-    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w8a16_policy);
+    ARK_DPAS_S4_PG_LAUNCH_SYM(dpas_w4a16_policy);
   }
 #undef ARK_DPAS_S4_PG_LAUNCH_SYM
+}
 
-  sycl::free(atomic_buffer, *q);
+// ---------------------------------------------------------------------------
+// Decode-specialized S4 (sym) per-K-group DPAS dispatch.
+//
+// Mirrors vllm-xpu-kernels' `w4a16` dispatch (`grouped_gemm_xe2_interface.hpp`):
+// the DPAS tile is selected from the average tokens-per-expert (`A_avg_M`)
+// ladder -- `_m_8` for `A_avg_M <= 4`, `_m_16` for `<= 8`, `_m_32` for `<= 128`,
+// then the wide tile. An earlier revision hard-pinned the 8-row
+// `dpas_w4a16_policy_m_8` tile on the assumption that decode only ever sees a
+// handful of tokens per expert, but that assumption breaks for larger decode
+// batches (many sequences, high top-k, or few experts): whenever more than 4
+// tokens route to an expert on average the 8-row tile under-fills the M
+// dimension and the (bandwidth-bound) packed weights are re-streamed 2-4x more
+// than necessary, roughly halving throughput versus the reference. Selecting
+// the same tile as the reference collapses to `_m_8` for tiny batches (so the
+// small-decode case is unchanged) and grows the M tile exactly when reuse pays
+// off.
+//
+// The underlying grouped-GEMM mainloop (`xe_gemm_*` per-group loop) is reused
+// verbatim: it already performs the 2D VNNI block load via
+// `get_block_2d_copy_A/B` + `make_block_2d_prefetch`, and caches the per-N
+// scale in the `sg_scale[]` register array, folding it once per K-group. So no
+// new mainloop math is written here -- only the tile selection differs from the
+// prefill dispatch (which uses the identical ladder).
+//
+// `ARK_MOE_DECODE_S4_DPAS_M8` (default OFF) can be set to "1"/"true"/"on"/"yes"
+// to force the legacy hard-pinned 8-row tile for A/B comparison and regression
+// escape (the two paths are numerically identical; only the tile shape differs).
+// ---------------------------------------------------------------------------
+inline bool moe_decode_s4_dpas_force_m8() {
+  const char* env = std::getenv("ARK_MOE_DECODE_S4_DPAS_M8");
+  if (env == nullptr) return false;  // default OFF -- use the A_avg_M ladder
+  std::string s(env);
+  for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (s == "1" || s == "true" || s == "on" || s == "yes") return true;
+  return false;
+}
+
+template <typename ScalarT>
+void moe_decode_s4_dpas_per_group_dispatch(
+    sycl::queue* q, const ScalarT* activations, const uint8_t* weights_NKp,
+    const ScalarT* scales, ScalarT* outputs,
+    const int* num_tokens_per_expert, int E, int N, int K, int group_size,
+    int total_tokens) {
+  // Default: select the DPAS tile from the shared `A_avg_M` ladder, matching
+  // the reference `w4a16` decode dispatch. Identical math; only the DPAS tile
+  // shape differs. `ARK_MOE_DECODE_S4_DPAS_M8=1` forces the legacy m_8 pin.
+  if (!moe_decode_s4_dpas_force_m8()) {
+    moe_prefill_s4_dpas_per_group_dispatch<ScalarT>(
+        q, activations, weights_NKp, scales, outputs, num_tokens_per_expert, E,
+        N, K, group_size, total_tokens);
+    return;
+  }
+
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+  if (K % group_size != 0) {
+    throw std::invalid_argument(
+        "moe_decode_s4_dpas(per-group): K must be a multiple of group_size");
+  }
+  if ((K & 1) != 0) {
+    throw std::invalid_argument(
+        "moe_decode_s4_dpas(per-group): K must be even (packed nibbles)");
+  }
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+  const auto* weights_i4 =
+      reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
+
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
+
+  // Legacy opt-in path (`ARK_MOE_DECODE_S4_DPAS_M8=1`): hard-pin the 8-row
+  // tile. Kept for A/B comparison against the default `A_avg_M` ladder above.
+  MoEGEMMLauncher_s4<'R', 'C', dpas_w4a16_policy_m_8>(
+      *q, activations_ca, weights_i4, scales_ca,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, group_size, atomic_buffer);
 }
 
 // ---------------------------------------------------------------------------

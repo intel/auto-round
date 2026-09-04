@@ -1624,7 +1624,7 @@ class TestSetCudaVisibleDevicesExtra:
         """Spaces in numeric input should still work (the function strips)."""
         from auto_round.utils.device import set_cuda_visible_devices
 
-        original = os.environ.get("CUDA_VISIBLE_DEVICES")
+        original = os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         try:
             set_cuda_visible_devices("0 ")
             assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0"
