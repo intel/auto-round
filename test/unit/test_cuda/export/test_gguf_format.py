@@ -103,7 +103,8 @@ class TestAutoRound:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     @require_gguf
     @pytest.mark.timeout(240)
-    def test_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path):
+    def test_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path, monkeypatch):
+        monkeypatch.setenv("AR_DISABLE_GGUF_MTP_EXPORT", "1")
         self._export_qwen35_moe_gguf(tiny_qwen35_moe_model_path)
 
     @pytest.mark.skip(
