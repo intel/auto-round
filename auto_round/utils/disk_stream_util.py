@@ -260,6 +260,8 @@ def _renamed_expert_candidates(index, full_name: str):
             if len(suffix_attr) == 2:
                 suffix = f"{suffix_attr[0]}.{match['attr']}"
             yield f"{prefix}.{expert}.{suffix}"
+
+
 # On-disk layout of fused expert tensors, keyed by checkpoint ``model_type``.
 # Two axes vary between families:
 #   * ``checkpoint_transposed`` -- the per-expert 2-D slice is stored as
