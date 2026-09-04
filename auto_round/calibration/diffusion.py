@@ -22,7 +22,7 @@ and customises:
 """
 
 import inspect
-from typing import Optional
+import os
 
 import torch
 from tqdm import tqdm
@@ -68,32 +68,28 @@ class DiffusionCalibrator(LLMCalibrator):
         """Diffusion calibration never early-stops: all denoising steps execute."""
         return False
 
-    def _get_calibration_image(self, batch_size: int):
-        """Return a synthetic PIL Image for I2V pipeline calibration."""
-        params = inspect.signature(self.pipe.__call__).parameters
-        width_param = params.get("width")
-        height_param = params.get("height")
-        width = (
-            832
-            if width_param is None or width_param.default in (inspect.Parameter.empty, None)
-            else width_param.default
-        )
-        height = (
-            480
-            if height_param is None or height_param.default in (inspect.Parameter.empty, None)
-            else height_param.default
-        )
-        from PIL import Image  # pylint: disable=E0401
-
-        image = Image.new("RGB", (int(width), int(height)), color=(127, 127, 127))
-        if batch_size == 1:
-            return image
-        return [image.copy() for _ in range(batch_size)]
-
     def _requires_calibration_image(self) -> bool:
         """Return whether the pipeline requires an image input."""
         image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
         return image_param is not None and image_param.default is inspect.Parameter.empty
+
+    @staticmethod
+    def _load_calibration_images(image_inputs):
+        """Load image paths while preserving already decoded image inputs."""
+        from PIL import Image  # pylint: disable=E0401
+
+        inputs = list(image_inputs) if isinstance(image_inputs, (list, tuple)) else [image_inputs]
+        images = []
+        for image_input in inputs:
+            if isinstance(image_input, (str, os.PathLike)):
+                image_path = os.fspath(image_input)
+                if not os.path.isfile(image_path):
+                    raise ValueError(f"Calibration image does not exist: {image_path}")
+                with Image.open(image_path) as image:
+                    images.append(image.convert("RGB"))
+            else:
+                images.append(image_input)
+        return images[0] if len(images) == 1 else images
 
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
@@ -113,10 +109,11 @@ class DiffusionCalibrator(LLMCalibrator):
             "Diffusion model will catch nsamples * num_inference_steps inputs, "
             "you can reduce nsamples or num_inference_steps if OOM or take too much time."
         )
+        requires_image = self._requires_calibration_image()
         if isinstance(self.dataset, str):
             dataset = self.dataset.replace(" ", "")
             self.dataloader, self.batch_size = get_diffusion_dataloader(
-                dataset=dataset, bs=bs, seed=self.seed, nsamples=nsamples
+                dataset=dataset, bs=bs, seed=self.seed, nsamples=nsamples, image_required=requires_image
             )
         else:
             self.dataloader = self.dataset
@@ -144,11 +141,18 @@ class DiffusionCalibrator(LLMCalibrator):
             low_gpu_mem_usage=self.low_gpu_mem_usage,
         )
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
-        # Check if this is an I2V pipeline (needs calibration image)
-        requires_image = self._requires_calibration_image()
 
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
-            for ids, prompts in self.dataloader:
+            for batch in self.dataloader:
+                if len(batch) == 2:
+                    ids, prompts = batch
+                    image_inputs = None
+                elif len(batch) == 3:
+                    ids, prompts, image_inputs = batch
+                else:
+                    raise ValueError(
+                        "Diffusion calibration batches must contain (ids, prompts) or (ids, prompts, images)."
+                    )
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
                 try:
@@ -158,7 +162,12 @@ class DiffusionCalibrator(LLMCalibrator):
                         else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
                     )
                     if requires_image:
-                        image = self._get_calibration_image(len(prompts) if isinstance(prompts, list) else 1)
+                        if image_inputs is None:
+                            raise ValueError(
+                                "I2V calibration requires images. Use the default coco2014 dataset or provide an "
+                                "'image' column in a local TSV."
+                            )
+                        image = self._load_calibration_images(image_inputs)
                         pipe(
                             image,
                             prompt=prompts,

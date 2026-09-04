@@ -118,23 +118,23 @@ class TestActQuantizationGpu:
         """Asymmetric W8A8 cannot be exported to the auto_round format.
 
         ``auto_round`` supports W8A8 export only for the symmetric path; an
-        asymmetric W8A8 config is rejected during format resolution.
+        asymmetric W8A8 config is rejected when the scheme is resolved (the
+        default export format has no room for an 8-bit zero point).
         """
-        autoround = AutoRound(
-            tiny_opt_model_path,
-            bits=8,
-            act_bits=8,
-            group_size=128,
-            act_group_size=32,
-            act_dynamic=True,
-            sym=False,
-            iters=0,
-            disable_opt_rtn=True,
-            nsamples=2,
-            seqlen=16,
-        )
-        with pytest.raises(ValueError, match="does not support exporting"):
-            autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
+        with pytest.raises(ValueError, match="8-bit asymmetric weight quantization is not supported"):
+            AutoRound(
+                tiny_opt_model_path,
+                bits=8,
+                act_bits=8,
+                group_size=128,
+                act_group_size=32,
+                act_dynamic=True,
+                sym=False,
+                iters=0,
+                disable_opt_rtn=True,
+                nsamples=2,
+                seqlen=16,
+            )
 
     @pytest.mark.timeout(180)
     def test_w4a8_reload_layer_type_diff_but_output_equal(self, tiny_opt_model_path):
