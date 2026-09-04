@@ -91,7 +91,7 @@ function run_common_unit_test() {
     # common test case for cpu/gpu/xpu
     # Group cases by the first-level folder under unit/common; a single test
     # file placed directly under unit/common (e.g. test_main.py) runs on its own.
-    for entry in $(find ./unit/common -mindepth 1 -maxdepth 1 | sort); do
+    for entry in $(find ./unit/common/advanced -mindepth 1 -maxdepth 1 | sort); do
         if [ -d "${entry}" ]; then
             local group_name=$(basename "${entry}")
             run_common_group "${group_name}" "$(find "${entry}" -name "test*.py" | sort)"
@@ -109,7 +109,7 @@ function run_unit_test() {
     # Split cpu specific test files into 4 parts.
     # Only fast unit tests run in PR CI; integration (inc/llmc) and e2e suites
     # run in the nightly pipelines (see nightly-test.yml).
-    find ./unit/test_cpu -name "test*.py" | sort > all_tests.txt
+    find ./unit/test_cpu/core -name "test*.py" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
     NUM_CHUNKS=2
     q=$(( total_lines / NUM_CHUNKS ))

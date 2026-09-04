@@ -48,7 +48,7 @@ class TestSelectGgufEvalFile:
 
         gguf_file, candidates = select_gguf_eval_file(str(tmp_path), ["gguf:q4_0"])
 
-        assert gguf_file == "model-Q4_0.gguf"
+        assert gguf_file == "test"
         assert candidates == ["model-Q4_0.gguf", "model-Q8_0.gguf"]
 
 

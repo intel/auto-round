@@ -83,6 +83,23 @@ stages:
               buildARKWheel: $(BUILD_ARK_WHEEL)
               filterChangedTests: true
 
+  - stage: AI_Analysis
+    displayName: "AI Failure Analysis"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: [Unit_test]
+    condition: failed()
+    variables:
+      - group: auto-round-bot-secrets
+    jobs:
+      - job: AnalyzeFailures
+        displayName: "Analyze failed CPU unit tests"
+        steps:
+          - template: template/ai-analysis-template.yml
+            parameters:
+              enableAiAnalysis: true
+              postComment: true
+
   - stage: Coverage
     displayName: "Collect Coverage"
     pool:

@@ -58,7 +58,7 @@ class TestAutoRound:
         autoround_1.quantize()
         out1 = model_tmp(inp)
 
-        assert out0[0].equal(out1[0])
+        assert out0[0].equal(out1[1])
         assert isclose(float(out0[0][0][0][0]), -0.021002087742090225, rel_tol=5e-04)
 
     def test_3bits_asym_autoround(self, tiny_opt_model_path):
