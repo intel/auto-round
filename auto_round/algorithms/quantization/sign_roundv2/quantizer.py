@@ -159,6 +159,10 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         # wrap phase -- N x weight bytes -- while the batched call needs it
         # only transiently per chunk (bounded by the batch cap)
         imatrix_raw = getattr(layer, "imatrix", None)
+        input_context = getattr(layer, "_teq_input_context", None)
+        if isinstance(imatrix_raw, torch.Tensor) and input_context is not None:
+            alpha = self._teq_scale(input_context, imatrix_raw)
+            imatrix_raw = imatrix_raw / alpha.square()
         imatrix = None if defer_search else reshape_imatrix_for_weight(imatrix_raw, weight_reshape, layer.group_size)
 
         self.weight_quant_func = get_optimized_quant_func(data_type)

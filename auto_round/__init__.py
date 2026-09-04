@@ -49,6 +49,7 @@ __all__ = [
     "SignRoundConfig",
     "SignRoundV2Config",
     "SpinQuantConfig",
+    "TEQConfig",
     "__version__",
     "quantize_and_save",
 ]
