@@ -1120,4 +1120,3 @@ def grouped_linear_experts_forward(
     if batch_size is not None:
         final_hidden_states = final_hidden_states.view(batch_size, seq_len, hidden_dim)
     return final_hidden_states
-
