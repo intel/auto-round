@@ -125,40 +125,20 @@ FLOAT8_UE5M3_MAX = 114688
 
 
 def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
-    x = torch.clamp(x, min=0.0)
-    e5m3 = torch.zeros_like(x, dtype=torch.uint8)
+    input_fp32 = x.to(torch.float32)
+    finite = torch.nan_to_num(input_fp32, nan=0.0, posinf=FLOAT8_UE5M3_MAX, neginf=0.0).clamp_(0.0, FLOAT8_UE5M3_MAX)
 
-    mask = x > 0
-    x_masked = x[mask]
+    mantissa, exponent = torch.frexp(finite.clamp_min(2**-14))
+    m3 = torch.round((mantissa - 0.5) * 16).to(torch.int32)
+    carry = m3 == 8
+    m3 = torch.where(carry, 0, m3)
+    e5 = exponent + 14 + carry.to(exponent.dtype)
+    normal = (e5 << 3) | m3
 
-    # normal number: x >= 2^-14
-    normal_mask = x_masked >= 2**-14
-    x_normal = x_masked[normal_mask]
-    mantissa, exponent = torch.frexp(x_normal)
-
-    # RNE on the 3-bit mantissa may produce 8; fold it into exponent carry.
-    m3_rounded = torch.round((mantissa - 0.5) * 16).to(torch.int32)
-    m3_carry = m3_rounded == 8
-    m3_rounded = torch.where(m3_carry, torch.zeros_like(m3_rounded), m3_rounded)
-    m3 = torch.clamp(m3_rounded, 0, 7).to(torch.uint8)
-    e5 = torch.clamp(exponent + 14 + m3_carry.to(exponent.dtype), 0, 31).to(
-        torch.uint8
-    )  # 0 reserved for subnormal, 31 reserved for NaN
-
-    e5m3_vals = ((e5 << 3) | m3).to(torch.uint8)
-
-    # sumnorm：0 < x < 2^-14
-    subnormal_mask = ~normal_mask
-    x_subnormal = x_masked[subnormal_mask]
-    m_sub = torch.clamp(torch.round(x_subnormal / (2**-14) * 8), 1, 7).to(torch.uint8)  # exponent = 0
-    e5m3_sub = m_sub  # top 5 bits = 0
-
-    out_vals = torch.zeros_like(x_masked, dtype=torch.uint8)
-    out_vals[normal_mask] = e5m3_vals
-    out_vals[subnormal_mask] = e5m3_sub
-
-    e5m3[mask] = out_vals
-    return e5m3
+    # RNE may underflow to zero or carry from the largest subnormal to 0x08.
+    subnormal = torch.round(finite * 2**17).to(torch.int32)
+    encoded = torch.where(finite < 2**-14, subnormal, normal).clamp_(0, 0xFE).to(torch.uint8)
+    return torch.where(torch.isnan(input_fp32), 0xFF, encoded)
 
 
 def e5m3_to_float_tensor(e5m3: torch.Tensor) -> torch.Tensor:

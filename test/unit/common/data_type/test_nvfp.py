@@ -462,6 +462,27 @@ class TestFloatToE5m3Frexp:
         assert out.item() == 0x80  # (exp=16, mantissa=0)
         assert decoded.item() == pytest.approx(2.0, rel=1e-6)
 
+    def test_rne_boundaries_and_saturation(self):
+        min_subnormal = 2**-17
+        max_subnormal = 7 * min_subnormal
+        min_normal = 2**-14
+        x = torch.tensor(
+            [
+                min_subnormal / 2,
+                torch.nextafter(torch.tensor((max_subnormal + min_normal) / 2), torch.tensor(float("inf"))).item(),
+                min_normal,
+                FLOAT8_UE5M3_MAX,
+                float("inf"),
+                float("nan"),
+            ],
+            dtype=torch.float32,
+        )
+
+        assert torch.equal(
+            float_to_e5m3_frexp(x),
+            torch.tensor([0x00, 0x08, 0x08, 0xFE, 0xFE, 0xFF], dtype=torch.uint8),
+        )
+
 
 class TestE5m3ToFloatTensor:
     """Test e5m3_to_float_tensor."""
