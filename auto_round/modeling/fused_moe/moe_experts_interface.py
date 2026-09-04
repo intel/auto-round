@@ -79,6 +79,7 @@ def resolve_experts_implementation() -> str:
     )
     return LINEAR_LOOP_IMPL
 
+
 # Known expert projection patterns for reference
 # These are used as hints when auto-detection needs to infer projection properties
 # Format: proj_name -> {"is_input_proj": bool, "output_multiplier": int}
