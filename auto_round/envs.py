@@ -162,31 +162,22 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # automatically when the native kernel is unavailable/ineligible (non-CUDA, pre-sm80,
     # unsupported dtype/torch, alignment) -- see modeling/fused_moe/grouped_experts.py.
     "AR_MOE_GROUPED_MM": lambda: os.getenv("AR_MOE_GROUPED_MM", "1").lower(),
-    # How many experts the "linear_grouped" backend fake-quantizes in one fused call.
-    #   <int>  - (default 16) force a fixed group size. Fusing every active expert at once
-    #            builds a working set that grows with the expert count; past a point that
-    #            costs peak memory on GPU and cache locality on CPU (measured: fusing 64
-    #            experts halved CPU calibration throughput, and doubled the GPU calibration
-    #            peak). 0 or negative means "fuse everything".
+    # How many experts the "linear_grouped" backend groups per fused op. This one knob
+    # governs BOTH the fake-quant fusion AND the native grouped_mm tiling (when
+    # AR_MOE_GROUPED_MM=1): the qdq of a chunk is one fused quant call, and that same chunk
+    # is one native grouped_mm launch, so the ``torch.stack`` (E, out, in) operand the kernel
+    # needs is bounded to ``chunk`` experts instead of all active experts.
+    #   <int>  - (default 16) fixed group size. Fusing every active expert at once builds a
+    #            working set that grows with the expert count; past a point that costs peak
+    #            memory on GPU and cache locality on CPU (measured: fusing 64 experts halved
+    #            CPU calibration throughput, and doubled the GPU calibration peak). 0 or
+    #            negative means "fuse everything" (one group; no tiling).
     #   "auto" - derive the group size from a fixed working-set budget and the weight shape
     #            (~16 on the shapes it was tuned on; more for small experts).
     # Results are identical either way -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
-    "AR_MOE_QDQ_CHUNK": lambda: os.getenv("AR_MOE_QDQ_CHUNK", "16").lower(),
-    # Experts per native grouped_mm call for the "linear_grouped" + AR_MOE_GROUPED_MM=1
-    # path (memory tiling). When the qdq was chunked there is no free stacked weight view,
-    # so feeding the native kernel *all* active experts builds one big ``torch.stack``
-    # ``(E, out, in)`` copy on top of the per-expert dequant weights -- the native path's
-    # main peak-memory cost. Tiling the kernel over experts bounds that copy to this many
-    # experts at a time (forward peak roughly cut by one full stack), at the cost of more,
-    # smaller grouped_mm launches. Numerically identical; only kicks in when the qdq did not
-    # produce a free stacked view.
-    #   "-1"/"off" - (default) one grouped_mm over all active experts (no tiling).
-    #   "auto"     - derive the tile size from a working-set budget and the weight shape.
-    #   <int>      - fixed experts per grouped_mm call (>0 enables tiling; <=0 disables it).
-    # NOTE: bounds the forward stack copy only; backward still saves per-expert dequant
-    # weights. Full fwd+bwd bounding would additionally checkpoint the qdq.
-    "AR_MOE_GROUPED_MM_CHUNK": lambda: os.getenv("AR_MOE_GROUPED_MM_CHUNK", "-1").lower(),
+    # The legacy name ``AR_MOE_QDQ_CHUNK`` is still honored as a fallback.
+    "AR_MOE_CHUNK": lambda: os.getenv("AR_MOE_CHUNK", os.getenv("AR_MOE_QDQ_CHUNK", "16")).lower(),
     # vLLM fused kernels require q/k/v and gate/up projections to use one
     # weight global scale. Disable only for runtimes without that requirement.
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()

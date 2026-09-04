@@ -591,7 +591,7 @@ class _SlotWeights:
 #   A100, 128x(4096x1536): chunk=16 held the speed (1.58x tuning vs 1.63x for one fused
 #     call) while cutting the calibration peak from 32.7 GB to 20.5 GB.
 #
-# ``AR_MOE_QDQ_CHUNK`` overrides it; 0 or negative means "fuse everything".
+# ``AR_MOE_CHUNK`` overrides it; 0 or negative means "fuse everything".
 _DEFAULT_QDQ_CHUNK = 16
 
 # Target working set for one fused qdq call. The chunk is derived from this budget and the
@@ -629,13 +629,13 @@ def _qdq_chunk_size(layers: list[nn.Module]) -> int:
     the chunk are routed, the group would silently shrink to the active count and the
     fused shape would follow the router again.
     """
-    setting = envs.AR_MOE_QDQ_CHUNK
+    setting = envs.AR_MOE_CHUNK
     if setting in ("", "auto"):
         return _auto_qdq_chunk(layers)
     try:
         chunk = int(setting)
     except ValueError:
-        logger.warning_once(f"Ignoring AR_MOE_QDQ_CHUNK={setting!r}: expected 'auto' or an integer.")
+        logger.warning_once(f"Ignoring AR_MOE_CHUNK={setting!r}: expected 'auto' or an integer.")
         return _auto_qdq_chunk(layers)
     return chunk
 
@@ -660,7 +660,7 @@ def _plan_qdq_groups(layers: list[nn.Module]) -> tuple[list[list[nn.Module]], li
     the tail, which :func:`_slot_weights` fuses into a single *eager* call (its shape may
     follow the router because eager needs no shape-keyed cache). The flag tells the caller
     whether the compiled quant function may be used for the whole groups -- it may not when
-    an explicit ``AR_MOE_QDQ_CHUNK=0`` asks to fuse everything, since that group's size
+    an explicit ``AR_MOE_CHUNK=0`` asks to fuse everything, since that group's size
     follows the router.
     """
     chunk = _qdq_chunk_size(layers)
@@ -945,14 +945,16 @@ def _add_grouped_bias(out: torch.Tensor, slot: _SlotWeights, counts: list[int]) 
 
 
 def _gemm_expert_chunk(num_experts: int, weight: torch.Tensor) -> int:
-    """Experts per native grouped_mm call. ``num_experts`` (the full count) disables tiling.
+    """Experts per native grouped_mm tile. ``num_experts`` (the full count) disables tiling.
 
-    Reads ``AR_MOE_GROUPED_MM_CHUNK`` (default ``-1`` = off). ``-1``/``off``/any ``<=0`` or
-    non-numeric value disables tiling; ``auto`` or a positive int enables it. Tiling bounds
-    the ``torch.stack`` ``(E, out, in)`` operand the native kernel needs to ``chunk`` experts.
+    Follows the single ``AR_MOE_CHUNK`` knob (same value as the qdq fusion), so a tile is
+    exactly one qdq chunk: the ``torch.stack`` ``(E, out, in)`` operand the native kernel needs
+    is bounded to ``chunk`` experts. ``auto`` derives the count from the working-set budget;
+    a fixed int is used as-is; ``0``/negative means "fuse everything" -> no tiling. Tiling only
+    actually runs when the qdq produced no free stacked view (see ``_grouped_linear``).
     """
-    setting = envs.AR_MOE_GROUPED_MM_CHUNK
-    if setting == "auto":
+    setting = envs.AR_MOE_CHUNK
+    if setting in ("", "auto"):
         per_expert = int(weight.shape[0]) * int(weight.shape[1]) * weight.element_size()
         if per_expert <= 0:
             return num_experts
@@ -960,7 +962,6 @@ def _gemm_expert_chunk(num_experts: int, weight: torch.Tensor) -> int:
     try:
         chunk = int(setting)
     except ValueError:
-        # "off"/"" and any other non-numeric value: no tiling.
         return num_experts
     return num_experts if chunk <= 0 else min(chunk, num_experts)
 
@@ -1097,7 +1098,11 @@ def _run_routes(
     out = _grouped_linear(hidden, down, active_counts, offsets)
 
     out = out.to(plan.output_device)
-    out = out * sample_weights.index_select(0, perm_valid).to(out.dtype).unsqueeze(-1)
+    # ``sample_weights``/``perm_valid`` live on the input device, which can differ from the
+    # experts' device in multi-GPU tuning (a whole layer's experts co-located on one card
+    # while the block input flows on another). Align to ``out`` before the multiply.
+    sample_weights_out = sample_weights.index_select(0, perm_valid).to(device=out.device, dtype=out.dtype)
+    out = out * sample_weights_out.unsqueeze(-1)
 
     # Scatter back to the original (token, top_k) order and reduce over top_k.
     out_per_sample = torch.zeros(num_pairs, hidden_dim, device=out.device, dtype=out.dtype)
