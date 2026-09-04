@@ -86,17 +86,41 @@ struct MoeDecodeParams {
     int N;
     int K;
     int group_size;
+    int* num_tokens_per_expert;
+    int num_experts;
     int total_tokens;
     bool asym;
 };
 
 void sycl_tla_moe_decode_fill_expert_id(sycl::queue* q, int* expert_id_per_token,
-                                                                                const int* num_tokens_per_expert, int num_experts, int total_tokens);
+                                        const int* num_tokens_per_expert, int num_experts, int total_tokens);
 void sycl_tla_moe_decode_fp(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_int4(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_int8(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_int2(const MoeDecodeParams& params);
 void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params);
+
+// Whether the int4 / FP8 decode call will be served by the per-group DPAS
+// grouped GEMM instead of the scalar GEMV. Those kernels consume
+// `num_tokens_per_expert` directly and never read `expert_id_per_token`, so
+// `moe_gemm_decode` uses these predicates to skip the
+// `sycl_tla_moe_decode_fill_expert_id` launch on the decode hot path. The
+// per-dtype dispatchers re-use the same predicates, so the "skip the fill" and
+// "take the DPAS path" decisions cannot diverge.
+bool sycl_tla_moe_decode_int4_dpas_applicable(const MoeDecodeParams& params);
+bool sycl_tla_moe_decode_fp8_dpas_applicable(const MoeDecodeParams& params);
+
+// Release every device scratch buffer the int4 decode fallbacks hold (the
+// N-tiled weight repack and the activation-sum table). Both are served from
+// grow-on-demand per-device slabs that are normally kept for the lifetime of
+// the process; call this to hand the memory back, or to drop a repack cached
+// under `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer
+// is freed. The next decode simply reallocates.
+//
+// Must not overlap a decode call on the same device: this frees the slabs a
+// concurrent call may already be holding a pointer into. Call it from the same
+// thread that drives decode, between calls.
+void moe_decode_release_scratch();
 
 /**
  * @brief MoE Grouped GEMM optimized for the prefill phase, supporting the
