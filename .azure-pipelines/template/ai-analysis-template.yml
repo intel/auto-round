@@ -75,8 +75,10 @@ steps:
       targetType: "inline"
       script: |
         set -uo pipefail
-        if [ ${{ parameters.enableAiAnalysis }} == "true" ]; then
+        if [ "${{ parameters.enableAiAnalysis }}" = "true" ]; then
+            echo "Installing Copilot CLI for AI analysis..."
             curl -fsSL https://gh.io/copilot-install | bash
+            copilot --version
         fi
         base="$(Build.SourcesDirectory)"
         work="${base}/ai_analysis"

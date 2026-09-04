@@ -24,8 +24,9 @@ KEYWORDS = ("== FAILURES ==", "== ERRORS ==", "Traceback", "core dumped", "Kille
 CRASH_MARKERS = ("core dumped", "killed", "segmentation fault", "aborted")
 
 # pytest per-test header of underscores wrapping a test id, e.g. "____ test_foo ____".
-# Long test names leave only a couple of underscores per side, so keep the bound low.
-_TEST_HEADER = re.compile(r"^_{2,}\s+(.+?)\s+_{2,}\s*$")
+# A very long test name collapses the padding to a single underscore per side
+# ("_ very.long.name _"), so allow one-or-more underscores instead of two-or-more.
+_TEST_HEADER = re.compile(r"^_+ (.+?) _+$")
 # A trailing exception summary line, e.g. "ValueError: shapes do not match".
 _EXC_SUMMARY = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Warning|Failure|Exit)):?\s")
 # Similarity threshold above which two normalized signatures share a cluster.
