@@ -15,7 +15,8 @@
 """Quantize Qwen3-0.6B with RRQ (packed-INT2 2+2+2+2) and verify the split-save.
 
 This script:
-    1. Runs the RRQ quantization on ``Qwen/Qwen3-0.6B`` (pure RTN, no calib).
+     1. Runs the RRQ quantization on ``Qwen/Qwen3-0.6B`` (RTN when
+         ``iters=0``; calibrated sign-SGD tuning when ``iters>0``).
     2. Saves the **base** model (standard INT2 ``auto_round``) and the
        **residual** model (3 packed-INT2 planes, ``auto_round:rrq``) to two
        separate directories.
@@ -29,9 +30,14 @@ This script:
        (both far smaller than the original fp model, residual a few x the base).
 
 Run:
-    python test_rrq_qwen3_06b.py                # quantize + verify
-    python test_rrq_qwen3_06b.py --skip-quant   # re-verify existing outputs only
-    python test_rrq_qwen3_06b.py --verify-load  # also load via load_rrq_model
+    # RTN baseline
+    python test_rrq_qwen3_06b.py --iters 0 --out ./rrq_output/rtn
+    # Phase 3: 50 sign-SGD iterations per plane
+    python test_rrq_qwen3_06b.py --iters 50 --lr 0.05 --out ./rrq_output/opt50
+    # Verify an existing result without re-quantizing
+    python test_rrq_qwen3_06b.py --skip-quant --out ./rrq_output/opt50
+    # Also load and generate with the result
+    python test_rrq_qwen3_06b.py --skip-quant --verify-load --out ./rrq_output/opt50
 """
 
 import argparse
@@ -106,7 +112,18 @@ def _safetensors_keys(path: str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Quantization
 # ─────────────────────────────────────────────────────────────────────────────
-def run_quantize(model_name: str, out_root: str, group_size: int, sym: bool, device: str):
+def run_quantize(
+    model_name: str,
+    out_root: str,
+    group_size: int,
+    sym: bool,
+    device: str,
+    iters: int,
+    lr: float | None,
+    nsamples: int,
+    seqlen: int,
+    batch_size: int,
+):
     from auto_round import AutoRound, RRQConfig
 
     base_dir = os.path.join(out_root, "base")
@@ -115,9 +132,13 @@ def run_quantize(model_name: str, out_root: str, group_size: int, sym: bool, dev
 
     print(f"\n=== Quantizing {model_name} with RRQ ===")
     print(f"    group_size={group_size}  sym={sym}  device={device}")
-    print("    (RRQ is pure RTN: 4 planes of INT2, effective 2/4/6/8-bit)")
+    print(f"    iters={iters}  lr={lr or 'auto'}  nsamples={nsamples}  seqlen={seqlen}")
+    if iters == 0:
+        print("    (RRQ RTN baseline: 4 planes of INT2, effective 2/4/6/8-bit)")
+    else:
+        print("    (RRQ Phase 3: 4 planes of INT2, sign-SGD tuning per plane)")
 
-    cfg = RRQConfig(group_size=group_size, sym=sym)
+    cfg = RRQConfig(group_size=group_size, sym=sym, iters=iters, lr=lr)
 
     ar = AutoRound(
         model_name,
@@ -125,6 +146,9 @@ def run_quantize(model_name: str, out_root: str, group_size: int, sym: bool, dev
         alg_configs=cfg,
         device_map=device,
         low_cpu_mem_usage=True,
+        nsamples=nsamples,
+        seqlen=seqlen,
+        batch_size=batch_size,
         seed=42,
     )
     ar.quantize()
@@ -371,6 +395,16 @@ def main():
     ap.add_argument("--sym", action="store_true", help="symmetric (default: asymmetric)")
     ap.add_argument("--device", default="cpu", help="cpu / cuda / xpu")
     ap.add_argument("--out", default="./rrq_output")
+    ap.add_argument(
+        "--iters",
+        type=int,
+        default=0,
+        help="Sign-SGD iterations per plane; 0 selects the RTN baseline, >0 enables Phase 3.",
+    )
+    ap.add_argument("--lr", type=float, default=None, help="Sign-SGD learning rate; default is auto.")
+    ap.add_argument("--nsamples", type=int, default=128, help="Number of calibration samples for iters>0.")
+    ap.add_argument("--seqlen", type=int, default=128, help="Calibration sequence length for iters>0.")
+    ap.add_argument("--batch-size", type=int, default=1, help="Calibration batch size for iters>0.")
     ap.add_argument("--skip-quant", action="store_true", help="skip quantize; verify existing outputs")
     ap.add_argument("--verify-load", action="store_true", help="also load via load_rrq_model + forward")
     args = ap.parse_args()
@@ -380,7 +414,20 @@ def main():
     residual_dir = os.path.join(out_root, "residual")
 
     if not args.skip_quant:
-        base_dir, residual_dir = run_quantize(args.model, out_root, args.group_size, args.sym, args.device)
+        if args.iters < 0:
+            ap.error("--iters must be non-negative")
+        base_dir, residual_dir = run_quantize(
+            args.model,
+            out_root,
+            args.group_size,
+            args.sym,
+            args.device,
+            args.iters,
+            args.lr,
+            args.nsamples,
+            args.seqlen,
+            args.batch_size,
+        )
     else:
         print(f"\n=== Skipping quantize; verifying existing outputs in {out_root} ===")
 
