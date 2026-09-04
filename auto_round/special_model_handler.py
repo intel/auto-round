@@ -22,7 +22,7 @@ import torch
 
 from auto_round.export.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
-from auto_round.utils import is_moe_model_via_config, logger
+from auto_round.utils import is_moe_model_via_config, logger, torch_version_at_least
 
 mllms_with_limited_bs = (
     "llava",
@@ -1217,24 +1217,27 @@ def get_torch_compile_off_reason(model) -> str | None:
 
 # DeepSeek V2/V3/V3.2/V4 and the GLM-5.3-Flash family (``glm_moe_dsa`` text /
 # ``glm5_next`` multimodal) share a DSA indexer + fused MoE with shape-dependent
-# control flow. Compiling the tuning graph there hits dynamo's recompile_limit and
-# provides little benefit, so keep those runs in eager mode.
-register_torch_compile_off(
-    matchers=[
-        ModelTypeMatcher("deepseek", mode="in"),
-        ArchitectureMatcher("Deepseek", mode="in"),
-        ArchitectureMatcher("DeepSeek", mode="in"),
-    ],
-    reason="the DeepSeek architecture is incompatible with torch.compile during tuning",
-)
-register_torch_compile_off(
-    matchers=[
-        ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
-        ModelTypeMatcher(r"glm5_next", mode="full"),
-        ArchitectureMatcher(r"Glm5Next", mode="in"),
-    ],
-    reason="the GLM-5 architecture is incompatible with torch.compile during tuning",
-)
+# control flow. On torch < 2.14.0 compiling the tuning graph there hits dynamo's
+# recompile_limit and provides little benefit, so keep those runs in eager mode.
+# From torch 2.14.0 onward these constraints are resolved, so we no longer force
+# ``torch.compile`` off and instead honor the default / user-provided setting.
+if not torch_version_at_least("2.14.0"):
+    register_torch_compile_off(
+        matchers=[
+            ModelTypeMatcher("deepseek", mode="in"),
+            ArchitectureMatcher("Deepseek", mode="in"),
+            ArchitectureMatcher("DeepSeek", mode="in"),
+        ],
+        reason="the DeepSeek architecture is incompatible with torch.compile during tuning on torch < 2.14.0",
+    )
+    register_torch_compile_off(
+        matchers=[
+            ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+            ModelTypeMatcher(r"glm5_next", mode="full"),
+            ArchitectureMatcher(r"Glm5Next", mode="in"),
+        ],
+        reason="the GLM-5 architecture is incompatible with torch.compile during tuning on torch < 2.14.0",
+    )
 
 
 def _attach_gemma4_rotary_emb(model):

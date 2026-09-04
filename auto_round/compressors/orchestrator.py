@@ -241,19 +241,24 @@ class CompressionOrchestrator(BaseOrchestrator):
                 modules = [get_module(model, n) for n in names]
                 m = WrapperMultiblock(modules)
 
-            # Also reload when `AR_DISK_STREAM_MODEL` is set even if
-            # `low_cpu_mem_usage` has been forced False (e.g. GGUF export --
-            # see base.py's `_finalize_compress_context`, which disables
-            # `low_cpu_mem_usage` for gguf formats for reasons unrelated to disk
-            # streaming). Under streaming, a block starts on the meta device
-            # regardless of `low_cpu_mem_usage`, which only ever controlled whether
-            # to *free* it again after use -- without this, the block below is never
-            # materialized at all and `m.to(device)` crashes with "Cannot copy out
-            # of meta tensor". The block intentionally stays real afterward (no
-            # matching post-tune offload runs when `low_cpu_mem_usage` is False --
-            # see the `is_immediate_saving`-adjacent offload call further down),
-            # matching upstream's own choice not to cycle blocks for these formats.
-            if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL:
+            # Also reload when disk streaming is active even if `low_cpu_mem_usage`
+            # has been forced False (e.g. GGUF export -- see base.py's
+            # `_finalize_compress_context`, which disables `low_cpu_mem_usage` for
+            # gguf formats for reasons unrelated to disk streaming). Disk streaming
+            # can be turned on explicitly via `AR_DISK_STREAM_MODEL=1` *or* chosen
+            # automatically for fused-MoE checkpoints (see ModelContext's
+            # `_should_use_meta_skeleton`); either way the model was built as a meta
+            # skeleton and `_disk_stream_index` is set. Under streaming, a block
+            # starts on the meta device regardless of `low_cpu_mem_usage`, which only
+            # ever controlled whether to *free* it again after use -- without this,
+            # the block below is never materialized at all and `m.to(device)` crashes
+            # with "Cannot copy out of meta tensor". The block intentionally stays
+            # real afterward (no matching post-tune offload runs when
+            # `low_cpu_mem_usage` is False -- see the `is_immediate_saving`-adjacent
+            # offload call further down), matching upstream's own choice not to cycle
+            # blocks for these formats.
+            disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
+            if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
                 if nblocks == 1:
                     self._offloader.reload(model, n)
                 else:
@@ -439,6 +444,18 @@ class CompressionOrchestrator(BaseOrchestrator):
             for block_name in block_names:
                 pbar.set_description(f"Quantizing {block_name}")
                 block = get_module(self.model, block_name)
+
+                # ── Infrastructure: reload from disk when streaming ───────
+                # Fused-MoE checkpoints (and explicit `AR_DISK_STREAM_MODEL=1`)
+                # build an all-meta skeleton to reduce RAM: each decoder block
+                # starts on the meta device and its real weights must be read
+                # back from the checkpoint before quantization. The data-driven
+                # path does this same reload; without it here the zero-shot
+                # (RTN) path leaves the block on meta and `layer.to(device)`
+                # crashes with "Cannot copy out of meta tensor".
+                disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
+                if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
+                    self._offloader.reload(self.model, block_name)
 
                 # ── Infrastructure: materialize ───────────────────────────
                 materialize_model_(block)

@@ -451,6 +451,17 @@ class BaseOrchestrator(object):
         # blocks already hold real weights (see OffloadManager._reload).
         if self.model_context.disk_stream_model_dir is not None:
             self._offloader.model_dir = self.model_context.disk_stream_model_dir
+        # A meta skeleton (explicit AR_DISK_STREAM_MODEL=1, or auto-selected for
+        # fused-MoE checkpoints -- signalled by `_disk_stream_index`) leaves every
+        # block on the meta device, so per-block reload from disk is mandatory: the
+        # tuning loop must materialize each block before moving it to the compute
+        # device. The offloader was created with `enabled=low_cpu_mem_usage`, which
+        # can be False (e.g. user-supplied, or GGUF forcing it off later); in that
+        # case reload() would no-op and `block.to(device)` would crash with
+        # "Cannot copy out of meta tensor". Force it enabled here whenever streaming
+        # is active so the reload path stays available regardless of low_cpu_mem_usage.
+        if getattr(self.model_context, "_disk_stream_index", None) is not None:
+            self._offloader.enabled = True
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,

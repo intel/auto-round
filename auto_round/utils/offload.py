@@ -255,9 +255,9 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
         # ``mlp.router.gate`` behind a ``mlp.gate`` module) and leaves them on
         # meta until a downstream ``.to(device)`` crashes.
         try:
-            from auto_round.utils.disk_stream_util import SafetensorsIndex, materialize_module
+            from auto_round.utils.disk_stream_util import get_safetensors_index, materialize_module
 
-            materialize_module(block, block_name, SafetensorsIndex(model_dir), device="cpu")
+            materialize_module(block, block_name, get_safetensors_index(model_dir), device="cpu")
             if not _has_meta(block):
                 return
         except FileNotFoundError:
