@@ -16,10 +16,13 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #if ARK_DNNL
 #include <dnnl.hpp>
@@ -96,8 +99,15 @@ class DeviceMemoryPool {
   size_t get_device_key(sycl::queue* q) {
 #if ARK_XPU
     if (q != nullptr) {
-      auto uuid = q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
-      return UUIDHasher{}(uuid);
+      std::lock_guard<std::mutex> lock(key_mutex_);
+      auto key = get_device_context_key_locked(q);
+      auto it = device_context_ids_.find(key);
+      if (it != device_context_ids_.end()) {
+        return it->second;
+      }
+      const size_t new_id = next_device_context_id_++;
+      device_context_ids_.emplace(key, new_id);
+      return new_id;
     }
 #endif
     return 0;
@@ -171,6 +181,50 @@ class DeviceMemoryPool {
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 
+#if ARK_XPU
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+#endif
+
   int8_t* allocate(size_t size, sycl::queue* q) {
 #if ARK_XPU
     if (q == nullptr) {
@@ -196,6 +250,13 @@ class DeviceMemoryPool {
 
   std::array<SizeMap, MaxLocNum> dev_mem_size_map;
   std::array<PtrMap, MaxLocNum> dev_mem_ptr_map;
+#if ARK_XPU
+  std::mutex key_mutex_;
+  std::vector<ContextEntry> context_ids_;
+  std::unordered_map<DeviceContextKey, size_t, DeviceContextKeyHasher> device_context_ids_;
+  size_t next_context_id_ = 1;
+  size_t next_device_context_id_ = 1;
+#endif
 };
 
 #if ARK_DNNL
@@ -245,52 +306,55 @@ class DnnlContext {
   }
 
   dnnl::engine* get_eng(sycl::queue* q) {
-    auto key = check_dnnl_device(q);
-    return &dev_engine_map[key];
-  }
-
-  dnnl::stream* get_stream(sycl::queue* q) {
-    auto key = check_dnnl_device(q);
-    return &dev_stream_map[key];
-  }
-
-  size_t check_dnnl_device(sycl::queue* q) {
-    size_t key = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
 
     if (q == nullptr) {
-      if (dev_engine_map.find(key) == dev_engine_map.end()) {
-        dev_engine_map[key] = dnnl::engine(dnnl::engine::kind::cpu, 0);
-        dev_stream_map[key] = dnnl::stream(dev_engine_map[key]);
+      if (!cpu_engine_) {
+        cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
       }
-      return key;
+      return cpu_engine_.get();
     }
 
 #if ARK_XPU
-    key = DeviceMemoryPool::Instance()->get_device_key(q);
-    if (dev_engine_map.find(key) == dev_engine_map.end()) {
-      sycl::device dev = q->get_device();
-      sycl::context ctx = q->get_context();
-      dev_engine_map[key] = dnnl::sycl_interop::make_engine(dev, ctx);
-      dev_stream_map[key] = dnnl::sycl_interop::make_stream(dev_engine_map[key], *q);
+    auto key = get_device_context_key_locked(q);
+    auto engine_it = xpu_engines_.find(key);
+    if (engine_it != xpu_engines_.end()) {
+      return engine_it->second.get();
     }
+    auto dev = q->get_device();
+    auto ctx = q->get_context();
+    auto insert_result =
+        xpu_engines_.emplace(key, std::make_unique<dnnl::engine>(dnnl::sycl_interop::make_engine(dev, ctx)));
+    return insert_result.first->second.get();
 #else
-    if (dev_engine_map.find(key) == dev_engine_map.end()) {
-      dev_engine_map[key] = dnnl::engine(dnnl::engine::kind::cpu, 0);
-      dev_stream_map[key] = dnnl::stream(dev_engine_map[key]);
+    if (!cpu_engine_) {
+      cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
     }
+    return cpu_engine_.get();
 #endif
+  }
 
-    return key;
+  dnnl::stream get_stream(sycl::queue* q) {
+    auto* eng = get_eng(q);
+    if (q == nullptr) {
+      return dnnl::stream(*eng);
+    }
+#if ARK_XPU
+    return dnnl::sycl_interop::make_stream(*eng, *q);
+#else
+    return dnnl::stream(*eng);
+#endif
   }
 
   dnnl::memory get_scratch_mem(dnnl::memory::desc md, sycl::queue* q) {
-    auto key = check_dnnl_device(q);
+    auto key = get_dnnl_key(q);
     auto ptr = DeviceMemoryPool::Instance()->get_scratch_ptr(md.get_size(), 0, q, key);
-    return dnnl::memory(md, dev_engine_map[key], ptr);
+    return dnnl::memory(md, *get_eng(q), ptr);
   }
 
   void* get_scratch_mem(size_t size, size_t buf_loc, sycl::queue* q) {
-    return DeviceMemoryPool::Instance()->get_scratch_mem(size, buf_loc, q);
+    auto key = get_dnnl_key(q);
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
   }
 
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
@@ -298,8 +362,75 @@ class DnnlContext {
   }
 
  private:
-  std::unordered_map<size_t, dnnl::engine> dev_engine_map;
-  std::unordered_map<size_t, dnnl::stream> dev_stream_map;
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  size_t get_dnnl_key(sycl::queue* q) {
+    if (q == nullptr) return 0;
+#if ARK_XPU
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto key = get_device_context_key_locked(q);
+    auto it = dnnl_scratch_domain_ids_.find(key);
+    if (it != dnnl_scratch_domain_ids_.end()) {
+      return it->second;
+    }
+    const size_t new_id = next_dnnl_scratch_domain_id_++;
+    dnnl_scratch_domain_ids_.emplace(key, new_id);
+    return new_id;
+#else
+    return 0;
+#endif
+  }
+
+#if ARK_XPU
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+
+  std::vector<ContextEntry> context_ids_;
+  std::unordered_map<DeviceContextKey, size_t, DeviceContextKeyHasher> dnnl_scratch_domain_ids_;
+  std::unordered_map<DeviceContextKey, std::unique_ptr<dnnl::engine>, DeviceContextKeyHasher> xpu_engines_;
+  size_t next_dnnl_scratch_domain_id_ = 1;
+  size_t next_context_id_ = 1;
+#endif
+
+  std::unique_ptr<dnnl::engine> cpu_engine_;
+  std::mutex mutex_;
 };
 
 #endif  // ARK_DNNL

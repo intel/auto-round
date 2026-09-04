@@ -14,10 +14,6 @@
 
 #include "utils.hpp"
 
-#define GETCTX()                                    \
-  auto& eng = *DnnlContext::Instance()->get_eng(q); \
-  auto& stream = *DnnlContext::Instance()->get_stream(q);
-
 namespace ark {
 
 class DnnlWrapper {
@@ -27,7 +23,8 @@ class DnnlWrapper {
 
   static void gemm(sycl::queue* q, int m, int n, int k, const void* a, dt at, const void* b, dt bt, bool BT, void* c,
                    dt ct, const void* bias) {
-    GETCTX();
+    auto& eng = *DnnlContext::Instance()->get_eng(q);
+    auto stream = DnnlContext::Instance()->get_stream(q);
     dnnl::memory::dims a_dims = {m, k};
     const auto a_in_md = dnnl::memory::desc(a_dims, at, dnnl::memory::format_tag::ab);
     auto a_mem = dnnl::memory(a_in_md, eng, const_cast<void*>(a));
@@ -70,7 +67,8 @@ class DnnlWrapper {
 
   static void dyn_quant_s8(sycl::queue* q, int m, int k, const void* a, dt adt, void* a_abs, int8_t* qa, void* maxa,
                            void* scalea) {
-    GETCTX();
+    auto& eng = *DnnlContext::Instance()->get_eng(q);
+    auto stream = DnnlContext::Instance()->get_stream(q);
     using namespace dnnl;
     auto src_f32_md = memory::desc({m, k}, adt, memory::format_tag::ab);
     auto src_f32_mem = memory(src_f32_md, eng, const_cast<void*>(a));
@@ -172,7 +170,8 @@ class DnnlWrapper {
   // scale_a:m  scale_b:n
   static void igemm_s8s8(sycl::queue* q, int m, int n, int k, const void* a, const void* b, bool BT, void* c, dt ct,
                          void* scale_a, void* scale_b, void* bias) {
-    GETCTX();
+    auto& eng = *DnnlContext::Instance()->get_eng(q);
+    auto stream = DnnlContext::Instance()->get_stream(q);
 
     dnnl::memory::dims a_dims = {m, k};
     const auto a_in_md = dnnl::memory::desc(a_dims, dt::s8, tag::ab);

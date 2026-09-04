@@ -27,6 +27,7 @@ typedef uintptr_t torch_ptr;
 #include <sycl/sycl.hpp>
 #include "xpu_wrapper.hpp"
 #include "sycl_s8_wrapper.hpp"
+#include "utils.hpp"
 #if ARK_SYCL_TLA
 #include "sycl_tla_common.hpp"
 #endif
@@ -144,6 +145,29 @@ static size_t packed_weight_size(torch_ptr stream, int n, int k, int blocksize, 
   return CpuWrapper::get_packw_size(&param);
 #endif
 }
+
+#if ARK_XPU
+static size_t debug_xpu_device_context_key(torch_ptr stream) {
+  return DeviceMemoryPool::Instance()->get_device_key(reinterpret_cast<sycl::queue*>(stream));
+}
+
+static size_t debug_xpu_pool_scratch_ptr(torch_ptr stream, size_t bytes, size_t slot) {
+  auto* ptr = DeviceMemoryPool::Instance()->get_scratch_mem(bytes, slot, reinterpret_cast<sycl::queue*>(stream));
+  return reinterpret_cast<size_t>(ptr);
+}
+
+#if ARK_DNNL
+static size_t debug_xpu_dnnl_engine_ptr(torch_ptr stream) {
+  auto* eng = DnnlContext::Instance()->get_eng(reinterpret_cast<sycl::queue*>(stream));
+  return reinterpret_cast<size_t>(eng);
+}
+
+static size_t debug_xpu_dnnl_scratch_ptr(torch_ptr stream, size_t bytes, size_t slot) {
+  auto* ptr = DnnlContext::Instance()->get_scratch_mem(bytes, slot, reinterpret_cast<sycl::queue*>(stream));
+  return reinterpret_cast<size_t>(ptr);
+}
+#endif
+#endif
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 
@@ -1322,6 +1346,14 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("packed_weight_size", &ark::packed_weight_size);
   m.def("repack_quantized_weight", &ark::repack_quantized_weight);
   m.def("unpack_weight", &ark::unpack_weight);
+#if defined(ARK_XPU)
+  m.def("_debug_xpu_device_context_key", &ark::debug_xpu_device_context_key);
+  m.def("_debug_xpu_pool_scratch_ptr", &ark::debug_xpu_pool_scratch_ptr);
+#if ARK_DNNL
+  m.def("_debug_xpu_dnnl_engine_ptr", &ark::debug_xpu_dnnl_engine_ptr);
+  m.def("_debug_xpu_dnnl_scratch_ptr", &ark::debug_xpu_dnnl_scratch_ptr);
+#endif
+#endif
 #if (defined(ARK_XPU) && defined(ARK_SYCL_TLA)) || !defined(ARK_XPU)
   m.def("sdpa", &ark::sdpa);
 #endif
