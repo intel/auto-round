@@ -375,3 +375,27 @@ def test_apply_custom_replacements_skips_linearized_moe_and_logs_reason(monkeypa
     assert replaced == []
     assert isinstance(model.block, DummyMoEForLinearizeSkipUT)
     assert any("skipped because linearize_moe" in msg for msg in messages)
+
+
+def test_unfuse_skips_detection_for_non_expert_modules(monkeypatch):
+    import auto_round.modeling.fused_moe.moe_experts_interface as mod
+
+    call_count = 0
+
+    def _counting_detect(module):
+        nonlocal call_count
+        call_count += 1
+        return {}
+
+    monkeypatch.setattr(mod, "_detect_expert_projections", _counting_detect)
+
+    # A plain nn.Linear is NOT an experts module (no __wrapped__ on forward)
+    linear = nn.Linear(64, 64)
+    result = mod._unfuse_experts_weights_inplace(linear)
+
+    assert result is False
+    assert call_count == 0, (
+        f"_detect_expert_projections was called {call_count} time(s) on a "
+        "non-expert module. The decorator check should short-circuit "
+        "BEFORE the expensive dir()-based detection."
+    )

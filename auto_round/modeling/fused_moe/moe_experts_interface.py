@@ -502,6 +502,15 @@ def _unfuse_experts_weights_inplace(
     Returns:
         True if unfusing was successful, False if module doesn't match pattern
     """
+    # Fast rejection: check decorator support (just a class-attribute lookup) before
+    # the much more expensive projection detection. prepare_model_for_moe_quantization
+    # calls this on every module in the model, and the vast majority are NOT decorated
+    # with @use_experts_implementation, so this avoids _detect_expert_projections
+    # (which scans all attributes via dir()) for those modules.
+    if check_decorator and not _experts_supports_decorator(module):
+        logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
+        return False
+
     # Detect available projections
     if projection_names:
         detected_projections = {
@@ -511,11 +520,6 @@ def _unfuse_experts_weights_inplace(
         detected_projections = _detect_expert_projections(module)
 
     if not detected_projections:
-        return False
-
-    # Only unfuse if the module supports the decorator (unless check_decorator is False)
-    if check_decorator and not _experts_supports_decorator(module):
-        logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
     global _logged_memory_before_replacement
