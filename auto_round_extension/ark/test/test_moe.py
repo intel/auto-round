@@ -142,7 +142,6 @@ class TestMoEGemm:
             tokens_per_expert[exp_idx] = 16
 
         num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
         output = ark.moe_gemm(activations, weights, num_tokens_per_expert)
 
         assert output.shape == (total_tokens, N)
@@ -481,6 +480,69 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    @pytest.mark.parametrize("tokens_per_expert", [[1, 0, 1, 1], [1, 1, 1, 1], [2, 0, 0, 1]])
+    def test_decode_int4_sym_dpas_matches_scalar(self, monkeypatch, dtype, group_size, tokens_per_expert):
+        """int4-sym decode: the S4 DPAS path (ARK_MOE_DECODE_DPAS_S4=1, default)
+        must match both the scalar GEMV fallback (ARK_MOE_DECODE_DPAS_S4=0) and
+        the dequant->bmm reference within quantization tolerance.
+
+        Shapes satisfy the DPAS per-group shape gate (N%64==0, K%32==0,
+        group_size in {32,64,128,256}) and ``ARK_MOE_DECODE_DPAS_S4_MIN_TPE=0``
+        disables the tokens-per-expert occupancy gate (these tiny token counts
+        would otherwise be routed to the scalar GEMV, which is faster there) so
+        the DPAS fast path is actually taken.
+        """
+        num_experts = 4
+        total_tokens = sum(tokens_per_expert)
+        N, K = 320, 256  # N%64==0, K%32==0
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_int4_sym(w_float, scales, group_size)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                weight_bits=4,
+                group_size=group_size,
+                asym=False,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4_MIN_TPE", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "1")
+        out_dpas = _run()
+
+        # A/B escape: deferring to the prefill A_avg_M bucket ladder must be
+        # numerically identical (only the DPAS tile shape differs).
+        monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "0")
+        out_dpas_ladder = _run()
+        monkeypatch.setenv("ARK_MOE_DECODE_S4_DPAS_M8", "1")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        out_scalar = _run()
+
+        assert out_dpas.shape == (total_tokens, N)
+        assert out_scalar.shape == (total_tokens, N)
+        # Both kernels approximate the same dequant reference.
+        torch.testing.assert_close(out_dpas, ref, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(out_scalar, ref, rtol=5e-2, atol=5e-2)
+        # And they must agree with each other within the same tolerance.
+        torch.testing.assert_close(out_dpas, out_scalar, rtol=5e-2, atol=5e-2)
+        # The m_8-pinned decode dispatch and the prefill bucket ladder are the
+        # same DPAS math on decode-sized batches.
+        torch.testing.assert_close(out_dpas, out_dpas_ladder, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_decode_int4_asym(self, dtype):
         num_experts = 4
         group_size = 128
@@ -510,6 +572,258 @@ class TestMoEGemmDecode:
         ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
         assert out.shape == (total_tokens, N)
         torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_int4_coalesced_matches_scalar(self, monkeypatch, dtype, asym, group_size):
+        """int4 scalar-GEMV fallback: the coalesced-load variant
+        (ARK_MOE_DECODE_COALESCE_INT4=1, default) must match both the legacy
+        per-lane-strided kernel (ARK_MOE_DECODE_COALESCE_INT4=0) and the
+        dequant->bmm reference within quantization tolerance.
+
+        The S4 DPAS fast path is disabled so both runs exercise the scalar
+        fallback (this is the only path the coalesce flag affects), and the
+        coalesce amortization gate is disabled so the coalesced kernel really
+        runs at this (tiny) token count instead of silently falling back to the
+        per-lane-strided one. Shapes use N%16==0 so the N-tiled repack is exact.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        if asym:
+            zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+        else:
+            zeros = None
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
+
+        # Force the scalar-GEMV fallback so the coalesce flag actually applies,
+        # and disable the tokens-per-expert amortization gate so the coalesced
+        # kernel is reached at this token count.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        out_coalesced = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+        out_scalar = _run()
+
+        assert out_coalesced.shape == (total_tokens, N)
+        assert out_scalar.shape == (total_tokens, N)
+        torch.testing.assert_close(out_coalesced, ref, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(out_scalar, ref, rtol=5e-2, atol=5e-2)
+        # The two kernels are numerically identical (same dequant math, only
+        # the weight memory layout differs), so require a tight match.
+        torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    def test_decode_int4_coalesced_token_blocking(self, monkeypatch, dtype, asym):
+        """The coalesced int4 fallback blocks up to TOKEN_BLOCK consecutive
+        tokens per work-item, reusing each loaded weight byte across tokens
+        routed to the same expert. This must stay bit-identical to the legacy
+        per-lane-strided kernel regardless of routing, so exercise:
+          - a run of many tokens on one expert (full + short trailing block),
+          - blocks that straddle an expert boundary (mixed experts per block),
+          - an expert with zero tokens.
+        Shapes keep N%16==0 so the N-tiled repack is exact.
+        """
+        num_experts = 4
+        # 7 tokens on expert 0, none on expert 1, 5 on expert 2, 3 on expert 3.
+        # With TOKEN_BLOCK=4 this yields full blocks, short trailing blocks and
+        # at least one block straddling the 0->2 and 2->3 expert boundaries.
+        tokens_per_expert = [7, 0, 5, 3]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 128
+        group_size = 32
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        if asym:
+            zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+        else:
+            zeros = None
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
+
+        # Force the scalar-GEMV fallback so the coalesce/token-blocking path
+        # runs, and disable the amortization gate so the coalesced kernel is
+        # reached at this token count.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        out_blocked = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+        out_scalar = _run()
+
+        assert out_blocked.shape == (total_tokens, N)
+        torch.testing.assert_close(out_blocked, ref, rtol=5e-2, atol=5e-2)
+        # Token blocking only changes weight reuse, not the dequant math, so the
+        # blocked and legacy kernels must match tightly for every routing shape.
+        torch.testing.assert_close(out_blocked, out_scalar, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("asym", [False, True])
+    @pytest.mark.parametrize("group_size", [4, 12])
+    def test_decode_int4_coalesced_unaligned_group_size(self, monkeypatch, dtype, asym, group_size):
+        """The coalesced int4 kernel loads four packed bytes per lane out of a
+        ``[E, N/16, ceil(K/8), 16, 4]`` layout. Group sizes that are a multiple
+        of 8 start every K-group on a 4-byte chunk boundary, so the vectorized
+        stage covers the whole group; other even group sizes need the scalar
+        prologue/epilogue around it.
+
+        ``group_size=4`` leaves every odd group misaligned with no room for a
+        vector step at all, and ``group_size=12`` mixes a misaligned prologue
+        with a vector step, so between them both non-vector paths are covered.
+        """
+        num_experts = 3
+        tokens_per_expert = [2, 0, 3]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 32, 48
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        if asym:
+            zeros = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+        else:
+            zeros = None
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                zeros=zeros,
+                weight_bits=4,
+                group_size=group_size,
+                asym=asym,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        out_coalesced = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "0")
+        out_scalar = _run()
+
+        assert out_coalesced.shape == (total_tokens, N)
+        torch.testing.assert_close(out_coalesced, ref, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_decode_int4_repack_cache(self, monkeypatch, dtype):
+        """``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` lets the coalesced int4 kernel
+        reuse the N-tiled weight repack across calls instead of rebuilding it.
+
+        Reuse is keyed on the weight buffer address plus its shape, so it is
+        only valid while the caller keeps that buffer alive. Verify that (a)
+        repeated calls on a live weight tensor keep matching the reference, and
+        (b) ``moe_decode_release_scratch()`` drops the cache so a *different*
+        weight tensor -- which torch's caching allocator may well hand back at
+        the same address -- is repacked again rather than answered from the
+        stale entry.
+        """
+        num_experts = 3
+        tokens_per_expert = [4, 0, 5]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 64, 128
+        group_size = 32
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _build():
+            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_int4_sym(w_float, scales, group_size)
+            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+            return packed, scales, _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+
+        def _run(packed, scales):
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                weight_bits=4,
+                group_size=group_size,
+                asym=False,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_INT4_REPACK_CACHE", "1")
+
+        try:
+            packed_a, scales_a, ref_a = _build()
+            # First call builds the repack, second must hit the cache.
+            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
+            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
+
+            # Drop the cached repack before the buffer it was derived from goes
+            # away, then verify a freshly built weight tensor is honoured.
+            del packed_a, scales_a
+            ark.moe_decode_release_scratch()
+            packed_b, scales_b, ref_b = _build()
+            torch.testing.assert_close(_run(packed_b, scales_b), ref_b, rtol=5e-2, atol=5e-2)
+        finally:
+            ark.moe_decode_release_scratch()
 
     def test_decode_validation_errors(self):
         """Sanity-check that Python-side validation catches misuse."""
@@ -556,6 +870,30 @@ class TestMoEGemmDecode:
                 group_size=128,
                 asym=True,
             )
+
+    def test_routing_sum_validation_is_opt_in(self, monkeypatch):
+        """A mismatched routing table is only rejected when asked for.
+
+        Summing ``num_tokens_per_expert`` means pulling a device tensor back to
+        the host, which stalls the whole queue -- far too expensive to pay once
+        per generated token. The check is therefore opt-in via
+        ``ARK_MOE_VALIDATE_ROUTING``; otherwise the sum being
+        ``activations.shape[0]`` is a caller contract.
+        """
+        activations = torch.randn(2, 128, dtype=torch.float16, device="xpu")
+        weights = torch.randn(2, 32, 128, dtype=torch.float16, device="xpu")
+        # Sums to 3, not to activations.shape[0] == 2.
+        bad_ntpe = torch.tensor([2, 1], dtype=torch.int32, device="xpu")
+
+        monkeypatch.setenv("ARK_MOE_VALIDATE_ROUTING", "1")
+        assert ark.moe_routing_validation_enabled() is True
+        with pytest.raises(ValueError, match="num_tokens_per_expert"):
+            ark.moe_gemm_decode(activations, weights, bad_ntpe, weight_bits=16)
+
+        monkeypatch.delenv("ARK_MOE_VALIDATE_ROUTING", raising=False)
+        assert ark.moe_routing_validation_enabled() is False
+        monkeypatch.setenv("ARK_MOE_VALIDATE_ROUTING", "0")
+        assert ark.moe_routing_validation_enabled() is False
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
     @pytest.mark.parametrize("group_size", [32, 128])
@@ -709,6 +1047,310 @@ class TestMoEGemmDecode:
         rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
         atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
         torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_modes_match(self, monkeypatch, dtype, fp8_dtype, group_size):
+        """FP8 decode: the word-native decoder (``ARK_FP8_DECODE_MODE=word``,
+        the default) must be numerically identical to the LUT and inline-bits
+        decoders.
+
+        ``word`` converts each FP8 byte to an fp16 bit pattern with a pure
+        bit-field move and folds E4M3's residual ``2**-8`` into the per-K-group
+        scale (an exact power of two), so on the finite encodings a real
+        checkpoint contains all three modes decode to exactly the same value.
+        Only the fp32 accumulation order differs (``word`` uses two partial
+        accumulators), hence ``bitwise=False`` and a tight -- not exact --
+        tolerance.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 256
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        # Keep every mode on the scalar GEMV so this compares decoders only.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        monkeypatch.delenv("ARK_FP8_DECODE_USE_LUT", raising=False)
+
+        monkeypatch.setenv("ARK_FP8_DECODE_MODE", "word")
+        out_word = _run()
+        monkeypatch.setenv("ARK_FP8_DECODE_MODE", "lut")
+        out_lut = _run()
+        monkeypatch.setenv("ARK_FP8_DECODE_MODE", "bits")
+        out_bits = _run()
+
+        assert out_word.shape == (total_tokens, N)
+        torch.testing.assert_close(out_word, out_lut, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out_word, out_bits, rtol=1e-3, atol=1e-3)
+
+        # Every mode must still track the dequant reference.
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        torch.testing.assert_close(out_word, ref, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_dpas_matches_scalar(self, monkeypatch, dtype, fp8_dtype, group_size):
+        """FP8 decode: the per-group DPAS path (``ARK_MOE_DECODE_DPAS_FP8=1``,
+        the default) must match both the scalar GEMV fallback
+        (``ARK_MOE_DECODE_DPAS_FP8=0``) and the dequant->bmm reference.
+
+        Shapes satisfy the DPAS per-group shape gate (N%64==0, K%32==0,
+        group_size in {32,64,128,256}) and ``ARK_MOE_DECODE_DPAS_FP8_MIN_TPE=0``
+        disables the tokens-per-expert occupancy gate (these tiny token counts
+        would otherwise be routed to the scalar GEMV, which is faster there) so
+        the DPAS fast path is actually taken.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 320, 256  # N%64==0, K%32==0
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "1")
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8_MIN_TPE", "0")
+        out_dpas = _run()
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        out_scalar = _run()
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+
+        assert out_dpas.shape == (total_tokens, N)
+        assert out_scalar.shape == (total_tokens, N)
+        torch.testing.assert_close(out_dpas, ref, rtol=rtol, atol=atol)
+        torch.testing.assert_close(out_scalar, ref, rtol=rtol, atol=atol)
+        torch.testing.assert_close(out_dpas, out_scalar, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_ksplit_matches_strided(self, monkeypatch, dtype, fp8_dtype, group_size):
+        """FP8 decode: the K-split GEMV (``ARK_MOE_DECODE_FP8_KSPLIT=1``, the
+        default) must match the legacy per-work-item GEMV
+        (``ARK_MOE_DECODE_FP8_KSPLIT=0``) and the dequant reference.
+
+        The two kernels compute the same dot products with a different lane
+        mapping: the legacy one gives a whole K row to one work-item, the
+        K-split one gives one output element to a whole sub-group and splits K
+        across its 16 lanes, then reduces. Only the fp32 summation order
+        differs, so the two outputs are compared at the same tight tolerance
+        used by ``test_decode_fp8_modes_match``.
+
+        K is deliberately larger than one sub-group step (16 lanes x 16
+        elements = 256) so the kernel's unrolled main loop *and* its remainder
+        loop are both exercised; ``group_size`` covers a group narrower and a
+        group wider than a lane's 16-element chunk.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 640  # K = 2*256 + 128 -> main loop plus a partial step
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, fp8_dtype)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        def _run():
+            return ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        # Compare the two scalar-GEMV lane mappings only: keep DPAS off.
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+        out_ksplit = _run()
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "0")
+        out_strided = _run()
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        rtol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+        atol = 1e-1 if fp8_dtype == torch.float8_e5m2 else 5e-2
+
+        assert out_ksplit.shape == (total_tokens, N)
+        torch.testing.assert_close(out_ksplit, out_strided, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out_ksplit, ref, rtol=rtol, atol=atol)
+        torch.testing.assert_close(out_strided, ref, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [48, 96])
+    def test_decode_fp8_ksplit_non_pow2_group_falls_back(self, monkeypatch, dtype, group_size):
+        """FP8 decode: a non-power-of-two ``group_size`` must still be correct.
+
+        The K-split GEMV indexes the scale array with a shift, which is only
+        valid when ``group_size`` is a power of two of at least 16 (a lane's
+        16-element chunk must sit inside one K-group). Other group sizes take
+        the legacy GEMV; this pins that fallback so a future gate change cannot
+        silently start feeding them to the shift-indexed kernel.
+
+        ``group_size`` stays a multiple of 16 because the shared vectorized
+        inner loop reads 16-element blocks from the start of every K-group.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 480  # divisible by both 48 and 96
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, torch.float8_e4m3fn)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+        out = ark.moe_gemm_decode(
+            activations,
+            packed,
+            num_tokens_per_expert,
+            scales=scales,
+            group_size=group_size,
+            asym=False,
+        )
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        assert out.shape == (total_tokens, N)
+        torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    @pytest.mark.parametrize("group_size", [32, 128])
+    def test_decode_fp8_ksplit_ncols_match(self, monkeypatch, dtype, group_size):
+        """FP8 decode: every N-blocking factor must produce the same result.
+
+        ``ARK_MOE_DECODE_FP8_KSPLIT_NCOLS`` sets how many consecutive output
+        columns one sub-group owns. The factor only changes which columns share
+        an activation load -- the per-output arithmetic (lane -> K chunk
+        mapping, per-chunk scale fold, final ``reduce_over_group``) is
+        unchanged -- so all factors must agree with each other to within
+        fp-contraction noise, and with the dequant reference.
+
+        The N chosen here (256) is divisible by ``16 * 4``, so no factor is
+        silently reduced by the host-side tiling fallback, and K is not a
+        multiple of the 256-element sub-group step so the remainder loop is
+        exercised for every factor.
+        """
+        num_experts = 4
+        tokens_per_expert = [1, 0, 2, 1]
+        total_tokens = sum(tokens_per_expert)
+        N, K = 256, 640  # 256 % (16*4) == 0; K = 2*256 + 128
+
+        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+        w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+        scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+        packed = _pack_fp8(w_float, scales, group_size, torch.float8_e4m3fn)
+        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+        monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+        monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+
+        outs = {}
+        for ncols in (1, 2, 4):
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS", str(ncols))
+            outs[ncols] = ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+        dequant = _dequant_fp8(packed, scales, group_size, dtype)
+        ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+        # One ulp of the output dtype at these magnitudes; any indexing bug
+        # (wrong column, dropped or double-counted K chunk) is orders of
+        # magnitude larger than this.
+        tight = 1e-3 if dtype == torch.float16 else 8e-3
+        for ncols, out in outs.items():
+            assert out.shape == (total_tokens, N), f"ncols={ncols}"
+            torch.testing.assert_close(out, outs[1], rtol=tight, atol=tight, msg=f"ncols={ncols} != ncols=1")
+            torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
+
+    @pytest.mark.parametrize("dtype", [torch.float16])
+    def test_decode_fp8_ksplit_ncols_falls_back_on_untileable_n(self, monkeypatch, dtype):
+        """FP8 decode: an N that a blocking factor cannot tile must still work.
+
+        A work-group covers ``16 * NCOLS`` columns, so ``N = 48`` only tiles
+        with ``NCOLS == 1`` and ``N = 160`` only with ``NCOLS <= 2``. The host
+        selector must shrink the requested factor instead of launching a grid
+        that walks past the last column.
+        """
+        num_experts = 3
+        tokens_per_expert = [2, 0, 1]
+        total_tokens = sum(tokens_per_expert)
+        group_size = 32
+        for N in (48, 160):
+            K = 512
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            packed = _pack_fp8(w_float, scales, group_size, torch.float8_e4m3fn)
+            num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+
+            monkeypatch.setenv("ARK_MOE_DECODE_DPAS_FP8", "0")
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT", "1")
+            monkeypatch.setenv("ARK_MOE_DECODE_FP8_KSPLIT_NCOLS", "4")
+            out = ark.moe_gemm_decode(
+                activations,
+                packed,
+                num_tokens_per_expert,
+                scales=scales,
+                group_size=group_size,
+                asym=False,
+            )
+
+            dequant = _dequant_fp8(packed, scales, group_size, dtype)
+            ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+            assert out.shape == (total_tokens, N), f"N={N}"
+            torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
 
 if __name__ == "__main__":
