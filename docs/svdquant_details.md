@@ -69,6 +69,14 @@ Q/K/V projections share one low-rank down factor and are exported as fused
 `to_qkv`. Cross-attention K/V, convolutions, normalization layers, and the
 remaining UNet state stay in BF16.
 
+Quality results for SDXL base 1.0:
+
+| Format | CLIP ↑ | CLIP-IQA ↑ | ImageReward ↑ |
+| --- | ---: | ---: | ---: |
+| BF16 | 26.8583 | 0.929027 | 0.812544 |
+| MXFP4 | 26.9006 | 0.895704 | 0.697131 |
+| MXFP4 (SVDQuant) | 26.8088 | 0.927907 | 0.7967 |
+
 ### Default SignRound workflow
 
 Use SignRound as the terminal quantizer by selecting `auto_round`:

@@ -64,6 +64,14 @@ CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
 低秩 down factor，并融合导出为 `to_qkv`。Cross-attention K/V、卷积、normalization
 层及其余 UNet state 保持 BF16。
 
+SDXL base 1.0 的质量结果如下：
+
+| 格式 | CLIP ↑ | CLIP-IQA ↑ | ImageReward ↑ |
+| --- | ---: | ---: | ---: |
+| BF16 | 26.8583 | 0.929027 | 0.812544 |
+| MXFP4 | 26.9006 | 0.895704 | 0.697131 |
+| MXFP4（SVDQuant） | 26.8088 | 0.927907 | 0.7967 |
+
 ### 默认 SignRound 流程
 
 选择 `auto_round` 即可使用 SignRound 作为最终量化算法：
