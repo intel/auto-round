@@ -70,6 +70,9 @@ def _make_qdq_kernel():
                 exponent = math.floor(math.log2(scale)) + cutlass.Float32(1.0)
                 mantissa = scale / math.exp2(exponent)
                 mantissa_bits = math.roundeven((mantissa - cutlass.Float32(0.5)) * cutlass.Float32(16.0))
+                if mantissa_bits == cutlass.Float32(8.0):
+                    mantissa_bits = cutlass.Float32(0.0)
+                    exponent = exponent + cutlass.Float32(1.0)
                 mantissa_bits = cute.arch.fmin(cute.arch.fmax(mantissa_bits, 0.0), 7.0)
                 scale = (cutlass.Float32(1.0) + mantissa_bits / cutlass.Float32(8.0)) * math.exp2(
                     exponent - cutlass.Float32(1.0)
