@@ -255,6 +255,153 @@ def _normalize_nvfp4_source_tensors(
     return raw_tensors, converted_layers
 
 
+# Auxiliary tensors emitted next to a ModelOpt / TensorRT-LLM NVFP4 packed
+# weight.  Once the packed weight has been dequantized back to high precision
+# these carry no information and must not leak into the quantized output.
+_MODELOPT_NVFP4_AUX_SUFFIXES: tuple[str, ...] = (
+    ".scale",
+    ".scale2",
+    ".input_amax",
+    ".weight_amax",
+    ".original_shape",
+)
+
+
+def _dequant_modelopt_nvfp4_slice(
+    packed: torch.Tensor,
+    scale: torch.Tensor,
+    global_scale: float,
+    out_features: int,
+    in_features: int,
+    group_size: int,
+    device: str,
+    target_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Dequantize one 2-D ModelOpt NVFP4 slice back to *target_dtype* on CPU."""
+    from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
+
+    packed_dev = packed.to(device)
+    unpacked = unpack_fp4_from_uint8(packed_dev, out_features, in_features, dtype=torch.float32)
+    n_groups = in_features // group_size
+    scale_dev = scale.to(device).to(torch.float32).reshape(out_features, n_groups, 1)
+    weight = unpacked.reshape(out_features, n_groups, group_size) * scale_dev
+    weight = weight.reshape(out_features, in_features) * global_scale
+    result = weight.to(target_dtype).to("cpu")
+    del packed_dev, unpacked, scale_dev, weight
+    return result
+
+
+def _dequant_modelopt_nvfp4_tensors(
+    raw_tensors: dict[str, torch.Tensor],
+    device: str = "cpu",
+    shard_name: str | None = None,
+    target_dtype: torch.dtype = torch.bfloat16,
+) -> dict[str, torch.Tensor]:
+    """Dequantize ModelOpt / TensorRT-LLM NVFP4 source tensors to high precision.
+
+    ModelOpt checkpoints (``hf_quant_config.json`` with ``quant_algo="NVFP4"``)
+    store a quantized weight as a *packed uint8* tensor ``X`` accompanied by:
+
+    * ``X.scale``  – per-block (group_size=16) scale, ``float8_e4m3fn``
+    * ``X.scale2`` – global scale (scalar, or one per expert for fused MoE)
+    * ``X.input_amax`` / ``X.original_shape`` – activation / bookkeeping metadata
+
+    Note the base tensor has **no** ``.weight`` suffix (e.g.
+    ``...mlp.experts.w13_weight``), so neither the generic FP8 dequant path nor
+    :func:`_normalize_nvfp4_source_tensors` (which keys off ``.weight`` /
+    ``.weight_packed`` + ``.weight_scale``) recognises it.  Without this pass the
+    packed uint8 bytes were quantized *as if they were real weights*, producing
+    silently corrupted output with half the expected ``in_features``.
+
+    Both plain 2-D weights and fused 3-D stacked MoE expert weights
+    (``[num_experts, out, in]``) are supported.  All auxiliary tensors listed in
+    :data:`_MODELOPT_NVFP4_AUX_SUFFIXES` are dropped after dequantization.
+    """
+    entries: list[str] = []
+    for name, tensor in raw_tensors.items():
+        if tensor.dtype != torch.uint8 or tensor.dim() not in (2, 3):
+            continue
+        scale = raw_tensors.get(f"{name}.scale")
+        if scale is None or f"{name}.scale2" not in raw_tensors:
+            continue
+        if scale.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2, torch.float32, torch.bfloat16, torch.float16):
+            continue
+        if scale.dim() != tensor.dim():
+            continue
+        entries.append(name)
+
+    if not entries:
+        return raw_tensors
+
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+    logger.info(
+        f"{shard_prefix}Dequantizing {len(entries)} ModelOpt NVFP4 source tensor(s) to {target_dtype} on {device}."
+    )
+
+    n_dropped = 0
+    for name in entries:
+        packed = raw_tensors.pop(name)
+        scale = raw_tensors.pop(f"{name}.scale")
+        global_scale = raw_tensors.pop(f"{name}.scale2").float().flatten()
+
+        out_features = packed.shape[-2]
+        in_features = packed.shape[-1] * 2
+        group_size = in_features // scale.shape[-1]
+
+        try:
+            if packed.dim() == 2:
+                dequantized = _dequant_modelopt_nvfp4_slice(
+                    packed,
+                    scale,
+                    float(global_scale[0]),
+                    out_features,
+                    in_features,
+                    group_size,
+                    device,
+                    target_dtype,
+                )
+            else:
+                num_experts = packed.shape[0]
+                if global_scale.numel() not in (1, num_experts):
+                    raise ValueError(f"scale2 has {global_scale.numel()} element(s); expected 1 or {num_experts}.")
+                # Fill a pre-allocated buffer instead of stacking a list of
+                # slices, so peak memory stays at one output tensor + one slice.
+                dequantized = torch.empty((num_experts, out_features, in_features), dtype=target_dtype)
+                for i in range(num_experts):
+                    dequantized[i] = _dequant_modelopt_nvfp4_slice(
+                        packed[i],
+                        scale[i],
+                        float(global_scale[i if global_scale.numel() > 1 else 0]),
+                        out_features,
+                        in_features,
+                        group_size,
+                        device,
+                        target_dtype,
+                    )
+        except Exception as e:
+            logger.warning(
+                f"{shard_prefix}Failed to dequantize ModelOpt NVFP4 tensor '{name}': {e}. "
+                f"Keeping the packed source tensor unchanged."
+            )
+            raw_tensors[name] = packed
+            raw_tensors[f"{name}.scale"] = scale
+            continue
+
+        raw_tensors[name] = dequantized
+        del packed, scale, global_scale
+
+        # Drop the now-meaningless auxiliary metadata tensors.
+        for suffix in _MODELOPT_NVFP4_AUX_SUFFIXES:
+            if raw_tensors.pop(f"{name}{suffix}", None) is not None:
+                n_dropped += 1
+
+    if n_dropped:
+        logger.info(f"{shard_prefix}Dropped {n_dropped} stale NVFP4 metadata tensor(s) after dequantization.")
+
+    clear_memory()
+    return raw_tensors
+
+
 def _handle_nvfp4_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     matcher: Any,
@@ -319,20 +466,30 @@ def _dequantize_with_device_fallback(
 ) -> torch.Tensor:
     """Run dequantization on ``dequant_device`` and fall back to CPU on errors."""
     if dequant_device != "cpu":
+        failure: tuple[bool, str] | None = None
         try:
             return on_device()
         except Exception as e:
-            if _is_out_of_memory_error(e):
-                logger.warning(
-                    f"{shard_prefix}{op_name} on {dequant_device} ran OOM for {tensor_label}: {e}. "
-                    "Clearing accelerator memory and falling back to CPU for this tensor."
-                )
-                clear_memory()
-            else:
-                logger.warning(
-                    f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {e}. "
-                    "Falling back to CPU for this tensor."
-                )
+            # Only keep plain data here.  Holding the exception object alive
+            # keeps its traceback (and therefore every device tensor still
+            # referenced by the failed frames) reachable, which would make the
+            # clear_memory() below a no-op for exactly the memory we need back.
+            failure = (_is_out_of_memory_error(e), str(e))
+
+        # Outside the ``except`` block the exception and its traceback have
+        # already been released, so reclaiming memory is now effective.
+        is_oom, message = failure
+        if is_oom:
+            logger.warning(
+                f"{shard_prefix}{op_name} on {dequant_device} ran OOM for {tensor_label}: {message}. "
+                "Clearing accelerator memory and falling back to CPU for this tensor."
+            )
+            clear_memory()
+        else:
+            logger.warning(
+                f"{shard_prefix}{op_name} on {dequant_device} failed for {tensor_label}: {message}. "
+                "Falling back to CPU for this tensor."
+            )
     return on_cpu()
 
 
@@ -358,8 +515,150 @@ def _normalize_scheme(scheme: Union[str, QuantizationScheme]) -> QuantizationSch
 
 
 def _is_eligible_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
-    """Check if a tensor is eligible for quantization (2D Linear weight)."""
-    return tensor_name.endswith(".weight") and tensor.dim() == 2
+    """Check if a tensor is eligible for quantization (2D high-precision Linear weight).
+
+    ``is_floating_point`` is required: an already-packed weight (uint8/int8 FP4
+    nibbles, int32 GPTQ words, ...) that slipped past the source-format handlers
+    must never be fed to the quantizer, which would reinterpret the packed bytes
+    as real values and silently corrupt the layer.
+    """
+    return tensor_name.endswith(".weight") and tensor.dim() == 2 and tensor.is_floating_point()
+
+
+def _is_moe_fused_expert_weight(tensor_name: str, tensor: torch.Tensor) -> bool:
+    """Check if *tensor* is a 3-D fused per-layer stacked MoE expert weight
+    (e.g. ``experts.w13_weight`` / ``experts.w2_weight``, shape
+    ``[num_experts, out, in]``).
+
+    Such tensors are produced when :func:`split_fused_expert_tensors
+    <auto_round.utils.missing_tensors.split_fused_expert_tensors>` skips
+    unfusing for the source model's ``model_type`` (see
+    ``_KEEP_FUSED_EXPERT_MODEL_TYPES``) because the target inference engine's
+    loader expects the fused layout preserved rather than split per expert.
+
+    Matches ``<prefix>.experts.<proj>_weight`` as well as the nested tensor
+    layouts ``<prefix>.experts.<proj>_weight.weight`` (dequantized) and
+    ``<prefix>.experts.<proj>_weight.weight_packed`` (MXFP4 source).
+    In some model families (e.g. Inkling) shared experts appear under the
+    path segment ``shared_experts`` (e.g. ``...shared_experts.shared_w13_weight``).
+    Treat these fused 3-D shared expert tensors the same as ordinary fused
+    expert tensors so they can be considered for in-place quantization.
+    Auxiliary 3-D tensors such as ``.scale`` / ``.weight_scale`` are still
+    excluded because they are not weight tensors.
+    """
+    if tensor.dim() != 3:
+        return False
+    parts = tensor_name.split(".")
+    # Accept fused experts stored under either "...experts..." or
+    # "...shared_experts..." path segments.
+    if "experts" not in parts and "shared_experts" not in parts:
+        return False
+    last = parts[-1]
+    if last in ("weight", "weight_packed"):
+        return True
+    return len(parts) >= 2 and parts[-2] in ("experts", "shared_experts") and last.endswith("_weight")
+
+
+def _fused_expert_layer_name(tensor_name: str) -> str:
+    """Strip the tensor-kind suffix from a fused MoE expert tensor name.
+
+    ``experts.w13_weight`` stays as-is, while ``experts.w13_weight.weight`` and
+    ``experts.w13_weight.weight_packed`` collapse to ``experts.w13_weight`` so
+    quantized / ignored layer bookkeeping uses one consistent layer name.
+    """
+    for suffix in (".weight_packed", ".weight"):
+        if tensor_name.endswith(suffix):
+            return tensor_name[: -len(suffix)]
+    return tensor_name
+
+
+def _quantize_moe_fused_expert_weight(
+    tensor_name: str,
+    tensor: torch.Tensor,
+    matcher: "_PatternMatcher",
+    device: str = "cpu",
+    disable_opt_rtn: bool = False,
+) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
+    """Quantize a 3-D fused per-layer stacked MoE expert weight in place.
+
+    Each expert's 2-D slice (``tensor[i]``) is quantized independently via
+    :func:`_quantize_weight_mxfp` and the packed outputs are re-stacked along
+    a new leading dimension, preserving the tensor's original fused layout
+    (e.g. ``experts.w13_weight.weight_packed`` stays 3-D instead of being
+    unfused into per-expert 2-D tensors). RTN/MXFP quantization groups values
+    along the last (``in_features``) dimension on a per-row basis, so this is
+    numerically equivalent to quantizing whatever 2-D weight each row
+    originally came from -- any gate/up row interleaving within a slice does
+    not affect correctness.
+
+    Only the MXFP4/MXFP8 path is currently supported for this layout; other
+    schemes fall back to keeping the original (unquantized) weight.
+
+    Returns:
+        (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
+    """
+    layer_name = _fused_expert_layer_name(tensor_name)
+
+    if not tensor.is_floating_point():
+        # An already-packed source tensor (e.g. NVFP4/MXFP4 uint8 nibbles) that
+        # was not consumed by a source-format handler. Quantizing it would
+        # reinterpret packed bytes as weights and silently corrupt the layer.
+        logger.warning_once(
+            f"Fused 3-D MoE tensor '{tensor_name}' has non-floating dtype {tensor.dtype}; "
+            "it appears to be already packed and is kept unchanged instead of being quantized."
+        )
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    if matcher.should_ignore(tensor_name) or matcher.should_skip(tensor_name):
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    scheme = matcher.resolve_scheme(tensor_name)
+    if scheme is None:
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    bits = scheme["bits"]
+    if bits >= 16:
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    data_type = (scheme.get("data_type") or "int").lower()
+    group_size = scheme["group_size"]
+
+    if not is_mx_fp(data_type):
+        logger.warning_once(
+            f"3-D fused MoE weight '{tensor_name}' (shape={list(tensor.shape)}) is only "
+            "supported for MXFP schemes in model_free mode; keeping original weight."
+        )
+        return layer_name, {tensor_name: tensor}, None, layer_name
+
+    try:
+        packed_parts: dict[str, list[torch.Tensor]] = {}
+        for i in range(tensor.shape[0]):
+            slice_out = _quantize_weight_mxfp(
+                weight=tensor[i],
+                layer_name=f"{layer_name}.{i}",
+                bits=bits,
+                group_size=group_size,
+                data_type=data_type,
+                device=device,
+                disable_opt_rtn=disable_opt_rtn,
+            )
+            prefix = f"{layer_name}.{i}"
+            for key, value in slice_out.items():
+                suffix = key[len(prefix) :]  # e.g. ".weight_packed" / ".weight_scale"
+                packed_parts.setdefault(suffix, []).append(value)
+
+        out = {f"{layer_name}{suffix}": torch.stack(values, dim=0) for suffix, values in packed_parts.items()}
+        # The per-expert slices have been copied into the stacked tensors; free
+        # them immediately instead of holding a second full-size copy.
+        packed_parts.clear()
+        logger.debug(
+            f"Quantized (MXFP, fused 3-D): {layer_name} "
+            f"(bits={bits}, group_size={group_size}, num_experts={tensor.shape[0]})"
+        )
+        return layer_name, out, layer_name, None
+    except Exception as e:
+        logger.warning(f"Failed to MXFP-quantize fused 3-D MoE weight {layer_name}: {e}. Keeping original weight.")
+        return layer_name, {tensor_name: tensor}, None, layer_name
 
 
 def _quantize_weight_mxfp(
@@ -414,31 +713,43 @@ def _quantize_weight_mxfp(
 
     # Build a lightweight nn.Linear holding the original weight so we can
     # delegate packing to the existing QuantLinear.pack implementation.
-    fake_linear = nn.Linear(in_features, out_features, bias=False)
+    # Materialize it on the meta device so no (out_features x in_features)
+    # buffer is allocated/initialized just to be immediately overwritten.
+    with torch.device("meta"):
+        fake_linear = nn.Linear(in_features, out_features, bias=False)
     with torch.no_grad():
         fake_linear.weight = nn.Parameter(weight_dev, requires_grad=False)
 
-    qlayer = QuantLinear(
-        bits=bits,
-        group_size=group_size,
-        infeatures=in_features,
-        outfeatures=out_features,
-        bias=False,
-        data_type="mx_fp4" if bits == 4 else "mx_fp8e4m3",
-        sym=True,
-        act_bits=bits,
-    )
+    # QuantLinear registers zero-filled packed weight/scale buffers that pack()
+    # replaces wholesale; allocate them on meta to avoid the throwaway copy.
+    with torch.device("meta"):
+        qlayer = QuantLinear(
+            bits=bits,
+            group_size=group_size,
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=False,
+            data_type="mx_fp4" if bits == 4 else "mx_fp8e4m3",
+            sym=True,
+            act_bits=bits,
+        )
     qlayer.pack(fake_linear, shared_exp, device=device)
 
+    # Drop every intermediate before returning so the (potentially large)
+    # high-precision weight and device-side buffers are freed as soon as the
+    # packed CPU copies exist.
     if bits == 8:
-        return {
+        out = {
             f"{layer_name}.weight": qlayer.weight.to("cpu"),
             f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
         }
-    return {
-        f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
-        f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
-    }
+    else:
+        out = {
+            f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
+            f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
+        }
+    del qlayer, fake_linear, weight_dev, shared_exp
+    return out
 
 
 def _quantize_weight_nvfp4_e5m3(
@@ -485,16 +796,22 @@ def _pack_weight_nvfp4_e5m3(
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
-    linear = torch.nn.Linear(in_features, out_features, bias=False, device=device, dtype=weight.dtype)
+    # Meta-device construction avoids allocating a full weight tensor on the
+    # accelerator (and zero-filled packed buffers) that are immediately replaced.
+    with torch.device("meta"):
+        linear = torch.nn.Linear(in_features, out_features, bias=False, dtype=weight.dtype)
     linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
-    qlayer = QuantLinear(
-        4, group_size, in_features, out_features, False, data_type="nvfp4_v2", act_bits=4, act_data_type="nvfp4_v2"
-    )
+    with torch.device("meta"):
+        qlayer = QuantLinear(
+            4, group_size, in_features, out_features, False, data_type="nvfp4_v2", act_bits=4, act_data_type="nvfp4_v2"
+        )
     qlayer.pack(linear, scale, device=device)
-    return {
+    out = {
         f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
         f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
     }
+    del qlayer, linear, weight_dev, scale
+    return out
 
 
 def _declared_int_packing(sym: bool) -> str:
@@ -525,6 +842,9 @@ def _quantize_single_tensor(
     Returns:
         (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
     """
+    if _is_moe_fused_expert_weight(tensor_name, tensor):
+        return _quantize_moe_fused_expert_weight(tensor_name, tensor, matcher, device, disable_opt_rtn)
+
     layer_name = tensor_name.rsplit(".", 1)[0]
 
     if not _is_eligible_weight(tensor_name, tensor):
@@ -630,33 +950,50 @@ def _load_weight_map_from_index(index_path: str) -> dict[str, str]:
 def _build_cross_shard_pairs_from_weight_map(
     weight_map: dict[str, str],
 ) -> tuple[dict[str, dict[str, list[str]]], dict[str, set[str]]]:
-    """Identify cross-shard FP8 (weight, weight_scale_inv) pairs from weight_map.
+    """Identify cross-shard (weight, scale-metadata) pairs from weight_map.
 
-    A *cross-shard pair* exists when ``<layer>.weight`` and
-    ``<layer>.weight_scale_inv`` reside in **different** shards.  The shard
-    that holds ``weight_scale_inv`` is the *donor*; the shard that holds
-    ``weight`` is the *recipient*.
+    Two source layouts are covered:
+
+    * **FP8**: ``<layer>.weight`` and ``<layer>.weight_scale_inv``.
+    * **ModelOpt / TensorRT-LLM NVFP4**: a packed base tensor ``X`` and its
+      ``X.scale`` / ``X.scale2`` siblings.
+
+    A *cross-shard pair* exists when the two tensors reside in **different**
+    shards.  The shard holding the scale metadata is the *donor*; the shard
+    holding the weight is the *recipient*.  Recording these lets the shard
+    scheduler order donors before recipients (critical in streaming mode, where
+    a donor shard must be downloaded before the recipient can hydrate from it).
 
     Returns:
         recipient_to_donors:
-            ``{recipient_shard: {donor_shard: [scale_inv_tensor_names]}}``
+            ``{recipient_shard: {donor_shard: [scale_tensor_names]}}``
         donor_shard_tensors:
-            ``{donor_shard: set(scale_inv tensor names it donates to other shards)}``
+            ``{donor_shard: set(scale tensor names it donates to other shards)}``
     """
     recipient_to_donors: dict[str, dict[str, list[str]]] = {}
     donor_shard_tensors: dict[str, set[str]] = {}
 
-    for tensor_name, shard in weight_map.items():
-        if not tensor_name.endswith(".weight_scale_inv"):
-            continue
-        # "layer.weight_scale_inv" -> "layer.weight"
-        weight_name = tensor_name[: -len("_scale_inv")]
+    def _record(scale_name: str, donor_shard: str, weight_name: str) -> None:
         weight_shard = weight_map.get(weight_name)
-        if not weight_shard or weight_shard == shard:
+        if not weight_shard or weight_shard == donor_shard:
+            return
+        # `donor_shard` donates `scale_name` to `weight_shard` (recipient)
+        recipient_to_donors.setdefault(weight_shard, {}).setdefault(donor_shard, []).append(scale_name)
+        donor_shard_tensors.setdefault(donor_shard, set()).add(scale_name)
+
+    nvfp4_bases = _modelopt_nvfp4_bases_from_weight_map(weight_map)
+
+    for tensor_name, shard in weight_map.items():
+        if tensor_name.endswith(".weight_scale_inv"):
+            # "layer.weight_scale_inv" -> "layer.weight"
+            _record(tensor_name, shard, tensor_name[: -len("_scale_inv")])
             continue
-        # `shard` (donor) donates `tensor_name` to `weight_shard` (recipient)
-        recipient_to_donors.setdefault(weight_shard, {}).setdefault(shard, []).append(tensor_name)
-        donor_shard_tensors.setdefault(shard, set()).add(tensor_name)
+        for suffix in (".scale2", ".scale"):
+            if tensor_name.endswith(suffix):
+                base = tensor_name[: -len(suffix)]
+                if base in nvfp4_bases:
+                    _record(tensor_name, shard, base)
+                break
 
     return recipient_to_donors, donor_shard_tensors
 
@@ -772,6 +1109,147 @@ def _hydrate_missing_fp8_scales_from_index(
     return raw_tensors
 
 
+def _find_index_path(idx_dir: str) -> str | None:
+    """Return the path of the ``*.safetensors.index.json`` file in *idx_dir*."""
+    index_path = os.path.join(idx_dir, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        return index_path
+    try:
+        candidates = sorted(
+            os.path.join(idx_dir, f) for f in os.listdir(idx_dir) if f.endswith(".safetensors.index.json")
+        )
+    except OSError:
+        return None
+    return candidates[0] if candidates else None
+
+
+def _modelopt_nvfp4_bases_from_weight_map(weight_map: dict[str, str]) -> set[str]:
+    """Return base tensor names that use the ModelOpt / TensorRT-LLM NVFP4 layout.
+
+    A base ``X`` qualifies when the checkpoint contains ``X``, ``X.scale`` and
+    ``X.scale2`` (see :func:`_dequant_modelopt_nvfp4_tensors`).
+    """
+    return {
+        name[: -len(".scale2")]
+        for name in weight_map
+        if name.endswith(".scale2")
+        and name[: -len(".scale2")] in weight_map
+        and f"{name[: -len('.scale2')]}.scale" in weight_map
+    }
+
+
+def _hydrate_and_clean_modelopt_nvfp4_aux(
+    raw_tensors: dict[str, torch.Tensor],
+    shard_path: str,
+    *,
+    shard_name: str | None = None,
+    index_dir: str | None = None,
+    donor_shard_dir: str | None = None,
+) -> dict[str, torch.Tensor]:
+    """Resolve ModelOpt NVFP4 ``.scale`` / ``.scale2`` tensors across shards.
+
+    ModelOpt checkpoints do **not** keep a packed weight and its scales in the
+    same shard — e.g. ``layers.36...w13_weight`` can sit in shard 6 while its
+    ``.scale`` is in shard 3 and its ``.scale2`` in shard 5.  Since model-free
+    processing is shard-local, :func:`_dequant_modelopt_nvfp4_tensors` would
+    otherwise never see a complete triple and the packed weight would be left
+    untouched (and reported as an already-packed, non-quantizable tensor).
+
+    This helper does two things, both driven by ``*.safetensors.index.json``:
+
+    1. **Hydrate** the missing ``.scale`` / ``.scale2`` tensors for every NVFP4
+       base weight present in this shard, reading only those tensors from the
+       sibling shards that hold them.
+    2. **Drop** orphan auxiliary tensors (``.scale``, ``.scale2``,
+       ``.input_amax``, ``.original_shape``) whose base weight lives in another
+       shard, so this shard's output is not polluted with stale metadata that
+       the consuming shard has already accounted for.
+    """
+    if not shard_path.endswith(".safetensors"):
+        return raw_tensors
+
+    shard_dir = os.path.dirname(shard_path)
+    idx_dir = index_dir if index_dir is not None else shard_dir
+    donor_dir = donor_shard_dir if donor_shard_dir is not None else idx_dir
+
+    index_path = _find_index_path(idx_dir)
+    if index_path is None:
+        return raw_tensors
+
+    try:
+        weight_map = _load_weight_map_from_index(index_path)
+    except Exception:
+        return raw_tensors
+
+    bases = _modelopt_nvfp4_bases_from_weight_map(weight_map)
+    if not bases:
+        return raw_tensors
+
+    shard_prefix = f"[{shard_name}] " if shard_name else ""
+
+    # --- 1) hydrate missing .scale / .scale2 for bases present in this shard ---
+    current_shard = os.path.basename(shard_path)
+    wanted_by_shard: dict[str, list[str]] = {}
+    for base in bases:
+        if base not in raw_tensors:
+            continue
+        for suffix in (".scale", ".scale2"):
+            aux_name = f"{base}{suffix}"
+            if aux_name in raw_tensors:
+                continue
+            target_shard = weight_map.get(aux_name)
+            if not target_shard or target_shard == current_shard:
+                continue
+            wanted_by_shard.setdefault(target_shard, []).append(aux_name)
+
+    if wanted_by_shard:
+        from safetensors import safe_open
+
+        hydrated = 0
+        for target_shard, aux_names in wanted_by_shard.items():
+            target_path = os.path.join(donor_dir, target_shard)
+            if not os.path.exists(target_path):
+                logger.warning(
+                    f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
+                    f"{len(aux_names)} NVFP4 scale tensor(s); the affected weight(s) will stay packed and "
+                    f"will not be quantized."
+                )
+                continue
+            try:
+                with safe_open(target_path, framework="pt", device="cpu") as sf:
+                    for aux_name in aux_names:
+                        try:
+                            raw_tensors[aux_name] = sf.get_tensor(aux_name)
+                            hydrated += 1
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.warning(f"{shard_prefix}Could not read donor shard '{target_shard}': {e}.")
+                continue
+
+        if hydrated:
+            logger.info(
+                f"{shard_prefix}Hydrated {hydrated} NVFP4 scale tensor(s) from sibling shard(s) using index mapping."
+            )
+
+    # --- 2) drop orphan auxiliary tensors owned by another shard's base ---
+    dropped = 0
+    for name in list(raw_tensors.keys()):
+        for suffix in _MODELOPT_NVFP4_AUX_SUFFIXES:
+            if not name.endswith(suffix):
+                continue
+            base = name[: -len(suffix)]
+            if base in bases and base not in raw_tensors:
+                del raw_tensors[name]
+                dropped += 1
+            break
+
+    if dropped:
+        logger.info(f"{shard_prefix}Dropped {dropped} orphan NVFP4 metadata tensor(s) owned by other shard(s).")
+
+    return raw_tensors
+
+
 def _dequant_mxfp_tensors(
     raw_tensors: dict[str, torch.Tensor],
     device: str = "cpu",
@@ -818,13 +1296,13 @@ def _dequant_mxfp_tensors(
                 shard_prefix=shard_prefix,
                 op_name="MXFP dequant",
                 tensor_label=layer_name,
-                on_device=lambda: dequant_mx_fp8(
+                on_device=lambda weight=weight, scale=scale: dequant_mx_fp8(
                     weight_fp8=weight.to(dequant_device, non_blocking=True),
                     scale_e8m0=scale.to(dequant_device, non_blocking=True),
                     block_size=32,
                     target_dtype=torch.bfloat16,
                 ).to("cpu"),
-                on_cpu=lambda: dequant_mx_fp8(
+                on_cpu=lambda weight=weight, scale=scale: dequant_mx_fp8(
                     weight_fp8=weight,
                     scale_e8m0=scale,
                     block_size=32,
@@ -837,14 +1315,14 @@ def _dequant_mxfp_tensors(
                 shard_prefix=shard_prefix,
                 op_name="MXFP dequant",
                 tensor_label=layer_name,
-                on_device=lambda: to_dtype(
+                on_device=lambda weight=weight, scale=scale: to_dtype(
                     data_lp=weight.view(torch.uint8).contiguous().to(dequant_device, non_blocking=True),
                     scale_e8m0=scale.to(dequant_device, non_blocking=True),
                     elem_dtype="fp4_e2m1",
                     block_size=32,
                     target_dtype=torch.bfloat16,
                 ).to("cpu"),
-                on_cpu=lambda: to_dtype(
+                on_cpu=lambda weight=weight, scale=scale: to_dtype(
                     data_lp=weight.view(torch.uint8).contiguous(),
                     scale_e8m0=scale,
                     elem_dtype="fp4_e2m1",
@@ -853,6 +1331,10 @@ def _dequant_mxfp_tensors(
                 ),
             )
         raw_tensors[f"{layer_name}.weight"] = dq_weight
+        # Drop the loop-local aliases so the source (packed weight + scale) and
+        # the previous iteration's dequantized tensor are not kept alive while
+        # the next, potentially much larger, layer is being processed.
+        del weight, scale, dq_weight
 
     return raw_tensors
 
@@ -985,13 +1467,16 @@ def _dequant_fp8_tensors(
             shard_prefix=shard_prefix,
             op_name="FP8 dequant",
             tensor_label=weight_name,
-            on_device=lambda: _dequant_fp8_linear_weight(
+            on_device=lambda weight=weight, scale=scale: _dequant_fp8_linear_weight(
                 weight.to(dequant_device, non_blocking=True),
                 scale.to(dequant_device, non_blocking=True),
                 block_size=block_size,
             ).to("cpu"),
-            on_cpu=lambda: _dequant_fp8_linear_weight(weight, scale, block_size=block_size),
+            on_cpu=lambda weight=weight, scale=scale: _dequant_fp8_linear_weight(weight, scale, block_size=block_size),
         )
+        # ``weight`` still aliases the original FP8 storage after the dict slot
+        # was rebound; release it (and the scale) before the next iteration.
+        del weight, scale
 
     return raw_tensors
 
@@ -1064,7 +1549,7 @@ def _process_shard(
         with safe_open(shard_path, framework="pt", device="cpu") as f:
             raw_tensors = {name: f.get_tensor(name) for name in f.keys()}
 
-    raw_tensors = split_fused_expert_tensors(raw_tensors)
+    raw_tensors = split_fused_expert_tensors(raw_tensors, model_type=model_type)
 
     # Hydrate cross-shard FP8 weight_scale_inv tensors *before* any
     # preprocessing below. Otherwise a weight whose scale lives in a sibling
@@ -1084,11 +1569,18 @@ def _process_shard(
     # Snapshot candidate weight layer names *before* any preprocessing. 1D
     # weights (for example LayerNorm) are not quantization targets, while 3D
     # weights remain tracked so unsupported layouts are visible as ignored.
+    # Fused 3-D MoE expert weights (e.g. ``experts.w13_weight``, kept fused
+    # for model_type architectures like Inkling) have no ``.weight`` suffix
+    # of their own, so they are tracked separately here.
     input_weight_layers: list[str] = list(
         dict.fromkeys(
-            name.rsplit(".", 1)[0]
+            (
+                _fused_expert_layer_name(name)
+                if _is_moe_fused_expert_weight(name, tensor)
+                else (name.rsplit(".", 1)[0] if name.endswith(".weight") else name)
+            )
             for name, tensor in raw_tensors.items()
-            if name.endswith(".weight") and tensor.dim() > 1
+            if (name.endswith(".weight") and tensor.dim() > 1) or _is_moe_fused_expert_weight(name, tensor)
         )
     )
 
@@ -1120,6 +1612,19 @@ def _process_shard(
 
     # 1.5) normalize legacy NVFP4 names to llm-compressor naming.
     raw_tensors, _converted_nvfp4_layers = _normalize_nvfp4_source_tensors(raw_tensors, shard_name=shard_name)
+
+    # 1.6) ModelOpt / TensorRT-LLM NVFP4 sources store the packed weight under a
+    # bare name (no ``.weight`` suffix) with ``.scale`` / ``.scale2`` siblings,
+    # which are frequently placed in *different* shards. Hydrate them from the
+    # index first, then dequantize and drop the stale metadata tensors.
+    raw_tensors = _hydrate_and_clean_modelopt_nvfp4_aux(
+        raw_tensors,
+        shard_path,
+        shard_name=shard_name,
+        index_dir=index_dir,
+        donor_shard_dir=donor_shard_dir,
+    )
+    raw_tensors = _dequant_modelopt_nvfp4_tensors(raw_tensors, device=device, shard_name=shard_name)
 
     # 1.5) model-type-specific low-precision dequantization (e.g. kimi_k25 INT4)
     raw_tensors = handle_model_type_low_precision_source_tensors(
@@ -1160,6 +1665,8 @@ def _process_shard(
         donor_shard_dir=donor_shard_dir,
     )
     raw_tensors.update(preserved_tensors)
+    # ``raw_tensors`` now owns these; drop the duplicate references.
+    preserved_tensors.clear()
 
     for tensor_name in list(raw_tensors.keys()):
         tensor = raw_tensors.pop(tensor_name)
@@ -1174,6 +1681,10 @@ def _process_shard(
         output_tensors.update(out_dict)
         if q_layer:
             quantized_layers.append(q_layer)
+        # Release the (possibly high-precision) source tensor and the packing
+        # result before loading the next one, so peak RSS stays at ~one layer
+        # instead of two.
+        del tensor, out_dict
 
     # Remove scale_inv tensors that this shard donates to other shards.
     # These tensors have no corresponding weight in this shard; keeping them
@@ -1201,11 +1712,34 @@ def _process_shard(
 # ---------------------------------------------------------------------------
 
 
+def _index_shards_cache_status(model_name_or_path: str, index_path: str) -> tuple[bool, int, int]:
+    """Return ``(all_cached, n_cached, n_total)`` for shards listed in an index file."""
+    from huggingface_hub import try_to_load_from_cache
+
+    try:
+        shard_files = sorted(set(_load_weight_map_from_index(index_path).values()))
+    except Exception:
+        return False, 0, 0
+
+    if not shard_files:
+        return False, 0, 0
+
+    n_cached = sum(1 for f in shard_files if isinstance(try_to_load_from_cache(model_name_or_path, f), str))
+    return n_cached == len(shard_files), n_cached, len(shard_files)
+
+
 def _get_model_cache_status(model_name_or_path: str) -> tuple[bool, str]:
     """Return cache decision and a short reason string.
 
-    Cached means local dir, or HF cache contains config plus at least one
-    weight entry file (index or single-file checkpoint).
+    Cached means a local directory, or an HF cache that holds ``config.json``
+    **plus the actual weight data**.
+
+    A cached ``*.index.json`` is deliberately *not* treated as a weight hit on
+    its own: many workflows (and this module's own streaming path) prefetch
+    only metadata.  Trusting the index would route such models to a full
+    ``snapshot_download``, downloading the entire checkpoint up-front instead
+    of streaming and quantizing shard-by-shard.  So when an index is present
+    its referenced shards are verified individually.
     """
     if os.path.isdir(model_name_or_path):
         return True, "input is an existing local directory"
@@ -1220,19 +1754,24 @@ def _get_model_cache_status(model_name_or_path: str) -> tuple[bool, str]:
         if not config_cached:
             return False, "HF cache miss: config.json not found"
 
-        weight_entry_candidates = (
-            "model.safetensors.index.json",
-            "pytorch_model.bin.index.json",
-            "model.safetensors",
-            "pytorch_model.bin",
-        )
-        hit_entries: list[str] = []
-        for fname in weight_entry_candidates:
+        # Single-file checkpoints: the file itself is the weight data.
+        for fname in ("model.safetensors", "pytorch_model.bin"):
             if isinstance(try_to_load_from_cache(model_name_or_path, fname), str):
-                hit_entries.append(fname)
+                return True, f"HF cache hit: config.json + {fname}"
 
-        if hit_entries:
-            return True, f"HF cache hit: config.json + {', '.join(hit_entries)}"
+        # Sharded checkpoints: an index is only a hit if every shard is cached.
+        for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+            index_path = try_to_load_from_cache(model_name_or_path, index_name)
+            if not isinstance(index_path, str):
+                continue
+            all_cached, n_cached, n_total = _index_shards_cache_status(model_name_or_path, index_path)
+            if all_cached:
+                return True, f"HF cache hit: config.json + {index_name} + all {n_total} shard(s)"
+            return (
+                False,
+                f"HF cache partial hit: {index_name} present but only {n_cached}/{n_total} shard(s) cached",
+            )
+
         return (
             False,
             "HF cache partial hit: config.json exists but no weight entry file found",
@@ -1476,24 +2015,36 @@ def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
 # TODO: Remove when the issue is fixed
 # https://github.com/vllm-project/llm-compressor/issues/3069
 def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
-    """Append ``"RoutedExperts"`` to *targets* when *layer_names* indicates a MoE model.
+    """Append ``"RoutedExperts"`` for routed expert layouts that llm-compressor misses.
 
-    LLM-Compressor has a known bug where MoE expert projections (e.g. ``w1``/
-    ``w3`` or layers inside ``block_sparse_moe``) are not matched by the generic
-    ``"Linear"`` target and require the explicit ``"RoutedExperts"`` target to be
-    present in the config group.  This helper detects that situation and injects
-    the extra target so quantization is applied correctly.
-
-    A model is considered MoE if any layer name contains:
-
-    * ``.w1`` or ``.w3`` (typical Mixtral / DeepSeek gating projections), or
-    * ``block_sparse_moe`` (Mixtral-style naming).
+    The generic ``"Linear"`` target does not cover all expert layouts.  Keep the
+    safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj`` and
+    ), but trigger for non-standard expert paths and for any routed
+    expert structure that lives outside the standard ``mlp.experts`` naming.
     """
     if "RoutedExperts" in targets:
         return targets
-    moe_re = re.compile(r"\.w[13](?:\.|$)|block_sparse_moe")
-    if any(moe_re.search(name) for name in layer_names):
+
+    def _projection_name(name: str) -> str:
+        # Eg. '...experts.0.gate_proj.weight' -> ['...', 'experts', '0', 'gate_proj', 'weight']
+        parts = name.split(".")
+        if len(parts) >= 2:
+            return parts[-2]
+        return parts[-1]
+
+    for name in layer_names:
+        lname = name.lower()
+        if "block_sparse_moe" in lname or ".moe." in lname or ".feed_forward." in lname:
+            return list(targets) + ["RoutedExperts"]
+
+        if ".experts." not in lname:
+            continue
+
+        projection = _projection_name(name)
+        if projection in {"gate_proj", "up_proj", "down_proj"}:
+            continue
         return list(targets) + ["RoutedExperts"]
+
     return targets
 
 
