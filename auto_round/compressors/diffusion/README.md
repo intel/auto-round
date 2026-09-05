@@ -23,7 +23,7 @@ autoround = AutoRound(
     "black-forest-labs/FLUX.1-dev",
     scheme="MXFP8",
     dataset="coco2014",
-    num_inference_steps=10,
+    calib_num_inference_steps=8,
     guidance_scale=7.5,
     generator_seed=None,
     batch_size=1,
@@ -36,7 +36,10 @@ autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently supports `coco2014` and user customized `.tsv` files.
-- `num_inference_steps`: the reference number of denoising steps.
+- `calib_num_inference_steps`: the number of inference steps requested when the scheduler builds its native
+  short calibration schedule. Higher-order schedulers may expand these into more internal timesteps.
+- `num_inference_steps`: the number of denoising steps used for diffusion generation/evaluation; it does not
+  control the calibration schedule.
 - `guidance_scale`: controls how much the image generation process follows the text prompt.
 - `generator_seed`: a seed that controls the initial noise from which an image is generated.
 
@@ -53,6 +56,7 @@ auto-round \
     --format fake \
     --batch_size 1 \
     --dataset coco2014 \
+    --calib_num_inference_steps 8 \
     --output_dir ./tmp_autoround
 ```
 

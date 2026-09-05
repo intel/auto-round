@@ -57,8 +57,9 @@ class DiffusionCalibrator(LLMCalibrator):
         super().__init__(compressor)
         self.pipe = compressor.pipe
         self.guidance_scale = compressor.guidance_scale
-        self.num_inference_steps = compressor.num_inference_steps
+        self.calib_num_inference_steps = compressor.calib_num_inference_steps
         self.generator_seed = compressor.generator_seed  # make sure pass
+        self.pipeline_call_kwargs = dict(getattr(compressor, "pipeline_call_kwargs", {}) or {})
 
     def _wrap_block_forward(self, forward_fn):
         """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
@@ -95,7 +96,8 @@ class DiffusionCalibrator(LLMCalibrator):
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the diffusion pipeline so block-forward hooks fire.
 
-        Verbatim port of the legacy ``DiffusionMixin.calib``.
+        The pipeline asks its scheduler to build a native schedule with
+        ``calib_num_inference_steps`` denoising steps.
         """
         from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
 
@@ -106,8 +108,8 @@ class DiffusionCalibrator(LLMCalibrator):
             )
 
         logger.warning(
-            "Diffusion model will catch nsamples * num_inference_steps inputs, "
-            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
+            "Diffusion model will catch nsamples * calib_num_inference_steps inputs, "
+            "you can reduce nsamples or calib_num_inference_steps if OOM or take too much time."
         )
         requires_image = self._requires_calibration_image()
         if isinstance(self.dataset, str):
@@ -141,7 +143,6 @@ class DiffusionCalibrator(LLMCalibrator):
             low_gpu_mem_usage=self.low_gpu_mem_usage,
         )
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
-
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
             for batch in self.dataloader:
                 if len(batch) == 2:
@@ -155,45 +156,29 @@ class DiffusionCalibrator(LLMCalibrator):
                     )
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
-                try:
-                    generator = (
-                        None
-                        if self.generator_seed is None
-                        else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
-                    )
-                    if requires_image:
-                        if image_inputs is None:
-                            raise ValueError(
-                                "I2V calibration requires images. Use the default coco2014 dataset or provide an "
-                                "'image' column in a local TSV."
-                            )
-                        image = self._load_calibration_images(image_inputs)
-                        pipe(
-                            image,
-                            prompt=prompts,
-                            guidance_scale=self.guidance_scale,
-                            num_inference_steps=self.num_inference_steps,
-                            generator=generator,
+                generator = (
+                    None
+                    if self.generator_seed is None
+                    else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
+                )
+                call_kwargs = dict(self.pipeline_call_kwargs)
+                call_kwargs.update(
+                    guidance_scale=self.guidance_scale,
+                    num_inference_steps=self.calib_num_inference_steps,
+                    generator=generator,
+                )
+                if requires_image:
+                    if image_inputs is None:
+                        raise ValueError(
+                            "I2V calibration requires images. Use the default coco2014 dataset or provide an "
+                            "'image' column in a local TSV."
                         )
-                    elif pipeline_fn is not None:
-                        pipeline_fn(
-                            pipe,
-                            prompts,
-                            guidance_scale=self.guidance_scale,
-                            num_inference_steps=self.num_inference_steps,
-                            generator=generator,
-                        )
-                    else:
-                        pipe(
-                            prompts,
-                            guidance_scale=self.guidance_scale,
-                            num_inference_steps=self.num_inference_steps,
-                            generator=generator,
-                        )
-                except NotImplementedError:
-                    pass
-                except Exception as error:
-                    raise error
+                    image = self._load_calibration_images(image_inputs)
+                    pipe(image, prompt=prompts, **call_kwargs)
+                elif pipeline_fn is not None:
+                    pipeline_fn(pipe, prompts, **call_kwargs)
+                else:
+                    pipe(prompts, **call_kwargs)
                 step = len(prompts)
                 total_cnt += step
                 pbar.update(step)
@@ -212,8 +197,8 @@ class DiffusionCalibrator(LLMCalibrator):
             )
             if total_cnt < self.batch_size:
                 raise ValueError(
-                    f"valid samples is less than batch_size({self.batch_size}),"
-                    " please adjust c.batch_size or seqlen."
+                    f"valid sample count is less than batch_size ({self.batch_size}); "
+                    "please reduce batch_size or provide more calibration samples."
                 )
             max_len = (total_cnt // self.batch_size) * self.batch_size
             for k, v in self.inputs.items():
