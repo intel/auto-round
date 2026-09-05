@@ -651,6 +651,9 @@ class MyCustomError(Exception):
         super().__init__(message)
 
 
+last_grad_input = None
+
+
 def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu", disk_index=None):
     """Wrap every block's forward so that, for one calibration batch, it (1) moves itself to
     ``major_device`` on demand, (2) records its own inputs into ``block_inputs`` (on CPU) so
