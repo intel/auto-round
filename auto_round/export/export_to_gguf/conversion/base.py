@@ -234,7 +234,7 @@ class ModelBase:
             index_file = self.dir_model / index_name
 
             if index_file.is_file():
-                logger.info(f"gguf: loading model weight map from '{index_name}'")
+                logger.debug(f"gguf: loading model weight map from '{index_name}'")
                 with open(index_file, "r", encoding="utf-8") as f:
                     index: dict[str, Any] = json.load(f)
                     weight_map = index.get("weight_map")
@@ -249,7 +249,7 @@ class ModelBase:
             weight_map = {}
 
         for part_name in part_names:
-            logger.info(f"gguf: indexing model part '{part_name}'")
+            logger.debug(f"gguf: indexing model part '{part_name}'")
             ctx: ContextManager[Any]
             if is_safetensors:
                 ctx = cast(ContextManager[Any], gguf.utility.SafetensorsLocal(self.dir_model / part_name))
