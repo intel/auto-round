@@ -85,6 +85,7 @@ class SVDQuantExportRecord:
     scheme: SVDQuantLinearScheme
     sources: tuple[SourceLinearRecord, ...]
     key_mapping: Mapping[str, str] = field(default_factory=dict)
+    omitted_suffixes: frozenset[str] = field(default_factory=frozenset)
 
 
 class SVDQuantModelAdapter(Protocol):
@@ -366,6 +367,9 @@ def _validate_export_record(record: SVDQuantExportRecord, config: SVDQuantExport
             f"{record.prefix} export group_size={config.group_size} disagrees with "
             f"selected group_size={selected_scheme[2]}"
         )
+    unsupported_omissions = record.omitted_suffixes - {"bias"}
+    if unsupported_omissions:
+        raise ValueError(f"{record.prefix} cannot omit required tensor suffixes {sorted(unsupported_omissions)}")
     return rank
 
 
@@ -478,6 +482,8 @@ def _serialize_export_records(
         if config.debug_unpacked:
             serialized["residual.weight"] = record.residual_weight
         for suffix, tensor in serialized.items():
+            if suffix in record.omitted_suffixes:
+                continue
             key = _export_key(record, suffix)
             if key in tensors:
                 raise ValueError(f"model adapter produced duplicate tensor key {key!r}")
