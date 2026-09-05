@@ -448,6 +448,9 @@ set(MOE_SOURCE_MODE 16)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_prefill_s4.cpp)
 set(MOE_SOURCE_MODE 17)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_prefill_native_fp8.cpp)
+# W4A8 (int4 weights re-scaled to int8, int8 activations) prepack + GEMM.
+set(MOE_SOURCE_MODE 21)
+generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_w4a8.cpp)
 
 foreach(_moe_dtype IN ITEMS f16 bf16)
   if(_moe_dtype STREQUAL "f16")

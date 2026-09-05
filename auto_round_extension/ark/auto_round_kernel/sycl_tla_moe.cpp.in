@@ -1040,6 +1040,37 @@ void dispatch_@MOE_DISPATCH_DTYPE@_@MOE_TILE_SUFFIX@(sycl::queue* q, const void*
 }  // namespace moe_gemm_detail
 }  // namespace ark
 
+#elif @MOE_SOURCE_MODE@ == 21
+
+#include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_w4a8.hpp"
+
+namespace ark {
+
+void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weights_s8, void* wscales,
+                      BTLA_DTYPE act_dtype, int num_experts, int N, int K, int group_size,
+                      int rescale_group_size) {
+  moe_w4a8_detail::moe_w4a8_prepack(q, weights_s4, scales, weights_s8, wscales, act_dtype, num_experts, N, K,
+                                    group_size, rescale_group_size);
+}
+
+void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, void* wscales, void* outputs,
+                   BTLA_DTYPE act_dtype, int N, int K, int rescale_block_size, int* num_tokens_per_expert,
+                   int num_experts, int total_tokens, int phase, const void* qact_in, const float* ascale_in,
+                   const int* row_to_token, const float* routing_weights, float* fused_out, int fused_batch) {
+  moe_w4a8_detail::moe_gemm_w4a8(q, activations, weights_s8, wscales, outputs, act_dtype, N, K, rescale_block_size,
+                                 num_tokens_per_expert, num_experts, total_tokens, phase, qact_in, ascale_in,
+                                 row_to_token, routing_weights, fused_out, fused_batch);
+}
+
+int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_size) {
+  return moe_w4a8_detail::moe_w4a8_rescale_block_size(K, group_size, rescale_group_size);
+}
+
+void moe_w4a8_release_scratch() { moe_w4a8_detail::moe_w4a8_release_scratch(); }
+
+}  // namespace ark
+
 #endif
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
