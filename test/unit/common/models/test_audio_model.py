@@ -229,7 +229,6 @@ class TestMiMoAudioQuantization:
             seqlen=32,
             device_map=device,
             enable_torch_compile=True,
-            disable_opt_rtn=True,
         )
         quantized_model, _ = autoround.quantize_and_save(output_dir=str(tmp_path / "saved"))
         assert quantized_model is not None

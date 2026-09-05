@@ -75,10 +75,12 @@
 //   for g in [0, K/group_size):          // scale group; barrier + scale reload
 //     stage A[BM][group_size] into SLM   // ONE cooperative load + barrier
 //     scale = scales[e, n_col, g]        // per-lane scale, loaded ONCE
+//     group_acc[m] = 0                   // per-group deferred-scale acc
 //     for sub in [0, group_size/BK):     // BK sub-tile inside the group
 //       load BK fp8 bytes for this lane  // 4-byte chunked, unrolled
-//       w_col[k] = decode_fp8(byte) * scale
-//       acc[m]  += sum_k a_slm[m, sub*BK+k] * w_col[k]
+//       w_col[k] = decode_fp8(byte)      // scale deferred, not folded here
+//       group_acc[m] += sum_k a_slm[m, sub*BK+k] * w_col[k]
+//     acc[m] += group_acc[m] * scale     // fold group scale ONCE per group
 //
 // vs. the original one-level loop that reloaded A + issued a barrier
 // once per BK-wide K-tile and reloaded the scale on every iteration.
@@ -255,11 +257,15 @@ sycl::event launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activat
           //   3. Inner loop over `sub in [0, group_size/BK)` runs BK-wide
           //      sub-tiles fully from SLM + registers with no extra barrier:
           //        a. Fetch BK fp8 weight bytes (4-byte chunked, unrolled).
-          //        b. Decode + fold scale in registers into w_col[BK].
-          //        c. MAC into acc[m] for each of the BM output rows.
+          //        b. Decode fp8 -> float in registers into w_col[BK].
+          //        c. MAC into group_acc[m] for each of the BM output rows.
+          //      Then fold the per-group scale into acc[m] once at the group
+          //      boundary (deferred-scale), so the per-element `* scale` is
+          //      lifted out of the weight-decode hot loop.
           //
-          // Per-BK partial-sum accumulation order is preserved bit-for-bit,
-          // so the FP8 parity tests (7e-2 tolerance) remain valid.
+          // Per-BK partial-sum accumulation order within a group is preserved,
+          // and folding the constant group scale once is distributive with the
+          // old per-element fold, so the FP8 parity tests (7e-2 tol) hold.
           // -----------------------------------------------------------------
           const size_t w_row_stride = static_cast<size_t>(K);              // [E, N, K] row-major
           const size_t w_expert_stride = static_cast<size_t>(N) * w_row_stride;
@@ -298,6 +304,18 @@ sycl::event launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activat
             // in the prior revision).
             const float scale = static_cast<float>(scales[s_row_base + static_cast<size_t>(g)]);
 
+            // Per-scale-group deferred-scale accumulator (one FP32 per output
+            // row). The group scale is constant across the whole group, so we
+            // accumulate the raw A*W dot product here and fold in `scale`
+            // ONCE per group below (sum_k a*(w*s) == s * sum_k a*w). This
+            // removes the per-element `* scale` multiply from the weight-decode
+            // stage (group_size multiplies per lane per group) in exchange for
+            // BM multiplies at the group boundary — the same deferred-scale
+            // design the DPAS variant-B mainloop uses (`tCrC_group`).
+            float group_acc[BM];
+#pragma unroll
+            for (int m = 0; m < BM; ++m) group_acc[m] = 0.0f;
+
             // --------- 3. Inner BK-sub-tile loop -------------------------
             for (int sub = 0; sub < gs_per_tile; ++sub) {
               const int base_k_sub = sub * BK;
@@ -307,7 +325,8 @@ sycl::event launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activat
               //     aligned: `weights_NK` is 4-byte aligned (tensor storage)
               //     and the offset `w_row_base + base_gk + base_k_sub` is a
               //     multiple of BK = 32 (K % BK == 0, base_gk multiple of
-              //     group_size which is a multiple of BK).
+              //     group_size which is a multiple of BK). The per-group scale
+              //     is NOT folded here — it is deferred to the group boundary.
               const size_t w_off = w_row_base + static_cast<size_t>(base_gk) + static_cast<size_t>(base_k_sub);
               const uint32_t* w_u32 =
                   reinterpret_cast<const uint32_t*>(weights_NK + w_off);
@@ -320,16 +339,17 @@ sycl::event launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activat
                 const uint8_t b1 = static_cast<uint8_t>((w >> 8) & 0xFFu);
                 const uint8_t b2 = static_cast<uint8_t>((w >> 16) & 0xFFu);
                 const uint8_t b3 = static_cast<uint8_t>((w >> 24) & 0xFFu);
-                w_col[wi * 4 + 0] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b0) * scale;
-                w_col[wi * 4 + 1] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b1) * scale;
-                w_col[wi * 4 + 2] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b2) * scale;
-                w_col[wi * 4 + 3] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b3) * scale;
+                w_col[wi * 4 + 0] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b0);
+                w_col[wi * 4 + 1] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b1);
+                w_col[wi * 4 + 2] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b2);
+                w_col[wi * 4 + 3] = moe_dequant::decode_fp8<IsE4M3, UseLut>(b3);
               }
 
               // 3b. MAC. For each output row m in this tile, dot-product
               //     the length-BK slice of A[m] (staged in SLM) with
-              //     `w_col`, accumulate into `acc[m]`. Same per-BK partial-
-              //     sum shape as the original kernel to preserve numerics.
+              //     `w_col`, accumulate into `group_acc[m]` (raw, unscaled).
+              //     Same per-BK partial-sum shape as before to preserve
+              //     numerics; the group scale is folded in once below.
               const size_t a_col_base = static_cast<size_t>(base_k_sub);
 #pragma unroll
               for (int m = 0; m < BM; ++m) {
@@ -341,9 +361,16 @@ sycl::event launch_moe_prefill_fp8_native(sycl::queue* q, const ScalarT* activat
                   const float a_f = static_cast<float>(a_slm[a_off]);
                   sum += a_f * w_col[k];
                 }
-                acc[m] += sum;
+                group_acc[m] += sum;
               }
             }
+
+            // Fold the per-group scale into the running accumulator once per
+            // scale group (deferred-scale). Distributive with the per-element
+            // fold used previously, modulo FP32-accumulator ordering (within
+            // the 7e-2 FP8 tolerance in test_moe_prefill_accuracy.py).
+#pragma unroll
+            for (int m = 0; m < BM; ++m) acc[m] += group_acc[m] * scale;
 
             // Barrier before the next scale group re-stages A[].
             it.barrier(sycl::access::fence_space::local_space);

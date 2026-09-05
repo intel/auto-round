@@ -219,7 +219,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     add_common_quantization_arguments(quant_group)
     for name in canonical_names:
         alg_group = mini.add_argument_group(f"Algorithm: {name}")
-        AlgorithmHandler.get(name).register(alg_group)
+        AlgorithmHandler.add_group(name, alg_group)
     mini.print_help()
     return True
 
@@ -411,7 +411,9 @@ def tune(args):
     )
 
     model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
-        args.output_dir, format=getattr(args, "_api_format", args.format)
+        args.output_dir,
+        format=getattr(args, "_api_format", args.format),
+        max_shard_size=args.max_shard_size,
     )
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()

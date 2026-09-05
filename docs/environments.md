@@ -79,6 +79,16 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_DISABLE_GGUF_MTP_EXPORT
+- **Description**: Disables multi-token prediction (MTP) layers when exporting GGUF models. By default, AutoRound follows the llama.cpp converter and includes MTP layers when the model provides them.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, or `"on"` (case-insensitive) disable MTP export; any other value keeps MTP export enabled
+- **Usage**: Enable this when exporting a checkpoint that uses an MTP-capable architecture but does not contain MTP tensors
+
+```bash
+export AR_DISABLE_GGUF_MTP_EXPORT=1
+```
+
 ### AR_ACT_SCALE
 - **Description**: Only for research. Controls the scaling factor applied to activation min/max values during activation quantization. A value less than 1.0 shrinks the clipping range, which can reduce outlier impact.
 - **Default**: `1.0`
@@ -219,6 +229,16 @@ export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 
 ```bash
 export AR_DISK_STREAM_MODEL=1
+```
+
+### AR_ALLOW_W8_ASYM
+- **Description**: Allows 8-bit asymmetric weight quantization in every export format, skipping the default refusal for formats that cannot serve it (native `auto_round` / `auto_gptq` / `auto_awq` / marlin). Without it, 8-bit asym is allowed for the `llm_compressor` format (compressed-tensors serving in vLLM) and refused or pinned back to symmetric elsewhere. Artifacts produced with it may not load in stock vLLM GPTQ-format serving.
+- **Default**: `0` (disabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Opt-in escape hatch for serving stacks beyond stock vLLM.
+
+```bash
+AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
 ```
 
 ### AR_RESUME_DIR

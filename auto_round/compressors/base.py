@@ -168,6 +168,26 @@ def _make_compressor_scheme_property(name):
     return property(getter, setter)
 
 
+def _formats_policy_string_of(formats) -> str:
+    """Comma-joined format names for policy checks (8-bit asym scoping).
+
+    Handles both the raw string form (before resolution) and the resolved
+    OutputFormat object list; backend names keep the composite spelling
+    (e.g. ``auto_round:llm_compressor``)."""
+    if formats is None:
+        return ""
+    if isinstance(formats, str):
+        return formats
+    items = formats if isinstance(formats, (list, tuple)) else [formats]
+    names = []
+    for fmt in items:
+        try:
+            names.append(fmt.get_backend_name())
+        except Exception:  # noqa: BLE001
+            names.append(str(getattr(fmt, "output_format", "")))
+    return ",".join(names)
+
+
 class BaseOrchestrator(object):
     need_calib: bool = True
     compress_context: CompressContext = None
@@ -272,7 +292,9 @@ class BaseOrchestrator(object):
                     if "group_size" in kwargs:
                         block_size = kwargs["group_size"]
                     else:
-                        block_size = parse_scheme(scheme, {})[2]["group_size"]
+                        block_size = parse_scheme(
+                            scheme, {}, format=_formats_policy_string_of(getattr(self, "formats", None))
+                        )[2]["group_size"]
                     _cfg.block_size = block_size  # TODO not robust
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
@@ -429,6 +451,17 @@ class BaseOrchestrator(object):
         # blocks already hold real weights (see OffloadManager._reload).
         if self.model_context.disk_stream_model_dir is not None:
             self._offloader.model_dir = self.model_context.disk_stream_model_dir
+        # A meta skeleton (explicit AR_DISK_STREAM_MODEL=1, or auto-selected for
+        # fused-MoE checkpoints -- signalled by `_disk_stream_index`) leaves every
+        # block on the meta device, so per-block reload from disk is mandatory: the
+        # tuning loop must materialize each block before moving it to the compute
+        # device. The offloader was created with `enabled=low_cpu_mem_usage`, which
+        # can be False (e.g. user-supplied, or GGUF forcing it off later); in that
+        # case reload() would no-op and `block.to(device)` would crash with
+        # "Cannot copy out of meta tensor". Force it enabled here whenever streaming
+        # is active so the reload path stays available regardless of low_cpu_mem_usage.
+        if getattr(self.model_context, "_disk_stream_index", None) is not None:
+            self._offloader.enabled = True
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,
@@ -517,7 +550,11 @@ class BaseOrchestrator(object):
         # Check if activation calibration is needed
         from auto_round.compressors.utils import check_need_act_calibration
 
-        _, _, final_attrs = parse_scheme(self.scheme, {})
+        _, _, final_attrs = parse_scheme(
+            self.scheme,
+            {},
+            format=_formats_policy_string_of(getattr(self, "formats", None)),
+        )
         act_bits = final_attrs["act_bits"]
         act_data_type = final_attrs["act_data_type"]
         act_dynamic = final_attrs["act_dynamic"]
@@ -705,7 +742,11 @@ class BaseOrchestrator(object):
             self.compress_context = compress_context
 
         user_scheme_overrides = collect_user_scheme_overrides(self._alg_configs)
-        default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(self.scheme, user_scheme_overrides)
+        default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(
+            self.scheme,
+            user_scheme_overrides,
+            format=_formats_policy_string_of(getattr(self, "formats", None)),
+        )
 
         self.scheme_context = QuantizationScheme.from_dict(final_attrs)
         for config in self._alg_configs:
@@ -816,6 +857,7 @@ class BaseOrchestrator(object):
             quant_lm_head=self.quant_lm_head,
             enable_gguf_official_mixed=False,
             is_mllm=self.model_context.is_mllm,
+            format=self._formats_policy_string(),
         )
         regex_config = extract_regex_config(
             model=self.model_context.model,
@@ -825,6 +867,7 @@ class BaseOrchestrator(object):
             supported_types=self.supported_types,
             inner_supported_types=self.inner_supported_types,
             ignore_layers=self.ignore_layers,
+            format=self._formats_policy_string(),
         )
         discovery_plan = resolve_quantization_config(
             (
@@ -909,6 +952,7 @@ class BaseOrchestrator(object):
             tokenizer=self.model_context.tokenizer,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             processor=self.model_context.processor,
+            export_format=_formats_policy_string_of(self.formats),
         )
         layer_config = self.scheme_generator.get_layer_config()
         # Re-attach vision/audio-tower layers we peeled off earlier so the
@@ -1004,6 +1048,7 @@ class BaseOrchestrator(object):
             enable_gguf_official_mixed=enable_gguf_official_mixed,
             is_mllm=self.model_context.is_mllm,
             fill_default_value=fill_default_value,
+            format=self._formats_policy_string(),
         )
         regex_config = extract_regex_config(
             model=self.model_context.model,
@@ -1014,6 +1059,7 @@ class BaseOrchestrator(object):
             inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
             ignore_layers=self.ignore_layers,
             fill_default_value=fill_default_value,
+            format=self._formats_policy_string(),
         )
         # ``resolved_layer_config`` already descends from (and fully subsumes)
         # ``format_resolution.layer_config_patch`` -- ``source_layer_config`` above was
@@ -1851,7 +1897,7 @@ class BaseOrchestrator(object):
     def _ensure_shard_writer(self):
         """Lazily create ShardWriter if it hasn't been created yet."""
         if self.shard_writer is None and self.formats is not None:
-            self.shard_writer = ShardWriter(self.model, bits=8)
+            self.shard_writer = ShardWriter(self.model, bits=8, max_shard_size=getattr(self, "max_shard_size", None))
 
     def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
@@ -1866,6 +1912,7 @@ class BaseOrchestrator(object):
         format: Union[str, list[OutputFormat]] = None,
         inplace: bool = True,
         return_folders: bool = False,
+        max_shard_size: Union[int, str] = None,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
@@ -1874,11 +1921,14 @@ class BaseOrchestrator(object):
             output_dir (str, optional): The directory to save the quantized model. Defaults to None.
             format (str, optional): The format in which to save the model. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            max_shard_size (int or str, optional): Maximum size of each safetensors shard. Defaults to 5GB.
             **kwargs: Additional keyword arguments specific to the export format.
 
         Returns:
             object: The compressed model object.
         """
+        if max_shard_size is not None:
+            self.max_shard_size = max_shard_size
         self.output_dir = output_dir
         if output_dir is not None:
             self.compress_context.output_dir = output_dir
@@ -2017,8 +2067,39 @@ class BaseOrchestrator(object):
             model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{bits}{suffix}",
         )
 
+    def _formats_policy_string(self) -> str:
+        """Comma-joined format names for policy checks (8-bit asym scoping)."""
+        return _formats_policy_string_of(self.formats)
+
+    def _assert_w8_asym_exportable(self) -> None:
+        """Re-check the 8-bit asym policy once the export format is final.
+
+        Construction-time validation runs before ``quantize_and_save(format=...)``
+        may supply the format, so it is conservative (native semantics). Re-check
+        here with the actual format: llm_compressor exports keep W8 asym."""
+        from auto_round import envs
+        from auto_round.schemes import format_allows_w8_asym
+
+        if envs.AR_ALLOW_W8_ASYM or format_allows_w8_asym(self._formats_policy_string()):
+            return
+        if getattr(self, "data_type", None) == "int" and getattr(self, "bits", None) == 8:
+            if getattr(self, "sym", None) is False:
+                raise ValueError(
+                    "8-bit asymmetric weight quantization is not supported for format "
+                    f"'{self._formats_policy_string()}': vLLM serves W8 GPTQ-format weights "
+                    "symmetric-only and Marlin supports zero points at 4 bits only. Use a "
+                    "symmetric 8-bit scheme (drop --asym), an asymmetric width of 7 bits or "
+                    "fewer, format 'auto_round:llm_compressor' (compressed-tensors serves W8 "
+                    "asym), or set AR_ALLOW_W8_ASYM=1 to skip this check."
+                )
+
     def quantize_and_save(
-        self, output_dir: str = "tmp_autoround", format: str = None, inplace: bool = True, **kwargs
+        self,
+        output_dir: str = "tmp_autoround",
+        format: str = None,
+        inplace: bool = True,
+        max_shard_size: Union[int, str] = None,
+        **kwargs,
     ) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantizes the model and saves it in the specified format(s).
 
@@ -2033,6 +2114,7 @@ class BaseOrchestrator(object):
                 by commas if multiple. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place if only
                 one format is used. Defaults to True.
+            max_shard_size (int or str, optional): Maximum size of each safetensors shard. Defaults to 5GB.
             **kwargs: Additional arguments for the quantization and saving process.
 
         Returns:
@@ -2042,6 +2124,8 @@ class BaseOrchestrator(object):
         Raises:
             ValueError: If an unsupported format is specified.
         """
+        if max_shard_size is not None:
+            self.max_shard_size = max_shard_size
         # Validate and process the specified formats
         self.output_dir = output_dir
         self.compress_context.output_dir = output_dir
@@ -2073,6 +2157,7 @@ class BaseOrchestrator(object):
         if isinstance(self.formats, str):
             self.formats = self._resolve_format_string(self.formats)
             self.compress_context.formats = self.formats
+        self._assert_w8_asym_exportable()
         # Derive descriptive export dir after post_init so scheme-resolved attrs are available.
         _fmt_str = format or (self.formats if isinstance(self.formats, str) else "")
         output_dir = self._get_export_dir(output_dir, _fmt_str)

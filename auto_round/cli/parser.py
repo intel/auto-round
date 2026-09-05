@@ -120,6 +120,9 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
     )
+    rt.add_argument(
+        "--max_shard_size", default=None, type=str, help="Maximum size of each safetensors shard. Defaults to 5GB."
+    )
     # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
         "--algorithm",
