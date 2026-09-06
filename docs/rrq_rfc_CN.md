@@ -77,8 +77,8 @@ from auto_round import generate_rrq_residual
 
 # base 已量化 checkpoint + 原始 FP 权重
 generate_rrq_residual(
-    base_model="./model-rrq-base",   # 已导出的 INT2 base
-    raw_model="./Qwen3-8B",          # 原始 FP 权重
+    base_model="./model-rrq-base",  # 已导出的 INT2 base
+    raw_model="./Qwen3-8B",  # 原始 FP 权重
     output_dir="./model-rrq-residual",
     group_size=128,
     sym=False,

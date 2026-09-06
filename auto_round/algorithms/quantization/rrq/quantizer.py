@@ -23,14 +23,15 @@ whose prefix sum reconstructs the weight at increasing precision.
 """
 
 import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
-from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
+from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import IndexSampler, collect_best_params
 from auto_round.data_type.utils import get_quant_func
 from auto_round.utils import check_to_quantized
@@ -121,15 +122,9 @@ class RRQPlaneWrapper(nn.Module):
 
     def qdq_from_params(self, params):
         value = params.get(f"value_{self.plane_idx}", getattr(self, f"value_{self.plane_idx}"))
-        min_scale = params.get(
-            f"min_scale_{self.plane_idx}", getattr(self, f"min_scale_{self.plane_idx}")
-        )
-        max_scale = params.get(
-            f"max_scale_{self.plane_idx}", getattr(self, f"max_scale_{self.plane_idx}")
-        )
-        return self._qdq_weight(
-            value.to(self.device), min_scale.to(self.device), max_scale.to(self.device)
-        )
+        min_scale = params.get(f"min_scale_{self.plane_idx}", getattr(self, f"min_scale_{self.plane_idx}"))
+        max_scale = params.get(f"max_scale_{self.plane_idx}", getattr(self, f"max_scale_{self.plane_idx}"))
+        return self._qdq_weight(value.to(self.device), min_scale.to(self.device), max_scale.to(self.device))
 
     def forward(self, x):
         value = getattr(self, f"value_{self.plane_idx}")
@@ -350,9 +345,7 @@ class RRQRTNQuantizer(BaseQuantizer):
                 # Residual plane: store packed INT2 (W2A16 layout) so the
                 # on-disk artifact is a standard single-plane INT2 layout.
                 in_features = original_weight.shape[1]
-                qweight, scales, qzeros = self._pack_plane(
-                    quantized, scale, zp, bits, group_size, in_features
-                )
+                qweight, scales, qzeros = self._pack_plane(quantized, scale, zp, bits, group_size, in_features)
                 layer.register_buffer(f"rrq_qweight_{plane_idx}", qweight.cpu())
                 layer.register_buffer(f"rrq_scales_{plane_idx}", scales.to(self._rrq_scale_dtype).cpu())
                 layer.register_buffer(f"rrq_qzeros_{plane_idx}", qzeros.cpu())
@@ -387,9 +380,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
     def _snapshot_round_params(self, wrappers, device):
         snapshot = {}
         for name, wrapper in wrappers.items():
-            snapshot[name] = {
-                key: value.detach().to(device="cpu", copy=True) for key, value in wrapper.params.items()
-            }
+            snapshot[name] = {key: value.detach().to(device="cpu", copy=True) for key, value in wrapper.params.items()}
         return snapshot
 
     def _tune_block_round(
@@ -436,13 +427,9 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
                 lr = minmax_lr if groups is minmax_groups else layer_lr
                 groups.setdefault(float(lr), []).append(parameter)
 
-        optimizer_params = [
-            {"params": parameters, "lr": lr} for lr, parameters in round_groups.items()
-        ]
+        optimizer_params = [{"params": parameters, "lr": lr} for lr, parameters in round_groups.items()]
         if self.enable_minmax_tuning:
-            optimizer_params.extend(
-                {"params": parameters, "lr": lr} for lr, parameters in minmax_groups.items()
-            )
+            optimizer_params.extend({"params": parameters, "lr": lr} for lr, parameters in minmax_groups.items())
         optimizer = self.optimizer(
             optimizer_params,
             lr=self.lr or (1.0 / self.iters),
@@ -489,11 +476,13 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             params = best_params.get(name, {})
             with torch.no_grad():
                 qdq, scale, zp = wrapper.qdq_from_params(params)
-            planes[name] = (qdq.detach().cpu(), scale.detach().cpu(), zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp)
+            planes[name] = (
+                qdq.detach().cpu(),
+                scale.detach().cpu(),
+                zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp,
+            )
             set_module(block, name, wrapper.orig_layer)
-        return planes, {
-            name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()
-        }
+        return planes, {name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()}
 
     @torch.no_grad()
     def _store_rrq_planes(self, layer, planes):

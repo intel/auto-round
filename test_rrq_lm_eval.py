@@ -21,12 +21,11 @@ def main():
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B", help="Original HF model name")
     ap.add_argument("--base-dir", default="./rrq_output/base", help="Base model dir")
     ap.add_argument("--residual-dir", default="./rrq_output/residual", help="Residual model dir")
-    ap.add_argument("--tasks", default="hellaswag,arc_easy,arc_challenge,piqa,boolq",
-                    help="Comma-separated lm-eval task names")
-    ap.add_argument("--bits", type=int, nargs="+", default=[2, 4, 6, 8],
-                    help="Bit-widths to evaluate (2, 4, 6, 8)")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="Max examples per task (None = full dataset)")
+    ap.add_argument(
+        "--tasks", default="hellaswag,arc_easy,arc_challenge,piqa,boolq", help="Comma-separated lm-eval task names"
+    )
+    ap.add_argument("--bits", type=int, nargs="+", default=[2, 4, 6, 8], help="Bit-widths to evaluate (2, 4, 6, 8)")
+    ap.add_argument("--limit", type=int, default=None, help="Max examples per task (None = full dataset)")
     ap.add_argument("--batch-size", type=int, default=8, help="Batch size")
     ap.add_argument("--device", default="cpu", help="cpu / cuda / xpu")
     ap.add_argument("--skip-fp", action="store_true", help="Skip original fp model reference")
@@ -34,9 +33,10 @@ def main():
     args = ap.parse_args()
 
     import torch
+    from transformers import AutoTokenizer
+
     from auto_round import load_rrq_model
     from auto_round.inference.rrq_linear import set_rrq_bits
-    from transformers import AutoTokenizer
 
     # ── Setup ──────────────────────────────────────────────────────────────
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
@@ -49,7 +49,7 @@ def main():
             return
 
     print(f"\n{'='*70}")
-    print(f"  RRQ lm-eval accuracy benchmark")
+    print("  RRQ lm-eval accuracy benchmark")
     print(f"  Model     : {args.model}")
     print(f"  Base dir  : {base_dir}")
     print(f"  Residual  : {residual_dir}")
@@ -63,13 +63,16 @@ def main():
     def eval_model(model, label: str) -> dict:
         """Run lm-eval and return {task: acc}."""
         import os
+
         import lm_eval
+
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
         tokenizer = AutoTokenizer.from_pretrained(base_dir)
 
         # Wrap model for lm-eval HFLM interface
         from lm_eval.models.huggingface import HFLM
+
         hflm = HFLM(
             pretrained=model,
             tokenizer=tokenizer,
@@ -145,7 +148,7 @@ def main():
     # ── Original fp model (reference) ──────────────────────────────────────
     if not args.skip_fp:
         print(f"\n{'─'*70}")
-        print(f"  Evaluating original fp model (reference) ...")
+        print("  Evaluating original fp model (reference) ...")
         print(f"{'─'*70}")
 
         from transformers import AutoModelForCausalLM
@@ -170,7 +173,7 @@ def main():
 
     # ── Summary table ──────────────────────────────────────────────────────
     print(f"\n{'='*70}")
-    print(f"  ACCURACY SUMMARY")
+    print("  ACCURACY SUMMARY")
     print(f"{'='*70}")
 
     # Header

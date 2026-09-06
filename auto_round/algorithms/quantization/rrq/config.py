@@ -71,9 +71,7 @@ class RRQConfig(RTNConfig):
         # Extract num_residual_planes before super (it's not a scheme field)
         self._num_residual_planes = kwargs.pop("num_residual_planes", 3)
         if self._num_residual_planes != 3:
-            raise ValueError(
-                f"RRQ Phase 1 only supports num_residual_planes=3, got {self._num_residual_planes}"
-            )
+            raise ValueError(f"RRQ Phase 1 only supports num_residual_planes=3, got {self._num_residual_planes}")
         if self._num_residual_planes <= 0:
             raise ValueError("num_residual_planes must be positive")
 
@@ -114,9 +112,7 @@ class RRQConfig(RTNConfig):
             help="Iterations of per-plane sign-SGD tuning. 0 (default) keeps "
             "pure RTN; >0 enables Phase-3 tuning and requires a calib dataset.",
         )
-        registry.add_argument(
-            "--lr", field="lr", default=None, type=float, help="Learning rate for the RRQ tuning."
-        )
+        registry.add_argument("--lr", field="lr", default=None, type=float, help="Learning rate for the RRQ tuning.")
         registry.add_argument(
             "--minmax_lr", field="minmax_lr", default=None, type=float, help="Learning rate for min-max tuning."
         )

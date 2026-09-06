@@ -41,7 +41,6 @@ import torch.nn as nn
 
 from auto_round.logger import logger
 
-
 RRQ_QUANT_METHOD = "auto-round-rrq"
 
 
@@ -467,6 +466,7 @@ def generate_rrq_residual(
     base_state: dict[str, torch.Tensor] = {}
     for f in sorted(glob.glob(os.path.join(base_model_dir, "*.safetensors"))):
         from safetensors.torch import load_file as _load_st
+
         base_state.update(_load_st(f))
     if not base_state:
         for f in sorted(glob.glob(os.path.join(base_model_dir, "*.bin"))):
@@ -480,6 +480,7 @@ def generate_rrq_residual(
     if os.path.isdir(raw_path):
         for f in sorted(glob.glob(os.path.join(raw_path, "*.safetensors"))):
             from safetensors.torch import load_file as _load_st
+
             raw_state.update(_load_st(f))
         if not raw_state:
             for f in sorted(glob.glob(os.path.join(raw_path, "*.bin"))):
@@ -487,10 +488,11 @@ def generate_rrq_residual(
     else:
         # HF model name -- download via transformers
         import transformers
-        from safetensors.torch import load_file as _load_st
 
         # Use snapshot_download to get the local path
         from huggingface_hub import snapshot_download
+        from safetensors.torch import load_file as _load_st
+
         local_dir = snapshot_download(raw_model)
         for f in sorted(glob.glob(os.path.join(local_dir, "*.safetensors"))):
             raw_state.update(_load_st(f))
@@ -557,9 +559,7 @@ def generate_rrq_residual(
         W_dequant_base = out.T.to(torch.float32)  # (out_features, in_features)
 
         # Generate 3 residual planes
-        planes = _generate_residual_for_layer(
-            W_fp, W_dequant_base, bits, group_size, sym, num_planes
-        )
+        planes = _generate_residual_for_layer(W_fp, W_dequant_base, bits, group_size, sym, num_planes)
 
         for k, (qw, sc, qz) in enumerate(planes, start=1):
             residual_state[f"{layer_name}.qweight_{k}"] = qw
@@ -584,8 +584,5 @@ def generate_rrq_residual(
     quantization_config = build_rrq_quantization_config(num_planes, group_size, sym)
     _write_quantization_config(quantization_config, output_dir)
 
-    logger.info(
-        f"RRQ residual model saved: {processed} layers, {num_planes - 1} planes each, "
-        f"to {output_dir}"
-    )
+    logger.info(f"RRQ residual model saved: {processed} layers, {num_planes - 1} planes each, " f"to {output_dir}")
     return residual_state
