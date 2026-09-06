@@ -244,10 +244,12 @@ call is unchanged.
 
 ```python
 out = ark.moe_gemm_w4a8(
-    qact,                    # [T, K] int8, rows sorted by expert
-    weights_s8, wscales, num_tokens_per_expert,
+    qact,  # [T, K] int8, rows sorted by expert
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
     activation_scale=ascale,  # [T] fp32, dequant scale per row
-    out_dtype=torch.bfloat16, # what the fp16/bf16 output should be
+    out_dtype=torch.bfloat16,  # what the fp16/bf16 output should be
 )
 ```
 
@@ -278,10 +280,13 @@ and neither quantizer has a tie to break.
 
 ```python
 out = ark.moe_gemm_w4a8(
-    activations, weights_s8, wscales, num_tokens_per_expert,
-    row_to_token=row_to_token,        # [T] int32, routed row -> model token
+    activations,
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    row_to_token=row_to_token,  # [T] int32, routed row -> model token
     routing_weights=routing_weights,  # [T] fp32, that row's gate weight
-    output_rows=batch,                # -> [batch, N] fp32, pre-zeroed
+    output_rows=batch,  # -> [batch, N] fp32, pre-zeroed
 )
 ```
 

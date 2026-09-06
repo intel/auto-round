@@ -216,10 +216,12 @@ padding 上被测量；512 是 256 的整数倍，是套件里唯一满足
 
 ```python
 out = ark.moe_gemm_w4a8(
-    qact,                    # [T, K] int8，按专家排序的行
-    weights_s8, wscales, num_tokens_per_expert,
+    qact,  # [T, K] int8，按专家排序的行
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
     activation_scale=ascale,  # [T] fp32，每行一个反量化 scale
-    out_dtype=torch.bfloat16, # 期望的 fp16/bf16 输出类型
+    out_dtype=torch.bfloat16,  # 期望的 fp16/bf16 输出类型
 )
 ```
 
@@ -244,10 +246,13 @@ fp16 读、int8 写、int8 读回 — 外加一次 kernel launch。GEMM 本身�
 
 ```python
 out = ark.moe_gemm_w4a8(
-    activations, weights_s8, wscales, num_tokens_per_expert,
-    row_to_token=row_to_token,        # [T] int32，路由行 -> 模型 token
+    activations,
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    row_to_token=row_to_token,  # [T] int32，路由行 -> 模型 token
     routing_weights=routing_weights,  # [T] fp32，该行的门控权重
-    output_rows=batch,                # -> [batch, N] fp32，需预先清零
+    output_rows=batch,  # -> [batch, N] fp32，需预先清零
 )
 ```
 
