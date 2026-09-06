@@ -74,9 +74,7 @@ class RRQLinear(nn.Module):
             self.in_features = base.infeatures
             self.out_features = base.outfeatures
             self.bits = base.bits
-            self.planes = nn.ModuleDict(
-                {f"rrq_{index}": plane for index, plane in enumerate(residual_planes, start=1)}
-            )
+            self.planes = nn.ModuleDict({f"rrq_{index}": plane for index, plane in enumerate(residual_planes, start=1)})
             self.active_planes = self.num_planes
             if isinstance(bias, torch.Tensor):
                 self.register_buffer("bias", bias)
@@ -94,9 +92,9 @@ class RRQLinear(nn.Module):
         # Dequantized weight of each plane, shape (out_features, in_features).
         for k in range(num_planes):
             self.register_buffer(
-            f"rrq_qweight_{k}",
-            torch.zeros((out_features, in_features), dtype=torch.float16),
-        )
+                f"rrq_qweight_{k}",
+                torch.zeros((out_features, in_features), dtype=torch.float16),
+            )
 
         if bias:
             self.register_buffer("bias", torch.zeros(out_features, dtype=torch.float16))
@@ -135,9 +133,7 @@ class RRQLinear(nn.Module):
         Returns:
             Reconstructed weight tensor of shape ``(out_features, in_features)``.
         """
-        assert 1 <= num_planes <= self.num_planes, (
-            f"active_planes must be in [1, {self.num_planes}], got {num_planes}"
-        )
+        assert 1 <= num_planes <= self.num_planes, f"active_planes must be in [1, {self.num_planes}], got {num_planes}"
 
         total = torch.zeros(
             self.out_features,
@@ -154,9 +150,7 @@ class RRQLinear(nn.Module):
     def set_active_planes(self, num_planes: int) -> None:
         """Set how many planes are used (1..num_planes)."""
         if not 1 <= num_planes <= self.num_planes:
-            raise ValueError(
-                f"active_planes must be in [1, {self.num_planes}], got {num_planes}"
-            )
+            raise ValueError(f"active_planes must be in [1, {self.num_planes}], got {num_planes}")
         self.active_planes = num_planes
 
     def set_active_bits(self, bits: int) -> None:
@@ -256,8 +250,7 @@ def set_rrq_random_residual(
     for name, m in layers:
         if max(high_planes, low_planes) > m.num_planes:
             raise ValueError(
-                f"Requested {max(high_bits, low_bits)}-bit but {name!r} only has "
-                f"{m.num_planes} planes."
+                f"Requested {max(high_bits, low_bits)}-bit but {name!r} only has " f"{m.num_planes} planes."
             )
 
     names = [name for name, _ in layers]
