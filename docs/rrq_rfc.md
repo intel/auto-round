@@ -77,8 +77,8 @@ from auto_round import generate_rrq_residual
 
 # Base quantized checkpoint + original FP weights
 generate_rrq_residual(
-    base_model="./model-rrq-base",   # Exported INT2 base
-    raw_model="./Qwen3-8B",          # Original FP weights
+    base_model="./model-rrq-base",  # Exported INT2 base
+    raw_model="./Qwen3-8B",  # Original FP weights
     output_dir="./model-rrq-residual",
     group_size=128,
     sym=False,
