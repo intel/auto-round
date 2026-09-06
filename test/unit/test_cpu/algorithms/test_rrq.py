@@ -354,9 +354,7 @@ class TestRRQLinear:
         from auto_round.inference.rrq_linear import RRQLinear, set_rrq_random_residual
 
         model = nn.Module()
-        model.layers = nn.ModuleList(
-            [self._build_rrq_layer(64, 32, group_size=32, num_residual=3) for _ in range(10)]
-        )
+        model.layers = nn.ModuleList([self._build_rrq_layer(64, 32, group_size=32, num_residual=3) for _ in range(10)])
 
         n_high = set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2)
         assert n_high == 5

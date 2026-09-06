@@ -24,18 +24,18 @@ whose prefix sum reconstructs the weight at increasing precision.
 
 import copy
 from contextlib import nullcontext
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
-from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
+from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import IndexSampler, collect_best_params
 from auto_round.data_type.utils import get_quant_func
-from auto_round.utils import check_to_quantized
-from auto_round.utils import SUPPORTED_LAYER_TYPES
+from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
 from auto_round.utils.model import set_module
 
 
@@ -148,15 +148,9 @@ class RRQPlaneWrapper(nn.Module):
 
     def qdq_from_params(self, params):
         value = params.get(f"value_{self.plane_idx}", getattr(self, f"value_{self.plane_idx}"))
-        min_scale = params.get(
-            f"min_scale_{self.plane_idx}", getattr(self, f"min_scale_{self.plane_idx}")
-        )
-        max_scale = params.get(
-            f"max_scale_{self.plane_idx}", getattr(self, f"max_scale_{self.plane_idx}")
-        )
-        return self._qdq_weight(
-            value.to(self.device), min_scale.to(self.device), max_scale.to(self.device)
-        )
+        min_scale = params.get(f"min_scale_{self.plane_idx}", getattr(self, f"min_scale_{self.plane_idx}"))
+        max_scale = params.get(f"max_scale_{self.plane_idx}", getattr(self, f"max_scale_{self.plane_idx}"))
+        return self._qdq_weight(value.to(self.device), min_scale.to(self.device), max_scale.to(self.device))
 
     def forward(self, x):
         value = getattr(self, f"value_{self.plane_idx}")
@@ -404,9 +398,7 @@ class RRQRTNQuantizer(BaseQuantizer):
         # ``layer.zp`` are set. The standalone unit-test layers lack compressor
         # context, so they keep the direct RTN fallback below.
         use_standard_base = (
-            hasattr(layer, "global_name")
-            and hasattr(self, "model_context")
-            and hasattr(self, "compress_context")
+            hasattr(layer, "global_name") and hasattr(self, "model_context") and hasattr(self, "compress_context")
         )
         if use_standard_base:
             self._quantize_layer_via_rtn(layer, disable_opt_rtn=False)
@@ -451,9 +443,7 @@ class RRQRTNQuantizer(BaseQuantizer):
                 # Residual plane: store packed INT2 (W2A16 layout) so the
                 # on-disk artifact is a standard single-plane INT2 layout.
                 in_features = original_weight.shape[1]
-                qweight, scales, qzeros = self._pack_plane(
-                    quantized, scale, zp, bits, group_size, in_features
-                )
+                qweight, scales, qzeros = self._pack_plane(quantized, scale, zp, bits, group_size, in_features)
                 layer.register_buffer(f"rrq_qweight_{plane_idx}", qweight.cpu())
                 layer.register_buffer(f"rrq_scales_{plane_idx}", scales.to(self._rrq_scale_dtype).cpu())
                 layer.register_buffer(f"rrq_qzeros_{plane_idx}", qzeros.cpu())
@@ -494,9 +484,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
     def _snapshot_round_params(self, wrappers, device):
         snapshot = {}
         for name, wrapper in wrappers.items():
-            snapshot[name] = {
-                key: value.detach().to(device="cpu", copy=True) for key, value in wrapper.params.items()
-            }
+            snapshot[name] = {key: value.detach().to(device="cpu", copy=True) for key, value in wrapper.params.items()}
         return snapshot
 
     def _get_loss(self, pred_output, ref_output, indices, loss_func, device, valid_token_mask=None):
@@ -565,13 +553,9 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
                 lr = minmax_lr if groups is minmax_groups else layer_lr
                 groups.setdefault(float(lr), []).append(parameter)
 
-        optimizer_params = [
-            {"params": parameters, "lr": lr} for lr, parameters in round_groups.items()
-        ]
+        optimizer_params = [{"params": parameters, "lr": lr} for lr, parameters in round_groups.items()]
         if self.enable_minmax_tuning:
-            optimizer_params.extend(
-                {"params": parameters, "lr": lr} for lr, parameters in minmax_groups.items()
-            )
+            optimizer_params.extend({"params": parameters, "lr": lr} for lr, parameters in minmax_groups.items())
         optimizer = self.optimizer(
             optimizer_params,
             lr=self.lr or (1.0 / self.iters),
@@ -646,11 +630,13 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             params = best_params.get(name, {})
             with torch.no_grad():
                 qdq, scale, zp = wrapper.qdq_from_params(params)
-            planes[name] = (qdq.detach().cpu(), scale.detach().cpu(), zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp)
+            planes[name] = (
+                qdq.detach().cpu(),
+                scale.detach().cpu(),
+                zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp,
+            )
             set_module(block, name, wrapper.orig_layer)
-        return planes, {
-            name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()
-        }
+        return planes, {name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()}
 
     @torch.no_grad()
     def _store_rrq_planes(self, layer, planes):
@@ -673,9 +659,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             layer.register_buffer(f"rrq_scales_{plane_idx}", scales.to(self._rrq_scale_dtype).cpu())
             layer.register_buffer(f"rrq_qzeros_{plane_idx}", qzeros.cpu())
 
-    def _quantize_block_opt(
-        self, block, fp_inputs, input_others, fp_outputs, block_ctx, q_inputs=None, input_ids=None
-    ):
+    def _quantize_block_opt(self, block, fp_inputs, input_others, fp_outputs, block_ctx, q_inputs=None, input_ids=None):
         device = next(block.parameters()).device
         originals = {}
         prefixes = {}
