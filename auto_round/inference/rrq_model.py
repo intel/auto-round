@@ -55,9 +55,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from auto_round.logger import logger
-
 from auto_round.export.export_to_autoround.export_to_rrq import RRQ_QUANT_METHOD
+from auto_round.logger import logger
 
 __all__ = ["load_rrq_model"]
 
@@ -97,9 +96,7 @@ def _load_state_dict(model_dir: str) -> dict:
             state_dict.update(_load_st(f))
         return state_dict
 
-    pt_files = sorted(glob.glob(os.path.join(model_dir, "*.pt"))) + sorted(
-        glob.glob(os.path.join(model_dir, "*.bin"))
-    )
+    pt_files = sorted(glob.glob(os.path.join(model_dir, "*.pt"))) + sorted(glob.glob(os.path.join(model_dir, "*.bin")))
     if pt_files:
         for f in pt_files:
             state_dict.update(torch.load(f, map_location="cpu", weights_only=False))
@@ -205,8 +202,7 @@ def _validate_base_matches_residual(base_config: dict, residual_config: dict) ->
 
     if res_q.get("quant_method") != RRQ_QUANT_METHOD:
         raise ValueError(
-            f"Residual model has quant_method={res_q.get('quant_method')!r}, "
-            f"expected {RRQ_QUANT_METHOD!r}."
+            f"Residual model has quant_method={res_q.get('quant_method')!r}, " f"expected {RRQ_QUANT_METHOD!r}."
         )
 
 
@@ -270,8 +266,7 @@ def load_rrq_model(
     eligible = set(base_layers) & set(residual_planes_by_layer)
     if not eligible:
         raise ValueError(
-            "No common packed-INT2 layers found between base and residual models; "
-            "cannot build any RRQ layer."
+            "No common packed-INT2 layers found between base and residual models; " "cannot build any RRQ layer."
         )
 
     # Load the base model architecture + non-quant weights.  The packed ``qweight``
@@ -345,8 +340,17 @@ def load_rrq_model(
             rz = residual_state[f"{layer_name}.qzeros_{k}"]
             residual_planes.append(
                 _build_quant_plane(
-                    QuantLinear, rw, rs, rz, bits, group_size, in_features,
-                    out_features, False, None, device_obj,
+                    QuantLinear,
+                    rw,
+                    rs,
+                    rz,
+                    bits,
+                    group_size,
+                    in_features,
+                    out_features,
+                    False,
+                    None,
+                    device_obj,
                 )
             )
         if not complete or len(residual_planes) != total_planes - 1:
