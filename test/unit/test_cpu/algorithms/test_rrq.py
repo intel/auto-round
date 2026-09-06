@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
-from auto_round.algorithms.quantization.rrq.quantizer import RRQRTNQuantizer, RRQSignRoundQuantizer, RRQPlaneWrapper
+from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper, RRQRTNQuantizer, RRQSignRoundQuantizer
 from auto_round.data_type.int import quant_tensor_rtn_sym
 from auto_round.export.export_to_autoround.export_to_rrq import (
     RRQ_QUANT_METHOD,
@@ -182,9 +182,7 @@ class TestRRQQuantization:
             norms.append((W - acc).norm().item())
 
         for i in range(1, len(norms)):
-            assert norms[i] <= norms[i - 1] + 1e-6, (
-                f"Residual norm increased at plane {i}: {norms[i]} > {norms[i-1]}"
-            )
+            assert norms[i] <= norms[i - 1] + 1e-6, f"Residual norm increased at plane {i}: {norms[i]} > {norms[i-1]}"
 
     def test_4bit_better_than_2bit(self):
         """RRQ 2+2 (4-bit) should beat standalone 2-bit RTN."""
@@ -201,9 +199,7 @@ class TestRRQQuantization:
 
         W_4 = layer.weight.data.float() + _plane_dequant(layer, 1, W)
         err_4bit = (W - W_4).norm().item()
-        assert err_4bit < err_2bit, (
-            f"RRQ 2+2 ({err_4bit:.6f}) should beat 2-bit RTN ({err_2bit:.6f})"
-        )
+        assert err_4bit < err_2bit, f"RRQ 2+2 ({err_4bit:.6f}) should beat 2-bit RTN ({err_2bit:.6f})"
 
     def test_8bit_close_to_original(self):
         """Full 4-plane (8-bit) reconstruction should be close to the original."""
@@ -504,9 +500,7 @@ class TestGenerateRRQResidual:
         torch.manual_seed(42)
         yield
 
-    def _make_base_and_raw(
-        self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True
-    ):
+    def _make_base_and_raw(self, tmp_path, out_features=64, in_features=128, group_size=32, sym=True):
         """Build a fake base model dir (packed INT2) + raw FP state dict.
 
         Returns ``(base_dir, raw_dir)`` where:
@@ -528,12 +522,19 @@ class TestGenerateRRQResidual:
 
         # RTN quantize to get scale/zp
         quant_func, _ = get_quant_func(
-            dtype="int", bits=2, sym=sym,
-            disable_opt_rtn=True, group_size=group_size, iters=0,
+            dtype="int",
+            bits=2,
+            sym=sym,
+            disable_opt_rtn=True,
+            group_size=group_size,
+            iters=0,
         )
         _, scale, zp = quant_func(
-            W, bits=2, group_size=group_size,
-            scale_dtype=torch.float16, q_scale_thresh=1e-5,
+            W,
+            bits=2,
+            group_size=group_size,
+            scale_dtype=torch.float16,
+            q_scale_thresh=1e-5,
         )
 
         # Normalize
@@ -592,6 +593,7 @@ class TestGenerateRRQResidual:
         assert os.path.exists(os.path.join(out_dir, "quantization_config.json"))
 
         from safetensors.torch import load_file
+
         state = load_file(os.path.join(out_dir, "model.safetensors"))
 
         # 3 planes × 3 tensors = 9
@@ -614,6 +616,7 @@ class TestGenerateRRQResidual:
         generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=True)
 
         from safetensors.torch import load_file
+
         state = load_file(os.path.join(out_dir, "model.safetensors"))
 
         # Load raw weight
@@ -622,6 +625,7 @@ class TestGenerateRRQResidual:
 
         # Dequant base
         from auto_round.algorithms.quantization.rrq.quantizer import _rrq_quant_linear_class
+
         QuantLinear = _rrq_quant_linear_class(True)
         ql = QuantLinear(2, 32, 128, 64, bias=False)
         ql.qweight.data = load_file(os.path.join(base_dir, "model.safetensors"))["test_layer.qweight"]
@@ -637,12 +641,19 @@ class TestGenerateRRQResidual:
         norms = [(W - acc).norm().item()]
         for k in range(1, 4):
             from auto_round.inference.rrq_model import _build_quant_plane
+
             plane = _build_quant_plane(
                 QuantLinear,
                 state[f"test_layer.qweight_{k}"],
                 state[f"test_layer.scales_{k}"],
                 state[f"test_layer.qzeros_{k}"],
-                2, 32, 128, 64, False, None, torch.device("cpu"),
+                2,
+                32,
+                128,
+                64,
+                False,
+                None,
+                torch.device("cpu"),
             )
             identity = torch.eye(128, dtype=torch.float32)
             with torch.no_grad():
@@ -650,9 +661,7 @@ class TestGenerateRRQResidual:
             norms.append((W - acc).norm().item())
 
         for i in range(1, len(norms)):
-            assert norms[i] <= norms[i - 1] + 1e-4, (
-                f"Residual norm increased at plane {i}: {norms[i]} > {norms[i-1]}"
-            )
+            assert norms[i] <= norms[i - 1] + 1e-4, f"Residual norm increased at plane {i}: {norms[i]} > {norms[i-1]}"
 
     def test_config_mismatch_raises(self, tmp_path):
         """Mismatched group_size should raise ValueError."""
@@ -677,6 +686,7 @@ class TestGenerateRRQResidual:
     def test_top_level_export(self):
         """generate_rrq_residual is accessible from auto_round top-level."""
         from auto_round import generate_rrq_residual as gen
+
         assert callable(gen)
 
 
@@ -684,7 +694,6 @@ class TestRRQPhase3:
     """Focused checks for the calibrated sign-SGD RRQ path."""
 
     def test_plane_wrapper_has_ste_gradients(self):
-        from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper
 
         layer = _make_layer(out_features=64, in_features=128, group_size=32, sym=True)
         layer.scale_dtype = torch.float16

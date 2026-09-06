@@ -228,8 +228,7 @@ def analyze_layout(base_info, residual_info):
     has_qzeros = any(k.endswith(".qzeros") for k in base_keys)
     # No residual-plane keys (qweight_1..3) should appear in the base.
     base_has_plane = any(
-        any(k.endswith(f"{s}_{i}") for s in ("qweight", "scales", "qzeros") for i in (1, 2, 3))
-        for k in base_keys
+        any(k.endswith(f"{s}_{i}") for s in ("qweight", "scales", "qzeros") for i in (1, 2, 3)) for k in base_keys
     )
     # Full model: embeddings present.
     has_embed = any("embed" in k.lower() for k in base_keys)
@@ -244,19 +243,21 @@ def analyze_layout(base_info, residual_info):
         ("embeddings present (full model)", has_embed),
         ("layernorms present (full model)", has_norm),
         (
-            'quant_method is a base (non-rrq) method',
-            base_info["qmethod"] is not None
-            and "auto-round" in base_info["qmethod"]
-            and base_info["qmethod"] != "auto-round-rrq"
-            if base_info
-            else False,
+            "quant_method is a base (non-rrq) method",
+            (
+                base_info["qmethod"] is not None
+                and "auto-round" in base_info["qmethod"]
+                and base_info["qmethod"] != "auto-round-rrq"
+                if base_info
+                else False
+            ),
         ),
     ):
         print(f"    [{'ok' if cond else 'XX'}] {name}")
         ok = ok and cond
 
     # count base quant layers (distinct layer prefixes having .qweight)
-    base_layers = {k[:- len(".qweight")] for k in base_keys if k.endswith(".qweight")}
+    base_layers = {k[: -len(".qweight")] for k in base_keys if k.endswith(".qweight")}
     print(f"    base quantized layers: {len(base_layers)}")
 
     # --- residual model checks --------------------------------------------
