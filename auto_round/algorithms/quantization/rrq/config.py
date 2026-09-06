@@ -16,10 +16,11 @@
 RRQ quantizes each weight tensor into K sequential INT2 planes (1 base +
 K-1 residual planes).  The total effective bit-width is K * plane_bits.
 
-Phase 1 quantizes each plane with RTN (``iters=0``).  Phase 3 adds a
-per-plane sign-SGD tuning pass (``iters > 0``) so every plane is optimized
-against the current residual using the block's calibration loss, while the
-already-quantized prefix is held fixed.
+By default RRQ follows AutoRound's default SignRound optimization settings
+(``iters=200``, automatic learning rates, zero momentum, and min/max tuning).
+Passing ``iters=0`` explicitly selects the RTN-only mode. Every plane uses the
+same optimization settings; residual planes differ only in their frozen prefix
+and target residual.
 """
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
@@ -36,10 +37,9 @@ class RRQConfig(RTNConfig):
         - act_bits = 16 (weight-only)
         - num_residual_planes = 3 (total planes = 4, effective bits 2/4/6/8)
 
-    With ``iters=0`` (the default) every plane is quantized by RTN only
-    (Phase 1 behaviour, no calibration needed).  Setting ``iters > 0``
-    enables per-plane sign-SGD tuning with the block calibration loss
-    (Phase 3), which requires a calibration dataset.
+    With the default ``iters=200``, every plane uses the same SignRound
+    optimization parameters as ordinary AutoRound. Passing ``iters=0``
+    explicitly selects RTN-only quantization without calibration.
     """
 
     #: Number of INT2 residual planes (after the base plane).
@@ -56,12 +56,19 @@ class RRQConfig(RTNConfig):
             raise ValueError(f"RRQ is weight-only; act_bits must be 16, got {kwargs['act_bits']}")
 
         # Extract tunable fields before super (they are not scheme fields)
-        self._rrq_iters = kwargs.pop("iters", 0)
+        # Match SignRoundConfig's AutoRound default. RTN remains available via
+        # an explicit ``iters=0``.
+        self._rrq_iters = kwargs.pop("iters", 200)
         self._rrq_lr = kwargs.pop("lr", None)
         self._rrq_minmax_lr = kwargs.pop("minmax_lr", None)
         self._rrq_momentum = kwargs.pop("momentum", 0.0)
         self._rrq_lr_scheduler = kwargs.pop("lr_scheduler", None)
         self._rrq_enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
+        self._rrq_gradient_accumulate_steps = kwargs.pop("gradient_accumulate_steps", 1)
+        self._rrq_enable_quanted_input = kwargs.pop("enable_quanted_input", True)
+        self._rrq_not_use_best_mse = kwargs.pop("not_use_best_mse", False)
+        self._rrq_dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
+        self._rrq_enable_lfq = kwargs.pop("enable_lfq", False)
 
         # Inject fixed values
         kwargs.setdefault("bits", 2)
@@ -70,13 +77,19 @@ class RRQConfig(RTNConfig):
 
         # Extract num_residual_planes before super (it's not a scheme field)
         self._num_residual_planes = kwargs.pop("num_residual_planes", 3)
-        if self._num_residual_planes != 3:
-            raise ValueError(f"RRQ Phase 1 only supports num_residual_planes=3, got {self._num_residual_planes}")
+        if self._num_residual_planes not in (1, 3):
+            raise ValueError(
+                f"RRQ supports num_residual_planes=1 or 3, got {self._num_residual_planes}"
+            )
         if self._num_residual_planes <= 0:
             raise ValueError("num_residual_planes must be positive")
 
-        # ``disable_opt_rtn`` forces plain RTN semantics for the weight, which
-        # is always the case for the per-plane RRQ quantization.
+        # ``disable_opt_rtn`` stays True at the config level purely to keep RRQ
+        # routed to its own quantizer: an RTNConfig subclass with
+        # ``disable_opt_rtn=False`` is silently coerced to OptimizedRTNConfig by
+        # the AutoRound entry, which would drop every residual plane. The
+        # per-plane RTN quality is matched to standard AutoRound (opt-RTN)
+        # inside the quantizer instead (see RRQRTNQuantizer).
         kwargs.setdefault("disable_opt_rtn", True)
 
         super().__init__(**kwargs)
@@ -87,8 +100,15 @@ class RRQConfig(RTNConfig):
         self.momentum = self._rrq_momentum
         self.lr_scheduler = self._rrq_lr_scheduler
         self.enable_minmax_tuning = self._rrq_enable_minmax_tuning
-        # Sign-SGD tuning needs the block calibration data; RTN-only does not.
-        self.need_calib = self.iters > 0
+        self.gradient_accumulate_steps = self._rrq_gradient_accumulate_steps
+        self.enable_quanted_input = self._rrq_enable_quanted_input
+        self.not_use_best_mse = self._rrq_not_use_best_mse
+        self.dynamic_max_gap = self._rrq_dynamic_max_gap
+        self.enable_lfq = self._rrq_enable_lfq
+        # Both paths use block calibration data: SignRound needs it for tuning,
+        # and the RTN path needs it to collect the imatrix for imatrix-weighted
+        # opt-RTN (matching an ordinary AutoRound W2A16 OptimizedRTN base).
+        self.need_calib = True
 
     @property
     def total_planes(self) -> int:
@@ -107,12 +127,14 @@ class RRQConfig(RTNConfig):
         registry.add_argument(
             "--iters",
             field="iters",
-            default=0,
+            default=200,
             type=int,
-            help="Iterations of per-plane sign-SGD tuning. 0 (default) keeps "
-            "pure RTN; >0 enables Phase-3 tuning and requires a calib dataset.",
+            help="Iterations of per-plane sign-SGD tuning. 0 explicitly selects "
+            "pure RTN; the default 200 matches AutoRound SignRound.",
         )
-        registry.add_argument("--lr", field="lr", default=None, type=float, help="Learning rate for the RRQ tuning.")
+        registry.add_argument(
+            "--lr", field="lr", default=None, type=float, help="Learning rate for the RRQ tuning."
+        )
         registry.add_argument(
             "--minmax_lr", field="minmax_lr", default=None, type=float, help="Learning rate for min-max tuning."
         )
@@ -124,6 +146,10 @@ class RRQConfig(RTNConfig):
         """Auto lr heuristic for sign-SGD tuning (mirrors SignRound)."""
         if self.iters <= 0:
             return None
+        # Match SignRoundConfig._lr_for_bits: low-bit layers get a higher lr
+        # when the iteration budget is large.
+        if self.iters >= 1000 and bits is not None and bits <= 3:
+            return 2.0 / self.iters
         return 1.0 / self.iters
 
     def compute_lr(self, bits):
