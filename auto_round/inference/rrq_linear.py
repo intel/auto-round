@@ -13,80 +13,95 @@
 # limitations under the License.
 """RRQ inference module: multi-plane INT2 linear layer with dynamic precision.
 
-Phase 1 implementation (packed INT2):
+Phase-1 reference implementation.  Each plane is stored as its *dequantized*
+float weight of shape ``(out_features, in_features)``.  ``forward`` accumulates
+the first ``active_planes`` planes and runs a single linear op:
 
-Each plane is a *stock* W2A16 ``QuantLinear`` (``qweight`` int32 + ``scales`` +
-``qzeros``), so dequantization reuses the existing INT2 AutoRound code path
-(:meth:`QuantLinear.forward`) verbatim -- no custom packing/unpacking logic is
-needed here.
+- active_planes=1: 2-bit (base only)
+- active_planes=2: 4-bit (base + 1 residual)
+- active_planes=3: 6-bit (base + 2 residuals)
+- active_planes=4: 8-bit (base + 3 residuals)
 
-A layer is composed of::
-
-    base (plane 0) + residual planes 1..K-1
-
-``forward`` computes the base result first, then -- if residual planes are
-active -- computes each residual's result in turn and **accumulates** all of
-them::
-
-    - active_bits=2: base only
-    - active_bits=4: base + 1 residual
-    - active_bits=6: base + 2 residuals
-    - active_bits=8: base + 3 residuals (all planes)
-
-The bias is added only once (to the base result).  This is a correctness
-reference implementation, not a fused kernel.
+This is a correctness reference implementation, not a performance kernel.
+Packed-INT2 storage and fused kernels are a follow-up concern (Phase 2+).
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from auto_round.logger import logger
+from auto_round.utils import logger
 
-__all__ = ["RRQLinear", "set_rrq_bits"]
+__all__ = ["RRQLinear", "set_rrq_bits", "set_rrq_random_residual"]
 
 
 class RRQLinear(nn.Module):
     """Multi-plane INT2 quantized linear layer with dynamic precision switching.
 
-    The ``base`` submodule and each ``planes[1:]`` submodule are standard
-    W2A16 ``QuantLinear`` modules.  ``forward`` computes the base output first
-    and then accumulates the output of the first ``active`` residual planes::
+    Each plane is stored as its *dequantized* float weight of shape
+    ``(out_features, in_features)``.  ``forward`` accumulates the first
+    ``active_planes`` planes and runs a single linear op::
 
-        out = base(x) + sum_{k=1}^{active} planes[k](x) + bias
+        - active_planes=1: 2-bit (base only)
+        - active_planes=2: 4-bit (base + 1 residual)
+        - active_planes=3: 6-bit (base + 2 residuals)
+        - active_planes=4: 8-bit (base + 3 residuals)
 
-    where ``active`` is ``active_bits // 2`` (number of *residual* planes; the
-    base plane always contributes).
-
-    Submodules:
-        ``base``          -- plane 0 (``QuantLinear``).
-        ``planes.rrq_1``  -- residual plane 1 (``QuantLinear``).
-        ``planes.rrq_2``  -- residual plane 2 (``QuantLinear``).
-        ``planes.rrq_3``  -- residual plane 3 (``QuantLinear``).  (K-1 total.)
-
-    Attributes:
-        ``active_bits``  -- 2/4/6/8; controls how many residual planes are used.
-        ``bias``         -- bias tensor (``None`` if the layer has no bias).
+    Buffers:
+        ``rrq_qweight_k``  -- dequantized weight of plane ``k`` (float),
+                             shape ``[out_features, in_features]``.
+        ``rrq_scales_k``  : per-group scale of plane ``k`` (informational).
+        ``rrq_zp_k``      : zero-point of plane ``k`` (asymmetric only), if any.
     """
 
-    def __init__(self, base: nn.Module, residual_planes, bias: torch.Tensor = None) -> None:
+    def __init__(
+        self,
+        in_features: int = None,
+        out_features: int = None,
+        num_planes: int = 4,
+        bits: int = 2,
+        bias: bool = True,
+        base: nn.Module = None,
+        residual_planes=None,
+    ) -> None:
         super().__init__()
-        self.base = base
-        self.num_planes = 1 + len(list(residual_planes))  # base + residual
-        self.in_features = base.infeatures
-        self.out_features = base.outfeatures
-        self.bits = base.bits
 
-        planes = nn.ModuleDict()
-        for i, plane in enumerate(residual_planes, start=1):
-            planes[f"rrq_{i}"] = plane
-        self.planes = planes
+        if base is not None or residual_planes is not None:
+            residual_planes = list(residual_planes or [])
+            self._packed = True
+            self.base = base
+            self.num_planes = 1 + len(residual_planes)
+            self.in_features = base.infeatures
+            self.out_features = base.outfeatures
+            self.bits = base.bits
+            self.planes = nn.ModuleDict(
+                {f"rrq_{index}": plane for index, plane in enumerate(residual_planes, start=1)}
+            )
+            self.active_planes = self.num_planes
+            if isinstance(bias, torch.Tensor):
+                self.register_buffer("bias", bias)
+            else:
+                self.register_parameter("bias", None)
+            return
 
-        if bias is not None:
-            self.register_buffer("bias", bias)
+        self._packed = False
+        self.in_features = in_features
+        self.out_features = out_features
+        self.num_planes = num_planes
+        self.bits = bits
+        self.active_planes = num_planes  # default: use all planes
+
+        # Dequantized weight of each plane, shape (out_features, in_features).
+        for k in range(num_planes):
+            self.register_buffer(
+            f"rrq_qweight_{k}",
+            torch.zeros((out_features, in_features), dtype=torch.float16),
+        )
+
+        if bias:
+            self.register_buffer("bias", torch.zeros(out_features, dtype=torch.float16))
         else:
             self.register_parameter("bias", None)
-
-        self.active_bits = self.bits * self.num_planes  # default: all planes
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass with dynamic plane selection.
@@ -97,35 +112,72 @@ class RRQLinear(nn.Module):
         Returns:
             Output tensor of shape ``(..., out_features)``.
         """
-        # The base plane is plane 0 and contributes ``bits`` on its own; each
-        # additional residual plane adds another ``bits``.  So the number of
-        # *residual* planes to include is ``active_bits // bits - 1``.
-        active = self.active_bits // self.bits - 1  # number of residual planes
+        if self._packed:
+            out = self.base(x)
+            for index in range(1, self.active_planes):
+                out = out + self.planes[f"rrq_{index}"](x)
+            if self.bias is not None:
+                out = out + self.bias.to(out.dtype)
+            return out
 
-        out = self.base(x)
-        if active > 0:
-            for i in range(1, active + 1):
-                out = out + self.planes[f"rrq_{i}"](x)
+        weight = self._dequantize(self.active_planes)
+        out = F.linear(x.to(weight.dtype), weight)
         if self.bias is not None:
-            out = out + self.bias.to(out.dtype)
+            out = out + self.bias.to(x.dtype)
         return out
 
+    def _dequantize(self, num_planes: int) -> torch.Tensor:
+        """Accumulate the first ``num_planes`` planes into a full weight tensor.
+
+        Args:
+            num_planes: Number of planes to accumulate (1 <= num_planes <= num_planes).
+
+        Returns:
+            Reconstructed weight tensor of shape ``(out_features, in_features)``.
+        """
+        assert 1 <= num_planes <= self.num_planes, (
+            f"active_planes must be in [1, {self.num_planes}], got {num_planes}"
+        )
+
+        total = torch.zeros(
+            self.out_features,
+            self.in_features,
+            dtype=torch.float32,
+            device=self.rrq_qweight_0.device,
+        )
+        for k in range(num_planes):
+            plane = getattr(self, f"rrq_qweight_{k}").to(torch.float32)
+            total += plane
+
+        return total
+
+    def set_active_planes(self, num_planes: int) -> None:
+        """Set how many planes are used (1..num_planes)."""
+        if not 1 <= num_planes <= self.num_planes:
+            raise ValueError(
+                f"active_planes must be in [1, {self.num_planes}], got {num_planes}"
+            )
+        self.active_planes = num_planes
+
     def set_active_bits(self, bits: int) -> None:
-        """Set the effective bit-width (2/4/6/8)."""
+        """Compatibility wrapper for callers that select precision in bits."""
         if bits not in (2, 4, 6, 8) or bits % self.bits != 0:
             raise ValueError(f"active_bits must be one of 2/4/6/8, got {bits}")
-        if bits > self.bits * self.num_planes:
-            raise ValueError(
-                f"Requested {bits}-bit precision ({bits // self.bits} planes) "
-                f"but this layer only has {self.num_planes} planes "
-                f"(max {self.bits * self.num_planes} bits)."
-            )
-        self.active_bits = bits
+        self.set_active_planes(bits // self.bits)
+
+    @property
+    def active_bits(self) -> int:
+        return self.active_planes * self.bits
+
+    @active_bits.setter
+    def active_bits(self, bits: int) -> None:
+        self.set_active_bits(bits)
 
     def extra_repr(self) -> str:
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
-            f"num_planes={self.num_planes}, active_bits={self.active_bits}"
+            f"bits={self.bits}, num_planes={self.num_planes}, "
+            f"active_planes={self.active_planes}"
         )
 
 
@@ -143,11 +195,79 @@ def set_rrq_bits(model: nn.Module, bits: int) -> None:
     if bits not in valid_bits:
         raise ValueError(f"RRQ supports only bits in {valid_bits}, got {bits}")
 
+    num_planes = bits // 2  # each plane is 2 bits
     found = False
     for module in model.modules():
         if isinstance(module, RRQLinear):
-            module.set_active_bits(bits)
+            if num_planes > module.num_planes:
+                raise ValueError(
+                    f"Requested {bits}-bit precision ({num_planes} planes) but "
+                    f"{module} only has {module.num_planes} planes."
+                )
+            module.active_planes = num_planes
             found = True
 
     if not found:
         logger.warning("No RRQLinear modules found in model; set_rrq_bits had no effect.")
+
+
+def set_rrq_random_residual(
+    model: nn.Module,
+    fraction: float = 0.5,
+    seed: int = 0,
+    high_bits: int = 4,
+    low_bits: int = 2,
+) -> int:
+    """Randomly give a fraction of RRQLinear layers the higher precision.
+
+    A reproducible (seeded) uniform sample of ``fraction`` of the RRQLinear
+    layers is set to ``high_bits`` effective bits; the rest use ``low_bits``.
+    This yields a mixed operating point between the two levels (e.g. ``0.5`` of
+    the layers at 4-bit and the rest at 2-bit is an effective ~3-bit model).
+
+    Args:
+        model: Model containing ``RRQLinear`` modules.
+        fraction: Fraction of layers assigned ``high_bits`` (0.0 <= f <= 1.0).
+        seed: RNG seed for the layer selection (reproducible).
+        high_bits: Effective bit-width for the selected layers (2/4/6/8).
+        low_bits: Effective bit-width for the rest (2/4/6/8).
+
+    Returns:
+        The number of layers assigned ``high_bits``.
+
+    Raises:
+        ValueError: If ``fraction`` is out of range, bit-widths are invalid,
+            or no RRQLinear modules exist.
+    """
+    import random
+
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError(f"fraction must be in [0.0, 1.0], got {fraction}")
+    valid_bits = {2, 4, 6, 8}
+    if high_bits not in valid_bits or low_bits not in valid_bits:
+        raise ValueError(f"high_bits/low_bits must be in {valid_bits}, got {high_bits}/{low_bits}")
+
+    layers = [(name, m) for name, m in model.named_modules() if isinstance(m, RRQLinear)]
+    if not layers:
+        raise ValueError("No RRQLinear modules found in model.")
+
+    high_planes = high_bits // 2
+    low_planes = low_bits // 2
+    for name, m in layers:
+        if max(high_planes, low_planes) > m.num_planes:
+            raise ValueError(
+                f"Requested {max(high_bits, low_bits)}-bit but {name!r} only has "
+                f"{m.num_planes} planes."
+            )
+
+    names = [name for name, _ in layers]
+    n_high = round(fraction * len(names))
+    keep = set(random.Random(seed).sample(names, n_high))
+    for name, m in layers:
+        m.active_planes = high_planes if name in keep else low_planes
+
+    logger.info(
+        f"RRQ random residual: {n_high}/{len(names)} layers at {high_bits}-bit, "
+        f"rest at {low_bits}-bit (fraction={fraction}, seed={seed})."
+    )
+    return n_high

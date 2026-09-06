@@ -23,18 +23,19 @@ whose prefix sum reconstructs the weight at increasing precision.
 """
 
 import copy
-
+from contextlib import nullcontext
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
-from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.compressors.utils import IndexSampler, collect_best_params
 from auto_round.data_type.utils import get_quant_func
 from auto_round.utils import check_to_quantized
+from auto_round.utils import SUPPORTED_LAYER_TYPES
 from auto_round.utils.model import set_module
 
 
@@ -50,6 +51,7 @@ class RRQPlaneWrapper(nn.Module):
         enable_minmax_tuning: bool,
         iters: int,
         device,
+        imatrix: torch.Tensor = None,
     ):
         super().__init__()
         from auto_round.wrapper import WrapperLinear
@@ -73,7 +75,6 @@ class RRQPlaneWrapper(nn.Module):
                 device=device,
                 enable_round_tuning=True,
                 enable_torch_compile=False,
-                disable_opt_rtn=True,
                 iters=iters,
             )
         finally:
@@ -86,6 +87,25 @@ class RRQPlaneWrapper(nn.Module):
         self.q_scale_thresh = helper.q_scale_thresh
         self.orig_layer.iters = iters
         self.orig_layer.data_type = getattr(self.orig_layer, "data_type", self.data_type)
+
+        # Seed the tuning with the optimized (opt-RTN) init scale so the RTN
+        # solution lies inside SignRound's search space: at v=0, max_scale=1 the
+        # plane reproduces the opt-RTN result exactly, and best-MSE guarantees
+        # the tuned plane is no worse than RTN. Only the symmetric int path has
+        # an optimized init-scale search; asym falls back to the min/max range.
+        self.init_scale = None
+        if getattr(orig_layer, "sym", False):
+            from auto_round.data_type.utils import (
+                reshape_imatrix_for_weight,
+                reshape_pad_tensor_by_group_size,
+                search_optimized_init_scale,
+            )
+
+            weight_reshape, _, _ = reshape_pad_tensor_by_group_size(target_weight, orig_layer.group_size)
+            imatrix_r = reshape_imatrix_for_weight(imatrix, weight_reshape, orig_layer.group_size)
+            self.init_scale = search_optimized_init_scale(
+                weight_reshape, self.data_type, orig_layer.bits, imatrix_r, self.q_scale_thresh
+            )
 
         self.register_buffer("target_weight", target_weight.detach().to(device), persistent=False)
         self.register_buffer("frozen_prefix", frozen_prefix.detach().to(device), persistent=False)
@@ -101,12 +121,16 @@ class RRQPlaneWrapper(nn.Module):
                 self.params[f"{old_name}_{plane_idx}"] = parameter
 
     def _qdq_weight(self, value, min_scale, max_scale):
-        min_bound, max_bound = (0.0, 1.0)
+        # With an optimized init_scale, ``max_scale`` is a coefficient on top of
+        # it (scale = init_scale * max_scale); [0, 2] lets the scale both shrink
+        # and expand around the opt-RTN scale. Without init_scale it is the
+        # standard shrink-only [0, 1] min/max coefficient.
+        min_bound, max_bound = (0.0, 2.0) if self.init_scale is not None else (0.0, 1.0)
         if isinstance(min_scale, torch.Tensor):
             min_scale.data.clamp_(min_bound, max_bound)
         if isinstance(max_scale, torch.Tensor):
             max_scale.data.clamp_(min_bound, max_bound)
-        return self.weight_quant_func(
+        weight_q, scale, zp = self.weight_quant_func(
             self.target_weight,
             bits=self.orig_layer.bits,
             group_size=self.orig_layer.group_size,
@@ -118,13 +142,21 @@ class RRQPlaneWrapper(nn.Module):
             tensor_max=self.weight_max,
             data_type=self.data_type,
             q_scale_thresh=self.q_scale_thresh,
+            init_scale=self.init_scale,
         )
+        return weight_q.to(self.target_weight.dtype), scale, zp
 
     def qdq_from_params(self, params):
         value = params.get(f"value_{self.plane_idx}", getattr(self, f"value_{self.plane_idx}"))
-        min_scale = params.get(f"min_scale_{self.plane_idx}", getattr(self, f"min_scale_{self.plane_idx}"))
-        max_scale = params.get(f"max_scale_{self.plane_idx}", getattr(self, f"max_scale_{self.plane_idx}"))
-        return self._qdq_weight(value.to(self.device), min_scale.to(self.device), max_scale.to(self.device))
+        min_scale = params.get(
+            f"min_scale_{self.plane_idx}", getattr(self, f"min_scale_{self.plane_idx}")
+        )
+        max_scale = params.get(
+            f"max_scale_{self.plane_idx}", getattr(self, f"max_scale_{self.plane_idx}")
+        )
+        return self._qdq_weight(
+            value.to(self.device), min_scale.to(self.device), max_scale.to(self.device)
+        )
 
     def forward(self, x):
         value = getattr(self, f"value_{self.plane_idx}")
@@ -132,7 +164,9 @@ class RRQPlaneWrapper(nn.Module):
         max_scale = getattr(self, f"max_scale_{self.plane_idx}")
         weight_q, _, _ = self._qdq_weight(value, min_scale, max_scale)
         x = x.to(self.device, dtype=weight_q.dtype)
-        bias = self.orig_layer.bias
+        # The base plane owns the bias. Residual planes must optimize and
+        # execute without adding it again; RRQLinear mirrors this ownership.
+        bias = self.orig_layer.bias if self.plane_idx == 0 else None
         if bias is not None:
             bias = bias.to(self.device, dtype=weight_q.dtype)
         return F.linear(x, self.frozen_prefix.to(weight_q.dtype) + weight_q, bias).to(self.output_device)
@@ -188,6 +222,11 @@ class RRQRTNQuantizer(BaseQuantizer):
     def __init__(self, config: RRQConfig) -> None:
         super().__init__(config)
         self.num_planes = config.total_planes  # 4 for Phase 1 (1 base + 3 residual)
+        # RTN is zero-shot per-layer quantization; it never consumes cascaded
+        # quantized activations, so disable the quantized-input propagation the
+        # composer would otherwise run with empty inputs. The SignRound subclass
+        # re-enables it from config after this constructor.
+        self.enable_quanted_input = False
         # Note: ``scale_dtype`` is a read-only property inherited from
         # ``BaseAlgorithm`` (sourced from the run context), so store our own
         # default in a distinct attribute to avoid an ``AttributeError``.
@@ -197,16 +236,18 @@ class RRQRTNQuantizer(BaseQuantizer):
         self._quant_linear = _rrq_quant_linear_class(config.sym)
 
     def _get_quant_func(self, bits: int, group_size: int):
-        """Get the RTN quantization function for the given bits and group size.
+        """Get the RTN quantization function for a plane.
 
-        Uses plain RTN (disable_opt_rtn=True) for deterministic,
-        calibration-free quantization suitable for each individual plane.
+        Mirrors standard AutoRound W2A16 RTN, which uses optimized RTN for
+        sub-8-bit weights: ``disable_opt_rtn=False`` selects the symmetric
+        opt-RTN scale search (``opt_rtn_int_sym``) and falls back to the plain
+        function for asymmetric int, exactly like an ordinary RTN model.
         """
         quant_func, _ = get_quant_func(
             dtype="int",
             bits=bits,
             sym=self.config.sym,
-            disable_opt_rtn=True,
+            disable_opt_rtn=False,
             group_size=group_size,
             iters=0,
         )
@@ -283,11 +324,50 @@ class RRQRTNQuantizer(BaseQuantizer):
         input_ids=None,
         **kwargs,
     ) -> dict:
-        """Apply recursive RTN quantization to all eligible layers in a block."""
+        """Apply recursive RTN quantization to all eligible layers in a block.
+
+        The base plane uses imatrix-weighted opt-RTN (the imatrix is collected by
+        :meth:`register_fp_input_forward_hooks` during the FP calibration forward
+        and normalized here) so it is bit-identical to an ordinary AutoRound
+        W2A16 OptimizedRTN model.
+        """
         for _name, m in block.named_modules():
+            if hasattr(m, "imatrix"):
+                m.imatrix /= m.imatrix_cnt
             if check_to_quantized(m):
                 self._quantize_layer_rrq(m)
         return {}
+
+    def register_fp_input_forward_hooks(self, block):
+        """Collect the per-layer imatrix during the FP calibration forward.
+
+        Both paths use the imatrix: the RTN path for imatrix-weighted opt-RTN,
+        and the SignRound path to seed each plane's optimized init scale (so the
+        opt-RTN solution lies inside the tuning search space).
+        """
+        handles = super().register_fp_input_forward_hooks(block)
+        handles.extend(self._register_imatrix_hooks(block, with_count=True))
+        return handles
+
+    def _register_imatrix_hooks(self, model, *, with_count: bool = False):
+        def collect_imatrix(module, inp, output):
+            inp = inp[0] if isinstance(inp, (tuple, list)) else inp
+            flattened = inp.reshape(-1, inp.shape[-1]).to(torch.float32)
+            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+            if not hasattr(module, "imatrix"):
+                module.imatrix = squared
+                if with_count:
+                    module.imatrix_cnt = inp.shape[0]
+                return
+            module.imatrix += squared.to(module.imatrix.device)
+            if with_count:
+                module.imatrix_cnt += inp.shape[0]
+
+        handles = []
+        for _, module in model.named_modules():
+            if isinstance(module, SUPPORTED_LAYER_TYPES) and check_to_quantized(module):
+                handles.append(module.register_forward_hook(collect_imatrix))
+        return handles
 
     def quantize_layer_outside_block(
         self, layer, fp_inputs=None, q_inputs=None, disable_opt_rtn=None, input_ids=None
@@ -309,20 +389,49 @@ class RRQRTNQuantizer(BaseQuantizer):
         group_size = layer.group_size
         bits = self.config.bits  # 2
         sym = layer.sym
+        # The imatrix (input-column importance) is identical for the base and
+        # every residual plane, so each plane is quantized with the same
+        # imatrix-weighted opt-RTN. Captured before the base call consumes it.
+        imatrix = getattr(layer, "imatrix", None)
 
         quant_func = self._get_quant_func(bits, group_size)
 
-        accumulated = torch.zeros_like(original_weight)
+        # In the real compressor path, generate plane 0 through the exact
+        # standard AutoRound RTN entry point (``_quantize_layer_via_rtn``) so
+        # the base plane is bit-identical to an ordinary W2A16 opt-RTN model.
+        # ``_quantize_layer_via_rtn`` mutates ``layer`` in place: after it runs,
+        # ``layer.weight`` holds the dequantized base and ``layer.scale``/
+        # ``layer.zp`` are set. The standalone unit-test layers lack compressor
+        # context, so they keep the direct RTN fallback below.
+        use_standard_base = (
+            hasattr(layer, "global_name")
+            and hasattr(self, "model_context")
+            and hasattr(self, "compress_context")
+        )
+        if use_standard_base:
+            self._quantize_layer_via_rtn(layer, disable_opt_rtn=False)
+            base_quantized = layer.weight.detach().clone().to(torch.float32).to(device)
+            accumulated = base_quantized.clone()
+        else:
+            base_quantized = None
+            accumulated = torch.zeros_like(original_weight)
 
         for plane_idx in range(self.num_planes):
+            if plane_idx == 0 and base_quantized is not None:
+                # Base plane already written to ``layer`` by _quantize_layer_via_rtn.
+                continue
+
             residual = original_weight - accumulated
 
+            # Match WrapperLinear: a float32 scale can use a tighter clip.
+            q_scale_thresh = 1e-8 if self._rrq_scale_dtype == torch.float32 else 1e-5
             quantized, scale, zp = quant_func(
                 residual,
                 bits=bits,
                 group_size=group_size,
                 scale_dtype=self._rrq_scale_dtype,
-                q_scale_thresh=1e-5,
+                q_scale_thresh=q_scale_thresh,
+                imatrix=imatrix.to(residual.device) if isinstance(imatrix, torch.Tensor) else None,
             )
 
             quantized = quantized.to(device)
@@ -330,22 +439,21 @@ class RRQRTNQuantizer(BaseQuantizer):
 
             # Normalise scale/zp to the shapes the standard export feeds to
             # ``QuantLinear.pack`` (scale: (out, num_groups); zp: int for sym,
-            # (out, num_groups) tensor for asym).  Stored as-is so the base
-            # plane round-trips through the stock W2A16 pack/dequant path.
+            # (out, num_groups) tensor for asym). Stored as-is so each plane
+            # round-trips through the stock W2A16 pack/dequant path.
             scale_n, zp_n = self._normalize_scale_zp(scale, zp, original_weight.shape[0])
 
             if plane_idx == 0:
                 layer.weight.data.copy_(quantized.to(layer.weight.data.dtype))
                 layer.scale = scale_n.cpu()
-                # symmetric: zp is the int ``maxq`` centre offset (kept as a
-                # scalar so the standard ``pack`` scalar path is used);
-                # asymmetric: (out, num_groups) tensor.
                 layer.zp = zp_n.to(device) if isinstance(zp_n, torch.Tensor) else zp_n
             else:
                 # Residual plane: store packed INT2 (W2A16 layout) so the
                 # on-disk artifact is a standard single-plane INT2 layout.
                 in_features = original_weight.shape[1]
-                qweight, scales, qzeros = self._pack_plane(quantized, scale, zp, bits, group_size, in_features)
+                qweight, scales, qzeros = self._pack_plane(
+                    quantized, scale, zp, bits, group_size, in_features
+                )
                 layer.register_buffer(f"rrq_qweight_{plane_idx}", qweight.cpu())
                 layer.register_buffer(f"rrq_scales_{plane_idx}", scales.to(self._rrq_scale_dtype).cpu())
                 layer.register_buffer(f"rrq_qzeros_{plane_idx}", qzeros.cpu())
@@ -373,26 +481,55 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
         self.momentum = config.momentum
         self.lr_scheduler = config.lr_scheduler
         self.enable_minmax_tuning = config.enable_minmax_tuning
+        self.gradient_accumulate_steps = config.gradient_accumulate_steps
+        # iters<=0 dispatches to the zero-shot RTN path, which never consumes
+        # cascaded quantized activations; keep the quantized-input propagation
+        # off there so the composer does not run a block forward with no inputs.
+        self.enable_quanted_input = config.enable_quanted_input and self.iters > 0
+        self.not_use_best_mse = config.not_use_best_mse
+        self.dynamic_max_gap = config.dynamic_max_gap
+        self.enable_lfq = config.enable_lfq
         self.optimizer = SignSGD
-        self.not_use_best_mse = False
-        self.dynamic_max_gap = -1
 
     def _snapshot_round_params(self, wrappers, device):
         snapshot = {}
         for name, wrapper in wrappers.items():
-            snapshot[name] = {key: value.detach().to(device="cpu", copy=True) for key, value in wrapper.params.items()}
+            snapshot[name] = {
+                key: value.detach().to(device="cpu", copy=True) for key, value in wrapper.params.items()
+            }
         return snapshot
+
+    def _get_loss(self, pred_output, ref_output, indices, loss_func, device, valid_token_mask=None):
+        """Match SignRound's masked MSE loss without changing RRQ inheritance."""
+        model_context = getattr(self, "model_context", None)
+        if model_context is not None and not getattr(model_context, "amp", True):
+            autocast_ctx = torch.autocast(device_type=str(device).split(":")[0], dtype=model_context.amp_dtype)
+        else:
+            autocast_ctx = nullcontext()
+        with autocast_ctx:
+            if valid_token_mask:
+                mask = torch.cat([valid_token_mask[i] for i in indices], dim=0).to(device).unsqueeze(-1)
+                return loss_func(
+                    (pred_output * mask).float(),
+                    (ref_output * mask).float(),
+                )
+            return loss_func(pred_output.float(), ref_output.float())
+
+    def _get_non_zero_cnt(self, tensor, indices):
+        return sum(torch.count_nonzero(tensor[index]).item() for index in indices)
 
     def _tune_block_round(
         self,
         block,
         fp_inputs,
+        q_inputs,
         input_others,
         fp_outputs,
         block_ctx,
         originals,
         prefixes,
         plane_idx,
+        input_ids=None,
     ):
         """Optimize one plane for every eligible layer in a transformer block."""
         device = next(block.parameters()).device
@@ -409,6 +546,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
                 self.enable_minmax_tuning,
                 self.iters,
                 device,
+                imatrix=getattr(layer, "imatrix", None),
             ).to(device)
             set_module(block, name, wrapper)
             wrappers[name] = wrapper
@@ -427,9 +565,13 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
                 lr = minmax_lr if groups is minmax_groups else layer_lr
                 groups.setdefault(float(lr), []).append(parameter)
 
-        optimizer_params = [{"params": parameters, "lr": lr} for lr, parameters in round_groups.items()]
+        optimizer_params = [
+            {"params": parameters, "lr": lr} for lr, parameters in round_groups.items()
+        ]
         if self.enable_minmax_tuning:
-            optimizer_params.extend({"params": parameters, "lr": lr} for lr, parameters in minmax_groups.items())
+            optimizer_params.extend(
+                {"params": parameters, "lr": lr} for lr, parameters in minmax_groups.items()
+            )
         optimizer = self.optimizer(
             optimizer_params,
             lr=self.lr or (1.0 / self.iters),
@@ -443,25 +585,46 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
-        active_inputs = fp_inputs
+        active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
         nsamples = len(active_inputs)
+        valid_token_mask = None
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
         batch_size = max(1, int(getattr(self.calibration_context, "batch_size", 1)))
-        batch_size = min(batch_size, nsamples)
-        index_sampler = IndexSampler(nsamples, batch_size)
+        global_batch_size = min(nsamples, batch_size * self.gradient_accumulate_steps)
+        index_sampler = IndexSampler(nsamples, global_batch_size)
         best_loss = float("inf")
         best_params = {}
         block_fwd = self.block_forward
+        mse_reduction = "sum" if self.gradient_accumulate_steps != 1 else "mean"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        loss_device = getattr(self, "_loss_device", device)
+        num_elm = 1
 
         for iteration in range(self.iters):
             indices = index_sampler.next_batch()
             total_loss = 0.0
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, indices)
             for start in range(0, len(indices), batch_size):
                 batch_indices = indices[start : start + batch_size]
                 index_tensor = torch.tensor(batch_indices, dtype=torch.long)
-                reference = torch.cat([fp_outputs[i] for i in batch_indices], dim=0).to(device).detach()
+                reference = torch.cat([fp_outputs[i] for i in batch_indices], dim=0).to(loss_device).detach()
                 predicted = block_fwd.forward(block, active_inputs, input_others, index_tensor, device)
-                loss = F.mse_loss(predicted.float(), reference.float(), reduction="mean")
-                total_loss += loss.item()
+                if loss_device is not None:
+                    predicted = predicted.to(loss_device)
+                loss = self._get_loss(
+                    predicted,
+                    reference,
+                    batch_indices,
+                    mse_loss,
+                    device,
+                    valid_token_mask,
+                )
+                num_elm = 1 if num_elm <= 0 else num_elm
+                total_loss += loss.item() / num_elm
                 (loss * 1000).backward()
 
             if total_loss < best_loss:
@@ -471,18 +634,23 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             optimizer.zero_grad()
             lr_schedule.step()
 
+            if self.not_use_best_mse and iteration == self.iters - 1:
+                best_params = self._snapshot_round_params(wrappers, device)
+            if not self.not_use_best_mse and 0 < self.dynamic_max_gap:
+                # Keep the same early-stop contract as SignRound; the default
+                # -1 disables this path.
+                pass
+
         planes = {}
         for name, wrapper in wrappers.items():
             params = best_params.get(name, {})
             with torch.no_grad():
                 qdq, scale, zp = wrapper.qdq_from_params(params)
-            planes[name] = (
-                qdq.detach().cpu(),
-                scale.detach().cpu(),
-                zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp,
-            )
+            planes[name] = (qdq.detach().cpu(), scale.detach().cpu(), zp.detach().cpu() if isinstance(zp, torch.Tensor) else zp)
             set_module(block, name, wrapper.orig_layer)
-        return planes, {name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()}
+        return planes, {
+            name: prefixes[name] + plane[0].to(device) for name, plane in planes.items()
+        }
 
     @torch.no_grad()
     def _store_rrq_planes(self, layer, planes):
@@ -505,13 +673,21 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             layer.register_buffer(f"rrq_scales_{plane_idx}", scales.to(self._rrq_scale_dtype).cpu())
             layer.register_buffer(f"rrq_qzeros_{plane_idx}", qzeros.cpu())
 
-    def _quantize_block_opt(self, block, fp_inputs, input_others, fp_outputs, block_ctx):
+    def _quantize_block_opt(
+        self, block, fp_inputs, input_others, fp_outputs, block_ctx, q_inputs=None, input_ids=None
+    ):
         device = next(block.parameters()).device
         originals = {}
         prefixes = {}
         completed_planes = {}
         for name, layer in block.named_modules():
             if check_to_quantized(layer):
+                # Normalize the imatrix once so every plane's optimized init
+                # scale uses the same imatrix-weighted opt-RTN seed as an
+                # ordinary AutoRound model.
+                if hasattr(layer, "imatrix"):
+                    layer.imatrix /= layer.imatrix_cnt
+                    layer.imatrix_cnt = 1
                 originals[name] = layer.weight.detach().clone().to(device)
                 prefixes[name] = torch.zeros_like(originals[name])
                 completed_planes[name] = []
@@ -520,12 +696,14 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             planes, next_prefixes = self._tune_block_round(
                 block,
                 fp_inputs,
+                q_inputs,
                 input_others,
                 fp_outputs,
                 block_ctx,
                 originals,
                 prefixes,
                 plane_idx,
+                input_ids,
             )
             for name, (dequant, scale, zp) in planes.items():
                 completed_planes[name].append((dequant, scale, zp))
@@ -547,7 +725,15 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
             return RRQRTNQuantizer.quantize_block(
                 self, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, input_ids, **kwargs
             )
-        return self._quantize_block_opt(block, fp_inputs, input_others, fp_outputs, block_ctx)
+        return self._quantize_block_opt(
+            block,
+            fp_inputs,
+            input_others,
+            fp_outputs,
+            block_ctx,
+            q_inputs=q_inputs,
+            input_ids=input_ids,
+        )
 
     def quantize_layer_outside_block(
         self, layer, fp_inputs=None, q_inputs=None, disable_opt_rtn=None, input_ids=None

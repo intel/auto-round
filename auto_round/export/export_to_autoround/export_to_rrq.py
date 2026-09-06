@@ -63,7 +63,7 @@ def build_rrq_quantization_config(num_planes: int, group_size: int, sym: bool) -
         "data_type": "int",
         "act_bits": 16,
         "residual_planes": [2] * (num_planes - 1),
-        "supported_effective_bits": [4, 6, 8],
+        "supported_effective_bits": [2 * plane for plane in range(2, num_planes + 1)],
         "total_planes": num_planes,
         "group_size": group_size,
         "sym": sym,
