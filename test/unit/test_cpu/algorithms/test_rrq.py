@@ -91,8 +91,25 @@ class TestRRQConfig:
         assert config.bits == 2
         assert config.data_type == "int"
         assert config.act_bits == 16
+        assert config.iters == 200
+        assert config.lr is None
+        assert config.minmax_lr is None
+        assert config.momentum == 0.0
+        assert config.enable_minmax_tuning is True
         assert config.total_planes == 4
         assert config.total_bits == 8
+
+    def test_explicit_zero_selects_rtn(self):
+        config = RRQConfig(iters=0)
+        assert config.iters == 0
+        # RTN base uses imatrix-weighted opt-RTN, so it also needs calibration.
+        assert config.need_calib is True
+
+    def test_four_bit_only_configuration(self):
+        config = RRQConfig(num_residual_planes=1, iters=200)
+        assert config.total_planes == 2
+        assert config.total_bits == 4
+        assert config.need_calib is True
 
     def test_rejects_wrong_bits(self):
         with pytest.raises(ValueError, match="bits=2"):
@@ -331,6 +348,31 @@ class TestRRQLinear:
         # 8-bit requires all 3 residual planes; with only 3 planes it is allowed.
         rrq.set_active_bits(8)
         assert rrq.active_bits == 8
+
+    def test_random_residual_fraction_and_reproducibility(self):
+        """set_rrq_random_residual assigns a seeded fraction and is reproducible."""
+        from auto_round.inference.rrq_linear import RRQLinear, set_rrq_random_residual
+
+        model = nn.Module()
+        model.layers = nn.ModuleList(
+            [self._build_rrq_layer(64, 32, group_size=32, num_residual=3) for _ in range(10)]
+        )
+
+        n_high = set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2)
+        assert n_high == 5
+        planes = [m.active_planes for m in model.layers]
+        assert planes.count(2) == 5 and planes.count(1) == 5
+
+        # Same seed -> identical assignment; different seed may differ.
+        first = [m.active_planes for m in model.layers]
+        set_rrq_random_residual(model, fraction=0.5, seed=0, high_bits=4, low_bits=2)
+        assert [m.active_planes for m in model.layers] == first
+
+        # fraction bounds and empty-model handling.
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(model, fraction=1.5)
+        with pytest.raises(ValueError):
+            set_rrq_random_residual(nn.Module())
 
 
 class TestRRQConfigBuilder:
@@ -712,8 +754,37 @@ class TestRRQPhase3:
         loss.backward()
 
         assert wrapper.params["value_0"].grad is not None
-        assert wrapper.params["min_scale_0"].grad is not None
+        # With the optimized init_scale seed, ``scale = init_scale * max_scale``
+        # so max_scale carries the scale gradient (min_scale is unused).
         assert wrapper.params["max_scale_0"].grad is not None
+
+    def test_residual_plane_does_not_add_bias(self):
+        from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper
+
+        layer = _make_layer(out_features=8, in_features=16, group_size=8, sym=True, bias=True)
+        layer.scale_dtype = torch.float16
+        layer.bias.data.fill_(3.0)
+        target = layer.weight.detach().clone()
+        wrapper = RRQPlaneWrapper(
+            layer,
+            target,
+            torch.zeros_like(target),
+            plane_idx=1,
+            enable_minmax_tuning=False,
+            iters=2,
+            device="cpu",
+        )
+        inputs = torch.randn(2, 16)
+        with torch.no_grad():
+            params = {
+                "value_1": wrapper.value_1,
+                "min_scale_1": wrapper.min_scale_1,
+                "max_scale_1": wrapper.max_scale_1,
+            }
+            weight_q, _, _ = wrapper.qdq_from_params(params)
+            output = wrapper(inputs)
+            expected = torch.nn.functional.linear(inputs, weight_q, None)
+        assert torch.allclose(output, expected, atol=1e-5, rtol=1e-5)
 
     def test_sign_sgd_produces_four_packed_planes(self):
         from auto_round.algorithms.block_runner import BlockForwardRunner

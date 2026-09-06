@@ -211,6 +211,10 @@ def load_rrq_model(
     residual_model_dir: str,
     active_bits: int = 8,
     device: Optional[str] = None,
+    residual_fraction: Optional[float] = None,
+    residual_seed: int = 0,
+    residual_high_bits: int = 4,
+    residual_low_bits: int = 2,
     **load_kwargs,
 ):
     """Load a base model + residual model and return an RRQ-enabled model.
@@ -219,8 +223,16 @@ def load_rrq_model(
         base_model_dir: Path to the exported INT2 base model (standard format).
         residual_model_dir: Path to the exported ``auto_round:rrq`` residual model
             (three packed INT2 planes).
-        active_bits: Effective bit-width to start with (2, 4, 6, or 8).
+        active_bits: Effective bit-width to start with (2, 4, 6, or 8). Ignored
+            when ``residual_fraction`` is set.
         device: Target device (e.g. ``"cpu"``, ``"cuda"``).
+        residual_fraction: If set, randomly give this fraction of layers the
+            higher precision (``residual_high_bits``) and the rest
+            ``residual_low_bits`` -- a mixed operating point (e.g. ``0.5`` gives
+            an effective ~3-bit model). Overrides ``active_bits``.
+        residual_seed: RNG seed for the random layer selection (reproducible).
+        residual_high_bits: Effective bits for the selected layers (2/4/6/8).
+        residual_low_bits: Effective bits for the rest (2/4/6/8).
         **load_kwargs: Extra keyword args forwarded to
             ``transformers.AutoModelForCausalLM.from_pretrained`` for the base
             model.
@@ -370,9 +382,24 @@ def load_rrq_model(
 
     from auto_round.inference.rrq_linear import set_rrq_bits
 
-    set_rrq_bits(base_model, active_bits)
+    if residual_fraction is not None:
+        from auto_round.inference.rrq_linear import set_rrq_random_residual
 
-    logger.info(f"Built {replaced} RRQ layers from base + residual (active={active_bits}-bit).")
+        n_high = set_rrq_random_residual(
+            base_model,
+            fraction=residual_fraction,
+            seed=residual_seed,
+            high_bits=residual_high_bits,
+            low_bits=residual_low_bits,
+        )
+        logger.info(
+            f"Built {replaced} RRQ layers; random residual: {n_high}/{replaced} at "
+            f"{residual_high_bits}-bit, rest at {residual_low_bits}-bit "
+            f"(fraction={residual_fraction}, seed={residual_seed})."
+        )
+    else:
+        set_rrq_bits(base_model, active_bits)
+        logger.info(f"Built {replaced} RRQ layers from base + residual (active={active_bits}-bit).")
     logger.info(
         "Switch precision via auto_round.inference.rrq_linear.set_rrq_bits(model, bits). "
         "Each RRQ layer computes the base result first, then accumulates each active "

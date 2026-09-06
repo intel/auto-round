@@ -698,6 +698,12 @@ class _CompressorBuilder(object):
         # path when Phase 3 tuning is enabled.
         model_free_iters = 0 if type(quant_config) is RTNConfig else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
+        if type(quant_config).__name__ == "RRQConfig":
+            # RRQ needs the regular compressor to materialize and retain all
+            # residual planes; the model-free RTN path only emits one base
+            # plane and silently drops RRQ state.
+            route_kwargs["disable_model_free"] = True
+            route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and
