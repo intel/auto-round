@@ -45,6 +45,8 @@ For usage details, please refer to the [User Guide](./docs/step_by_step.md).
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
 
+* [2026/09] We experimentally support **Recurrent Residual Quantization (RRQ)**, a progressive multi-precision representation that stacks INT2 residual planes on a standard INT2 base. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
+
 * [2026/09] The **NeUQI** grid search ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)) is available for calibration-free quantization: `--enable_neuqi` with `--iters 0` runs a joint (scale, zero-point) search for asymmetric layers and a two-stage scale search for symmetric layers, and anchors the tuning grid when `iters > 0`. [*Results*](./docs/neuqi_acc.md)
 
 * [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.

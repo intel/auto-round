@@ -43,6 +43,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。
 
+* [2026/09] 我们实验性地支持 **递归残差量化（RRQ）**：一种渐进式多精度表示，在标准 INT2 base 之上叠加 INT2 残差平面。单个 checkpoint 即可在加载时选择 2/4/6/8-bit（以及逐层混合精度），无需重新量化：[*论文*](https://arxiv.org/abs/2608.04048)。
+
 * [2026/09] 面向免标定量化的 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）现已可用：`--enable_neuqi` 配合 `--iters 0` 时，非对称层执行联合 (scale, zero-point) 搜索、对称层执行两阶段 scale 搜索；`iters > 0` 时搜索结果将作为调优网格的锚点：[*结果*](./docs/neuqi_acc.md)。
 
 * [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
