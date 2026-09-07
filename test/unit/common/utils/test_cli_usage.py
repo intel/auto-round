@@ -339,7 +339,8 @@ def test_legacy_disable_flags_map_to_enable_bools():
     assert args.enable_quanted_input is False
 
 
-def test_svdquant_cli_builds_hyphenated_options_before_rtn():
+@pytest.mark.parametrize("model_adapter", ["flux", "sdxl"])
+def test_svdquant_cli_builds_hyphenated_options_before_rtn(model_adapter):
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
     from auto_round.cli.algorithms import AlgorithmHandler
     from auto_round.cli.parser import build_quantize_parser
@@ -368,7 +369,7 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
             "--svdquant-exclude-modules",
             "proj_out",
             "--svdquant-model-adapter",
-            "flux",
+            model_adapter,
             "--disable_opt_rtn",
         ]
     )
@@ -385,7 +386,7 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
     assert configs[0].low_rank_dtype == "fp32"
     assert configs[0].target_modules == ["attn", "ff"]
     assert configs[0].exclude_modules == ["proj_out"]
-    assert configs[0].model_adapter == "flux"
+    assert configs[0].model_adapter == model_adapter
     assert configs[1].__class__.__name__ == "RTNConfig"
 
 

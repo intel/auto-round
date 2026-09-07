@@ -52,6 +52,14 @@ class FluxTransformerBlock(torch.nn.Module):
         self.ff_context = FeedForward(width)
 
 
+class BasicTransformerBlock(torch.nn.Module):
+    def __init__(self, width=4):
+        super().__init__()
+        self.attn1 = Attention(width)
+        self.attn2 = Attention(width)
+        self.ff = FeedForward(width)
+
+
 def test_flux_adapter_discovers_fused_projection_groups_without_duplicates():
     block = FluxTransformerBlock()
     block.global_name = "transformer_blocks.7"
@@ -72,3 +80,29 @@ def test_flux_adapter_discovers_fused_projection_groups_without_duplicates():
     assert len(by_key["transformer_blocks.7.attn.qkv"].projections) == 3
     assert len(by_key["transformer_blocks.7.attn.add_qkv"].projections) == 3
     assert len({id(projection) for group in groups for projection in group.projections}) == 12
+
+
+def test_sdxl_adapter_groups_self_attention_qkv_and_keeps_other_targets_direct():
+    block = BasicTransformerBlock()
+    block.global_name = "down_blocks.1.attentions.0.transformer_blocks.0"
+    targets = {
+        "attn1.to_q",
+        "attn1.to_k",
+        "attn1.to_v",
+        "attn1.to_out.0",
+        "attn2.to_q",
+        "attn2.to_out.0",
+        "ff.net.0.proj",
+        "ff.net.2",
+    }
+
+    groups = discover_svdquant_groups(
+        block, lambda name, module: isinstance(module, torch.nn.Linear) and name in targets
+    )
+    by_key = {group.key: group for group in groups}
+
+    qkv_key = "down_blocks.1.attentions.0.transformer_blocks.0.attn1.qkv"
+    assert qkv_key in by_key
+    assert len(by_key[qkv_key].projections) == 3
+    assert len(groups) == 6
+    assert len({id(projection) for group in groups for projection in group.projections}) == 8

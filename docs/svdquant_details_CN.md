@@ -10,10 +10,11 @@ Linear(x) ~= QuantizedLinear(x, Q(R)) + Linear(Linear(x, V), U)
 该功能采用 [SVDQuant: Absorbing Outliers by Low-Rank Components for 4-Bit
 Diffusion Models](https://arxiv.org/abs/2411.05007) 提出的分解方法。
 AutoRound 可以将该变换与 RTN 或 SignRound 组合，并导出 Nunchaku 可直接加载的
-MXFP4 FLUX pipeline。
+MXFP4 FLUX 和 SDXL pipeline。
 
-> 目前端到端导出流程仅在 FLUX.1-dev 上完成验证。其他使用兼容 Diffusers
-> FLUX block 类的模型仍属于实验性支持，运行时会输出警告。
+> 架构 adapter 使用严格匹配：FLUX 已在 FLUX.1-dev 上验证；SDXL adapter 面向
+> `stabilityai/stable-diffusion-xl-base-1.0`。Stable Diffusion 1.x UNet 不会使用
+> SDXL adapter。
 
 ## 快速开始
 
@@ -41,6 +42,35 @@ CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
 
 选择 `svdquant` 且未指定 `--format` 时，CLI 也会默认使用
 `svdquant_nunchaku`。
+
+### SDXL base 1.0 RTN 流程
+
+SDXL 使用 UNet，而不是 Diffusers transformer component。AutoRound 可以根据 UNet
+config 自动选择 SDXL adapter，也可以显式指定：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 auto-round-rtn \
+  --model /path/to/stable-diffusion-xl-base-1.0 \
+  --model_dtype bf16 \
+  --scheme MXFP4 \
+  --algorithm svdquant \
+  --svdquant-model-adapter sdxl \
+  --format svdquant_nunchaku \
+  --device 0 \
+  --output_dir ./sdxl-base-1.0-mxfp4-svdquant-rtn
+```
+
+只量化 Nunchaku runtime 会替换的 projection。SDXL self-attention Q/K/V 共享一个
+低秩 down factor，并融合导出为 `to_qkv`。Cross-attention K/V、卷积、normalization
+层及其余 UNet state 保持 BF16。
+
+SDXL base 1.0 的质量结果如下：
+
+| 格式 | CLIP ↑ | CLIP-IQA ↑ | ImageReward ↑ |
+| --- | ---: | ---: | ---: |
+| BF16 | 26.8583 | 0.929027 | 0.812544 |
+| MXFP4 | 26.9006 | 0.895704 | 0.697131 |
+| MXFP4（SVDQuant） | 26.8088 | 0.927907 | 0.7967 |
 
 ### 默认 SignRound 流程
 
@@ -105,8 +135,8 @@ SVDQuant 是结构变换预处理器，后面必须接一个最终量化算法�
   -> Nunchaku 导出
 ```
 
-FLUX 的 Q/K/V projection 会作为一组处理：共享一个低秩 down factor，并保留各自的
-up factor，以匹配运行时布局。
+FLUX 和 SDXL self-attention 的 Q/K/V projection 会作为一组处理：共享一个低秩
+down factor，并保留各自的 up factor，以匹配对应的运行时布局。
 
 ## Residual iteration
 
@@ -226,9 +256,38 @@ image = pipe(
 image.save("flux-svdquant-mxfp4.png")
 ```
 
+对于 SDXL，需要加载导出的 Nunchaku UNet，再注入保存后的 Diffusers pipeline：
+
+```python
+import torch
+from diffusers import StableDiffusionXLPipeline
+from nunchaku.models.unets.unet_sdxl import NunchakuSDXLUNet2DConditionModel
+
+model_dir = "./sdxl-base-1.0-mxfp4-svdquant-rtn"
+unet = NunchakuSDXLUNet2DConditionModel.from_pretrained(
+    f"{model_dir}/unet/diffusion_pytorch_model.safetensors",
+    torch_dtype=torch.bfloat16,
+    device="cuda:0",
+)
+pipe = StableDiffusionXLPipeline.from_pretrained(
+    model_dir,
+    unet=unet,
+    torch_dtype=torch.bfloat16,
+    local_files_only=True,
+).to("cuda:0")
+
+image = pipe(
+    "A cinematic photograph of a red panda in a bamboo forest",
+    num_inference_steps=20,
+    guidance_scale=5.0,
+    generator=torch.Generator(device="cuda").manual_seed(12345),
+).images[0]
+image.save("sdxl-svdquant-mxfp4.png")
+```
+
 ## 当前限制
 
-- Runtime-loadable export 目前只在 FLUX.1-dev 上完成验证。
+- SDXL adapter 支持 SDXL base 1.0，不支持 Stable Diffusion 1.x UNet。
 - SVDQuant 要求 `nblocks=1`。
 - Smooth 搜索会针对每组 Alpha/Beta 候选重放所有保留 calls。
 - 增加 residual iterations 会重复执行分解和 QDQ。
