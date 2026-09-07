@@ -383,6 +383,72 @@ arise. The two tests above avoid it by construction, quantizing rows that lie on
 the int8 grid (`a = q × 2^-e`, `|q| ≤ 127`), where every product is an integer
 and neither quantizer has a tie to break.
 
+### Reaching contract 1 with no int8 upstream: deduplicate the quantization
+
+The contract above assumes a producer that can emit int8. Most callers do not
+have one — the previous operator emits bf16, and the dynamic quantization has
+to happen somewhere. That does **not** put contract 1 out of reach, because of
+where the quantization happens rather than whether it happens.
+
+The quantizer is a per-row absmax: `a.abs().amax(dim=1)`, then
+`round(x × 127 / absmax)`. Nothing in it depends on the expert. So the int8
+bytes and the scale for a token are a property of *the token*, identical on
+every routed row that token lands on.
+
+Now count the rows. The up/gate projection is handed `[T, K]` sorted by expert,
+where `T = batch × top_k` — and those rows are `top_k` **copies** of `batch`
+distinct tokens. At the shipped `top_k = 8`, the in-call pass therefore reads
+each token's row 8 times, computes its absmax 8 times, and writes 8 identical
+int8 rows. Seven eighths of that is redundant.
+
+Hoist the same quantization above the permute and it disappears. The caller
+quantizes the `batch` rows it actually has, then permutes int8 instead of bf16:
+
+```python
+qact, ascale = quantize_rows(hidden_states)  # [batch, K] -> int8 + [batch] fp32
+out = ark.moe_gemm_w4a8(
+    qact.index_select(0, row_to_token),  # [T, K] int8, sorted by expert
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    activation_scale=ascale.index_select(0, row_to_token),
+    out_dtype=torch.bfloat16,
+)
+```
+
+**This is where the honesty check matters.** Contract 1 measured on its own
+looks spectacular partly because it *moves* the quantization out of the timed
+region. A caller who quantized the already-permuted `[T, K]` rows themselves
+would hand back the entire gain — same bytes, different clock. Deduplication is
+what makes the work genuinely smaller, and it also halves the permute, because
+the permute now moves 1 byte per element instead of 2. Counting both sides at
+the qwen3 up-projection shape:
+
+| | kernel | caller's permute | end to end |
+|---|---|---|---|
+| in-call quant | 1141 MB | 268 MB (bf16) | **1409 MB** |
+| deduplicated | 738 MB | 185 MB (quantize 8192 rows + int8 permute) | **923 MB** |
+
+1.53x less traffic end to end, and the kernel half is byte-for-byte the call
+that measured 2.090 ms. `test_perf_prefill_dedup_quant_long_seq` times both
+paths *with the permute included* — the only comparison that can tell a real
+saving from a relocated one — and asserts the outputs agree.
+
+Two limits worth stating plainly:
+
+* **Up/gate only.** The down projection's `T` rows are the SiLU output: one
+  distinct row per routed row, nothing to deduplicate. Its route to the same
+  contract is to fold the quantization into the SiLU epilogue, which already
+  writes that tensor and already holds the row in registers — free, in the
+  sense contract 1 describes, and measured at 1.45x.
+* **The `[T, K]` int8 is still materialized.** Removing it too means gathering
+  A inside the mainloop, so the deduplicated `[batch, K]` int8 (16.8 MB, small
+  enough to stay cache-resident) is read directly. That would delete a further
+  134 MB write plus most of the read, but it turns the A-side 2D block load
+  into a per-row gather — the same class of change that made contract 2 lose.
+  It is a kernel change, not a calling change, and it should not be attempted
+  without the hardware to measure it.
+
 ### Contract 2 — the top-k reduction fused into the epilogue
 
 ```python

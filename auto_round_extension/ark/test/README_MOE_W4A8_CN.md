@@ -331,6 +331,61 @@ fp16 读、int8 写、int8 读回 — 外加一次 kernel launch。GEMM 本身�
 上面那两个测试则是从构造上回避它 — 量化的行落在 int8 网格上 (`a = q × 2^-e`、
 `|q| ≤ 127`)，每个乘积都是整数，两边的量化器都没有分界要打破。
 
+### 上游没有 int8 时如何用上契约 1：去重量化
+
+上面的契约假设生产者能直接输出 int8。多数调用方并没有这样的算子——上一个算子输出
+bf16，动态量化总得有人做。但这并不意味着契约 1 用不上，关键不在于量化做不做，而在于
+它在**哪里**做。
+
+量化器是逐行 absmax：`a.abs().amax(dim=1)`，然后 `round(x × 127 / absmax)`。其中
+没有任何一项依赖专家。所以一个 token 的 int8 字节和 scale 是**这个 token 自身**的属性，
+在它被路由到的每一行上都完全相同。
+
+再数一下行数。up/gate 投影拿到的是按专家排序的 `[T, K]`，其中 `T = batch × top_k`
+——而这些行正是 `batch` 个不同 token 的 `top_k` 份**副本**。在实际使用的
+`top_k = 8` 下，调用内的量化因此把每个 token 的行读了 8 遍、absmax 算了 8 遍、
+写出 8 行完全相同的 int8。其中八分之七是冗余的。
+
+把同一个量化提到 permute 之上，这部分就消失了。调用方量化自己手里真正拥有的
+`batch` 行，然后 permute int8 而不是 bf16：
+
+```python
+qact, ascale = quantize_rows(hidden_states)  # [batch, K] -> int8 + [batch] fp32
+out = ark.moe_gemm_w4a8(
+    qact.index_select(0, row_to_token),  # [T, K] int8，按专家排序
+    weights_s8,
+    wscales,
+    num_tokens_per_expert,
+    activation_scale=ascale.index_select(0, row_to_token),
+    out_dtype=torch.bfloat16,
+)
+```
+
+**这里必须诚实地做一次核对。**契约 1 单独测出来的数字之所以亮眼，有一部分原因是它把
+量化**挪出**了计时区间。如果调用方自己去量化已经 permute 过的 `[T, K]`，收益会被
+原样还回去——字节数没变，只是换了个计时的人。真正让工作量变小的是去重；而且它同时把
+permute 减半，因为 permute 现在每个元素只搬 1 字节而不是 2 字节。把两侧一起算，
+以 qwen3 up 投影的形状为例：
+
+| | kernel | 调用方的 permute | 端到端 |
+|---|---|---|---|
+| 调用内量化 | 1141 MB | 268 MB（bf16） | **1409 MB** |
+| 去重后 | 738 MB | 185 MB（量化 8192 行 + int8 permute） | **923 MB** |
+
+端到端流量降低 1.53x，而 kernel 那一半逐字节就是测得 2.090 ms 的那次调用。
+`test_perf_prefill_dedup_quant_long_seq` 会把两条路径**连同 permute 一起**计时
+——只有这样的对比才能区分真正的节省和被挪走的开销——并断言两者输出一致。
+
+有两条边界需要讲清楚：
+
+* **只适用于 up/gate。**down 投影的 `T` 行是 SiLU 的输出：每一条路由行对应一行不同的
+  数据，没有可去重的东西。它走向同一契约的路径是把量化折进 SiLU 的 epilogue——那里
+  本来就在写这个张量、行也本来就在寄存器里，属于契约 1 所说的“免费”，实测 1.45x。
+* **`[T, K]` 的 int8 仍然会被物化。**要把它也去掉，就得在 mainloop 内部 gather A，
+  直接读去重后的 `[batch, K]` int8（16.8 MB，小到可以常驻 cache）。那会再省下
+  134 MB 的写以及大部分读，但也会把 A 侧的 2D block load 变成逐行 gather——正是让
+  契约 2 失利的那一类改动。这是 kernel 改动而非调用方改动，没有硬件实测就不该动。
+
 ### 契约 2 — 把 top-k 规约折进 epilogue
 
 ```python

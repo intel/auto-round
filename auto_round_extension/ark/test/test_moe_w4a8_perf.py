@@ -1447,6 +1447,154 @@ def run_perf(
     return rows
 
 
+def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=True):
+    """End-to-end permute + GEMM for the up/gate projection, two ways.
+
+    The kernel quantizes its activations per row, and the row absmax is a
+    property of the *token*: ``a.abs().amax(dim=1)`` does not depend on which
+    expert the row was routed to. On the up/gate projection the ``T`` rows the
+    kernel is handed are ``top_k`` copies of ``batch`` distinct tokens, so the
+    in-call pass computes every scale ``top_k`` times and writes ``top_k``
+    copies of every int8 row -- 8x redundant at the shipped ``top_k = 8``.
+
+    Hoisting the same quantization above the permute removes that redundancy
+    and lets a caller reach the pre-quantized contract *without* an int8
+    producer upstream: the dynamic quantization still happens, just on
+    ``batch`` rows instead of ``batch * top_k``, and the permute then moves
+    int8 instead of 16-bit.
+
+    Both paths are timed **including the caller's permute**, which is what
+    makes this an honest comparison rather than an accounting shift. The
+    pre-quantized contract on its own only moves the quantization across the
+    call boundary; it is the deduplication -- and the halved permute that comes
+    with moving int8 instead of bf16 -- that makes the work actually smaller.
+    A caller who quantized the *permuted* rows themselves would see the
+    contract's gain cancel almost exactly.
+
+    Up/gate only. The down projection's ``T`` rows are the SiLU output, one
+    distinct row per routed row, so there is nothing to deduplicate; its route
+    to the same contract is folding the quantization into the SiLU epilogue
+    that already writes that tensor, which is what
+    ``test_perf_prefill_prequant_long_seq`` measures.
+    """
+    batches = _long_seq_batches() if batches is None else batches
+    resolved = _models(models)
+    if verbose:
+        print()
+        print("=" * _PERF_WIDTH)
+        print(
+            f"W4A8 end-to-end [prefill] (models={'+'.join(n for n, _ in resolved)}, up/gate only) "
+            f"-- caller permute + moe_gemm_w4a8, in-call quant vs deduplicated quant"
+        )
+        print(
+            f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'batch':>8}{'topk':>6}"
+            f"{'path':>22}{'permute(ms)':>13}{'gemm(ms)':>11}{'total(ms)':>12}{'vs in-call':>12}"
+        )
+        print("-" * _PERF_WIDTH)
+    rows = []
+    shapes = [
+        (nk_label, N, K, spec, batch)
+        for _, spec in resolved
+        for nk_label, N, K in spec["nk"]
+        if not _reduces_topk(nk_label)
+        for batch in batches
+    ]
+    for nk_label, N, K, spec, batch in shapes:
+        E, topk, group_size = spec["E"], spec["topk"], spec["group_size"]
+        total_tokens = batch * topk
+        case = _build_case(
+            N, K, E, total_tokens, group_size, dtype, need_reference=False, need_dequant=False, topk=topk
+        )
+        weights_s8, wscales, block = ark.moe_w4a8_prepack(
+            case["packed"], case["scales"], group_size=group_size, rescale_group_size=-1
+        )
+        # The unpermuted hidden states a real layer holds, and the map the
+        # router produces. `index_select` wants a 64-bit index; converting it
+        # is one-off setup a caller does once per layer, not per call, so it
+        # stays outside both timed paths.
+        n_tokens = case["batch"]
+        hidden = case["activations"][:n_tokens].contiguous()
+        index = case["row_to_token"].long()
+
+        def _call(act, ascale=None):
+            kwargs = {"rescale_block_size": block, "phase": "prefill"}
+            if ascale is not None:
+                kwargs["activation_scale"] = ascale
+                kwargs["out_dtype"] = dtype
+            return ark.moe_gemm_w4a8(act, weights_s8, wscales, case["ntpe"], **kwargs)
+
+        def _today():
+            return _call(hidden.index_select(0, index))
+
+        def _dedup():
+            qact, ascale = _quantize_rows(hidden)
+            return _call(qact.index_select(0, index), ascale.index_select(0, index))
+
+        # Round-robin, min-filtered: the same guard against clock droop the
+        # other sweeps use, since the two paths are being compared to each
+        # other rather than reported in isolation.
+        today, dedup, perm_bf16, perm_int8 = [], [], [], []
+        iters = max(1, ITERS // SWEEP_ROUNDS)
+        qact_ref = _quantize_rows(hidden)[0]
+        for _ in range(SWEEP_ROUNDS):
+            today.append(_xpu_time_ms(_today, iters=iters))
+            dedup.append(_xpu_time_ms(_dedup, iters=iters))
+            perm_bf16.append(_xpu_time_ms(lambda: hidden.index_select(0, index), iters=iters))
+            perm_int8.append(_xpu_time_ms(lambda: qact_ref.index_select(0, index), iters=iters))
+        today_ms, dedup_ms = min(today), min(dedup)
+        perm_bf16_ms, perm_int8_ms = min(perm_bf16), min(perm_int8)
+
+        # The deduplicated path must not change the result: the row absmax is
+        # expert-independent, so quantizing before the permute and permuting
+        # the int8 is the same arithmetic on the same row values.
+        snr_db = _snr_db(_today().to(torch.float32), _dedup().to(torch.float32))
+
+        rows.append(
+            {
+                "label": nk_label,
+                "E": E,
+                "N": N,
+                "K": K,
+                "tokens": total_tokens,
+                "batch": n_tokens,
+                "topk": topk,
+                "today_ms": today_ms,
+                "dedup_ms": dedup_ms,
+                "permute_bf16_ms": perm_bf16_ms,
+                "permute_int8_ms": perm_int8_ms,
+                "speedup": (today_ms / dedup_ms) if dedup_ms else None,
+                "snr_db": snr_db,
+            }
+        )
+        if verbose:
+            for path, total_ms, perm_ms, speedup in (
+                ("in-call quant", today_ms, perm_bf16_ms, None),
+                ("dedup quant", dedup_ms, perm_int8_ms, today_ms / dedup_ms if dedup_ms else None),
+            ):
+                print(
+                    f"{nk_label:<14}{E:>5}{N:>7}{K:>7}{total_tokens:>8}{n_tokens:>8}{topk:>6}"
+                    f"{path:>22}{perm_ms:>13.3f}{max(total_ms - perm_ms, 0.0):>11.3f}{total_ms:>12.3f}"
+                    f"{(f'{speedup:.2f}x' if speedup else '--'):>12}"
+                )
+
+        case = weights_s8 = wscales = hidden = qact_ref = None
+        ark.clear_moe_w4a8_prepack_cache()
+        ark.moe_w4a8_release_scratch()
+        _release_xpu_memory()
+
+    if verbose and rows:
+        print()
+        print("deduplicated dynamic quantization [prefill] (up/gate only; the down projection has no duplicate rows):")
+        for row in rows:
+            print(
+                f"  {row['label']:<12} {row['today_ms']:.3f} ms -> {row['dedup_ms']:.3f} ms  "
+                f"{row['speedup']:.2f}x end-to-end   (quantizes {row['batch']} rows instead of "
+                f"{row['tokens']}, permutes int8 instead of {str(dtype).split('.')[-1]})   "
+                f"SNR {row['snr_db']:.1f} dB"
+            )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Kernel-configuration sweeps
 #
@@ -2259,6 +2407,27 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"call contract {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_dedup_quant_long_seq(self, request):
+            """End-to-end win from deduplicating the dynamic quantization.
+
+            The answer for a caller whose upstream operator has no int8 to
+            hand over. The quantization still has to happen -- it just does not
+            have to happen ``top_k`` times per token. See :func:`run_dedup_quant`
+            for why the row absmax makes that safe, and why both paths are
+            timed with the caller's permute included.
+
+            Asserts the two paths agree: the deduplicated path is the same
+            arithmetic on the same row values, so the only permitted difference
+            is the few-ulp fp32 division noise :func:`_quantize_rows` documents.
+            """
+            rows = run_dedup_quant(models=_models_option(request))
+            assert rows and all(r["today_ms"] > 0 and r["dedup_ms"] > 0 for r in rows)
+            for row in rows:
+                assert row["snr_db"] >= _SWEEP_MIN_SNR_DB, (
+                    f"deduplicated quantization changed {row['label']}: "
+                    f"SNR {row['snr_db']:.2f} dB below {_SWEEP_MIN_SNR_DB}"
+                )
+
         def test_perf_prefill_prequant_long_seq(self, request):
             """Prefill throughput for one 8K prompt with the int8-in contract alone.
 
@@ -2830,6 +2999,15 @@ def _parse_args(argv):
         ),
     )
     parser.add_argument(
+        "--dedup-quant",
+        action="store_true",
+        help=(
+            "Also run the end-to-end up/gate comparison that deduplicates the dynamic quantization: "
+            "quantize the batch distinct tokens once and permute int8, instead of permuting 16-bit and "
+            "letting the kernel quantize every routed row. Both paths are timed with the permute included."
+        ),
+    )
+    parser.add_argument(
         "--contracts",
         action="store_true",
         help=(
@@ -2921,6 +3099,12 @@ def main(argv=None) -> int:
                     models=models,
                     prequantized=True,
                     fused_reduce=True,
+                )
+            if phase == "prefill" and args.dedup_quant:
+                run_dedup_quant(
+                    _long_seq_batches() if args.long_seq else None,
+                    dtype=dtype,
+                    models=models,
                 )
             if args.sweep_configs:
                 configs = _PREFILL_TILE_CONFIGS if phase == "prefill" else _DECODE_CONFIGS
