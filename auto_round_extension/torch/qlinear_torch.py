@@ -363,11 +363,13 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         else:
             raise ValueError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
 
-    def forward(self, x):
-        out_shape = x.shape[:-1] + (self.outfeatures,)
-        x = x.reshape(-1, x.shape[-1])
-        x_dtype = x.dtype
+    def _dequantize(self) -> torch.Tensor:
+        """Dequantize the packed weights into a full ``(out, in)`` weight tensor.
 
+        Shared by :meth:`forward` and by multi-plane layers (e.g. RRQ) that need
+        the plain dequantized weight. The result is returned in float and the
+        caller casts it to the desired dtype before the matmul.
+        """
         if self.use_generic_bit_packing:
             # Generic bit-stream layout: unpack straight into 2-D tensors.
             zeros = unpack_bitstream(self.qzeros, self.bits, dim=1).reshape(self.scales.shape)
@@ -417,7 +419,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         if weight.dim() == 3:
             weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         if hasattr(self, "g_idx"):
-            num_itr = self.g_idx.shape[0] // x.shape[-1]
+            num_itr = self.g_idx.shape[0] // self.infeatures
             num_dim = self.g_idx.shape[0] // num_itr
             weights = []
             for i in range(num_itr):
@@ -431,7 +433,14 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
             repeat_scales = self.scales.repeat_interleave(self.group_size, dim=0)
             repeat_zeros = zeros.repeat_interleave(self.group_size, dim=0)
             weights = repeat_scales * (weight - repeat_zeros)
-        weights = weights.to(x_dtype)
+        return weights
+
+    def forward(self, x):
+        out_shape = x.shape[:-1] + (self.outfeatures,)
+        x = x.reshape(-1, x.shape[-1])
+        x_dtype = x.dtype
+
+        weights = self._dequantize().to(x_dtype)
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)
         out = out.reshape(out_shape)
