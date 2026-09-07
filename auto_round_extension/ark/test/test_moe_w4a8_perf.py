@@ -1463,13 +1463,39 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
     ``batch`` rows instead of ``batch * top_k``, and the permute then moves
     int8 instead of 16-bit.
 
-    Both paths are timed **including the caller's permute**, which is what
-    makes this an honest comparison rather than an accounting shift. The
-    pre-quantized contract on its own only moves the quantization across the
-    call boundary; it is the deduplication -- and the halved permute that comes
-    with moving int8 instead of bf16 -- that makes the work actually smaller.
-    A caller who quantized the *permuted* rows themselves would see the
-    contract's gain cancel almost exactly.
+    Every path is timed **including the caller's permute and its
+    quantization**, which is what makes this an honest comparison rather than
+    an accounting shift. The pre-quantized contract on its own only moves the
+    quantization across the call boundary; it is the deduplication -- and the
+    halved permute that comes with moving int8 instead of bf16 -- that makes
+    the work actually smaller. A caller who quantized the *permuted* rows
+    themselves would see the contract's gain cancel almost exactly.
+
+    **Which quantizer does the deduplicated work matters more than the
+    deduplication.** :func:`_quantize_rows` is the eager-torch reference: it
+    upcasts to fp32 and walks the tensor about seven times, once per operator,
+    materializing a full-size intermediate each time. The in-call path uses the
+    fused SYCL quantizer, which reads each row once and keeps the absmax in
+    registers. Comparing them directly charges the deduplicated path a constant
+    factor roughly fifteen times worse per row, which is more than enough to
+    eat an 8x reduction in rows -- so this reports all three points and lets
+    the columns say which effect is which:
+
+    * ``in-call quant`` -- what ships today: permute 16-bit, kernel quantizes
+      ``T`` rows with the fused quantizer.
+    * ``dedup, torch quant`` -- the deduplication done with the reference
+      quantizer. Not a shipping configuration; it is here because it is the
+      obvious way to try this and it *loses*, and that is worth recording.
+    * ``dedup, fused quant`` -- the deduplication with a quantizer of the same
+      quality as the one already in the kernel.
+
+    The fused quantizer has no standalone Python entry point, so its cost is
+    measured rather than assumed: the same GEMM is timed with 16-bit input and
+    with int8 input, on the same shape and the same weights, and the difference
+    is the in-kernel quantization of exactly those rows. Doing that at both
+    ``T`` and ``batch`` rows also cross-checks that the cost is linear in rows
+    (it should divide by ``top_k``), which is reported as ``fused quant
+    T/batch`` so a bad measurement cannot pass silently.
 
     Up/gate only. The down projection's ``T`` rows are the SiLU output, one
     distinct row per routed row, so there is nothing to deduplicate; its route
@@ -1488,7 +1514,8 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
         )
         print(
             f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'batch':>8}{'topk':>6}"
-            f"{'path':>22}{'permute(ms)':>13}{'gemm(ms)':>11}{'total(ms)':>12}{'vs in-call':>12}"
+            f"{'path':>21}{'permute(ms)':>13}{'quant(ms)':>11}{'gemm(ms)':>11}{'total(ms)':>12}"
+            f"{'vs in-call':>12}"
         )
         print("-" * _PERF_WIDTH)
     rows = []
@@ -1513,41 +1540,94 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
         # is one-off setup a caller does once per layer, not per call, so it
         # stays outside both timed paths.
         n_tokens = case["batch"]
-        hidden = case["activations"][:n_tokens].contiguous()
+        # `clone`, not `contiguous`: a leading slice of a contiguous tensor is
+        # already contiguous, so `contiguous()` would hand back a view and keep
+        # the whole [T, K] allocation alive through it. This function holds
+        # several large tensors live at once -- both permuted forms are
+        # materialized so each stage can be timed on its own -- so the 268 MB
+        # the full activations occupy at this shape is worth actually
+        # releasing.
+        hidden = case["activations"][:n_tokens].clone()
         index = case["row_to_token"].long()
+        ntpe_full = case["ntpe"]
+        case["activations"] = case["packed"] = case["scales"] = None
+        _release_xpu_memory()
 
-        def _call(act, ascale=None):
+        # Routing histogram for a `batch`-row call: same weights, same experts,
+        # one row per distinct token. Only used to isolate the fused
+        # quantizer's cost at that row count.
+        ntpe_batch = torch.tensor(_spread_tokens(n_tokens, E), dtype=torch.int32, device=hidden.device)
+
+        def _call(act, ascale=None, ntpe=None):
             kwargs = {"rescale_block_size": block, "phase": "prefill"}
             if ascale is not None:
                 kwargs["activation_scale"] = ascale
                 kwargs["out_dtype"] = dtype
-            return ark.moe_gemm_w4a8(act, weights_s8, wscales, case["ntpe"], **kwargs)
+            return ark.moe_gemm_w4a8(act, weights_s8, wscales, ntpe_full if ntpe is None else ntpe, **kwargs)
 
-        def _today():
-            return _call(hidden.index_select(0, index))
-
-        def _dedup():
-            qact, ascale = _quantize_rows(hidden)
-            return _call(qact.index_select(0, index), ascale.index_select(0, index))
+        # Materialized once, outside every timed region: each stage is timed on
+        # its own so the reported columns are attributable, and the three
+        # stages form a true dependency chain (permute -> quantize -> GEMM),
+        # which is why summing separately-timed stages is a faithful model of
+        # running them back to back.
+        qact_batch, ascale_batch = _quantize_rows(hidden)
+        permuted_bf16 = hidden.index_select(0, index)
+        permuted_int8 = qact_batch.index_select(0, index)
+        permuted_scale = ascale_batch.index_select(0, index)
 
         # Round-robin, min-filtered: the same guard against clock droop the
-        # other sweeps use, since the two paths are being compared to each
-        # other rather than reported in isolation.
-        today, dedup, perm_bf16, perm_int8 = [], [], [], []
+        # other sweeps use, since these points are compared to each other
+        # rather than reported in isolation.
+        stages = {
+            k: []
+            for k in (
+                "perm_bf16",
+                "perm_int8",
+                "quant_torch",
+                "gemm_bf16_t",
+                "gemm_int8_t",
+                "gemm_bf16_b",
+                "gemm_int8_b",
+            )
+        }
         iters = max(1, ITERS // SWEEP_ROUNDS)
-        qact_ref = _quantize_rows(hidden)[0]
         for _ in range(SWEEP_ROUNDS):
-            today.append(_xpu_time_ms(_today, iters=iters))
-            dedup.append(_xpu_time_ms(_dedup, iters=iters))
-            perm_bf16.append(_xpu_time_ms(lambda: hidden.index_select(0, index), iters=iters))
-            perm_int8.append(_xpu_time_ms(lambda: qact_ref.index_select(0, index), iters=iters))
-        today_ms, dedup_ms = min(today), min(dedup)
-        perm_bf16_ms, perm_int8_ms = min(perm_bf16), min(perm_int8)
+            stages["perm_bf16"].append(_xpu_time_ms(lambda: hidden.index_select(0, index), iters=iters))
+            stages["perm_int8"].append(
+                _xpu_time_ms(
+                    lambda: (qact_batch.index_select(0, index), ascale_batch.index_select(0, index)), iters=iters
+                )
+            )
+            stages["quant_torch"].append(_xpu_time_ms(lambda: _quantize_rows(hidden), iters=iters))
+            stages["gemm_bf16_t"].append(_xpu_time_ms(lambda: _call(permuted_bf16), iters=iters))
+            stages["gemm_int8_t"].append(_xpu_time_ms(lambda: _call(permuted_int8, permuted_scale), iters=iters))
+            stages["gemm_bf16_b"].append(_xpu_time_ms(lambda: _call(hidden, ntpe=ntpe_batch), iters=iters))
+            stages["gemm_int8_b"].append(
+                _xpu_time_ms(lambda: _call(qact_batch, ascale_batch, ntpe=ntpe_batch), iters=iters)
+            )
+        t = {k: min(v) for k, v in stages.items()}
+
+        # The fused quantizer has no standalone entry point, so difference the
+        # same GEMM with 16-bit and int8 input: identical shape, identical
+        # weights, identical output -- the only work that differs is the
+        # in-kernel quantization of exactly those rows.
+        quant_fused_t = max(t["gemm_bf16_t"] - t["gemm_int8_t"], 0.0)
+        quant_fused_b = max(t["gemm_bf16_b"] - t["gemm_int8_b"], 0.0)
+        # Should be ~top_k: the quantizer is a pure streaming pass, so its cost
+        # is linear in rows. A ratio far from top_k means one of the two
+        # differences is noise rather than signal.
+        fused_ratio = (quant_fused_t / quant_fused_b) if quant_fused_b > 0 else None
+
+        perm_bf16_ms, perm_int8_ms = t["perm_bf16"], t["perm_int8"]
+        gemm_ms = t["gemm_int8_t"]
+        today_ms = perm_bf16_ms + t["gemm_bf16_t"]
+        dedup_torch_ms = perm_int8_ms + t["quant_torch"] + gemm_ms
+        dedup_fused_ms = perm_int8_ms + quant_fused_b + gemm_ms
 
         # The deduplicated path must not change the result: the row absmax is
         # expert-independent, so quantizing before the permute and permuting
         # the int8 is the same arithmetic on the same row values.
-        snr_db = _snr_db(_today().to(torch.float32), _dedup().to(torch.float32))
+        snr_db = _snr_db(_call(permuted_bf16).to(torch.float32), _call(permuted_int8, permuted_scale).to(torch.float32))
 
         rows.append(
             {
@@ -1559,25 +1639,35 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
                 "batch": n_tokens,
                 "topk": topk,
                 "today_ms": today_ms,
-                "dedup_ms": dedup_ms,
+                "dedup_ms": dedup_fused_ms,
+                "dedup_torch_ms": dedup_torch_ms,
                 "permute_bf16_ms": perm_bf16_ms,
                 "permute_int8_ms": perm_int8_ms,
-                "speedup": (today_ms / dedup_ms) if dedup_ms else None,
+                "gemm_int8_ms": gemm_ms,
+                "quant_torch_ms": t["quant_torch"],
+                "quant_fused_batch_ms": quant_fused_b,
+                "quant_fused_tokens_ms": quant_fused_t,
+                "fused_ratio": fused_ratio,
+                "speedup": (today_ms / dedup_fused_ms) if dedup_fused_ms else None,
+                "speedup_torch": (today_ms / dedup_torch_ms) if dedup_torch_ms else None,
                 "snr_db": snr_db,
             }
         )
         if verbose:
-            for path, total_ms, perm_ms, speedup in (
-                ("in-call quant", today_ms, perm_bf16_ms, None),
-                ("dedup quant", dedup_ms, perm_int8_ms, today_ms / dedup_ms if dedup_ms else None),
+            for path, perm_ms, quant_ms, total_ms in (
+                ("in-call quant", perm_bf16_ms, quant_fused_t, today_ms),
+                ("dedup, torch quant", perm_int8_ms, t["quant_torch"], dedup_torch_ms),
+                ("dedup, fused quant", perm_int8_ms, quant_fused_b, dedup_fused_ms),
             ):
+                speedup = None if total_ms == today_ms else (today_ms / total_ms if total_ms else None)
                 print(
                     f"{nk_label:<14}{E:>5}{N:>7}{K:>7}{total_tokens:>8}{n_tokens:>8}{topk:>6}"
-                    f"{path:>22}{perm_ms:>13.3f}{max(total_ms - perm_ms, 0.0):>11.3f}{total_ms:>12.3f}"
+                    f"{path:>21}{perm_ms:>13.3f}{quant_ms:>11.3f}{gemm_ms:>11.3f}{total_ms:>12.3f}"
                     f"{(f'{speedup:.2f}x' if speedup else '--'):>12}"
                 )
 
-        case = weights_s8 = wscales = hidden = qact_ref = None
+        case = weights_s8 = wscales = hidden = None
+        qact_batch = ascale_batch = permuted_bf16 = permuted_int8 = permuted_scale = None
         ark.clear_moe_w4a8_prepack_cache()
         ark.moe_w4a8_release_scratch()
         _release_xpu_memory()
@@ -1586,11 +1676,23 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
         print()
         print("deduplicated dynamic quantization [prefill] (up/gate only; the down projection has no duplicate rows):")
         for row in rows:
+            ratio = row["fused_ratio"]
             print(
                 f"  {row['label']:<12} {row['today_ms']:.3f} ms -> {row['dedup_ms']:.3f} ms  "
                 f"{row['speedup']:.2f}x end-to-end   (quantizes {row['batch']} rows instead of "
                 f"{row['tokens']}, permutes int8 instead of {str(dtype).split('.')[-1]})   "
                 f"SNR {row['snr_db']:.1f} dB"
+            )
+            print(
+                f"  {'':<12} with the eager-torch quantizer instead: {row['dedup_torch_ms']:.3f} ms "
+                f"({row['speedup_torch']:.2f}x) -- {row['quant_torch_ms']:.3f} ms to quantize "
+                f"{row['batch']} rows, vs {row['quant_fused_batch_ms']:.3f} ms fused"
+            )
+            print(
+                f"  {'':<12} fused quant measured by differencing: {row['quant_fused_tokens_ms']:.3f} ms at "
+                f"{row['tokens']} rows / {row['quant_fused_batch_ms']:.3f} ms at {row['batch']} rows = "
+                f"{(f'{ratio:.1f}x' if ratio else 'n/a')} for {row['topk']}x the rows"
+                f"{'' if ratio and 0.5 * row['topk'] <= ratio <= 2.0 * row['topk'] else '  <- NOT linear, treat as noise'}"
             )
     return rows
 
@@ -2426,6 +2528,20 @@ if pytest is not None:
                 assert row["snr_db"] >= _SWEEP_MIN_SNR_DB, (
                     f"deduplicated quantization changed {row['label']}: "
                     f"SNR {row['snr_db']:.2f} dB below {_SWEEP_MIN_SNR_DB}"
+                )
+                # The fused quantizer's cost is obtained by differencing two
+                # GEMM timings, so it is only meaningful if the difference is
+                # signal. A pure streaming pass must scale with rows: if
+                # quantizing top_k times as many rows does not cost roughly
+                # top_k times as much, the differences are measurement noise
+                # and every number derived from them is meaningless.
+                ratio, topk = row["fused_ratio"], row["topk"]
+                assert ratio is not None and 0.5 * topk <= ratio <= 2.0 * topk, (
+                    f"fused activation quantization does not scale with rows on {row['label']}: "
+                    f"{row['quant_fused_tokens_ms']:.3f} ms at {row['tokens']} rows vs "
+                    f"{row['quant_fused_batch_ms']:.3f} ms at {row['batch']} rows "
+                    f"({'n/a' if ratio is None else f'{ratio:.2f}x'} for {topk}x the rows) -- "
+                    f"the GEMM difference is noise, not the quantizer"
                 )
 
         def test_perf_prefill_prequant_long_seq(self, request):

@@ -434,6 +434,41 @@ that measured 2.090 ms. `test_perf_prefill_dedup_quant_long_seq` times both
 paths *with the permute included* — the only comparison that can tell a real
 saving from a relocated one — and asserts the outputs agree.
 
+#### Which quantizer does the deduplicated work decides whether it wins
+
+Fewer rows is not automatically less time, and the first measurement of this
+said so: **0.94x**, a regression. The permute halved exactly as predicted
+(1.011 → 0.466 ms), but the quantization of 8192 rows cost *more* than the
+in-kernel quantization of 65536.
+
+The cause was the quantizer, not the deduplication. `_quantize_rows` is the
+eager-torch reference — it upcasts to fp32 and walks the tensor about seven
+times, once per operator, materializing a full-size intermediate each time.
+The in-call path uses the fused SYCL quantizer, which reads each row once and
+keeps the absmax in registers. Per row it is roughly fifteen times cheaper,
+which is more than enough to eat an 8x reduction in rows:
+
+| path | permute | quant | GEMM | total | vs in-call |
+|---|---|---|---|---|---|
+| in-call quant | 1.011 (bf16) | 0.897 (fused, 65536 rows) | 2.090 | 3.998 | — |
+| dedup, torch quant | 0.466 (int8) | ~1.68 (torch, 8192 rows) | 2.090 | ~4.24 | **0.94x** |
+| dedup, fused quant | 0.466 (int8) | ~0.11 (fused, 8192 rows) | 2.090 | ~2.67 | **~1.50x** |
+
+The fused quantizer has no standalone Python entry point, so the benchmark
+does not assume its cost: it times the same GEMM with 16-bit input and with
+int8 input, on the same shape and the same weights, and takes the difference —
+the only work that differs is the in-kernel quantization of exactly those
+rows. Doing that at both `T` and `batch` rows also cross-checks that the cost
+is linear in rows, which it must be for a streaming pass; the test asserts the
+ratio lands within 2x of `top_k`, so a difference that is really measurement
+noise cannot quietly become a headline number.
+
+The practical consequence: **do not deduplicate with an eager-torch
+quantizer.** The version worth shipping folds the quantization into the
+epilogue of whatever produces `hidden_states` (the norm ahead of the MoE),
+where the row is already in registers and the absmax is free — which is the
+same "upstream this is free" the contract above describes.
+
 Two limits worth stating plainly:
 
 * **Up/gate only.** The down projection's `T` rows are the SiLU output: one
