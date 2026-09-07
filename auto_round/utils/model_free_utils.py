@@ -342,7 +342,8 @@ def _dequant_modelopt_nvfp4_tensors(
     for name in entries:
         packed = raw_tensors.pop(name)
         scale = raw_tensors.pop(f"{name}.scale")
-        global_scale = raw_tensors.pop(f"{name}.scale2").float().flatten()
+        scale2 = raw_tensors.pop(f"{name}.scale2")
+        global_scale = scale2.float().flatten()
 
         out_features = packed.shape[-2]
         in_features = packed.shape[-1] * 2
@@ -385,10 +386,11 @@ def _dequant_modelopt_nvfp4_tensors(
             )
             raw_tensors[name] = packed
             raw_tensors[f"{name}.scale"] = scale
+            raw_tensors[f"{name}.scale2"] = scale2
             continue
 
         raw_tensors[name] = dequantized
-        del packed, scale, global_scale
+        del packed, scale, scale2, global_scale
 
         # Drop the now-meaningless auxiliary metadata tensors.
         for suffix in _MODELOPT_NVFP4_AUX_SUFFIXES:
@@ -598,6 +600,7 @@ def _quantize_moe_fused_expert_weight(
         (layer_name, output_tensors_dict, quantized_layer_or_None, ignored_layer_or_None)
     """
     layer_name = _fused_expert_layer_name(tensor_name)
+    matcher_name = f"{layer_name}.weight"
 
     if not tensor.is_floating_point():
         # An already-packed source tensor (e.g. NVFP4/MXFP4 uint8 nibbles) that
@@ -609,10 +612,10 @@ def _quantize_moe_fused_expert_weight(
         )
         return layer_name, {tensor_name: tensor}, None, layer_name
 
-    if matcher.should_ignore(tensor_name) or matcher.should_skip(tensor_name):
+    if matcher.should_ignore(matcher_name) or matcher.should_skip(matcher_name):
         return layer_name, {tensor_name: tensor}, None, layer_name
 
-    scheme = matcher.resolve_scheme(tensor_name)
+    scheme = matcher.resolve_scheme(matcher_name)
     if scheme is None:
         return layer_name, {tensor_name: tensor}, None, layer_name
 
@@ -2018,8 +2021,8 @@ def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> li
     """Append ``"RoutedExperts"`` for routed expert layouts that llm-compressor misses.
 
     The generic ``"Linear"`` target does not cover all expert layouts.  Keep the
-    safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj`` and
-    ), but trigger for non-standard expert paths and for any routed
+    safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj``),
+    but trigger for non-standard expert paths and for any routed
     expert structure that lives outside the standard ``mlp.experts`` naming.
     """
     if "RoutedExperts" in targets:
