@@ -37,8 +37,8 @@ pool: B60
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312-xpu"
-  DOCKERFILE_NAME: "Dockerfile_xpu"
+  IMAGE_TAG: "py314-xpu"
+  DOCKERFILE_NAME: "xpu.dockerfile"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "Nightly_XPU_coverage_report"
@@ -100,8 +100,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '3.12'
-            displayName: 'Use Python 3.12'
+              versionSpec: '3.14'
+              displayName: 'Use Python 3.14'
 
           - script: |
               pip install -U pip setuptools uv

@@ -131,7 +131,6 @@ function run_unit_test_ark() {
 
 function run_unit_test_llmc() {
     cd /auto-round/test || exit 1
-    run_if_retry && return 0
 
     local llmc_tests
     llmc_tests=$(filter_changed_tests "test" "$(find ./integration/test_xpu -name "test_llmc_integration.py" | sort)")
@@ -144,6 +143,8 @@ function run_unit_test_llmc() {
     BUILD_TYPE="nightly" uv pip install -r ./integration/test_xpu/requirements_llmc.txt
     uv pip list
     echo "##[endgroup]" 
+
+    run_if_retry && return 0
 
     for test_file in ${llmc_tests}; do
         local test_basename=$(basename ${test_file} .py)
