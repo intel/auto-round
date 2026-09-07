@@ -56,6 +56,13 @@ w8[e][n][k]  = round( w4[e][n][k] * s[e][n][k / group_size] / sxt[e][n][j] )
 因此下面两个目标分别是 int8 峰值的 51% 和引脚带宽的 66%。`Arc Pro B60 Dual` 卡会
 暴露两个这样的设备，kernel 只看到其中一个。
 
+> **这些上限属于 B60，不能套用到 B70。** 下文引用的 B70 数据里，W4A16 基线在
+> qwen3 up 上跑到了 104 TFLOPS (bf16)，*高于*上表中 98 TFLOPS 的 bf16 峰值——说明
+> 那是一块更大的芯片，因而基于上表推导出的所有上限、`BW@100T` 以及 PASS/FAIL 判定
+> 在那里都是错的。测试脚本会探测自己所在的设备 (`_device_bandwidth_gbps`，在每张
+> 性能表顶部打印为 `device copy bandwidth probe:`)；请以那一行为准来读判定结果，
+> 并在把本节用于非 B60 芯片之前重新测量。
+
 本 kernel 的目标是 **prefill > 100 TFLOPS**、**decode 权重带宽 > 300 GB/s**。
 prefill 目标是否*可能*达到，取决于**路由**而不是 kernel 本身。
 
@@ -216,20 +223,46 @@ padding 上被测量；512 是 256 的整数倍，是套件里唯一满足
 数据流的权重项也就更小。tile、store、epilogue 或调度上的任何改动都撼动不了这一点——
 这些配置搬运的字节数完全相同。真正有效的两个杠杆是下面的[调用契约](#削减-prefill-流量两个可选的调用契约)，
 按这组数据推算可达 2.0–2.5x；`qwen3 down` 是唯一还留有内核余量的形状，这正是
-[预取深度与 K](#预取深度与-k) 所讨论的内容。
+[预取深度与 K](#预取深度与-k--已实测结论是否定的) 所讨论的内容。
 
-### 为什么仍然保留 int8 权重副本
+### int8 权重副本，以及树内反对它的先例
 
-剩下的流量杠杆就是 prepack 本身：让 int4 留在 DRAM 里、在寄存器内扩宽成 int8，可以
-省掉 `E × N × K / 2` 字节——占 qwen3 up 流量的 18%、minimax up 的 24%——同时还能把
-[prepack 显存开销](#内存开销)减半。
+另一个流量杠杆是 prepack 本身。让 int4 留在 DRAM 里、在寄存器内扩宽成 int8，可以省掉
+`E × N × K / 2` 字节——占 qwen3 up 流量的 18%、minimax up 的 24%——同时还能把
+[prepack 显存开销](#内存开销)减半，而这正是单卡跑 30B 模型会爆显存的原因。
 
-没有实现它，是因为这会放弃整个设计所依赖的性质。AUTO_S8 重缩放的存在，就是为了让 K
-循环成为一次全宽 int32 累加 (`blks == 1`)；改读 int4 就把按组折算重新放回循环，于是在
-`group_size = 32` 下一次累加会变成 64 次部分累加。这是用计算换带宽，方向在这里是对的
-——但它是一次 mainloop 重写，而不是调参，而且 `sycl_tla_s8_gemm.hpp` 接收的是
-`const int8_t* b`，树内的 W4A8 GEMM 并不能作为它的模板。调用契约无需触碰 mainloop 就能
-达到同等的流量削减，因此在启用契约*之后*仍然测出有形状不达标之前，这一项不会启动。
+树内存在一个直接的先例，而且它的结论与当前设计相反。`sycl_tla_moe_prefill_s4_dpas.hpp`
+之所以存在，就是因为 s4 prefill 路径曾经做过与本 kernel 的 AUTO_S8 prepack 完全相同的
+事——通过一块 workspace 把 int4 物化成 `[E, N, K]` int8
+(`launch_upcast_int4_sym_to_int8`)，再把这块缓冲交给 int8 DPAS mainloop。该头文件记录了
+结果：
+
+> upcast pass 写出 `E * N * K` 字节，mainloop 再经由 L2 把它们读回来——相比直接读取
+> packed nibble，这基本上让 B 侧的全局内存流量翻了一倍。在 BMG 上，这次 workspace
+> 往返使 DPAS 路径在 auto-round prefill 扫描的*每一个*形状上都退化到了传统
+> bf16-dequant + 标准 GEMM 回退路径*之下*。
+
+那条路径后来被改写为直接读取 packed 的 `[E, N, K/2]` nibble，并通过本 kernel 已经在用的
+同一套 `cute::reorder(tBrB, tCrB)` 机制、借助
+`NumericArrayConverter<ElementA, cutlass::int4b_t, N>` 在寄存器内解包，同时在
+`k_tile * tile_k % group_size == 0` 边界上做延迟的按组折算。所以模板是存在的；本文档早前
+声称它不存在 (当时指向的是 `sycl_tla_s8_gemm.hpp`，那个接口接收 `const int8_t* b`)，那是
+看错了头文件。
+
+尚未确定的是它在这里是否划算，因为 W4A8 并不等同于 s4 路径。AUTO_S8 换来的是一次全宽
+int32 累加 (`blks == 1`)；改读 int4 就把按组折算重新放回 K 循环，于是在 `group_size = 32`
+下一次累加会变成 64 次部分累加。这是用带宽换计算——在 kernel 受带宽限制时方向是对的，而
+一旦不再受带宽限制，方向就是错的。上面的契约正是决定这一点的关键：它们在不触碰 mainloop
+的前提下削减约 45% 的流量，而一个在启用契约*之后*已经受计算限制的 kernel，再增加折算去省
+它本来就不必等待的字节，只会更慢而不是更快。
+
+关于这个先例该采信到什么程度，有一点需要说明：它报告的那次退化是实测结果，但取代它的那个
+头文件自身标注着 `STATUS: NEEDS-HARDWARE-VALIDATION -- untested single-pass port`，并由
+env 开关控制、以便在运行时直接屏蔽。它提供的是 mainloop 结构的模板，而不是"这个结构在这里
+更快"的证据。
+
+因此顺序是：先在 B70 上实测契约，然后再决定 packed-nibble mainloop 值不值得做。如果在两个
+契约都启用之后仍有形状不达标，那它就是下一项改动，而 s4 头文件就是可以照抄的模板。
 
 ## 削减 prefill 流量：两个可选的调用契约
 
@@ -940,31 +973,71 @@ legacy GEMV 的收益为 1.09–1.93×。
 带宽为基准则是 68–79%)，因此只有 minimax down 越过了 300 GB/s 的目标。decode 每做
 一次乘加就要读一个权重字节、别无其他，所以剩下的差距在访存消息效率，而不在算力。
 
-### 预取深度与 K
+### 预取深度与 K —— 已实测，结论是否定的
 
-`moe_w4a8_prefill_prefetch_dist` 对所有形状都返回同一个常量 (`3`)，在扫描给出
-结论之前维持不变。
+`moe_w4a8_prefill_prefetch_dist` 对所有形状都返回同一个常量 (`3`)。为质疑它而
+搭建的扫描已经在 B70 上跑过，结论是这个常量维持不变。
 
-值得质疑它的原因在于：这个常量在各个已发布形状上所占 mainloop 的比例差别很大。
-在 64 元素的 k-tile 下，qwen3 down (`K = 768`) 的 mainloop 只有 12 次迭代，
-qwen3 up (`K = 2048`) 是 32 次，minimax up (`K = 3072`) 是 48 次，因此长度为 3 的
-prologue 在第一个循环里占四分之一，在最后一个里只占十六分之一。这个形状也正是
-还有余量的那个：在 B70 的已发布契约下它只达到 DRAM 上限的 74%，而另外三个是
-91–100%。
+值得质疑的理由在于：`3` 在各个已发布形状上所占 mainloop 的比例差别很大。在 64
+元素的 k-tile 下，qwen3 down (`K = 768`) 的 mainloop 只有 12 次迭代，qwen3 up
+(`K = 2048`) 是 32 次，minimax up (`K = 3072`) 是 48 次，因此 prologue 在第一个
+循环里占四分之一，在最后一个里只占十六分之一。qwen3 down 也正是还有余量的那个
+形状——它只达到 DRAM 上限的 74%，而另外三个是 91–100%。如果 prologue 真是原因，
+深度就应该把这些形状区分开。
 
-但这并不能确定方向。更短的 prologue 让计算更早开始；更长的则让 DPAS 链跑在更深的
-访存流水线上。两者都随同一个 k-tile 数变化，在这么短的 mainloop 上任何一方都可能
-占优。仅凭 k-tile 数就选定一方等于直接断言结论，因此下面的扫描在两个 prefill 点上
-覆盖完整的合法区间，只有当它们把不同形状区分开时才改动默认值：
+但它没有。B70，两个 prefill 点，`TFLOPS`：
+
+| 深度 | up @384 | down @384 | up @512 | down @512 |
+|---|---|---|---|---|
+| 1 | 123.29 | 85.34 | 135.99 | 89.45 |
+| 2 | 122.82 | **85.37** | 136.67 | 92.93 |
+| 3 *(默认)* | **130.09** | 85.28 | 141.96 | 93.32 |
+| 4 | 129.87 | 84.82 | **143.85** | **93.33** |
+| 6 | 127.78 | 84.59 | 141.28 | 90.33 |
+| 8 | 119.76 | 84.65 | 130.49 | 90.34 |
+
+最大差距只有 1.06x，而且排名并不稳定：qwen3 down 的"最优"在 384 rows/expert 下是
+深度 2，在 512 下是深度 4，且 384 时深度 2/3/4 彼此相差不到 0.1%——这是噪声，不是
+信号。唯一真实的效应是深度 8 在 qwen3 up 上*损失* 3–4%，也就是说太深会有害，而默认
+值已经落在曲线的平坦段上。这里没有任何证据支持 K 相关的启发式，尤其没有解释
+qwen3 down 的 74%。
+
+所以 prologue 从来不是瓶颈，74% 另有原因——参见[还剩下什么](#还剩下什么)。若要在
+其他芯片上重跑：
 
 ```bash
 pytest test_moe_w4a8_perf.py -k "prefetch_sweep" -v
 python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq
 ```
 
-只有当某个深度在 qwen3 down 上胜过 `3`，*并且* 在长 K 形状上仍由 `3` (或另一个
-深度) 取胜时，K 相关的默认值才成立。如果某个深度处处最优，那就只是常量换个取值；
-如果排名没有区分度，说明 prologue 从来不是瓶颈，那 74% 另有原因。
+### 还剩下什么
+
+在 prologue 已被实测排除、tile 阶梯也已扫描过之后，剩下的差距在于流量，而且它的
+分布并不均匀：
+
+| 形状 | 读 | 写 | 写占比 |
+|---|---|---|---|
+| qwen3 up | 805 MB | 336 MB | 29% |
+| qwen3 down | 352 MB | 319 MB | **48%** |
+
+qwen3 down 未规约的 `[T, N]` 输出单独就有 268 MB——占整个调用搬运量的 40%，是它最大
+的单条数据流，比权重还大。这就是那 74% 的全部原因：它是整个测试集中写入占比最高的
+形状，只跑出 325 GB/s，而 qwen3 up 能跑到 401 GB/s——这两个数正是测试脚本自己在
+`DRAM GB/s` 一列打印出来的值，所以上面的拆分是对实测结果的分解，而不是另一套模型。
+任何预取深度、tile、store 模式或调度改动都撼动不了一个受写入限制的形状——而这正是
+各轮扫描反复给出的结果。
+
+这条数据流不是靠重新调度、而是靠 fused 规约契约*直接消除*的：它把 `[T, N]` 的写入
+换成 `[batch, N]` 的累加。**这两个契约都已实现，但从未在 B70 上测过**，而且它们是
+唯一还能改变字节数的杠杆：
+
+```bash
+pytest test_moe_w4a8_perf.py -k contracts_long_seq -v
+```
+
+在真实的 MoE 层里这两项都是免费的：`up`/`gate` 共享激活，因此 int8 副本只需做一次
+就能同时喂给两者；而 `down` 的下游本来就是 epilogue 可以顺手完成的 unpermute + 加权
+求和。应当把它们当作调用约定，而不是一项优化。
 
 ## 环境变量
 
@@ -981,7 +1054,7 @@ python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | 在 absmax 与量化两步之间把激活行留在寄存器里，而不是把 `[T, K]` 读两遍；在行放得下时**默认开启** (`VEC = 8` 下 `K ≤ 2048`，占每 lane 128 个 dword 中的 64 个)，在满足条件的形状上带来 1.00–1.05× 的收益。设为 `0` 可强制走两遍 kernel——更长的行本来也走它。两者逐位相同。 |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上最多带来 1.08× 的收益 (落后时也不超过 0.9%)。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。使用融合 top-k 规约时会自动关闭，因为那是 scatter，用不了 block store。 |
-| `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` (compute-bound batch) 与 `test_perf_prefill_prefetch_sweep_long_seq` (8K 提示词路由) 会对完整的 `1 / 2 / 3 / 4 / 6 / 8` 区间计时。超出 `1`–`8` 的取值回退到默认值。默认值刻意保持为单一常量——参见[预取深度与 K](#预取深度与-k)。 |
+| `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` (compute-bound batch) 与 `test_perf_prefill_prefetch_sweep_long_seq` (8K 提示词路由) 会对完整的 `1 / 2 / 3 / 4 / 6 / 8` 区间计时。超出 `1`–`8` 的取值回退到默认值。扫描结果显示排名平坦，因此默认值保持不变——参见[预取深度与 K](#预取深度与-k--已实测结论是否定的)。 |
 
 ## 形状约束
 
