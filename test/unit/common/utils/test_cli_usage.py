@@ -218,6 +218,24 @@ class TestAutoRoundCmd:
         assert args.layer_config == layer_cfg
 
 
+def test_diffusion_quantize_cli_keeps_inference_steps_separate():
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--calib_num_inference_steps",
+            "6",
+            "--num_inference_steps",
+            "12",
+        ]
+    )
+
+    assert args.calib_num_inference_steps == 6
+    assert args.num_inference_steps == 12
+
+
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
     from auto_round.cli import main as cli_main
 
