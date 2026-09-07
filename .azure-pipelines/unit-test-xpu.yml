@@ -18,7 +18,7 @@ pr:
       - .azure-pipelines/unit-test-xpu.yml
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
       - .azure-pipelines/scripts/ut/detect_changed_tests.sh
-      - .azure-pipelines/docker/Dockerfile_xpu.devel
+      - .azure-pipelines/docker/xpu.dockerfile
       - .azure-pipelines/build-auto-round-lib.yml
       - .azure-pipelines/template/lib-build-template.yml
     exclude:
@@ -30,8 +30,8 @@ pool: B60
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312-xpu"
-  DOCKERFILE_NAME: "Dockerfile_xpu"
+  IMAGE_TAG: "py314-xpu"
+  DOCKERFILE_NAME: "xpu.dockerfile"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
@@ -93,8 +93,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '3.12'
-            displayName: 'Use Python 3.12'
+              versionSpec: '3.14'
+            displayName: 'Use Python 3.14'
 
           - script: |
               cd ${BUILD_SOURCESDIRECTORY}

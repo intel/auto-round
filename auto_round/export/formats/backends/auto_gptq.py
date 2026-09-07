@@ -24,16 +24,36 @@ from auto_round.schemes import QuantizationScheme
 
 @OutputFormat.register("auto_gptq", "gptqmodel")
 class AutoGPTQFormat(OutputFormat):
-    support_schemes = ["W4A16", "W2A16", "W3A16", "W8A16", "BF16", "W2A16G64", "W2A16G32", "W4A16_MIXED"]
+    support_schemes = [
+        "W4A16",
+        "W2A16",
+        "W3A16",
+        "W8A16",
+        "BF16",
+        "W2A16G64",
+        "W2A16G32",
+        "W4A16_MIXED",
+    ]
     format_name = "auto_gptq"
 
+    # 5/6/7-bit weights straddle int32 word boundaries. AutoRound packs them with the
+    # generic bit-stream layout (see auto_round.utils.bit_packing), which upstream
+    # AutoGPTQ/GPTQModel kernels cannot read -- so restrict them to ``auto_round:*``.
+    EXTENDED_BITS = (5, 6, 7)
+
     def check_and_reset_format(self, scheme: QuantizationScheme, ctx):
+        if scheme.bits in self.EXTENDED_BITS and not self.output_format.startswith("auto_round"):
+            raise ValueError(
+                f"{self.output_format} format does not support bits={scheme.bits}. "
+                f"{self.EXTENDED_BITS} bit packing is only defined for the `auto_round` format family, "
+                "please export to `auto_round` or `auto_round:auto_gptq`."
+            )
         if not scheme.sym:
             logger.warning(
                 "the asymmetrical kernel of the GPTQ format may result in a noticeable accuracy drop,"
                 " particularly for 2-bit quantization and smaller models."
                 " We recommend exporting to either the AutoAWQ format ( only 4 bits) or "
-                "the AutoRound format(2/3/4/8 bits)."
+                "the AutoRound format(2/3/4/5/6/7/8 bits)."
             )
         if self.backend is None:
             ctx.layer_config = _check_divisible_by_32(scheme, ctx.model, ctx.layer_config)

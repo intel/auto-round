@@ -523,7 +523,19 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
         )
 
+    if "humming" in layer_backend:
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=bias,
+            sym=config["sym"],
+            weight_dtype=layer.weight.dtype,
+        )
+
     if "auto_round_kernel" in layer_backend:
+
         return QuantLinear(
             bits=config["bits"],
             group_size=config["group_size"],
@@ -717,6 +729,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ark_init = False
+    need_humming_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -728,6 +741,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             need_gptqmodel_init = True
         elif backend.startswith("auto_round_kernel"):
             need_ark_init = True
+        elif "humming" in backend:
+            need_humming_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -768,6 +783,13 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 layers.append(m)
 
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):
+            layer.post_init()
+
+    # humming post-init: repack the checkpoint layout into the kernel-native one
+    # and JIT-compile the selected GEMM.
+    if need_humming_init:
+        layers = [m for _, m in model.named_modules() if getattr(m, "QUANT_TYPE", "").startswith("humming")]
+        for layer in tqdm(layers, desc="repacking to humming format", total=len(layers), leave=True):
             layer.post_init()
 
     # ExLLaMAv2 kernels
