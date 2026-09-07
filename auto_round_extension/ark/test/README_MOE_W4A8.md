@@ -437,22 +437,28 @@ saving from a relocated one — and asserts the outputs agree.
 #### Which quantizer does the deduplicated work decides whether it wins
 
 Fewer rows is not automatically less time, and the first measurement of this
-said so: **0.94x**, a regression. The permute halved exactly as predicted
-(1.011 → 0.466 ms), but the quantization of 8192 rows cost *more* than the
+said so: **0.95x**, a regression. The permute halved exactly as predicted
+(1.011 → 0.468 ms), but the quantization of 8192 rows cost *more* than the
 in-kernel quantization of 65536.
 
 The cause was the quantizer, not the deduplication. `_quantize_rows` is the
 eager-torch reference — it upcasts to fp32 and walks the tensor about seven
 times, once per operator, materializing a full-size intermediate each time.
 The in-call path uses the fused SYCL quantizer, which reads each row once and
-keeps the absmax in registers. Per row it is roughly fifteen times cheaper,
-which is more than enough to eat an 8x reduction in rows:
+keeps the absmax in registers. Per row it is about eleven times cheaper, which
+is more than enough to eat an 8x reduction in rows. All three points, measured
+on B70 at the qwen3 up-projection shape with an 8K prompt:
 
 | path | permute | quant | GEMM | total | vs in-call |
 |---|---|---|---|---|---|
-| in-call quant | 1.011 (bf16) | 0.897 (fused, 65536 rows) | 2.090 | 3.998 | — |
-| dedup, torch quant | 0.466 (int8) | ~1.68 (torch, 8192 rows) | 2.090 | ~4.24 | **0.94x** |
-| dedup, fused quant | 0.466 (int8) | ~0.11 (fused, 8192 rows) | 2.090 | ~2.67 | **~1.50x** |
+| in-call quant | 1.011 (bf16) | 0.818 (fused, 65536 rows) | 2.033 | 3.862 | — |
+| dedup, torch quant | 0.468 (int8) | 1.558 (torch, 8192 rows) | 2.033 | 4.059 | **0.95x** |
+| dedup, fused quant | 0.468 (int8) | 0.136 (fused, 8192 rows) | 2.033 | **2.637** | **1.46x** |
+
+The traffic model above predicted 1.53x and the device returned 1.46x, so the
+byte count is what is driving this. Against W4A16 on the same end-to-end basis
+(its GEMM measured 3.679 ms, and it permutes 16-bit) the deduplicated path is
+**1.78x**.
 
 The fused quantizer has no standalone Python entry point, so the benchmark
 does not assume its cost: it times the same GEMM with 16-bit input and with
@@ -461,13 +467,19 @@ the only work that differs is the in-kernel quantization of exactly those
 rows. Doing that at both `T` and `batch` rows also cross-checks that the cost
 is linear in rows, which it must be for a streaming pass; the test asserts the
 ratio lands within 2x of `top_k`, so a difference that is really measurement
-noise cannot quietly become a headline number.
+noise cannot quietly become a headline number. Measured, it is **6.0x for 8x
+the rows** — mildly sublinear, in the direction fixed per-launch cost predicts
+(33% more expensive per row at the smaller size), which is why the check is a
+band rather than an equality.
 
 The practical consequence: **do not deduplicate with an eager-torch
 quantizer.** The version worth shipping folds the quantization into the
 epilogue of whatever produces `hidden_states` (the norm ahead of the MoE),
 where the row is already in registers and the absmax is free — which is the
-same "upstream this is free" the contract above describes.
+same "upstream this is free" the contract above describes. Failing that, a
+single fused quantization kernel over the `[batch, K]` hidden states is what
+the 0.136 ms column represents; the 1.558 ms column is what calling eager
+torch costs instead.
 
 Two limits worth stating plainly:
 
@@ -1363,14 +1375,24 @@ the activation round-trip saved and those runs said nothing about it. Isolated:
 | qwen3 down | 2.596 ms | 2.107 ms | **1.796 ms** | 97.83 → **114.78** | 1.16x → **1.45x** |
 
 It deletes `3 * T * K` bytes — 402 MB of qwen3 up's 1141 MB — and the predicted
-~1.97 ms landed within 6% of the measured 2.090 ms. It is also the contract a
-serving stack can adopt without touching layer code, since the previous op in
-most quantized pipelines already produced int8, and unlike contract 2 it keeps
-the result bit-identical:
+~1.97 ms landed within 6% of the measured 2.090 ms. Unlike contract 2 it keeps
+the result bit-identical.
+
+The obvious objection is that it needs an int8 producer upstream, and most
+pipelines do not have one — the previous operator emits bf16 and the dynamic
+quantization has to happen somewhere. It is reachable anyway, because the row
+absmax does not depend on the expert, so on the up/gate projection the in-call
+pass quantizes `top_k` identical copies of every token. Quantizing the `batch`
+distinct rows once and permuting int8 gets to the same call, and measures
+**1.46x end to end** including the caller's permute — the whole story is in
+[deduplicate the quantization](#reaching-contract-1-with-no-int8-upstream-deduplicate-the-quantization),
+including the way it is a *regression* if the deduplicated rows go through an
+eager-torch quantizer.
 
 ```bash
 pytest test_moe_w4a8_perf.py -k prequant_long_seq -v   # contract 1 alone
-pytest test_moe_w4a8_perf.py -k contracts_long_seq -v  # both, for the contrast
+pytest test_moe_w4a8_perf.py -k dedup_quant -v         # reaching it without int8 upstream
+pytest test_moe_w4a8_perf.py -k contracts_long_seq -v  # both contracts, for the contrast
 ```
 
 That second sweep used to answer the question unfairly, and the bug ran against
