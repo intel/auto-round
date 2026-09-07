@@ -82,6 +82,47 @@ def _append_trace(trace_file: str, entry: dict) -> None:
         print(f"Warning: could not write trace file: {e}", file=sys.stderr)
 
 
+def _parse_copilot_json(stdout: str) -> dict:
+    """Parse the Copilot ``--output-format json`` JSONL stream.
+
+    A single stream carries everything we need: the assistant answer, the model
+    actually used, and the AI-credit / premium-request usage — so there is no need
+    to shell out for stderr credits or dig through debug logs separately.
+    """
+    answer = ""
+    model = ""
+    nano_aiu = None
+    premium_requests = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        etype = event.get("type")
+        data = event.get("data", {})
+        if etype == "assistant.message":
+            model = data.get("model") or model
+            if data.get("content"):
+                answer = data["content"]  # keep the last full assistant message
+        elif etype == "model.call_start":
+            model = data.get("model") or model
+        elif etype == "session.usage_checkpoint":
+            nano_aiu = data.get("totalNanoAiu", nano_aiu)
+            premium_requests = data.get("totalPremiumRequests", premium_requests)
+        elif etype == "result":
+            usage = event.get("usage", {})
+            premium_requests = usage.get("premiumRequests", premium_requests)
+    return {
+        "answer": answer,
+        "model": model,
+        "ai_credits": round(nano_aiu / 1e9, 6) if nano_aiu is not None else None,
+        "premium_requests": premium_requests,
+    }
+
+
 def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cluster_id) -> str:
     argv = [
         "copilot",
@@ -93,6 +134,8 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cl
         "--allow-tool=read",
         "--allow-tool=write",
         "--no-ask-user",
+        "--output-format",
+        "json",
     ]
     if model:
         argv += ["--model", model]
@@ -105,31 +148,33 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cl
     started = datetime.datetime.now(datetime.timezone.utc)
     returncode = None
     stderr = ""
-    raw = ""
+    stdout = ""
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, check=False)
         returncode = proc.returncode
         stderr = proc.stderr.strip()
-        raw = proc.stdout.strip()
+        stdout = proc.stdout
         if returncode != 0:
             print(f"Warning: Copilot CLI exited {returncode}: {stderr}", file=sys.stderr)
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"Warning: Copilot CLI call failed: {e}", file=sys.stderr)
         stderr = str(e)
     ended = datetime.datetime.now(datetime.timezone.utc)
-    # ``argv`` omits the token; safe to record verbatim for auditing.
+    parsed = _parse_copilot_json(stdout)
+    raw = parsed["answer"]
     _append_trace(
         trace_file,
         {
             "cluster_id": cluster_id,
             "timestamp": started.isoformat(),
             "duration_s": round((ended - started).total_seconds(), 3),
-            "model": model or "(cli default)",
-            "cmd": ["copilot", "-p", "<prompt>"] + (["--model", model] if model else []),
+            "model": parsed["model"] or model or "(unknown)",
+            "ai_credits": parsed["ai_credits"],
+            "premium_requests": parsed["premium_requests"],
             "returncode": returncode,
             "prompt": prompt,
             "response": raw,
-            "stderr": stderr,
+            "transcript": stdout,  # raw JSONL stream: full step-by-step execution trace
         },
     )
     return raw

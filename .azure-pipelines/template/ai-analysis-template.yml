@@ -33,12 +33,12 @@ steps:
       targetType: "inline"
       script: |
         set -uo pipefail
-        out="$(Build.SourcesDirectory)/ai_analysis/pr.diff"
-        target="${SYSTEM_PULLREQUEST_TARGETBRANCH:-main}"
-        target="${target#refs/heads/}"
+        repo="$(Build.SourcesDirectory)"
+        out="${repo}/ai_analysis/pr.diff"
+        mkdir -p "$(dirname "$out")"
         # Best-effort: the diff only enriches the prompt, never block on failure.
-        git -C "$(Build.SourcesDirectory)" fetch --no-tags --depth=200 origin "$target" || true
-        git -C "$(Build.SourcesDirectory)" diff "origin/${target}...HEAD" > "$out" 2>/dev/null || true
+        # The build SHA already captures the change under review (same as the commit page).
+        git -C "$repo" show --no-color "$(Build.SourceVersion)" > "$out" 2>/dev/null || : > "$out"
         echo "PR diff bytes: $(wc -c < "$out" 2>/dev/null || echo 0)"
 
   - task: Bash@3
