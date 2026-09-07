@@ -665,3 +665,130 @@ def tiny_mimo_audio_model_path():
     config.architectures = ["MiMoAudioModel"]
     config.save_pretrained(tiny_model_path)
     yield tiny_model_path
+
+
+def _micro_model_path(model_name_or_path, name, config_overrides, num_experts=None):
+    """Build a reusable architecture-level model with random micro-sized weights."""
+    model_path = tiny_model_dir(name)
+    if _tiny_model_ready(model_path):
+        config = transformers.AutoConfig.from_pretrained(model_path)
+        if any(getattr(config, key, None) != value for key, value in config_overrides.items()):
+            os.remove(os.path.join(model_path, ".autoround_ready"))
+
+    model_path = save_tiny_model(
+        model_name_or_path,
+        model_path,
+        num_layers=2,
+        from_config=True,
+        num_experts=num_experts,
+        config_overrides=config_overrides,
+    )
+    _save_micro_tokenizer(model_path)
+    return model_path
+
+
+def _save_micro_tokenizer(model_path):
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+
+    tokenizer = Tokenizer(
+        WordLevel(
+            {
+                "<pad>": 0,
+                "<bos>": 1,
+                "<eos>": 2,
+                "<unk>": 3,
+                "auto": 4,
+                "round": 5,
+                "calibration": 6,
+                "sample": 7,
+                "keeps": 8,
+                "each": 9,
+                "token": 10,
+                "distinct": 11,
+                "for": 12,
+                "scoring": 13,
+                "another": 14,
+                "local": 15,
+                "dataset": 16,
+                "verifies": 17,
+                "scheme": 18,
+                "behavior": 19,
+                "sequence": 20,
+            },
+            unk_token="<unk>",
+        )
+    )
+    tokenizer.pre_tokenizer = Whitespace()
+    transformers.PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        bos_token="<bos>",
+        eos_token="<eos>",
+        pad_token="<pad>",
+        unk_token="<unk>",
+    ).save_pretrained(model_path)
+
+
+@pytest.fixture(scope="session")
+def micro_opt_model_path():
+    yield _micro_model_path(
+        opt_name_or_path,
+        "micro_opt_model_path",
+        {
+            "vocab_size": 256,
+            "hidden_size": 64,
+            "bos_token_id": 1,
+            "eos_token_id": 2,
+            "pad_token_id": 0,
+            "word_embed_proj_dim": 64,
+            "ffn_dim": 128,
+            "num_attention_heads": 4,
+            "max_position_embeddings": 128,
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def micro_qwen_model_path():
+    yield _micro_model_path(
+        qwen_name_or_path,
+        "micro_qwen_model_path",
+        {
+            "vocab_size": 32768,
+            "hidden_size": 256,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 64,
+            "bos_token_id": 1,
+            "eos_token_id": 2,
+            "pad_token_id": 0,
+            "max_position_embeddings": 128,
+            "tie_word_embeddings": True,
+        },
+    )
+
+
+@pytest.fixture(scope="session")
+def micro_qwen_moe_model_path():
+    yield _micro_model_path(
+        qwen_moe_name_or_path,
+        "micro_qwen_moe_model_path",
+        {
+            "vocab_size": 256,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "moe_intermediate_size": 32,
+            "shared_expert_intermediate_size": 128,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 4,
+            "num_experts_per_tok": 2,
+            "decoder_sparse_step": 1,
+            "bos_token_id": 1,
+            "eos_token_id": 2,
+            "pad_token_id": 0,
+            "max_position_embeddings": 128,
+        },
+        num_experts=4,
+    )

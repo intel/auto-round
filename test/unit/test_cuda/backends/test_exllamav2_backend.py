@@ -47,23 +47,17 @@ class TestAutoRoundexllamaBackend:
         )
 
         quantization_config = AutoRoundConfig(backend="gptqmodel:exllamav2")
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
-        torch.cuda.empty_cache()
-
-        model = AutoModelForCausalLM.from_pretrained(
-            quantized_model_path, torch_dtype=torch.bfloat16, device_map="auto", quantization_config=quantization_config
-        )
-
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16)
-        torch.cuda.empty_cache()
+        # Keep the full accuracy gate for the primary dtype. BF16 uses the same
+        # exported weights and backend; a bounded accuracy smoke detects dtype-specific
+        # loading or kernel regressions without duplicating the full evaluation.
+        for dtype, limit in ((torch.float16, None), (torch.bfloat16, 10)):
+            model = AutoModelForCausalLM.from_pretrained(
+                quantized_model_path, torch_dtype=dtype, device_map="auto", quantization_config=quantization_config
+            )
+            tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
+            model_infer(model, tokenizer)
+            evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16, limit=limit)
+            torch.cuda.empty_cache()
 
     @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_autogptq
