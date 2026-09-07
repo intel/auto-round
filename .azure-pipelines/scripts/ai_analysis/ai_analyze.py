@@ -38,8 +38,8 @@ Guidance:
 - The excerpt below is truncated. The repository is checked out at ``{project_root}`` and the
   complete raw failure logs are under ``{log_path}``. When you need more context, use your
   shell/read/rg tools to inspect source files, git history, and the full logs before concluding.
-- The full PR diff is on disk at ``{diff_path}``; read it with your tools when you need it
-  instead of relying on a truncated inline copy.
+- To see this PR's changes, diff the two parents of merge commit ``{pr_sha}`` with git yourself
+  (``git diff {pr_sha}^1...{pr_sha}^2``); a plain ``git show`` on the merge is empty.
 
 ## Project source root
 {project_root}
@@ -56,8 +56,8 @@ Guidance:
 ## Log excerpt
 {excerpt}
 
-## PR diff file
-{diff_path}
+## PR merge commit
+{pr_sha}
 """
 
 
@@ -205,20 +205,20 @@ def parse_model_json(text: str) -> "dict | None":
         return None
 
 
-def build_prompt(cluster: dict, diff_path: str, max_excerpt: int, project_root: str, log_path: str) -> str:
+def build_prompt(cluster: dict, pr_sha: str, max_excerpt: int, project_root: str, log_path: str) -> str:
     return _PROMPT_TEMPLATE.format(
         signature=cluster.get("signature", ""),
         test_count=len(cluster.get("tests", [])),
         tests=", ".join(cluster.get("tests", [])) or "(unknown)",
         excerpt=(cluster.get("sample", "") or "")[:max_excerpt],
-        diff_path=diff_path or "(no diff available)",
+        pr_sha=pr_sha or "(not provided)",
         project_root=project_root or "(not provided)",
         log_path=log_path or "(not provided)",
     )
 
 
-def analyze(cluster: dict, diff_path: str, args) -> dict:
-    prompt = build_prompt(cluster, diff_path, args.max_excerpt_chars, args.project_root, args.log_dir)
+def analyze(cluster: dict, pr_sha: str, args) -> dict:
+    prompt = build_prompt(cluster, pr_sha, args.max_excerpt_chars, args.project_root, args.log_dir)
     raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
     parsed = parse_model_json(raw)
     result = {
@@ -262,7 +262,11 @@ def main():
     parser = argparse.ArgumentParser(description="AI-analyze the top unknown failure clusters")
     parser.add_argument("--clusters-json", required=True, help="Annotated clusters JSON")
     parser.add_argument("--output", required=True, help="AI analysis JSON output path")
-    parser.add_argument("--pr-diff-file", help="File containing the PR diff for context")
+    parser.add_argument(
+        "--pr-sha",
+        default="",
+        help="Merge commit SHA of the PR build; the AI derives the diff from it via git",
+    )
     parser.add_argument("--top", type=int, default=3, help="Number of top unknown clusters to analyze")
     parser.add_argument("--backend", choices=["copilot", "none"], default="none", help="Inference backend")
     parser.add_argument(
@@ -285,17 +289,15 @@ def main():
     with open(args.clusters_json, encoding="utf-8") as f:
         data = json.load(f)
 
-    # Pass only the diff path; the AI reads it on demand instead of inlining a
-    # large, truncated copy into every prompt.
-    diff_path = ""
-    if args.pr_diff_file and os.path.isfile(args.pr_diff_file):
-        diff_path = os.path.abspath(args.pr_diff_file)
+    # The AI derives the PR diff on demand from git using the merge commit SHA,
+    # instead of relying on a pre-computed (and easily wrong) diff file.
+    pr_sha = (args.pr_sha or "").strip()
 
     unknown = [c for c in data.get("clusters", []) if not c.get("known")]
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
     selected = unknown[: args.top]
 
-    analyses = [analyze(cluster, diff_path, args) for cluster in selected]
+    analyses = [analyze(cluster, pr_sha, args) for cluster in selected]
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump({"backend": args.backend, "analyses": analyses}, f, indent=2)

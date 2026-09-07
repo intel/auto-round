@@ -73,7 +73,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
     if not unknown:
         return []
-    lines = [f"## New issues ({len(unknown)}) — ranked by frequency", ""]
+    lines = [f"## New issues ({len(unknown)})", ""]
 
     for rank, c in enumerate(unknown, start=1):
         sig = _inline(c.get("signature", ""))
