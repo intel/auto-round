@@ -919,10 +919,18 @@ def _device_bandwidth_gbps():
     independent probe.
 
     The copy counts one read plus one write, which slightly *understates*
-    read-only weight streaming -- a conservative choice: it can only make the
-    ceiling smaller and therefore never turns a genuinely slow kernel into an
-    excused row. Cached after the first call; returns ``None`` if XPU is
-    unavailable or the probe fails.
+    read-only weight streaming. That conservatism is not free: a ceiling that
+    is too low reads as "bandwidth bound", and :func:`_assert_targets` skips
+    enforcement on exactly those rows, so an under-measured probe silently
+    excuses a slow kernel. :func:`_apply_bandwidth_evidence` is the guard.
+
+    Taken as the *best* of several rounds rather than one burst's median. A
+    single burst samples whatever clock state the device happens to be in, and
+    on B70 that spread three consecutive runs across 439 / 373 / 299 GB/s --
+    a 47% swing in a number the ceilings treat as a hardware constant. The
+    fastest copy is the one least contaminated by throttling, which is the same
+    reason every other measurement here min-filters. Cached after the first
+    call; returns ``None`` if XPU is unavailable or the probe fails.
     """
     global _DEVICE_BW_GBPS
     if _DEVICE_BW_GBPS is not None:
@@ -933,7 +941,7 @@ def _device_bandwidth_gbps():
     try:
         src = torch.empty(nbytes, dtype=torch.int8, device="xpu")
         dst = torch.empty_like(src)
-        ms = _xpu_time_ms(lambda: dst.copy_(src), warmup=3, iters=10)
+        ms = min(_xpu_time_ms(lambda: dst.copy_(src), warmup=2, iters=5) for _ in range(3))
         _DEVICE_BW_GBPS = 2.0 * nbytes / (ms * 1e-3) / 1e9
     except Exception as exc:  # pragma: no cover - depends on device/runtime
         print(f"[moe-w4a8-perf] device bandwidth probe unavailable: {exc}")
@@ -942,6 +950,41 @@ def _device_bandwidth_gbps():
         src = dst = None
         _release_xpu_memory()
     return _DEVICE_BW_GBPS
+
+
+def _apply_bandwidth_evidence(rows) -> None:
+    """Raise the ceilings when a row proved the probe under-measured.
+
+    The ceilings are derived from an independent copy probe, but the probe is
+    only ever a *lower* bound on what the part can stream: it counts a read
+    plus a write, and it samples one moment of one clock state. A kernel row
+    that moved its own traffic at a higher rate is direct evidence the device
+    sustains at least that much -- so the probe, not the row, is what was
+    wrong.
+
+    Without this a run can print "118% of the bandwidth ceiling", which is not
+    a thing a roofline can do; worse, :func:`_assert_targets` waives the target
+    for any row sitting below its ceiling, so a cold probe hands out the
+    "bandwidth bound, unreachable" excuse to rows that are merely slow.
+
+    Ceilings are linear in bandwidth, so each is rescaled by the same ratio.
+    This only ever raises them, which only ever makes the verdict stricter.
+    """
+    if not rows:
+        return
+    probe = rows[0].get("device_bw_gbps")
+    if not probe:
+        return
+    best = max((r.get("dram_gbps") or 0.0) for r in rows)
+    if best <= probe:
+        return
+    winner = max(rows, key=lambda r: r.get("dram_gbps") or 0.0)
+    scale = best / probe
+    for row in rows:
+        if row.get("tflops_ceiling") is not None:
+            row["tflops_ceiling"] *= scale
+        row["bw_evidence_gbps"] = best
+        row["bw_evidence_label"] = winner["label"]
 
 
 # ---------------------------------------------------------------------------
@@ -1076,10 +1119,17 @@ def _print_targets(phase: str, rows) -> None:
     target = _TARGET_PREFILL_TFLOPS if is_prefill else _TARGET_DECODE_GBPS
     unit = "TFLOPS" if is_prefill else "GB/s"
     device_bw = rows[0].get("device_bw_gbps")
+    evidence = rows[0].get("bw_evidence_gbps")
     print()
     print(f"targets [{phase}]: {'prefill compute' if is_prefill else 'decode weight bandwidth'} > {target:g} {unit}")
     if device_bw:
-        print(f"  device copy bandwidth probe: {device_bw:.0f} GB/s")
+        note = ""
+        if evidence:
+            note = (
+                f" (under-measured: {rows[0]['bw_evidence_label']} streamed {evidence:.0f} GB/s, "
+                f"so the ceilings below use that)"
+            )
+        print(f"  device copy bandwidth probe: {device_bw:.0f} GB/s{note}")
     for row in rows:
         measured = row["tflops"] if is_prefill else row["gbps"]
         ceiling = row.get("tflops_ceiling")
@@ -1388,6 +1438,10 @@ def run_perf(
         ark.clear_moe_w4a8_prepack_cache()
         ark.moe_w4a8_release_scratch()
         _release_xpu_memory()
+    # Before any verdict is drawn from the ceilings -- including the one
+    # `_assert_targets` draws from the returned rows, which is why this is not
+    # gated on `verbose`.
+    _apply_bandwidth_evidence(rows)
     if verbose:
         _print_targets(phase, rows)
     return rows

@@ -248,12 +248,21 @@ So three of the four are within 8–9% of what the part can stream, and the
 trails minimax because its K is smaller, so the weight term it amortizes the
 activation streams against is smaller too. No tile, store, epilogue or
 scheduling change moves any of it — every one of those configurations moves the
-same bytes. The only levers that do are the [call contracts](#cutting-the-prefill-traffic-two-optional-call-contracts)
-below — and of the two, only [contract 1](#contract-1--caller-supplied-int8-activations)
-survives measurement on B70; contract 2 removes bytes but adds more time than it
-saves (see [What is left](#what-is-left)). `qwen3 down` is the one shape with
-kernel headroom left, which is what
-[Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no) is about.
+same bytes.
+
+The only lever that does is [contract 1](#contract-1--caller-supplied-int8-activations),
+and on B70 it is worth more than every tuning knob in this document combined:
+
+| shape | w4a16 | shipped | contract 1 | TFLOPS | vs w4a16 |
+|---|---|---|---|---|---|
+| qwen3 up | 3.679 ms | 3.034 ms | **2.090 ms** | 135.91 → **197.31** | 1.30x → **1.76x** |
+| qwen3 down | 2.596 ms | 2.107 ms | **1.796 ms** | 97.83 → **114.78** | 1.16x → **1.45x** |
+
+Both shapes clear the 100 TFLOPS target, and `qwen3 up` at 197 TFLOPS is 1.45x
+the *shipped* W4A8 path. This is the whole of the gap: not the mainloop, not the
+tiles — the activation round-trip, deleted by having the caller pass int8 it
+already had. The other contract goes the other way; see
+[What is left](#what-is-left).
 
 ### The int8 weight copy, and the in-tree precedent against it
 
@@ -427,18 +436,20 @@ traffic model:
 (`n/a` = the fused reduction does not apply to an up/gate projection, so the
 reachable number for those shapes is the `+ int8 in` column.)
 
-Both qwen3 shapes clear 100 TFLOPS: the up projection on contract 1 alone, the
-down projection only on **both together** — at either routing.
+B70 has now measured the 8K-prompt rows of the `+ int8 in` column, and the
+model was close: it projected **152** for `qwen3 up` and **91.0** for
+`qwen3 down`; the device returned **197.31** and **114.78**. Both beat the
+projection — the model prices the shipped path's activation round-trip at the
+sweep's average bandwidth, and deleting it also improves the locality of what
+remains, which a pure byte count cannot see. Both shapes clear 100 TFLOPS on
+contract 1 **alone**, which the table said only `qwen3 up` would.
 
-These are projections from a traffic model, not measurements — see
-[Status](#status) — and the `fused reduce` / `Both` columns are now known to be
-wrong. B70 measured contract 2 as a **regression**, because this model prices
-the fused epilogue by the bytes it removes and it is in fact priced by the
-~134M device-scope atomics it adds ([What is left](#what-is-left)). Read the
-`+ int8 in` column as the live projection and the two fused columns as an upper
-bound that measurement did not reach; the standing consequence is that
-`qwen3 down` has no projected path past 100 TFLOPS left, since its only one ran
-through contract 2.
+The `fused reduce` / `Both` columns, by contrast, are now known to be wrong in
+the other direction. B70 measured contract 2 as a **regression**, because this
+model prices the fused epilogue by the bytes it removes and it is in fact priced
+by the ~134M device-scope atomics it adds ([What is left](#what-is-left)). Read
+the `+ int8 in` column as validated at the 8K routing and the two fused columns
+as an upper bound measurement did not reach.
 
 ## Decode: coalesced K-split mapping
 
@@ -1241,15 +1252,20 @@ So contract 2 is not a contract to take on this hardware. The `[T, N]` write it
 deletes is real, but a coalesced 268 MB store beats 134M scattered read-modify-
 writes by more than the bytes suggest.
 
-**Contract 1 has still never been measured on its own.** Both B70 runs so far
-enabled the two together, so contract 2's ~1.5 ms swamped whatever the
-activation round-trip saved and that run says nothing about the round-trip. Its
-own arithmetic is unencumbered: it deletes `3 * T * K` bytes — 402 MB of qwen3
-up's 1141 MB — which at the 376 GB/s the shipped path already streams is
-~1.97 ms, or **2.0x vs W4A16's 3.929 ms**. It is also the contract a serving
-stack can adopt without touching layer code, since the previous op in most
-quantized pipelines already produced int8, and unlike contract 2 it keeps the
-result bit-identical:
+**Contract 1, measured on its own, is the answer.** The two earlier B70 runs
+had enabled the contracts together, so contract 2's ~1.5 ms swamped whatever
+the activation round-trip saved and those runs said nothing about it. Isolated:
+
+| shape | w4a16 | shipped | contract 1 | TFLOPS | vs w4a16 |
+|---|---|---|---|---|---|
+| qwen3 up | 3.679 ms | 3.034 ms | **2.090 ms** | 135.91 → **197.31** | 1.30x → **1.76x** |
+| qwen3 down | 2.596 ms | 2.107 ms | **1.796 ms** | 97.83 → **114.78** | 1.16x → **1.45x** |
+
+It deletes `3 * T * K` bytes — 402 MB of qwen3 up's 1141 MB — and the predicted
+~1.97 ms landed within 6% of the measured 2.090 ms. It is also the contract a
+serving stack can adopt without touching layer code, since the previous op in
+most quantized pipelines already produced int8, and unlike contract 2 it keeps
+the result bit-identical:
 
 ```bash
 pytest test_moe_w4a8_perf.py -k prequant_long_seq -v   # contract 1 alone
@@ -1285,10 +1301,42 @@ contract a caller can take, so `run_perf` no longer applies it to those rows —
 the earlier table's `up` regression was measuring a configuration nobody can
 ship. Contract 2 is a down-projection contract.
 
-Both contracts are free in a real MoE layer: `up`/`gate` share activations so
-the int8 copy is made once and handed to both, and `down`'s consumer is the
-unpermute + weighted sum the epilogue would be doing anyway. Treat them as the
-calling convention rather than an optimization.
+Contract 1 is free in a real MoE layer: `up`/`gate` share activations, so the
+int8 copy is made once and handed to both. Treat it as the calling convention
+rather than an optimization. Contract 2's premise — that `down`'s consumer is
+the unpermute + weighted sum the epilogue would be doing anyway — is sound, but
+on this hardware the epilogue does it worse than a separate pass does.
+
+### The bandwidth probe was lying, and it mattered
+
+The contract 1 run printed `118% of the 167 TFLOPS bandwidth ceiling`, which is
+not a thing a roofline can do. The ceilings come from a device copy probe, and
+that probe reported **439, 373 and 299 GB/s** on three consecutive runs of the
+same suite — a 47% swing in a number the verdicts treat as a hardware constant.
+At 299 GB/s it sat *below* the 353 GB/s the kernel itself was streaming.
+
+That was never only cosmetic. `_assert_targets` waives the target for any row
+whose ceiling is under it, on the theory that no kernel change can reach it — so
+an under-measured probe hands the "bandwidth bound, unreachable" excuse to rows
+that are merely slow, and `--enforce-targets` stops enforcing.
+
+Two fixes. The probe is now the best of several rounds rather than one burst's
+median, for the same reason every other measurement here min-filters: the
+fastest copy is the one least contaminated by throttling. And a row that moved
+its own traffic faster than the probe is direct evidence the device sustains at
+least that much, so the ceilings are rescaled by it — the probe is only ever a
+lower bound. This can only raise ceilings, i.e. only make verdicts stricter.
+
+The corrected reading of that same run changes the conclusion:
+
+| shape | printed | corrected ceiling | corrected |
+|---|---|---|---|
+| qwen3 up | 118% of 167 | 197.3 | **100%** — at the roofline |
+| qwen3 down | 97% of 119 | 140.6 | **82%** — 18% of headroom |
+
+So `qwen3 down` is *not* finished, as the bad probe's "97%" implied. It is the
+one shape with kernel headroom left under contract 1, and the write-heavy
+analysis above is why.
 
 ## Environment variables
 
