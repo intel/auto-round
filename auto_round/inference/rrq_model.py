@@ -402,7 +402,7 @@ def load_rrq_model(
         logger.info(f"Built {replaced} RRQ layers from base + residual (active={active_bits}-bit).")
     logger.info(
         "Switch precision via auto_round.inference.rrq_linear.set_rrq_bits(model, bits). "
-        "Each RRQ layer computes the base result first, then accumulates each active "
-        "residual's result (stock W2A16 dequant; correctness reference, not a fused kernel)."
+        "Each RRQ layer dequantizes all active planes into a single weight and runs "
+        "one matmul+bias (stock W2A16 dequant; correctness reference, not a fused kernel)."
     )
     return base_model
