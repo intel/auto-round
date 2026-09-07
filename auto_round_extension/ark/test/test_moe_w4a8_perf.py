@@ -1445,8 +1445,17 @@ _PREFILL_STORE_CONFIGS = [
 # written with; the shipped shapes are short in K (12 k-tiles at K = 768, where
 # a prologue of 3 is a quarter of the whole mainloop), which is exactly the
 # regime where the depth is worth re-measuring in both directions.
+#
+# The sweep spans the whole range the kernel accepts (1-8) rather than a window
+# around the default. The narrower `2 / 3 / 4 / 6` it used to probe cannot
+# distinguish "3 is the optimum" from "3 is the best of the four points that
+# were tried": both endpoints are legal values the clamp in
+# `moe_w4a8_prefill_prefetch_dist` admits, and on a 12-k-tile mainloop they are
+# the two hypotheses that matter -- 1 is the shortest prologue the kernel can
+# have, 8 is deep enough to cover two thirds of that mainloop before the first
+# DPAS. A K-aware default can only be justified by a sweep that includes them.
 _PREFILL_PREFETCH_CONFIGS = [
-    (f"prefetch {dist}", {"ARK_MOE_W4A8_PREFILL_PREFETCH": str(dist)}) for dist in (2, 3, 4, 6)
+    (f"prefetch {dist}", {"ARK_MOE_W4A8_PREFILL_PREFETCH": str(dist)}) for dist in (1, 2, 3, 4, 6, 8)
 ]
 
 # Prefill: the two call contracts that cut traffic instead of cycles.
@@ -1930,6 +1939,44 @@ if pytest is not None:
             bit-identical to the first; only the timing is a measurement.
             """
             rows = run_config_sweep("prefill", _PREFILL_PREFETCH_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"prefetch depth {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_prefetch_sweep_long_seq(self, request):
+            """Time the mainloop's prefetch depth at the 8K-prompt routing.
+
+            Same sweep as above at the other prefill point, and the one that
+            has to decide whether the depth should depend on K. The compute-
+            bound batch derives its token count per model so every shape lands
+            on 384 rows per expert; a fixed 8K prompt does not, so the qwen3
+            shapes get 512 rows per expert and the minimax ones 341. That is
+            the routing the shipped-contract numbers were taken at, and the one
+            where the qwen3 down-projection reads 74% of its DRAM ceiling while
+            the other three sit at 91-100% -- i.e. the only shape in the suite
+            with headroom a scheduling change could still take.
+
+            K is what separates it: at a 64-element k-tile its mainloop is 12
+            iterations against 32 for qwen3 up and 48 for minimax up, so a
+            prologue of 3 is a quarter of the loop there and a sixteenth here.
+            Whether that costs anything is not decidable from the shape alone
+            -- a shorter prologue starts computing sooner but runs against a
+            shallower memory pipeline -- so `moe_w4a8_prefill_prefetch_dist`
+            deliberately stays a single constant until this sweep separates the
+            two shapes. Making it K-aware on the strength of the k-tile count
+            alone would be picking one of those two effects by assertion.
+
+            Nothing about the arithmetic changes, so every row must be
+            bit-identical to the first; only the timing is a measurement.
+            """
+            rows = run_config_sweep(
+                "prefill",
+                _PREFILL_PREFETCH_CONFIGS,
+                models=_models_option(request),
+                batches=_long_seq_batches(),
+            )
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
             for row in rows:
                 assert (
@@ -2506,6 +2553,16 @@ def _parse_args(argv):
             "These change what the call moves, so the printed ceiling and BW@100T follow the contract."
         ),
     )
+    parser.add_argument(
+        "--prefetch",
+        action="store_true",
+        help=(
+            "Also sweep the prefill mainloop's prefetch depth (1-8) at whichever prefill points are "
+            "selected. This is the measurement a K-dependent default would have to rest on: the "
+            "qwen3 down-projection has 12 k-tiles where minimax up has 48, so a fixed depth is a very "
+            "different fraction of the mainloop on each. Pair with --long-seq for the 8K-prompt routing."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     return parser.parse_args(argv)
@@ -2578,6 +2635,17 @@ def main(argv=None) -> int:
                     run_config_sweep(phase, configs, dtype=dtype, models=models, batches=_long_seq_batches())
                 if phase == "prefill" and args.contracts:
                     run_config_sweep(phase, _PREFILL_CONTRACT_CONFIGS, dtype=dtype, models=models)
+            if phase == "prefill" and args.prefetch:
+                if not args.long_seq or args.compute_bound:
+                    run_config_sweep(phase, _PREFILL_PREFETCH_CONFIGS, dtype=dtype, models=models)
+                if args.long_seq:
+                    run_config_sweep(
+                        phase,
+                        _PREFILL_PREFETCH_CONFIGS,
+                        dtype=dtype,
+                        models=models,
+                        batches=_long_seq_batches(),
+                    )
 
     if failures:
         print()

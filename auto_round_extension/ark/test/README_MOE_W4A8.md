@@ -208,6 +208,59 @@ prefill are far below it, so readings of 0.55–0.71× are expected there: W4A8 
 a large-batch prefill optimization, and at decode it can only help by improving
 the *memory* path.
 
+### Why `vs w4a16` is ~1.2–1.7x at large batches
+
+Above the crossover the ratio stops being about the crossover and becomes a
+traffic ratio. A B70 reading of the shipped contract at one 8K prompt:
+
+| shape | E | N | K | rows/E | w4a16 | w4a8 | TFLOPS | vs w4a16 |
+|---|---|---|---|---|---|---|---|---|
+| qwen3 up | 128 | 1536 | 2048 | 512 | 3.964 ms | 2.845 ms | 144.92 | 1.39x |
+| qwen3 down | 128 | 2048 | 768 | 512 | 2.413 ms | 2.062 ms | 99.98 | 1.17x |
+| minimax up | 192 | 1536 | 3072 | 341 | 6.828 ms | 4.358 ms | 141.91 | 1.57x |
+| minimax down | 192 | 3072 | 1536 | 341 | 7.023 ms | 4.260 ms | 145.18 | 1.65x |
+
+Those are not four readings of the same kernel quality. Put both paths through
+`_traffic_bytes` and the W4A8 call moves **1.43–1.81x the bytes** the int4 path
+does — the doubled weights, plus the activation round-trip the int4 path never
+pays. The int4 path is still dequant-bound at 151–195 GB/s; W4A8 runs at
+325–439 GB/s, i.e. into the memory wall. Against the 439 GB/s the fastest row
+demonstrates:
+
+| shape | ceiling | measured | % of roofline |
+|---|---|---|---|
+| qwen3 up | 158.7 | 144.92 | 91% |
+| qwen3 down | 134.9 | 99.98 | **74%** |
+| minimax up | 142.0 | 141.91 | 100% |
+| minimax down | 158.7 | 145.18 | 92% |
+
+So three of the four are within 8–9% of what the part can stream, and the
+`vs w4a16` spread tracks arithmetic intensity (K), not kernel quality: qwen3
+trails minimax because its K is smaller, so the weight term it amortizes the
+activation streams against is smaller too. No tile, store, epilogue or
+scheduling change moves any of it — every one of those configurations moves the
+same bytes. The two levers that do are the [call contracts](#cutting-the-prefill-traffic-two-optional-call-contracts)
+below, which on this reading project 2.0–2.5x; `qwen3 down` is the one shape
+with kernel headroom left, which is what
+[Prefetch depth and K](#prefetch-depth-and-k) is about.
+
+### Why the int8 weight copy is still there
+
+The remaining traffic lever is the prepack itself: keeping int4 in DRAM and
+widening to int8 in-register would drop `E × N × K / 2` bytes — 18% of qwen3
+up's traffic, 24% of minimax up's — and halve the [prepack footprint](#memory-cost)
+at the same time.
+
+It is not implemented because it forfeits the property the design rests on. The
+AUTO_S8 rescale exists so the K loop can be a single full-width int32
+accumulation (`blks == 1`); reading int4 puts per-group folding back in the
+loop, so at `group_size = 32` one accumulation becomes 64 partial ones. That
+trades bandwidth for compute, which is the right direction here — but it is a
+mainloop rewrite, not a tuning change, and `sycl_tla_s8_gemm.hpp` takes
+`const int8_t* b`, so the in-tree W4A8 GEMM offers no template for it. The
+contracts reach the same traffic reduction without touching the mainloop, so
+this stays unstarted until a shape is measured short *with* them enabled.
+
 ## Cutting the prefill traffic: two optional call contracts
 
 Read the roofline the other way round. At the compute-bound batch the four
@@ -1018,6 +1071,36 @@ the device-copy probe actually reaches), so only minimax down clears the
 300 GB/s target. A decode step reads one weight byte per multiply-add and
 nothing else, so the remaining gap is message efficiency, not arithmetic.
 
+### Prefetch depth and K
+
+`moe_w4a8_prefill_prefetch_dist` returns one constant (`3`) for every shape, and
+it stays that way until a sweep says otherwise.
+
+The reason it is worth questioning is that the constant is a very different
+fraction of the mainloop on each shipped shape. At a 64-element k-tile the qwen3
+down-projection (`K = 768`) runs 12 k-tile iterations, qwen3 up (`K = 2048`) runs
+32 and minimax up (`K = 3072`) runs 48, so a prologue of 3 is a quarter of the
+first loop and a sixteenth of the last. That shape is also the one with
+headroom: on B70's shipped contract it reads 74% of its DRAM ceiling where the
+other three sit at 91–100%.
+
+What that does *not* establish is the direction. A shorter prologue starts
+computing sooner; a longer one runs the DPAS chain against a deeper memory
+pipeline. Both scale with the same k-tile count, and on a mainloop that short
+either can dominate. Picking one from the k-tile count alone would be asserting
+the answer, so the sweeps below span the whole legal range at both prefill
+points and the default only moves if they separate the shapes:
+
+```bash
+pytest test_moe_w4a8_perf.py -k "prefetch_sweep" -v
+python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq
+```
+
+A K-aware default is justified only if some depth beats `3` on qwen3 down *and*
+`3` (or another depth) still wins on the long-K shapes. If one depth wins
+everywhere, the constant simply changes value; if the ranking is flat, the
+prologue was never the limiter and the 74% belongs to something else.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -1033,7 +1116,7 @@ nothing else, so the remaining gap is message efficiency, not arithmetic.
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | Keep the activation row in registers between the absmax and the quantize pass instead of reading `[T, K]` twice; **on by default** where the row fits (`K ≤ 2048` at `VEC = 8`, 64 of the 128 dwords a lane gets), worth 1.00–1.05× on the shapes that qualify. Set to `0` to force the two-pass kernel, which is also what runs for longer rows. Bit-identical to it. |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth up to 1.08× on the swept shapes (and never more than 0.9% behind). The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Automatically off when the fused top-k reduction is used, which scatters and therefore cannot use a block store. |
-| `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` times `2 / 3 / 4 / 6`. Values outside `1`–`8` fall back to the default. |
+| `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` (compute-bound batch) and `test_perf_prefill_prefetch_sweep_long_seq` (8K-prompt routing) time the whole `1 / 2 / 3 / 4 / 6 / 8` range. Values outside `1`–`8` fall back to the default. The default is a single constant on purpose — see [Prefetch depth and K](#prefetch-depth-and-k). |
 
 ## Shape constraints
 
