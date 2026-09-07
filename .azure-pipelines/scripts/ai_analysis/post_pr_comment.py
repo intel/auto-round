@@ -17,6 +17,15 @@ _MARKER = "<!-- ai-failure-analysis -->"
 _MAX_BODY = 65000
 
 
+def _build_marker(key: str) -> str:
+    """Return the hidden comment marker, scoped by an optional per-workflow key.
+
+    Distinct keys keep separate workflows from overwriting each other's comment.
+    """
+    key = (key or "").strip()
+    return f"<!-- ai-failure-analysis:{key} -->" if key else _MARKER
+
+
 def _api(url: str, token: str, method: str = "GET", payload: "dict | None" = None) -> "list | dict":
     headers = {"Accept": "application/vnd.github+json"}
     if token:
@@ -30,7 +39,7 @@ def _api(url: str, token: str, method: str = "GET", payload: "dict | None" = Non
     return json.loads(body) if body else {}
 
 
-def _find_existing(repo: str, pr: int, token: str) -> "int | None":
+def _find_existing(repo: str, pr: int, token: str, marker: str) -> "int | None":
     page = 1
     while True:
         url = f"https://api.github.com/repos/{repo}/issues/{pr}/comments?per_page=100&page={page}"
@@ -38,7 +47,7 @@ def _find_existing(repo: str, pr: int, token: str) -> "int | None":
         if not isinstance(comments, list) or not comments:
             return None
         for c in comments:
-            if _MARKER in (c.get("body") or ""):
+            if marker in (c.get("body") or ""):
                 return c.get("id")
         if len(comments) < 100:
             return None
@@ -50,9 +59,15 @@ def main():
     parser.add_argument("--repo", default=os.environ.get("REPO_PATH", ""), help="owner/name")
     parser.add_argument("--pr", default=os.environ.get("PR_NUMBER", ""), help="PR number")
     parser.add_argument("--body-file", required=True, help="Markdown report to post")
+    parser.add_argument(
+        "--marker-key",
+        default=os.environ.get("AI_COMMENT_MARKER_KEY", ""),
+        help="Per-workflow key so different pipelines update separate PR comments",
+    )
     parser.add_argument("--token-env", default="AUTO_ROUND_BOT_TOKEN", help="Env var holding the GitHub token")
     args = parser.parse_args()
 
+    marker = _build_marker(args.marker_key)
     token = os.environ.get(args.token_env, "")
     if not args.repo or "/" not in args.repo or not str(args.pr).strip():
         print("No repo/PR number available; skipping PR comment.", file=sys.stderr)
@@ -68,11 +83,11 @@ def main():
         body = f.read()
     if len(body) > _MAX_BODY:
         body = body[:_MAX_BODY] + "\n\n_...truncated; see the pipeline artifact for the full report._"
-    body = f"{_MARKER}\n{body}"
+    body = f"{marker}\n{body}"
 
     pr = int(args.pr)
     try:
-        existing = _find_existing(args.repo, pr, token)
+        existing = _find_existing(args.repo, pr, token, marker)
         if existing is not None:
             _api(
                 f"https://api.github.com/repos/{args.repo}/issues/comments/{existing}",

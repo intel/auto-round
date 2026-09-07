@@ -139,6 +139,7 @@ steps:
             python "${scripts}/post_pr_comment.py" \
               --repo "${repo_path}" \
               --pr "${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}" \
+              --marker-key "$(Build.DefinitionName)" \
               --body-file "${work}/report.md"
 
   - task: PublishPipelineArtifact@1
