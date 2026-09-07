@@ -47,8 +47,10 @@ def build_known_section(clusters: list[dict]) -> list[str]:
     if not known:
         return []
     lines = [
-        f"## Known issues ({len(known)})", "",
-        "<details><summary>Details</summary>", "",
+        f"## Known issues ({len(known)})",
+        "",
+        "<details><summary>Details</summary>",
+        "",
         "| Cluster | Issue | Matched by | Occurrences | Sample log |",
         "| --- | --- | --- | --- | --- |",
     ]
@@ -79,7 +81,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         occ = c.get("occurrences", 0)
         lines.append(f"### {rank}. `{sig}` — {occ} occurrence(s)")
         lines.append("")
-        lines.append(f"<details><summary>Details</summary>")
+        lines.append("<details><summary>Details</summary>")
         lines.append("")
         lines.append(f"- **Affected tests ({len(c.get('tests', []))}):** {', '.join(c.get('tests', [])) or '-'}")
         lines.append(f"- **Logs:** {', '.join(c.get('logs', [])) or '-'}")
@@ -95,7 +97,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         lines.append("</details>")
         lines.append("")
         lines.append("</details>")
-        lines.append("") 
+        lines.append("")
 
         analysis = analyses_by_id.get(c.get("id"))
         if analysis:
