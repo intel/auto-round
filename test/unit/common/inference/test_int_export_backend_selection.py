@@ -23,7 +23,15 @@ from pathlib import Path
 
 import pytest
 
+import auto_round.inference.backend as backend_module
 from auto_round.inference.backend import BackendInfos, get_layer_backend
+
+_AUTO_SELECTION_BACKENDS = (
+    "auto_round:torch",
+    "auto_round:tritonv2",
+    "gptqmodel:marlin",
+    "gptqmodel:exllamav2",
+)
 
 
 @pytest.mark.parametrize("bits", [2, 4, 8])
@@ -52,10 +60,12 @@ def test_torch_backend_supports_int_export_matrix(bits, group_size, sym):
 )
 def test_auto_backend_selection_for_int_exports(monkeypatch, bits, group_size, sym, expected_backend):
     """Check capability/priority selection independently of optional packages."""
-    for backend_info in BackendInfos.values():
+    backend_infos = {name: BackendInfos[name] for name in _AUTO_SELECTION_BACKENDS}
+    monkeypatch.setattr(backend_module, "BackendInfos", backend_infos)
+    for backend_info in backend_infos.values():
         monkeypatch.setattr(backend_info, "requirements", None)
 
-    backend = get_layer_backend(
+    backend = backend_module.get_layer_backend(
         device="cuda",
         backend="auto",
         packing_format="auto_round",

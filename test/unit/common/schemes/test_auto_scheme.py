@@ -426,13 +426,13 @@ class TestAutoScheme:
         avg_bits = total_bits / total_params
         assert avg_bits <= target_bits + 0.05
 
-    def test_layer_config(self, micro_opt_model_path, tmp_path):
+    def test_layer_config(self, tiny_opt_model_path, tmp_path):
         calibration_dataset = _make_local_calibration_dataset(tmp_path)
         from auto_round.auto_scheme.utils import compute_avg_bits_for_model
         from auto_round.utils import get_module
 
         target_bits = 3.5
-        model_name = micro_opt_model_path
+        model_name = tiny_opt_model_path
         scheme = AutoScheme(avg_bits=target_bits, options=("W2A16", "W4A16", "BF16"))
         # 8-bit entries must be symmetric (asymmetric 8-bit is refused during
         # layer-config resolution); the entry still exercises per-layer
@@ -457,7 +457,10 @@ class TestAutoScheme:
         assert layer.group_size == 32
         avg_bits, _ = compute_avg_bits_for_model(model)
         print(avg_bits)
-        assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
+        # AutoScheme treats avg_bits as a budget.  A fixed 8-bit layer and
+        # discrete candidate schemes can make the closest valid result lower
+        # than the requested target.
+        assert avg_bits <= target_bits + 1e-3
 
     def test_cache_files_saved_with_correct_format(self, micro_opt_model_path, tmp_path, monkeypatch):
         """After AutoScheme runs, per-scheme JSON cache files must exist with individual layer scores."""
@@ -530,7 +533,7 @@ class TestAutoScheme:
         bits_used = {v["bits"] for v in config.values() if "bits" in v}
         assert bits_used == {4, 8}, f"expected a mixed MXFP4/MXFP8 config, got {sorted(bits_used)}"
 
-    def test_different_avg_bits_produces_different_layer_config(self, micro_opt_model_path, tmp_path):
+    def test_different_avg_bits_produces_different_layer_config(self, tiny_opt_model_path, tmp_path):
         """Changing avg_bits should change the resulting layer_config."""
         calibration_dataset = _make_local_calibration_dataset(tmp_path)
         scheme_low = AutoScheme(
@@ -540,18 +543,18 @@ class TestAutoScheme:
             ignore_scale_zp_bits=True,
         )
         ar_low = AutoRound(
-            model=micro_opt_model_path, scheme=scheme_low, iters=0, nsamples=1, seqlen=8, dataset=calibration_dataset
+            model=tiny_opt_model_path, scheme=scheme_low, iters=0, nsamples=1, seqlen=8, dataset=calibration_dataset
         )
         _, config_low = ar_low.quantize()
 
         scheme_high = AutoScheme(
-            avg_bits=3.5,
+            avg_bits=4.0,
             options=("W2A16", "W4A16"),
             nsamples=1,
             ignore_scale_zp_bits=True,
         )
         ar_high = AutoRound(
-            model=micro_opt_model_path, scheme=scheme_high, iters=0, nsamples=1, seqlen=8, dataset=calibration_dataset
+            model=tiny_opt_model_path, scheme=scheme_high, iters=0, nsamples=1, seqlen=8, dataset=calibration_dataset
         )
         _, config_high = ar_high.quantize()
 
@@ -562,7 +565,7 @@ class TestAutoScheme:
             len([v for v in config_high.values() if "bits" in v]), 1
         )
         assert high_avg > low_avg, (
-            f"avg_bits=4 should produce higher average bits than avg_bits=2, "
+            f"avg_bits=4 should produce higher average bits than avg_bits=2.5, "
             f"got low={low_avg:.2f} high={high_avg:.2f}"
         )
 

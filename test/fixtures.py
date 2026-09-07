@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 from unittest.mock import patch
@@ -38,14 +39,24 @@ def tiny_model_dir(name):
     return os.path.join(TINY_MODEL_ROOT, os.path.basename(os.path.normpath(name)))
 
 
-def _tiny_model_ready(path):
-    return os.path.isfile(os.path.join(path, ".autoround_ready"))
+def _tiny_model_ready(path, signature=None):
+    marker_path = os.path.join(path, ".autoround_ready")
+    if not os.path.isfile(marker_path):
+        return False
+    if signature is None:
+        return True
+    with open(marker_path, encoding="utf-8") as marker:
+        return marker.read() == signature
 
 
-def _mark_tiny_model(path):
+def _mark_tiny_model(path, signature=None):
     os.makedirs(path, exist_ok=True)
     with open(os.path.join(path, ".autoround_ready"), "w", encoding="utf-8") as marker:
-        marker.write("ready\n")
+        marker.write(signature or "ready\n")
+
+
+def _tiny_model_signature(args, kwargs):
+    return json.dumps({"args": args, "kwargs": kwargs}, default=str, sort_keys=True)
 
 
 def _release_source_model_cache():
@@ -72,7 +83,8 @@ def _release_source_model_cache():
 def save_tiny_model(*args, **kwargs):
     requested_path = args[1] if len(args) > 1 else kwargs["tiny_model_path"]
     tiny_model_path = tiny_model_dir(requested_path)
-    if _tiny_model_ready(tiny_model_path):
+    signature = _tiny_model_signature(args, kwargs)
+    if _tiny_model_ready(tiny_model_path, signature):
         return tiny_model_path
 
     args = list(args)
@@ -83,7 +95,7 @@ def save_tiny_model(*args, **kwargs):
         kwargs["tiny_model_path"] = tiny_model_path
     model_name_or_path = args[0] if args else kwargs["model_name_or_path"]
     result = _save_tiny_model(*args, **kwargs)
-    _mark_tiny_model(result)
+    _mark_tiny_model(result, signature)
     if os.environ.get("AUTOROUND_REUSE_TINY_MODELS") == "1" and not os.path.isdir(model_name_or_path):
         _source_model_ids.add(model_name_or_path)
     return result
