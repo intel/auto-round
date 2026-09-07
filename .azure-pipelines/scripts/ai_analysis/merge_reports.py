@@ -94,9 +94,6 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         lines.append("```")
         lines.append("")
         lines.append("</details>")
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
 
         analysis = analyses_by_id.get(c.get("id"))
         if analysis:
@@ -120,6 +117,9 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             lines.append("")
             lines.append("_Not in the top-N AI-analyzed set._")
 
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
     return lines
 
 
