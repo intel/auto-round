@@ -194,17 +194,32 @@ class AlgorithmHandler:
                 for parameter in registry.parameters:
                     if _check_existing_parser_argument(parser, parameter, fallback=fallback):
                         continue
+                    # Prefer matching on the shared option string first: two distinct
+                    # options (e.g. ``--disable_opt_rtn`` and ``--enable_opt_rtn``) can
+                    # share the same ``dest`` while being different argparse actions, and
+                    # only the option-string match pairs them with the correct counterpart.
                     existing_index = next(
                         (
                             index
                             for index, item in enumerate(merged_parameters)
                             if locations[index][0] != group_name
-                            and (
-                                item.dest == parameter.dest or set(item.option_strings) & set(parameter.option_strings)
-                            )
+                            and set(item.option_strings) & set(parameter.option_strings)
                         ),
                         None,
                     )
+                    if existing_index is None:
+                        # Fall back to matching by ``dest`` (aliased options), but only
+                        # when the parsing semantics are compatible.
+                        existing_index = next(
+                            (
+                                index
+                                for index, item in enumerate(merged_parameters)
+                                if locations[index][0] != group_name
+                                and item.dest == parameter.dest
+                                and _argument_compatibility_key(item) == _argument_compatibility_key(parameter)
+                            ),
+                            None,
+                        )
                     if existing_index is not None:
                         merged = _merge_parameter(merged_parameters[existing_index], parameter)
                         merged_parameters[existing_index] = merged
