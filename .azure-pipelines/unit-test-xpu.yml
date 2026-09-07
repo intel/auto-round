@@ -118,10 +118,6 @@ stages:
               publishLocation: "pipeline"
 
           - task: PublishCodeCoverageResults@2
-            condition: ne(variables['HAS_COVERAGE'], 'false')
             inputs:
-              summaryFileLocation: $(UPLOAD_PATH)/coverage_PR/coverage.xml
-              # coverage.xml is produced inside the container, where the checkout
-              # lives at /auto-round, so its <sources> root does not exist on the
-              # agent. Point the task at the agent-side checkout instead.
-              pathToSources: $(Build.SourcesDirectory)
+              summaryFileLocation: $(Build.SourcesDirectory)/log_dir/coverage_PR/coverage.xml
+

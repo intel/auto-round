@@ -87,8 +87,8 @@ detect_changed_tests() {
                          <(printf '%s\n' "${test_changed}" | sort -u))"
     if [ -n "${non_test}" ]; then
         echo "##[group]non-test files changed, run full suite:" >&2
-        printf '  %s\n' ${non_test} >&2
-        echo "##[endgroup]"
+        printf '  %s\n' "${non_test}" >&2
+        echo "##[endgroup]" >&2
         return 1
     fi
 

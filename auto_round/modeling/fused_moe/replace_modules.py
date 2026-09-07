@@ -13,12 +13,12 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, Type
 
 import torch
 from tqdm import tqdm
-from transformers import PreTrainedModel
 
 from auto_round.modeling.fused_moe.utils import is_linearized_layout
 from auto_round.utils import (
@@ -121,13 +121,46 @@ def is_custom_model(model: torch.nn.Module) -> bool:
     return False
 
 
-def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
-    """Log the first experts module found in the model for debugging."""
+def _find_first_moe_block(model: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[None, None]:
+    """Return ``(name, module)`` of the first experts-like module, or ``(None, None)``."""
     for name, module in model.named_modules():
         if name.endswith(".experts") or name.endswith(".moe"):
-            logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
-            return True
-    return False
+            return name, module
+    return None, None
+
+
+def _describe_moe_block(model: torch.nn.Module, name: str) -> str | None:
+    """Render the experts module at ``name`` for the before/after comparison."""
+    try:
+        module = model.get_submodule(name)
+    except AttributeError:
+        return None
+    return f"({module.__class__.__name__}):\n{module}"
+
+
+@contextmanager
+def log_moe_block_transition(model: torch.nn.Module, label: str = "replacement"):
+    """Log the first experts module before and after a structural change.
+
+    The structural unfuse happens in one of two places depending on how the model was
+    built: on the meta skeleton (``build_meta_model``) or during ``apply_replacements``.
+    Both wrap themselves in this so the transition is reported wherever it actually
+    occurs, and only when something really changed -- printing an identical before/after
+    pair (which is what the other path sees, since it then has nothing left to do) is
+    just noise.
+    """
+    name, _ = _find_first_moe_block(model)
+    before = _describe_moe_block(model, name) if name is not None else None
+    try:
+        yield
+    finally:
+        if name is not None:
+            after = _describe_moe_block(model, name)
+            if after is not None and after != before:
+                logger.info(f"Experts (before {label}) [{name}] {before}")
+                logger.info(f"Experts (after {label}) [{name}] {after}")
+            else:
+                logger.debug(f"Experts [{name}] left unchanged by {label} {before}")
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -138,18 +171,27 @@ def materialize_model_(model: torch.nn.Module) -> None:
 
     model.apply(_materialize_module)
 
-    # check if any module on meta device remains
-    found_meta = False
-    for name, param in model.named_parameters():
-        if param.device.type == "meta":
-            logger.warning(f"Parameter {name} is still on meta device after materialization.")
-            found_meta = True
-    for name, buffer in model.named_buffers():
-        if buffer.device.type == "meta":
-            logger.warning(f"Buffer {name} is still on meta device after materialization.")
-            found_meta = True
-    if not found_meta:
-        logger.debug("All parameters and buffers have been materialized from meta device.")
+    # Any tensor still on meta after per-block materialization means the meta-skeleton
+    # loader could not resolve it from the checkpoint (e.g. a checkpoint-conversion
+    # layout AutoRound does not reverse yet). Leaving it on meta only defers the failure
+    # to a cryptic "Cannot copy out of meta tensor" crash on the next `.to(device)`, so
+    # fail fast with an actionable message.
+    still_meta = [name for name, param in model.named_parameters() if param.device.type == "meta"]
+    still_meta += [name for name, buffer in model.named_buffers() if buffer.device.type == "meta"]
+    if still_meta:
+        from auto_round import envs
+
+        preview = ", ".join(still_meta[:8]) + (f" (+{len(still_meta) - 8} more)" if len(still_meta) > 8 else "")
+        # The auto meta-skeleton is only enabled for fused-MoE checkpoints; an explicit
+        # AR_DISK_STREAM_MODEL=1 forces it for anything else. Point at whichever toggle
+        # actually turned it on so the hint stays correct (AR_DISABLE_AUTO_META_LOAD is
+        # the MoE-only auto path).
+        hint = "unset AR_DISK_STREAM_MODEL" if envs.AR_DISK_STREAM_MODEL else "set AR_DISABLE_AUTO_META_LOAD=1"
+        raise RuntimeError(
+            f"Failed to materialize {len(still_meta)} checkpoint tensor(s), still on meta: {preview}. "
+            f"To load the whole model on CPU instead, {hint} (uses more RAM)."
+        )
+    logger.debug("All parameters and buffers have been materialized from meta device.")
     release_original_module_(model)
 
 
@@ -319,25 +361,14 @@ def apply_replacements(
         The model with modules replaced.
     """
     _import_required_replacements(model)
-    _raw_expert_is_logged = False
 
-    # Custom replacements first
-    if is_custom_model(model):
+    with log_moe_block_transition(model, "replacement"):
+        # Custom replacements first
+        if is_custom_model(model):
+            _apply_custom_replacements(model, gguf_export=gguf_export)
 
-        if not _raw_expert_is_logged:
-            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-
-        _apply_custom_replacements(model, gguf_export=gguf_export)
-
-    if auto_detect_moe and is_transformers_version_greater_or_equal_5():
-
-        if not _raw_expert_is_logged:
-            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-
-        _handle_moe_modules(model)
-
-    if _raw_expert_is_logged:
-        _log_first_moe_block(model, "after replacement/skip")
+        if auto_detect_moe and is_transformers_version_greater_or_equal_5():
+            _handle_moe_modules(model)
 
     return model
 
