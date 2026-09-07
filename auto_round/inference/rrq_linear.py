@@ -142,10 +142,7 @@ class RRQLinear(nn.Module):
         precision loss. The result is cached until ``active_planes`` or the
         underlying packed tensors change (the cache key is ``num_planes``).
         """
-        if (
-            self._packed_weight is not None
-            and self._packed_weight_planes == num_planes
-        ):
+        if self._packed_weight is not None and self._packed_weight_planes == num_planes:
             return self._packed_weight
 
         weight = self.base._dequantize().float()
