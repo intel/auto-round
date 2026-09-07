@@ -1,5 +1,8 @@
-# Reusable AI-failure-analysis stage shared across pipelines (CPU, XPU, ...).
-# Analyzes the test stage on failure and hides the stale report comment on success.
+# Reusable AI-failure-analysis stages shared across pipelines (CPU, XPU, ...).
+# Split into two stages because a job condition cannot read a previous stage's
+# overall result (`stageDependencies.<stage>` only exposes per-job nodes, so
+# `stageDependencies.<stage>.result` is a dictionary miss -> Null). A stage-level
+# condition can read `dependencies.<stage>.result`, so we branch there instead.
 parameters:
   - name: dependsOn
     type: string
@@ -20,21 +23,29 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: ${{ parameters.dependsOn }}
-    condition: not(canceled())
+    condition: and(eq(dependencies.${{ parameters.dependsOn }}.result, 'Failed'), eq(variables['System.StageAttempt'], '1'))
     variables:
       - group: "auto-round-bot-secrets"
     jobs:
       - job: AnalyzeFailures
         displayName: "Analyze failed unit tests"
-        condition: and(eq(stageDependencies.${{ parameters.dependsOn }}.result, 'Failed'), eq(variables['System.StageAttempt'], '1'))
         steps:
           - template: ai-analysis-template.yml
             parameters:
               enableAiAnalysis: ${{ parameters.enableAiAnalysis }}
               postComment: ${{ parameters.postComment }}
+
+  - stage: ${{ parameters.stageName }}_HideOutdated
+    displayName: "Hide AI Analysis Comments"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: in(dependencies.${{ parameters.dependsOn }}.result, 'Succeeded', 'SucceededWithIssues')
+    variables:
+      - group: "auto-round-bot-secrets"
+    jobs:
       - job: HideComments
         displayName: "Hide AI Analysis Comments"
-        condition: eq(stageDependencies.${{ parameters.dependsOn }}.result, 'Succeeded')
         steps:
           - task: UsePythonVersion@0
             inputs:
