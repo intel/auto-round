@@ -35,10 +35,17 @@ steps:
         set -uo pipefail
         repo="$(Build.SourcesDirectory)"
         out="${repo}/ai_analysis/pr.diff"
+        sha="$(Build.SourceVersion)"
         mkdir -p "$(dirname "$out")"
         # Best-effort: the diff only enriches the prompt, never block on failure.
-        # The build SHA already captures the change under review (same as the commit page).
-        git -C "$repo" show --no-color "$(Build.SourceVersion)" > "$out" 2>/dev/null || : > "$out"
+        # In PR builds Build.SourceVersion is a merge commit (parent1 = target tip,
+        # parent2 = PR head); git show on it emits the whole branch divergence, so
+        # diff the parents from their merge-base to capture only the PR's changes.
+        if git -C "$repo" rev-parse -q --verify "${sha}^2" >/dev/null 2>&1; then
+          git -C "$repo" diff --no-color "${sha}^1...${sha}^2" > "$out" 2>/dev/null || : > "$out"
+        else
+          git -C "$repo" show --no-color "$sha" > "$out" 2>/dev/null || : > "$out"
+        fi
         echo "PR diff bytes: $(wc -c < "$out" 2>/dev/null || echo 0)"
 
   - task: Bash@3
@@ -78,9 +85,6 @@ steps:
         if [ "${{ parameters.enableAiAnalysis }}" = "True" ]; then
             echo "Installing Copilot CLI for AI analysis..."
             curl -fsSL https://gh.io/copilot-install | bash
-            # Non-root install lands in $HOME/.local/bin, which the installer does
-            # not add to PATH non-interactively; export it so the python subprocess
-            # below can find the copilot binary.
             export PATH="$HOME/.local/bin:$PATH"
             copilot --version
         fi

@@ -38,6 +38,8 @@ Guidance:
 - The excerpt below is truncated. The repository is checked out at ``{project_root}`` and the
   complete raw failure logs are under ``{log_path}``. When you need more context, use your
   shell/read/rg tools to inspect source files, git history, and the full logs before concluding.
+- The full PR diff is on disk at ``{diff_path}``; read it with your tools when you need it
+  instead of relying on a truncated inline copy.
 
 ## Project source root
 {project_root}
@@ -54,8 +56,8 @@ Guidance:
 ## Log excerpt
 {excerpt}
 
-## PR diff (may be truncated)
-{diff}
+## PR diff file
+{diff_path}
 """
 
 
@@ -177,6 +179,15 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cl
             "transcript": stdout,  # raw JSONL stream: full step-by-step execution trace
         },
     )
+    print(
+        f"AI call cluster={cluster_id} "
+        f"model={parsed['model'] or model or '(unknown)'} "
+        f"duration_s={round((ended - started).total_seconds(), 3)} "
+        f"ai_credits={parsed['ai_credits']} "
+        f"premium_requests={parsed['premium_requests']} "
+        f"returncode={returncode}",
+        file=sys.stderr,
+    )
     return raw
 
 
@@ -194,20 +205,20 @@ def parse_model_json(text: str) -> "dict | None":
         return None
 
 
-def build_prompt(cluster: dict, diff: str, max_excerpt: int, max_diff: int, project_root: str, log_path: str) -> str:
+def build_prompt(cluster: dict, diff_path: str, max_excerpt: int, project_root: str, log_path: str) -> str:
     return _PROMPT_TEMPLATE.format(
         signature=cluster.get("signature", ""),
         test_count=len(cluster.get("tests", [])),
         tests=", ".join(cluster.get("tests", [])) or "(unknown)",
         excerpt=(cluster.get("sample", "") or "")[:max_excerpt],
-        diff=(diff or "(no diff available)")[:max_diff],
+        diff_path=diff_path or "(no diff available)",
         project_root=project_root or "(not provided)",
         log_path=log_path or "(not provided)",
     )
 
 
-def analyze(cluster: dict, diff: str, args) -> dict:
-    prompt = build_prompt(cluster, diff, args.max_excerpt_chars, args.max_diff_chars, args.project_root, args.log_dir)
+def analyze(cluster: dict, diff_path: str, args) -> dict:
+    prompt = build_prompt(cluster, diff_path, args.max_excerpt_chars, args.project_root, args.log_dir)
     raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
     parsed = parse_model_json(raw)
     result = {
@@ -265,7 +276,6 @@ def main():
     parser.add_argument("--project-root", default="", help="Repository checkout root the AI may inspect")
     parser.add_argument("--log-dir", default="", help="Directory holding the full raw failure logs")
     parser.add_argument("--max-excerpt-chars", type=int, default=4000)
-    parser.add_argument("--max-diff-chars", type=int, default=12000)
     args = parser.parse_args()
 
     # The AI switch overrides the backend so a single pipeline step can toggle it.
@@ -275,20 +285,22 @@ def main():
     with open(args.clusters_json, encoding="utf-8") as f:
         data = json.load(f)
 
-    diff = ""
+    # Pass only the diff path; the AI reads it on demand instead of inlining a
+    # large, truncated copy into every prompt.
+    diff_path = ""
     if args.pr_diff_file and os.path.isfile(args.pr_diff_file):
-        with open(args.pr_diff_file, encoding="utf-8", errors="replace") as f:
-            diff = f.read()
+        diff_path = os.path.abspath(args.pr_diff_file)
 
     unknown = [c for c in data.get("clusters", []) if not c.get("known")]
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
     selected = unknown[: args.top]
 
-    analyses = [analyze(cluster, diff, args) for cluster in selected]
+    analyses = [analyze(cluster, diff_path, args) for cluster in selected]
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump({"backend": args.backend, "analyses": analyses}, f, indent=2)
-    print(f"Analyzed {len(analyses)} unknown cluster(s) with backend '{args.backend}'", file=sys.stderr)
+    print(f"Analyzed {len(analyses)} unknown cluster(s) with backend '  {args.backend}'", file=sys.stderr)
+
 
 
 if __name__ == "__main__":
