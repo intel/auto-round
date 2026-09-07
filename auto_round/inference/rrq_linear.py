@@ -80,6 +80,8 @@ class RRQLinear(nn.Module):
                 self.register_buffer("bias", bias)
             else:
                 self.register_parameter("bias", None)
+            self._packed_weight = None
+            self._packed_weight_planes = None
             return
 
         self._packed = False
@@ -111,9 +113,15 @@ class RRQLinear(nn.Module):
             Output tensor of shape ``(..., out_features)``.
         """
         if self._packed:
-            out = self.base(x)
-            for index in range(1, self.active_planes):
-                out = out + self.planes[f"rrq_{index}"](x)
+            # Dequant each active plane once, accumulate them into a single
+            # weight, then run one matmul + bias. This replaces four separate
+            # GEMMs (one per plane) with a single GEMM.
+            weight = self._get_packed_weight(self.active_planes)
+            out = torch.matmul(x, weight.to(x.dtype))
+            out = out.to(x.dtype)
+            # The base plane may own the bias; add it if present.
+            if self.base.bias is not None:
+                out = out + self.base.bias.to(out.dtype)
             if self.bias is not None:
                 out = out + self.bias.to(out.dtype)
             return out
@@ -123,6 +131,37 @@ class RRQLinear(nn.Module):
         if self.bias is not None:
             out = out + self.bias.to(x.dtype)
         return out
+
+    # -- Packed (production) path helpers -----------------------------------------
+
+    def _get_packed_weight(self, num_planes: int) -> torch.Tensor:
+        """Build (and cache) the dequantized accumulated weight for ``num_planes``.
+
+        Each plane is dequantized once via :meth:`QuantLinear._dequantize`, and
+        the resulting ``(out, in)`` weights are summed in float32 to avoid
+        precision loss. The result is cached until ``active_planes`` or the
+        underlying packed tensors change (the cache key is ``num_planes``).
+        """
+        if (
+            self._packed_weight is not None
+            and self._packed_weight_planes == num_planes
+        ):
+            return self._packed_weight
+
+        weight = self.base._dequantize().float()
+        for index in range(1, num_planes):
+            weight = weight + self.planes[f"rrq_{index}"]._dequantize().to(weight.dtype)
+
+        self._packed_weight = weight
+        self._packed_weight_planes = num_planes
+        return weight
+
+    def reset_packed_weight_cache(self) -> None:
+        """Invalidate the cached weight (call after in-place weight changes)."""
+        self._packed_weight = None
+        self._packed_weight_planes = None
+
+    # -- Non-packed (reference) path helpers --------------------------------------
 
     def _dequantize(self, num_planes: int) -> torch.Tensor:
         """Accumulate the first ``num_planes`` planes into a full weight tensor.
