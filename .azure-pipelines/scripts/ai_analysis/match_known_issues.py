@@ -20,9 +20,43 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 # Minimum combined score for a cluster to be considered a known issue.
-_MATCH_THRESHOLD = 0.55
-# Signature-similarity above which the signature alone counts as a strong signal.
-_SIGNATURE_STRONG = 0.6
+_MATCH_THRESHOLD = 0.7
+# Title fuzzy-ratio must be near-identical to stand alone; generic assertion
+# boilerplate ("assert ... == 'test'") otherwise inflates unrelated matches.
+_TITLE_STRONG = 0.85
+# Generic error/boilerplate tokens carry no discriminative signal, so they are
+# excluded from signature overlap; otherwise every assertion failure looks alike.
+_STOPWORDS = frozenset(
+    {
+        "assert",
+        "asserts",
+        "assertion",
+        "assertionerror",
+        "error",
+        "errors",
+        "exception",
+        "failed",
+        "failure",
+        "warning",
+        "index",
+        "diff",
+        "full",
+        "test",
+        "tests",
+        "none",
+        "true",
+        "false",
+        "self",
+        "the",
+        "and",
+        "not",
+        "for",
+        "with",
+        "value",
+        "expected",
+        "actual",
+    }
+)
 
 
 def normalize(text: str) -> str:
@@ -58,16 +92,20 @@ def fetch_known_issues(repo: str, label: str, token: str) -> list[dict]:
 
 
 def _token_overlap(sig_norm: str, issue_norm: str) -> float:
-    tokens = [t for t in re.split(r"\W+", sig_norm) if len(t) >= 3]
+    tokens = [t for t in re.split(r"\W+", sig_norm) if len(t) >= 3 and t not in _STOPWORDS]
     if not tokens:
         return 0.0
     hits = sum(1 for t in tokens if t in issue_norm)
     return hits / len(tokens)
 
 
-def score_issue(cluster: dict, issue: dict) -> "tuple[float, list[str]]":
-    """Score how well a cluster matches an issue; return (score, reasons)."""
-    reasons: list[str] = []
+def score_issue(cluster: dict, issue: dict) -> "tuple[float, dict]":
+    """Score how well a cluster matches an issue; return (score, matched_by).
+
+    ``matched_by`` breaks the decision into the three underlying signals so the
+    report can show them: ``test`` (test-name corroborated by the error),
+    ``signature`` (error-keyword overlap) and ``title`` (fuzzy title similarity).
+    """
     sig_norm = normalize(cluster.get("signature", ""))
     title_norm = normalize(issue.get("title", ""))
     body_norm = normalize(issue.get("body") or "")
@@ -75,27 +113,30 @@ def score_issue(cluster: dict, issue: dict) -> "tuple[float, list[str]]":
 
     # 1) Failing test name mentioned verbatim in the issue — strongest signal.
     test_hit = next((t for t in cluster.get("tests", []) if t and t.lower() in issue_norm), None)
-    if test_hit:
-        reasons.append(f"test-name:{test_hit}")
 
     # 2) Error signature similarity / containment against the whole issue.
     sig_ratio = _token_overlap(sig_norm, issue_norm)
     if sig_norm and sig_norm in issue_norm:
         sig_ratio = max(sig_ratio, 1.0)
-    if sig_ratio >= _SIGNATURE_STRONG:
-        reasons.append(f"signature:{sig_ratio:.2f}")
 
-    # 3) Fuzzy similarity between signature and issue title.
+    # 3) Fuzzy similarity between signature and issue title. Only a near-identical
+    #    title counts toward the score; a moderate ratio is shared boilerplate.
     title_ratio = SequenceMatcher(None, sig_norm, title_norm).ratio() if sig_norm else 0.0
-    if title_ratio >= 0.5:
-        reasons.append(f"title:{title_ratio:.2f}")
 
+    # A verbatim test-name match is strong but not conclusive: the same test can
+    # fail for a different reason, so require the error signature to corroborate it.
+    test_score = (0.5 + 0.5 * sig_ratio) if test_hit else 0.0
     score = max(
-        1.0 if test_hit else 0.0,
+        test_score,
         sig_ratio,
-        title_ratio,
+        title_ratio if title_ratio >= _TITLE_STRONG else 0.0,
     )
-    return score, reasons
+    matched_by = {
+        "test": round(test_score, 2),
+        "signature": round(sig_ratio, 2),
+        "title": round(title_ratio, 2),
+    }
+    return score, matched_by
 
 
 def match_clusters(clusters: list[dict], issues: list[dict]) -> None:
@@ -103,20 +144,20 @@ def match_clusters(clusters: list[dict], issues: list[dict]) -> None:
     for cluster in clusters:
         best_score = 0.0
         best_issue = None
-        best_reasons: list[str] = []
+        best_matched_by: dict = {}
         for issue in issues:
-            score, reasons = score_issue(cluster, issue)
-            if reasons and score > best_score:
+            score, matched_by = score_issue(cluster, issue)
+            if score > best_score:
                 best_score = score
                 best_issue = issue
-                best_reasons = reasons
+                best_matched_by = matched_by
         if best_issue is not None and best_score >= _MATCH_THRESHOLD:
             cluster["known"] = True
             cluster["issue"] = {
                 "number": best_issue.get("number"),
                 "title": best_issue.get("title"),
                 "url": best_issue.get("html_url"),
-                "matched_by": best_reasons,
+                "matched_by": best_matched_by,
                 "score": round(best_score, 3),
             }
         else:

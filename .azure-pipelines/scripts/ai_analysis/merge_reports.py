@@ -51,7 +51,7 @@ def build_known_section(clusters: list[dict]) -> list[str]:
         "",
         "<details><summary>Details</summary>",
         "",
-        "| Cluster | Issue | Matched by | Occurrences | Sample log |",
+        "| Cluster | Issue | Score | Occurrences | Sample log |",
         "| --- | --- | --- | --- | --- |",
     ]
     for c in known:
@@ -59,10 +59,10 @@ def build_known_section(clusters: list[dict]) -> list[str]:
         num = issue.get("number")
         url = issue.get("url") or ""
         issue_cell = f"[#{num}]({url})" if url else f"#{num}"
-        matched_by = ", ".join(issue.get("matched_by", [])) or "-"
+        score = f"{issue.get('score', 0):.2f}"
         sample_log = ", ".join(c.get("logs", [])) or "-"
         lines.append(
-            f"| {c.get('id')} | {issue_cell} | {_inline(matched_by, 80)} | "
+            f"| {c.get('id')} | {issue_cell} | {score} | "
             f"{c.get('occurrences')} | {_inline(sample_log, 60)} |"
         )
     lines.extend(["", "</details>", ""])
