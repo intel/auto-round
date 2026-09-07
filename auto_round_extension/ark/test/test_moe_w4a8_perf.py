@@ -725,6 +725,20 @@ def _prequantized(case):
     return case["qact"], case["ascale"]
 
 
+def _reduces_topk(nk_label: str) -> bool:
+    """Whether this projection's output is the one the top-k combine reduces.
+
+    Only the second (down) GEMM of a MoE layer produces rows that are scaled by
+    the routing weights and summed back per token. The up/gate output stays
+    expanded -- one row per routed token, straight into SiLU -- so it owes no
+    caller-side reduction and cannot use the fused epilogue. Charging it one
+    would credit the fused contract with removing work that never existed, the
+    same overstatement :func:`_traffic_bytes` avoids by leaving ``fused_rows``
+    unset.
+    """
+    return nk_label.strip().endswith("down")
+
+
 def _reduce_topk(case, out):
     """Reduce an unfused ``[T, N]`` output the way a caller would.
 
@@ -840,6 +854,13 @@ def _traffic_bytes(total_tokens, active_experts, N, K, act_bytes=2, out_bytes=2,
     * ``fused_rows``: the epilogue reduces into a ``[batch, N]`` fp32
       accumulator, so instead of writing ``T * N`` elements it reads *and*
       writes ``batch * N`` fp32 ones.
+
+    This counts one *call*, so the caller-side reduction an unfused result
+    still owes is deliberately not in here: only the second projection's output
+    is reduced in a real layer, and the up/gate output feeds SiLU unreduced, so
+    charging every unfused shape for a reduction would overstate the traffic on
+    half of them. The contract sweep accounts for that reduction in the timing
+    instead, where it can be applied per configuration.
     """
     act_read = 0.0 if prequantized else float(total_tokens) * K * act_bytes
     qact_write_read = (1.0 if prequantized else 2.0) * float(total_tokens) * K
@@ -1510,7 +1531,7 @@ _PREFILL_CONTRACT_CONFIGS = [
 _SWEEP_MIN_SNR_DB = 40.0
 
 
-def _sweep_timings(configs, call):
+def _sweep_timings(configs, call, extra=None):
     """Time every configuration, round-robin, and return the per-round samples.
 
     Timing each configuration to completion in turn -- warmup and all its
@@ -1529,25 +1550,36 @@ def _sweep_timings(configs, call):
     keeps the spread as the noise floor a ranking has to clear.
 
     ``call`` is invoked as ``call(call_kwargs)`` with the configuration's env
-    overrides in force. Returns one list of per-round timings per
-    configuration, positionally aligned with ``configs``.
+    overrides in force. ``extra`` is an optional zero-argument callable timed
+    once per round alongside them, for work that is charged to some
+    configurations but is not itself one. Returns
+    ``(per_config_samples, extra_samples)``, the former positionally aligned
+    with ``configs``.
     """
     samples = [[] for _ in configs]
+    extra_samples = []
     iters = max(1, ITERS // SWEEP_ROUNDS)
     for _ in range(SWEEP_ROUNDS):
         for idx, (_, overrides, call_kwargs) in enumerate(configs):
             with _env_override(**overrides):
                 samples[idx].append(_xpu_time_ms(lambda: call(call_kwargs), iters=iters))
-    return samples
+        if extra is not None:
+            # Timed inside the round-robin, not after it: a measurement taken
+            # once at the end of the sweep lands at the sweep's hottest point
+            # and would be biased high against the configurations it is added
+            # to, which is the artefact the round-robin exists to remove.
+            extra_samples.append(_xpu_time_ms(extra, iters=iters))
+    return samples, extra_samples
 
 
-def _print_sweep_header(title: str, metric: str) -> None:
+def _print_sweep_header(title: str, metric: str, with_reduce: bool = False) -> None:
     print()
     print("=" * _PERF_WIDTH)
     print(title)
+    extra = f"{'+reduce':>10}" if with_reduce else ""
     print(
         f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'rows/E':>8}  "
-        f"{'config':<22}{'ms':>10}{metric:>10}{'vs default':>12}{'SNR(dB)':>10}{'drift':>9}"
+        f"{'config':<22}{'ms':>10}{extra}{metric:>10}{'vs default':>12}{'SNR(dB)':>10}{'drift':>9}"
     )
     print("-" * _PERF_WIDTH)
 
@@ -1568,6 +1600,20 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
     :func:`_w4a8`. A contract that reduces inside the kernel returns a
     ``[batch, N]`` tensor where the others return ``[T, N]``, so outputs are
     put in the same frame (:func:`_reduce_topk`) before they are compared.
+
+    When some configuration fuses the top-k reduction, timing the others as a
+    bare GEMM would rank them against a baseline that skips work: the fused row
+    pays for the reduction inside its epilogue while the unfused rows leave a
+    ``[T, N]`` tensor their caller still has to reduce. Every row therefore also
+    carries the caller-side reduction it would owe (``+reduce``, zero for the
+    fused rows), and ``vs default`` ranks on the sum -- the cost of *producing
+    the routed output*, which is the thing the contract actually changes.
+
+    That sum brackets the win rather than pinning it. The reduction is timed as
+    :func:`_reduce_topk`, a torch ``index_add_`` that materializes fp32
+    temporaries, so it is an upper bound on a hand-written one; the GEMM-only
+    ``ms`` column is the lower bound. The truth is between the two columns,
+    which is why both are printed.
     """
     is_prefill = phase == "prefill"
     # An explicit batch list opts out of the compute-bound derivation, which
@@ -1585,6 +1631,7 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
             f"W4A8 config sweep [{phase}] (models={'+'.join(n for n, _ in resolved)}, "
             f"act={str(dtype).split('.')[-1]}) -- same workload, one row per kernel configuration",
             metric_name,
+            with_reduce=need_routing,
         )
     if batches is None:
         batches = _DECODE_BATCHES
@@ -1634,7 +1681,20 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                     out = None
                 baseline_out = None
 
-                samples = _sweep_timings(configs, lambda kw: _w4a8(case, weights_s8, wscales, block, phase, **kw))
+                # What an unfused caller still owes after the GEMM returns --
+                # but only on the projection whose output is actually reduced.
+                # Timed inside the round-robin so it is min-filtered on the
+                # same basis as the configurations it is charged to.
+                charge_reduce = need_routing and _reduces_topk(nk_label)
+                unreduced = _w4a8(case, weights_s8, wscales, block, phase) if charge_reduce else None
+                samples, reduce_samples = _sweep_timings(
+                    configs,
+                    lambda kw: _w4a8(case, weights_s8, wscales, block, phase, **kw),
+                    extra=(lambda: _reduce_topk(case, unreduced)) if charge_reduce else None,
+                )
+                reduce_ms = min(reduce_samples) if reduce_samples else 0.0
+                unreduced = None
+                _release_xpu_memory()
 
                 baseline_ms = None
                 for idx, (label, overrides, call_kwargs) in enumerate(configs):
@@ -1643,8 +1703,12 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                     ms = min(samples[idx])
                     noise = (max(samples[idx]) - ms) / ms if ms else 0.0
                     snr = snrs[idx]
+                    # The fused epilogue has already done the reduction; every
+                    # other configuration leaves it for the caller.
+                    row_reduce_ms = 0.0 if call_kwargs.get("fused") else reduce_ms
+                    total_ms = ms + row_reduce_ms
                     if baseline_ms is None:
-                        baseline_ms = ms
+                        baseline_ms = total_ms
                     tflops = _flops(total_tokens, N, K) / (ms * 1e-3) / 1e12
                     gbps = _weight_bytes(active_experts, N, K, 8) / (ms * 1e-3) / 1e9
                     row = {
@@ -1659,11 +1723,13 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                         "tokens": total_tokens,
                         "rows_per_expert": rows_per_expert,
                         "w4a8_ms": ms,
+                        "reduce_ms": row_reduce_ms,
+                        "total_ms": total_ms,
                         "noise": noise,
                         "tflops": tflops,
                         "gbps": gbps,
                         "snr_db": snr,
-                        "speedup": baseline_ms / ms if ms else None,
+                        "speedup": baseline_ms / total_ms if total_ms else None,
                         "device_bw_gbps": device_bw,
                     }
                     rows.append(row)
@@ -1671,9 +1737,10 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                         metric = tflops if is_prefill else gbps
                         snr_txt = "--" if math.isinf(snr) else f"{snr:.1f}"
                         speedup_txt = "--" if row["speedup"] is None else f"{row['speedup']:.2f}x"
+                        reduce_txt = f"{row_reduce_ms:>10.3f}" if need_routing else ""
                         print(
                             f"{nk_label:<14}{E:>5}{N:>7}{K:>7}{total_tokens:>8}{rows_per_expert:>8.1f}  "
-                            f"{label:<22}{ms:>10.3f}{metric:>10.2f}{speedup_txt:>12}{snr_txt:>10}"
+                            f"{label:<22}{ms:>10.3f}{reduce_txt}{metric:>10.2f}{speedup_txt:>12}{snr_txt:>10}"
                             f"{noise * 100:>8.1f}%"
                         )
                     out = None
@@ -1684,6 +1751,27 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
     if verbose:
         _print_sweep_best(phase, rows)
     return rows
+
+
+def _ranked_ms(row):
+    """The time a configuration is ranked on: GEMM plus any reduction it left.
+
+    Equal to ``w4a8_ms`` for every sweep that has no fused-reduce
+    configuration, so the dispatch-knob sweeps rank exactly as before.
+    """
+    return row.get("total_ms", row["w4a8_ms"])
+
+
+def _ranked_noise(row):
+    """``row``'s round-to-round drift as a fraction of the time it is ranked on.
+
+    The drift is measured on the GEMM call, so charging a configuration an
+    unmeasured constant on top of it dilutes the same absolute jitter.
+    """
+    ranked = _ranked_ms(row)
+    if not ranked:
+        return row.get("noise", 0.0)
+    return row.get("noise", 0.0) * row["w4a8_ms"] / ranked
 
 
 def _print_sweep_best(phase, rows) -> None:
@@ -1715,14 +1803,19 @@ def _print_sweep_best(phase, rows) -> None:
             if not candidates:
                 print(f"  {name:<14} no numerically-equivalent configuration")
                 continue
-            best = min(candidates, key=lambda r: r["w4a8_ms"])
+            best = min(candidates, key=_ranked_ms)
             # A winner is only a winner if its lead over the sweep's own
             # first (= default) configuration is larger than the drift the
             # sweep measured on itself. Below that the ranking is reporting
             # which configuration happened to be timed on the coolest
             # device, and recommending it bakes an artefact into a default.
-            noise = max(r.get("noise", 0.0) for r in group)
-            lead = group[0]["w4a8_ms"] / best["w4a8_ms"] - 1.0 if best["w4a8_ms"] else 0.0
+            # ``noise`` is a spread relative to the GEMM time, but the lead is
+            # a ratio of GEMM+reduce times. Adding the same reduction to both
+            # sides of that ratio shrinks it, so the gate has to be put on the
+            # same basis or a real win between two unfused configurations gets
+            # discarded as drift.
+            noise = max(_ranked_noise(r) for r in group)
+            lead = _ranked_ms(group[0]) / _ranked_ms(best) - 1.0 if _ranked_ms(best) else 0.0
             if lead <= noise:
                 print(
                     f"  {name:<14} inconclusive: best is {lead * 100:.1f}% ahead of the default, "
@@ -1733,7 +1826,14 @@ def _print_sweep_best(phase, rows) -> None:
             parts = [f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None]
             parts += [f"{k}={v}" for k, v in sorted(best.get("call_kwargs", {}).items()) if v]
             env = " ".join(parts) or "(defaults)"
-            print(f"  {name:<14} {best['config']:<22} {best['w4a8_ms']:.3f} ms  {metric:<16} {env}")
+            # The metric is derived from the GEMM time, so the GEMM time is what
+            # is printed beside it; the reduction is shown as a separate term so
+            # the ranked total stays recoverable without implying the metric was
+            # computed from it.
+            ms_txt = f"{best['w4a8_ms']:.3f} ms"
+            if best.get("reduce_ms"):
+                ms_txt += f" + {best['reduce_ms']:.3f} reduce"
+            print(f"  {name:<14} {best['config']:<22} {ms_txt:<26} {metric:<16} {env}")
 
 
 # ---------------------------------------------------------------------------

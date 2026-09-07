@@ -1213,10 +1213,39 @@ lever left that changes the byte count:
 pytest test_moe_w4a8_perf.py -k contracts_long_seq -v
 ```
 
-Both are free in a real MoE layer: `up`/`gate` share activations so the int8
-copy is made once and handed to both, and `down`'s consumer is the unpermute +
-weighted sum the epilogue would be doing anyway. Treat them as the calling
-convention rather than an optimization.
+That sweep used to answer the question unfairly, and the bug ran against the
+contract. It timed every configuration as a bare GEMM, so the fused row paid for
+the reduction inside its epilogue while the unfused rows left a `[T, N]` tensor
+their caller still had to reduce — work that was never on anyone's clock. The
+sweep now charges each unfused row the reduction it owes and shows it in its own
+`+reduce` column, so `vs default` ranks on the cost of *producing the routed
+output* rather than of returning from the GEMM.
+
+Read the two columns as bounds, because neither alone is the answer:
+
+* `ms` alone (the old behaviour) is the **lower** bound on the contract's value
+  — it credits the baseline with skipping the reduction entirely.
+* `ms + reduce` is the **upper** bound — the reduction is timed as a torch
+  `index_add_`, which materializes fp32 temporaries a hand-written epilogue
+  would not.
+
+For `qwen3 down` the gap between those bounds is not a detail: its unreduced
+`[T, N]` output is 268 MB, so the reduction it hands back reads that 268 MB and
+writes 67 MB more. That is the single largest stream in the whole call, and the
+old accounting billed none of it.
+
+The charge lands on the down-projection rows only. A MoE layer reduces just the
+second GEMM's output; the up/gate result stays expanded, one row per routed
+token, straight into SiLU. So the `up` rows show `+reduce` as `0.000` and the
+fused contract shows up there as a small *regression* — that is the correct
+reading, not a measurement artefact: the fused epilogue scatters where a plain
+store would do, and on that projection nothing is saved in exchange. Contract 2
+is a down-projection contract.
+
+Both contracts are free in a real MoE layer: `up`/`gate` share activations so
+the int8 copy is made once and handed to both, and `down`'s consumer is the
+unpermute + weighted sum the epilogue would be doing anyway. Treat them as the
+calling convention rather than an optimization.
 
 ## Environment variables
 
