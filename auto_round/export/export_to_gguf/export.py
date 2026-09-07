@@ -22,6 +22,7 @@ from pathlib import Path
 import requests
 import torch
 
+from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.convert import is_mmproj_tensor_name, wrapper_model_instance
 from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
@@ -92,23 +93,6 @@ def _set_mmproj_output_path(model_instance):
     return model_instance
 
 
-def _create_conversion_model(model_class, hparams, **kwargs):
-    if not getattr(model_class, "supports_mtp_export", False):
-        return model_class(hparams=hparams, **kwargs)
-
-    # AutoRound exports the target model only; unlike llama.cpp's CLI, it does not
-    # provide a separate MTP export mode. Conversion filters read this flag from
-    # the concrete class, so restore it immediately after constructing the instance.
-    original_no_mtp = model_class.no_mtp
-    try:
-        model_class.no_mtp = True
-        model_instance = model_class(hparams=hparams, **kwargs)
-        model_instance.no_mtp = True
-        return model_instance
-    finally:
-        model_class.no_mtp = original_no_mtp
-
-
 def create_model_class(
     output_dir,
     model,
@@ -147,9 +131,13 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         hparams.pop("quantization_config", None)
-        model_instance = _create_conversion_model(
-            model_class,
-            hparams,
+        if envs.AR_DISABLE_GGUF_MTP_EXPORT and getattr(model_class, "supports_mtp_export", False):
+            model_class = type(
+                f"AutoRound{model_class.__name__}",
+                (model_class,),
+                {"model_arch": model_class.model_arch, "no_mtp": True},
+            )
+        model_instance = model_class(
             dir_model=Path(tmp_work_dir),
             ftype=output_type,
             fname_out=Path(output_dir),
@@ -159,6 +147,7 @@ def create_model_class(
             split_max_size=0,
             dry_run=False,
             small_first_shard=False,
+            hparams=hparams,
         )
         if native_nontext_export:
             logger.info("Using native llama.cpp F32 export for non-text GGUF model")

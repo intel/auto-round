@@ -321,7 +321,9 @@ def set_cuda_visible_devices(device: str):
             visible_devices = ",".join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = device
+            # Use the cleaned/normalized device indices (no spaces, no type
+            # prefixes) when initially setting the environment variable.
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
 
 
 class override_cuda_device_capability(ContextDecorator):

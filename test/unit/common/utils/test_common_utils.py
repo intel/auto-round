@@ -43,19 +43,29 @@ class TestDownloadAudiocapsCsv:
 
         from auto_round.utils.common import download_audiocaps_csv
 
-        # Create a temporary cached file
-        cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_file = os.path.join(cache_dir, "train.csv")
+        # Set AR_WORKSPACE so the function uses our test tmp directory
+        prev_ar_ws = os.environ.get("AR_WORKSPACE")
+        os.environ["AR_WORKSPACE"] = "./tmp"
+        try:
+            # Create a temporary cached file
+            cache_dir = os.path.join("./tmp", "audiocaps_cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_file = os.path.join(cache_dir, "train.csv")
 
-        with open(cache_file, "w") as f:
-            f.write("audio_id,audio_file,caption\ntest,test.wav,a test caption")
+            with open(cache_file, "w") as f:
+                f.write("audio_id,audio_file,caption\ntest,test.wav,a test caption")
 
-        # Should use cached file without network call
-        with patch("requests.get") as mock_get:
-            result = download_audiocaps_csv()
-            assert result == cache_file
-            mock_get.assert_not_called()
+            # Should use cached file without network call
+            with patch("requests.get") as mock_get:
+                result = download_audiocaps_csv()
+                assert result == cache_file
+                mock_get.assert_not_called()
+        finally:
+            # Restore previous AR_WORKSPACE
+            if prev_ar_ws is None:
+                del os.environ["AR_WORKSPACE"]
+            else:
+                os.environ["AR_WORKSPACE"] = prev_ar_ws
 
 
 class TestCompareVersions:

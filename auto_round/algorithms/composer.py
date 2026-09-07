@@ -362,6 +362,7 @@ class AlgorithmComposer:
         block_ctx: BlockContext,
         q_inputs=None,
         input_ids=None,
+        reference_output=None,
         **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
@@ -414,13 +415,13 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
-        reference_output = None
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
-                reference_output = block_forward_fn(block, fp_inputs, input_others)
+                if reference_output is None:
+                    reference_output = block_forward_fn(block, fp_inputs, input_others)
                 reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
