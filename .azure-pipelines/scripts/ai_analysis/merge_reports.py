@@ -62,8 +62,7 @@ def build_known_section(clusters: list[dict]) -> list[str]:
         score = f"{issue.get('score', 0):.2f}"
         sample_log = ", ".join(c.get("logs", [])) or "-"
         lines.append(
-            f"| {c.get('id')} | {issue_cell} | {score} | "
-            f"{c.get('occurrences')} | {_inline(sample_log, 60)} |"
+            f"| {c.get('id')} | {issue_cell} | {score} | " f"{c.get('occurrences')} | {_inline(sample_log, 60)} |"
         )
     lines.extend(["", "</details>", ""])
     return lines
