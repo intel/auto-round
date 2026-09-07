@@ -37,9 +37,14 @@
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
 
-// `env_flag_enabled`, `fill_expert_id_per_token`, `SG_SIZE` / `N_TILE` and the
-// `DeviceMemoryPool` declaration. Cutlass-free, unlike the DPAS headers.
+// `env_flag_enabled`, `fill_expert_id_per_token`, `SG_SIZE` / `N_TILE`.
+// Cutlass-free, unlike the DPAS headers.
 #include "sycl_tla_moe_decode.hpp"
+// `DeviceMemoryPool`, backing the scratch slabs below. Before the split this
+// header's contents lived in `sycl_tla_moe_w4a8.hpp`, which picked the pool up
+// transitively through `sycl_tla_moe_prefill_int_dpas.hpp`; that chain runs
+// through cutlass, so the include has to be explicit here.
+#include "utils.hpp"
 
 namespace ark {
 namespace moe_w4a8 {
