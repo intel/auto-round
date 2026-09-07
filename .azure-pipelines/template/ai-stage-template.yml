@@ -1,0 +1,60 @@
+# Reusable AI-failure-analysis stage shared across pipelines (CPU, XPU, ...).
+# Analyzes the test stage on failure and hides the stale report comment on success.
+parameters:
+  - name: dependsOn
+    type: string
+    default: "Unit_test"
+  - name: stageName
+    type: string
+    default: "AI_Analysis"
+  - name: enableAiAnalysis
+    type: boolean
+    default: true
+  - name: postComment
+    type: boolean
+    default: true
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: "AI Failure Analysis"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: not(canceled())
+    variables:
+      - group: "auto-round-bot-secrets"
+    jobs:
+      - job: AnalyzeFailures
+        displayName: "Analyze failed unit tests"
+        condition: and(eq(stageDependencies.${{ parameters.dependsOn }}.result, 'Failed'), eq(variables['System.StageAttempt'], '1'))
+        steps:
+          - template: ai-analysis-template.yml
+            parameters:
+              enableAiAnalysis: ${{ parameters.enableAiAnalysis }}
+              postComment: ${{ parameters.postComment }}
+      - job: HideComments
+        displayName: "Hide AI Analysis Comments"
+        condition: eq(stageDependencies.${{ parameters.dependsOn }}.result, 'Succeeded')
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.12"
+            displayName: "Use Python 3.12"
+          - task: Bash@3
+            displayName: "Hide outdated AI analysis comment"
+            condition: eq(variables['Build.Reason'], 'PullRequest')
+            env:
+              AUTO_ROUND_BOT_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
+            inputs:
+              targetType: "inline"
+              script: |
+                set -uo pipefail
+                base="$(Build.SourcesDirectory)"
+                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
+                repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
+                repo_path="${repo_path%.git}"
+                python "${scripts}/post_pr_comment.py" \
+                  --repo "${repo_path}" \
+                  --pr "${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}" \
+                  --marker-key "$(Build.DefinitionName)" \
+                  --hide

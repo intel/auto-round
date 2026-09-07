@@ -22,7 +22,7 @@ steps:
   - task: DownloadPipelineArtifact@2
     inputs:
       artifact:
-      patterns: "ut-*-*/unittest_*"
+      patterns: "ut-*-1/unittest_*"
       path: $(Build.SourcesDirectory)/ai_analysis/failed_logs
     displayName: "Download failed-log artifacts"
 
