@@ -235,7 +235,7 @@ class ModelContext(BaseContext):
 
                 model_type = getattr(config, "model_type", None)
                 if model_type is not None and model_type not in BUILTIN_MODULES:
-                    logger.warning( #TODO WARNING
+                    logger.warning(  # TODO WARNING
                         "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
                         "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
                     )
