@@ -115,7 +115,15 @@ class SVDQuantNunchakuFormat(OutputFormat):
 
     def check_and_reset_format(self, scheme: QuantizationScheme, ctx: Any):
         self._validate_svd_layer_overrides(ctx.model, ctx.layer_config)
-        return None, scheme, ctx.layer_config, ctx.quant_block_list
+        quant_block_list = ctx.quant_block_list
+        if quant_block_list is None and ctx.model is not None:
+            from auto_round.export.svdquant_adapters import resolve_svdquant_model_adapter
+
+            model_adapter = resolve_svdquant_model_adapter("auto", ctx.model)
+            adapter_quant_block_list = getattr(model_adapter, "quant_block_list", None)
+            if callable(adapter_quant_block_list):
+                quant_block_list = adapter_quant_block_list(ctx.model)
+        return None, scheme, ctx.layer_config, quant_block_list
 
     def pack_layer(self, *args, **kwargs):
         return None
