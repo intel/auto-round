@@ -28,10 +28,13 @@
 //
 // File layout
 // -----------
-// The W4A8 path is spread over three headers so that no translation unit pays
+// The W4A8 path is spread over four headers so that no translation unit pays
 // for more than it uses:
 //
-//   sycl_tla_moe_w4a8_helpers.hpp  declarations, host helpers, scratch pools
+//   sycl_tla_moe_w4a8_scratch.hpp  device scratch slabs; declarations only, so
+//                                  that `utils.hpp` (and bestla's JIT headers
+//                                  behind it) stay out of the light TUs
+//   sycl_tla_moe_w4a8_helpers.hpp  declarations, host helpers, tile ladder
 //                                  (cutlass-free; what the dispatcher sees)
 //   sycl_tla_moe_w4a8_kernels.hpp  activation quant, AUTO_S8 prepack, decode
 //                                  GEMV (cutlass-free, plain SYCL)

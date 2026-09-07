@@ -929,12 +929,13 @@ decode 的 K-split 映射还额外要求重缩放 block 不小于 256 且是 16 
 
 ## 源码结构
 
-整条路径按对 cutlass 的依赖拆成三个头文件，使得任何一个翻译单元都不会实例化过多
-kernel：
+整条路径按对 cutlass（以及 bestla）的依赖拆成四个头文件，使得任何一个翻译单元都不会
+实例化过多 kernel：
 
 | 头文件 | 内容 | 需要 CuTe |
 | --- | --- | --- |
-| `sycl_tla_moe_w4a8_helpers.hpp` | scratch 池、host 辅助函数、prefill tile 阶梯、四个对外入口 | 否 |
+| `sycl_tla_moe_w4a8_scratch.hpp` / `.cpp` | 设备 scratch 显存（`DeviceMemoryPool`），头文件只放声明，实现放在 `.cpp` | 否 |
+| `sycl_tla_moe_w4a8_helpers.hpp` | host 辅助函数、prefill tile 阶梯、四个对外入口 | 否 |
 | `sycl_tla_moe_w4a8_kernels.hpp` | 激活量化、AUTO_S8 prepack、decode GEMV 及其 K-split 变体 | 否 |
 | `sycl_tla_moe_w4a8.hpp` | DPAS tile policy、分组 prefill GEMM 及其 launcher | 是 |
 
@@ -944,6 +945,11 @@ dispatcher，十二个 prefill 翻译单元（每个 dtype x tile 一个，各�
 dtype 一个）。拆分之前，单个翻译单元要实例化全部 52 个 kernel，编译器 RSS 峰值约
 4.2 GB；这里的拆法与 `sycl_tla_moe_prefill_s4_*.cpp` 拆分 S4 prefill 的方式一致。
 运行时 API 与各项 dispatch 决策均不受影响。
+
+scratch 池按照 `sycl_tla_moe_decode_scratch.{hpp,cpp}` 的同样方式单独拆出：它需要
+`utils.hpp` 里的 `DeviceMemoryPool`，而该头文件会带入 bestla 的 AVX512/xbyak JIT
+头文件；如果从头文件包含，每个不依赖 cutlass 的 W4A8 翻译单元的头文件行数会从约
+3.7k 膨胀到约 44k。
 
 ## 状态
 

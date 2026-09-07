@@ -1052,12 +1052,13 @@ failing.
 
 ## Source layout
 
-The path is split across three headers by cutlass dependency, so that no single
-translation unit compiles more than a handful of kernels:
+The path is split across four headers by cutlass (and bestla) dependency, so
+that no single translation unit compiles more than a handful of kernels:
 
 | Header | Contents | Needs CuTe |
 | --- | --- | --- |
-| `sycl_tla_moe_w4a8_helpers.hpp` | Scratch pools, host helpers, the prefill tile ladder, the four public entry points | no |
+| `sycl_tla_moe_w4a8_scratch.hpp` / `.cpp` | Device scratch slabs (`DeviceMemoryPool`), declared in the header and defined in the `.cpp` | no |
+| `sycl_tla_moe_w4a8_helpers.hpp` | Host helpers, the prefill tile ladder, the four public entry points | no |
 | `sycl_tla_moe_w4a8_kernels.hpp` | Activation quantization, AUTO_S8 prepack, decode GEMV and its K-split variants | no |
 | `sycl_tla_moe_w4a8.hpp` | DPAS tile policies, the grouped prefill GEMM, its launcher | yes |
 
@@ -1068,6 +1069,11 @@ prepack (one per dtype). Before the split a single TU instantiated all 52
 kernels and peaked at ~4.2 GB of compiler RSS; the layout mirrors how
 `sycl_tla_moe_prefill_s4_*.cpp` splits the S4 prefill. Nothing about the runtime
 API or the dispatch decisions changes.
+
+The scratch pools are split off the same way `sycl_tla_moe_decode_scratch.{hpp,cpp}`
+is: they need `DeviceMemoryPool` from `utils.hpp`, which drags in bestla's
+AVX512/xbyak JIT headers, and including that from a header would grow every
+cutlass-free W4A8 TU from ~3.7k to ~44k header lines.
 
 ## Status
 
