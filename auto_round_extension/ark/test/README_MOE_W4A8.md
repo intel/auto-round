@@ -251,7 +251,7 @@ scheduling change moves any of it — every one of those configurations moves th
 same bytes. The two levers that do are the [call contracts](#cutting-the-prefill-traffic-two-optional-call-contracts)
 below, which on this reading project 2.0–2.5x; `qwen3 down` is the one shape
 with kernel headroom left, which is what
-[Prefetch depth and K](#prefetch-depth-and-k--measured-and-the-answer-is-no) is about.
+[Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no) is about.
 
 ### The int8 weight copy, and the in-tree precedent against it
 
@@ -803,7 +803,13 @@ python test_moe_w4a8_perf.py --contracts           # add the int8-in + fused-red
 python test_moe_w4a8_perf.py --dtype fp16          # fp16 activations
 python test_moe_w4a8_perf.py --rescale-group-size 256
 python test_moe_w4a8_perf.py --warmup 10 --iters 100
+python test_moe_w4a8_perf.py --rounds 5             # more interleaved rounds when drift is high
 ```
+
+`--rounds` sets how many times the sweeps round-robin over their
+configurations (default 3). Each round times `ITERS // rounds` iterations, so
+raising it costs almost nothing; raise it when the `drift` column is
+comparable to the spread being ranked.
 
 `--long-seq` also repeats the prefill tile sweep at the 8K prompt when combined
 with `--sweep-configs`; `--contracts` adds the contract A/B sweep the same way.
@@ -1111,11 +1117,11 @@ the device-copy probe actually reaches), so only minimax down clears the
 300 GB/s target. A decode step reads one weight byte per multiply-add and
 nothing else, so the remaining gap is message efficiency, not arithmetic.
 
-### Prefetch depth and K — measured, and the answer is no
+### Prefetch depth and K — measured twice, and the answer is no
 
 `moe_w4a8_prefill_prefetch_dist` returns one constant (`3`) for every shape.
-The sweep that was built to question that has now run on B70, and the constant
-stays.
+The sweep that was built to question that has now run on B70 twice, and the
+constant stays.
 
 The reason it was worth questioning is that `3` is a very different fraction of
 the mainloop on each shipped shape. At a 64-element k-tile the qwen3
@@ -1125,30 +1131,58 @@ first loop and a sixteenth of the last. qwen3 down is also the shape with
 headroom — it reads 74% of its DRAM ceiling where the other three sit at
 91–100%. If the prologue were the reason, depth would separate the shapes.
 
-It does not. B70, both prefill points, `TFLOPS`:
+It does not, and the second run is the one that settles it. B70, `TFLOPS`,
+run 1 / run 2:
 
 | depth | up @384 | down @384 | up @512 | down @512 |
 |---|---|---|---|---|
-| 1 | 123.29 | 85.34 | 135.99 | 89.45 |
-| 2 | 122.82 | **85.37** | 136.67 | 92.93 |
-| 3 *(default)* | **130.09** | 85.28 | 141.96 | 93.32 |
-| 4 | 129.87 | 84.82 | **143.85** | **93.33** |
-| 6 | 127.78 | 84.59 | 141.28 | 90.33 |
-| 8 | 119.76 | 84.65 | 130.49 | 90.34 |
+| 1 | 123.29 / 123.72 | 85.34 / 85.32 | 135.99 / **143.08** | 89.45 / 89.86 |
+| 2 | 122.82 / **124.65** | **85.37** / **85.54** | 136.67 / **144.61** | 92.93 / 92.52 |
+| 3 *(default)* | **130.09** / 122.65 | 85.28 / 85.14 | 141.96 / 136.44 | 93.32 / **93.16** |
+| 4 | 129.87 / 121.34 | 84.82 / 84.81 | **143.85** / 135.26 | **93.33** / 92.97 |
+| 6 | 127.78 / 121.02 | 84.59 / 84.79 | 141.28 / 135.14 | 90.33 / 90.63 |
+| 8 | 119.76 / 120.14 | 84.65 / 85.10 | 130.49 / 133.05 | 90.34 / 90.77 |
 
-The spread is 1.06x at best and the ranking does not hold still: qwen3 down's
-"winner" is depth 2 at 384 rows/expert and depth 4 at 512, with depths 2/3/4
-inside 0.1% of each other at 384 — noise, not a signal. The one real effect is
-that depth 8 *costs* 3–4% on qwen3 up, i.e. too deep hurts and the default is
-already on the flat part of the curve. Nothing here justifies a K-aware
-heuristic, and specifically nothing here explains qwen3 down's 74%.
+Read the two runs against each other rather than down either column. On qwen3
+up the ranking **inverted**: run 1 peaked at depth 3–4 and run 2 peaks at depth
+1–2, and the run-to-run difference at a *fixed* depth (up to 7.0% at 384, 6.4%
+at 512) is larger than the 4–10% spread the sweep is being used to rank. A
+ranking cannot survive that. Normalizing each run to its own best shows what is
+actually being measured:
 
-So the prologue was never the limiter, and the 74% belongs to something else —
-see [What is left](#what-is-left). To re-run it on another part:
+| position swept | 1st | 2nd | 3rd | 4th | 5th | 6th |
+|---|---|---|---|---|---|---|
+| up @512 run 1 | 94.5 | 95.0 | 98.7 | **100.0** | 98.2 | 90.7 |
+| up @512 run 2 | 98.9 | **100.0** | 94.4 | 93.5 | 93.5 | 92.0 |
+
+Run 2 declines monotonically from the second position, run 1 warms up and then
+declines, and the last-measured configuration is the slowest in both. That is a
+clock droop over the sweep, not a property of the depth: qwen3 up runs at 144
+TFLOPS of int8 and heats the part faster than the sweep can measure it, so
+whichever configuration is timed early wins.
+
+qwen3 down does not do this — it reproduces to 0.5% at every depth in both runs,
+because at 93 TFLOPS and 48% writes it draws much less power. And it is the only
+shape with a real signal: depth 1 is genuinely 4% down, depths 2/3/4 are a
+plateau, and 6/8 give back ~3%. Both runs agree, and the shipped default sits in
+the middle of that plateau.
+
+So: no K-aware heuristic, and nothing here explains qwen3 down's 74% — see
+[What is left](#what-is-left).
+
+The harness has been fixed rather than the kernel. `_sweep_timings` now
+round-robins the configurations across `SWEEP_ROUNDS` rounds instead of running
+each to completion in turn, reports each one at its least-throttled round, and
+prints the round-to-round `drift` per configuration; the "best configuration"
+line is suppressed when the winner's lead is inside that drift. The per-round
+iteration count is `ITERS // SWEEP_ROUNDS`, so the sweep is no slower than
+before. `run_perf` is interleaved the same way — it used to time w4a8 first and
+w4a16 last, which put the numerator and denominator of the headline `vs w4a16`
+ratio at opposite ends of the droop and biased it *upward*.
 
 ```bash
 pytest test_moe_w4a8_perf.py -k "prefetch_sweep" -v
-python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq
+python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq --rounds 5
 ```
 
 ### What is left
@@ -1199,7 +1233,7 @@ convention rather than an optimization.
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | Keep the activation row in registers between the absmax and the quantize pass instead of reading `[T, K]` twice; **on by default** where the row fits (`K ≤ 2048` at `VEC = 8`, 64 of the 128 dwords a lane gets), worth 1.00–1.05× on the shapes that qualify. Set to `0` to force the two-pass kernel, which is also what runs for longer rows. Bit-identical to it. |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth up to 1.08× on the swept shapes (and never more than 0.9% behind). The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Automatically off when the fused top-k reduction is used, which scatters and therefore cannot use a block store. |
-| `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` (compute-bound batch) and `test_perf_prefill_prefetch_sweep_long_seq` (8K-prompt routing) time the whole `1 / 2 / 3 / 4 / 6 / 8` range. Values outside `1`–`8` fall back to the default. The sweep found the ranking flat, so the default stays — see [Prefetch depth and K](#prefetch-depth-and-k--measured-and-the-answer-is-no). |
+| `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` (compute-bound batch) and `test_perf_prefill_prefetch_sweep_long_seq` (8K-prompt routing) time the whole `1 / 2 / 3 / 4 / 6 / 8` range. Values outside `1`–`8` fall back to the default. The sweep found the ranking flat, so the default stays — see [Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no). |
 
 ## Shape constraints
 
