@@ -1134,6 +1134,35 @@ def _opaque_to_dynamo(fn):
     return disable(fn) if disable is not None else fn
 
 
+# Config attributes various architectures store the expert count under. transformers' own
+# experts forwards (``grouped_mm_experts_forward`` / ``batched_mm_experts_forward``) read
+# ``self.num_experts`` directly, and every ``@use_experts_implementation`` module sets it in
+# ``__init__``; AutoRound's unfuse sets it too. These config keys are the ones those
+# ``__init__`` methods derive ``num_experts`` from (e.g. DeepSeek ``n_routed_experts``,
+# Mixtral ``num_local_experts``), used only as a fallback so a module that leaves the
+# attribute unset still resolves instead of silently dropping to the per-expert loop.
+_NUM_EXPERTS_CONFIG_KEYS = ("num_experts", "num_local_experts", "n_routed_experts")
+
+
+def _resolve_num_experts(module: nn.Module) -> int | None:
+    """Resolve the expert count, matching transformers' ``self.num_experts`` convention.
+
+    top_k is deliberately *not* resolved this way: transformers reads it per-call from
+    ``top_k_index.size(-1)`` rather than from an attribute, which is what the forward below
+    already does, so it stays correct even for models that never store a ``top_k`` field.
+    """
+    num_experts = getattr(module, "num_experts", None)
+    if isinstance(num_experts, int) and num_experts > 0:
+        return num_experts
+    config = getattr(module, "config", None)
+    if config is not None:
+        for key in _NUM_EXPERTS_CONFIG_KEYS:
+            value = getattr(config, key, None)
+            if isinstance(value, int) and value > 0:
+                return value
+    return None
+
+
 @_opaque_to_dynamo
 def grouped_linear_experts_forward(
     self: nn.Module,
@@ -1159,8 +1188,8 @@ def grouped_linear_experts_forward(
     """
     from auto_round.modeling.fused_moe.moe_experts_interface import linear_loop_experts_forward
 
-    num_experts = getattr(self, "num_experts", None)
-    if not isinstance(num_experts, int) or num_experts <= 0:
+    num_experts = _resolve_num_experts(self)
+    if num_experts is None:
         _log_fallback_once("num_experts is unavailable")
         return linear_loop_experts_forward(self, hidden_states, top_k_index, top_k_weights)
 
