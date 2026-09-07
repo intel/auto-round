@@ -248,9 +248,11 @@ So three of the four are within 8–9% of what the part can stream, and the
 trails minimax because its K is smaller, so the weight term it amortizes the
 activation streams against is smaller too. No tile, store, epilogue or
 scheduling change moves any of it — every one of those configurations moves the
-same bytes. The two levers that do are the [call contracts](#cutting-the-prefill-traffic-two-optional-call-contracts)
-below, which on this reading project 2.0–2.5x; `qwen3 down` is the one shape
-with kernel headroom left, which is what
+same bytes. The only levers that do are the [call contracts](#cutting-the-prefill-traffic-two-optional-call-contracts)
+below — and of the two, only [contract 1](#contract-1--caller-supplied-int8-activations)
+survives measurement on B70; contract 2 removes bytes but adds more time than it
+saves (see [What is left](#what-is-left)). `qwen3 down` is the one shape with
+kernel headroom left, which is what
 [Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no) is about.
 
 ### The int8 weight copy, and the in-tree precedent against it
@@ -285,10 +287,12 @@ AUTO_S8 buys a single full-width int32 accumulation (`blks == 1`); reading int4
 puts per-group folding back in the K loop, so at `group_size = 32` one
 accumulation becomes 64 partial ones. That trades bandwidth for compute — the
 right direction while the kernel is bandwidth-bound, and the wrong one once it
-is not. The contracts above are what decide that: they remove ~45% of the
-traffic without touching the mainloop, and a kernel that is compute-bound
-*after* them would be made slower, not faster, by adding folds to save bytes it
-is no longer waiting on.
+is not. Contract 1 is what decides that: it removes ~37% of qwen3 up's traffic
+without touching the mainloop, and a kernel that is compute-bound *after* it
+would be made slower, not faster, by adding folds to save bytes it is no longer
+waiting on. Contract 2 has since been measured and does not enter this
+calculation — it regresses, so the ~45% figure an earlier draft used here was
+counting bytes that cannot actually be removed at a profit.
 
 One caveat on how much weight to put on that precedent: the regression it
 reports is a measurement, but the header that replaced it is itself marked
@@ -296,10 +300,11 @@ reports is a measurement, but the header that replaced it is itself marked
 env switch so it can be neutralized at runtime. It is a template for the
 mainloop structure, not evidence that the structure is faster here.
 
-Hence the order: measure the contracts on B70 first, and only then decide
-whether the packed-nibble mainloop is worth building. If a shape is still short
-with both contracts on, this is the next change and the s4 header is the
-template to copy.
+Hence the order: measure contract 1 on B70 first, and only then decide whether
+the packed-nibble mainloop is worth building. If a shape is still short with it
+on, this is the next change and the s4 header is the template to copy — with the
+`STATUS` caveat above meaning it has to be validated on hardware, not merely
+ported.
 
 ## Cutting the prefill traffic: two optional call contracts
 
@@ -423,13 +428,17 @@ traffic model:
 reachable number for those shapes is the `+ int8 in` column.)
 
 Both qwen3 shapes clear 100 TFLOPS: the up projection on contract 1 alone, the
-down projection on **both together** — neither is sufficient by itself, at either
-routing. `qwen3 down`'s asymptotic ceiling moves from 105 TFLOPS to 155 (int8
-in), 147 (fused) or 267 (both), which is the real statement: with the contracts
-the shape stops being routing-limited.
+down projection only on **both together** — at either routing.
 
 These are projections from a traffic model, not measurements — see
-[Status](#status).
+[Status](#status) — and the `fused reduce` / `Both` columns are now known to be
+wrong. B70 measured contract 2 as a **regression**, because this model prices
+the fused epilogue by the bytes it removes and it is in fact priced by the
+~134M device-scope atomics it adds ([What is left](#what-is-left)). Read the
+`+ int8 in` column as the live projection and the two fused columns as an upper
+bound that measurement did not reach; the standing consequence is that
+`qwen3 down` has no projected path past 100 TFLOPS left, since its only one ran
+through contract 2.
 
 ## Decode: coalesced K-split mapping
 
@@ -765,7 +774,10 @@ pytest -v -s test_moe_w4a8_perf.py -k "prequantized or fused_reduce"
 `test_perf_prefill_contract_sweep` and `test_perf_prefill_contracts_long_seq`
 time the four combinations of the two [call
 contracts](#cutting-the-prefill-traffic-two-optional-call-contracts) at the two
-prefill routings. Because each contract changes what the call moves, every row's
+prefill routings, and `test_perf_prefill_prequant_long_seq` isolates contract 1
+at the 8K routing — the one configuration a serving stack can adopt without
+touching its layer code, and the one the earlier both-contracts runs could not
+see past. Because each contract changes what the call moves, every row's
 `DRAM GB/s`, `BW@100T` and ceiling are computed from *that row's* traffic model,
 so the columns stay comparable across contracts. The fused rows are compared
 against a canonicalized baseline (the unfused output reduced by the harness)
@@ -1205,21 +1217,53 @@ scheduling change moves a write-bound shape, which is exactly what the sweeps
 keep reporting.
 
 The stream is removed — not rescheduled — by the fused reduction contract, which
-replaces the `[T, N]` write with a `[batch, N]` accumulate. **These contracts
-are implemented and have never been measured on B70**, and they are the only
-lever left that changes the byte count:
+replaces the `[T, N]` write with a `[batch, N]` accumulate. That is the only
+lever left that changes the byte count — and on B70 it **loses**:
+
+| shape | shipped | both contracts | TFLOPS | `DRAM GB/s` |
+|---|---|---|---|---|
+| qwen3 up | 3.034 ms | 3.254 ms (**0.93x**) | 135.91 → 126.72 | 376.1 → 195.9 |
+| qwen3 down | 2.107 ms | 3.198 ms (**0.66x**) | 97.83 → 64.47 | 318.4 → 120.7 |
+
+Fewer bytes, more time. That combination is the whole finding: the effective
+bandwidth column halves, which a bandwidth-bound kernel moving 44% less data
+cannot do. Whatever the fused path costs, it is not paying for DRAM.
+
+It is paying for the epilogue. `store_fused` issues one device-scope
+`atomic_add_f32` **per output element** — 100M of them for qwen3 up, 134M for
+qwen3 down — and because a scatter cannot use a block store, enabling it also
+gives up the 2D store worth a measured 1.12–1.35x. Solve both rows for the
+atomic rate and they agree: ~1.3 ms of added time on up, ~1.6 ms on down, both
+≈80 G atomics/s. Two shapes, two routings, one constant — the cost model is the
+atomic count, and it is set by `T * N`, which no tuning parameter touches.
+
+So contract 2 is not a contract to take on this hardware. The `[T, N]` write it
+deletes is real, but a coalesced 268 MB store beats 134M scattered read-modify-
+writes by more than the bytes suggest.
+
+**Contract 1 has still never been measured on its own.** Both B70 runs so far
+enabled the two together, so contract 2's ~1.5 ms swamped whatever the
+activation round-trip saved and that run says nothing about the round-trip. Its
+own arithmetic is unencumbered: it deletes `3 * T * K` bytes — 402 MB of qwen3
+up's 1141 MB — which at the 376 GB/s the shipped path already streams is
+~1.97 ms, or **2.0x vs W4A16's 3.929 ms**. It is also the contract a serving
+stack can adopt without touching layer code, since the previous op in most
+quantized pipelines already produced int8, and unlike contract 2 it keeps the
+result bit-identical:
 
 ```bash
-pytest test_moe_w4a8_perf.py -k contracts_long_seq -v
+pytest test_moe_w4a8_perf.py -k prequant_long_seq -v   # contract 1 alone
+pytest test_moe_w4a8_perf.py -k contracts_long_seq -v  # both, for the contrast
 ```
 
-That sweep used to answer the question unfairly, and the bug ran against the
-contract. It timed every configuration as a bare GEMM, so the fused row paid for
-the reduction inside its epilogue while the unfused rows left a `[T, N]` tensor
-their caller still had to reduce — work that was never on anyone's clock. The
-sweep now charges each unfused row the reduction it owes and shows it in its own
-`+reduce` column, so `vs default` ranks on the cost of *producing the routed
-output* rather than of returning from the GEMM.
+That second sweep used to answer the question unfairly, and the bug ran against
+the contract. It timed every configuration as a bare GEMM, so the fused row paid
+for the reduction inside its epilogue while the unfused rows left a `[T, N]`
+tensor their caller still had to reduce — work that was never on anyone's clock.
+The sweep now charges each unfused row the reduction it owes and shows it in its
+own `+reduce` column, so `vs default` ranks on the cost of *producing the routed
+output* rather than of returning from the GEMM. It is worth stressing that this
+fix moved the accounting in contract 2's favour and contract 2 lost anyway.
 
 Read the two columns as bounds, because neither alone is the answer:
 
@@ -1234,13 +1278,12 @@ For `qwen3 down` the gap between those bounds is not a detail: its unreduced
 writes 67 MB more. That is the single largest stream in the whole call, and the
 old accounting billed none of it.
 
-The charge lands on the down-projection rows only. A MoE layer reduces just the
-second GEMM's output; the up/gate result stays expanded, one row per routed
-token, straight into SiLU. So the `up` rows show `+reduce` as `0.000` and the
-fused contract shows up there as a small *regression* — that is the correct
-reading, not a measurement artefact: the fused epilogue scatters where a plain
-store would do, and on that projection nothing is saved in exchange. Contract 2
-is a down-projection contract.
+The charge lands on the down-projection rows only, and so does the contract. A
+MoE layer reduces just the second GEMM's output; the up/gate result stays
+expanded, one row per routed token, straight into SiLU. Fusing there is not a
+contract a caller can take, so `run_perf` no longer applies it to those rows —
+the earlier table's `up` regression was measuring a configuration nobody can
+ship. Contract 2 is a down-projection contract.
 
 Both contracts are free in a real MoE layer: `up`/`gate` share activations so
 the int8 copy is made once and handed to both, and `down`'s consumer is the
@@ -1402,7 +1445,7 @@ traffic the call still moves and ceiling the routing sets:
 | Lead | What it would change | Where it shows |
 |---|---|---|
 | Caller-supplied int8 activations ([contract 1](#contract-1--caller-supplied-int8-activations)) | Deletes 3 of the 5 streams — 27% of the traffic at `K = 768`, 37% at `K = 2048`, 44% at `K = 3072` | Every shape; it is the largest single item, and the only one that gets `qwen3 up` past 100 on its own |
-| The fused top-k reduction ([contract 2](#contract-2--the-top-k-reduction-fused-into-the-epilogue)) | Turns a `T × N` fp16 write into a `batch × N` fp32 read-modify-write, and deletes the separate reduction kernel | Second projections only; combined with contract 1 it is what gets `qwen3 down` past 100 |
+| The fused top-k reduction ([contract 2](#contract-2--the-top-k-reduction-fused-into-the-epilogue)) | Turns a `T × N` fp16 write into a `batch × N` fp32 read-modify-write, and deletes the separate reduction kernel | Second projections only — and **measured slower on B70**, because the read-modify-write is one device-scope atomic per element and forfeits the 2D block store |
 | Routing more rows per expert | Nothing in the kernel — it *raises* the ceiling, because the weight stream is the only one that does not grow with the token count | Real but bounded: `qwen3 down`'s ceiling converges to 105 TFLOPS as rows/expert → ∞, so this lead alone can never reach the target on that shape |
 | Prefetch depth, scheduler tile order, non-temporal D stores | Pure mainloop/epilogue work against the 239–296 GB/s the four shapes currently stream | `qwen3 down` is the lowest of the four (239 GB/s): its D is a *write*, and 12 k-tiles is the shortest mainloop, so its prologue/epilogue amortize worst |
 | A single-pass activation quantizer for `K = 3072` | The second read of `[T, K]`, ~450 MB at the compute-bound batch | minimax up only; its row is 96 dwords per lane, past the 16-vector rung — and moot under contract 1, which deletes the pass entirely |

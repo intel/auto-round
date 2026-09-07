@@ -1197,6 +1197,12 @@ def run_perf(
     contracts (see :func:`_w4a8`). They change what the call moves, so they are
     also fed to the traffic model: the printed ``DRAM GB/s``, ``BW@100T`` and
     the ceiling that decides the verdict all follow the contract in force.
+
+    ``fused_reduce`` applies only to the projection whose output is actually
+    top-k reduced (:func:`_reduces_topk`). Fusing the up/gate projection is not
+    a contract a layer can take -- that output stays expanded into SiLU -- so
+    enabling it there measures a configuration nobody can ship and charges the
+    contract for it. The header says which shapes it reached.
     """
     rows = []
     # Probed before anything large is allocated (and cached across sweeps).
@@ -1205,7 +1211,7 @@ def run_perf(
     contract = "".join(
         [
             ", A=int8-in" if prequantized else "",
-            ", fused top-k reduce" if fused_reduce else "",
+            ", fused top-k reduce (down-proj only)" if fused_reduce else "",
         ]
     )
     if verbose:
@@ -1224,6 +1230,8 @@ def run_perf(
     for nk_label, N, K, spec, batch in shapes:
         E, topk, group_size = spec["E"], spec["topk"], spec["group_size"]
         total_tokens = batch * topk
+        # Only the reduced projection can take the fused contract.
+        fused_here = fused_reduce and _reduces_topk(nk_label)
         case = _build_case(
             N,
             K,
@@ -1233,7 +1241,7 @@ def run_perf(
             dtype,
             need_reference=False,
             need_dequant=torch_baseline,
-            topk=topk if fused_reduce else None,
+            topk=topk if fused_here else None,
         )
 
         # One-shot int4 -> int8 AUTO_S8 conversion. Timed separately: it
@@ -1268,7 +1276,7 @@ def run_perf(
         for _ in range(SWEEP_ROUNDS):
             w4a8_samples.append(
                 _xpu_time_ms(
-                    lambda: _w4a8(case, weights_s8, wscales, block, phase, prequant=prequantized, fused=fused_reduce),
+                    lambda: _w4a8(case, weights_s8, wscales, block, phase, prequant=prequantized, fused=fused_here),
                     iters=iters,
                 )
             )
@@ -1294,7 +1302,7 @@ def run_perf(
         # of A, the int8 copy it writes, the GEMM's read of that copy and the
         # output. On the small-K shapes the weights are under half of it.
         act_bytes = _dtype_bytes(dtype)
-        fused_rows = case["batch"] if fused_reduce else None
+        fused_rows = case["batch"] if fused_here else None
         traffic = _traffic_bytes(
             total_tokens,
             active_experts,
@@ -1354,7 +1362,7 @@ def run_perf(
             ),
             "device_bw_gbps": device_bw,
             "prequantized": prequantized,
-            "fused_reduce": fused_reduce,
+            "fused_reduce": fused_here,
         }
         rows.append(row)
         if verbose:
@@ -2197,15 +2205,48 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"call contract {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_prequant_long_seq(self, request):
+            """Prefill throughput for one 8K prompt with the int8-in contract alone.
+
+            The two contracts were only ever measured together, and together
+            they regress on B70 (see the README): the fused epilogue's cost
+            swamps whatever the activation round-trip saves, so that run says
+            nothing about the round-trip itself. This isolates it.
+
+            It is also the contract a serving stack can actually adopt without
+            touching its layer code -- the previous op already produced int8 in
+            most quantized pipelines -- whereas the fused reduction requires the
+            caller to hand over the routing map and give up a bit-identical
+            result. Removing the round-trip drops ``3 * T * K`` bytes, a third
+            of the up projection's traffic, and the traffic model here is told
+            about it so the printed ceiling matches what the call moves.
+            """
+            rows = run_perf(
+                "prefill",
+                _long_seq_batches(),
+                torch_baseline=False,
+                models=_models_option(request),
+                prequantized=True,
+            )
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            _assert_targets(request, "prefill", rows)
+
         def test_perf_prefill_contracts_long_seq(self, request):
             """Prefill throughput for one 8K prompt with both contracts enabled.
 
             ``test_perf_prefill_long_seq`` measures the shipped contract, where
             the qwen3 shapes are bandwidth-bound below the target. This runs
-            the same prompt with the activation round-trip and the unreduced
-            output removed, which is the configuration the target is reachable
-            in; the ceiling printed next to it is computed from the same
-            reduced traffic model, so the verdict is against the right roof.
+            the same prompt with the activation round-trip removed, and the
+            output reduction folded into the epilogue on the one projection
+            that is actually reduced; the ceiling printed next to it is
+            computed from the same reduced traffic model, so the verdict is
+            against the right roof.
+
+            On B70 this is *slower* than the shipped contract even though it
+            moves fewer bytes -- the fused epilogue trades a coalesced 2D block
+            store for one device-scope atomic per output element. Compare
+            against ``test_perf_prefill_prequant_long_seq`` to separate the two
+            contracts' contributions.
             """
             rows = run_perf(
                 "prefill",
