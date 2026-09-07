@@ -160,6 +160,11 @@ if _W4A8_SKIP:
 
 WARMUP = 5
 ITERS = 30
+# Rounds the config sweeps round-robin over their configurations. Three is
+# enough to separate a real ranking from clock drift without making the sweep
+# slower: the per-round iteration count is ITERS // SWEEP_ROUNDS, so the total
+# number of timed iterations per configuration is unchanged.
+SWEEP_ROUNDS = 3
 
 
 def _release_xpu_memory() -> None:
@@ -1229,15 +1234,35 @@ def run_perf(
             rescale_group_size=rescale_group_size,
         )
 
-        w4a8_ms = _xpu_time_ms(
-            lambda: _w4a8(case, weights_s8, wscales, block, phase, prequant=prequantized, fused=fused_reduce)
-        )
-        torch_ms = _xpu_time_ms(lambda: _torch_baseline(case)) if torch_baseline else None
-        try:
-            w4a16_ms = _xpu_time_ms(lambda: _w4a16(case, phase))
-        except Exception as exc:  # pragma: no cover - depends on build
-            print(f"[moe-w4a8-perf] W4A16 timing unavailable for {nk_label}: {exc}")
-            w4a16_ms = None
+        # Round-robin over the three implementations rather than timing each
+        # to completion in turn. Measuring w4a8 first and w4a16 last put the
+        # two on opposite ends of the sweep's clock droop, which biases the
+        # headline `vs w4a16` ratio *upward* -- both the numerator being
+        # measured hot and the denominator cold push it the same way. Taking
+        # each one's least-throttled round removes that from the ratio; see
+        # `_sweep_timings` for the measurement this is guarding against.
+        w4a8_samples, torch_samples, w4a16_samples = [], [], []
+        w4a16_failed = None
+        iters = max(1, ITERS // SWEEP_ROUNDS)
+        for _ in range(SWEEP_ROUNDS):
+            w4a8_samples.append(
+                _xpu_time_ms(
+                    lambda: _w4a8(case, weights_s8, wscales, block, phase, prequant=prequantized, fused=fused_reduce),
+                    iters=iters,
+                )
+            )
+            if torch_baseline:
+                torch_samples.append(_xpu_time_ms(lambda: _torch_baseline(case), iters=iters))
+            if w4a16_failed is None:
+                try:
+                    w4a16_samples.append(_xpu_time_ms(lambda: _w4a16(case, phase), iters=iters))
+                except Exception as exc:  # pragma: no cover - depends on build
+                    w4a16_failed = exc
+        if w4a16_failed is not None:
+            print(f"[moe-w4a8-perf] W4A16 timing unavailable for {nk_label}: {w4a16_failed}")
+        w4a8_ms = min(w4a8_samples)
+        torch_ms = min(torch_samples) if torch_samples else None
+        w4a16_ms = min(w4a16_samples) if w4a16_samples else None
 
         active_experts = sum(1 for n_e in case["tpe"] if n_e > 0)
         tflops = _flops(total_tokens, N, K) / (w4a8_ms * 1e-3) / 1e12
@@ -1485,13 +1510,44 @@ _PREFILL_CONTRACT_CONFIGS = [
 _SWEEP_MIN_SNR_DB = 40.0
 
 
+def _sweep_timings(configs, call):
+    """Time every configuration, round-robin, and return the per-round samples.
+
+    Timing each configuration to completion in turn -- warmup and all its
+    iterations, then on to the next -- silently ranks by position as much as
+    by configuration. These shapes draw enough power to droop the clock over
+    a sweep, so every configuration measured later is handicapped by the
+    heat the earlier ones produced. On the qwen3 up-proj shape that artefact
+    is worth 6-7% run to run, which is *larger* than the spread the sweep is
+    being used to rank: two runs of the prefill prefetch sweep an hour apart
+    put the optimum at depth 3-4 and then at depth 1-2, with the ordering
+    essentially reversed and the last-measured configuration slowest in both.
+
+    Round-robin instead, so the drift is spread evenly across configurations
+    rather than accumulating against the later ones. The caller takes the
+    minimum across rounds (each configuration at its least-throttled) and
+    keeps the spread as the noise floor a ranking has to clear.
+
+    ``call`` is invoked as ``call(call_kwargs)`` with the configuration's env
+    overrides in force. Returns one list of per-round timings per
+    configuration, positionally aligned with ``configs``.
+    """
+    samples = [[] for _ in configs]
+    iters = max(1, ITERS // SWEEP_ROUNDS)
+    for _ in range(SWEEP_ROUNDS):
+        for idx, (_, overrides, call_kwargs) in enumerate(configs):
+            with _env_override(**overrides):
+                samples[idx].append(_xpu_time_ms(lambda: call(call_kwargs), iters=iters))
+    return samples
+
+
 def _print_sweep_header(title: str, metric: str) -> None:
     print()
     print("=" * _PERF_WIDTH)
     print(title)
     print(
         f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'rows/E':>8}  "
-        f"{'config':<22}{'ms':>10}{metric:>10}{'vs default':>12}{'SNR(dB)':>10}"
+        f"{'config':<22}{'ms':>10}{metric:>10}{'vs default':>12}{'SNR(dB)':>10}{'drift':>9}"
     )
     print("-" * _PERF_WIDTH)
 
@@ -1555,21 +1611,40 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                 active_experts = sum(1 for n_e in case["tpe"] if n_e > 0)
                 rows_per_expert = _rows_per_expert(total_tokens, active_experts)
 
+                # Correctness first, one configuration at a time, so that only
+                # the baseline output and the one being compared to it are
+                # alive: a six-configuration sweep that held every output at
+                # once would need six [T, N] tensors (1.2 GB on the qwen3
+                # up-proj shape).
                 baseline_out = None
-                baseline_ms = None
+                snrs = []
                 for label, overrides, call_kwargs in configs:
                     with _env_override(**overrides):
                         out = _w4a8(case, weights_s8, wscales, block, phase, **call_kwargs)
-                        ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, phase, **call_kwargs))
                     if need_routing and not call_kwargs.get("fused"):
                         out = _reduce_topk(case, out)
                     if baseline_out is None:
                         # Cloned: the kernel may hand back a reused scratch
                         # buffer, which would make every later comparison
                         # compare a tensor with itself.
-                        baseline_out, baseline_ms, snr = out.clone(), ms, float("inf")
+                        baseline_out = out.clone()
+                        snrs.append(float("inf"))
                     else:
-                        snr = _snr_db(baseline_out.to(torch.float32), out.to(torch.float32))
+                        snrs.append(_snr_db(baseline_out.to(torch.float32), out.to(torch.float32)))
+                    out = None
+                baseline_out = None
+
+                samples = _sweep_timings(configs, lambda kw: _w4a8(case, weights_s8, wscales, block, phase, **kw))
+
+                baseline_ms = None
+                for idx, (label, overrides, call_kwargs) in enumerate(configs):
+                    # The least-throttled round, and the spread across rounds
+                    # as the noise floor this shape's ranking has to clear.
+                    ms = min(samples[idx])
+                    noise = (max(samples[idx]) - ms) / ms if ms else 0.0
+                    snr = snrs[idx]
+                    if baseline_ms is None:
+                        baseline_ms = ms
                     tflops = _flops(total_tokens, N, K) / (ms * 1e-3) / 1e12
                     gbps = _weight_bytes(active_experts, N, K, 8) / (ms * 1e-3) / 1e9
                     row = {
@@ -1584,6 +1659,7 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                         "tokens": total_tokens,
                         "rows_per_expert": rows_per_expert,
                         "w4a8_ms": ms,
+                        "noise": noise,
                         "tflops": tflops,
                         "gbps": gbps,
                         "snr_db": snr,
@@ -1598,6 +1674,7 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                         print(
                             f"{nk_label:<14}{E:>5}{N:>7}{K:>7}{total_tokens:>8}{rows_per_expert:>8.1f}  "
                             f"{label:<22}{ms:>10.3f}{metric:>10.2f}{speedup_txt:>12}{snr_txt:>10}"
+                            f"{noise * 100:>8.1f}%"
                         )
                     out = None
                 case = weights_s8 = wscales = baseline_out = None
@@ -1639,6 +1716,19 @@ def _print_sweep_best(phase, rows) -> None:
                 print(f"  {name:<14} no numerically-equivalent configuration")
                 continue
             best = min(candidates, key=lambda r: r["w4a8_ms"])
+            # A winner is only a winner if its lead over the sweep's own
+            # first (= default) configuration is larger than the drift the
+            # sweep measured on itself. Below that the ranking is reporting
+            # which configuration happened to be timed on the coolest
+            # device, and recommending it bakes an artefact into a default.
+            noise = max(r.get("noise", 0.0) for r in group)
+            lead = group[0]["w4a8_ms"] / best["w4a8_ms"] - 1.0 if best["w4a8_ms"] else 0.0
+            if lead <= noise:
+                print(
+                    f"  {name:<14} inconclusive: best is {lead * 100:.1f}% ahead of the default, "
+                    f"within the {noise * 100:.1f}% round-to-round drift -- keep the default"
+                )
+                continue
             metric = f"{best['tflops']:.2f} TFLOPS" if is_prefill else f"{best['gbps']:.1f} GB/s"
             parts = [f"{k}={v}" for k, v in sorted(best["overrides"].items()) if v is not None]
             parts += [f"{k}={v}" for k, v in sorted(best.get("call_kwargs", {}).items()) if v]
@@ -2565,11 +2655,19 @@ def _parse_args(argv):
     )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=SWEEP_ROUNDS,
+        help=f"Rounds the sweeps round-robin over their configurations (default {SWEEP_ROUNDS}). "
+        "Each round times ITERS // ROUNDS iterations, so the total is unchanged; raise it when the "
+        "reported drift is comparable to the spread being ranked.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
-    global WARMUP, ITERS
+    global WARMUP, ITERS, SWEEP_ROUNDS
     args = _parse_args(sys.argv[1:] if argv is None else argv)
     if _W4A8_SKIP:
         print(f"[moe-w4a8-perf] cannot run: {_W4A8_SKIP}")
@@ -2577,6 +2675,7 @@ def main(argv=None) -> int:
 
     WARMUP = args.warmup
     ITERS = args.iters
+    SWEEP_ROUNDS = max(1, args.rounds)
     dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
     phases = ("decode", "prefill") if args.phase == "both" else (args.phase,)
 
