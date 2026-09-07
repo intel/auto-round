@@ -1050,6 +1050,25 @@ The decode K-split mapping additionally needs a re-scale block of at least 256
 that is a multiple of 16; shapes that miss it use the original GEMV instead of
 failing.
 
+## Source layout
+
+The path is split across three headers by cutlass dependency, so that no single
+translation unit compiles more than a handful of kernels:
+
+| Header | Contents | Needs CuTe |
+| --- | --- | --- |
+| `sycl_tla_moe_w4a8_helpers.hpp` | Scratch pools, host helpers, the prefill tile ladder, the four public entry points | no |
+| `sycl_tla_moe_w4a8_kernels.hpp` | Activation quantization, AUTO_S8 prepack, decode GEMV and its K-split variants | no |
+| `sycl_tla_moe_w4a8.hpp` | DPAS tile policies, the grouped prefill GEMM, its launcher | yes |
+
+`sycl_tla_generation.cmake` then emits 19 translation units instead of one: a
+dispatcher that only sees the helpers, twelve prefill TUs (one per dtype x tile,
+one DPAS kernel each), and six cutlass-free TUs for decode, activation quant and
+prepack (one per dtype). Before the split a single TU instantiated all 52
+kernels and peaked at ~4.2 GB of compiler RSS; the layout mirrors how
+`sycl_tla_moe_prefill_s4_*.cpp` splits the S4 prefill. Nothing about the runtime
+API or the dispatch decisions changes.
+
 ## Status
 
 The W4A8 kernel is a new SYCL/CuTe port, marked

@@ -927,6 +927,24 @@ Qwen3-MoE 的两个 GEMM 都满足以上条件 (`K = 2048` 和 `K = 768`)。
 decode 的 K-split 映射还额外要求重缩放 block 不小于 256 且是 16 的倍数；不满足的形
 状会退回到原 GEMV，而不是报错。
 
+## 源码结构
+
+整条路径按对 cutlass 的依赖拆成三个头文件，使得任何一个翻译单元都不会实例化过多
+kernel：
+
+| 头文件 | 内容 | 需要 CuTe |
+| --- | --- | --- |
+| `sycl_tla_moe_w4a8_helpers.hpp` | scratch 池、host 辅助函数、prefill tile 阶梯、四个对外入口 | 否 |
+| `sycl_tla_moe_w4a8_kernels.hpp` | 激活量化、AUTO_S8 prepack、decode GEMV 及其 K-split 变体 | 否 |
+| `sycl_tla_moe_w4a8.hpp` | DPAS tile policy、分组 prefill GEMM 及其 launcher | 是 |
+
+`sycl_tla_generation.cmake` 据此生成 19 个翻译单元而不是一个：一个只看到 helpers 的
+dispatcher，十二个 prefill 翻译单元（每个 dtype x tile 一个，各含一个 DPAS kernel），
+以及六个完全不依赖 cutlass 的翻译单元，分别对应 decode、激活量化和 prepack（每个
+dtype 一个）。拆分之前，单个翻译单元要实例化全部 52 个 kernel，编译器 RSS 峰值约
+4.2 GB；这里的拆法与 `sycl_tla_moe_prefill_s4_*.cpp` 拆分 S4 prefill 的方式一致。
+运行时 API 与各项 dispatch 决策均不受影响。
+
 ## 状态
 
 W4A8 kernel 是新移植的 SYCL/CuTe 实现，在
