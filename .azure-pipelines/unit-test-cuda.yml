@@ -59,8 +59,8 @@ stages:
 
               - task: UsePythonVersion@0
                 inputs:
-                  versionSpec: "3.13"
-                displayName: "Use Python 3.13"
+                  versionSpec: "3.14"
+                displayName: "Use Python 3.14"
 
               - task: Bash@3
                 displayName: "Install dependencies"
@@ -115,6 +115,8 @@ stages:
 
           - job: GpuTests
             dependsOn: Start_Pod_Job
+            variables:
+              - group: auto-round-bot-secrets
             timeoutInMinutes: 60
             pool:
               name: "$(POOL_NAME)"
@@ -183,6 +185,8 @@ stages:
                     --test_case=ci \
                     --test_part=${{ pair.value.PART }}
                 displayName: "Run GPU Tests"
+                env:
+                  GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
 
               - task: PublishPipelineArtifact@1
                 condition: succeeded()
@@ -221,8 +225,8 @@ stages:
 
               - task: UsePythonVersion@0
                 inputs:
-                  versionSpec: "3.13"
-                displayName: "Use Python 3.13"
+                  versionSpec: "3.14"
+                displayName: "Use Python 3.14"
 
               - task: Bash@3
                 displayName: "Install dependencies"
@@ -285,8 +289,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '3.12'
-            displayName: 'Use Python 3.12'
+              versionSpec: '3.14'
+            displayName: 'Use Python 3.14'
 
           - script: |
               cd ${BUILD_SOURCESDIRECTORY}

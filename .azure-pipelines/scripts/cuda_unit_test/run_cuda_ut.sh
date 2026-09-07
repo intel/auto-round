@@ -40,15 +40,21 @@ function setup_environment() {
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc"
     export AUTOROUND_REUSE_TINY_MODELS=1
+
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf"
+        export GIT_CONFIG_VALUE_0="https://github.com/"
+    fi
 }
 
 function cleanup_test_workspace() {
-    local tmp_root="${BUILD_SOURCESDIRECTORY}/test/tmp"
-    if [ -d "${tmp_root}" ]; then
-        find "${tmp_root}" -mindepth 1 -maxdepth 1 ! -name tiny_models -exec rm -rf {} +
+    local tmp_root="/test/tmp"
+    if [ -d "" ]; then
+        find "" -mindepth 1 -maxdepth 1 ! -name tiny_models -exec rm -rf {} +
     fi
-    rm -rf "${BUILD_SOURCESDIRECTORY}/test/ar_work_space"
-    rm -rf "${BUILD_SOURCESDIRECTORY}/test/tmp_autoround"
+    rm -rf "/test/ar_work_space"
+    rm -rf "/test/tmp_autoround"
 }
 
 trap cleanup_test_workspace EXIT
@@ -72,16 +78,18 @@ function setup_basic_test_env() {
     echo "##[group]Setting up test environment..."
 
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    rm -rf /root/.venv
+    uv venv --python=3.14 /root/.venv
+    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
-    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip install -U pytest-cov
-    uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
+    uv pip install kernels==0.16.1 # For sm120: https://github.com/huggingface/transformers/blob/v5.16.1/setup.py#L93
     uv pip uninstall torch torchvision
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
 
     echo "List dependencies ..."
@@ -171,7 +179,7 @@ function run_unit_test_llmc() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
-    uv venv --python=3.12 /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/integration/test_cuda/requirements_llmc.txt \
@@ -195,7 +203,7 @@ function run_unit_test_sglang() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
-    uv venv --python=3.12 /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
@@ -220,7 +228,7 @@ function run_unit_test_vllm() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
-    uv venv --python=3.12 /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \

@@ -534,6 +534,20 @@ def apply_plan_to_model(model, plan: ResolvedQuantizationConfig) -> None:
     """Apply a resolved plan at the single explicit module-attribute write boundary."""
     scheme_keys = tuple(field.name for field in fields(QuantizationScheme)) + ("scale_dtype",)
     for module_name, module in model.named_modules():
+        # AutoRound only ever writes scheme attributes onto quantization-target
+        # layers (plus model-level keys such as ``rotation_config`` on the root
+        # module). Some scheme keys share a name with attributes a model class
+        # legitimately owns -- e.g. a grouped RMSNorm's own ``group_size`` -- so
+        # blindly clearing them from every module would corrupt the model
+        # (``AttributeError`` on the norm's next forward). Scope the reset to the
+        # same modules that receive the plan below.
+        is_quant_target = (
+            isinstance(module, SUPPORTED_LAYER_TYPES)
+            or isinstance(module, torch.nn.Embedding)
+            or module.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES
+        )
+        if module_name != "" and not is_quant_target:
+            continue
         for key in scheme_keys:
             if module_name == "" and key == "rotation_config":
                 continue

@@ -9,6 +9,11 @@ namespace moe_prefill_fp8_detail {
 
 bool enabled();
 bool shape_ok(int N, int K, int group_size);
+// 8-row tile, used only by the decode ladder (`sycl_tla_moe_decode_fp8.cpp`).
+void dispatch_f16_e4m3_tiny(const MoePrefillParams& params);
+void dispatch_f16_e5m2_tiny(const MoePrefillParams& params);
+void dispatch_bf16_e4m3_tiny(const MoePrefillParams& params);
+void dispatch_bf16_e5m2_tiny(const MoePrefillParams& params);
 void dispatch_f16_e4m3_small(const MoePrefillParams& params);
 void dispatch_f16_e4m3_mid(const MoePrefillParams& params);
 void dispatch_f16_e4m3_large(const MoePrefillParams& params);

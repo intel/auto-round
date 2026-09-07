@@ -9,6 +9,7 @@ live in the separate internal-route test module.
 """
 
 import math
+import zlib
 
 import pytest
 import torch
@@ -40,6 +41,27 @@ def _mixed_sdpa(q, k, v, scale, is_causal, layout):
     return auto_round_kernel.sdpa(q, k, v, scale=scale, is_causal=is_causal, tensor_layout=layout)
 
 
+def _kernel_view_kv(k, v, seq_q):
+    """Mirror the CPU mixed runtime's fp16->bf16 conversion for fp16 prefill.
+
+    The packed mixed path (``_cpu_public_mixed_sdpa_packed``) converts fp16 K/V
+    to bf16 on prefill (query seq_len > 1) when the BF16 route is compiled, so
+    the kernel computes from bf16-rounded K/V. Build the fp32 reference from the
+    same data the kernel will see; decode (seq_q == 1) and native-bf16 K/V are
+    left untouched. The caller must keep the original fp16 K/V for the kernel
+    call and use the returned tensors only for the reference.
+    """
+    if (
+        k.dtype == torch.float16
+        and seq_q > 1
+        and auto_round_kernel._cpu_public_packed_kv_available()
+        and getattr(auto_round_kernel.cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE", False)
+    ):
+        k = k.to(dtype=torch.bfloat16)
+        v = v.to(dtype=torch.bfloat16)
+    return k, v
+
+
 def test_mixed_dtype_sdpa_routes_to_mixed_path():
     """Verify mixed-dtype SDPA is dispatched to the BestLA mixed path by default."""
     torch.manual_seed(4001)
@@ -47,11 +69,14 @@ def test_mixed_dtype_sdpa_routes_to_mixed_path():
     k = torch.randn(1, 2, 16, 64, dtype=torch.float16)
     v = torch.randn(1, 2, 16, 64, dtype=torch.float16)
     scale = 1 / math.sqrt(64)
-    expected = torch.nn.functional.scaled_dot_product_attention(q, k.float(), v.float(), scale=scale, enable_gqa=True)
+    k_ref, v_ref = _kernel_view_kv(k, v, seq_q=16)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        q, k_ref.float(), v_ref.float(), scale=scale, enable_gqa=True
+    )
 
     out = auto_round_kernel.sdpa(q, k, v, scale=scale)
 
-    atol, rtol = _TOL[torch.float16]
+    atol, rtol = _TOL[k_ref.dtype]
     assert out.dtype == torch.float32
     torch.testing.assert_close(out, expected, atol=atol, rtol=rtol)
 
@@ -67,8 +92,9 @@ def test_bestla_mixed_sdpa_matches_torch(kv_dtype, is_causal, layout):
     k = torch.randn(batch, heads_kv, seq, head_dim, dtype=kv_dtype)
     v = torch.randn(batch, heads_kv, seq, head_dim, dtype=kv_dtype)
 
+    k_ref, v_ref = _kernel_view_kv(k, v, seq_q=seq)
     expected_hnd = torch.nn.functional.scaled_dot_product_attention(
-        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=is_causal
+        q, k_ref.float(), v_ref.float(), scale=scale, enable_gqa=True, is_causal=is_causal
     )
     try:
         actual = _mixed_sdpa(
@@ -77,7 +103,7 @@ def test_bestla_mixed_sdpa_matches_torch(kv_dtype, is_causal, layout):
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(_to_hnd(actual, layout), expected_hnd, atol=atol, rtol=rtol)
 
@@ -94,15 +120,16 @@ def test_bestla_mixed_sdpa_gqa_ratio(kv_dtype, gqa_ratio):
     k = torch.randn(batch, heads_kv, seq, head_dim, dtype=kv_dtype)
     v = torch.randn(batch, heads_kv, seq, head_dim, dtype=kv_dtype)
 
+    k_ref, v_ref = _kernel_view_kv(k, v, seq_q=seq)
     expected = torch.nn.functional.scaled_dot_product_attention(
-        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=False
+        q, k_ref.float(), v_ref.float(), scale=scale, enable_gqa=True, is_causal=False
     )
     try:
         actual = _mixed_sdpa(q, k, v, scale, False, "HND")
     except (RuntimeError, ValueError) as exc:
         pytest.skip(f"BestLA mixed path unavailable on this ISA/runtime: {exc}")
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
@@ -169,13 +196,14 @@ def test_mixed_batched_gqa_prefill_runs_repeatedly(kv_dtype):
 
     route = auto_round_kernel.debug_cpu_sdpa_route(q, k, v, scale=scale, is_causal=True, tensor_layout="HND")
     assert route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW
+    k_ref, v_ref = _kernel_view_kv(k, v, seq_q=seq)
     expected = torch.nn.functional.scaled_dot_product_attention(
-        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=True
+        q, k_ref.float(), v_ref.float(), scale=scale, enable_gqa=True, is_causal=True
     )
     for _ in range(20):
         actual = _mixed_sdpa(q, k, v, scale, True, "HND")
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
@@ -204,14 +232,18 @@ LLM_SHAPES = [
 @pytest.mark.parametrize("kv_dtype", [torch.float16, torch.bfloat16])
 def test_mixed_llm_shape_accuracy(label, batch, heads_q, heads_kv, head_dim, seq_q, seq_kv, is_causal, kv_dtype):
     """Validate mixed-precision SDPA accuracy on real LLM attention shapes."""
-    torch.manual_seed(5020 + hash(label) % 1000)
+    # Builtin hash() is randomized per process (PYTHONHASHSEED), which made this
+    # test draw different random data on every run/machine and flake near the
+    # tolerance boundary; use a deterministic digest so it is reproducible.
+    torch.manual_seed(5020 + zlib.crc32(label.encode()) % 1000)
     scale = 1 / math.sqrt(head_dim)
     q = torch.randn(batch, heads_q, seq_q, head_dim, dtype=torch.float32)
     k = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
     v = torch.randn(batch, heads_kv, seq_kv, head_dim, dtype=kv_dtype)
 
+    k_ref, v_ref = _kernel_view_kv(k, v, seq_q=seq_q)
     expected = torch.nn.functional.scaled_dot_product_attention(
-        q, k.float(), v.float(), scale=scale, enable_gqa=True, is_causal=is_causal
+        q, k_ref.float(), v_ref.float(), scale=scale, enable_gqa=True, is_causal=is_causal
     )
     try:
         actual = _mixed_sdpa(q, k, v, scale, is_causal, "HND")
@@ -223,6 +255,6 @@ def test_mixed_llm_shape_accuracy(label, batch, heads_q, heads_kv, head_dim, seq
         route == auto_round_kernel.cpu_lib.ARK_CPU_SDPA_ROUTE_MIXED_RAW
     ), f"{label}: expected mixed route, got {route}"
 
-    atol, rtol = _TOL[kv_dtype]
+    atol, rtol = _TOL[k_ref.dtype]
     assert actual.dtype == torch.float32
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
