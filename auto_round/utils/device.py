@@ -1110,13 +1110,26 @@ def set_auto_device_map_for_block_with_tuning(
 
     # Ensure all remaining modules with parameters/buffers are moved to expected device, by default device_0
     output_device = device_0 if output_device is None else output_device
+    from auto_round.utils.model import module_is_pinned_on_cpu
+
     for name, module in block.named_modules():
-        if name not in names:  # This module wasn't assigned a device
-            # Check if module has any parameters or buffers
-            has_params = any(True for _ in module.parameters(recurse=False))
-            has_buffers = any(True for _ in module.buffers(recurse=False))
-            if has_params or has_buffers:
-                module = module.to(output_device)
+        if name in names:  # This module was already assigned a device
+            continue
+        if module_is_pinned_on_cpu(module):
+            # Intentionally kept resident on CPU (e.g. huge non-quantizable ngram
+            # embeddings hooked by hook_ngram_embeddings_on_cpu); never move it to
+            # an accelerator or it would OOM device_0.
+            continue
+        # Move only this module's OWN tensors (recurse=False). Using module.to()
+        # would recurse and drag a CPU-pinned child (e.g. a nested ngram
+        # embedding) back onto the accelerator. Because named_modules() visits
+        # every module, each tensor is still covered exactly once here.
+        for _, param in module.named_parameters(recurse=False):
+            if param.device.type != "meta":
+                param.data = param.data.to(output_device)
+        for _, buf in module.named_buffers(recurse=False):
+            if buf.device.type != "meta":
+                buf.data = buf.data.to(output_device)
 
     return card_0_in_high_risk, loss_device
 

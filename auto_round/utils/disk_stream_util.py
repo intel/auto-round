@@ -600,6 +600,185 @@ def _assemble_sharded_tensor(index, full_name: str, device: str):
     return None
 
 
+# ── General converter-driven materialization ─────────────────────────────────
+# The helpers above cover the common single-op cases explicitly (direct name,
+# reverse renaming, expert fusion, literal/wildcard concat). Some model families
+# -- especially the MoE ones we target on the meta path (Qwen3-Next "Flash",
+# GLM-5-next, DeepSeek-V4, ...) -- also carry *other* WeightConverters in their
+# transformers mapping: fused-qkv ``Chunk``, ``Interleave``/``Transpose`` gate-up,
+# ``PermuteForRope``, and multi-op chains. Rather than reimplement each op, the
+# fallback below reuses the real transformers ``WeightConverter`` objects: it
+# routes the checkpoint keys through ``rename_source_key`` exactly like
+# ``from_pretrained`` (all renamings, then one converter), feeds the collected
+# source tensors into a fresh converter instance, and runs ``convert`` -- the same
+# path transformers' own ``revert_weight_conversion`` uses. Output is accepted
+# only when its shape matches the destination parameter, so a mis-route can never
+# silently corrupt a weight (it just falls back to leaving the param on meta).
+
+
+@lru_cache(maxsize=8)
+def _conversion_transforms_for_dir(checkpoint_dir: str):
+    """Collect ``(renamings, converters)`` from every model_type in the config.
+
+    Deduplicated by ``(source_patterns, target_patterns)`` so families that share
+    a base mapping (e.g. ``qwen3_5_moe_text`` embeds ``qwen2_moe``) do not route a
+    checkpoint key through the same converter twice (which would duplicate tensors
+    inside a concat/merge).
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import WeightConverter, WeightRenaming
+    except ImportError:  # pragma: no cover - transformers < 5
+        return (), ()
+
+    renamings: list = []
+    converters: list = []
+    seen: set = set()
+    for model_type in _model_types_for_dir(checkpoint_dir):
+        mapping = get_checkpoint_conversion_mapping(model_type)
+        if not mapping:
+            continue
+        for entry in mapping:
+            if not isinstance(entry, (WeightConverter, WeightRenaming)):
+                continue
+            sig = (tuple(entry.source_patterns), tuple(entry.target_patterns))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            (converters if isinstance(entry, WeightConverter) else renamings).append(entry)
+    return tuple(renamings), tuple(converters)
+
+
+@lru_cache(maxsize=8)
+def _converter_routing_table(checkpoint_dir: str):
+    """Map each converter-produced model-side name to its checkpoint sources.
+
+    Mirrors the ``from_pretrained`` routing loop: every checkpoint key is renamed
+    via ``rename_source_key`` (all ``WeightRenaming``s, then at most one
+    ``WeightConverter``). Returns ``(table, pattern_to_converter)`` where ``table``
+    maps ``renamed_full_name -> [(source_pattern, checkpoint_key), ...]``.
+    """
+    renamings, converters = _conversion_transforms_for_dir(checkpoint_dir)
+    if not converters:
+        return {}, {}
+    try:
+        from transformers.core_model_loading import rename_source_key
+    except ImportError:  # pragma: no cover - transformers < 5
+        return {}, {}
+
+    index = get_safetensors_index(checkpoint_dir)
+    pattern_to_converter = {pattern: conv for conv in converters for pattern in conv.source_patterns}
+    renaming_list = list(renamings)
+    converter_list = list(converters)
+    table: dict = {}
+    for key in index.weight_map:
+        try:
+            renamed, source_pattern = rename_source_key(key, renaming_list, converter_list)
+        except Exception:  # pragma: no cover - never fail the whole load on one key
+            continue
+        if source_pattern is None:
+            continue
+        table.setdefault(renamed, []).append((source_pattern, key))
+
+    # ``rename_source_key`` renames a 1->N converter (e.g. fused-QKV ``Chunk``) to its FIRST
+    # target only, so the table above holds just that one name. ``convert`` emits every target
+    # from the same source tensors, so register the sibling target names too (each pointing at
+    # the same collected sources); the caller passes whichever it needs and picks it out.
+    expanded: dict = {}
+    for renamed, entries in table.items():
+        converter = pattern_to_converter.get(entries[0][0])
+        targets = list(getattr(converter, "target_patterns", []) or [])
+        first = targets[0] if targets else None
+        if len(targets) <= 1 or first is None or first not in renamed:
+            expanded[renamed] = entries
+            continue
+        for target in targets:
+            expanded[renamed.replace(first, target, 1)] = entries
+    return expanded, pattern_to_converter
+
+
+@lru_cache(maxsize=8)
+def _auto_config_for_dir(checkpoint_dir: str):
+    """Best-effort model config for converter ops that need it (PermuteForRope, ...).
+
+    ``local_files_only=True`` keeps this fully offline -- the checkpoint is already a local
+    snapshot dir, and a hub round-trip here would stall the whole materialization.
+    """
+    try:
+        from transformers import AutoConfig
+
+        return AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=True, local_files_only=True)
+    except Exception as exc:  # pragma: no cover - config-less ops still work
+        logger.debug("could not load config for converter ops from %s: %s", checkpoint_dir, exc)
+        return None
+
+
+def _convert_param_via_converters(index, full_name: str, target_shape, device: str):
+    """Materialize ``full_name`` by replaying its transformers ``WeightConverter``.
+
+    Returns ``(tensor, dst_device)`` when a converter produces a tensor whose shape
+    matches ``target_shape``; otherwise ``None`` (the caller then leaves the param
+    on meta). ``dst_device`` is ``"cpu"`` when the converter declares ``force_cpu``.
+    """
+    checkpoint_dir = str(getattr(index, "checkpoint_dir", "") or "")
+    if not checkpoint_dir:
+        return None
+    try:
+        table, pattern_to_converter = _converter_routing_table(checkpoint_dir)
+    except Exception:  # pragma: no cover
+        return None
+    entries = table.get(full_name)
+    if not entries:
+        return None
+
+    try:
+        import copy as _copy
+        from types import SimpleNamespace
+
+        base_converter = pattern_to_converter.get(entries[0][0])
+        if base_converter is None:
+            return None
+        force_cpu = bool(getattr(base_converter, "force_cpu", False))
+        read_device = "cpu" if force_cpu else device
+
+        # Group checkpoint keys per source pattern; order within each group by the
+        # same natural key transformers uses, so shard/expert indices line up.
+        keys_by_pattern: dict = {}
+        for source_pattern, key in entries:
+            keys_by_pattern.setdefault(source_pattern, []).append(key)
+
+        converter = _copy.deepcopy(base_converter)
+        all_keys = [k for keys in keys_by_pattern.values() for k in keys]
+        read = index.read_tensors(all_keys, device=read_device)
+        for source_pattern in converter.source_patterns:
+            keys = keys_by_pattern.get(source_pattern)
+            if not keys:
+                continue
+            keys.sort(key=_dot_natural_key)
+            for key in keys:
+                converter.add_tensor(full_name, key, source_pattern, read[key])
+
+        config = _auto_config_for_dir(checkpoint_dir)
+        target_size = torch.Size(tuple(target_shape))
+        model_shim = SimpleNamespace(
+            config=config,
+            get_parameter=lambda _name, _s=target_size: SimpleNamespace(shape=_s),
+        )
+        result = converter.convert(full_name, model=model_shim, config=config)
+    except Exception as exc:
+        logger.debug("converter-driven materialization of %s failed: %s", full_name, exc)
+        return None
+
+    if not isinstance(result, dict):
+        return None
+    value = result.get(full_name)
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if value is None or tuple(value.shape) != tuple(target_shape):
+        return None
+    return value.contiguous(), read_device
+
+
 def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIndex, device: str) -> None:
     """Populate `module`'s (currently meta) parameters/buffers with real data read
     directly from the checkpoint, onto `device`. `module_name` is `module`'s dotted
@@ -706,6 +885,11 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
             assembled = _assemble_sharded_tensor(index, full_name, device)
             if assembled is not None:
                 value, dst_device = assembled
+                set_module_tensor_to_device(module, name, dst_device, value=value, dtype=value.dtype)
+                continue
+            converted = _convert_param_via_converters(index, full_name, tensor.shape, device)
+            if converted is not None:
+                value, dst_device = converted
                 set_module_tensor_to_device(module, name, dst_device, value=value, dtype=value.dtype)
                 continue
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
@@ -910,7 +1094,12 @@ def materialize_non_block_params(
             assembled = _assemble_sharded_tensor(index, full_name, device)
             if assembled is not None:
                 value, dst_device = assembled
-                set_module_tensor_to_device(model, name, dst_device, value=value, dtype=value.dtype)
+                _place_param(model, name, value, dst_device)
+                continue
+            converted = _convert_param_via_converters(index, full_name, tensor.shape, device)
+            if converted is not None:
+                value, dst_device = converted
+                _place_param(model, name, value, dst_device)
                 continue
             if _is_tied(name):
                 deferred_tied.append(name)

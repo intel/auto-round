@@ -2558,23 +2558,62 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
         os.remove(idx)
 
 
+def _pin_module_execution_on_cpu(module: torch.nn.Module) -> None:
+    """Attach an accelerate hook that keeps ``module``'s forward on CPU.
+
+    ``AlignDevicesHook(execution_device="cpu")`` temporarily aligns the module's
+    inputs to CPU before the forward and moves the output back to the caller's
+    device (``io_same_device=True``), so a huge, non-quantizable embedding can
+    stay resident on host RAM instead of being dragged onto an accelerator.
+    """
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+    add_hook_to_module(module, AlignDevicesHook(io_same_device=True, execution_device="cpu"))
+
+
+def module_is_pinned_on_cpu(module: torch.nn.Module) -> bool:
+    """Return True if ``module`` carries a CPU-execution accelerate hook.
+
+    Used by the multi-card block dispatch fallback to avoid moving modules that
+    were intentionally pinned on CPU (e.g. per-layer ngram embeddings) back onto
+    a GPU. Matches modules hooked by :func:`_pin_module_execution_on_cpu`.
+    """
+    hook = getattr(module, "_hf_hook", None)
+    if hook is None:
+        return False
+    hooks = getattr(hook, "hooks", (hook,))  # SequentialHook aggregates several
+    for h in hooks:
+        exec_device = getattr(h, "execution_device", None)
+        if exec_device is not None and str(exec_device) == "cpu":
+            return True
+    return False
+
+
 def hook_ngram_embeddings_on_cpu(model):
+    """Pin ngram embeddings on CPU so they are never moved onto an accelerator.
+
+    Handles two layouts:
+
+    * The top-level ``model.model.ngram_embeddings`` module (original behavior).
+    * Per-layer ngram embeddings nested anywhere in the tree, e.g.
+      ``model.language_model.layers.N.ple.ple_embedding.ngram_embedding`` used by
+      Qwen3-Next-Flash style checkpoints. These are single, very large lookup
+      tables (~tens of GiB) that do not participate in tuning, so keeping them on
+      CPU avoids GPU OOM during per-block dispatch.
+
+    Returns ``(has_top_level_ngram, raw_top_level_ngram_or_None)`` for backward
+    compatibility with the calibration dispatch restore logic.
+    """
+    # Per-layer / nested ngram embeddings (match any module attribute literally
+    # named ``ngram_embedding``, plus the pluralized top-level ``ngram_embeddings``).
+    for name, module in model.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in ("ngram_embedding", "ngram_embeddings"):
+            _pin_module_execution_on_cpu(module)
+
     has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
-    if has_ngram_embeddings:
-        raw_ngram_embeddings = model.model.ngram_embeddings
-
-        def hook_input_output_device_for_cpu_module(module):
-            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-            hook = AlignDevicesHook(
-                io_same_device=True,
-                execution_device="cpu",
-            )
-
-            add_hook_to_module(module, hook)
-
-        hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
-    return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None
+    raw_ngram_embeddings = model.model.ngram_embeddings if has_ngram_embeddings else None
+    return has_ngram_embeddings, raw_ngram_embeddings
 
 
 def is_model_free_route(

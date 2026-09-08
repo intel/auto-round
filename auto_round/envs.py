@@ -177,7 +177,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     #                that grows with the expert count; past a point that costs peak memory on
     #                GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
     #                calibration throughput, and doubled the GPU calibration peak).
-    #   0 or <0    - "fuse everything" (one group; no tiling).
+    #   0 or <0    - disable chunking/tiling: "fuse everything" in one group (e.g. set -1 to turn it off).
     # Results are identical for any value -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
     "AR_MOE_CHUNK": lambda: os.getenv("AR_MOE_CHUNK", "auto").lower(),
