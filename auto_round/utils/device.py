@@ -652,16 +652,19 @@ def _resolve_moe_chunk() -> int:
 def _preassign_moe_experts(
     layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
 ) -> dict:
-    """Place a MoE experts container's experts device-locally so the grouped path stays on.
+    """Place a MoE experts container's experts chunk-locally so the grouped path stays on.
 
-    The grouped experts forward requires every active expert of a layer to sit on one device
-    (else it falls back to the slow per-expert loop). This pre-pass keeps them together:
+    The grouped experts forward only needs the experts *of one fused chunk* to sit on the same
+    device (else that chunk falls back to the slow per-expert loop). This pre-pass keeps each
+    ``AR_MOE_CHUNK``-aligned group whole on one device while spreading the groups across cards,
+    so memory stays balanced across GPUs instead of piling a whole (potentially hundreds of
+    experts) container onto a single card -- the latter defeats the load balancer and OOMs that
+    card on large MoEs (e.g. GLM/Qwen), even though the block fits when experts are spread.
 
-      * Tier 1 -- put the whole experts container on one device when it fits.
-      * Tier 2 -- otherwise place ``AR_MOE_CHUNK``-aligned expert groups, each group whole on
-        one device, so at least each chunk's grouped GEMM stays single-device.
-      * Tier 3 -- experts that do not fit even one chunk are left unassigned here and fall
-        through to the general load balancer (current behavior; grouped will loop-fallback).
+      * Per chunk -- place each ``AR_MOE_CHUNK``-aligned expert group whole on the device with
+        the most free memory that fits it, so grouped GEMM stays single-device within a chunk.
+      * Overflow -- groups that do not fit on any device are left unassigned here and fall
+        through to the general load balancer (grouped will loop-fallback for those layers).
 
     Only placement is affected -- correctness is unchanged (the forward's device checks and
     AlignDevicesHook handle whatever layout results). ``device_memory`` is decremented in
@@ -700,24 +703,17 @@ def _preassign_moe_experts(
     chunk = _resolve_moe_chunk()
     for container, by_idx in containers.items():
         idxs = sorted(by_idx)
-        all_items = [item for i in idxs for item in by_idx[i]]
 
-        # Tier 1: whole container on a single device.
-        total = mem_of(all_items)
-        device = best_fit(total)
-        if device is not None:
-            place(all_items, device)
-            device_memory[device] -= total
-            continue
-
-        # Tier 2: chunk-aligned groups; Tier 3: unfitting groups fall through.
+        # Spread chunk-aligned groups across cards: each group stays whole on one device (so a
+        # chunk's grouped GEMM is single-device) but different groups balance across GPUs.
+        # ``chunk <= 0`` ("fuse everything") keeps the whole container as one group.
         step = len(idxs) if chunk <= 0 else chunk
         for start in range(0, len(idxs), step):
             group_items = [item for i in idxs[start : start + step] for item in by_idx[i]]
             group_mem = mem_of(group_items)
             group_device = best_fit(group_mem)
             if group_device is None:
-                continue  # Tier 3: leave for the general balancer
+                continue  # Overflow: leave for the general balancer
             place(group_items, group_device)
             device_memory[group_device] -= group_mem
 
@@ -731,8 +727,9 @@ def _allocate_layers_to_devices(
     Allocates layers to devices using a load-balancing strategy.
 
     Strategy:
-    0. MoE pre-pass: keep each experts container's experts device-local (whole container, or
-       chunk-aligned groups) so the grouped experts forward stays single-device per group.
+    0. MoE pre-pass: keep each ``AR_MOE_CHUNK``-aligned expert group whole on one device while
+       spreading the groups across cards, so a chunk's grouped GEMM stays single-device without
+       piling a whole experts container onto one card.
     1. Sort remaining layers by memory size (descending), preserve order for equal sizes
     2. Assign largest N layers to higher-index devices (N = num_devices)
     3. Remaining layers use memory availability + layer continuity scorings
