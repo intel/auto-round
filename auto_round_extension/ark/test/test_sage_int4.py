@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import auto_round_kernel
 
-
 pytestmark = pytest.mark.skipif(
     not (hasattr(torch, "xpu") and torch.xpu.is_available()),
     reason="XPU not available",
@@ -55,9 +54,9 @@ def test_sage_s4_matches_unpacked_int4_reference(head_dim, seq_len, batch, heads
         qscale = torch.linspace(0.0625, 0.125, batch * heads_q * blocks, dtype=torch.float32, device="xpu").reshape(
             batch, heads_q, blocks, 1
         )
-        kscale = torch.linspace(
-            0.09375, 0.15625, batch * heads_kv * blocks, dtype=torch.float32, device="xpu"
-        ).reshape(batch, heads_kv, blocks, 1)
+        kscale = torch.linspace(0.09375, 0.15625, batch * heads_kv * blocks, dtype=torch.float32, device="xpu").reshape(
+            batch, heads_kv, blocks, 1
+        )
     scale = 1.0 / math.sqrt(head_dim)
 
     output = auto_round_kernel.sage_s4(
