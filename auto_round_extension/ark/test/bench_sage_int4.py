@@ -90,9 +90,15 @@ def main() -> None:
     s4_ms = _benchmark(sage_s4, args.warmup, args.iterations)
     s8_ms = _benchmark(sage_s8, args.warmup, args.iterations)
 
+    # FLOPs: Q*K^T (2*B*H*S*S*D) + P*V (2*B*H*S*S*D) = 4*B*H*S^2*D
+    flops = 4.0 * batch * heads * seq * seq * head_dim
+    s4_tops = flops / (s4_ms * 1e-3) / 1e12
+    s8_tops = flops / (s8_ms * 1e-3) / 1e12
+
     print(
         f"shape=[{batch},{heads},{seq},{head_dim}] block_size={block_size} "
         f"s4_ms={s4_ms:.4f} s8_ms={s8_ms:.4f} "
+        f"s4_tops={s4_tops:.2f} s8_tops={s8_tops:.2f} "
         f"s4_vs_s8={(s4_ms / s8_ms - 1.0) * 100.0:+.2f}% "
         f"max_diff={max_diff:.6f} mean_diff={mean_diff:.6f}"
     )
