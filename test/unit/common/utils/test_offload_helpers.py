@@ -267,8 +267,7 @@ class TestResolveModelDir:
 # OffloadManager stale-dir sweep
 # ---------------------------------------------------------------------------
 class TestOffloadStaleDirSweep:
-    """Startup cleanup of leftover pid-tagged offload temp dirs.
-    """
+    """Startup cleanup of leftover pid-tagged offload temp dirs."""
 
     def _offload_base(self, tmp_path, monkeypatch) -> str:
         workspace = str(tmp_path).lower()  # envs.AR_WORK_SPACE is lowercased
