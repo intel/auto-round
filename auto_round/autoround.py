@@ -547,9 +547,9 @@ class _CompressorBuilder:
         nsamples: int | None = None,
         seqlen: int | None = None,
         **kwargs,
-    ) -> BaseCompressor:
-        from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+    ) -> "BaseCompressor":
         from auto_round.algorithms.quantization.rrq.config import RRQConfig
+        from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
         from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
