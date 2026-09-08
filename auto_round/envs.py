@@ -184,13 +184,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Where to place huge, non-quantizable per-layer ngram/PLE embeddings (e.g. Qwen4-Exp's
     # ~95 GiB table) during per-block tuning. They do not participate in tuning but must run to
     # produce correct block outputs.
-    #   "auto"  - (default) multi-GPU -> row-shard the table across the GPUs (fast on-device
-    #             lookup, avoids card-0 OOM); single-GPU -> keep it on that GPU; no GPU -> CPU.
-    #   "across"/"shard"/"gpu" - force row-sharding across all available GPUs.
-    #   "cpu"   - keep it pinned on CPU (slow host<->device round-trips per forward, but safe).
+    #   "auto"  - (default) keep the table pinned on CPU (memory-safe: no per-card OOM and no
+    #             extra device RAM churn). A one-time hint suggests the faster on-GPU options.
+    #   "across"/"shard"/"gpu" - row-shard the table across all available GPUs (fast on-device
+    #             lookup, avoids card-0 OOM). Experimental.
+    #   "cpu"   - keep it pinned on CPU (same as the default).
     #   "cuda:N"/"xpu:N"/"<index>" - put the whole table on that specific card.
-    # NOTE: multi-GPU sharding ("auto" on >1 GPU, or "across") is experimental and may have
-    # bugs; use "cpu" or a specific card if you hit issues.
+    # NOTE: multi-GPU sharding ("across") is experimental and may have bugs; prefer "cpu"
+    # (default) or a specific card if you hit issues.
     "AR_NGRAM_DEVICE": lambda: os.getenv("AR_NGRAM_DEVICE", "auto").strip().lower(),
     # vLLM fused kernels require q/k/v and gate/up projections to use one
     # weight global scale. Disable only for runtimes without that requirement.

@@ -2628,15 +2628,18 @@ def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> tor
     """
     if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
         return module
-    for _, param in module.named_parameters(recurse=False):
+    # Materialize the iterators before mutating: reassigning ``param.data`` can trigger
+    # changes to the module's internal ``_parameters``/``_buffers`` dicts (e.g. on HPU lazy
+    # mode), which would raise ``RuntimeError: dictionary keys changed during iteration``.
+    for _, param in list(module.named_parameters(recurse=False)):
         if param.device.type != "meta":
             param.data = param.data.to(device)
             if param.grad is not None:
                 param.grad.data = param.grad.data.to(device)
-    for _, buf in module.named_buffers(recurse=False):
+    for _, buf in list(module.named_buffers(recurse=False)):
         if buf.device.type != "meta":
             buf.data = buf.data.to(device)
-    for child in module.children():
+    for child in list(module.children()):
         move_to_device_preserving_cpu_pinned(child, device)
     return module
 
@@ -2680,15 +2683,18 @@ class _ShardedEmbedding(torch.nn.Module):
 
     def forward(self, input_ids: "torch.Tensor") -> "torch.Tensor":
         flat = input_ids.reshape(-1)
-        out = torch.empty(flat.shape[0], self.embedding_dim, dtype=self.weight_dtype, device=flat.device)
+        # Compile-friendly gather: no data-dependent control flow. Avoid ``mask.any()`` (a scalar
+        # sync -> dynamo graph break) and boolean-mask indexing (``flat[mask]`` -> data-dependent
+        # shapes -> recompiles). Instead, for every shard clamp ids into its local range, gather,
+        # and select the owning shard's rows with ``torch.where``. Each id lives in exactly one
+        # shard, so exactly one iteration writes it; the rest keep the running ``out``.
+        out = torch.zeros(flat.shape[0], self.embedding_dim, dtype=self.weight_dtype, device=flat.device)
         for i, (lo, hi) in enumerate(self._bounds):
             shard = getattr(self, f"shard_{i}")
             mask = (flat >= lo) & (flat < hi)
-            if not bool(mask.any()):
-                continue
-            local = (flat[mask] - lo).to(shard.device)
-            gathered = torch.nn.functional.embedding(local, shard)
-            out[mask] = gathered.to(out.device)
+            local = torch.clamp(flat - lo, 0, hi - lo - 1).to(shard.device)
+            gathered = torch.nn.functional.embedding(local, shard).to(out.device)
+            out = torch.where(mask.unsqueeze(-1), gathered, out)
         return out.reshape(*input_ids.shape, self.embedding_dim)
 
 
@@ -2785,10 +2791,10 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
 
     ``AR_NGRAM_DEVICE`` values:
 
-    * ``auto`` (default): multi-GPU -> row-shard across the GPUs (fast on-device lookup, no
-      card-0 OOM); single-GPU -> keep the table on that GPU; no GPU -> pin on CPU.
+    * ``auto`` (default): keep the table pinned on CPU (memory-safe; the table does not
+      participate in tuning). A one-time hint points users at the faster on-GPU options.
     * ``across`` / ``shard`` / ``gpu``: force row-sharding across all available GPUs.
-    * ``cpu``: pin on CPU (slow but always safe).
+    * ``cpu``: pin on CPU (same as the default).
     * a device (``cuda:1``, ``xpu:0``, or a bare index like ``1``): put the whole table on
       that specific card.
 
@@ -2817,14 +2823,24 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
     if setting in ("across", "shard", "gpu"):
         mode = "across"
     elif setting in ("auto", ""):
-        mode = "across" if len(devices) >= 2 else "single"
-        single_target = devices[0] if len(devices) == 1 else "cpu"
+        # Default: keep the (huge, non-tunable) ngram table on CPU. It does not participate in
+        # tuning, so host residency is correct and memory-safe (no per-card OOM, no extra device
+        # RAM churn); the only cost is host<->device copies per forward. Point users at the
+        # faster on-GPU options once, so they can opt in when they have the headroom.
+        mode = "single"
+        single_target = "cpu"
+        logger.info_once(
+            "Keeping ngram embeddings on CPU (default, memory-safe). This adds host<->device "
+            "copies each block forward. For faster lookup set AR_NGRAM_DEVICE=<cuda:N|xpu:N> to "
+            "place the whole table on one card, or AR_NGRAM_DEVICE=across to row-shard it across "
+            "all GPUs."
+        )
     elif single_target is not None:
         mode = "single"
     else:
-        logger.warning(f"Unrecognized AR_NGRAM_DEVICE={setting!r}; falling back to 'auto'.")
-        mode = "across" if len(devices) >= 2 else "single"
-        single_target = devices[0] if len(devices) == 1 else "cpu"
+        logger.warning(f"Unrecognized AR_NGRAM_DEVICE={setting!r}; falling back to CPU (safe default).")
+        mode = "single"
+        single_target = "cpu"
 
     handled: list = []
     if mode == "across":
