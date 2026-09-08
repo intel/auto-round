@@ -229,6 +229,68 @@ inline void act_quant_write_scale(float* ascale, int token, float scale, int* ex
   expert_id_per_token[token] = expert;
 }
 
+// ---------------------------------------------------------------------------
+// Work-group shape: how many token rows share one work-group.
+//
+// Every kernel below maps one sub-group to one token, so the obvious launch is
+// `global{T, SG_SIZE} local{1, SG_SIZE}` -- and that is what shipped: one
+// sub-group, i.e. **one hardware thread, per work-group**. 65536 routed rows
+// are then 65536 single-thread work-groups.
+//
+// That is the one dimension of this kernel nobody has swept. `ACT_QUANT_VEC`
+// (bytes per lane), `ACT_QUANT_UNROLL` (loads in flight) and
+// `ACT_QUANT_SINGLE_PASS` (row resident in registers) all tune *what one thread
+// does*; none of them changes *how many threads are resident*. Intel's thread
+// dispatcher caps the work-groups resident on an Xe-core well below the number
+// of thread slots that Xe-core has, so at one thread per work-group the
+// work-group limit binds first and the slots go unfilled. Every other kernel in
+// this file runs 256 work-items per work-group; the quantizer is the outlier.
+//
+// Widening to `local{R, SG_SIZE}` carries no synchronization risk: there is no
+// barrier and no SLM here, and SYCL linearizes work-items with the last
+// dimension fastest, so local id `(r, lane)` is linear id `r * SG_SIZE + lane`.
+// With `reqd_sub_group_size(SG_SIZE)` each sub-group therefore still covers
+// exactly one token's SG_SIZE lanes, `reduce_over_group(sg, ...)` keeps its
+// meaning, and the `token >= total_tokens` guard is sub-group-uniform (all
+// SG_SIZE lanes of a sub-group share one `token`), which is what a sub-group
+// collective requires. The output is bit-identical, and
+// `test_act_quant_rows_per_wg_matches` asserts exactly that with `torch.equal`.
+//
+// R is a *runtime* value -- it reaches `nd_range` and nothing else, never the
+// kernel body -- so the rungs cost no extra kernel instantiations in a
+// translation unit that already builds 11.
+//
+// Default 1, today's shape, until `test_perf_act_quant_wg_sweep` rules on real
+// hardware; the per-policy GRF budget is the standing reminder of what shipping
+// an unmeasured default costs. Expect little at long prefill: at 65536 rows the
+// pass already streams ~493 GB/s, above this machine's own device-copy probe,
+// so it is sitting on the roof and there is nothing there to win. The room is
+// in the short batch -- 8192 rows read only ~370 GB/s, and 8x the rows cost
+// 6.0x the time, so it is short prompts (and decode) that are under-fed.
+inline constexpr int kActQuantRowsPerWgDefault = 1;
+
+inline int moe_w4a8_act_quant_rows_per_wg() {
+  const char* env = std::getenv("ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG");
+  if (env != nullptr) {
+    char* end = nullptr;
+    const long long v = std::strtoll(env, &end, 10);
+    // Powers of two through 16. 16 rows is 256 work-items -- the work-group
+    // size the GEMMs in this file already launch -- so no device query is
+    // needed to know the largest rung fits.
+    if (end != env && (v == 1 || v == 2 || v == 4 || v == 8 || v == 16)) return static_cast<int>(v);
+  }
+  return kActQuantRowsPerWgDefault;
+}
+
+// Row count rounded up to whole work-groups; the padding rows exit on the
+// guard at the top of each kernel.
+inline sycl::nd_range<2> act_quant_nd_range(int total_tokens, int rows_per_wg) {
+  const size_t rows = static_cast<size_t>(rows_per_wg);
+  const size_t padded = ((static_cast<size_t>(total_tokens) + rows - 1) / rows) * rows;
+  return sycl::nd_range<2>(sycl::range<2>{padded, static_cast<size_t>(SG_SIZE)},
+                           sycl::range<2>{rows, static_cast<size_t>(SG_SIZE)});
+}
+
 template <typename ScalarT, int VEC, int UNROLL>
 void launch_act_dynamic_quant_vec(sycl::queue* q, const ScalarT* activations, int8_t* qact, float* ascale,
                                   int total_tokens, int K, int* expert_id_per_token,
@@ -245,12 +307,11 @@ void launch_act_dynamic_quant_vec(sycl::queue* q, const ScalarT* activations, in
   const int steps = K / (SG_SIZE * VEC);
   const int main_steps = steps - (steps % UNROLL);
 
-  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
-  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
-
   q->parallel_for<MoEW4A8ActQuantVec<ScalarT, VEC, UNROLL>>(
-      sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+      act_quant_nd_range(total_tokens, moe_w4a8_act_quant_rows_per_wg()),
+      [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
         const int token = static_cast<int>(it.get_global_id(0));
+        if (token >= total_tokens) return;
         const int lane = static_cast<int>(it.get_local_id(1));
         const ActVec* row = reinterpret_cast<const ActVec*>(activations + static_cast<size_t>(token) * K);
         QVec* out = reinterpret_cast<QVec*>(qact + static_cast<size_t>(token) * K);
@@ -364,12 +425,11 @@ void launch_act_dynamic_quant_vec_single(sycl::queue* q, const ScalarT* activati
 
   const int steps = K / (SG_SIZE * VEC);
 
-  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
-  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
-
   q->parallel_for<MoEW4A8ActQuantSingle<ScalarT, VEC, MAX_STEPS>>(
-      sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+      act_quant_nd_range(total_tokens, moe_w4a8_act_quant_rows_per_wg()),
+      [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
         const int token = static_cast<int>(it.get_global_id(0));
+        if (token >= total_tokens) return;
         const int lane = static_cast<int>(it.get_local_id(1));
         const ActVec* row = reinterpret_cast<const ActVec*>(activations + static_cast<size_t>(token) * K);
         QVec* out = reinterpret_cast<QVec*>(qact + static_cast<size_t>(token) * K);
@@ -523,12 +583,11 @@ void launch_act_dynamic_quant(sycl::queue* q, const ScalarT* activations, int8_t
     }
   }
 
-  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(SG_SIZE)};
-  sycl::range<2> local{1, static_cast<size_t>(SG_SIZE)};
-
   q->parallel_for<MoEW4A8ActQuant<ScalarT>>(
-      sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
+      act_quant_nd_range(total_tokens, moe_w4a8_act_quant_rows_per_wg()),
+      [=](sycl::nd_item<2> it) [[intel::reqd_sub_group_size(SG_SIZE)]] {
         const int token = static_cast<int>(it.get_global_id(0));
+        if (token >= total_tokens) return;
         const int lane = static_cast<int>(it.get_local_id(1));
         const ScalarT* row = activations + static_cast<size_t>(token) * K;
         int8_t* out = qact + static_cast<size_t>(token) * K;

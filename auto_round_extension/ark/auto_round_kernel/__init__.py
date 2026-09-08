@@ -3808,6 +3808,58 @@ def moe_gemm_w4a8(
     return outputs
 
 
+def moe_w4a8_quant_act(activations: torch.Tensor) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Quantize activations per token the way :func:`moe_gemm_w4a8` does.
+
+    This is the call's own quantization pass, on its own. Two uses:
+
+    * **Pre-quantization.** The returned pair is exactly what
+      ``moe_gemm_w4a8(..., activation_scale=...)`` accepts, so a caller that
+      routes the same rows through several experts, or that can produce int8
+      upstream, can pay for the pass once instead of once per call.
+    * **Measurement.** The pass had no standalone entry point, so its cost
+      could only be priced by differencing a 16-bit-input call against a
+      pre-quantized one -- two GEMM timings subtracted, with the noise of both
+      landing on a number a fraction of their size.
+
+    Args:
+        activations: ``[T, K]`` fp16 or bf16 on XPU, ``K % 64 == 0``.
+
+    Returns:
+        ``(qact, ascale)``: ``[T, K]`` ``torch.int8`` and ``[T]``
+        ``torch.float32`` row scales, ``absmax / 127`` (a row that is entirely
+        zero gets scale 0 and quantizes to zeros).
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_w4a8_quant_act is only supported on XPU")
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"moe_w4a8_quant_act: activations must be fp16/bf16, got {activations.dtype}")
+    if activations.ndim != 2:
+        raise ValueError("moe_w4a8_quant_act: activations must be 2D [T, K]")
+
+    total_tokens, K = activations.shape
+    if K % 64 != 0:
+        raise ValueError(f"moe_w4a8_quant_act: K must be a multiple of 64 (got {K})")
+
+    activations = activations.contiguous()
+    qact = torch.empty((total_tokens, K), device=activations.device, dtype=torch.int8)
+    ascale = torch.empty((total_tokens,), device=activations.device, dtype=torch.float32)
+    if total_tokens == 0:
+        return qact, ascale
+
+    lib = get_lib(activations)
+    lib.moe_w4a8_quant_act(
+        get_stream(activations),
+        activations.data_ptr(),
+        qact.data_ptr(),
+        ascale.data_ptr(),
+        cvt_dtype(activations.dtype),
+        total_tokens,
+        K,
+    )
+    return qact, ascale
+
+
 def moe_w4a8(
     activations: torch.Tensor,
     weights: torch.Tensor,

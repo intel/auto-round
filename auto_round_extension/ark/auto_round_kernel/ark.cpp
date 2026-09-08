@@ -581,6 +581,15 @@ static void moe_gemm_w4a8_wrapper(torch_ptr stream, torch_ptr activations, torch
                      (const float*)routing_weights, (float*)fused_out, fused_batch);
 }
 
+// Standalone per-token activation quantization -- the pass `moe_gemm_w4a8`
+// runs internally, exposed so it can be timed on its own and so a caller can
+// pre-quantize once and hand the result back as `qact`/`ascale`.
+static void moe_w4a8_quant_act_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr qact, torch_ptr ascale,
+                                       int act_dtype, int total_tokens, int K) {
+  ark::moe_w4a8_quant_act((sycl::queue*)stream, (const void*)activations, (void*)qact, (void*)ascale,
+                          (BTLA_DTYPE)(act_dtype), total_tokens, K);
+}
+
 static void sage_dynamic_quant(torch_ptr stream, torch_ptr input, torch_ptr bias, torch_ptr output, torch_ptr scale_out,
                                int num_rows, int head_dim, int block_size) {
   auto* q = (sycl::queue*)stream;
@@ -1422,6 +1431,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
   m.def("moe_w4a8_prepack", &ark::moe_w4a8_prepack_wrapper);
   m.def("moe_gemm_w4a8", &ark::moe_gemm_w4a8_wrapper);
+  m.def("moe_w4a8_quant_act", &ark::moe_w4a8_quant_act_wrapper);
   m.def("moe_w4a8_rescale_block_size", &ark::moe_w4a8_rescale_block_size);
   m.def("moe_w4a8_release_scratch", &ark::moe_w4a8_release_scratch);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);

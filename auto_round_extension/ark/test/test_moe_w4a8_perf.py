@@ -142,6 +142,26 @@ def _w4a8_skip_reason() -> str:
 
 _W4A8_SKIP = _w4a8_skip_reason()
 
+
+def _quant_act_skip_reason() -> str:
+    """Skip reason for the tests that need the standalone quantization entry point.
+
+    Kept apart from :data:`_W4A8_SKIP` so an extension built before
+    ``moe_w4a8_quant_act`` existed still runs the rest of the suite instead of
+    skipping all of it.
+    """
+    if _W4A8_SKIP:
+        return _W4A8_SKIP
+    if not hasattr(ark.xpu_lib, "moe_w4a8_quant_act"):
+        return (
+            "ark.xpu_lib has no moe_w4a8_quant_act symbol -- rebuild the extension "
+            "to measure the activation quantization pass on its own"
+        )
+    return ""
+
+
+_QUANT_ACT_SKIP = _quant_act_skip_reason()
+
 print(
     "[moe-w4a8-perf] xpu_available=%s  xpu_lib=%s  has_moe_gemm_w4a8=%s"
     % (
@@ -1489,13 +1509,15 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
     * ``dedup, fused quant`` -- the deduplication with a quantizer of the same
       quality as the one already in the kernel.
 
-    The fused quantizer has no standalone Python entry point, so its cost is
-    measured rather than assumed: the same GEMM is timed with 16-bit input and
-    with int8 input, on the same shape and the same weights, and the difference
-    is the in-kernel quantization of exactly those rows. Doing that at both
-    ``T`` and ``batch`` rows also cross-checks that the cost is linear in rows
-    (it should divide by ``top_k``), which is reported as ``fused quant
-    T/batch`` so a bad measurement cannot pass silently.
+    The fused quantizer's cost is measured rather than assumed: the same GEMM
+    is timed with 16-bit input and with int8 input, on the same shape and the
+    same weights, and the difference is the in-kernel quantization of exactly
+    those rows. Doing that at both ``T`` and ``batch`` rows also cross-checks
+    that the cost is linear in rows (it should divide by ``top_k``), which is
+    reported as ``fused quant T/batch`` so a bad measurement cannot pass
+    silently. :func:`run_act_quant` now times the same pass through
+    ``moe_w4a8_quant_act`` without differencing anything, and prints the two
+    side by side.
 
     Up/gate only. The down projection's ``T`` rows are the SiLU output, one
     distinct row per routed row, so there is nothing to deduplicate; its route
@@ -1607,10 +1629,10 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
             )
         t = {k: min(v) for k, v in stages.items()}
 
-        # The fused quantizer has no standalone entry point, so difference the
-        # same GEMM with 16-bit and int8 input: identical shape, identical
-        # weights, identical output -- the only work that differs is the
-        # in-kernel quantization of exactly those rows.
+        # Difference the same GEMM with 16-bit and int8 input: identical shape,
+        # identical weights, identical output -- the only work that differs is
+        # the in-kernel quantization of exactly those rows. This is the older,
+        # softer estimate; `run_act_quant` times the pass itself.
         quant_fused_t = max(t["gemm_bf16_t"] - t["gemm_int8_t"], 0.0)
         quant_fused_b = max(t["gemm_bf16_b"] - t["gemm_int8_b"], 0.0)
         # Should be ~top_k: the quantizer is a pure streaming pass, so its cost
@@ -1693,6 +1715,214 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
                 f"{row['tokens']} rows / {row['quant_fused_batch_ms']:.3f} ms at {row['batch']} rows = "
                 f"{(f'{ratio:.1f}x' if ratio else 'n/a')} for {row['topk']}x the rows"
                 f"{'' if ratio and 0.5 * row['topk'] <= ratio <= 2.0 * row['topk'] else '  <- NOT linear, treat as noise'}"
+            )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# The activation quantization pass, measured on its own
+#
+# Until `moe_w4a8_quant_act` existed the pass had no standalone entry point, so
+# its cost was only ever *inferred*: time the same GEMM with 16-bit input and
+# with int8 input and subtract. That is two whole-call timings differenced into
+# a number a quarter their size, carrying the run-to-run noise of both -- and
+# every claim about the quantizer rests on it (its share of the call, the
+# bandwidth it achieves, the ceiling a faster one could reach). This sweep
+# measures the pass directly and prints the differenced estimate next to it, so
+# the soft number can finally be checked against a hard one.
+# ---------------------------------------------------------------------------
+
+# Token rows per work-group. 1 is the shape that shipped -- `local{1, SG_SIZE}`,
+# one sub-group and therefore one *hardware thread* per work-group, which is
+# the worst dispatch shape on an Intel GPU: the thread dispatcher's per-Xe-core
+# work-group limit binds long before its thread slots fill. 16 rows is 256
+# work-items, the work-group size every GEMM in the same header already uses.
+_ACT_QUANT_WG_ROWS = (1, 2, 4, 8, 16)
+
+# A row count deliberately *not* a multiple of the largest rung, so the
+# quantizer's `token >= total_tokens` guard is live in the identity test
+# instead of being dead code. Every shipped routing gives a round number of
+# rows, so nothing else in this file would ever reach the padding path.
+_ACT_QUANT_RAGGED_TOKENS = _PREFILL_BATCHES[0] * _QWEN3_TOPK + 5
+
+
+def _quant_act_caller(activations):
+    """A zero-allocation callable that runs one activation-quantization pass.
+
+    Goes through the extension entry point rather than
+    :func:`ark.moe_w4a8_quant_act` on purpose: the Python wrapper allocates its
+    two output tensors per call, and this measurement exists to put a hard
+    number on the *kernel*, not on the caching allocator. Hoisting the
+    allocation is the only difference; the arguments are the ones the wrapper
+    would have passed.
+
+    Returns ``(call, qact, ascale)`` -- the outputs are handed back so the
+    caller can compare them across configurations.
+    """
+    total_tokens, K = activations.shape
+    qact = torch.empty((total_tokens, K), device=activations.device, dtype=torch.int8)
+    ascale = torch.empty((total_tokens,), device=activations.device, dtype=torch.float32)
+    args = (
+        ark.get_stream(activations),
+        activations.data_ptr(),
+        qact.data_ptr(),
+        ascale.data_ptr(),
+        ark.cvt_dtype(activations.dtype),
+        total_tokens,
+        K,
+    )
+    lib = ark.get_lib(activations)
+    return (lambda: lib.moe_w4a8_quant_act(*args)), qact, ascale
+
+
+def _act_quant_bytes(total_tokens, K, act_bytes) -> float:
+    """Bytes the quantization pass has to move, at best.
+
+    Read ``[T, K]`` activations, write ``[T, K]`` int8, write ``[T]`` fp32
+    scales. The second pass re-reads a row the first pass just touched and is
+    served by cache, so it is not counted -- which makes this a *lower* bound
+    on traffic and therefore an *upper* bound on the achieved bandwidth.
+    """
+    return float(total_tokens) * K * act_bytes + float(total_tokens) * K + float(total_tokens) * 4.0
+
+
+def run_act_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=True, wg_rows=None):
+    """Time the activation quantization pass alone, one row per work-group shape.
+
+    Three things come out of this that the whole-call sweeps cannot give:
+
+    * **The pass's real cost.** Directly measured, not differenced.
+    * **The bandwidth it achieves**, against the harness's own device-copy
+      probe. At 65536 rows and K = 2048 the pass moves 402.9 MB; if that lands
+      near the probe there is no room in the kernel and the only way to make
+      the pass cheaper is to give it fewer bytes (deduplicate the rows, or take
+      int8 from the caller), both of which are call-contract changes.
+    * **Whether the work-group shape matters.** ``ACT_QUANT_VEC`` (bytes per
+      lane), ``ACT_QUANT_UNROLL`` (loads in flight) and ``ACT_QUANT_SINGLE_PASS``
+      (row resident in registers) all tune what one thread does; none of them
+      changes how many threads are resident, and one thread per work-group is
+      the one shape nobody has swept.
+
+    Every row is required to be bit-identical to the first: the shape only
+    changes which thread handles which row, so a difference would be a bug, not
+    a trade-off.
+    """
+    batches = _PREFILL_BATCHES if batches is None else batches
+    rungs = _ACT_QUANT_WG_ROWS if wg_rows is None else tuple(wg_rows)
+    resolved = _models(models)
+    probe_gbps = _device_bandwidth_gbps()
+    if verbose:
+        print()
+        print("=" * _PERF_WIDTH)
+        print(
+            f"W4A8 activation quantization [prefill] (models={'+'.join(n for n, _ in resolved)}, "
+            f"act={str(dtype).split('.')[-1]}) -- the pass timed on its own, one row per work-group shape"
+        )
+        print(
+            f"{'shape':<14}{'E':>5}{'N':>7}{'K':>7}{'tokens':>8}{'rows/WG':>9}{'items/WG':>10}"
+            f"{'quant(ms)':>11}{'GB/s':>9}{'% of probe':>12}{'% of call':>11}{'vs 1 row':>10}{'bits':>10}"
+        )
+        print("-" * _PERF_WIDTH)
+    rows = []
+    shapes = [
+        (nk_label, N, K, spec, batch) for _, spec in resolved for nk_label, N, K in spec["nk"] for batch in batches
+    ]
+    for nk_label, N, K, spec, batch in shapes:
+        E, topk, group_size = spec["E"], spec["topk"], spec["group_size"]
+        total_tokens = batch * topk
+        case = _build_case(
+            N, K, E, total_tokens, group_size, dtype, need_reference=False, need_dequant=False, topk=topk
+        )
+        weights_s8, wscales, block = ark.moe_w4a8_prepack(
+            case["packed"], case["scales"], group_size=group_size, rescale_group_size=-1
+        )
+
+        # The call this pass is a part of, and the same call with the pass
+        # removed -- the pair the old estimate came from.
+        call_ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, "prefill"))
+        prequant_ms = _xpu_time_ms(lambda: _w4a8(case, weights_s8, wscales, block, "prefill", prequant=True))
+        differenced_ms = max(call_ms - prequant_ms, 0.0)
+
+        quant_bytes = _act_quant_bytes(total_tokens, K, _dtype_bytes(dtype))
+        call, qact, ascale = _quant_act_caller(case["activations"])
+        reference = None
+        first_row = len(rows)
+        for wg in rungs:
+            with _env_override(ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG=str(wg)):
+                quant_ms = _xpu_time_ms(call)
+                call()  # leave `qact`/`ascale` holding this configuration's output
+                torch.xpu.synchronize()
+            if reference is None:
+                reference = (qact.clone(), ascale.clone())
+                identical = True
+            else:
+                identical = torch.equal(qact, reference[0]) and torch.equal(ascale, reference[1])
+            gbps = quant_bytes / (quant_ms * 1e-3) / 1e9 if quant_ms > 0 else 0.0
+            rows.append(
+                {
+                    "label": nk_label,
+                    "E": E,
+                    "N": N,
+                    "K": K,
+                    "tokens": total_tokens,
+                    "batch": batch,
+                    "rows_per_wg": wg,
+                    "quant_ms": quant_ms,
+                    "quant_bytes": quant_bytes,
+                    "gbps": gbps,
+                    "device_bw_gbps": probe_gbps,
+                    "call_ms": call_ms,
+                    "prequant_ms": prequant_ms,
+                    "differenced_ms": differenced_ms,
+                    "share_of_call": (quant_ms / call_ms) if call_ms > 0 else None,
+                    "identical": identical,
+                }
+            )
+        # `vs 1 row` is relative to this shape's first rung, so it can only be
+        # filled in once that rung has been timed.
+        shape_rows = rows[first_row:]
+        baseline_ms = shape_rows[0]["quant_ms"]
+        for row in shape_rows:
+            row["vs_first"] = (baseline_ms / row["quant_ms"]) if row["quant_ms"] > 0 else None
+            if verbose:
+                share = row["share_of_call"]
+                probe_pct = (100.0 * row["gbps"] / probe_gbps) if probe_gbps else None
+                probe_txt = f"{probe_pct:.0f}%" if probe_pct else "--"
+                share_txt = f"{100.0 * share:.1f}%" if share else "--"
+                vs_txt = f"{row['vs_first']:.2f}x" if row["vs_first"] else "--"
+                bits_txt = "same" if row["identical"] else "DIFFER"
+                print(
+                    f"{row['label']:<14}{E:>5}{N:>7}{K:>7}{total_tokens:>8}{row['rows_per_wg']:>9}"
+                    f"{row['rows_per_wg'] * 16:>10}{row['quant_ms']:>11.3f}{row['gbps']:>9.0f}"
+                    f"{probe_txt:>12}{share_txt:>11}{vs_txt:>10}{bits_txt:>10}"
+                )
+
+        call = qact = ascale = reference = None
+        case = weights_s8 = wscales = None
+        ark.clear_moe_w4a8_prepack_cache()
+        ark.moe_w4a8_release_scratch()
+        _release_xpu_memory()
+
+    if verbose and rows:
+        print()
+        print("the pass, measured against the estimate every earlier conclusion used:")
+        for row in rows:
+            # One line per shape: the first rung is the shipped launch shape.
+            if row["rows_per_wg"] != rungs[0]:
+                continue
+            direct, differenced = row["quant_ms"], row["differenced_ms"]
+            gap = (abs(direct - differenced) / direct * 100.0) if direct > 0 else None
+            share = row["share_of_call"]
+            share_txt = f", {100.0 * share:.1f}% of the {row['call_ms']:.3f} ms call" if share else ""
+            gap_txt = f" -- {gap:.0f}% apart" if gap is not None else ""
+            verdict = "  <- the estimate was off" if gap is not None and gap > 25.0 else ""
+            print(
+                f"  {row['label'].strip():<12} {row['tokens']:>6} rows: measured {direct:.3f} ms "
+                f"({row['quant_bytes'] / 1e6:.1f} MB at {row['gbps']:.0f} GB/s{share_txt})"
+            )
+            print(
+                f"  {'':<12} {'':>6}       differencing the same call against int8-in says "
+                f"{differenced:.3f} ms{gap_txt}{verdict}"
             )
     return rows
 
@@ -2454,6 +2684,65 @@ if pytest is not None:
                     f"SNR {row['snr_db']:.2f} dB"
                 )
 
+        @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
+        def test_perf_act_quant_wg_sweep(self, request):
+            """Measure the quantization pass directly, and sweep its work-group shape.
+
+            Two things at once, because they need the same setup.
+
+            **The measurement.** Every earlier conclusion about this pass came
+            from differencing a 16-bit-input call against a pre-quantized one:
+            two whole-call timings subtracted into a number a quarter their
+            size. ``moe_w4a8_quant_act`` makes the pass callable on its own, so
+            the table prints the measured cost, the bandwidth it implies
+            against the harness's own copy probe, and the differenced estimate
+            beside it. If the two disagree, the estimate was the problem.
+
+            **The sweep.** The pass ships as ``local{1, SG_SIZE}`` -- one
+            sub-group, i.e. one hardware thread, per work-group. That is the
+            worst dispatch shape on an Intel GPU: the thread dispatcher caps
+            resident work-groups per Xe-core well below the thread slots that
+            Xe-core has, so the work-group limit binds first and the slots go
+            unfilled. Every other kernel in the same header launches 256
+            work-items. ``VEC``, ``UNROLL`` and ``SINGLE_PASS`` all tune what
+            one thread does; this is the only knob that changes how many
+            threads are resident.
+
+            Expect little at long prefill -- the pass already streams close to
+            the probe there, and a kernel on the roof has nothing to give. The
+            room, if any, is at the short batch, which reads well under it.
+
+            The shape only decides which thread handles which row, so every
+            rung must be bit-identical, not merely close.
+            """
+            rows = run_act_quant(models=_models_option(request))
+            assert rows and all(r["quant_ms"] > 0 for r in rows)
+            for row in rows:
+                assert row["identical"], (
+                    f"{row['label'].strip()}: {row['rows_per_wg']} rows/work-group changed the quantized "
+                    f"activations -- the work-group shape must only move work between threads"
+                )
+
+        @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
+        def test_perf_act_quant_wg_sweep_long_seq(self, request):
+            """Sweep the quantizer's work-group shape at the 8K-prompt routing.
+
+            The point where the pass is most expensive in absolute terms and
+            least likely to be helped: at 65536 routed rows it is already
+            streaming enough to sit against the device copy probe, so its cost
+            is the byte count, not the dispatch. That makes this the row that
+            decides whether the whole line of attack is dead -- and it is the
+            batch whose 28% quantization share every ceiling calculation for
+            the up projection was built on.
+            """
+            rows = run_act_quant(batches=_long_seq_batches(), models=_models_option(request))
+            assert rows and all(r["quant_ms"] > 0 for r in rows)
+            for row in rows:
+                assert row["identical"], (
+                    f"{row['label'].strip()}: {row['rows_per_wg']} rows/work-group changed the quantized "
+                    f"activations at the long-sequence routing"
+                )
+
         def test_perf_prefill_store_sweep(self, request):
             """Time the D store width at the compute-bound batch.
 
@@ -3109,6 +3398,109 @@ if pytest is not None:
                 ark.moe_w4a8_release_scratch()
                 _release_xpu_memory()
 
+        @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
+        def test_act_quant_rows_per_wg_matches(self):
+            """Packing more token rows into a work-group must change nothing.
+
+            ``ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG`` only widens the launch:
+            ``local{R, SG_SIZE}`` instead of ``local{1, SG_SIZE}``. SYCL
+            linearizes work-items with the last dimension fastest, so local id
+            ``(r, lane)`` is linear id ``r * SG_SIZE + lane`` and, under
+            ``reqd_sub_group_size(SG_SIZE)``, each sub-group still covers
+            exactly one token's lanes. The reduction is the same sub-group
+            reduce over the same values, and there is no barrier or SLM for a
+            wider group to interact through -- so the outputs must be equal bit
+            for bit.
+
+            The row count is deliberately *not* a multiple of the largest rung:
+            the launch rounds the global range up to whole work-groups, so the
+            trailing rows exercise the ``token >= total_tokens`` guard. Without
+            it those threads would read and write past the end of the buffers.
+            """
+            for nk_label, N, K in _QWEN3_NK:
+                case = _build_case(
+                    N,
+                    K,
+                    _QWEN3_E,
+                    _ACT_QUANT_RAGGED_TOKENS,
+                    _QWEN3_GROUP_SIZE,
+                    torch.bfloat16,
+                    need_reference=False,
+                    need_dequant=False,
+                )
+                total_tokens = case["total_tokens"]
+                assert total_tokens % max(_ACT_QUANT_WG_ROWS) != 0, (
+                    f"{nk_label.strip()}: {total_tokens} rows divides by {max(_ACT_QUANT_WG_ROWS)}, so the "
+                    f"padding guard is never exercised -- pick a row count that does not"
+                )
+                outs = {}
+                for wg in _ACT_QUANT_WG_ROWS:
+                    with _env_override(ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG=str(wg)):
+                        qact, ascale = ark.moe_w4a8_quant_act(case["activations"])
+                    outs[wg] = (qact, ascale)
+                base_q, base_s = outs[_ACT_QUANT_WG_ROWS[0]]
+                for wg in _ACT_QUANT_WG_ROWS[1:]:
+                    q, s = outs[wg]
+                    assert torch.equal(base_q, q), (
+                        f"{nk_label.strip()} (K={K}): {wg} rows/work-group quantizes differently from 1: "
+                        f"max |diff| {(base_q.float() - q.float()).abs().max().item():.6g}"
+                    )
+                    assert torch.equal(base_s, s), (
+                        f"{nk_label.strip()} (K={K}): {wg} rows/work-group writes different row scales than 1: "
+                        f"max |diff| {(base_s - s).abs().max().item():.6g}"
+                    )
+                case = outs = base_q = base_s = q = s = qact = ascale = None
+                _release_xpu_memory()
+
+        @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
+        def test_quant_act_matches_in_call_quant(self):
+            """The standalone quantizer must be the pass the call runs internally.
+
+            Timing ``moe_w4a8_quant_act`` only says something about
+            ``moe_gemm_w4a8`` if it is the same work. It is the same launcher
+            behind the same parameter struct, and this pins that down from the
+            outside: feed its output back as the pre-quantized contract and the
+            GEMM has to produce bit-identical results to letting the call
+            quantize for itself. Any difference -- a different rounding, a
+            different scale convention, a missed row -- moves at least one
+            output element.
+            """
+            for nk_label, N, K in _QWEN3_NK:
+                case = _build_case(
+                    N,
+                    K,
+                    _QWEN3_E,
+                    _PREFILL_BATCHES[0] * _QWEN3_TOPK,
+                    _QWEN3_GROUP_SIZE,
+                    torch.bfloat16,
+                    need_reference=False,
+                    need_dequant=False,
+                )
+                weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                    case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+                )
+                in_call = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+                qact, ascale = ark.moe_w4a8_quant_act(case["activations"])
+                standalone = ark.moe_gemm_w4a8(
+                    qact,
+                    weights_s8,
+                    wscales,
+                    case["ntpe"],
+                    rescale_block_size=block,
+                    phase="prefill",
+                    activation_scale=ascale,
+                    out_dtype=case["dtype"],
+                )
+                assert torch.equal(in_call, standalone), (
+                    f"{nk_label.strip()} (K={K}): pre-quantizing with moe_w4a8_quant_act disagrees with the "
+                    f"call's own quantization: max |diff| "
+                    f"{(in_call.float() - standalone.float()).abs().max().item():.6g}"
+                )
+                case = weights_s8 = wscales = in_call = standalone = qact = ascale = None
+                ark.clear_moe_w4a8_prepack_cache()
+                ark.moe_w4a8_release_scratch()
+                _release_xpu_memory()
+
         def test_prefill_2d_store_matches_scalar(self):
             """The 2D block store must write exactly what the scalar store wrote.
 
@@ -3441,6 +3833,18 @@ def _parse_args(argv):
             "at the large budget their smaller accumulator was supposed to avoid."
         ),
     )
+    parser.add_argument(
+        "--act-quant-wg",
+        action="store_true",
+        help=(
+            "Also time the activation quantization pass on its own, one row per work-group shape "
+            "(1-16 token rows per group). Two answers in one table: what the pass actually costs -- "
+            "until now it was only ever differenced out of two whole-call timings -- and whether the "
+            "shipped one-thread-per-work-group launch is leaving the thread dispatcher idle. Pair "
+            "with --long-seq for the routing whose 28% quantization share the up-projection ceilings "
+            "were computed from."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     parser.add_argument(
@@ -3561,6 +3965,15 @@ def main(argv=None) -> int:
                         models=models,
                         batches=_long_seq_batches(),
                     )
+
+            if phase == "prefill" and args.act_quant_wg:
+                if _QUANT_ACT_SKIP:
+                    print(f"[moe-w4a8-perf] --act-quant-wg unavailable: {_QUANT_ACT_SKIP}")
+                else:
+                    if not args.long_seq or args.compute_bound:
+                        run_act_quant(dtype=dtype, models=models)
+                    if args.long_seq:
+                        run_act_quant(dtype=dtype, models=models, batches=_long_seq_batches())
 
     if failures:
         print()

@@ -536,6 +536,58 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   }
 }
 
+// ---------------------------------------------------------------------------
+// Public entry point 3 -- the per-token activation quantization on its own.
+//
+// This is the same pass `moe_gemm_w4a8` runs internally when the caller does
+// not supply `qact_in`/`ascale_in`, exposed so it can be *measured*. Until now
+// the quantizer had no standalone entry point, so the harness priced it by
+// differencing a 16-bit-input call against a pre-quantized one: two GEMM
+// timings subtracted, with the whole GEMM's run-to-run noise landing on a
+// number that is a quarter of one of them. Every claim about the quantizer --
+// its share of the call, the bandwidth it achieves, the ceiling a faster one
+// could reach -- rests on that difference, so it is worth having directly.
+//
+// It is a measurement and pre-quantization entry point, not a new call
+// contract: `moe_gemm_w4a8` is unchanged, and its result is what feeds
+// `qact_in`/`ascale_in` there. `expert_map` stays null (the decode map is a
+// decode-path concern the fused pass folds in for itself).
+//
+//   - activations : [total_tokens, K]  act dtype
+//   - qact        : [total_tokens, K]  int8 out
+//   - ascale      : [total_tokens]     fp32 out, `absmax / 127`
+// ---------------------------------------------------------------------------
+inline void moe_w4a8_quant_act(sycl::queue* q, const void* activations, void* qact, void* ascale,
+                               BTLA_DTYPE act_dtype, int total_tokens, int K) {
+  if (total_tokens == 0) return;
+  if (total_tokens < 0) {
+    throw std::invalid_argument("moe_w4a8_quant_act: total_tokens must be non-negative");
+  }
+  if (K <= 0 || K % 64 != 0) {
+    throw std::invalid_argument("moe_w4a8_quant_act: K must be a positive multiple of 64");
+  }
+  if (activations == nullptr || qact == nullptr || ascale == nullptr) {
+    throw std::invalid_argument("moe_w4a8_quant_act: null buffer");
+  }
+  if (act_dtype != BTLA_DTYPE::F16 && act_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("moe_w4a8_quant_act: act_dtype must be F16 or BF16");
+  }
+
+  W4A8QuantParams qp;
+  qp.q = q;
+  qp.activations = activations;
+  qp.qact = static_cast<int8_t*>(qact);
+  qp.ascale = static_cast<float*>(ascale);
+  qp.total_tokens = total_tokens;
+  qp.K = K;
+
+  if (act_dtype == BTLA_DTYPE::F16) {
+    quant_f16(qp);
+  } else {
+    quant_bf16(qp);
+  }
+}
+
 // Resolve the effective AUTO_S8 block size (host helper, also exported to
 // Python so callers can size the `wscales` tensor consistently).
 inline int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_size) {

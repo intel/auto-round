@@ -284,6 +284,20 @@ void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, void* ws
                    const int* row_to_token, const float* routing_weights, float* fused_out, int fused_batch);
 
 /**
+ * @brief W4A8 per-token activation quantization on its own -- the same pass
+ * `moe_gemm_w4a8` runs internally, exposed so it can be timed directly and so
+ * a caller can pre-quantize once and reuse the result across calls.
+ *
+ * Quantizes `[total_tokens, K]` `act_dtype` activations to `[total_tokens, K]`
+ * int8 plus `[total_tokens]` fp32 row scales (`absmax / 127`) -- exactly the
+ * pair `moe_gemm_w4a8` accepts as `qact_in` / `ascale_in`.
+ *
+ * STATUS: NEEDS-HARDWARE-VALIDATION.
+ */
+void moe_w4a8_quant_act(sycl::queue* q, const void* activations, void* qact, void* ascale, BTLA_DTYPE act_dtype,
+                        int total_tokens, int K);
+
+/**
  * @brief Resolve the effective W4A8 AUTO_S8 re-scale block size for a given
  * K / group_size, honouring `ARK_MOE_W4A8_AUTO_S8`. Returns K (one scale per
  * output channel) for `rescale_group_size <= 0` or any unusable value.
