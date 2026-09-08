@@ -1604,7 +1604,6 @@ class TestHookNgramEmbeddingsOnCpu:
         assert module_is_pinned_on_cpu(nn.Linear(4, 4)) is False
 
 
-
 class TestMvModuleFromGpu:
     """Test mv_module_from_gpu function."""
 
