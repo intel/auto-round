@@ -16,7 +16,7 @@
 set -Eeuo pipefail
 
 PROFILE="${1:-fast}"
-GPUS="${2:-${GPUS:-0,1,2}}"
+GPUS="${2:-${GPUS:-0}}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${REPO:-$(dirname "$SCRIPT_DIR")}" 
@@ -67,8 +67,9 @@ LOW_GPU_MEM_USAGE="${LOW_GPU_MEM_USAGE:-1}"
 
 MEMORY_ARGS=(--disable_low_cpu_mem_usage)
 if [[ "$LOW_GPU_MEM_USAGE" == "1" ]]; then
-  # Keep cached calibration inputs/reference outputs on CPU and transfer only
-  # the active mini-batch. This leaves headroom for Smooth SVD and SignRound.
+  # On a single visible GPU, AutoRound enables Diffusers model CPU offload.
+  # Calibration caches also remain on CPU and only active data is transferred.
+  # This leaves B200 headroom for Smooth SVD and SignRound temporaries.
   MEMORY_ARGS+=(--low_gpu_mem_usage)
 elif [[ "$LOW_GPU_MEM_USAGE" != "0" ]]; then
   echo "LOW_GPU_MEM_USAGE must be 0 or 1" >&2
@@ -100,7 +101,8 @@ export PYTHONPATH="$ROOT/nunchaku-torch-cu130-ubuntu22/nunchaku:$REPO${PYTHONPAT
 printf 'profile=%s physical_gpus=%s\n' "$PROFILE" "$GPUS"
 printf 'residual_iters=%s nsamples=%s steps=%s signround_iters=%s smooth_grids=%s smooth_calls=%s\n' \
   "$RESIDUAL_ITERS" "$NSAMPLES" "$STEPS" "$SIGNROUND_ITERS" "$SMOOTH_GRIDS" "$SMOOTH_MAX_CALLS"
-printf 'low_gpu_mem_usage=%s (CPU calibration cache)\n' "$LOW_GPU_MEM_USAGE"
+printf 'low_gpu_mem_usage=%s (single-GPU Diffusers CPU model offload + CPU calibration cache)\n' \
+  "$LOW_GPU_MEM_USAGE"
 printf 'output=%s\nlog=%s\n' "$OUT" "$LOG"
 
 "$PY" -u -m auto_round \
@@ -112,7 +114,7 @@ printf 'output=%s\nlog=%s\n' "$OUT" "$LOG"
   --nsamples "$NSAMPLES" \
   --batch_size 1 \
   --dataset "$DATASET" \
-  --num_inference_steps "$STEPS" \
+  --calib_num_inference_steps "$STEPS" \
   --svdquant-rank "$RANK" \
   --svdquant-residual-iters "$RESIDUAL_ITERS" \
   --enable-svdquant-residual-early-stop \
