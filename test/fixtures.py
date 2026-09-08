@@ -39,6 +39,14 @@ def tiny_model_dir(name):
     return os.path.join(TINY_MODEL_ROOT, os.path.basename(os.path.normpath(name)))
 
 
+def _tiny_model_config_fingerprint(path):
+    config_path = os.path.join(path, "config.json")
+    if not os.path.isfile(config_path):
+        return None
+    with open(config_path, encoding="utf-8") as config_file:
+        return json.load(config_file)
+
+
 def _tiny_model_ready(path, signature=None):
     marker_path = os.path.join(path, ".autoround_ready")
     if not os.path.isfile(marker_path):
@@ -46,13 +54,20 @@ def _tiny_model_ready(path, signature=None):
     if signature is None:
         return True
     with open(marker_path, encoding="utf-8") as marker:
-        return marker.read() == signature
+        try:
+            metadata = json.load(marker)
+        except json.JSONDecodeError:
+            return False
+    return metadata.get("signature") == signature and metadata.get("config") == _tiny_model_config_fingerprint(path)
 
 
 def _mark_tiny_model(path, signature=None):
     os.makedirs(path, exist_ok=True)
     with open(os.path.join(path, ".autoround_ready"), "w", encoding="utf-8") as marker:
-        marker.write(signature or "ready\n")
+        if signature is None:
+            marker.write("ready\n")
+        else:
+            json.dump({"signature": signature, "config": _tiny_model_config_fingerprint(path)}, marker, sort_keys=True)
 
 
 def _tiny_model_signature(args, kwargs):

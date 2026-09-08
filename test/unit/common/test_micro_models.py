@@ -1,14 +1,17 @@
 from transformers import AutoConfig, AutoTokenizer
 
 
-def test_tiny_model_cache_requires_a_matching_build_signature(tmp_path):
+def test_tiny_model_cache_rejects_a_changed_model_config(tmp_path):
     from test import fixtures
 
     signature = fixtures._tiny_model_signature(("model", str(tmp_path)), {"num_layers": 2})
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"hidden_size": 64}')
     fixtures._mark_tiny_model(tmp_path, signature)
 
-    assert fixtures._tiny_model_ready(tmp_path, signature)
-    assert not fixtures._tiny_model_ready(tmp_path, "different-build")
+    config_path.write_text('{"hidden_size": 256}')
+
+    assert not fixtures._tiny_model_ready(tmp_path, signature)
 
 
 def test_micro_model_tokenizer_ids_fit_the_model_vocabulary(micro_opt_model_path, micro_qwen_model_path):

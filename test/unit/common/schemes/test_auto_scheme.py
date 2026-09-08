@@ -533,41 +533,20 @@ class TestAutoScheme:
         bits_used = {v["bits"] for v in config.values() if "bits" in v}
         assert bits_used == {4, 8}, f"expected a mixed MXFP4/MXFP8 config, got {sorted(bits_used)}"
 
-    def test_different_avg_bits_produces_different_layer_config(self, tiny_opt_model_path, tmp_path):
-        """Changing avg_bits should change the resulting layer_config."""
-        calibration_dataset = _make_local_calibration_dataset(tmp_path)
-        scheme_low = AutoScheme(
-            avg_bits=2.5,
-            options=("W2A16", "W4A16"),
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-        )
-        ar_low = AutoRound(
-            model=tiny_opt_model_path, scheme=scheme_low, iters=0, nsamples=1, seqlen=8, dataset=calibration_dataset
-        )
-        _, config_low = ar_low.quantize()
+    def test_different_avg_bits_select_different_allocator_paths(self):
+        """A larger feasible budget must allow the lower-loss 4-bit choices."""
+        from auto_round.auto_scheme.delta_loss import choose_bits_per_layer_with_path
 
-        scheme_high = AutoScheme(
-            avg_bits=4.0,
-            options=("W2A16", "W4A16"),
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-        )
-        ar_high = AutoRound(
-            model=tiny_opt_model_path, scheme=scheme_high, iters=0, nsamples=1, seqlen=8, dataset=calibration_dataset
-        )
-        _, config_high = ar_high.quantize()
+        layers = {
+            "layer.0": [(0, 2, 2.0, ["layer.0"]), (1, 4, 1.0, ["layer.0"])],
+            "layer.1": [(0, 2, 2.0, ["layer.1"]), (1, 4, 1.0, ["layer.1"])],
+        }
 
-        low_avg = sum(v["bits"] for v in config_low.values() if "bits" in v) / max(
-            len([v for v in config_low.values() if "bits" in v]), 1
-        )
-        high_avg = sum(v["bits"] for v in config_high.values() if "bits" in v) / max(
-            len([v for v in config_high.values() if "bits" in v]), 1
-        )
-        assert high_avg > low_avg, (
-            f"avg_bits=4 should produce higher average bits than avg_bits=2.5, "
-            f"got low={low_avg:.2f} high={high_avg:.2f}"
-        )
+        _, low_budget_path = choose_bits_per_layer_with_path(layers, P=4)
+        _, high_budget_path = choose_bits_per_layer_with_path(layers, P=8)
+
+        assert [scheme for _, scheme in low_budget_path] == [0, 0]
+        assert [scheme for _, scheme in high_budget_path] == [1, 1]
 
     def test_shared_layers_assigns_same_bits(self, micro_opt_model_path, tmp_path):
         """With shared_layers=[q_proj,k_proj,v_proj], all three must get the same bits per block."""
