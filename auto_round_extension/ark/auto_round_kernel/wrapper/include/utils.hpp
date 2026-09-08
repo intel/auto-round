@@ -136,9 +136,7 @@ class DeviceMemoryPool {
   }
 
   // Current size of the slab held for ``buf_loc`` on ``q``'s device+context+queue, or 0 when
-  // no slab is held. Callers that must synchronize before an existing slab is
-  // freed (because in-flight kernels may still reference it) use this to detect
-  // the grow path in `get_scratch_ptr` ahead of time.
+  // no slab is held.
   size_t get_scratch_size(size_t buf_loc, sycl::queue* q) {
     if (buf_loc >= MaxLocNum) return 0;
     auto key = get_device_key(q);
@@ -178,6 +176,14 @@ class DeviceMemoryPool {
 
     auto old_size = dev_mem_size_map[buf_loc][key];
     if (old_size < size) {
+#if ARK_XPU
+      if (q == nullptr) {
+        throw std::invalid_argument("DeviceMemoryPool: XPU grow requires a non-null SYCL queue");
+      }
+      // Ensure no in-flight kernel on this queue is still using the previous
+      // slab before freeing it.
+      q->wait();
+#endif
       release(it->second, q);
       auto newptr = allocate(size, q);
       dev_mem_size_map[buf_loc][key] = size;

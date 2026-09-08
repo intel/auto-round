@@ -316,11 +316,18 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
         eager_input = torch.randn(m, k, dtype=torch.float16, device="xpu") - 0.5
         replay_input = eager_input + 0.75
 
+        # Submit work to two queues in the same SYCL context before any global
+        # synchronize so the executions can overlap in-flight.
         with torch.xpu.stream(default_stream):
             out_a = _woq_call(eager_input)
         with torch.xpu.stream(capture_stream):
             out_b = _woq_call(replay_input)
         torch.xpu.synchronize()
+        expected_a = _woq_call(eager_input)
+        expected_b = _woq_call(replay_input)
+        torch.xpu.synchronize()
+        assert torch.allclose(out_a, expected_a, rtol=0.1, atol=2.0)
+        assert torch.allclose(out_b, expected_b, rtol=0.1, atol=2.0)
         assert not torch.allclose(out_a, out_b, rtol=1e-3, atol=1e-3)
 
         # Warm up on the default queue to reproduce stale stream cache regressions.
