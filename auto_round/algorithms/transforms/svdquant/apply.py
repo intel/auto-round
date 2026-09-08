@@ -118,15 +118,19 @@ class SVDQuantTransform(BasePreprocessor):
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
         self._target_modules = config.target_modules
-        if self._target_modules is None and config.model_adapter in {"flux", "sdxl"}:
+        if self._target_modules is None and config.model_adapter in {"flux", "sdxl", "wan"}:
             from auto_round.export.svdquant_adapters import (
                 FLUX_SVDQUANT_TARGET_MODULES,
                 SDXL_SVDQUANT_TARGET_MODULES,
+                WAN_SVDQUANT_TARGET_MODULES,
             )
 
-            self._target_modules = (
-                FLUX_SVDQUANT_TARGET_MODULES if config.model_adapter == "flux" else SDXL_SVDQUANT_TARGET_MODULES
-            )
+            target_modules = {
+                "flux": FLUX_SVDQUANT_TARGET_MODULES,
+                "sdxl": SDXL_SVDQUANT_TARGET_MODULES,
+                "wan": WAN_SVDQUANT_TARGET_MODULES,
+            }
+            self._target_modules = target_modules[config.model_adapter]
 
     def bind(self, orchestrator) -> None:
         super().bind(orchestrator)
@@ -168,6 +172,12 @@ class SVDQuantTransform(BasePreprocessor):
                 }
             ):
                 model_adapter = "flux"
+            elif (
+                model_adapter == "identity"
+                and block is not None
+                and block.__class__.__name__ == "WanTransformerBlock"
+            ):
+                model_adapter = "wan"
         if model is not None:
             model._autoround_svdquant_model_adapter = model_adapter
         if model_adapter == "flux":
@@ -176,15 +186,19 @@ class SVDQuantTransform(BasePreprocessor):
             if model is not None:
                 warn_if_unverified_flux_model(model)
         self._target_modules = self.config.target_modules
-        if self._target_modules is None and model_adapter in {"flux", "sdxl"}:
+        if self._target_modules is None and model_adapter in {"flux", "sdxl", "wan"}:
             from auto_round.export.svdquant_adapters import (
                 FLUX_SVDQUANT_TARGET_MODULES,
                 SDXL_SVDQUANT_TARGET_MODULES,
+                WAN_SVDQUANT_TARGET_MODULES,
             )
 
-            self._target_modules = (
-                FLUX_SVDQUANT_TARGET_MODULES if model_adapter == "flux" else SDXL_SVDQUANT_TARGET_MODULES
-            )
+            target_modules = {
+                "flux": FLUX_SVDQUANT_TARGET_MODULES,
+                "sdxl": SDXL_SVDQUANT_TARGET_MODULES,
+                "wan": WAN_SVDQUANT_TARGET_MODULES,
+            }
+            self._target_modules = target_modules[model_adapter]
         return model_adapter
 
     def register_fp_input_forward_hooks(self, block) -> list:

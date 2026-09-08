@@ -102,7 +102,7 @@ class SVDQuantConfig(QuantizationConfig):
             "--svdquant-model-adapter",
             field="model_adapter",
             default="auto",
-            choices=["auto", "identity", "flux", "sdxl"],
+            choices=["auto", "identity", "flux", "sdxl", "wan"],
             help="Architecture adapter used by SVDQuant export.",
         )
 

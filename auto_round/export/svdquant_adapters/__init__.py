@@ -33,6 +33,7 @@ from auto_round.export.svdquant_adapters.sdxl import (
     SDXLSVDQuantNunchakuAdapter,
     is_sdxl_unet_config,
 )
+from auto_round.export.svdquant_adapters.wan import WAN_SVDQUANT_TARGET_MODULES, WanSVDQuantNunchakuAdapter
 
 
 def _model_config(model: torch.nn.Module) -> dict:
@@ -54,6 +55,8 @@ def detect_svdquant_model_adapter(model: torch.nn.Module) -> str:
     class_name = str(config.get("_class_name", type(model).__name__)).lower()
     if "fluxtransformer" in class_name:
         return "flux"
+    if any(name in class_name for name in ("wantransformer", "wanpipeline")):
+        return "wan"
     if is_sdxl_unet_config(config, type(model).__name__):
         return "sdxl"
     return "identity"
@@ -68,8 +71,8 @@ def resolve_svdquant_model_adapter(
     """Resolve a registered architecture adapter without runtime dependencies."""
 
     normalized = name.strip().lower()
-    if normalized not in {"auto", "identity", "flux", "sdxl"}:
-        raise ValueError(f"unknown SVDQuant model adapter {name!r}; expected auto, identity, flux, or sdxl")
+    if normalized not in {"auto", "identity", "flux", "sdxl", "wan"}:
+        raise ValueError(f"unknown SVDQuant model adapter {name!r}; expected auto, identity, flux, sdxl, or wan")
     config = _model_config(model)
     if normalized == "auto":
         normalized = detect_svdquant_model_adapter(model)
@@ -85,6 +88,8 @@ def resolve_svdquant_model_adapter(
             decomposition_device=decomposition_device,
             require_complete_model=True,
         )
+    if normalized == "wan":
+        return WanSVDQuantNunchakuAdapter(config=config or None, require_complete_model=True)
     return IdentitySVDQuantModelAdapter()
 
 
@@ -93,6 +98,8 @@ __all__ = [
     "FLUX_SVDQUANT_TARGET_MODULES",
     "SDXL_SVDQUANT_TARGET_MODULES",
     "SDXLSVDQuantNunchakuAdapter",
+    "WAN_SVDQUANT_TARGET_MODULES",
+    "WanSVDQuantNunchakuAdapter",
     "FluxSVDQuantNunchakuAdapter",
     "detect_svdquant_model_adapter",
     "flux_onefile_tensor_count",

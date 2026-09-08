@@ -327,8 +327,12 @@ class DiffusionMixin:
         primary_layer_config = dict(self.layer_config) if self.layer_config else {}
         primary_quant_block_list = list(self.quant_block_list) if self.quant_block_list else []
         quantized_extras = {}
+        original_boundary_ratio = getattr(self.model_context.pipe.config, "boundary_ratio", None)
 
         # Quantize primary transformer
+        # Route every calibration timestep to the primary Wan expert. Pipelines
+        # without boundary_ratio simply retain this unused config entry.
+        self.model_context.pipe.register_to_config(boundary_ratio=0.0)
         logger.info("start to cache block inputs for primary transformer")
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
@@ -347,6 +351,9 @@ class DiffusionMixin:
         # Quantize additional transformers
         for comp_name, transformer in additional:
             logger.info(f"Quantizing {comp_name}")
+
+            # Route every calibration timestep to the secondary Wan expert.
+            self.model_context.pipe.register_to_config(boundary_ratio=1.1)
 
             # Reset quantization state for new transformer
             self.model_context.model = transformer
@@ -407,6 +414,7 @@ class DiffusionMixin:
         self.compress_context.is_immediate_packing = orig_immediate_packing
         self.compress_context.is_immediate_saving = orig_immediate_saving
         self.calib_num_inference_steps = orig_steps
+        self.model_context.pipe.register_to_config(boundary_ratio=original_boundary_ratio)
 
         return self.model_context.model, self.layer_config
 
