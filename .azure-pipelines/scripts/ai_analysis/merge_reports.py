@@ -146,7 +146,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             "",
             "> **Notes**",
             f"> - Only top-{len(analyzed)} issues receive AI analysis.",
-            f"> - You can @mention copilot to provide further AI fix by \"Quote reply\" in the PR comment.",
+            '> - You can @mention copilot to provide further AI fix by "Quote reply" in the PR comment.',
             "",
         ]
     )

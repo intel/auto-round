@@ -128,9 +128,7 @@ def _parse_copilot_json(stdout: str) -> dict:
     }
 
 
-def _call_copilot_cli(
-    prompt: str, timeout: int, model: str, reasoning_effort: str, trace_file: str, cluster_id
-) -> str:
+def _call_copilot_cli(prompt: str, timeout: int, model: str, reasoning_effort: str, trace_file: str, cluster_id) -> str:
     argv = [
         "copilot",
         "-p",
