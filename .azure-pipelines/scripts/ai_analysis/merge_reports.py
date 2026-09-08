@@ -64,9 +64,9 @@ def build_known_section(clusters: list[dict]) -> list[str]:
     if not known:
         return []
     lines = [
-        f"## Known issues ({len(known)})",
+        f"## Known Issues ({len(known)})",
         "",
-        "<details><summary>Details</summary>",
+        "<details><summary>🔍 Summary table</summary>",
         "",
         "| Cluster | Issue | Score | Occurrences | Sample log |",
         "| --- | --- | --- | --- | --- |",
@@ -90,7 +90,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
     if not unknown:
         return []
-    lines = [f"## New issues ({len(unknown)})", ""]
+    lines = [f"## New Issues ({len(unknown)})", ""]
 
     for rank, c in enumerate(unknown, start=1):
         signature = _inline(c.get("signature", ""))
@@ -99,7 +99,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         logs = ", ".join(c.get("logs", [])) or "-"
         lines.append(f"### No.{rank} — {occ} occurrence(s)")
         lines.append("")
-        lines.append("<details><summary>📝 Basic Info</summary>")
+        lines.append("<details><summary>📝 Basic info</summary>")
         lines.append("")
         lines.append(f"- **Signature:** {_code_span(signature)}")
         lines.append(f"- **Affected tests ({len(tests)}):** {', '.join(tests) or '-'}")
@@ -108,7 +108,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         lines.append("</details>")
 
         lines.append("")
-        lines.append("<details><summary>🔍 Log Excerpt</summary>")
+        lines.append("<details><summary>🔍 Log excerpt</summary>")
         lines.append("")
         lines.append("```")
         lines.append((c.get("sample", "") or "").strip())
@@ -120,7 +120,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         analysis = analyses_by_id.get(c.get("id"))
         if analysis:
             lines.append("")
-            lines.append("<details><summary>✨ AI Analysis</summary>")
+            lines.append("<details><summary>✨ AI analysis</summary>")
             lines.append("")
             lines.append(f"- **Category:** {analysis.get('category', 'Unknown')}")
             lines.append(f"- **Confidence:** {analysis.get('confidence', 'low')}")
@@ -146,7 +146,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             "",
             "> **Notes**",
             f"> - Only top-{len(analyzed)} issues receive AI analysis.",
-            '> - You can @mention copilot to provide further AI fix by "Quote reply" in the PR comment.',
+            '> - To request an additional fix from Copilot, use "Quote reply" on the PR comment and @mention Copilot.',
             "",
         ]
     )
