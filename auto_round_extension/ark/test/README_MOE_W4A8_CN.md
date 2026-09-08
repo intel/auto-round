@@ -1144,6 +1144,64 @@ pytest test_moe_w4a8_perf.py -k "prefetch_sweep" -v
 python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq --rounds 5
 ```
 
+### 常驻 kernel 何时去领下一个 tile
+
+Prefill GEMM 是一个**常驻 (persistent)** kernel：grid 是按设备规模来定的
+(`sm_count` × 单个 Xe core 能容纳的 work-group 数)，而不是按问题规模，所以一个
+work-group 并不只负责一个 tile——它会循环取活，下一个 tile 的编号来自一次
+device-scope 的 `atomicAdd`，落在同一个 dword 上，所有常驻 work-group 都会撞上它。
+
+这次领取过去是发在它所对应的那个 tile **之后**的：
+
+```
+   [ GEMM tile ]  -> atomicAdd -> 等待 -> [ GEMM tile ]  -> atomicAdd -> 等待 ...
+                    \___________________/
+                     这一段没有任何东西可以重叠
+```
+
+一次打在竞争 dword 上的 L2 往返，而且恰好落在循环中 work-group 手里没有任何
+在途工作可以掩盖它的位置。现在它发在**之前**：
+
+```
+   atomicAdd -> [ GEMM tile ] -> 使用结果 -> atomicAdd -> [ GEMM tile ] -> ...
+                \____________/
+                 这条消息在整个 mainloop 期间都在途
+```
+
+有两个细节决定了这是真的隐藏了延迟，而不只是把停顿挪了个位置：
+
+* **结果先留在私有寄存器里，而不是直接写进 SLM。** 紧跟 atomic 之后的 SLM store
+  会让 lane 0 当场等这个结果，进而让整个 work-group 卡在 mainloop 的第一个
+  barrier 上。把 store 放到 GEMM 之后才真正推迟了这次等待；而 atomic 本身不可能
+  被下沉到 mainloop 的 barrier 之后，所以它会留在写下的位置。
+* **SLM 槽位在两个 dword 之间乒乓。** 只用一个 dword 时，lane 0 为 tile `i + 1`
+  写入的值可能抢在某个较慢的 sub-group 读 tile `i` 的值之前，那就需要每个 tile
+  再加一个 barrier 来防止；用两个槽位则让写和读落在不同地址上。
+
+计算哪些 tile 完全没变——每个 tile 一次领取、同样的编号、同样的消费顺序——所以两种
+顺序是**逐位相同**的，`test_prefill_claim_early_matches` 用 ragged batch 上的
+`torch.equal` 来断言这一点 (每专家 300 行，于是每个专家同时有完整 tile 和不完整
+tile，tile 遍历必须遵守的专家边界也就进入了比较范围)。
+
+这项改动同时把工作计数器的清零挪到了主机侧。它过去是由 group 0 / lane 0 在 kernel
+入口处在设备上清零的，而这与其他所有 work-group 打在同一个 dword 上的 `atomicAdd`
+之间没有任何顺序保证——这个竞态之所以一直成立，只是因为一个 work-group 的首次领取
+要等一整个 GEMM tile 之后、也就是几微秒之后才会发生。提前领取把这个窗口压缩到了
+几条指令，所以 `MoEGEMMLauncher_w4a8` 现在用 `queue::memset` 填这个 dword，并让
+kernel `depends_on` 这次填充。一个 dword、一条额外命令，没有任何同步。
+
+这项改动值多少，上界取决于一个 tile 有多少工作可以用来掩盖这次停顿，所以它应该在
+**down** 投影上显现、而在 up 投影上几乎看不到：在同样的 tile 形状、同一个 kernel 下，
+`K = 768` 的一个 tile 只有 12 个 k-tile，而 `K = 2048` 有 32 个。qwen3 down 同时也是
+距离自身带宽上限最远的那个形状。如果所有形状都打平，那也是一个真实的结论——它会说明
+这次领取从来就不是瓶颈，down 投影的差距在 prologue、epilogue 或者 D 的写上，参见
+[还剩下什么](#还剩下什么)。
+
+```bash
+pytest test_moe_w4a8_perf.py -k "claim_early" -v
+python test_moe_w4a8_perf.py --skip-accuracy --claim-early --long-seq --rounds 5
+```
+
 ### 还剩下什么
 
 在 prologue 已被实测排除、tile 阶梯也已扫描过之后，剩下的差距在于流量，而且它的
@@ -1277,6 +1335,7 @@ epilogue 做这件事比单独一遍做得更差。
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上最多带来 1.08× 的收益 (落后时也不超过 0.9%)。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。使用融合 top-k 规约时会自动关闭，因为那是 scatter，用不了 block store。 |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` (compute-bound batch) 与 `test_perf_prefill_prefetch_sweep_long_seq` (8K 提示词路由) 会对完整的 `1 / 2 / 3 / 4 / 6 / 8` 区间计时。超出 `1`–`8` 的取值回退到默认值。扫描结果显示排名平坦，因此默认值保持不变——参见[预取深度与 K](#预取深度与-k--已实测两轮结论是否定的)。 |
+| `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY` | 常驻 prefill kernel 何时从 device-scope 工作计数器领取下一个 tile：**`1` (默认)** 把 `atomicAdd` 发在 GEMM 之前，于是这次 L2 往返在整个 mainloop 期间都在途；`0` 恢复旧顺序，即它完全暴露在两个 tile 之间的空档里。计算哪些 tile 完全没变，因此两者逐位相同 (`test_prefill_claim_early_matches` 断言 `torch.equal`)；`test_perf_prefill_claim_early_sweep{,_long_seq}` 会对这一对计时。tile 本身可用于掩盖停顿的工作越少收益越大——参见[常驻 kernel 何时去领下一个 tile](#常驻-kernel-何时去领下一个-tile)。 |
 
 ## 形状约束
 
@@ -1345,6 +1404,7 @@ scale 相关的 bug。两个 8K 提示词的 prefill 用例
 | 激活量化的批量 load——同时挂起 `UNROLL` 个请求而不是一个 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` | 在唯一真正走这条路径的形状上，`UNROLL = 2` 或 `4` 快 1.02–1.03×；2 与 4 之间的差异在噪声内 |
 | 单遍激活量化——行数据留在寄存器中，`[T, K]` 只读一次而不是两次 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | 1.00–1.06×；留在寄存器里的行并未溢出 |
 | D 的 2D block store——每个 sub-group fragment 由少数几条 block 消息取代 64 条 32 字节的标量消息 | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×，prefill 单项收益最大 |
+| tile 的领取改到 GEMM 之前而不是之后，让工作计数器的 device-scope atomic 与 mainloop 重叠 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | 尚未在 B70 上实测——上界取决于每个 tile 的停顿，因此预期在 12 个 k-tile 的 down 投影上显现、在 up 投影上接近于零 |
 
 本节此前把 2D store 列为"需要设备而不是一个开关"的工作，理由是同类 MoE kernel 都经由
 `partition_sg_fragment_S` + `reorder` 抵达它，而其中没有任何一个是对**带 scale 的**

@@ -1321,6 +1321,71 @@ pytest test_moe_w4a8_perf.py -k "prefetch_sweep" -v
 python test_moe_w4a8_perf.py --skip-accuracy --prefetch --long-seq --rounds 5
 ```
 
+### When the persistent kernel asks for its next tile
+
+The prefill GEMM is a **persistent** kernel: the grid is sized to the device
+(`sm_count` × the work-groups that fit on an Xe core), not to the problem, so a
+work-group does not own one tile — it loops, and takes the next tile index from
+a device-scope `atomicAdd` on a single dword that every resident work-group
+hits.
+
+That claim used to be issued *after* the tile it precedes:
+
+```
+   [ GEMM tile ]  -> atomicAdd -> wait -> [ GEMM tile ]  -> atomicAdd -> wait ...
+                    \___________________/
+                     nothing overlaps this
+```
+
+An L2 round trip on a contended dword, in the one place in the loop where the
+work-group has no work in flight to hide it behind. It is now issued *before*:
+
+```
+   atomicAdd -> [ GEMM tile ] -> use result -> atomicAdd -> [ GEMM tile ] -> ...
+                \____________/
+                 the message is in flight across the whole mainloop
+```
+
+Two details make that work rather than just move the stall:
+
+* **The result is kept in a private register, not stored straight to SLM.** An
+  SLM store immediately after the atomic would make lane 0 wait on the result
+  right there, and with it the whole work-group at the mainloop's first barrier.
+  Storing it after the GEMM is what defers the wait; the atomic itself cannot
+  sink past the mainloop's barriers, so it stays where it is written.
+* **The SLM slot ping-pongs between two dwords.** With one dword, lane 0's write
+  for tile `i + 1` could overtake a slower sub-group still reading tile `i`'s
+  value, which would need a second barrier per tile to prevent. Two slots make
+  the write and the read target different addresses instead.
+
+Which tiles get computed does not change — one claim per tile, the same indices,
+consumed in the same order — so the two orders are **bit-identical**, and
+`test_prefill_claim_early_matches` asserts `torch.equal` on the ragged batch
+(300 rows/expert, so every expert has interior *and* partial tiles and the
+expert boundaries the tile walk has to respect are in the comparison).
+
+This also moved the work-stealing counter's reset to the host. It used to be
+zeroed on the device by group 0 / lane 0 at kernel entry, which is unordered
+against every other work-group's `atomicAdd` on the same dword — a race that
+held only because a work-group's first claim came after a whole GEMM tile,
+microseconds later. Claiming early shrinks that window to a few instructions, so
+`MoEGEMMLauncher_w4a8` now fills the dword with `queue::memset` and makes the
+kernel `depends_on` that fill. One dword, one extra command, no synchronization.
+
+How much this is worth is bounded by how much work a tile has to hide the stall
+behind, so it should show on the **down** projections and barely on the up ones:
+at `K = 768` a tile is 12 k-tiles against 32 at `K = 2048`, on the same tile
+shape and the same kernel. qwen3 down is also the shape that sits furthest below
+its own bandwidth ceiling. A tie on every shape is a real result — it would say
+the claim was never the stall, and that the down projection's gap is the
+prologue, the epilogue or the D write instead (see
+[What is left](#what-is-left)).
+
+```bash
+pytest test_moe_w4a8_perf.py -k "claim_early" -v
+python test_moe_w4a8_perf.py --skip-accuracy --claim-early --long-seq --rounds 5
+```
+
 ### What is left
 
 With the prologue ruled out by measurement and the tile ladder already swept,
@@ -1477,6 +1542,7 @@ analysis above is why.
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth up to 1.08× on the swept shapes (and never more than 0.9% behind). The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Automatically off when the fused top-k reduction is used, which scatters and therefore cannot use a block store. |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` (compute-bound batch) and `test_perf_prefill_prefetch_sweep_long_seq` (8K-prompt routing) time the whole `1 / 2 / 3 / 4 / 6 / 8` range. Values outside `1`–`8` fall back to the default. The sweep found the ranking flat, so the default stays — see [Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no). |
+| `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY` | When the persistent prefill kernel claims its next tile from the device-scope work counter: **`1` (default)** issues the `atomicAdd` before the GEMM, so the L2 round trip is in flight across the mainloop; `0` restores the old order, where it sat fully exposed in the gap between two tiles. Which tiles run does not change, so the two are bit-identical (`test_prefill_claim_early_matches` asserts `torch.equal`); `test_perf_prefill_claim_early_sweep{,_long_seq}` times the pair. Worth most where a tile is short on work to hide the stall behind — see [When the persistent kernel asks for its next tile](#when-the-persistent-kernel-asks-for-its-next-tile). |
 
 ## Shape constraints
 
@@ -1551,6 +1617,7 @@ have now been timed twice, and all three kept their default:
 | Activation quantizer's batched loads — `UNROLL` vectors in flight instead of one | `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` | 1.02–1.03× at `UNROLL = 2` or `4` on the only shape that exercises it; 2 vs 4 is inside the noise |
 | Single-pass activation quantizer — the row stays in registers, so `[T, K]` is read once instead of twice | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | 1.00–1.06×; the register-resident row does not spill |
 | 2D block store for D — a handful of block messages instead of 64 scalar 32-byte ones per sub-group fragment | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×, the largest single prefill win |
+| Tile claim issued before the GEMM instead of after it, so the work counter's device-scope atomic overlaps the mainloop | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | Not yet measured on B70 — bounded by the per-tile stall, so expected on the 12-k-tile down projections and near-nil on the up ones |
 
 The 2D store was previously listed as needing a device rather than a flag, on
 the grounds that the sibling MoE kernels reach it through
