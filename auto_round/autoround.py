@@ -857,8 +857,6 @@ class AutoRound:
         runtime_kwargs["batch_size"] = batch_size
 
         return _CompressorBuilder(
-            model,
-            scheme,
             configs,
             tokenizer=tokenizer,
             platform=platform,
