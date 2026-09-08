@@ -140,12 +140,11 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             lines.append("</details>")
             lines.append("")
 
-    analyzed = [c for c in unknown if analyses_by_id.get(c.get("id"))]
     lines.extend(
         [
             "",
             "> **Notes**",
-            f"> - Only top-{len(analyzed)} issues receive AI analysis.",
+            f"> - Only top-3 issues receive AI analysis.",
             '> - To request an additional fix from Copilot, use "Quote reply" on the PR comment and @mention Copilot.',
             "",
         ]
