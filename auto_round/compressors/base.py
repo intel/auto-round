@@ -1933,10 +1933,7 @@ class BaseOrchestrator(object):
         if output_dir is not None:
             self.compress_context.output_dir = output_dir
         if format is not None:
-            if isinstance(format, str):
-                # An explicit export format must override any previously
-                # resolved format, since one quantized model may be exported
-                # to multiple backends sequentially.
+            if isinstance(format, str) and getattr(self, "formats", None) is None:
                 self.formats = self._resolve_format_string(format)
                 self.compress_context.formats = self.formats
 

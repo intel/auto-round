@@ -650,6 +650,7 @@ class _CompressorBuilder(object):
         **kwargs,
     ) -> "BaseCompressor":
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+        from auto_round.algorithms.quantization.rrq.config import RRQConfig
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
         from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
@@ -695,16 +696,13 @@ class _CompressorBuilder(object):
             )
 
         # Model-free routing is now supported directly by the new entry path.
-        # RRQConfig inherits RTNConfig but must use the regular calibrated
-        # path when Phase 3 tuning is enabled.
-        model_free_iters = 0 if type(quant_config) is RTNConfig else getattr(quant_config, "iters", None)
+        model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
-        if type(quant_config).__name__ == "RRQConfig":
-            # RRQ needs the regular compressor to materialize and retain all
-            # residual planes; the model-free RTN path only emits one base
-            # plane and silently drops RRQ state.
+        # RRQConfig inherits RTNConfig but must use the regular calibrated
+        # path: the model-free RTN path only emits a single base plane and
+        # would silently drop every residual plane.
+        if isinstance(quant_config, RRQConfig):
             route_kwargs["disable_model_free"] = True
-            route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and
