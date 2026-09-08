@@ -189,7 +189,6 @@ _MODEL_PROJ_TO_FUSED = {
 }
 
 
-
 def _renamed_expert_candidates(index, full_name: str):
     """Checkpoint-name candidates for an unfused per-expert parameter."""
     match = _MODEL_SIDE_EXPERT_RE.match(full_name)
@@ -400,7 +399,6 @@ def _concat_converters_for(model_type):
             continue
         converters.append((target, sources, getattr(concat, "dim", 0)))
     return tuple(converters)
-
 
 
 def _resolve_checkpoint_name(index, full_name: str):
