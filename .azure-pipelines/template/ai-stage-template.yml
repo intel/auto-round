@@ -16,6 +16,12 @@ parameters:
   - name: postComment
     type: boolean
     default: true
+  - name: topUnknown
+    type: number
+    default: 3
+  - name: knownIssueLabel
+    type: string
+    default: "CI-known-issue"
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -30,10 +36,118 @@ stages:
       - job: AnalyzeFailures
         displayName: "Analyze failed unit tests"
         steps:
-          - template: ai-analysis-template.yml
-            parameters:
-              enableAiAnalysis: ${{ parameters.enableAiAnalysis }}
-              postComment: ${{ parameters.postComment }}
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.12"
+            displayName: "Use Python 3.12"
+
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact:
+              patterns: "ut-*-1/unittest_*"
+              path: $(Build.SourcesDirectory)/ai_analysis/failed_logs
+            displayName: "Download failed-log artifacts"
+
+          - task: Bash@3
+            displayName: "Cluster failures and match known issues"
+            env:
+              AUTO_ROUND_BOT_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
+            inputs:
+              targetType: "inline"
+              script: |
+                set -eo pipefail
+                base="$(Build.SourcesDirectory)"
+                work="${base}/ai_analysis"
+                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
+                repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
+                repo_path="${repo_path%.git}"
+
+                python "${scripts}/analyze_failures.py" \
+                  --input-dir "${work}/failed_logs" \
+                  --clusters-json "${work}/clusters.json" \
+                  --decision-log "${work}/decision_log.md"
+
+                python "${scripts}/match_known_issues.py" \
+                  --clusters-json "${work}/clusters.json" \
+                  --output "${work}/annotated.json" \
+                  --repo "${repo_path}" \
+                  --label "${{ parameters.knownIssueLabel }}"
+
+          - task: Bash@3
+            displayName: "AI analysis of top unknown failures"
+            continueOnError: true
+            env:
+              AI_TOKEN: $(AI_TOKEN)
+            inputs:
+              targetType: "inline"
+              script: |
+                set -uo pipefail
+                if [ "${{ parameters.enableAiAnalysis }}" = "True" ]; then
+                    echo "Installing Copilot CLI for AI analysis..."
+                    curl -fsSL https://gh.io/copilot-install | bash
+                    export PATH="$HOME/.local/bin:$PATH"
+                fi
+                base="$(Build.SourcesDirectory)"
+                work="${base}/ai_analysis"
+                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
+                python "${scripts}/ai_analyze.py" \
+                  --clusters-json "${work}/annotated.json" \
+                  --output "${work}/ai.json" \
+                  --pr-sha "$(Build.SourceVersion)" \
+                  --top ${{ parameters.topUnknown }} \
+                  --enable-ai-analysis ${{ parameters.enableAiAnalysis }} \
+                  --backend copilot \
+                  --trace-file "${work}/ai_trace.jsonl" \
+                  --project-root "${base}" \
+                  --log-dir "${work}/failed_logs"
+
+          - task: Bash@3
+            displayName: "Merge markdown report"
+            env:
+              BUILD_DEFINITIONNAME: $(Build.DefinitionName)
+              PR_NUMBER: $(System.PullRequest.PullRequestNumber)
+              CURRENT_SHA: $(Build.SourceVersion)
+              RUN_URL: $(System.CollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)
+            inputs:
+              targetType: "inline"
+              script: |
+                set -eo pipefail
+                base="$(Build.SourcesDirectory)"
+                work="${base}/ai_analysis"
+                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
+                python "${scripts}/merge_reports.py" \
+                  --clusters-json "${work}/annotated.json" \
+                  --ai-json "${work}/ai.json" \
+                  --output "${work}/report.md"
+
+          - ${{ if eq(parameters.postComment, true) }}:
+              - task: Bash@3
+                displayName: "Post report as PR comment"
+                condition: eq(variables['Build.Reason'], 'PullRequest')
+                env:
+                  AUTO_ROUND_BOT_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
+                inputs:
+                  targetType: "inline"
+                  script: |
+                    set -uo pipefail
+                    base="$(Build.SourcesDirectory)"
+                    work="${base}/ai_analysis"
+                    scripts="${base}/.azure-pipelines/scripts/ai_analysis"
+                    repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
+                    repo_path="${repo_path%.git}"
+                    python "${scripts}/post_pr_comment.py" \
+                      --repo "${repo_path}" \
+                      --pr "${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}" \
+                      --marker-key "$(Build.DefinitionName)" \
+                      --body-file "${work}/report.md"
+
+          - task: PublishPipelineArtifact@1
+            condition: always()
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/ai_analysis
+              artifact: "ai-failure-analysis"
+              publishLocation: "pipeline"
+            displayName: "Publish AI failure-analysis report"
 
   - stage: ${{ parameters.stageName }}_HideOutdated
     displayName: "Hide AI Analysis Comments"

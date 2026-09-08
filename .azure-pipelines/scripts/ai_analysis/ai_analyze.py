@@ -35,11 +35,12 @@ Guidance:
 - Use the PR diff to judge whether this is a code regression introduced by the change.
 - If the error looks environmental/dependency-related and unrelated to the diff, say so.
 - If uncertain, set confidence to "low", leave suggested_fix and patch empty, and fill directions.
-- The excerpt below is truncated. The repository is checked out at ``{project_root}`` and the
-  complete raw failure logs are under ``{log_path}``. When you need more context, use your
-  shell/read/rg tools to inspect source files, git history, and the full logs before concluding.
-- To see this PR's changes, diff the two parents of merge commit ``{pr_sha}`` with git yourself
-  (``git diff {pr_sha}^1...{pr_sha}^2``); a plain ``git show`` on the merge is empty.
+- For an ``AssertionError`` whose log excerpt already contains pytest's ``Full diff`` (the ``-``/``+``
+  lines), that diff is usually authoritative: cross-check it against the changed files below and
+  conclude directly.
+- The ``PR changed files`` section below lists every file this PR touched. Inspect the relevant ones
+  yourself with your ``read``/``rg`` tools on the checkout at ``{project_root}`` (and the complete raw
+  failure logs under ``{log_path}``) to judge whether the change caused the failure.
 
 ## Project source root
 {project_root}
@@ -56,8 +57,8 @@ Guidance:
 ## Log excerpt
 {excerpt}
 
-## PR merge commit
-{pr_sha}
+## PR changed files
+{pr_files}
 """
 
 
@@ -130,11 +131,14 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cl
         "copilot",
         "-p",
         prompt,
-        "--allow-tool=shell(git:*)",
         "--allow-tool=shell(python:*)",
         "--allow-tool=shell(rg:*)",
         "--allow-tool=read",
         "--allow-tool=write",
+        # The PR diff is pre-computed into the prompt, so no GitHub API access is needed. Dropping the
+        # built-in GitHub MCP server trims the tool schema re-sent on every turn (~11k tokens -> far
+        # less), which is the dominant per-call cost in this multi-turn loop.
+        "--disable-builtin-mcps",
         "--no-ask-user",
         "--output-format",
         "json",
@@ -205,20 +209,91 @@ def parse_model_json(text: str) -> "dict | None":
         return None
 
 
-def build_prompt(cluster: dict, pr_sha: str, max_excerpt: int, project_root: str, log_path: str) -> str:
+def _run_git(project_root: str, args: "list[str]", timeout: int = 120) -> "subprocess.CompletedProcess | None":
+    """Run a git command in ``project_root``; return the completed process or None on failure."""
+    try:
+        return subprocess.run(
+            ["git", "-C", project_root or ".", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"Warning: git {' '.join(args)} failed: {e}", file=sys.stderr)
+        return None
+
+
+_unshallowed = False
+
+
+def _ensure_full_history(project_root: str) -> None:
+    """Unshallow the checkout once so merge-base / parent commits are available.
+
+    CI checkouts are usually shallow, which makes ``git diff <sha>^1...<sha>^2`` fail. Doing it here,
+    once, keeps that cost out of the analysis loop.
+    """
+    global _unshallowed
+    if _unshallowed:
+        return
+    _unshallowed = True
+    res = _run_git(project_root, ["rev-parse", "--is-shallow-repository"])
+    if res is not None and res.stdout.strip() == "true":
+        print("Unshallowing repository for PR diff computation...", file=sys.stderr)
+        _run_git(project_root, ["fetch", "--quiet", "--unshallow", "origin"], timeout=600)
+
+
+def compute_pr_changed_files(pr_sha: str, project_root: str, max_chars: int) -> str:
+    """Return the ``--name-status`` list of files this PR changed (same for every cluster).
+
+    The three-dot range ``sha^1...sha^2`` is the merge commit's change (merge-base..PR-head). We hand
+    the model only the file list and let it read the actual source itself, so the PR context stays
+    small and cluster-independent. Returns an empty string when it cannot be produced (e.g. no SHA).
+    """
+    if not pr_sha:
+        return ""
+    _ensure_full_history(project_root)
+    argv = ["diff", f"{pr_sha}^1...{pr_sha}^2", "--name-status"]
+    res = _run_git(project_root, argv)
+    if res is None or res.returncode != 0:
+        # Retry once after unshallowing in case the first attempt raced a shallow checkout.
+        _run_git(project_root, ["fetch", "--quiet", "--unshallow", "origin"], timeout=600)
+        res = _run_git(project_root, argv)
+    if res is None or res.returncode != 0:
+        return ""
+    files = res.stdout.strip()
+    if len(files) > max_chars:
+        files = files[:max_chars] + "\n... (list truncated) ..."
+    return files
+
+
+def _save_pr_changed_files(output_path: str, pr_files: str) -> None:
+    """Persist the PR changed-file list next to the analysis output for easy log inspection."""
+    if not pr_files:
+        return
+    out_dir = os.path.dirname(os.path.abspath(output_path)) if output_path else "."
+    path = os.path.join(out_dir, "pr_changed_files.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(pr_files + "\n")
+    except OSError as e:
+        print(f"Warning: could not write PR changed-file list {path}: {e}", file=sys.stderr)
+
+
+def build_prompt(cluster: dict, pr_files: str, max_excerpt: int, project_root: str, log_path: str) -> str:
     return _PROMPT_TEMPLATE.format(
         signature=cluster.get("signature", ""),
         test_count=len(cluster.get("tests", [])),
         tests=", ".join(cluster.get("tests", [])) or "(unknown)",
         excerpt=(cluster.get("sample", "") or "")[:max_excerpt],
-        pr_sha=pr_sha or "(not provided)",
+        pr_files=pr_files or "(empty; inspect the checkout with your read/rg tools if needed)",
         project_root=project_root or "(not provided)",
         log_path=log_path or "(not provided)",
     )
 
 
-def analyze(cluster: dict, pr_sha: str, args) -> dict:
-    prompt = build_prompt(cluster, pr_sha, args.max_excerpt_chars, args.project_root, args.log_dir)
+def analyze(cluster: dict, pr_files: str, args) -> dict:
+    prompt = build_prompt(cluster, pr_files, args.max_excerpt_chars, args.project_root, args.log_dir)
     raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
     parsed = parse_model_json(raw)
     result = {
@@ -265,7 +340,7 @@ def main():
     parser.add_argument(
         "--pr-sha",
         default="",
-        help="Merge commit SHA of the PR build; the AI derives the diff from it via git",
+        help="Merge commit SHA of the PR build; used to pre-compute the PR diff embedded in prompts",
     )
     parser.add_argument("--top", type=int, default=3, help="Number of top unknown clusters to analyze")
     parser.add_argument("--backend", choices=["copilot", "none"], default="none", help="Inference backend")
@@ -280,6 +355,12 @@ def main():
     parser.add_argument("--project-root", default="", help="Repository checkout root the AI may inspect")
     parser.add_argument("--log-dir", default="", help="Directory holding the full raw failure logs")
     parser.add_argument("--max-excerpt-chars", type=int, default=4000)
+    parser.add_argument(
+        "--max-diff-chars",
+        type=int,
+        default=20000,
+        help="Max characters of the PR changed-file list embedded in each prompt",
+    )
     args = parser.parse_args()
 
     # The AI switch overrides the backend so a single pipeline step can toggle it.
@@ -289,15 +370,16 @@ def main():
     with open(args.clusters_json, encoding="utf-8") as f:
         data = json.load(f)
 
-    # The AI derives the PR diff on demand from git using the merge commit SHA,
-    # instead of relying on a pre-computed (and easily wrong) diff file.
+    # The PR changed-file list is the same for every cluster, so compute and persist it once; the
+    # model reads the actual source itself instead of running git inside a shallow checkout.
     pr_sha = (args.pr_sha or "").strip()
+    pr_files = compute_pr_changed_files(pr_sha, args.project_root, args.max_diff_chars)
 
     unknown = [c for c in data.get("clusters", []) if not c.get("known")]
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
     selected = unknown[: args.top]
 
-    analyses = [analyze(cluster, pr_sha, args) for cluster in selected]
+    analyses = [analyze(cluster, pr_files, args) for cluster in selected]
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump({"backend": args.backend, "analyses": analyses}, f, indent=2)
