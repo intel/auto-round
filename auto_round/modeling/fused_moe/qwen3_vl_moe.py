@@ -23,7 +23,7 @@ from auto_round.utils import clear_memory, unsupported_meta_device
 transformers_version = version.parse(transformers.__version__)
 from typing import TYPE_CHECKING
 
-from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
+from auto_round.modeling.fused_moe.utils import _update_parameter, grouped_or_sequential_moe_forward
 
 if TYPE_CHECKING:
     from transformers import Qwen3VLMoeConfig, Qwen3VLMoeTextConfig
@@ -105,7 +105,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
                     weighted_output = expert_out * routing_weights[token_idx, idx, None]
                     next_states.index_add_(0, token_idx, weighted_output.to(hidden_states.dtype))
         else:
-            next_states = sequential_moe_forward(
+            next_states = grouped_or_sequential_moe_forward(
                 hidden_states, router_indices, routing_weights, self.experts, self.num_experts
             )
         next_states = next_states.reshape(batch_size, sequence_length, hidden_dim)
@@ -144,6 +144,8 @@ class SequentialQwen3VLMoeTextExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Qwen3VLMoeTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
+        # Container-level activation so the grouped experts forward can apply gating.
+        self.act_fn = self[0].act_fn
         register_moe_fusion_spec(
             self,
             build_standard_moe_fusion_spec(
