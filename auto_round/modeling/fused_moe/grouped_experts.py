@@ -50,9 +50,10 @@ How it works:
    their scales per row of the group-reshaped tensor, so rows stay independent and the
    result is bit-identical; the backward likewise becomes a single big graph. See
    ``_batched_qdq_weights``.
-5. Run the routed GEMM: by default one ``F.linear`` per *active* expert over its
-   contiguous slice; ``AR_MOE_GROUPED_MM=1`` switches to torch's ``grouped_mm`` kernel
-   instead (see the note above ``_native_grouped_mm_available`` for why the loop wins).
+5. Run the routed GEMM: by default torch's native ``grouped_mm`` kernel (one launch for all
+   experts); ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced`` forces one ``F.linear`` per
+   *active* expert over its contiguous slice instead (see the note above
+   ``_native_grouped_mm_available``).
 6. Scatter back and reduce over ``top_k``.
 
 Gradients flow through the fake-quantized weights exactly as in the loop version, so this
@@ -96,6 +97,9 @@ from auto_round.utils import logger
 
 # Expert implementation name registered into transformers' ``ALL_EXPERTS_FUNCTIONS``.
 GROUPED_LINEAR_IMPL = "linear_grouped"
+# Same grouped forward, but forcing the sliced per-expert GEMM loop instead of the native
+# ``grouped_mm`` kernel. Selected via ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced``.
+GROUPED_LINEAR_SLICED_IMPL = "linear_grouped_sliced"
 
 # Set once if the native grouped_mm kernel raises; afterwards we always use the sliced loop.
 _NATIVE_GROUPED_MM_DISABLED = False
@@ -831,11 +835,11 @@ def _build_plan(module: nn.Module, active_ids: list[int]) -> _GroupedPlan | None
 #   sliced loop  one ``F.linear`` per *active* expert over a contiguous slice.
 #                Same kernels as transformers' ``grouped_mm_fallback``, but without its
 #                extra ``offs.tolist()`` sync -- we already hold the counts on the host.
-#                Enable with ``AR_MOE_GROUPED_MM=0``.
+#                Enable with ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced``.
 #   grouped_mm   (default) ``torch.nn.functional.grouped_mm`` / ``torch._grouped_mm``: one
 #                kernel for all experts, driven by ``offsets``. Differentiable, and
 #                bit-identical to the loop (verified on A100). Disable with
-#                ``AR_MOE_GROUPED_MM=0``.
+#                ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced``.
 #   batched_mm   transformers' ``_batched_linear``/``torch.bmm`` path gathers
 #                ``weight[expert_ids]`` into an ``(S, out, in)`` tensor -- one weight copy
 #                per routed token. That is a decode-time trick (S == top_k); at tuning
@@ -872,16 +876,25 @@ except Exception:  # pragma: no cover - older/absent transformers
     _transformers_can_use_grouped_mm = None
 
 
+def _sliced_grouped_mm_requested() -> bool:
+    """Whether the sliced per-expert GEMM loop was explicitly requested.
+
+    ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced`` forces the sliced loop; every other
+    grouped setting (``auto`` / ``linear_grouped``) prefers the native ``grouped_mm`` kernel.
+    """
+    return str(envs.AR_MOE_EXPERTS_IMPL).lower() == GROUPED_LINEAR_SLICED_IMPL
+
+
 def _native_grouped_mm_available() -> bool:
     """Cheap pre-check that does not need the stacked 3-D operand."""
-    if _NATIVE_GROUPED_MM_DISABLED or envs.AR_MOE_GROUPED_MM != "1":
+    if _NATIVE_GROUPED_MM_DISABLED or _sliced_grouped_mm_requested():
         return False
     return hasattr(F, "grouped_mm") or hasattr(torch, "_grouped_mm")
 
 
 def _native_grouped_mm_preferred(device: torch.device) -> bool:
     """Whether the native kernel is opted into. On by default; see the note above."""
-    return envs.AR_MOE_GROUPED_MM == "1"
+    return not _sliced_grouped_mm_requested()
 
 
 def _native_grouped_mm_usable(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> bool:

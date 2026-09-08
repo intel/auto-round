@@ -36,7 +36,11 @@ from torch import nn
 
 from auto_round import envs
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
-from auto_round.modeling.fused_moe.grouped_experts import GROUPED_LINEAR_IMPL, grouped_linear_experts_forward
+from auto_round.modeling.fused_moe.grouped_experts import (
+    GROUPED_LINEAR_IMPL,
+    GROUPED_LINEAR_SLICED_IMPL,
+    grouped_linear_experts_forward,
+)
 from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
@@ -62,20 +66,25 @@ AUTO_ROUND_EXPERTS_IMPLS = {
 def resolve_experts_implementation() -> str:
     """Pick the experts forward used for AutoRound's unfused per-expert layout.
 
-    ``AR_MOE_EXPERTS_IMPL`` accepts ``auto`` (default), ``linear_grouped`` or
-    ``linear_loop``. ``auto`` selects the grouped-GEMM backend, which batches the routed
-    token/expert pairs into a single sorted GEMM instead of looping (and syncing) over
-    every expert; it self-checks the layer and falls back to the loop when the layer is
-    not eligible.
+    ``AR_MOE_EXPERTS_IMPL`` accepts ``auto`` (default), ``linear_grouped``,
+    ``linear_grouped_sliced`` or ``linear_loop``. ``auto``/``linear_grouped`` select the
+    grouped-GEMM backend with torch's native ``grouped_mm`` kernel, which batches the routed
+    token/expert pairs into a single sorted GEMM instead of looping (and syncing) over every
+    expert; it self-checks the layer and falls back to the loop when the layer is not
+    eligible. ``linear_grouped_sliced`` is the same grouped backend but forces the sliced
+    per-expert GEMM loop instead of the native kernel.
     """
     requested = str(envs.AR_MOE_EXPERTS_IMPL).lower()
-    if requested in ("", "auto"):
+    if requested in ("", "auto", GROUPED_LINEAR_IMPL, GROUPED_LINEAR_SLICED_IMPL):
+        # Both grouped variants use the same forward; native vs sliced is decided inside it
+        # from AR_MOE_EXPERTS_IMPL (see grouped_experts._sliced_grouped_mm_requested).
         return GROUPED_LINEAR_IMPL
-    if requested in AUTO_ROUND_EXPERTS_IMPLS:
-        return requested
+    if requested == LINEAR_LOOP_IMPL:
+        return LINEAR_LOOP_IMPL
     logger.warning(
         f"Unknown AR_MOE_EXPERTS_IMPL='{requested}', expected one of "
-        f"{['auto', *AUTO_ROUND_EXPERTS_IMPLS]}. Falling back to '{LINEAR_LOOP_IMPL}'."
+        f"{['auto', GROUPED_LINEAR_IMPL, GROUPED_LINEAR_SLICED_IMPL, LINEAR_LOOP_IMPL]}. "
+        f"Falling back to '{LINEAR_LOOP_IMPL}'."
     )
     return LINEAR_LOOP_IMPL
 
