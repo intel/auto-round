@@ -49,7 +49,6 @@ from auto_round.utils import (
     set_module,
     unsupported_meta_device,
 )
-from auto_round.utils.model import get_layer_names_in_block
 
 
 def _is_supported_layer(module: torch.nn.Module) -> bool:
@@ -85,8 +84,6 @@ def _collect_modules_to_not_convert(
         non_quant_blocks = set(all_block_names) - to_quant_set
         modules_to_not_convert.update(non_quant_blocks)
 
-    layers_in_blocks = set(get_layer_names_in_block(model, quant_block_list=all_blocks))
-
     # 2. Collect non-quantized layers from layer_config
     layers_from_block_patterns = set()
     for layer_name, layer_cfg in layer_config.items():
@@ -94,13 +91,12 @@ def _collect_modules_to_not_convert(
             layers_from_block_patterns.add(layer_name)
     modules_to_not_convert.update(layers_from_block_patterns)
 
-    # 3. Scan full model for supported layers not in layer_config and not in blocks
+    # 3. Scan full model for supported layers that were not quantized.
+    #    Any supported layer not in layer_config was not quantized and must
+    #    be listed so that the AWQ loader skips it at load time.
     for module_name, module in model.named_modules():
-        if _is_supported_layer(module):
-            # If this layer is not in layer_config, it wasn't quantized
-            if module_name not in layer_config and module_name not in layers_in_blocks:
-                # Standalone layer outside blocks
-                modules_to_not_convert.add(module_name)
+        if _is_supported_layer(module) and module_name not in layer_config:
+            modules_to_not_convert.add(module_name)
 
     # 4. Add high-precision layers from regex_config (bits > 8)
     for regex_name, regex_cfg in regex_config.items():
