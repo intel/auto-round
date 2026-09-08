@@ -1837,6 +1837,42 @@ _PREFILL_CLAIM_CONFIGS = [
     ("claim before gemm", {"ARK_MOE_W4A8_PREFILL_CLAIM_EARLY": "1"}),
 ]
 
+# Prefill: the register budget, and therefore how many work-groups are resident.
+#
+# `grf_size` used to be hardwired at 256 in the launcher, which pinned every
+# tile in the ladder at 4 hardware threads per vector engine -- 512 work-items
+# per Xe-core, which is exactly the `MaxThreadsPerSM` the persistent grid is
+# sized from. Asking for 128 registers instead doubles both. The small tiles are
+# in the ladder *because* they ask for fewer registers, so every one of them has
+# been swept so far paying that cost without ever collecting the occupancy that
+# is their reason to exist.
+#
+# The flag alone would sweep nothing: the ladder sends every shipped qwen3 shape
+# to `128x256`, whose 32x64 sub-group accumulator is 128 int32 registers -- the
+# entire small-GRF file, nothing left for the staged A/B tiles -- so that policy
+# declines the halved budget and both settings launch the identical kernel. The
+# tile therefore has to be forced for the knob to be observable at all, and the
+# first two rows do exactly that: same 128x128 tile, same everything else, one
+# register budget each. That pair is the measurement.
+#
+# The third row is the shipped default, and it is what the pair is *for*. The
+# question is not whether 128 registers beat 256 on the same tile -- it is
+# whether the smaller tile at double occupancy finally catches the bigger tile
+# that has beaten it in every sweep so far. If row 2 beats row 1 but neither
+# reaches row 3, the ladder stays as it is and the answer is that the 256-wide N
+# tile wins on A re-reads, not on occupancy.
+#
+# Expect the effect, if any, on the down projection: occupancy hides latency,
+# half of qwen3 down's time is per-tile cost that does not scale with K, and
+# ~78% of that is the 64 KB of D each tile writes. Covering a store stream with
+# other work-groups is what more residency buys. The up projection is at 86% of
+# the DPAS peak with the quantizer subtracted and has nothing to hide.
+_PREFILL_GRF_CONFIGS = [
+    ("128x128, grf 256", {"ARK_MOE_W4A8_PREFILL_TILE": "128x128", "ARK_MOE_W4A8_PREFILL_SMALL_GRF": "0"}),
+    ("128x128, grf 128", {"ARK_MOE_W4A8_PREFILL_TILE": "128x128", "ARK_MOE_W4A8_PREFILL_SMALL_GRF": "1"}),
+    ("128x256 (default)", {"ARK_MOE_W4A8_PREFILL_TILE": "128x256"}),
+]
+
 # Prefill: the two call contracts that cut traffic instead of cycles.
 #
 # Neither changes the GEMM. They change what crosses the call boundary, which
@@ -2556,6 +2592,55 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"claim order {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_grf_sweep(self, request):
+            """Time the register budget, which is really a test of occupancy.
+
+            The kernel is persistent and its grid is sized to fill the device
+            exactly once, so the number of work-groups launched *is* the
+            residency. That number comes from a threads-per-Xe-core constant
+            that only holds at ``grf_size<256>``; halving the register request
+            doubles it, and the two have to move together or nothing changes.
+
+            The first two rows are the measurement -- one tile, two budgets --
+            and the third is the question they answer: whether 128x128 at
+            double occupancy catches the 128x256 tile that has beaten it in
+            every sweep so far. Every row computes the same tiles from the same
+            inputs, so all three must be bit-identical and only the timing is a
+            measurement.
+            """
+            rows = run_config_sweep("prefill", _PREFILL_GRF_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"GRF budget {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_grf_sweep_long_seq(self, request):
+            """Time the register budget at the 8K-prompt routing.
+
+            The other prefill point, and the one where the occupancy argument
+            is weakest for the small tile: 512 rows/expert divides evenly by
+            both 128 and 256, so the padding penalty that decides the ladder
+            elsewhere is absent here and the tiles compete on their merits.
+
+            A tie across all three rows would say the down projection's gap is
+            not a latency that more resident work-groups can cover, which --
+            after prefetch depth, tile order and claim order all came back
+            flat -- would close the last of the latency knobs and leave the D
+            write as the only remaining prefill lever.
+            """
+            rows = run_config_sweep(
+                "prefill",
+                _PREFILL_GRF_CONFIGS,
+                models=_models_option(request),
+                batches=_long_seq_batches(),
+            )
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"GRF budget {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
         def test_perf_prefill_contract_sweep(self, request):
             """Time the two traffic-cutting call contracts at the compute-bound batch.
 
@@ -3092,6 +3177,58 @@ if pytest is not None:
                 f"{(outs['0'] != outs['1']).sum().item()} of {outs['0'].numel()} elements differ"
             )
 
+        def test_prefill_small_grf_matches(self):
+            """The halved register budget must not change the result.
+
+            ``grf_size`` asks the compiler for a register allocation; it does
+            not change what the kernel computes. But it is not only a compiler
+            hint here: the request also sets how many work-groups are resident,
+            and the persistent grid is sized from that number, so the two
+            budgets launch *different grids* over the same tiles. That is the
+            part worth testing. Tiles are handed out by a device-scope counter
+            rather than owned by a work-group, so a grid of a different size
+            must still consume every index exactly once.
+
+            The failure mode is silent in the same way the claim-order one is:
+            too few work-groups leave the last tiles uncomputed, too many leave
+            a band recomputed, and neither raises. Both show up as a mismatch
+            against the large-GRF baseline.
+
+            The tile is forced to 128x128 because that is the only rung the
+            halved budget applies to -- the ladder's own choice for these
+            shapes is 128x256, which declines it and would make this test
+            compare a kernel against itself. The batch is the ragged one, so
+            every expert contributes two interior tiles and one partial and the
+            expert boundaries the tile walk has to respect are in the
+            comparison.
+            """
+            rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
+            case = _build_case(
+                _QWEN3_NK[1][1],
+                _QWEN3_NK[1][2],
+                _QWEN3_E,
+                rows_per_expert * _QWEN3_E,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            outs = {}
+            for flag in ("0", "1"):
+                with _env_override(
+                    ARK_MOE_W4A8_PREFILL_TILE="128x128",
+                    ARK_MOE_W4A8_PREFILL_SMALL_GRF=flag,
+                ):
+                    outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+            assert torch.equal(outs["0"], outs["1"]), (
+                "halving the register budget changed the result: "
+                f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}, "
+                f"{(outs['0'] != outs['1']).sum().item()} of {outs['0'].numel()} elements differ"
+            )
+
         def test_decode_ksplit_matches_legacy(self):
             """The K-split decode mapping must agree with the legacy one.
 
@@ -3272,6 +3409,17 @@ def _parse_args(argv):
             "pair with --long-seq for the 12-k-tile down projections where it should show first."
         ),
     )
+    parser.add_argument(
+        "--grf",
+        action="store_true",
+        help=(
+            "Also sweep the prefill register budget: the same 128x128 tile at grf_size 256 and 128, "
+            "plus the shipped 128x256 tile for reference. Halving the request doubles how many "
+            "work-groups are resident, which the persistent grid is sized from, so this is the "
+            "occupancy sweep the small tiles in the ladder have never had -- they were all measured "
+            "at the large budget their smaller accumulator was supposed to avoid."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     parser.add_argument(
@@ -3377,6 +3525,17 @@ def main(argv=None) -> int:
                     run_config_sweep(
                         phase,
                         _PREFILL_CLAIM_CONFIGS,
+                        dtype=dtype,
+                        models=models,
+                        batches=_long_seq_batches(),
+                    )
+            if phase == "prefill" and args.grf:
+                if not args.long_seq or args.compute_bound:
+                    run_config_sweep(phase, _PREFILL_GRF_CONFIGS, dtype=dtype, models=models)
+                if args.long_seq:
+                    run_config_sweep(
+                        phase,
+                        _PREFILL_GRF_CONFIGS,
                         dtype=dtype,
                         models=models,
                         batches=_long_seq_batches(),
