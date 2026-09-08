@@ -2016,7 +2016,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             return False
 
         family = _validate_auto_scheme_options(self.scheme_input)
-        accepted_formats = {"auto_round", "auto_round:auto_gptq", "auto_round:rrq"}
+        accepted_formats = {"auto_round", "auto_round:auto_gptq"}
         if family == "mx_fp":
             accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
 
