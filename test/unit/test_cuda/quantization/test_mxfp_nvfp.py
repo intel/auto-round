@@ -126,30 +126,3 @@ class TestAutoRound:
         autoround.quantize()
         quantized_model_path = self.save_dir
         autoround.save_quantized(output_dir=quantized_model_path, inplace=False, format="auto_round")
-
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
-    def test_qwen_moe_quant_infer(self, dataloader):
-        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
-        layer_config = {
-            r"layers\.(?:[3-9]|1[0-9]|2[0-3])": {"bits": 16, "act_bits": 16},
-        }
-        scheme = "nvfp4"
-        autoround = AutoRound(
-            model_name,
-            scheme=scheme,
-            iters=1,
-            seqlen=3,
-            nsamples=2,
-            dataset=dataloader,
-            layer_config=layer_config,
-        )
-        quantized_model_path = self.save_dir
-        _, quantized_model_path = autoround.quantize_and_save(
-            output_dir=quantized_model_path, inplace=False, format="auto_round"
-        )
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, torch_dtype="auto", device_map="auto")
-        tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
-        from test.helpers import evaluate_accuracy
-
-        evaluate_accuracy(model, tokenizer, threshold=0.49, batch_size=16, task="piqa", limit=10)
