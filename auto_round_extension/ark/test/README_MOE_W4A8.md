@@ -451,27 +451,29 @@ on B70 at the qwen3 up-projection shape with an 8K prompt:
 
 | path | permute | quant | GEMM | total | vs in-call |
 |---|---|---|---|---|---|
-| in-call quant | 1.011 (bf16) | 0.818 (fused, 65536 rows) | 2.033 | 3.862 | — |
-| dedup, torch quant | 0.468 (int8) | 1.558 (torch, 8192 rows) | 2.033 | 4.059 | **0.95x** |
-| dedup, fused quant | 0.468 (int8) | 0.136 (fused, 8192 rows) | 2.033 | **2.637** | **1.46x** |
+| in-call quant | 1.015 (bf16) | 0.804 (fused, 65536 rows) | 2.204 | 4.028 | — |
+| dedup, torch quant | 0.468 (int8) | 1.557 (torch, 8192 rows) | 2.204 | 4.230 | **0.95x** |
+| dedup, fused quant | 0.468 (int8) | 0.110 (fused, 8192 rows) | 2.204 | **2.782** | **1.45x** |
 
-Both `quant` figures for the fused quantizer in that table were obtained by
-differencing two whole-call timings, which is [since known to read high when the
-pass is a small share of the
-call](#measuring-it-instead-of-differencing-it). The 65536-row entry is safe:
-differencing and the direct measurement agree there to 1%. The 8192-row entry is
-the open one, and it is *not* yet settled which way it errs — extrapolating the
-confirmed 65536-row measurement linearly predicts ~0.10 ms against the
-0.132–0.136 ms differencing reports, but the 1024-row points show the pass also
-carries a fixed ~25–30 µs launch cost, which is the same size as that gap. So
-the 8192-row figure is either inflated by differencing or genuinely paying a
-floor, and the two are not distinguishable from the numbers in this table.
-`run_dedup_quant` now measures it directly rather than differencing it. Either
-way the correction can only move that row *down*, so 1.46–1.47x is a floor on
-this comparison rather than a ceiling.
+Both `quant` figures for the fused quantizer in that table are now measured
+directly. They used to be obtained by differencing two whole-call timings, which
+is [known to read high when the pass is a small share of the
+call](#measuring-it-instead-of-differencing-it), and the 8192-row entry was the
+one that sat in that regime. It is settled: **differencing said 0.153 ms and the
+measurement says 0.110 ms**, 39% high, in exactly the predicted direction. The
+[fixed launch cost](#measuring-it-instead-of-differencing-it) is real but far
+smaller than the 1024-row points alone suggested — about 11 µs on this shape,
+not the 25–30 µs that was briefly written here.
 
-The traffic model above predicted 1.53x and the device returned 1.46x, so the
-byte count is what is driving this. Against W4A16 on the same end-to-end basis
+The headline reads 1.45x here against 1.46–1.47x in the two earlier runs, and
+the quantizer is not the reason. The GEMM ran 2.204 ms this time against
+2.033–2.040 ms before — 8% slower, and *common to both rows*, so it dilutes the
+ratio no matter what the quantizer does. Hold it at the earlier value and the
+same three measurements give 1.47x. The run-to-run spread on this comparison is
+the GEMM, not the pass being compared.
+
+The traffic model above predicted 1.53x and the device returns 1.45–1.47x, so
+the byte count is what is driving this. Against W4A16 on the same end-to-end basis
 (its GEMM measured 3.679 ms, and it permutes 16-bit) the deduplicated path is
 **1.78x**.
 
@@ -482,10 +484,10 @@ exactly those rows — and since `moe_w4a8_quant_act` exists it measures the pas
 directly instead, printing the old difference alongside. Doing it at both `T`
 and `batch` rows cross-checks the cost against rows; the test asserts the ratio
 lands within 2x of `top_k`, so a difference that is really measurement noise
-cannot quietly become a headline number. It reads **6.0–6.2x for 8x the rows**
-— sublinear in the direction a fixed per-launch cost predicts, which is why the
-check is a band rather than an equality, and which is also why that sublinearity
-is not headroom.
+cannot quietly become a headline number. Measured, it reads **7.3x for 8x the
+rows** — 91% of linear, the shortfall being the fixed per-launch cost. The old
+differenced version of the same check read 5.3x, and that larger gap was once
+written up as headroom; it was mostly the difference being inflated.
 
 The practical consequence: **do not deduplicate with an eager-torch
 quantizer.** The version worth shipping folds the quantization into the
@@ -493,7 +495,7 @@ epilogue of whatever produces `hidden_states` (the norm ahead of the MoE),
 where the row is already in registers and the absmax is free — which is the
 same "upstream this is free" the contract above describes. Failing that, a
 single fused quantization kernel over the `[batch, K]` hidden states is what
-the 0.136 ms column represents; the 1.558 ms column is what calling eager
+the 0.110 ms column represents; the 1.557 ms column is what calling eager
 torch costs instead.
 
 Two limits worth stating plainly:
@@ -1617,6 +1619,7 @@ differenced estimate.
 |---|---|---|---|---|
 | qwen3 up | 65536 | 0.810 ms | 0.808 ms | agree |
 | qwen3 down | 65536 | 0.284 ms | 0.303 ms | 7% apart |
+| qwen3 up | 8192 | 0.110 ms | 0.153 ms | **39% apart** |
 | qwen3 up | 1024 | 0.025 ms | 0.185 ms | **7.4× apart** |
 | qwen3 down | 1024 | 0.031 ms | 0.125 ms | **4.0× apart** |
 
@@ -1629,18 +1632,22 @@ and every small-row one derived from it does not.
 
 That is not a footnote, because one such figure is load-bearing: the
 deduplicated path is costed at `batch` rows, and its `top_k` linearity check
-reads **6.0–6.2× for an 8× row count**. That gap was once written up as the
-short row count being under-fed, i.e. as headroom. It is not headroom. The
-1024-row measurements settle the direction: the pass costs 0.025 ms on up and
-0.031 ms on down there — down being *slower* while moving a third of the bytes,
-which no bandwidth model produces — so at small row counts the pass is paying a
-fixed ~25–30 µs launch cost, not running short of work. A floor is not
-something occupancy, vectorization or any other in-kernel change moves.
+read **5.3× for an 8× row count** when it was differenced. That gap was written
+up as the short row count being under-fed, i.e. as headroom. It was not.
+Measured, the same check reads **7.3×**, and the pass costs 0.110 ms at 8192
+rows rather than the 0.153 ms the subtraction reported.
 
-What the 1024-row points do *not* settle is the 8192-row one, which is the row
-count that actually matters here, and which sits between a regime where
-differencing is trustworthy and one where it is not. That is why
-`run_dedup_quant` now measures it directly.
+What is left after the correction is a genuine but small fixed cost. Fitting a
+straight line through the measured up-projection points gives **≈11 µs of
+per-launch overhead and 508 GB/s of marginal bandwidth**, and that one line
+reproduces all three row counts across two independent runs — 0.023 ms predicted
+against 0.025 measured at 1024, 0.110 at 8192, 0.804 at 65536. At 8192 rows the
+pass therefore still achieves 458 GB/s, 92% of its own long-prefill figure. The
+down projection's 1024-row point implies a larger intercept (≈27 µs, which is
+why it is *slower* than up there while moving a third of the bytes), so the
+floor is shape-dependent rather than a single constant. None of it is
+recoverable: a fixed launch cost is not something occupancy, vectorization or
+any other in-kernel change moves.
 
 #### It is on the roof, and the roof is above the probe
 
@@ -1735,9 +1742,9 @@ One work-group per hardware thread was never the constraint; the DRAM was.
 
 The small-row rungs fail for the opposite reason. At 1024 rows the pass costs
 0.025 ms (up) and 0.031 ms (down) — note that down is *slower* while moving a
-third of the bytes, which no bandwidth model produces. That is a fixed
-~25–30 µs launch floor, not a stream, and occupancy does not move a floor
-either. It does not matter: at that size the pass is 2–4% of the call.
+third of the bytes, which no bandwidth model produces. That is a fixed launch
+cost (≈11 µs on up, ≈27 µs on down), not a stream, and occupancy does not move a
+floor either. It does not matter: at that size the pass is 2–4% of the call.
 
 So the hypothesis this knob was built to test is refuted from both ends, and
 usefully so — it was the last untested dimension of this kernel. The flag stays
@@ -1747,9 +1754,11 @@ instantiated per rung), because the sweep is now a regression guard, and because
 guard. **The default stays at `1`.**
 
 These 1024-row numbers also retire the "short prompts are under-fed" reading
-that the 8192-row estimate had suggested — though not by restoring linearity.
-The pass really is sublinear at small row counts; it is just that the cause is a
-launch floor rather than an unfed stream, so there is nothing there to win.
+that the 8192-row estimate had suggested — and the direct measurement has since
+retired most of the estimate itself. At the row count that actually matters the
+pass costs 0.110 ms, not the 0.153 ms differencing reported, and holds 458 GB/s.
+What sublinearity survives is a launch floor rather than an unfed stream, so
+there is nothing there to win.
 
 ```bash
 pytest test_moe_w4a8_perf.py -k "act_quant_wg" -v -s
@@ -1819,7 +1828,7 @@ quantization has to happen somewhere. It is reachable anyway, because the row
 absmax does not depend on the expert, so on the up/gate projection the in-call
 pass quantizes `top_k` identical copies of every token. Quantizing the `batch`
 distinct rows once and permuting int8 gets to the same call, and measures
-**1.46x end to end** including the caller's permute — the whole story is in
+**1.45–1.47x end to end** including the caller's permute — the whole story is in
 [deduplicate the quantization](#reaching-contract-1-with-no-int8-upstream-deduplicate-the-quantization),
 including the way it is a *regression* if the deduplicated rows go through an
 eager-torch quantizer.
