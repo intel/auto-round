@@ -1521,6 +1521,89 @@ class TestHookNgramEmbeddingsOnCpu:
         assert has_ngram is False
         assert raw_ngram is None
 
+    def test_top_level_ngram_embeddings_pinned(self):
+        """Top-level ``model.model.ngram_embeddings`` is pinned and returned."""
+        import torch.nn as nn
+
+        from auto_round.utils.model import hook_ngram_embeddings_on_cpu, module_is_pinned_on_cpu
+
+        class Inner(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.ngram_embeddings = nn.Embedding(50, 8)
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = Inner()
+
+        model = Model()
+        has_ngram, raw_ngram = hook_ngram_embeddings_on_cpu(model)
+        assert has_ngram is True
+        assert raw_ngram is model.model.ngram_embeddings
+        assert module_is_pinned_on_cpu(model.model.ngram_embeddings)
+
+    def test_per_layer_ngram_embeddings_pinned(self):
+        """Nested per-layer ``...ple.ple_embedding.ngram_embedding`` are pinned.
+
+        Mirrors the Qwen3-Next-Flash layout where each decoder layer carries its
+        own large ngram lookup table that must stay resident on CPU.
+        """
+        import torch
+        import torch.nn as nn
+
+        from auto_round.utils.model import hook_ngram_embeddings_on_cpu, module_is_pinned_on_cpu
+
+        class PleEmb(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("layer_multipliers", torch.zeros(4))
+                self.ngram_embedding = nn.Embedding(100, 8)
+
+        class Ple(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.ple_embedding = PleEmb()
+                self.key_proj = nn.Linear(8, 8)
+
+        class Layer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.ple = Ple()
+
+        class Inner(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([Layer(), Layer()])
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = Inner()
+
+        model = Model()
+        # No top-level ngram_embeddings here.
+        has_ngram, raw_ngram = hook_ngram_embeddings_on_cpu(model)
+        assert has_ngram is False
+        assert raw_ngram is None
+
+        pinned = [n for n, m in model.named_modules() if module_is_pinned_on_cpu(m)]
+        assert pinned == [
+            "model.layers.0.ple.ple_embedding.ngram_embedding",
+            "model.layers.1.ple.ple_embedding.ngram_embedding",
+        ]
+        # Sibling / regular projection layers are untouched.
+        assert not module_is_pinned_on_cpu(model.model.layers[0].ple.key_proj)
+
+    def test_module_is_pinned_on_cpu_false_for_plain_module(self):
+        """A module without a CPU-execution hook is not reported as pinned."""
+        import torch.nn as nn
+
+        from auto_round.utils.model import module_is_pinned_on_cpu
+
+        assert module_is_pinned_on_cpu(nn.Linear(4, 4)) is False
+
+
 
 class TestMvModuleFromGpu:
     """Test mv_module_from_gpu function."""

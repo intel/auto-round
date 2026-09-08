@@ -2589,6 +2589,47 @@ def module_is_pinned_on_cpu(module: torch.nn.Module) -> bool:
     return False
 
 
+def pin_ngram_embeddings_on_cpu_(module: torch.nn.Module) -> list:
+    """Pin every ngram embedding found under ``module`` on CPU, in place.
+
+    Works on any subtree (a whole model *or* a single decoder block), so it can
+    be applied right after a block is materialized and before it is dispatched
+    onto accelerators. Returns the list of pinned module names.
+    """
+    pinned = []
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in ("ngram_embedding", "ngram_embeddings"):
+            if not module_is_pinned_on_cpu(sub):
+                _pin_module_execution_on_cpu(sub)
+            pinned.append(name)
+    return pinned
+
+
+def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> torch.nn.Module:
+    """Move ``module`` to ``device`` but leave CPU-pinned subtrees on CPU.
+
+    ``nn.Module.to()`` recurses unconditionally and would drag a CPU-pinned
+    child (e.g. a multi-GiB ngram embedding) onto the accelerator, which is
+    exactly what causes card-0 OOM on large ngram models. This walks the tree
+    manually and stops at any subtree pinned by
+    :func:`_pin_module_execution_on_cpu`.
+    """
+    if module_is_pinned_on_cpu(module):
+        return module
+    for _, param in module.named_parameters(recurse=False):
+        if param.device.type != "meta":
+            param.data = param.data.to(device)
+            if param.grad is not None:
+                param.grad.data = param.grad.data.to(device)
+    for _, buf in module.named_buffers(recurse=False):
+        if buf.device.type != "meta":
+            buf.data = buf.data.to(device)
+    for child in module.children():
+        move_to_device_preserving_cpu_pinned(child, device)
+    return module
+
+
 def hook_ngram_embeddings_on_cpu(model):
     """Pin ngram embeddings on CPU so they are never moved onto an accelerator.
 
@@ -2606,10 +2647,7 @@ def hook_ngram_embeddings_on_cpu(model):
     """
     # Per-layer / nested ngram embeddings (match any module attribute literally
     # named ``ngram_embedding``, plus the pluralized top-level ``ngram_embeddings``).
-    for name, module in model.named_modules():
-        leaf = name.rsplit(".", 1)[-1]
-        if leaf in ("ngram_embedding", "ngram_embeddings"):
-            _pin_module_execution_on_cpu(module)
+    pin_ngram_embeddings_on_cpu_(model)
 
     has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
     raw_ngram_embeddings = model.model.ngram_embeddings if has_ngram_embeddings else None

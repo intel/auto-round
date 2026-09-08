@@ -1036,6 +1036,20 @@ def set_auto_device_map_for_block_with_tuning(
         This function is intended for internal use in device memory management and tuning.
     """
     card_0_in_high_risk, loss_device = False, output_device
+    from auto_round.utils.model import (
+        module_is_pinned_on_cpu,
+        move_to_device_preserving_cpu_pinned,
+        pin_ngram_embeddings_on_cpu_,
+    )
+
+    # Keep huge, non-quantizable ngram embeddings resident on CPU. They do not
+    # participate in tuning and can be tens of GiB, so moving them onto an
+    # accelerator (the fallback below would put them all on device_0) reliably
+    # OOMs card 0. Must run before any device placement below.
+    pinned = pin_ngram_embeddings_on_cpu_(block)
+    if pinned:
+        logger.debug(f"Keeping {len(pinned)} ngram embedding module(s) on CPU: {pinned}")
+
     dev_mgr = get_current_device_manager()
     if dev_mgr.is_available() and dev_mgr.type != "cpu":
         num_devices = dev_mgr.device_count()
@@ -1044,7 +1058,7 @@ def set_auto_device_map_for_block_with_tuning(
         return card_0_in_high_risk, loss_device
 
     if len(device_list) <= 1:  # Only 1 card is available or non-auto device map
-        block = block.to(output_device)
+        move_to_device_preserving_cpu_pinned(block, output_device)
         return card_0_in_high_risk, loss_device
 
     if device_list:
@@ -1082,7 +1096,7 @@ def set_auto_device_map_for_block_with_tuning(
 
     if not layer_memory_dict:
         output_device = device_0 if output_device is None else output_device
-        block.to(output_device)
+        move_to_device_preserving_cpu_pinned(block, output_device)
         logger.debug(f"No layers require tuning; moved the block to {output_device}")
         return card_0_in_high_risk, loss_device
 
@@ -1110,7 +1124,6 @@ def set_auto_device_map_for_block_with_tuning(
 
     # Ensure all remaining modules with parameters/buffers are moved to expected device, by default device_0
     output_device = device_0 if output_device is None else output_device
-    from auto_round.utils.model import module_is_pinned_on_cpu
 
     for name, module in block.named_modules():
         if name in names:  # This module was already assigned a device

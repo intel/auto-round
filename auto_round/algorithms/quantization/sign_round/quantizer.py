@@ -110,7 +110,10 @@ class SignRoundQuantizer(BaseQuantizer):
                         continue
                     add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
         else:
-            block = block.to(device_manager.device)
+            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, pin_ngram_embeddings_on_cpu_
+
+            pin_ngram_embeddings_on_cpu_(block)
+            block = move_to_device_preserving_cpu_pinned(block, device_manager.device)
             card_0_in_high_risk, loss_device = False, device_manager.device
 
         self._card_0_in_high_risk = card_0_in_high_risk
