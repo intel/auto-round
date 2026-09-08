@@ -2740,9 +2740,7 @@ def _iter_ngram_modules(module: torch.nn.Module):
     for name, sub in module.named_modules():
         leaf = name.rsplit(".", 1)[-1]
         # Keep exact matches first, but also accept common ngram leaf variants.
-        if leaf in ("ngram_embedding", "ngram_embeddings") or (
-            "ngram_embedding" in leaf or leaf.startswith("ngram")
-        ):
+        if leaf in ("ngram_embedding", "ngram_embeddings") or ("ngram_embedding" in leaf or leaf.startswith("ngram")):
             yield name, sub
 
 
