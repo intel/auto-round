@@ -59,7 +59,10 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
             super().__init__([Step3p5ExpertMLP(hidden_size, intermediate_size, limit) for _ in range(self.num_experts)])
         # Container-level activation + limit so the grouped experts forward can reproduce the
         # per-expert gating (silu + the optional gate/up clamp) via ``_apply_gate`` below.
-        self.act_fn = self[0].act_fn
+        # Store ``act_fn`` via ``object.__setattr__`` so it is NOT registered as a child module
+        # of this ``ModuleList``; otherwise iterating ``experts`` would also yield the activation
+        # module (breaking per-expert iteration / materialization).
+        object.__setattr__(self, "act_fn", self[0].act_fn)
         self.limit = limit
         register_moe_fusion_spec(
             self,

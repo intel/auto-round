@@ -216,6 +216,13 @@ def _act_quant_is_row_independent(layer: nn.Module) -> bool:
 
 def _projection_is_supported(layer: nn.Module) -> bool:
     if type(layer) is nn.Linear:
+        # A plain Linear carrying forward (pre-)hooks must run its own forward so the hooks
+        # fire. This is how act_max is collected during calibration: the composer registers a
+        # forward hook on each expert Linear, and the grouped path -- which multiplies the
+        # weights directly and never calls ``Linear.forward`` -- would silently skip them,
+        # leaving every expert without ``act_max`` (breaking static-act export, e.g. NVFP4).
+        if layer._forward_pre_hooks or layer._forward_hooks:
+            return False
         return True
     if not _is_wrapper_linear(layer):
         return False
