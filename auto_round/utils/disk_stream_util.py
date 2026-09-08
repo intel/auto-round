@@ -495,6 +495,111 @@ def _resolve_checkpoint_name(index, full_name: str):
     return None
 
 
+def _dot_natural_key(name: str):
+    """Natural-sort key matching transformers' ``dot_natural_key``.
+
+    Falls back to a local reimplementation when the transformers symbol is
+    unavailable, so shards sort as ``shard_2`` < ``shard_11`` (numeric), exactly
+    like ``from_pretrained`` orders them before concatenating.
+    """
+    try:
+        from transformers.core_model_loading import dot_natural_key
+
+        return dot_natural_key(name)
+    except Exception:  # pragma: no cover - transformers < 5 / API drift
+        parts: list = []
+        for part in name.split("."):
+            if part.isdigit():
+                parts.append((0, int(part)))
+            else:
+                text = part.rstrip("0123456789")
+                trailing = part[len(text) :]
+                parts.append((1, text, int(trailing)) if trailing else (1, text))
+        return parts
+
+
+@lru_cache(maxsize=None)
+def _wildcard_concat_converters_for(model_type):
+    """Wildcard shard-concat converters registered for one family.
+
+    Mirrors :func:`_concat_converters_for` but keeps the *wildcard* converters it
+    intentionally skips: a single-source ``source_patterns`` containing ``*`` whose
+    only operation is a ``Concatenate``. Qwen3-Next "Flash" (``qwen4_exp_text``) is
+    the motivating case -- its per-layer PLE n-gram embedding is stored as
+    ``...ngram_embedding.shard_<i>.weight`` and merged into a single
+    ``...ngram_embedding.weight`` via
+    ``Concatenate(dim=0, num_shards_attribute="split_ngram_parts")`` with
+    ``force_cpu=True`` (the assembled embedding is far too large to concatenate on
+    an accelerator).
+
+    Returns a tuple of ``(target_suffix, source_suffix, concat_dim, force_cpu)``
+    tuples; ``source_suffix`` still contains the ``*`` shard wildcard.
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import Concatenate, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    converters = []
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        if len(entry.source_patterns) != 1 or len(entry.target_patterns) != 1:
+            continue
+        # Only a single Concatenate op (no MergeModulelist -> that is expert fusion,
+        # no Chunk/Transpose/etc. -> not a plain shard merge).
+        if len(entry.operations) != 1 or not isinstance(entry.operations[0], Concatenate):
+            continue
+        source = entry.source_patterns[0].rstrip("$")
+        target = entry.target_patterns[0].rstrip("$")
+        if "*" not in source or "*" in target:
+            continue
+        converters.append((target, source, getattr(entry.operations[0], "dim", 0), getattr(entry, "force_cpu", False)))
+    return tuple(converters)
+
+
+def _assemble_sharded_tensor(index, full_name: str, device: str):
+    """Reconstruct a fused model-side param stored on disk as numbered shards.
+
+    Follows the transformers checkpoint converter for the checkpoint's family: it
+    finds a wildcard ``Concatenate`` converter whose target suffix matches
+    ``full_name``, expands the ``shard_*`` source glob against the checkpoint index,
+    orders the shards with transformers' natural-sort key, and concatenates them
+    along the converter's declared ``dim`` (honoring its ``force_cpu`` flag so a
+    huge embedding is never assembled on an accelerator).
+
+    Returns ``(tensor, dst_device)`` -- ``dst_device`` is ``"cpu"`` when the
+    converter sets ``force_cpu`` -- or ``None`` when no converter matches (the
+    caller then leaves the param on meta and surfaces an actionable error).
+    """
+    for model_type in _index_model_types(index):
+        for target_suffix, source_suffix, dim, force_cpu in _wildcard_concat_converters_for(model_type):
+            if not full_name.endswith(target_suffix):
+                continue
+            prefix = full_name[: -len(target_suffix)]
+            # Require a clean path boundary so a suffix does not match mid-token.
+            if prefix and not prefix.endswith("."):
+                continue
+            # Build the concrete ``shard_*`` glob for this parameter and match the index.
+            source_regex = re.compile("^" + re.escape(prefix + source_suffix).replace(r"\*", r"(.+)") + "$")
+            matched = [name for name in index.weight_map if source_regex.match(name)]
+            if not matched:
+                continue
+            matched.sort(key=_dot_natural_key)
+            read_device = "cpu" if force_cpu else device
+            read = index.read_tensors(matched, device=read_device)
+            assembled = torch.cat([read[name] for name in matched], dim=dim).contiguous()
+            return assembled, read_device
+    return None
+
+
 def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIndex, device: str) -> None:
     """Populate `module`'s (currently meta) parameters/buffers with real data read
     directly from the checkpoint, onto `device`. `module_name` is `module`'s dotted
@@ -597,6 +702,11 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
                 sliced = _concat_lookup(full_name)
             if sliced is not None:
                 fused_targets.append((name, sliced))
+                continue
+            assembled = _assemble_sharded_tensor(index, full_name, device)
+            if assembled is not None:
+                value, dst_device = assembled
+                set_module_tensor_to_device(module, name, dst_device, value=value, dtype=value.dtype)
                 continue
             logger.warning("No checkpoint tensor found for %s, leaving on meta", full_name)
             continue
@@ -797,6 +907,11 @@ def materialize_non_block_params(
         full_name = name.replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
         if resolved_name is None:
+            assembled = _assemble_sharded_tensor(index, full_name, device)
+            if assembled is not None:
+                value, dst_device = assembled
+                set_module_tensor_to_device(model, name, dst_device, value=value, dtype=value.dtype)
+                continue
             if _is_tied(name):
                 deferred_tied.append(name)
             else:
