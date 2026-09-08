@@ -2739,7 +2739,10 @@ def _iter_ngram_modules(module: torch.nn.Module):
     """Yield ``(name, submodule)`` for every ngram embedding leaf under ``module``."""
     for name, sub in module.named_modules():
         leaf = name.rsplit(".", 1)[-1]
-        if leaf in ("ngram_embedding", "ngram_embeddings"):
+        # Keep exact matches first, but also accept common ngram leaf variants.
+        if leaf in ("ngram_embedding", "ngram_embeddings") or (
+            "ngram_embedding" in leaf or leaf.startswith("ngram")
+        ):
             yield name, sub
 
 
@@ -2821,6 +2824,7 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
     from auto_round import envs
 
     setting = str(getattr(envs, "AR_NGRAM_DEVICE", "auto")).strip().lower()
+    ngram_device_explicitly_set = bool(envs.is_set("AR_NGRAM_DEVICE"))
 
     devices = [str(d) for d in gpu_devices] if gpu_devices else []
     if not devices:
@@ -2834,6 +2838,20 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
 
     ngram_modules = list(_iter_ngram_modules(module))
     if not ngram_modules:
+        fallback_ngram_names = [name for name, _ in module.named_modules() if "ngram" in name.lower()]
+        if fallback_ngram_names:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s is set, but no ngram embedding leaf matched placement rules in this block. "
+                "Found %d ngram-like module name(s), e.g. %s",
+                setting or "auto",
+                len(fallback_ngram_names),
+                ", ".join(fallback_ngram_names[:3]),
+            )
+        else:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s is set, but no ngram modules were found under this block.",
+                setting or "auto",
+            )
         return []
     total_ngram_nbytes = sum(_module_storage_nbytes(sub) for _, sub in ngram_modules)
     logger.info_once(
@@ -2854,13 +2872,19 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
         # faster on-GPU options once, so they can opt in when they have the headroom.
         mode = "single"
         single_target = "cpu"
-        logger.info_once(
-            "Keeping ngram embeddings on CPU (default, memory-safe; total %s). This adds host<->device "
-            "copies each block forward. For faster lookup set AR_NGRAM_DEVICE=<cuda:N|xpu:N> to "
-            "place the whole table on one card, or AR_NGRAM_DEVICE=across to row-shard it across "
-            "all GPUs.",
-            _format_nbytes_gib(total_ngram_nbytes),
-        )
+        if not ngram_device_explicitly_set:
+            logger.info_once(
+                "AR_NGRAM_DEVICE is not set, so ngram embeddings stay on CPU by default (total %s, memory-safe). "
+                "For faster lookup set AR_NGRAM_DEVICE=<cuda:N|xpu:N> (single GPU) or AR_NGRAM_DEVICE=across "
+                "(multi-GPU sharding, experimental and may have bugs).",
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+        else:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s keeps ngram embeddings on CPU (total %s, memory-safe).",
+                setting,
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
     elif single_target is not None:
         mode = "single"
     else:
