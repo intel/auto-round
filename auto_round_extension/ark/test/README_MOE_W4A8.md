@@ -456,29 +456,36 @@ on B70 at the qwen3 up-projection shape with an 8K prompt:
 | dedup, fused quant | 0.468 (int8) | 0.136 (fused, 8192 rows) | 2.033 | **2.637** | **1.46x** |
 
 Both `quant` figures for the fused quantizer in that table were obtained by
-differencing two whole-call timings, which is [since known to read high at small
-row counts](#measuring-it-instead-of-differencing-it): the 8192-row entry is the
-inflated one, and the direct measurement puts the pass at ~0.10 ms there rather
-than 0.136. The correction moves the bottom row *down*, so 1.46x is a floor on
-this comparison, not a ceiling; `run_dedup_quant` now costs itself with the
-direct measurement and prints the old difference beside it.
+differencing two whole-call timings, which is [since known to read high when the
+pass is a small share of the
+call](#measuring-it-instead-of-differencing-it). The 65536-row entry is safe:
+differencing and the direct measurement agree there to 1%. The 8192-row entry is
+the open one, and it is *not* yet settled which way it errs — extrapolating the
+confirmed 65536-row measurement linearly predicts ~0.10 ms against the
+0.132–0.136 ms differencing reports, but the 1024-row points show the pass also
+carries a fixed ~25–30 µs launch cost, which is the same size as that gap. So
+the 8192-row figure is either inflated by differencing or genuinely paying a
+floor, and the two are not distinguishable from the numbers in this table.
+`run_dedup_quant` now measures it directly rather than differencing it. Either
+way the correction can only move that row *down*, so 1.46–1.47x is a floor on
+this comparison rather than a ceiling.
 
 The traffic model above predicted 1.53x and the device returned 1.46x, so the
 byte count is what is driving this. Against W4A16 on the same end-to-end basis
 (its GEMM measured 3.679 ms, and it permutes 16-bit) the deduplicated path is
 **1.78x**.
 
-The fused quantizer has no standalone Python entry point, so the benchmark
-does not assume its cost: it times the same GEMM with 16-bit input and with
-int8 input, on the same shape and the same weights, and takes the difference —
-the only work that differs is the in-kernel quantization of exactly those
-rows. Doing that at both `T` and `batch` rows also cross-checks that the cost
-is linear in rows, which it must be for a streaming pass; the test asserts the
-ratio lands within 2x of `top_k`, so a difference that is really measurement
-noise cannot quietly become a headline number. Measured, it is **6.0x for 8x
-the rows** — mildly sublinear, in the direction fixed per-launch cost predicts
-(33% more expensive per row at the smaller size), which is why the check is a
-band rather than an equality.
+The benchmark does not assume the fused quantizer's cost. It used to obtain it
+by timing the same GEMM with 16-bit input and with int8 input and taking the
+difference — the only work that differs is the in-kernel quantization of
+exactly those rows — and since `moe_w4a8_quant_act` exists it measures the pass
+directly instead, printing the old difference alongside. Doing it at both `T`
+and `batch` rows cross-checks the cost against rows; the test asserts the ratio
+lands within 2x of `top_k`, so a difference that is really measurement noise
+cannot quietly become a headline number. It reads **6.0–6.2x for 8x the rows**
+— sublinear in the direction a fixed per-launch cost predicts, which is why the
+check is a band rather than an equality, and which is also why that sublinearity
+is not headroom.
 
 The practical consequence: **do not deduplicate with an eager-torch
 quantizer.** The version worth shipping folds the quantization into the
@@ -1620,12 +1627,20 @@ drift. At 65536 rows the pass is a quarter of the call and the same subtraction
 is sound. So every long-prefill figure quoted from the old estimate survives —
 and every small-row one derived from it does not.
 
-That is not a footnote, because one such figure was load-bearing: the
-deduplicated path is costed at `batch` rows, and its `top_k` linearity check had
-been reading **6.0× for an 8× row count**. That was written up as the short row
-count being under-fed. It was not: it was the smaller difference being
-inflated. Corrected to the direct measurement the pass is linear in rows, as a
-streaming kernel must be, and `run_dedup_quant` now costs itself that way.
+That is not a footnote, because one such figure is load-bearing: the
+deduplicated path is costed at `batch` rows, and its `top_k` linearity check
+reads **6.0–6.2× for an 8× row count**. That gap was once written up as the
+short row count being under-fed, i.e. as headroom. It is not headroom. The
+1024-row measurements settle the direction: the pass costs 0.025 ms on up and
+0.031 ms on down there — down being *slower* while moving a third of the bytes,
+which no bandwidth model produces — so at small row counts the pass is paying a
+fixed ~25–30 µs launch cost, not running short of work. A floor is not
+something occupancy, vectorization or any other in-kernel change moves.
+
+What the 1024-row points do *not* settle is the 8192-row one, which is the row
+count that actually matters here, and which sits between a regime where
+differencing is trustworthy and one where it is not. That is why
+`run_dedup_quant` now measures it directly.
 
 #### It is on the roof, and the roof is above the probe
 
@@ -1731,9 +1746,10 @@ instantiated per rung), because the sweep is now a regression guard, and because
 `test_act_quant_rows_per_wg_matches` is a real correctness test of the padding
 guard. **The default stays at `1`.**
 
-This also retires the "short prompts are under-fed" reading that the 8192-row
-estimate had suggested: corrected, that row count streams at the same ~500 GB/s
-as every other, and the pass is linear in rows throughout.
+These 1024-row numbers also retire the "short prompts are under-fed" reading
+that the 8192-row estimate had suggested — though not by restoring linearity.
+The pass really is sublinear at small row counts; it is just that the cause is a
+launch floor rather than an unfed stream, so there is nothing there to win.
 
 ```bash
 pytest test_moe_w4a8_perf.py -k "act_quant_wg" -v -s

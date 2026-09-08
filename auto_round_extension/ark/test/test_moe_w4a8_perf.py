@@ -1645,7 +1645,7 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
         # the answer. `batch` rows sits between the two, so the deduplicated
         # path is costed with the direct measurement where it is available and
         # only falls back to the difference on a build without the entry point.
-        if _QUANT_ACT_SKIP is None:
+        if not _QUANT_ACT_SKIP:
             # The output tensors must stay referenced for as long as the
             # callable is used: it captures their raw `data_ptr()`, so dropping
             # them here would leave the timed call writing into freed memory.
@@ -1755,8 +1755,17 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
                 print(
                     f"  {'':<12} the old differenced estimate, for comparison: "
                     f"{row['diff_fused_tokens_ms']:.3f} ms / {row['diff_fused_batch_ms']:.3f} ms = "
-                    f"{(f'{diff_ratio:.1f}x' if diff_ratio else 'n/a')} -- differencing inflates the "
-                    f"smaller row count, which is why this path is no longer costed with it"
+                    f"{(f'{diff_ratio:.1f}x' if diff_ratio else 'n/a')}"
+                )
+            else:
+                # Say why, rather than quietly reporting the softer number: the
+                # fallback previously fired on every run because the guard
+                # tested the skip reason against `None` when it is `""`, and a
+                # plausible-looking differenced figure is exactly the kind of
+                # thing that hides such a bug.
+                print(
+                    f"  {'':<12} (differenced because the direct measurement is unavailable: "
+                    f"{_QUANT_ACT_SKIP or 'unknown'})"
                 )
     return rows
 
