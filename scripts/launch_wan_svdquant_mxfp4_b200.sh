@@ -63,6 +63,17 @@ STEPS="${STEPS:-$DEFAULT_STEPS}"
 SIGNROUND_ITERS="${SIGNROUND_ITERS:-$DEFAULT_SIGNROUND_ITERS}"
 SMOOTH_GRIDS="${SMOOTH_GRIDS:-$DEFAULT_SMOOTH_GRIDS}"
 SMOOTH_MAX_CALLS="${SMOOTH_MAX_CALLS:-$DEFAULT_SMOOTH_CALLS}"
+LOW_GPU_MEM_USAGE="${LOW_GPU_MEM_USAGE:-1}"
+
+MEMORY_ARGS=(--disable_low_cpu_mem_usage)
+if [[ "$LOW_GPU_MEM_USAGE" == "1" ]]; then
+  # Keep cached calibration inputs/reference outputs on CPU and transfer only
+  # the active mini-batch. This leaves headroom for Smooth SVD and SignRound.
+  MEMORY_ARGS+=(--low_gpu_mem_usage)
+elif [[ "$LOW_GPU_MEM_USAGE" != "0" ]]; then
+  echo "LOW_GPU_MEM_USAGE must be 0 or 1" >&2
+  exit 2
+fi
 
 TAG="b200-smooth-signround-r${RANK}-ri${RESIDUAL_ITERS}-n${NSAMPLES}-s${STEPS}-i${SIGNROUND_ITERS}-g${SMOOTH_GRIDS}-c${SMOOTH_MAX_CALLS}"
 OUT="${OUT:-$ROOT/Wan2.2-T2V-A14B-AutoRound-SVDQuant-MXFP4-$TAG-Nunchaku}"
@@ -89,6 +100,7 @@ export PYTHONPATH="$ROOT/nunchaku-torch-cu130-ubuntu22/nunchaku:$REPO${PYTHONPAT
 printf 'profile=%s physical_gpus=%s\n' "$PROFILE" "$GPUS"
 printf 'residual_iters=%s nsamples=%s steps=%s signround_iters=%s smooth_grids=%s smooth_calls=%s\n' \
   "$RESIDUAL_ITERS" "$NSAMPLES" "$STEPS" "$SIGNROUND_ITERS" "$SMOOTH_GRIDS" "$SMOOTH_MAX_CALLS"
+printf 'low_gpu_mem_usage=%s (CPU calibration cache)\n' "$LOW_GPU_MEM_USAGE"
 printf 'output=%s\nlog=%s\n' "$OUT" "$LOG"
 
 "$PY" -u -m auto_round \
@@ -111,6 +123,6 @@ printf 'output=%s\nlog=%s\n' "$OUT" "$LOG"
   --svdquant-model-adapter wan \
   --format svdquant_nunchaku \
   --device auto \
-  --disable_low_cpu_mem_usage \
+  "${MEMORY_ARGS[@]}" \
   --output_dir "$OUT" \
   2>&1 | tee "$LOG"
