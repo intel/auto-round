@@ -44,7 +44,11 @@ import torch
 
 from auto_round.logger import logger
 from auto_round.utils.common import compress_layer_names
-from auto_round.utils.model_free_utils import quantize_weight_rtn, split_fused_expert_tensors
+from auto_round.utils.model_free_utils import (
+    _normalize_tensor_name_for_warning,
+    quantize_weight_rtn,
+    split_fused_expert_tensors,
+)
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
