@@ -140,6 +140,7 @@ class DeviceMemoryPool {
   size_t get_scratch_size(size_t buf_loc, sycl::queue* q) {
     if (buf_loc >= MaxLocNum) return 0;
     auto key = get_device_key(q);
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
     auto it = dev_mem_size_map[buf_loc].find(key);
     return it == dev_mem_size_map[buf_loc].end() ? 0 : it->second;
   }
@@ -155,6 +156,7 @@ class DeviceMemoryPool {
   void* detach_scratch_mem(size_t buf_loc, sycl::queue* q) {
     if (buf_loc >= MaxLocNum) return nullptr;
     auto key = get_device_key(q);
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
     auto it = dev_mem_ptr_map[buf_loc].find(key);
     if (it == dev_mem_ptr_map[buf_loc].end()) return nullptr;
     int8_t* ptr = it->second;
@@ -165,6 +167,7 @@ class DeviceMemoryPool {
 
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
     if (size == 0 || buf_loc >= MaxLocNum) return nullptr;
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
 
     auto it = dev_mem_ptr_map[buf_loc].find(key);
     if (it == dev_mem_ptr_map[buf_loc].end()) {
@@ -314,6 +317,7 @@ class DeviceMemoryPool {
 
   std::array<SizeMap, MaxLocNum> dev_mem_size_map;
   std::array<PtrMap, MaxLocNum> dev_mem_ptr_map;
+  std::mutex scratch_mutex_;
 #if ARK_XPU
   std::mutex key_mutex_;
   std::vector<ContextEntry> context_ids_;

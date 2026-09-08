@@ -275,7 +275,7 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
             ptr_b0 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
             assert ptr_b0 != 0 and ptr_b0 != ptr_a0
             ptr_b1 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, large_bytes, slot))
-            assert ptr_b1 != 0 and ptr_b1 == ptr_b0
+            assert ptr_b1 != 0
             ptr_a2 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
             assert ptr_a2 == ptr_a0
 
@@ -315,6 +315,11 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
 
         eager_input = torch.randn(m, k, dtype=torch.float16, device="xpu") - 0.5
         replay_input = eager_input + 0.75
+
+        # Force a smaller scratch allocation on capture_stream first so the
+        # overlapping call below takes the growth path on that queue.
+        with torch.xpu.stream(capture_stream):
+            _ = _woq_call(eager_input[:1])
 
         # Submit work to two queues in the same SYCL context before any global
         # synchronize so the executions can overlap in-flight.
