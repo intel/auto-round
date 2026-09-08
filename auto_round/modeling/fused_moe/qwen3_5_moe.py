@@ -93,7 +93,10 @@ class SequentialQwen3_5MoeExperts(torch.nn.ModuleList):
         # The grouped experts forward applies gating at the container level, so it needs the
         # activation here (all experts share the same stateless act_fn). Referencing the first
         # expert's keeps it consistent with the per-expert MLPs.
-        self.act_fn = self[0].act_fn
+        # Store via ``object.__setattr__`` so the activation is NOT registered as a child module
+        # of this ``ModuleList``; otherwise it would appear as an extra expert (e.g. index 256)
+        # in iteration/len, breaking per-expert traversal, materialization and export.
+        object.__setattr__(self, "act_fn", self[0].act_fn)
 
         register_moe_fusion_spec(
             self,

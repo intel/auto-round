@@ -35,7 +35,9 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
         with no_init_weights(), torch.device("meta"):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
         # Container-level activation so the grouped experts forward can apply gating.
-        self.act_fn = getattr(self[0], "act_fn", None) or getattr(self[0], "activation_fn", None)
+        # Store via ``object.__setattr__`` so a Module activation is NOT registered as a child
+        # of this ``ModuleList`` (it would otherwise appear as an extra expert in iteration/len).
+        object.__setattr__(self, "act_fn", getattr(self[0], "act_fn", None) or getattr(self[0], "activation_fn", None))
         register_moe_fusion_spec(
             self,
             build_standard_moe_fusion_spec(

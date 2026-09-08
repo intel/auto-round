@@ -91,7 +91,9 @@ class SequentialQwen3OmniThinkerExperts(torch.nn.ModuleList):
         with torch.device("meta"):
             super().__init__([Qwen3OmniMoeThinkerTextMLP(config, intermediate_size) for _ in range(self.num_experts)])
         # Container-level activation so the grouped experts forward can apply gating.
-        self.act_fn = self[0].act_fn
+        # Store via ``object.__setattr__`` so the activation is NOT registered as a child module
+        # of this ``ModuleList``; otherwise it would appear as an extra expert in iteration/len.
+        object.__setattr__(self, "act_fn", self[0].act_fn)
         register_moe_fusion_spec(
             self,
             build_standard_moe_fusion_spec(
