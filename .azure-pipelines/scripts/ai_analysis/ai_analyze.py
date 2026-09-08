@@ -32,11 +32,11 @@ Respond with ONLY a single JSON object, no prose, using exactly these keys:
 }}
 
 Guidance:
-- Use the PR diff to judge whether this is a code regression introduced by the change.
+- Use the PR changed files to judge whether this is a code regression introduced by the change.
 - If the error looks environmental/dependency-related and unrelated to the diff, say so.
 - If uncertain, set confidence to "low", leave suggested_fix and patch empty, and fill directions.
 - For an ``AssertionError`` whose log excerpt already contains pytest's ``Full diff`` (the ``-``/``+``
-  lines), that diff is usually authoritative: cross-check it against the changed files below and
+  lines), that diff is usually authoritative: cross-check it against the PR changed files below and
   conclude directly.
 - The ``PR changed files`` section below lists every file this PR touched. Inspect the relevant ones
   yourself with your ``read``/``rg`` tools on the checkout at ``{project_root}`` (and the complete raw
@@ -374,6 +374,7 @@ def main():
     # model reads the actual source itself instead of running git inside a shallow checkout.
     pr_sha = (args.pr_sha or "").strip()
     pr_files = compute_pr_changed_files(pr_sha, args.project_root, args.max_diff_chars)
+    _save_pr_changed_files(args.output, pr_files)
 
     unknown = [c for c in data.get("clusters", []) if not c.get("known")]
     unknown.sort(key=lambda c: c.get("occurrences", 0), reverse=True)
