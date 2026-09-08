@@ -635,91 +635,6 @@ def set_non_auto_device_map(
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
 
-def _resolve_moe_chunk() -> int:
-    """The configured experts-per-chunk (``AR_MOE_CHUNK``), for device co-allocation.
-
-    ``auto`` / invalid -> the default fixed chunk (16); ``<=0`` means "whole container"
-    (fuse everything -> a container is only ever placed as a single device-local unit).
-    """
-    from auto_round import envs
-
-    try:
-        return int(str(envs.AR_MOE_CHUNK))
-    except (TypeError, ValueError):
-        return 16
-
-
-def _preassign_moe_experts(
-    layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
-) -> dict:
-    """Place a MoE experts container's experts chunk-locally so the grouped path stays on.
-
-    The grouped experts forward only needs the experts *of one fused chunk* to sit on the same
-    device (else that chunk falls back to the slow per-expert loop). This pre-pass keeps each
-    ``AR_MOE_CHUNK``-aligned group whole on one device while spreading the groups across cards,
-    so memory stays balanced across GPUs instead of piling a whole (potentially hundreds of
-    experts) container onto a single card -- the latter defeats the load balancer and OOMs that
-    card on large MoEs (e.g. GLM/Qwen), even though the block fits when experts are spread.
-
-      * Per chunk -- place each ``AR_MOE_CHUNK``-aligned expert group whole on the device with
-        the most free memory that fits it, so grouped GEMM stays single-device within a chunk.
-      * Overflow -- groups that do not fit on any device are left unassigned here and fall
-        through to the general load balancer (grouped will loop-fallback for those layers).
-
-    Only placement is affected -- correctness is unchanged (the forward's device checks and
-    AlignDevicesHook handle whatever layout results). ``device_memory`` is decremented in
-    place for the layers this function assigns.
-
-    Returns a ``{layer_name: device}`` map for the experts it placed.
-    """
-    # Group expert projections by their container -> {expert_idx: [(name, mem_info), ...]}.
-    containers: dict[str, dict[int, list]] = {}
-    for name, info in layer_memory_dict.items():
-        if not info.get("is_moe_expert"):
-            continue
-        head, _, _slot = name.rpartition(".")  # ".../<container>.<idx>.<slot>"
-        container, _, idx_str = head.rpartition(".")
-        try:
-            idx = int(idx_str)
-        except ValueError:
-            continue  # unexpected naming; leave it to the general balancer
-        containers.setdefault(container, {}).setdefault(idx, []).append((name, info))
-
-    assigned: dict[str, str] = {}
-    if not containers:
-        return assigned
-
-    def mem_of(items) -> float:
-        return sum(mem_info["param_memory"] * mem_per_param for _, mem_info in items)
-
-    def best_fit(required: float):
-        candidates = [d for d in gpu_devices if device_memory[d] >= required]
-        return max(candidates, key=lambda d: device_memory[d]) if candidates else None
-
-    def place(items, device) -> None:
-        for layer_name, _ in items:
-            assigned[layer_name] = device
-
-    chunk = _resolve_moe_chunk()
-    for container, by_idx in containers.items():
-        idxs = sorted(by_idx)
-
-        # Spread chunk-aligned groups across cards: each group stays whole on one device (so a
-        # chunk's grouped GEMM is single-device) but different groups balance across GPUs.
-        # ``chunk <= 0`` ("fuse everything") keeps the whole container as one group.
-        step = len(idxs) if chunk <= 0 else chunk
-        for start in range(0, len(idxs), step):
-            group_items = [item for i in idxs[start : start + step] for item in by_idx[i]]
-            group_mem = mem_of(group_items)
-            group_device = best_fit(group_mem)
-            if group_device is None:
-                continue  # Overflow: leave for the general balancer
-            place(group_items, group_device)
-            device_memory[group_device] -= group_mem
-
-    return assigned
-
-
 def _allocate_layers_to_devices(
     layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
 ) -> tuple[dict, list]:
@@ -727,9 +642,6 @@ def _allocate_layers_to_devices(
     Allocates layers to devices using a load-balancing strategy.
 
     Strategy:
-    0. MoE pre-pass: keep each ``AR_MOE_CHUNK``-aligned expert group whole on one device while
-       spreading the groups across cards, so a chunk's grouped GEMM stays single-device without
-       piling a whole experts container onto one card.
     1. Sort remaining layers by memory size (descending), preserve order for equal sizes
     2. Assign largest N layers to higher-index devices (N = num_devices)
     3. Remaining layers use memory availability + layer continuity scorings
@@ -748,14 +660,15 @@ def _allocate_layers_to_devices(
     layer_names_in_order = list(layer_memory_dict.keys())
     layer_order = {name: idx for idx, name in enumerate(layer_names_in_order)}
 
-    # Phase 0: keep MoE experts device-local so the grouped path is not forced to loop.
-    preassigned = _preassign_moe_experts(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
-    device_map.update(preassigned)
-    names.extend(preassigned.keys())
-
-    # The general balancer handles everything the pre-pass did not place.
-    remaining = {name: layer_memory_dict[name] for name in layer_names_in_order if name not in preassigned}
-    sorted_layers = sorted(remaining.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
+    # NOTE: MoE experts are intentionally NOT pre-assigned as a co-located block here.
+    # Co-locating a whole experts container (or even chunk-aligned groups via best-fit) piles
+    # hundreds of experts onto whichever card looks emptiest, which on large MoEs (e.g. GLM-5.3
+    # Flash: 288 experts) overfills that single card and OOMs it. Instead every expert
+    # projection flows through the same load balancer as the rest of the block, so the experts
+    # spread across all cards (the profile that worked before this branch). The grouped experts
+    # forward transparently falls back to the per-expert loop for any layer whose active experts
+    # end up on mixed devices, so correctness is unaffected.
+    sorted_layers = sorted(layer_memory_dict.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
     num_devices = len(gpu_devices)
 
     def find_best_device(layer_name, estimated_memory, layer_idx):
