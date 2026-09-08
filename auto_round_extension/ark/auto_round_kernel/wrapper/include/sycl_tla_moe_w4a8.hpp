@@ -269,8 +269,16 @@ class MoEW4A8GemmName;
 // 128-wide N can double its occupancy, 256-wide N cannot be asked to.
 //
 // This is a request, not a guarantee: if the halved budget does not hold the
-// staged tiles the compiler spills, which costs time but not correctness. The
-// flag says "this tile may be asked", the sweep says whether it should be.
+// staged tiles the compiler spills, which costs time but not correctness.
+//
+// **Measured on B70, it spills.** Forcing `128x128` and halving the budget cost
+// 1.56-1.60x on qwen3 up and 1.16-1.20x on down -- the occupancy doubled and the
+// tile stopped fitting. The penalty tracks `K` rather than tile count, putting
+// it in the mainloop, on exactly the staged fragments this paragraph worried
+// about. So `ARK_MOE_W4A8_PREFILL_SMALL_GRF` defaults to off and the ladder
+// keeps the large budget; `kSmallGrfOk` remains only so the question can be
+// re-asked on a part with a different register file. Full numbers are in the
+// launch-time comment on `moe_w4a8_prefill_launch`.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
@@ -1107,26 +1115,41 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // claim stays on because it is free and counter contention grows with the
 // number of resident work-groups. The host-side counter reset it forced is a
 // correctness fix and applies to both settings.
-// `ARK_MOE_W4A8_PREFILL_SMALL_GRF=0` keeps every tile at `grf_size<256>` and the
-// 512-work-item grid, the A/B baseline for the per-policy register budget. The
-// GRF request used to be hardwired here, which pinned all six tiles at 2
-// work-groups per Xe-core -- so the small tiles in the ladder paid for their
-// smaller accumulator and never collected the occupancy that is the reason to
-// have them. It is now a property of the policy (`kSmallGrfOk`, see the tile
-// table above): 128-wide-N tiles ask for half the registers and get twice the
-// resident work-groups, 256-wide-N tiles cannot because their accumulator alone
-// is a whole 128-register file. `blks > 1` opts out at runtime -- the blocked
-// re-scale carries a second, float fragment for the whole mainloop.
+// `ARK_MOE_W4A8_PREFILL_SMALL_GRF=1` lets a tile policy that can afford it ask
+// for `grf_size<128>` instead of `<256>`, which doubles both the threads an Xe
+// core holds (512 -> 1024) and, because this kernel is persistent and its grid
+// is sized to fill the device exactly once, the launched grid with it. It is
+// **off by default: measured on B70, it loses, and not narrowly.**
 //
-// The default ladder sends every shipped qwen3 shape to `128x256`, which is not
-// eligible, so this changes nothing until a tile is forced:
-// `ARK_MOE_W4A8_PREFILL_TILE=128x128` with and without this flag separates the
-// tile from the register budget, which a policy-only knob could not do. Both
-// settings compute the same tiles in the same order and are bit-identical;
-// `test_prefill_small_grf_matches` asserts it. Occupancy is a latency-hiding
-// lever, so the shape to watch is the down projection: half its time is
-// per-tile cost, ~78% of that the 64 KB of D each tile writes, and covering a
-// store stream is what more resident work-groups are for.
+//   tile 128x128, forced       grf 256    grf 128
+//   qwen3 up   @ 49152 tokens   2.399 ms   3.745 ms   1.56x slower
+//   qwen3 up   @ 65536 tokens   2.866 ms   4.579 ms   1.60x slower
+//   qwen3 down @ 49152 tokens   1.794 ms   2.147 ms   1.20x slower
+//   qwen3 down @ 65536 tokens   2.352 ms   2.723 ms   1.16x slower
+//
+// The occupancy did double; it bought nothing because the tile no longer fits.
+// A 128-wide-N tile's accumulator is 64 int32 per lane, which is half of a
+// 128-register file before a single operand is staged, and the measurement says
+// the other half does not hold the mainloop's live set. The penalty scales with
+// `K` -- 1.56-1.60x at K=2048 against 1.16-1.20x at K=768, i.e. with mainloop
+// trips rather than with tile count -- which places the spill inside the
+// mainloop, on the staged A/B fragments that are live across every iteration.
+// Round-to-round drift on the spilling rows also jumped from the usual 0.5-1.7%
+// to 4.2-15.3%, as scratch traffic makes the runtime depend on memory state.
+//
+// So the reason the small tiles in the ladder were swept at the large budget is
+// not an oversight: at 128 registers they stop being fast. `kSmallGrfOk` and
+// `W4A8GrfBudget` stay so the result can be re-checked on a part with a
+// different register file, but on this one the knob is closed. Both settings
+// remain bit-identical (`test_prefill_small_grf_matches`), and
+// `test_perf_prefill_grf_sweep{,_long_seq}` reproduces the table above --
+// forcing `ARK_MOE_W4A8_PREFILL_TILE=128x128`, since the ladder sends every
+// shipped qwen3 shape to `128x256`, which is not eligible either way.
+//
+// This closes the last latency knob. Prefetch depth, tile order, claim order
+// and now occupancy have all come back flat or worse, which is what the cost
+// model predicted: the down projection's per-tile cost is ~78% the 64 KB of D
+// it writes, and bytes are not something residency can hide.
 // ---------------------------------------------------------------------------
 template <class Policy, typename ElementD>
 void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {
@@ -1151,7 +1174,7 @@ void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {
       store_2d_aligned && moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_STORE_2D", true);
   const int prefetch_dist = moe_w4a8_prefill_prefetch_dist();
   const bool claim_early = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_CLAIM_EARLY", true);
-  const bool small_grf = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_SMALL_GRF", true);
+  const bool small_grf = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_SMALL_GRF", false);
   int32_t* atomic_buffer = moe_dpas_fp8::get_atomic_scratch_buffer(p.q);
 
   MoEGEMMLauncher_w4a8<Policy, ElementD>(*p.q, p.qact, p.weights, p.ascale, p.wscale, outputs, p.N, p.K,

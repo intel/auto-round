@@ -1855,18 +1855,32 @@ _PREFILL_CLAIM_CONFIGS = [
 # first two rows do exactly that: same 128x128 tile, same everything else, one
 # register budget each. That pair is the measurement.
 #
-# The third row is the shipped default, and it is what the pair is *for*. The
-# question is not whether 128 registers beat 256 on the same tile -- it is
-# whether the smaller tile at double occupancy finally catches the bigger tile
-# that has beaten it in every sweep so far. If row 2 beats row 1 but neither
-# reaches row 3, the ladder stays as it is and the answer is that the 256-wide N
-# tile wins on A re-reads, not on occupancy.
+# The third row is the shipped default, for reference.
 #
-# Expect the effect, if any, on the down projection: occupancy hides latency,
-# half of qwen3 down's time is per-tile cost that does not scale with K, and
-# ~78% of that is the 64 KB of D each tile writes. Covering a store stream with
-# other work-groups is what more residency buys. The up projection is at 86% of
-# the DPAS peak with the quantizer subtracted and has nothing to hide.
+# Measured on B70, and the answer is unambiguous: the halved budget loses.
+#
+#   tile 128x128, forced        grf 256    grf 128
+#   qwen3 up   @ 49152 tokens    2.399 ms   3.745 ms   1.56x slower
+#   qwen3 up   @ 65536 tokens    2.866 ms   4.579 ms   1.60x slower
+#   qwen3 down @ 49152 tokens    1.794 ms   2.147 ms   1.20x slower
+#   qwen3 down @ 65536 tokens    2.352 ms   2.723 ms   1.16x slower
+#
+# The occupancy did double. The tile stopped fitting: a 128-wide-N accumulator
+# is 64 int32 per lane, half a 128-register file before anything is staged, and
+# the other half does not hold the mainloop's live set. The penalty scales with
+# K -- 1.56-1.60x at K=2048 against 1.16-1.20x at K=768 -- so it is per mainloop
+# trip, not per tile, which puts the spill on the staged A/B fragments that are
+# live across every iteration. Drift on the spilling rows rose from the usual
+# 0.5-1.7% to 4.2-15.3%, as scratch traffic makes the runtime depend on memory
+# state.
+#
+# So the small tiles were never being short-changed: at 128 registers they stop
+# being fast, which is why the ladder was swept at the large budget to begin
+# with. The flag defaults to off and this sweep stays as the regression guard.
+# It also closes the last latency knob -- prefetch depth, tile order, claim
+# order and now occupancy have all come back flat or worse, exactly as the cost
+# model predicted, because ~78% of qwen3 down's per-tile cost is the 64 KB of D
+# it writes and bytes are not something residency can hide.
 _PREFILL_GRF_CONFIGS = [
     ("128x128, grf 256", {"ARK_MOE_W4A8_PREFILL_TILE": "128x128", "ARK_MOE_W4A8_PREFILL_SMALL_GRF": "0"}),
     ("128x128, grf 128", {"ARK_MOE_W4A8_PREFILL_TILE": "128x128", "ARK_MOE_W4A8_PREFILL_SMALL_GRF": "1"}),
@@ -2602,11 +2616,15 @@ if pytest is not None:
             doubles it, and the two have to move together or nothing changes.
 
             The first two rows are the measurement -- one tile, two budgets --
-            and the third is the question they answer: whether 128x128 at
-            double occupancy catches the 128x256 tile that has beaten it in
-            every sweep so far. Every row computes the same tiles from the same
-            inputs, so all three must be bit-identical and only the timing is a
-            measurement.
+            and the third is the shipped default for reference. Measured on
+            B70 the halved budget loses by 1.56x here and 1.20x on the down
+            projection: the occupancy doubles and the tile stops fitting, since
+            a 128-wide-N accumulator is already half of a 128-register file.
+            The row to watch is therefore not a hoped-for win but the size of
+            the spill, which is why this stays as a regression guard.
+
+            Every row computes the same tiles from the same inputs, so all
+            three must be bit-identical and only the timing is a measurement.
             """
             rows = run_config_sweep("prefill", _PREFILL_GRF_CONFIGS, models=_models_option(request))
             assert rows and all(r["w4a8_ms"] > 0 for r in rows)
@@ -2623,11 +2641,14 @@ if pytest is not None:
             both 128 and 256, so the padding penalty that decides the ladder
             elsewhere is absent here and the tiles compete on their merits.
 
-            A tie across all three rows would say the down projection's gap is
-            not a latency that more resident work-groups can cover, which --
-            after prefetch depth, tile order and claim order all came back
-            flat -- would close the last of the latency knobs and leave the D
-            write as the only remaining prefill lever.
+            Measured on B70 the halved budget loses by 1.60x on the up
+            projection and 1.16x on the down. Both ratios are larger at
+            K=2048 than at K=768, so the cost scales with mainloop trips
+            rather than with tile count -- the spill is inside the mainloop,
+            on the staged A/B fragments. That closes the last of the latency
+            knobs, after prefetch depth, tile order and claim order all came
+            back flat, and leaves the D write as the only remaining prefill
+            lever.
             """
             rows = run_config_sweep(
                 "prefill",
