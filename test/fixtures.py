@@ -134,6 +134,14 @@ def tiny_lamini_model_path():
 
 
 @pytest.fixture(scope="session")
+def micro_conv1d_model_path():
+    """One-layer Conv1D model for backend-agnostic save/reload smoke tests."""
+    tiny_model_path = tiny_model_dir("micro_conv1d_model_path")
+    tiny_model_path = save_tiny_model(lamini_name_or_path, tiny_model_path, num_layers=1)
+    yield tiny_model_path
+
+
+@pytest.fixture(scope="session")
 def tiny_gptj_model_path():
     model_name_or_path = gptj_name_or_path
     tiny_model_path = tiny_model_dir("tiny_gptj_model_path")

@@ -43,13 +43,13 @@ class TestQuantizationConv1d:
 
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     @pytest.mark.timeout(300)
-    def test_quant(self, dataloader, device, tiny_lamini_model_path):
+    def test_quant(self, dataloader, device, micro_conv1d_model_path):
         """Quantize a Conv1D-based model, save it, reload on `device`, and run inference."""
         if device != "cpu" and not is_gptqmodel_available():
             pytest.skip("test requires gptqmodel>=2.0")
 
-        model = AutoModelForCausalLM.from_pretrained(tiny_lamini_model_path, trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(tiny_lamini_model_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(micro_conv1d_model_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(micro_conv1d_model_path, trust_remote_code=True)
 
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
