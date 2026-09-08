@@ -992,10 +992,15 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // used to sit on a fully exposed L2 round trip. Issuing the claim ahead of the
 // tile puts that round trip in flight across the DPAS mainloop instead. Which
 // tiles get computed does not change (see `MoEGEMM_w4a8`), so the two settings
-// are bit-identical and `test_prefill_claim_early_matches` asserts it; the
-// difference is timing, and it is largest on the short-K down projections where
-// a tile is only 12 k-tiles of work.
-// `test_perf_prefill_claim_early_sweep` times the pair.
+// are bit-identical and `test_prefill_claim_early_matches` asserts it.
+// `test_perf_prefill_claim_early_sweep` times the pair, and on B70 it is a tie
+// at both shapes and both batches: the claim was never the stall. Half of the
+// short-K down projection's time is per-tile cost that does not scale with `K`,
+// and ~78% of *that* is the 64 KB of D each tile writes -- bytes, not latency,
+// which is why this and the prefetch-depth sweep both come back flat. The early
+// claim stays on because it is free and counter contention grows with the
+// number of resident work-groups. The host-side counter reset it forced is a
+// correctness fix and applies to both settings.
 // ---------------------------------------------------------------------------
 template <class Policy, typename ElementD>
 void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {

@@ -1190,12 +1190,60 @@ tile，tile 遍历必须遵守的专家边界也就进入了比较范围)。
 几条指令，所以 `MoEGEMMLauncher_w4a8` 现在用 `queue::memset` 填这个 dword，并让
 kernel `depends_on` 这次填充。一个 dword、一条额外命令，没有任何同步。
 
-这项改动值多少，上界取决于一个 tile 有多少工作可以用来掩盖这次停顿，所以它应该在
-**down** 投影上显现、而在 up 投影上几乎看不到：在同样的 tile 形状、同一个 kernel 下，
-`K = 768` 的一个 tile 只有 12 个 k-tile，而 `K = 2048` 有 32 个。qwen3 down 同时也是
-距离自身带宽上限最远的那个形状。如果所有形状都打平，那也是一个真实的结论——它会说明
-这次领取从来就不是瓶颈，down 投影的差距在 prologue、epilogue 或者 D 的写上，参见
-[还剩下什么](#还剩下什么)。
+**B70 实测：打平，所有形状、两个 batch 都是。**
+
+| 形状 | tokens | claim after gemm | claim before gemm | drift |
+|---|---|---|---|---|
+| qwen3 up | 49152 | 2.521 ms | 2.517 ms (1.00×) | 1.2% |
+| qwen3 down | 49152 | 1.817 ms | 1.819 ms (1.00×) | 0.4% |
+| qwen3 up | 65536 | 2.993 ms | 3.027 ms (0.99×) | 1.4% |
+| qwen3 down | 65536 | 2.206 ms | 2.202 ms (1.00×) | 0.8% |
+
+上面预测它会在短 K 的 down 投影上显现。结果哪里都没显现：每一行都落在各自的
+round-to-round drift 之内，而且两个 batch 之间符号还翻转了。这次领取从来就不是瓶颈。
+
+默认值仍然保持提前领取——两者逐位相同，这个重排是免费的，而计数器上的竞争程度与
+常驻 work-group 数量成正比，B70 上只有 `sm_count × 2`。Xe core 数量高出几倍的部件，
+在同一个 dword 上的竞争也会高出几倍。它顺带带来的主机侧计数器清零无论开关如何都会
+保留：那一项是正确性修复，不是性能改动。
+
+### 为什么这次打平是可以预判的，以及它关掉了什么
+
+这次 sweep 打印了八个数——两个形状 × 两个 batch——这已经足够把一个 tile 的开销拆成
+随 `K` 变化的部分和不随 `K` 变化的部分。两个形状跑的是同一个 `128 × 256 × 64` tile，
+所以一个 tile 就是 `K / 64` 个 k-tile 的 mainloop，加上固定的 prologue、epilogue 和
+一次 `128 × 256` 的 D 写：
+
+```
+   T_tile = F + (K / 64) · c        up: K = 2048 -> 32 个 k-tile
+                                  down: K =  768 -> 12 个 k-tile
+```
+
+两个形状、两个未知数，而 tile 数量是精确已知的
+(`experts × ceil(rows_per_expert / 128) × N / 256`)。在每个 batch 上求解：
+
+| tokens | `c` (每个 k-tile) | `F` (每个 tile) | `F` 占 qwen3 up | `F` 占 qwen3 down |
+|---|---|---|---|---|
+| 49152 | 25.1 ns | 290 ns | 26.5% | **49.0%** |
+| 65536 | 21.8 ns | 276 ns | 28.4% | **51.5%** |
+
+两个 batch 是各自独立拟合的，结果相差不到 5%，所以这是 kernel 的性质而不是某一次运行
+的偶然。**qwen3 down 的 GEMM 时间里有一半是每个 tile 的固定开销，任何 mainloop 调优
+都碰不到它**——qwen3 up 上大约是四分之一。
+
+而且 `F` 的主体并不是延迟。每个 tile 要写 `128 × 256` 个 fp16 = 64 KB 的 D，4096 个
+tile 就是 268 MB，按测试脚本自己测出的 299 GB/s 拷贝带宽算是 0.898 ms——**占 `F` 所
+对应的 1.135 ms 的 79%**(较小的 batch 上是 76%)。每个 tile 的固定开销就是这次 D 写，
+再加上五分之一左右的 prologue、epilogue 和描述符准备。
+
+这一个数字同时解释了三次打平的 sweep。预取深度、tile 顺序，以及现在的 tile 领取，全
+都是**延迟**类的旋钮，而它们针对的 kernel，其每个 tile 的主要开销是往 DRAM 送的一串
+字节。在这种状态下还能推动一个形状的只有两条路：更少的字节——在 down 投影上就是融合
+规约，而那个因为自身的原因[实测更慢](#还剩下什么)——或者更多的在途请求，也就是
+occupancy；而这里的 occupancy 被钉死在每个 Xe core 2 个 work-group，因为
+`128 × 256` 的 tile 每个 lane 需要 128 个累加器寄存器，必须用 `grf_size<256>`。tile
+阶梯里较小的那几档也是在同样的大 GRF 设置下扫的，所以它们从来没有在真正属于自己的
+更高 occupancy 下被测量过。
 
 ```bash
 pytest test_moe_w4a8_perf.py -k "claim_early" -v
@@ -1335,7 +1383,7 @@ epilogue 做这件事比单独一遍做得更差。
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上最多带来 1.08× 的收益 (落后时也不超过 0.9%)。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。使用融合 top-k 规约时会自动关闭，因为那是 scatter，用不了 block store。 |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` (compute-bound batch) 与 `test_perf_prefill_prefetch_sweep_long_seq` (8K 提示词路由) 会对完整的 `1 / 2 / 3 / 4 / 6 / 8` 区间计时。超出 `1`–`8` 的取值回退到默认值。扫描结果显示排名平坦，因此默认值保持不变——参见[预取深度与 K](#预取深度与-k--已实测两轮结论是否定的)。 |
-| `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY` | 常驻 prefill kernel 何时从 device-scope 工作计数器领取下一个 tile：**`1` (默认)** 把 `atomicAdd` 发在 GEMM 之前，于是这次 L2 往返在整个 mainloop 期间都在途；`0` 恢复旧顺序，即它完全暴露在两个 tile 之间的空档里。计算哪些 tile 完全没变，因此两者逐位相同 (`test_prefill_claim_early_matches` 断言 `torch.equal`)；`test_perf_prefill_claim_early_sweep{,_long_seq}` 会对这一对计时。tile 本身可用于掩盖停顿的工作越少收益越大——参见[常驻 kernel 何时去领下一个 tile](#常驻-kernel-何时去领下一个-tile)。 |
+| `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY` | 常驻 prefill kernel 何时从 device-scope 工作计数器领取下一个 tile：**`1` (默认)** 把 `atomicAdd` 发在 GEMM 之前，于是这次 L2 往返在整个 mainloop 期间都在途；`0` 恢复旧顺序，即它完全暴露在两个 tile 之间的空档里。计算哪些 tile 完全没变，因此两者逐位相同 (`test_prefill_claim_early_matches` 断言 `torch.equal`)；`test_perf_prefill_claim_early_sweep{,_long_seq}` 会对这一对计时。**B70 上实测打平**——两个形状、两个 batch 都是；保持开启是因为它免费，而计数器竞争随常驻 work-group 数量增长，而 B70 的常驻数量很少。参见[常驻 kernel 何时去领下一个 tile](#常驻-kernel-何时去领下一个-tile)。 |
 
 ## 形状约束
 
@@ -1404,7 +1452,7 @@ scale 相关的 bug。两个 8K 提示词的 prefill 用例
 | 激活量化的批量 load——同时挂起 `UNROLL` 个请求而不是一个 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL=1` | 在唯一真正走这条路径的形状上，`UNROLL = 2` 或 `4` 快 1.02–1.03×；2 与 4 之间的差异在噪声内 |
 | 单遍激活量化——行数据留在寄存器中，`[T, K]` 只读一次而不是两次 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | 1.00–1.06×；留在寄存器里的行并未溢出 |
 | D 的 2D block store——每个 sub-group fragment 由少数几条 block 消息取代 64 条 32 字节的标量消息 | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×，prefill 单项收益最大 |
-| tile 的领取改到 GEMM 之前而不是之后，让工作计数器的 device-scope atomic 与 mainloop 重叠 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | 尚未在 B70 上实测——上界取决于每个 tile 的停顿，因此预期在 12 个 k-tile 的 down 投影上显现、在 up 投影上接近于零 |
+| tile 的领取改到 GEMM 之前而不是之后，让工作计数器的 device-scope atomic 与 mainloop 重叠 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | **打平**——两个形状、两个 batch 全是 1.00×，落在 drift 之内，两次运行之间符号还翻转；保留是因为它免费，且竞争程度随 Xe core 数量增长 |
 
 本节此前把 2D store 列为"需要设备而不是一个开关"的工作，理由是同类 MoE kernel 都经由
 `partition_sg_fragment_S` + `reorder` 抵达它，而其中没有任何一个是对**带 scale 的**
