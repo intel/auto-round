@@ -1250,6 +1250,74 @@ pytest test_moe_w4a8_perf.py -k "claim_early" -v
 python test_moe_w4a8_perf.py --skip-accuracy --claim-early --long-seq --rounds 5
 ```
 
+### 寄存器预算，其实就是 occupancy 这个旋钮
+
+上一段点名的正是那些 sweep 唯一没碰过的杠杆，现在把它接上了。`grf_size` 过去是
+launcher 里的一个常量，而且它不是一个人：网格规模由紧挨着它上面的
+`MaxThreadsPerSM = 512` 决定，而 512 并不是一个泛泛的数字——它就是
+`8 个 vector engine × 4 个线程 × SIMD16`，也正是**每个 lane 要 256 个寄存器时**一个
+Xe core 能容纳的量。改成要 128 个，同一个寄存器文件每个 engine 就能放 8 个线程，
+即 1024 个 work-item。这两个常量是同一个事实写了两遍，所以现在它们合并到了一处：
+
+| `grf_size` | 每 Xe core 线程数 | 常驻 work-group 数 (每 WG 256 线程时) |
+|---|---|---|
+| 256 | 512 | 2 |
+| 128 | 1024 | **4** |
+
+这件事之所以重要，是因为这个 kernel 是常驻式的：网格按"恰好铺满设备一次"来调整，
+之后 work-group 就从一个 device-scope 计数器不断领取 tile，直到 tile 用完为止。
+**启动的网格规模本身就是常驻度**，所以只把寄存器请求减半、却不同时把
+`MaxThreadsPerSM` 翻倍，启动的 work-group 数会和以前完全一样，什么也测不出来。
+
+哪些 tile 有资格提出这个请求，取决于一个 lane 在整个 mainloop 期间要持有什么——即 C
+fragment，也就是 WG tile 除以 sub-group 数：
+
+| policy | WG tile | SG 数 | SG C fragment | int32 寄存器/lane | 可否申请 128 |
+|---|---|---|---|---|---|
+| `m_8` | 8 × 128 | 4 | 8 × 32 | 16 | 可以 |
+| `m_64` | 64 × 128 | 8 | 32 × 32 | 64 | 可以 |
+| `m_128` | 128 × 128 | 16 | 32 × 32 | 64 | 可以 |
+| `m_128_n256` | 128 × 256 | 16 | 32 × 64 | **128** | 不可以 |
+| `m_256_n128` | 256 × 128 | 32 | 32 × 32 | 64 | 可以 |
+| `large` | 256 × 256 | 32 | 32 × 64 | **128** | 不可以 |
+
+这个分界线恰好沿着 N 维落下。N 宽 256 的 tile，它的累加器**本身就是**一整个 128
+寄存器文件，给暂存的 A/B tile 一点都不剩；而 N 宽 128 的还能留下一半。`blks > 1`
+在运行期同样会退出，因为分块重标定要在整个 mainloop 期间把浮点影子 `tFrC` 和 int32
+累加器一起带着，活跃 fragment 直接翻倍——这也正是当初让 `blks == 1` 成为一条特化路径
+的那个寄存器文件论证。
+
+**被实测过的那些配置没有变化。** 阶梯会把所有已发布的 qwen3 形状都送到
+`128 × 256`，而它拒绝这份减半的预算，因此在那里两种设置启动的是同一个 kernel。至于
+确实会选到 N 宽 128 的那几档——每专家行数低于 128，或者 `N % 256 != 0`——则按默认接受
+这份减半预算，而那里尚未被实测过。这也正是 sweep 必须强制指定一个 tile 的原因：
+
+| 行 | tile | `grf_size` | 用途 |
+|---|---|---|---|
+| 1 | 128 × 128 | 256 | 此前扫过的那个 tile —— 用来隔离出预算这一个变量 |
+| 2 | 128 × 128 | 128 | 同一个 tile，occupancy 翻倍 |
+| 3 | 128 × 256 | 256 | 已发布的默认值，作为参照 |
+
+第 1、2 行是测量，第 3 行才是它们要回答的问题。问题不是"同一个 tile 上 128 个寄存器
+是否胜过 256 个"，而是"**occupancy 翻倍之后，小 tile 是否终于追上了那个在此前每一轮
+sweep 里都赢过它的大 tile**"。如果第 2 行赢了第 1 行却仍然输给第 3 行，那阶梯就维持
+原样，结论是 N 宽 256 的 tile 赢在 A 的重复读取上，而不是赢在 occupancy 上。
+
+要盯的形状是 down projection，理由由成本模型给出：它一半的时间是 per-tile 成本，其中
+约 78% 是 D 的写出，而用别的 work-group 去掩盖一条写出流，正是常驻度买来的东西。
+qwen3 up 没什么可掩盖的——把量化那一遍减掉之后，它的 GEMM 已经在设备 int8 峰值的 86%
+上了。三行全部打平同样是一个实实在在的结果：那将关掉最后一个延迟类旋钮，让 D 的写出
+成为 prefill 唯一还站着的杠杆。
+
+每一行都用相同的输入计算相同的 tile，因此三者必须逐位相同；
+`test_prefill_small_grf_matches` 会在一个不整齐 (ragged) 的 batch 上断言这一点——规模
+不同的网格走同一个工作窃取计数器，正是最容易漏掉或重复某个 tile 的地方。
+
+```bash
+pytest test_moe_w4a8_perf.py -k "grf" -v
+python test_moe_w4a8_perf.py --skip-accuracy --grf --long-seq --rounds 5
+```
+
 ### 还剩下什么
 
 在 prologue 已被实测排除、tile 阶梯也已扫描过之后，剩下的差距在于流量，而且它的
@@ -1384,6 +1452,7 @@ epilogue 做这件事比单独一遍做得更差。
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。使用融合 top-k 规约时会自动关闭，因为那是 scatter，用不了 block store。 |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` (compute-bound batch) 与 `test_perf_prefill_prefetch_sweep_long_seq` (8K 提示词路由) 会对完整的 `1 / 2 / 3 / 4 / 6 / 8` 区间计时。超出 `1`–`8` 的取值回退到默认值。扫描结果显示排名平坦，因此默认值保持不变——参见[预取深度与 K](#预取深度与-k--已实测两轮结论是否定的)。 |
 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY` | 常驻 prefill kernel 何时从 device-scope 工作计数器领取下一个 tile：**`1` (默认)** 把 `atomicAdd` 发在 GEMM 之前，于是这次 L2 往返在整个 mainloop 期间都在途；`0` 恢复旧顺序，即它完全暴露在两个 tile 之间的空档里。计算哪些 tile 完全没变，因此两者逐位相同 (`test_prefill_claim_early_matches` 断言 `torch.equal`)；`test_perf_prefill_claim_early_sweep{,_long_seq}` 会对这一对计时。**B70 上实测打平**——两个形状、两个 batch 都是；保持开启是因为它免费，而计数器竞争随常驻 work-group 数量增长，而 B70 的常驻数量很少。参见[常驻 kernel 何时去领下一个 tile](#常驻-kernel-何时去领下一个-tile)。 |
+| `ARK_MOE_W4A8_PREFILL_SMALL_GRF` | 有能力承担的 tile policy 是否改为申请 `grf_size<128>` 而不是 `<256>`；这会让每个 Xe core 的常驻 work-group 数翻倍 (512 -> 1024 线程)，而且由于 prefill kernel 是常驻式的，启动的网格也随之翻倍。**`1` (默认)**；`0` 让所有 tile 都维持大预算。只有 N 宽 128 的 policy 有资格——N 宽 256 的 tile 其 32x64 累加器就是 128 个寄存器，即整个小寄存器文件——并且 `blks > 1` 会在运行期退出，因为分块重标定要额外带一份浮点 fragment。**每个已发布的 qwen3 形状都落在 `128x256` 上，而它会拒绝该预算，因此被实测过的那些配置没有变化；至于确实会选到 N 宽 128 的那几档阶梯——每专家行数低于 128，或者 `N % 256 != 0`——则会按默认启用这份减半预算，而那里尚未被实测过。** 两种设置逐位相同 (`test_prefill_small_grf_matches`)；`test_perf_prefill_grf_sweep{,_long_seq}` 会对它计时。参见[寄存器预算，其实就是 occupancy 这个旋钮](#寄存器预算其实就是-occupancy-这个旋钮)。 |
 
 ## 形状约束
 
@@ -1453,6 +1522,7 @@ scale 相关的 bug。两个 8K 提示词的 prefill 用例
 | 单遍激活量化——行数据留在寄存器中，`[T, K]` 只读一次而不是两次 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | 1.00–1.06×；留在寄存器里的行并未溢出 |
 | D 的 2D block store——每个 sub-group fragment 由少数几条 block 消息取代 64 条 32 字节的标量消息 | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×，prefill 单项收益最大 |
 | tile 的领取改到 GEMM 之前而不是之后，让工作计数器的 device-scope atomic 与 mainloop 重叠 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | **打平**——两个形状、两个 batch 全是 1.00×，落在 drift 之内，两次运行之间符号还翻转；保留是因为它免费，且竞争程度随 Xe core 数量增长 |
+| 按 policy 区分的寄存器预算：N 宽 128 的 tile 申请 `grf_size<128>`，每个 Xe core 常驻 4 个 work-group 而不是 2 个 | `ARK_MOE_W4A8_PREFILL_SMALL_GRF=0` | **尚未实测**——在已发布的 `128x256` tile 上是 no-op；用 `ARK_MOE_W4A8_PREFILL_TILE=128x128` 来扫它 |
 
 本节此前把 2D store 列为"需要设备而不是一个开关"的工作，理由是同类 MoE kernel 都经由
 `partition_sg_fragment_S` + `reorder` 抵达它，而其中没有任何一个是对**带 scale 的**

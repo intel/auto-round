@@ -1440,6 +1440,84 @@ pytest test_moe_w4a8_perf.py -k "claim_early" -v
 python test_moe_w4a8_perf.py --skip-accuracy --claim-early --long-seq --rounds 5
 ```
 
+### The register budget, which is really the occupancy knob
+
+That last paragraph names the one lever the sweeps had not touched, so it is now
+wired up. `grf_size` used to be a constant in the launcher, and it was not
+alone: the grid is sized from a `MaxThreadsPerSM = 512` right above it, and 512
+is not a generic number — it is `8 vector engines × 4 threads × SIMD16`, which
+is exactly what an Xe core holds *when each lane asks for 256 registers*. Ask
+for 128 instead and the same register file holds 8 threads per engine, i.e.
+1024 work-items. The two constants are one fact written twice, so they now live
+in one place:
+
+| `grf_size` | threads/Xe core | work-groups resident (at 256 threads/WG) |
+|---|---|---|
+| 256 | 512 | 2 |
+| 128 | 1024 | **4** |
+
+This matters because the kernel is persistent: the grid is sized to fill the
+device exactly once and then work-groups take tiles from a device-scope counter
+until the tiles run out. **The launched grid *is* the residency**, so halving the
+register request without doubling `MaxThreadsPerSM` would have launched the same
+work-groups as before and measured nothing at all.
+
+Which tiles can ask is decided by what a lane holds for the whole mainloop — the
+C fragment, which is the WG tile divided by the sub-group count:
+
+| policy | WG tile | SGs | SG C fragment | int32 regs/lane | may ask for 128 |
+|---|---|---|---|---|---|
+| `m_8` | 8 × 128 | 4 | 8 × 32 | 16 | yes |
+| `m_64` | 64 × 128 | 8 | 32 × 32 | 64 | yes |
+| `m_128` | 128 × 128 | 16 | 32 × 32 | 64 | yes |
+| `m_128_n256` | 128 × 256 | 16 | 32 × 64 | **128** | no |
+| `m_256_n128` | 256 × 128 | 32 | 32 × 32 | 64 | yes |
+| `large` | 256 × 256 | 32 | 32 × 64 | **128** | no |
+
+The split falls exactly along N. A 256-wide N tile's accumulator *is* a whole
+128-register file, leaving nothing for the staged A/B tiles; a 128-wide one
+keeps half the file. `blks > 1` opts out at runtime as well, because a blocked
+re-scale carries the float shadow `tFrC` alongside the int32 accumulator for the
+entire mainloop and doubles the live fragment — which is the same register-file
+argument that made `blks == 1` a specialized path in the first place.
+
+**The measured configurations are unchanged.** The ladder sends every shipped
+qwen3 shape to `128 × 256`, which declines the halved budget, so both settings
+launch the identical kernel there. The rungs that do pick a 128-wide tile —
+under 128 rows/expert, or `N % 256 != 0` — take the halved budget by default,
+and those have not been measured. That is also why the sweep has to force a
+tile:
+
+| row | tile | `grf_size` | what it is for |
+|---|---|---|---|
+| 1 | 128 × 128 | 256 | the tile as previously swept — isolates the budget |
+| 2 | 128 × 128 | 128 | the same tile at double occupancy |
+| 3 | 128 × 256 | 256 | the shipped default, for reference |
+
+Rows 1 and 2 are the measurement; row 3 is the question they answer. It is not
+"do 128 registers beat 256 on the same tile" but "**does the small tile at
+double occupancy finally catch the big tile that has beaten it in every sweep so
+far**". If row 2 beats row 1 and still loses to row 3, the ladder stays as it is
+and the answer is that the 256-wide N tile wins on A re-reads, not on occupancy.
+
+The shape to watch is the down projection, for the reason the cost model gives:
+half its time is per-tile cost, ~78% of that is the D write, and covering a
+store stream with other work-groups is precisely what residency buys. qwen3 up
+has nothing to hide — with the quantizer subtracted its GEMM is already at 86%
+of the device's int8 peak. A tie on all three rows is a real result too: it
+would close the last latency knob and leave the D write as the only prefill
+lever standing.
+
+Every row computes the same tiles from the same inputs, so all three must be
+bit-identical; `test_prefill_small_grf_matches` asserts it against a ragged
+batch, where a differently-sized grid walking the same work-stealing counter is
+the thing most likely to skip or repeat a tile.
+
+```bash
+pytest test_moe_w4a8_perf.py -k "grf" -v
+python test_moe_w4a8_perf.py --skip-accuracy --grf --long-seq --rounds 5
+```
+
 ### What is left
 
 With the prologue ruled out by measurement and the tile ladder already swept,
@@ -1597,6 +1675,7 @@ analysis above is why.
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Automatically off when the fused top-k reduction is used, which scatters and therefore cannot use a block store. |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` (compute-bound batch) and `test_perf_prefill_prefetch_sweep_long_seq` (8K-prompt routing) time the whole `1 / 2 / 3 / 4 / 6 / 8` range. Values outside `1`–`8` fall back to the default. The sweep found the ranking flat, so the default stays — see [Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no). |
 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY` | When the persistent prefill kernel claims its next tile from the device-scope work counter: **`1` (default)** issues the `atomicAdd` before the GEMM, so the L2 round trip is in flight across the mainloop; `0` restores the old order, where it sat fully exposed in the gap between two tiles. Which tiles run does not change, so the two are bit-identical (`test_prefill_claim_early_matches` asserts `torch.equal`); `test_perf_prefill_claim_early_sweep{,_long_seq}` times the pair. **Measured a tie on B70** at both shapes and both batches — kept on because it is free and counter contention scales with the number of resident work-groups, which B70 has few of. See [When the persistent kernel asks for its next tile](#when-the-persistent-kernel-asks-for-its-next-tile). |
+| `ARK_MOE_W4A8_PREFILL_SMALL_GRF` | Whether a tile policy that can afford it asks for `grf_size<128>` instead of `<256>`, which doubles the resident work-groups per Xe core (512 -> 1024 threads) and, because the prefill kernel is persistent, doubles the launched grid with it. **`1` (default)**; `0` keeps every tile at the large budget. Only the 128-wide-N policies are eligible -- a 256-wide N tile's 32x64 accumulator is 128 registers, the whole small file -- and `blks > 1` opts out at runtime because the blocked re-scale carries a second, float fragment. **Every shipped qwen3 shape lands on `128x256`, which declines it, so the measured configurations are unchanged; the ladder rungs that do pick a 128-wide tile -- under 128 rows/expert, or `N % 256 != 0` -- take the halved budget by default and have not been measured there.** Bit-identical either way (`test_prefill_small_grf_matches`); `test_perf_prefill_grf_sweep{,_long_seq}` times it. See [The register budget, which is really the occupancy knob](#the-register-budget-which-is-really-the-occupancy-knob). |
 
 ## Shape constraints
 
@@ -1672,6 +1751,7 @@ have now been timed twice, and all three kept their default:
 | Single-pass activation quantizer — the row stays in registers, so `[T, K]` is read once instead of twice | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS=0` | 1.00–1.06×; the register-resident row does not spill |
 | 2D block store for D — a handful of block messages instead of 64 scalar 32-byte ones per sub-group fragment | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×, the largest single prefill win |
 | Tile claim issued before the GEMM instead of after it, so the work counter's device-scope atomic overlaps the mainloop | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | **A tie** — 1.00× on both shapes at both batches, inside drift, sign flips between runs; kept because it is free and contention scales with Xe-core count |
+| Per-policy register budget: 128-wide-N tiles ask for `grf_size<128>` and get 4 resident work-groups per Xe core instead of 2 | `ARK_MOE_W4A8_PREFILL_SMALL_GRF=0` | **Not yet measured** — no-op on the shipped `128x256` tile; sweep it with `ARK_MOE_W4A8_PREFILL_TILE=128x128` |
 
 The 2D store was previously listed as needing a device rather than a flag, on
 the grounds that the sibling MoE kernels reach it through
