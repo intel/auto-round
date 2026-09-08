@@ -1024,6 +1024,18 @@ Helper: `ark.moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)`
 resolves the effective block size (and therefore the `wscales` shape) without
 allocating anything.
 
+`ark.moe_w4a8_quant_act(activations)` runs the call's own per-token
+quantization on its own, returning the `(qact, ascale)` pair the contract above
+accepts. Two uses: pre-quantizing once when the same rows go through several
+calls, and *measuring* the pass — until it existed, its cost could only be
+inferred by differencing two whole-call timings. See [The activation quantizer,
+and the one shape nobody
+swept](#the-activation-quantizer-and-the-one-shape-nobody-swept).
+
+```python
+qact, ascale = ark.moe_w4a8_quant_act(activations)  # [T, K] int8, [T] fp32
+```
+
 ## Memory cost
 
 The prepacked weights are `E × N × K` **bytes** (int8), i.e. **2× the packed
@@ -1553,6 +1565,116 @@ pytest test_moe_w4a8_perf.py -k "grf" -v
 python test_moe_w4a8_perf.py --skip-accuracy --grf --long-seq --rounds 5
 ```
 
+### The activation quantizer, and the one shape nobody swept
+
+The quantization pass is not a preamble. It reads `[T, K]` 16-bit activations,
+writes `[T, K]` int8 and writes `[T]` fp32 scales, and at prefill sizes that is
+a quarter to a third of everything `moe_gemm_w4a8` does. Three knobs have
+already been swept and shipped on it — `ACT_QUANT_VEC` (bytes per lane, worth
+1.04–1.13×), `ACT_QUANT_UNROLL` (loads in flight, 1.02–1.03×) and
+`ACT_QUANT_SINGLE_PASS` (row held in registers, 1.00–1.06×).
+
+Every one of them tunes *what one thread does*. None of them changes *how many
+threads are resident*, and the pass ships with a launch geometry that makes
+that the obvious question.
+
+#### Measuring it, instead of differencing it
+
+The pass had no standalone entry point, so its cost was never measured — it was
+inferred, by timing the same GEMM with 16-bit input and with int8 input and
+subtracting. That is two whole-call timings differenced into a number a quarter
+their size, carrying the run-to-run noise of both. Its share of the call, the
+bandwidth it achieves, the ceiling a faster one could reach: all of it rests on
+that difference.
+
+`ark.moe_w4a8_quant_act(activations)` makes the pass callable on its own. It is
+the same launcher behind the same parameter struct the GEMM uses internally, and
+it returns exactly the `(qact, ascale)` pair the pre-quantized contract accepts
+— which is also how it is pinned down from the outside:
+`test_quant_act_matches_in_call_quant` feeds the output back through the
+contract and requires the GEMM result to be bit-identical to letting the call
+quantize for itself.
+
+`run_act_quant` then prints the measured cost, the bandwidth it implies, and
+the old differenced estimate side by side, so the soft number can finally be
+checked against a hard one.
+
+The bandwidth column is the one to read first, because it decides whether any
+of this is worth pursuing. The byte count is fixed by the call contract, not by
+the kernel: 402.9 MB at 65536 rows and `K = 2048`. Against the earlier
+differenced estimate of 0.818 ms that is ~493 GB/s — *above* this machine's own
+device-copy probe, whose best of three rounds on B70 was 439 GB/s, and read
+from a 268 MB buffer far too large to be cached. If the direct measurement
+confirms it, the pass is not merely fast, it is the fastest sustained stream
+anything in this project has produced on B70, and it *is* the roof.
+
+That bounds the whole line of attack before any tuning:
+
+| qwen3 up @ 65536 tokens | call | speedup |
+|---|---|---|
+| shipped | 2.871 ms | — |
+| quantization made *free* | 2.053 ms | **1.40×** |
+| quantization 25% faster (needs 616 GB/s) | 2.667 ms | 1.08× |
+| quantization 10% faster | 2.789 ms | 1.03× |
+
+Deleting the pass entirely is worth 1.40× on the up projection; a realistic
+in-kernel improvement is worth 3%. On the down projection the pass is 14.8% of
+the call, so even a free one is 1.17×. The levers that actually move the byte
+count are the call contracts — deduplicating the routed rows (**1.46×** measured
+end to end) and taking int8 from the caller (**1.76× / 1.45×**) — and both are
+in [What is left](#what-is-left), not here.
+
+#### The one shape nobody swept
+
+The pass launches `global{T, 16} local{1, 16}`: one sub-group, which is **one
+hardware thread, per work-group**. 65536 routed rows are 65536 single-thread
+work-groups.
+
+That is the worst dispatch shape on an Intel GPU. The thread dispatcher caps how
+many work-groups can be resident on an Xe-core, and that cap is far below the
+number of thread slots the Xe-core has — so at one thread per group the
+work-group limit binds first and the slots go unfilled. Every other kernel in
+the same header runs 256 work-items per work-group; the quantizer is the
+outlier. The harness's own comments have been assuming a 1280-thread occupancy
+ceiling that this geometry may never have been able to reach.
+
+`ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG` widens it to `local{R, 16}` for
+`R ∈ {1, 2, 4, 8, 16}`, with 16 rows landing on the same 256 work-items the
+GEMMs use. Nothing else changes:
+
+* SYCL linearizes work-items with the last dimension fastest, so local id
+  `(r, lane)` is linear id `r × 16 + lane`. Under `reqd_sub_group_size(16)` each
+  sub-group therefore still covers exactly one token's 16 lanes, and
+  `reduce_over_group(sg, …)` keeps its meaning.
+* There is no barrier and no SLM in the kernel, so a wider group has nothing to
+  interact through.
+* The global range rounds up to whole work-groups and the padding rows exit on a
+  `token >= total_tokens` guard, which is sub-group-uniform because all 16 lanes
+  of a sub-group share one token — what a sub-group collective requires.
+* `R` reaches `nd_range` and nothing else, so the rungs cost no extra kernel
+  instantiations in a translation unit that already builds 11.
+
+The output is therefore bit-identical, which
+`test_act_quant_rows_per_wg_matches` asserts with `torch.equal` on both the int8
+rows and the fp32 scales, at a row count deliberately chosen not to divide by 16
+so the padding guard is live rather than dead code.
+
+**Default `1` — today's shape — until B70 says otherwise.** The per-policy GRF
+budget above is the standing reminder of what shipping an unmeasured default
+costs.
+
+And the expectation is deliberately low. At 65536 rows the pass is already
+against the probe, and a kernel on the roof has nothing to give; the arithmetic
+above caps even a *free* quantizer at 1.40×. The room, if there is any, is at
+the short batch: 8192 rows read ~370 GB/s, 75% of the same probe, and 8× the
+rows cost only 6.0× the time — so it is short prompts and decode that are
+under-fed, not the 8K prefill this was asked about.
+
+```bash
+pytest test_moe_w4a8_perf.py -k "act_quant_wg" -v -s
+python test_moe_w4a8_perf.py --skip-accuracy --act-quant-wg --long-seq --rounds 5
+```
+
 ### What is left
 
 With the prologue ruled out by measurement and the tile ladder already swept,
@@ -1706,6 +1828,7 @@ analysis above is why.
 | `ARK_MOE_W4A8_ACT_QUANT_VEC` | Vectorized per-token activation quantization (each lane owns 4 or 8 consecutive K elements instead of striding by the sub-group width); **on by default**, worth 1.04–1.13× on the swept shapes. Set to `0` to force the scalar mapping for A/B measurement. Ignored when K or the buffer alignment doesn't qualify, in which case the scalar kernel runs anyway. |
 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | Vectors the activation quantizer loads before it consumes any of them: `1`, `2` or `4` (default, measured fastest). Higher values raise the bytes a work-item keeps in flight — the pass is latency-bound, not bandwidth-bound, at one outstanding load per thread — at the cost of GRF. `1` is the kernel as it was before the batching, so it is the A/B baseline; every value is bit-identical. Values outside `{1, 2, 4}` fall back to the default. Only applies to the vectorized *two-pass* mapping: the single-pass kernel below issues the whole row at once and ignores this. |
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | Keep the activation row in registers between the absmax and the quantize pass instead of reading `[T, K]` twice; **on by default** where the row fits (`K ≤ 2048` at `VEC = 8`, 64 of the 128 dwords a lane gets), worth 1.00–1.05× on the shapes that qualify. Set to `0` to force the two-pass kernel, which is also what runs for longer rows. Bit-identical to it. |
+| `ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG` | Token rows per work-group in the activation quantizer: `1` (default, the shipped shape), `2`, `4`, `8` or `16`. The pass launches one sub-group — i.e. **one hardware thread** — per work-group, which is the one dimension of it that has never been swept: `VEC`, `UNROLL` and `SINGLE_PASS` all tune what a thread does, none changes how many are resident, and Intel's dispatcher caps resident work-groups per Xe-core well below its thread slots. `16` rows is 256 work-items, the work-group size every GEMM in the same header uses. Bit-identical at every rung (`test_act_quant_rows_per_wg_matches`, on a row count that exercises the padding guard); `test_perf_act_quant_wg_sweep{,_long_seq}` times them. **Not yet measured on hardware**, hence the default of `1`. Values outside `{1, 2, 4, 8, 16}` fall back to the default. See [The activation quantizer, and the one shape nobody swept](#the-activation-quantizer-and-the-one-shape-nobody-swept). |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | Skip the epilogue's store predicate and scale-index clamps on tiles that touch neither the M nor the N edge; **on by default**, worth up to 1.08× on the swept shapes (and never more than 0.9% behind). The choice is uniform across the work-group, so it costs one comparison per tile instead of several per output element. Set to `0` to force the guarded epilogue everywhere (the two must be bit-identical). |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | Write D through the hardware 2D block store instead of one scalar 32-byte message per fragment element; **on by default** where the output is aligned (`N × sizeof(ElementD) % 64 == 0`, true for every shipped shape), and the largest single prefill win of the set at 1.12–1.35×. Set to `0` to force the scalar store, which is also what runs for shapes that miss the alignment gate. Bit-identical to it. Automatically off when the fused top-k reduction is used, which scatters and therefore cannot use a block store. |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | How many k-tiles ahead the prefill mainloop prefetches A and B: `1`–`8`, default `3`. Deeper prefetch hides more DRAM latency at the cost of GRF and of a longer prologue, which matters most on short mainloops (`qwen3 down` has only 12 k-tiles per tile). Every value is bit-identical; `test_perf_prefill_prefetch_sweep` (compute-bound batch) and `test_perf_prefill_prefetch_sweep_long_seq` (8K-prompt routing) time the whole `1 / 2 / 3 / 4 / 6 / 8` range. Values outside `1`–`8` fall back to the default. The sweep found the ranking flat, so the default stays — see [Prefetch depth and K](#prefetch-depth-and-k--measured-twice-and-the-answer-is-no). |
@@ -1778,7 +1901,8 @@ the only routing where a 256-row tile pads no more than a 128-row one — the
 
 Three prefill changes used to be listed here as reasoned-through but unmeasured,
 because the authoring environment has no XPU and no SYCL compiler. All three
-have now been timed twice, and all three kept their default:
+have now been timed twice, and all three kept their default. The last row is the
+one still in that state:
 
 | Change | Revert with | Measured |
 |---|---|---|
@@ -1787,6 +1911,7 @@ have now been timed twice, and all three kept their default:
 | 2D block store for D — a handful of block messages instead of 64 scalar 32-byte ones per sub-group fragment | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×, the largest single prefill win |
 | Tile claim issued before the GEMM instead of after it, so the work counter's device-scope atomic overlaps the mainloop | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | **A tie** — 1.00× on both shapes at both batches, inside drift, sign flips between runs; kept because it is free and contention scales with Xe-core count |
 | Register budget made a property of the tile policy (`kSmallGrfOk`), then measured and left **off** | already off — `ARK_MOE_W4A8_PREFILL_SMALL_GRF=1` asks for it | **0.63–0.86×, a clear loss.** Double occupancy at `grf_size<128>`, but a 128-wide-N accumulator is half the file and the mainloop's staged operands spill; the penalty scales with K, not with tiles |
+| Activation quantizer's work-group shape — `R` token rows per group instead of one sub-group per group | already off — `ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG=1` is the shipped shape | **Not yet measured.** Shipped at the default, so this row is a sweep point, not a change; the pass is already near the device copy probe at long prefill, so the expectation is short prompts and decode, not 8K |
 
 The 2D store was previously listed as needing a device rather than a flag, on
 the grounds that the sibling MoE kernels reach it through

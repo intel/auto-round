@@ -892,6 +892,15 @@ ark.moe_w4a8_release_scratch()  # 归还设备端 scratch 内存
 辅助函数：`ark.moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)`
 可以在不做任何分配的情况下解析出有效的 block 大小 (即 `wscales` 的形状)。
 
+`ark.moe_w4a8_quant_act(activations)` 单独跑调用内部那一趟 per-token 量化，返回上面
+那条契约所接受的 `(qact, ascale)` 二元组。它有两个用途：同一批行要过好几次调用时只
+量化一次，以及**测量**这一趟 —— 在它出现之前，这一趟的开销只能靠两次整调用计时相减
+推出来。参见[激活量化 kernel，以及那个从没有人扫过的形状](#激活量化-kernel以及那个从没有人扫过的形状)。
+
+```python
+qact, ascale = ark.moe_w4a8_quant_act(activations)  # [T, K] int8, [T] fp32
+```
+
 ## 内存开销
 
 预处理后的权重为 `E × N × K` **字节** (int8)，即打包 int4 权重的 **2 倍**：
@@ -1348,6 +1357,99 @@ pytest test_moe_w4a8_perf.py -k "grf" -v
 python test_moe_w4a8_perf.py --skip-accuracy --grf --long-seq --rounds 5
 ```
 
+### 激活量化 kernel，以及那个从没有人扫过的形状
+
+量化这一趟并不是什么前置小活。它读 `[T, K]` 的 16-bit 激活，写 `[T, K]` 的 int8，
+再写 `[T]` 的 fp32 scale；在 prefill 的规模下，这占了 `moe_gemm_w4a8` 整个调用的
+四分之一到三分之一。围绕它已经扫过并落地了三个旋钮 —— `ACT_QUANT_VEC`
+(每 lane 处理多少字节，值 1.04–1.13×)、`ACT_QUANT_UNROLL` (在飞的 load 数，
+1.02–1.03×) 和 `ACT_QUANT_SINGLE_PASS` (整行留在寄存器里，1.00–1.06×)。
+
+它们调的全都是**一个线程做什么**。没有一个动过**有多少线程常驻**，而这一趟的
+launch 形状恰好把这件事摆成了最显眼的问题。
+
+#### 直接测它，而不是靠相减推它
+
+这一趟此前没有独立的入口，所以它的开销从来没被测过，只是被**推**出来的：用
+16-bit 输入和 int8 输入各跑一遍同一个 GEMM，然后相减。那是拿两个整调用的计时去
+减出一个只有它们四分之一大小的数，两边的抖动都被带了进来。它占调用的比例、它达到
+的带宽、一个更快的版本能有多少上限 —— 全都建立在这个差值上。
+
+`ark.moe_w4a8_quant_act(activations)` 让这一趟可以被单独调用。它走的是 GEMM 内部
+用的同一个 launcher、同一个参数结构体，返回的正是预量化契约所接受的
+`(qact, ascale)` 二元组 —— 这也正是它从外部被钉死的方式：
+`test_quant_act_matches_in_call_quant` 把它的输出喂回那条契约，要求 GEMM 的结果与
+让调用自己去量化时逐位相同。
+
+`run_act_quant` 随后会把实测开销、由此反推的带宽、以及旧的相减估计并排打印出来，
+好让这个软数字终于能对上一个硬数字。
+
+带宽那一列是要先看的，因为它决定了这整条路线值不值得走。字节数是由调用契约定死
+的，不是由 kernel 定的：65536 行、`K = 2048` 时是 402.9 MB。对上此前相减得到的
+0.818 ms，就是约 493 GB/s —— **高过这台机器自己的 device copy 探针**，后者在 B70
+上三轮里最好的一次是 439 GB/s；而且它读的是一个 268 MB 的缓冲区，大到根本不可能
+靠缓存作弊。如果直接测量证实了这个数，那这一趟就不只是快，它是这个项目在 B70 上
+跑出过的最快持续流带宽 —— 它本身**就是那根屋顶**。
+
+这在做任何调优之前就把整条路线的上限框死了：
+
+| qwen3 up @ 65536 tokens | 调用耗时 | 加速比 |
+|---|---|---|
+| 当前实现 | 2.871 ms | —— |
+| 量化完全**免费** | 2.053 ms | **1.40×** |
+| 量化快 25% (需要 616 GB/s) | 2.667 ms | 1.08× |
+| 量化快 10% | 2.789 ms | 1.03× |
+
+把这一趟整个删掉，在 up 投影上值 1.40×；而一个现实的 kernel 内部改进值 3%。在
+down 投影上这一趟只占调用的 14.8%，所以即便完全免费也只有 1.17×。真正能改变字节
+数的杠杆是调用契约 —— 对路由后的行去重 (端到端**实测 1.46×**) 和由 caller 直接给
+int8 (**实测 1.76× / 1.45×**) —— 这两条都在[还剩下什么](#还剩下什么)那一节，不在
+这里。
+
+#### 那个从没有人扫过的形状
+
+这一趟的 launch 是 `global{T, 16} local{1, 16}`：每个 work-group 一个 sub-group，
+也就是**一个硬件线程**。65536 条路由行就是 65536 个单线程 work-group。
+
+这是 Intel GPU 上最差的 dispatch 形状。线程分派器对每个 Xe-core 上能常驻多少个
+work-group 有一个上限，而这个上限远低于 Xe-core 的线程槽数 —— 于是在一个 group
+一个线程时，先撞上的是 work-group 上限，线程槽根本填不满。同一个头文件里其他所有
+kernel 每个 work-group 都是 256 个 work-item；量化 kernel 是唯一的异类。harness
+自己的注释一直假设着一个 1280 线程的 occupancy 天花板，而这个形状可能从来就够不到。
+
+`ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG` 把它放宽成 `local{R, 16}`，
+`R ∈ {1, 2, 4, 8, 16}`，其中 16 行正好落在 GEMM 所用的那 256 个 work-item 上。
+其他什么都不变：
+
+* SYCL 对 work-item 的线性化是**最后一维最快**，所以 local id `(r, lane)` 的线性 id
+  就是 `r × 16 + lane`。在 `reqd_sub_group_size(16)` 下，每个 sub-group 因此仍然
+  恰好覆盖一个 token 的 16 个 lane，`reduce_over_group(sg, …)` 的语义保持不变。
+* kernel 里没有 barrier 也没有 SLM，所以放大 work-group 之后它们之间没有任何可以
+  互相影响的东西。
+* 全局范围会向上取整到整数个 work-group，多出来的行由 `token >= total_tokens` 这句
+  守卫提前返回；因为一个 sub-group 的 16 个 lane 共享同一个 token，这个条件是
+  **sub-group 内一致**的 —— 这正是 sub-group 集合操作所要求的。
+* `R` 只传到 `nd_range`，不会进入 kernel 体，所以这些档位在一个已经要编 11 个
+  kernel 的翻译单元里**不增加任何实例化**。
+
+因此输出必然逐位相同，`test_act_quant_rows_per_wg_matches` 会用 `torch.equal` 对
+int8 行和 fp32 scale 两者都断言这一点，并且刻意选了一个不能被 16 整除的行数，好让
+那句补齐守卫是活代码而不是死代码。
+
+**默认值是 `1` —— 也就是今天的形状 —— 在 B70 给出结论之前不变。** 上面那个
+per-policy GRF 预算就是"默认打开一个没测过的东西"要付什么代价的现成教训。
+
+而且期望值是刻意压低的。在 65536 行上这一趟已经贴着探针了，一个已经在屋顶上的
+kernel 没有东西可以再给；上面的算术连一个**免费**的量化也只封顶到 1.40×。真要有
+空间，是在小 batch 上：8192 行只跑出约 370 GB/s，是同一个探针的 75%，而 8 倍的行
+数只花了 6.0 倍的时间 —— 也就是说没喂饱的是**短 prompt 和 decode**，不是这次被问
+到的 8K prefill。
+
+```bash
+pytest test_moe_w4a8_perf.py -k "act_quant_wg" -v -s
+python test_moe_w4a8_perf.py --skip-accuracy --act-quant-wg --long-seq --rounds 5
+```
+
 ### 还剩下什么
 
 在 prologue 已被实测排除、tile 阶梯也已扫描过之后，剩下的差距在于流量，而且它的
@@ -1478,6 +1580,7 @@ epilogue 做这件事比单独一遍做得更差。
 | `ARK_MOE_W4A8_ACT_QUANT_VEC` | 向量化的每 token 激活量化 (每个 lane 负责 4 或 8 个连续的 K 元素，而不是按 sub-group 宽度跨步)；**默认开启**，在被扫描的形状上带来 1.04–1.13× 的收益。设为 `0` 可强制使用标量映射以便做 A/B 测量。当 K 或缓冲区对齐不满足条件时该开关被忽略，此时本就会运行标量 kernel。 |
 | `ARK_MOE_W4A8_ACT_QUANT_UNROLL` | 激活量化 kernel 在开始消费之前先加载的向量个数：`1`、`2` 或 `4` (默认，实测最快)。取值越大，一个 work-item 保持在途的字节越多——这一遍在每线程仅一条在途 load 时受限于延迟而非带宽——代价是 GRF 占用。`1` 即批量化之前的 kernel，可作为 A/B 基线；所有取值逐位相同。不在 `{1, 2, 4}` 中的取值会回退到默认值。只对向量化的**两遍**映射生效：下面的单遍 kernel 一次性发出整行，会忽略这个开关。 |
 | `ARK_MOE_W4A8_ACT_QUANT_SINGLE_PASS` | 在 absmax 与量化两步之间把激活行留在寄存器里，而不是把 `[T, K]` 读两遍；在行放得下时**默认开启** (`VEC = 8` 下 `K ≤ 2048`，占每 lane 128 个 dword 中的 64 个)，在满足条件的形状上带来 1.00–1.05× 的收益。设为 `0` 可强制走两遍 kernel——更长的行本来也走它。两者逐位相同。 |
+| `ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG` | 激活量化 kernel 里每个 work-group 处理多少个 token 行：`1` (默认，即当前形状)、`2`、`4`、`8` 或 `16`。这一趟的 launch 是每个 work-group 一个 sub-group —— 也就是**一个硬件线程** —— 而这是它唯一从没被扫过的维度：`VEC`、`UNROLL`、`SINGLE_PASS` 调的都是一个线程做什么，没有一个动过有多少线程常驻，而 Intel 的分派器对每个 Xe-core 常驻的 work-group 数的上限远低于它的线程槽数。`16` 行就是 256 个 work-item，也就是同一个头文件里每个 GEMM 所用的 work-group 大小。每一档都逐位相同 (`test_act_quant_rows_per_wg_matches`，用的行数会触发补齐守卫)；`test_perf_act_quant_wg_sweep{,_long_seq}` 会对它们计时。**尚未在硬件上实测**，所以默认是 `1`。取值不在 `{1, 2, 4, 8, 16}` 内时回退到默认值。参见[激活量化 kernel，以及那个从没有人扫过的形状](#激活量化-kernel以及那个从没有人扫过的形状)。 |
 | `ARK_MOE_W4A8_PREFILL_FULL_TILE` | 对既不触及 M 边界也不触及 N 边界的 tile，跳过 epilogue 中的 store 谓词与 scale 下标钳制；**默认开启**，在被扫描的形状上最多带来 1.08× 的收益 (落后时也不超过 0.9%)。该判断在 work-group 内是一致的，因此代价是每个 tile 一次比较，而不是每个输出元素若干次。设为 `0` 可强制所有 tile 都走带保护的 epilogue (两者必须逐位相同)。 |
 | `ARK_MOE_W4A8_PREFILL_STORE_2D` | 用硬件 2D block store 写 D，而不是每个 fragment 元素发一条 32 字节的标量消息；在输出满足对齐条件 (`N × sizeof(ElementD) % 64 == 0`，所有已支持形状均满足) 时**默认开启**，是这组改动中 prefill 收益最大的一项，达 1.12–1.35×。设为 `0` 可强制使用标量 store——不满足对齐门限的形状本来也走它。两者逐位相同。使用融合 top-k 规约时会自动关闭，因为那是 scatter，用不了 block store。 |
 | `ARK_MOE_W4A8_PREFILL_PREFETCH` | prefill mainloop 预取 A/B 的 k-tile 深度：`1`–`8`，默认 `3`。预取越深越能掩盖 DRAM 延迟，代价是 GRF 和更长的 prologue——对短 mainloop 影响最大 (`qwen3 down` 每个 tile 只有 12 个 k-tile)。所有取值逐位相同；`test_perf_prefill_prefetch_sweep` (compute-bound batch) 与 `test_perf_prefill_prefetch_sweep_long_seq` (8K 提示词路由) 会对完整的 `1 / 2 / 3 / 4 / 6 / 8` 区间计时。超出 `1`–`8` 的取值回退到默认值。扫描结果显示排名平坦，因此默认值保持不变——参见[预取深度与 K](#预取深度与-k--已实测两轮结论是否定的)。 |
@@ -1544,7 +1647,7 @@ scale 相关的 bug。两个 8K 提示词的 prefill 用例
 
 本节此前列有三项"只经过推导、既未实测计时也尚未在设备上运行"的 prefill 改动，因为编写
 它们的环境既没有 XPU 也没有 SYCL 编译器。这三项现在都已实测两次，并且都保持了原有默认
-值：
+值。最后一行是仍处在那个状态里的：
 
 | 改动 | 回退方式 | 实测结果 |
 |---|---|---|
@@ -1553,6 +1656,7 @@ scale 相关的 bug。两个 8K 提示词的 prefill 用例
 | D 的 2D block store——每个 sub-group fragment 由少数几条 block 消息取代 64 条 32 字节的标量消息 | `ARK_MOE_W4A8_PREFILL_STORE_2D=0` | 1.09–1.35×，prefill 单项收益最大 |
 | tile 的领取改到 GEMM 之前而不是之后，让工作计数器的 device-scope atomic 与 mainloop 重叠 | `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` | **打平**——两个形状、两个 batch 全是 1.00×，落在 drift 之内，两次运行之间符号还翻转；保留是因为它免费，且竞争程度随 Xe core 数量增长 |
 | 把寄存器预算改成 tile policy 的属性 (`kSmallGrfOk`)，实测后**保持关闭** | 已经是关闭的 —— `ARK_MOE_W4A8_PREFILL_SMALL_GRF=1` 才会去申请 | **0.63–0.86×，明确的负结果。** `grf_size<128>` 下 occupancy 确实翻倍，但 N 宽 128 的累加器就占掉半个文件，mainloop 暂存的操作数会 spill；代价按 K 而不是按 tile 数增长 |
+| 激活量化 kernel 的 work-group 形状 —— 每个 group `R` 个 token 行，而不是一个 sub-group 一个 group | 已经是关闭的 —— `ARK_MOE_W4A8_ACT_QUANT_ROWS_PER_WG=1` 就是当前形状 | **尚未实测。** 按默认值落地，所以这一行是一个待扫描点、而不是一项改动；在长 prefill 上这一趟已经贴着 device copy 探针了，所以预期收益在短 prompt 和 decode，而不是 8K |
 
 本节此前把 2D store 列为"需要设备而不是一个开关"的工作，理由是同类 MoE kernel 都经由
 `partition_sg_fragment_S` + `reorder` 抵达它，而其中没有任何一个是对**带 scale 的**
