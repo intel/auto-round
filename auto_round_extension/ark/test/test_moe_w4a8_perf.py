@@ -1509,15 +1509,16 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
     * ``dedup, fused quant`` -- the deduplication with a quantizer of the same
       quality as the one already in the kernel.
 
-    The fused quantizer's cost is measured rather than assumed: the same GEMM
-    is timed with 16-bit input and with int8 input, on the same shape and the
-    same weights, and the difference is the in-kernel quantization of exactly
-    those rows. Doing that at both ``T`` and ``batch`` rows also cross-checks
-    that the cost is linear in rows (it should divide by ``top_k``), which is
-    reported as ``fused quant T/batch`` so a bad measurement cannot pass
-    silently. :func:`run_act_quant` now times the same pass through
-    ``moe_w4a8_quant_act`` without differencing anything, and prints the two
-    side by side.
+    The fused quantizer's cost is measured rather than assumed, and since
+    ``moe_w4a8_quant_act`` exists it is measured *directly* -- the pass is
+    timed on its own instead of being inferred from the gap between the same
+    GEMM run with 16-bit and with int8 input. That matters here: the two agree
+    at 65536 rows but not at small row counts, where the difference is taken
+    between two timings whose own drift is the size of the answer, and it
+    reads high. The deduplicated path is costed at ``batch`` rows, so it was
+    exactly the case the old estimate got wrong. Both numbers are still
+    reported, together with the ``top_k`` linearity check that first exposed
+    the discrepancy.
 
     Up/gate only. The down projection's ``T`` rows are the SiLU output, one
     distinct row per routed row, so there is nothing to deduplicate; its route
@@ -1632,13 +1633,41 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
         # Difference the same GEMM with 16-bit and int8 input: identical shape,
         # identical weights, identical output -- the only work that differs is
         # the in-kernel quantization of exactly those rows. This is the older,
-        # softer estimate; `run_act_quant` times the pass itself.
-        quant_fused_t = max(t["gemm_bf16_t"] - t["gemm_int8_t"], 0.0)
-        quant_fused_b = max(t["gemm_bf16_b"] - t["gemm_int8_b"], 0.0)
+        # softer estimate, kept only as a cross-check.
+        diff_fused_t = max(t["gemm_bf16_t"] - t["gemm_int8_t"], 0.0)
+        diff_fused_b = max(t["gemm_bf16_b"] - t["gemm_int8_b"], 0.0)
+
+        # Measured on B70, the difference is only trustworthy when the pass is
+        # a large share of the call. At 65536 rows differencing and the direct
+        # measurement agree to 0-7%; at 1024 rows, where the call is weight-
+        # bound and the pass is 2-4% of it, differencing reads 4-7x high --
+        # it is subtracting two ~1 ms timings whose own drift is the size of
+        # the answer. `batch` rows sits between the two, so the deduplicated
+        # path is costed with the direct measurement where it is available and
+        # only falls back to the difference on a build without the entry point.
+        if _QUANT_ACT_SKIP is None:
+            # The output tensors must stay referenced for as long as the
+            # callable is used: it captures their raw `data_ptr()`, so dropping
+            # them here would leave the timed call writing into freed memory.
+            quant_t = _quant_act_caller(permuted_bf16)
+            quant_fused_t = _xpu_time_ms(quant_t[0])
+            quant_t = None
+            _release_xpu_memory()
+            quant_b = _quant_act_caller(hidden)
+            quant_fused_b = _xpu_time_ms(quant_b[0])
+            quant_b = None
+            _release_xpu_memory()
+            quant_measured = True
+        else:
+            quant_fused_t, quant_fused_b = diff_fused_t, diff_fused_b
+            quant_measured = False
         # Should be ~top_k: the quantizer is a pure streaming pass, so its cost
-        # is linear in rows. A ratio far from top_k means one of the two
-        # differences is noise rather than signal.
+        # is linear in rows. This is the check that first caught the estimate
+        # being wrong -- differencing put it at 6.0x for an 8x row count, which
+        # was read as the short row count being under-fed when it was really
+        # the smaller difference being inflated.
         fused_ratio = (quant_fused_t / quant_fused_b) if quant_fused_b > 0 else None
+        diff_ratio = (diff_fused_t / diff_fused_b) if diff_fused_b > 0 else None
 
         perm_bf16_ms, perm_int8_ms = t["perm_bf16"], t["perm_int8"]
         gemm_ms = t["gemm_int8_t"]
@@ -1669,7 +1698,11 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
                 "quant_torch_ms": t["quant_torch"],
                 "quant_fused_batch_ms": quant_fused_b,
                 "quant_fused_tokens_ms": quant_fused_t,
+                "quant_measured": quant_measured,
+                "diff_fused_batch_ms": diff_fused_b,
+                "diff_fused_tokens_ms": diff_fused_t,
                 "fused_ratio": fused_ratio,
+                "diff_ratio": diff_ratio,
                 "speedup": (today_ms / dedup_fused_ms) if dedup_fused_ms else None,
                 "speedup_torch": (today_ms / dedup_torch_ms) if dedup_torch_ms else None,
                 "snr_db": snr_db,
@@ -1711,11 +1744,20 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
                 f"{row['batch']} rows, vs {row['quant_fused_batch_ms']:.3f} ms fused"
             )
             print(
-                f"  {'':<12} fused quant measured by differencing: {row['quant_fused_tokens_ms']:.3f} ms at "
-                f"{row['tokens']} rows / {row['quant_fused_batch_ms']:.3f} ms at {row['batch']} rows = "
+                f"  {'':<12} fused quant {'measured directly' if row['quant_measured'] else 'by differencing'}: "
+                f"{row['quant_fused_tokens_ms']:.3f} ms at {row['tokens']} rows / "
+                f"{row['quant_fused_batch_ms']:.3f} ms at {row['batch']} rows = "
                 f"{(f'{ratio:.1f}x' if ratio else 'n/a')} for {row['topk']}x the rows"
                 f"{'' if ratio and 0.5 * row['topk'] <= ratio <= 2.0 * row['topk'] else '  <- NOT linear, treat as noise'}"
             )
+            if row["quant_measured"]:
+                diff_ratio = row["diff_ratio"]
+                print(
+                    f"  {'':<12} the old differenced estimate, for comparison: "
+                    f"{row['diff_fused_tokens_ms']:.3f} ms / {row['diff_fused_batch_ms']:.3f} ms = "
+                    f"{(f'{diff_ratio:.1f}x' if diff_ratio else 'n/a')} -- differencing inflates the "
+                    f"smaller row count, which is why this path is no longer costed with it"
+                )
     return rows
 
 
