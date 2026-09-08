@@ -35,6 +35,10 @@ stages:
     jobs:
       - job: AnalyzeFailures
         displayName: "Analyze failed unit tests"
+        variables:
+          base: $(Build.SourcesDirectory)
+          output_dir: $(Build.SourcesDirectory)/ai_analysis_results
+          scripts: $(Build.SourcesDirectory)/.azure-pipelines/scripts/ai_analysis
         steps:
           - task: UsePythonVersion@0
             inputs:
@@ -45,33 +49,42 @@ stages:
             inputs:
               artifact:
               patterns: "ut-*-1/unittest_*"
-              path: $(Build.SourcesDirectory)/ai_analysis/failed_logs
+              path: $(output_dir)/failed_logs
             displayName: "Download failed-log artifacts"
 
           - task: Bash@3
-            displayName: "Cluster failures and match known issues"
+            displayName: "Cluster failures"
+            inputs:
+              targetType: "inline"
+              script: |
+                set -eo pipefail
+                python "$(scripts)/analyze_failures.py" \
+                  --input-dir "$(output_dir)/failed_logs" \
+                  --clusters-json "$(output_dir)/clusters.json" \
+                  --decision-log "$(output_dir)/decision_log.md"
+                
+                echo "Cluster analysis completed. Results are in $(output_dir)/clusters.json"
+                cat "$(output_dir)/clusters.json"
+
+          - task: Bash@3
+            displayName: "Match known issues"
             env:
               AUTO_ROUND_BOT_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
             inputs:
               targetType: "inline"
               script: |
                 set -eo pipefail
-                base="$(Build.SourcesDirectory)"
-                work="${base}/ai_analysis"
-                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
                 repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                 repo_path="${repo_path%.git}"
 
-                python "${scripts}/analyze_failures.py" \
-                  --input-dir "${work}/failed_logs" \
-                  --clusters-json "${work}/clusters.json" \
-                  --decision-log "${work}/decision_log.md"
-
-                python "${scripts}/match_known_issues.py" \
-                  --clusters-json "${work}/clusters.json" \
-                  --output "${work}/annotated.json" \
+                python "$(scripts)/match_known_issues.py" \
+                  --clusters-json "$(output_dir)/clusters.json" \
+                  --output "$(output_dir)/annotated.json" \
                   --repo "${repo_path}" \
                   --label "${{ parameters.knownIssueLabel }}"
+                
+                echo "Matching known issues completed. Results are in $(output_dir)/annotated.json"
+                cat "$(output_dir)/annotated.json"
 
           - task: Bash@3
             displayName: "AI analysis of top unknown failures"
@@ -87,19 +100,19 @@ stages:
                     curl -fsSL https://gh.io/copilot-install | bash
                     export PATH="$HOME/.local/bin:$PATH"
                 fi
-                base="$(Build.SourcesDirectory)"
-                work="${base}/ai_analysis"
-                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
-                python "${scripts}/ai_analyze.py" \
-                  --clusters-json "${work}/annotated.json" \
-                  --output "${work}/ai.json" \
+                python "$(scripts)/ai_analyze.py" \
+                  --clusters-json "$(output_dir)/annotated.json" \
+                  --output "$(output_dir)/ai.json" \
                   --pr-sha "$(Build.SourceVersion)" \
                   --top ${{ parameters.topUnknown }} \
                   --enable-ai-analysis ${{ parameters.enableAiAnalysis }} \
                   --backend copilot \
-                  --trace-file "${work}/ai_trace.jsonl" \
-                  --project-root "${base}" \
-                  --log-dir "${work}/failed_logs"
+                  --trace-file "$(output_dir)/ai_trace.jsonl" \
+                  --project-root "$(base)" \
+                  --log-dir "$(output_dir)/failed_logs"
+
+                echo "AI analysis completed. Results are in $(output_dir)/ai.json"
+                cat "$(output_dir)/ai.json"
 
           - task: Bash@3
             displayName: "Merge markdown report"
@@ -112,13 +125,10 @@ stages:
               targetType: "inline"
               script: |
                 set -eo pipefail
-                base="$(Build.SourcesDirectory)"
-                work="${base}/ai_analysis"
-                scripts="${base}/.azure-pipelines/scripts/ai_analysis"
-                python "${scripts}/merge_reports.py" \
-                  --clusters-json "${work}/annotated.json" \
-                  --ai-json "${work}/ai.json" \
-                  --output "${work}/report.md"
+                python "$(scripts)/merge_reports.py" \
+                  --clusters-json "$(output_dir)/annotated.json" \
+                  --ai-json "$(output_dir)/ai.json" \
+                  --output "$(output_dir)/report.md"
 
           - ${{ if eq(parameters.postComment, true) }}:
               - task: Bash@3
@@ -130,21 +140,18 @@ stages:
                   targetType: "inline"
                   script: |
                     set -uo pipefail
-                    base="$(Build.SourcesDirectory)"
-                    work="${base}/ai_analysis"
-                    scripts="${base}/.azure-pipelines/scripts/ai_analysis"
                     repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
                     repo_path="${repo_path%.git}"
-                    python "${scripts}/post_pr_comment.py" \
+                    python "$(scripts)/post_pr_comment.py" \
                       --repo "${repo_path}" \
                       --pr "${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}" \
                       --marker-key "$(Build.DefinitionName)" \
-                      --body-file "${work}/report.md"
+                      --body-file "$(output_dir)/report.md"
 
           - task: PublishPipelineArtifact@1
             condition: always()
             inputs:
-              targetPath: $(Build.SourcesDirectory)/ai_analysis
+              targetPath: $(Build.SourcesDirectory)/ai_analysis_results
               artifact: "ai-failure-analysis"
               publishLocation: "pipeline"
             displayName: "Publish AI failure-analysis report"
