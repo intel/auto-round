@@ -16,6 +16,7 @@ from auto_round.auto_scheme.delta_loss import (
     _vram_inventory_text,
 )
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
+from auto_round.export.export_to_gguf.export import _clear_gguf_model_instances
 
 
 def _make_local_calibration_dataset(tmp_path):
@@ -376,7 +377,10 @@ class TestAutoScheme:
             for n, m in ar.model.named_modules()
             if getattr(m, "weight", None) is not None and len(list(m.children())) == 0
         }
-        model, layer_config = ar.quantize()
+        try:
+            model, layer_config = ar.quantize()
+        finally:
+            _clear_gguf_model_instances()
         assert layer_config["model.embed_tokens"]["bits"] == 3
         quant_layers = [n for n in layer_config if n in weight_numels]
         total_params = sum(weight_numels[n] for n in quant_layers)
@@ -417,7 +421,10 @@ class TestAutoScheme:
             for n, m in ar.model.named_modules()
             if getattr(m, "weight", None) is not None and len(list(m.children())) == 0
         }
-        model, layer_config = ar.quantize()
+        try:
+            model, layer_config = ar.quantize()
+        finally:
+            _clear_gguf_model_instances()
         # Only q2_k_s fits the budget for the embedding (q4_k_s/q6_k alone would exceed it).
         assert layer_config["model.embed_tokens"]["bits"] == 2
         quant_layers = [n for n in layer_config if n in weight_numels]
