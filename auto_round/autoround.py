@@ -353,6 +353,7 @@ _ENTRY_KWARG_OWNERS = {
     "quant_nontext_module": "mllm",
     "guidance_scale": "diffusion",
     "num_inference_steps": "diffusion",
+    "calib_num_inference_steps": "diffusion",
     "generator_seed": "diffusion",
 }
 

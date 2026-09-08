@@ -45,7 +45,7 @@ import torch
 # Matrix
 # ---------------------------------------------------------------------------
 
-# (hf_id, scheme, min_ram_gib, num_inference_steps, guidance_scale)
+# (hf_id, scheme, min_ram_gib, calib_num_inference_steps, guidance_scale)
 DIFFUSION_CASES = [
     # FLUX.1-dev - the canonical diffusion quant target.
     (
@@ -107,7 +107,7 @@ def _require_ram(min_gib: int) -> None:
         pytest.skip(f"only {avail:.1f} GiB free RAM, need {min_gib} GiB for this diffusion case")
 
 
-def _quantize_diffusion(model_id: str, scheme: str, output_dir: str, num_inference_steps: int) -> None:
+def _quantize_diffusion(model_id: str, scheme: str, output_dir: str, calib_num_inference_steps: int) -> None:
     """Quantize a diffusion model with ``auto-round`` and write to ``output_dir``."""
     from test.helpers import get_model_path
 
@@ -122,7 +122,7 @@ def _quantize_diffusion(model_id: str, scheme: str, output_dir: str, num_inferen
         scheme=scheme,
         iters=0,  # diffusion paths are typically RTN
         disable_opt_rtn=(scheme not in ("W4A16",)),
-        num_inference_steps=num_inference_steps,
+        calib_num_inference_steps=calib_num_inference_steps,
     )
     ar.quantize_and_save(output_dir)
 
@@ -181,7 +181,7 @@ class TestDiffusionQuantizeE2E:
 
         # ---- 1. quantize + save ----
         t0 = time.perf_counter()
-        _quantize_diffusion(model_id, scheme, save_dir, num_inference_steps=num_steps)
+        _quantize_diffusion(model_id, scheme, save_dir, calib_num_inference_steps=num_steps)
         quant_time = time.perf_counter() - t0
 
         # Sanity: the saved pipeline must contain the expected files.
@@ -253,7 +253,7 @@ class TestDiffusionLoadOnly:
         _require_ram(20)
 
         save_dir = str(tmp_path / "diffusion_load_only")
-        _quantize_diffusion(model_id, scheme, save_dir, num_inference_steps=2)
+        _quantize_diffusion(model_id, scheme, save_dir, calib_num_inference_steps=2)
 
         from diffusers import AutoPipelineForText2Image
 
