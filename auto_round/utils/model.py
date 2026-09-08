@@ -2607,13 +2607,45 @@ def pin_ngram_embeddings_on_cpu_(module: torch.nn.Module) -> list:
     onto accelerators. Returns the list of pinned module names.
     """
     pinned = []
+    pinned_modules = []
     for name, sub in module.named_modules():
         leaf = name.rsplit(".", 1)[-1]
         if leaf in ("ngram_embedding", "ngram_embeddings"):
             if not module_is_pinned_on_cpu(sub):
                 _pin_module_execution_on_cpu(sub)
             pinned.append(name)
+            pinned_modules.append(sub)
+    if pinned_modules:
+        _log_ngram_cpu_hint(pinned_modules)
     return pinned
+
+
+def _log_ngram_cpu_hint(ngram_modules: list) -> None:
+    """Tell the user ngram embeddings are on CPU and how to move them (once per run).
+
+    Emits the total ngram size and, when ``AR_NGRAM_DEVICE`` is not explicitly set, points at
+    the faster on-GPU options -- noting that ``across`` (multi-GPU sharding) is experimental
+    and may have bugs.
+    """
+    from auto_round import envs
+
+    total_nbytes = sum(_module_storage_nbytes(sub) for sub in ngram_modules)
+    if envs.is_set("AR_NGRAM_DEVICE"):
+        logger.info_once(
+            "Found %d ngram embedding module(s) (total %s); AR_NGRAM_DEVICE=%s keeps them on CPU.",
+            len(ngram_modules),
+            _format_nbytes_gib(total_nbytes),
+            str(getattr(envs, "AR_NGRAM_DEVICE", "auto")),
+        )
+    else:
+        logger.info_once(
+            "Found %d ngram embedding module(s) (total %s). AR_NGRAM_DEVICE is not set, so they stay on "
+            "CPU by default (memory-safe, but adds host<->device copies each block forward). To speed up, "
+            "set AR_NGRAM_DEVICE=<cuda:N|xpu:N> to place the whole table on one card, or AR_NGRAM_DEVICE=across "
+            "to row-shard it across all GPUs (experimental, may have bugs).",
+            len(ngram_modules),
+            _format_nbytes_gib(total_nbytes),
+        )
 
 
 def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> torch.nn.Module:

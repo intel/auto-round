@@ -110,9 +110,11 @@ class SignRoundQuantizer(BaseQuantizer):
                         continue
                     add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
         else:
-            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, pin_ngram_embeddings_on_cpu_
+            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, place_ngram_embeddings_for_tuning_
 
-            pin_ngram_embeddings_on_cpu_(block)
+            # Honor AR_NGRAM_DEVICE even on a single GPU (default keeps the table on CPU and
+            # logs a hint); this also surfaces the ngram size / placement info to the user.
+            place_ngram_embeddings_for_tuning_(block)
             block = move_to_device_preserving_cpu_pinned(block, device_manager.device)
             card_0_in_high_risk, loss_device = False, device_manager.device
 
