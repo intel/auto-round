@@ -46,7 +46,24 @@ class RRQConfig(RTNConfig):
     #: Total planes = 1 (base) + num_residual_planes.
     num_residual_planes: int = 3
 
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        *,
+        iters: int = 200,
+        lr: float | None = None,
+        minmax_lr: float | None = None,
+        momentum: float = 0.0,
+        lr_scheduler=None,
+        enable_minmax_tuning: bool = True,
+        gradient_accumulate_steps: int = 1,
+        enable_quanted_input: bool = True,
+        not_use_best_mse: bool = False,
+        dynamic_max_gap: int = -1,
+        enable_lfq: bool = False,
+        num_residual_planes: int = 3,
+        disable_opt_rtn: bool | None = True,
+        **kwargs,
+    ):
         # Enforce fixed values
         if "bits" in kwargs and kwargs["bits"] != 2:
             raise ValueError(f"RRQ only supports bits=2 per plane, got {kwargs['bits']}")
@@ -55,42 +72,43 @@ class RRQConfig(RTNConfig):
         if "act_bits" in kwargs and kwargs["act_bits"] != 16:
             raise ValueError(f"RRQ is weight-only; act_bits must be 16, got {kwargs['act_bits']}")
 
-        # Extract tunable fields before super (they are not scheme fields)
-        # Match SignRoundConfig's AutoRound default. RTN remains available via
-        # an explicit ``iters=0``.
-        self._rrq_iters = kwargs.pop("iters", 200)
-        self._rrq_lr = kwargs.pop("lr", None)
-        self._rrq_minmax_lr = kwargs.pop("minmax_lr", None)
-        self._rrq_momentum = kwargs.pop("momentum", 0.0)
-        self._rrq_lr_scheduler = kwargs.pop("lr_scheduler", None)
-        self._rrq_enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
-        self._rrq_gradient_accumulate_steps = kwargs.pop("gradient_accumulate_steps", 1)
-        self._rrq_enable_quanted_input = kwargs.pop("enable_quanted_input", True)
-        self._rrq_not_use_best_mse = kwargs.pop("not_use_best_mse", False)
-        self._rrq_dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
-        self._rrq_enable_lfq = kwargs.pop("enable_lfq", False)
+        # RRQ-tunable fields (not scheme fields). Declared as named parameters so
+        # the CLI field-acceptance contract (see test_cli_usage) holds; stored
+        # before super() so the inherited RTN/Quantization __init__ doesn't drop
+        # them. Match SignRoundConfig's AutoRound default. RTN remains available
+        # via an explicit ``iters=0``.
+        self._rrq_iters = iters
+        self._rrq_lr = lr
+        self._rrq_minmax_lr = minmax_lr
+        self._rrq_momentum = momentum
+        self._rrq_lr_scheduler = lr_scheduler
+        self._rrq_enable_minmax_tuning = enable_minmax_tuning
+        self._rrq_gradient_accumulate_steps = gradient_accumulate_steps
+        self._rrq_enable_quanted_input = enable_quanted_input
+        self._rrq_not_use_best_mse = not_use_best_mse
+        self._rrq_dynamic_max_gap = dynamic_max_gap
+        self._rrq_enable_lfq = enable_lfq
 
         # Inject fixed values
         kwargs.setdefault("bits", 2)
         kwargs.setdefault("data_type", "int")
         kwargs.setdefault("act_bits", 16)
 
-        # Extract num_residual_planes before super (it's not a scheme field)
-        self._num_residual_planes = kwargs.pop("num_residual_planes", 3)
-        if self._num_residual_planes not in (1, 3):
-            raise ValueError(f"RRQ supports num_residual_planes=1 or 3, got {self._num_residual_planes}")
-        if self._num_residual_planes <= 0:
+        # num_residual_planes is not a scheme field
+        if num_residual_planes not in (1, 3):
+            raise ValueError(f"RRQ supports num_residual_planes=1 or 3, got {num_residual_planes}")
+        if num_residual_planes <= 0:
             raise ValueError("num_residual_planes must be positive")
+        self._num_residual_planes = num_residual_planes
 
         # ``disable_opt_rtn`` stays True at the config level purely to keep RRQ
         # routed to its own quantizer: an RTNConfig subclass with
         # ``disable_opt_rtn=False`` is silently coerced to OptimizedRTNConfig by
         # the AutoRound entry, which would drop every residual plane. The
         # per-plane RTN quality is matched to standard AutoRound (opt-RTN)
-        # inside the quantizer instead (see RRQRTNQuantizer).
-        kwargs.setdefault("disable_opt_rtn", True)
-
-        super().__init__(**kwargs)
+        # inside the quantizer instead (see RRQRTNQuantizer). Passed explicitly
+        # (not via ``**kwargs``) since it is a named parameter here.
+        super().__init__(disable_opt_rtn=disable_opt_rtn, **kwargs)
 
         self.iters = int(self._rrq_iters or 0)
         self.lr = self._rrq_lr
