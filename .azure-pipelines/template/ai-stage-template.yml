@@ -107,6 +107,8 @@ stages:
                   --top ${{ parameters.topUnknown }} \
                   --enable-ai-analysis ${{ parameters.enableAiAnalysis }} \
                   --backend copilot \
+                  --model gpt-5.6-luna \
+                  --reasoning-effort max \
                   --trace-file "$(output_dir)/ai_trace.jsonl" \
                   --project-root "$(base)" \
                   --log-dir "$(output_dir)/failed_logs"

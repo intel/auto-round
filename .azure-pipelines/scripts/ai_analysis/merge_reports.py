@@ -16,6 +16,23 @@ def _inline(text: str, limit: int = 160) -> str:
     return text[:limit]
 
 
+def _code_span(text: str) -> str:
+    """Wrap text in an inline code span without breaking embedded backticks."""
+    text = (text or "").replace("\n", " ").strip()
+    if "`" not in text:
+        return f"`{text}`"
+    longest_run = 0
+    current_run = 0
+    for character in text:
+        if character == "`":
+            current_run += 1
+            longest_run = max(longest_run, current_run)
+        else:
+            current_run = 0
+    fence = "`" * (longest_run + 1)
+    return f"{fence} {text} {fence}"
+
+
 def _load(path: str) -> dict:
     if not path or not os.path.isfile(path):
         return {}
@@ -76,29 +93,34 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
     lines = [f"## New issues ({len(unknown)})", ""]
 
     for rank, c in enumerate(unknown, start=1):
-        sig = _inline(c.get("signature", ""))
+        signature = _inline(c.get("signature", ""))
         occ = c.get("occurrences", 0)
-        lines.append(f"### {rank}. `{sig}` — {occ} occurrence(s)")
+        tests = c.get("tests", [])
+        logs = ", ".join(c.get("logs", [])) or "-"
+        lines.append(f"### No.{rank} — {occ} occurrence(s)")
         lines.append("")
-        lines.append("<details><summary>Details</summary>")
+        lines.append("<details><summary>📝 Basic Info</summary>")
         lines.append("")
-        lines.append(f"- **Affected tests ({len(c.get('tests', []))}):** {', '.join(c.get('tests', [])) or '-'}")
-        lines.append(f"- **Logs:** {', '.join(c.get('logs', [])) or '-'}")
+        lines.append(f"- **Signature:** {_code_span(signature)}")
+        lines.append(f"- **Affected tests ({len(tests)}):** {', '.join(tests) or '-'}")
+        lines.append(f"- **Logs:** {logs}")
+        lines.append("")
+        lines.append("</details>")
 
-        # Sample log excerpt section
         lines.append("")
-        lines.append("<details><summary>Failed log excerpt</summary>")
+        lines.append("<details><summary>🔍 Log Excerpt</summary>")
         lines.append("")
         lines.append("```")
         lines.append((c.get("sample", "") or "").strip())
         lines.append("```")
         lines.append("")
         lines.append("</details>")
+        lines.append("")
 
         analysis = analyses_by_id.get(c.get("id"))
         if analysis:
             lines.append("")
-            lines.append("**AI analysis**")
+            lines.append("<details><summary>✨ AI Analysis</summary>")
             lines.append("")
             lines.append(f"- **Category:** {analysis.get('category', 'Unknown')}")
             lines.append(f"- **Confidence:** {analysis.get('confidence', 'low')}")
@@ -108,18 +130,26 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
                 lines.append(f"- **Suggested fix:** {analysis['suggested_fix']}")
             if analysis.get("patch"):
                 lines.append("")
-                lines.append("```diff")
-                lines.append(analysis["patch"])
-                lines.append("```")
+                lines.append("- **Patch:**")
+                lines.append("    ```diff")
+                lines.extend(f"    {line}" for line in analysis["patch"].splitlines())
+                lines.append("    ```")
             if analysis.get("directions"):
                 lines.append(f"- **Investigation directions (low confidence):** {analysis['directions']}")
-        else:
             lines.append("")
-            lines.append("_Not in the top-N AI-analyzed set._")
+            lines.append("</details>")
+            lines.append("")
 
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
+    analyzed = [c for c in unknown if analyses_by_id.get(c.get("id"))]
+    lines.extend(
+        [
+            "",
+            "> **Notes**",
+            f"> - Only top-{len(analyzed)} issues receive AI analysis.",
+            f"> - You can @mention copilot to provide further AI fix by \"Quote reply\" in the PR comment.",
+            "",
+        ]
+    )
     return lines
 
 

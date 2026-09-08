@@ -62,7 +62,9 @@ Guidance:
 """
 
 
-def call_backend(prompt: str, backend: str, timeout: int, model: str, trace_file: str, cluster_id) -> str:
+def call_backend(
+    prompt: str, backend: str, timeout: int, model: str, reasoning_effort: str, trace_file: str, cluster_id
+) -> str:
     """Dispatch a prompt to the selected AI backend and return raw text output.
 
     Swap point: replace the ``copilot`` branch to change the inference provider.
@@ -70,7 +72,7 @@ def call_backend(prompt: str, backend: str, timeout: int, model: str, trace_file
     if backend == "none":
         return ""
     if backend == "copilot":
-        return _call_copilot_cli(prompt, timeout, model, trace_file, cluster_id)
+        return _call_copilot_cli(prompt, timeout, model, reasoning_effort, trace_file, cluster_id)
     raise ValueError(f"unknown backend: {backend}")
 
 
@@ -126,7 +128,9 @@ def _parse_copilot_json(stdout: str) -> dict:
     }
 
 
-def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cluster_id) -> str:
+def _call_copilot_cli(
+    prompt: str, timeout: int, model: str, reasoning_effort: str, trace_file: str, cluster_id
+) -> str:
     argv = [
         "copilot",
         "-p",
@@ -145,6 +149,8 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, trace_file: str, cl
     ]
     if model:
         argv += ["--model", model]
+    if reasoning_effort:
+        argv += ["--reasoning-effort", reasoning_effort]
     env = dict(os.environ)
     # Let the Copilot CLI authenticate with the dedicated token.
     ai_token = os.environ.get("AI_TOKEN", "")
@@ -294,7 +300,15 @@ def build_prompt(cluster: dict, pr_files: str, max_excerpt: int, project_root: s
 
 def analyze(cluster: dict, pr_files: str, args) -> dict:
     prompt = build_prompt(cluster, pr_files, args.max_excerpt_chars, args.project_root, args.log_dir)
-    raw = call_backend(prompt, args.backend, args.timeout, args.model, args.trace_file, cluster.get("id"))
+    raw = call_backend(
+        prompt,
+        args.backend,
+        args.timeout,
+        args.model,
+        args.reasoning_effort,
+        args.trace_file,
+        cluster.get("id"),
+    )
     parsed = parse_model_json(raw)
     result = {
         "cluster_id": cluster.get("id"),
@@ -351,6 +365,12 @@ def main():
     )
     parser.add_argument("--timeout", type=int, default=300, help="Per-call timeout in seconds")
     parser.add_argument("--model", default="", help="Copilot model to use; empty uses the CLI default")
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        default="",
+        help="Copilot reasoning effort; empty uses the CLI default",
+    )
     parser.add_argument("--trace-file", default="", help="JSONL file logging each AI call for auditing")
     parser.add_argument("--project-root", default="", help="Repository checkout root the AI may inspect")
     parser.add_argument("--log-dir", default="", help="Directory holding the full raw failure logs")
