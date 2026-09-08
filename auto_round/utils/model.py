@@ -2743,6 +2743,22 @@ def _iter_ngram_modules(module: torch.nn.Module):
             yield name, sub
 
 
+def _module_storage_nbytes(module: torch.nn.Module) -> int:
+    """Return parameter+buffer storage bytes for one module (including its children)."""
+    total = 0
+    for param in module.parameters(recurse=True):
+        total += int(param.numel()) * int(param.element_size())
+    for buf in module.buffers(recurse=True):
+        total += int(buf.numel()) * int(buf.element_size())
+    return total
+
+
+def _format_nbytes_gib(nbytes: int) -> str:
+    """Format byte count in GiB for user-facing logs."""
+    gib = float(nbytes) / (1024.0**3)
+    return f"{gib:.2f} GiB"
+
+
 def _place_ngram_on_single_device_(sub: torch.nn.Module, device: str) -> None:
     """Keep one ngram embedding resident on ``device`` (CPU or a specific accelerator).
 
@@ -2817,6 +2833,13 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
     ngram_modules = list(_iter_ngram_modules(module))
     if not ngram_modules:
         return []
+    total_ngram_nbytes = sum(_module_storage_nbytes(sub) for _, sub in ngram_modules)
+    logger.info_once(
+        "Detected %d ngram embedding module(s), total size %s (AR_NGRAM_DEVICE=%s).",
+        len(ngram_modules),
+        _format_nbytes_gib(total_ngram_nbytes),
+        setting or "auto",
+    )
 
     # Resolve the requested mode.
     single_target = _normalize_ngram_target_device(setting, devices)
@@ -2830,10 +2853,11 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
         mode = "single"
         single_target = "cpu"
         logger.info_once(
-            "Keeping ngram embeddings on CPU (default, memory-safe). This adds host<->device "
+            "Keeping ngram embeddings on CPU (default, memory-safe; total %s). This adds host<->device "
             "copies each block forward. For faster lookup set AR_NGRAM_DEVICE=<cuda:N|xpu:N> to "
             "place the whole table on one card, or AR_NGRAM_DEVICE=across to row-shard it across "
-            "all GPUs."
+            "all GPUs.",
+            _format_nbytes_gib(total_ngram_nbytes),
         )
     elif single_target is not None:
         mode = "single"
@@ -2850,6 +2874,13 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
                 "set AR_NGRAM_DEVICE=cpu (safe) or a specific card (e.g. AR_NGRAM_DEVICE=cuda:0) if you hit issues."
             )
             handled = list(shard_ngram_embeddings_across_gpus_(module, devices))
+            if handled:
+                logger.info(
+                    "Placed %d ngram embedding module(s) across %d GPUs (total %s).",
+                    len(handled),
+                    len(devices),
+                    _format_nbytes_gib(total_ngram_nbytes),
+                )
         # Any ngram not sharded (single/no GPU, custom module, OOM) falls back to CPU pin below.
         fallback = devices[0] if len(devices) == 1 else "cpu"
         for name, sub in ngram_modules:
@@ -2857,6 +2888,13 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
                 continue
             _place_ngram_on_single_device_(sub, fallback)
             handled.append(name)
+        if handled and len(devices) < 2:
+            logger.info(
+                "Placed %d ngram embedding module(s) on %s (total %s).",
+                len(handled),
+                fallback,
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
         return handled
 
     # mode == "single": every ngram table on one chosen device (CPU or a specific card).
@@ -2864,6 +2902,13 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
     for name, sub in ngram_modules:
         _place_ngram_on_single_device_(sub, target)
         handled.append(name)
+    if handled:
+        logger.info(
+            "Placed %d ngram embedding module(s) on %s (total %s).",
+            len(handled),
+            target,
+            _format_nbytes_gib(total_ngram_nbytes),
+        )
     return handled
 
 
