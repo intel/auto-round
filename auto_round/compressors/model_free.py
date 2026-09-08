@@ -103,12 +103,14 @@ import multiprocessing as mp
 import os
 import re
 import shutil
+import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
 from typing import Any, Optional, Union
 
 import torch
+from safetensors import safe_open
 
 from auto_round import envs
 from auto_round.compressors.config_resolution import thaw_mapping
@@ -195,6 +197,24 @@ _QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
     "quantize_config.json",
     "quant_config.json",
 )
+
+_RESUME_MANIFEST_NAME = "model_free_resume.json"
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write JSON without leaving a partially-written resume manifest."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp_model_free_resume_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _find_quantization_config(config: Any) -> dict:
@@ -593,6 +613,8 @@ class _ModelFreeCompressorCore:
         self._donor_remaining_recipients: dict[str, int] = {}
         self._donor_self_consumed: dict[str, bool] = {}
         self._donor_shard_paths: dict[str, str] = {}
+        self._resume_parameters: dict = {}
+        self._resume_processed_shards: dict[str, dict] = {}
 
     # -------------------------------------------------------------------
     # Validation / parsing
@@ -983,6 +1005,143 @@ class _ModelFreeCompressorCore:
     # Shard processing pipeline
     # -------------------------------------------------------------------
 
+    @property
+    def _resume_manifest_path(self) -> str:
+        return os.path.join(self.output_dir, ".cache", _RESUME_MANIFEST_NAME)
+
+    def _build_resume_parameters(self) -> dict:
+        """Return the effective command inputs that determine shard output."""
+        source_shards = []
+        if not self.is_streaming:
+            for shard_name in self.shard_names:
+                shard_path = os.path.join(self.source_dir, shard_name)
+                try:
+                    stat = os.stat(shard_path)
+                    source_shards.append({"name": shard_name, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
+                except OSError:
+                    source_shards.append({"name": shard_name, "missing": True})
+        else:
+            source_shards = [{"name": shard_name} for shard_name in self.shard_names]
+
+        parameters = {
+            "model_name_or_path": (
+                os.path.realpath(self.model_name_or_path)
+                if os.path.isdir(self.model_name_or_path)
+                else self.model_name_or_path
+            ),
+            "source_shards": source_shards,
+            "default_scheme": self.default_scheme,
+            "layer_config": self.layer_config,
+            "ignore_patterns": self.ignore_patterns,
+            "format": self.format,
+            "device": self.device,
+            "quant_lm_head": self.quant_lm_head,
+            "quant_nontext_module": self.quant_nontext_module,
+            "enable_torch_compile": self.enable_torch_compile,
+            "disable_opt_rtn": self.disable_opt_rtn,
+            "model_type": self.model_type,
+            "source_quantization_config": self.source_quantization_config,
+        }
+        return json.loads(json.dumps(parameters, sort_keys=True, default=str))
+
+    def _resume_record_is_valid(self, record: Any) -> bool:
+        """Check that a completed shard is present, readable, and unchanged."""
+        if not isinstance(record, dict):
+            return False
+        out_shard_name = record.get("output_file")
+        tensor_names = record.get("tensor_names")
+        if not isinstance(out_shard_name, str) or not isinstance(tensor_names, list):
+            return False
+        shard_path = os.path.join(self._quant_output_dir, out_shard_name)
+        try:
+            with safe_open(shard_path, framework="pt") as shard:
+                return set(shard.keys()) == set(tensor_names)
+        except Exception:
+            return False
+
+    def _write_resume_manifest(self) -> None:
+        processed = self._resume_processed_shards
+        pending = [name for name in self.shard_names if name not in processed]
+        _atomic_write_json(
+            self._resume_manifest_path,
+            {
+                "version": 1,
+                "parameters": self._resume_parameters,
+                "pending_files": pending,
+                "processed_files": processed,
+            },
+        )
+
+    def _prepare_resume_state(self) -> None:
+        """Load only output shards proven to belong to this exact command."""
+        self._resume_parameters = self._build_resume_parameters()
+        manifest = None
+        try:
+            with open(self._resume_manifest_path) as f:
+                manifest = json.load(f)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning(f"Could not read model-free resume state: {exc}; starting from the first shard.")
+
+        if manifest and manifest.get("version") == 1 and manifest.get("parameters") == self._resume_parameters:
+            cached_processed = manifest.get("processed_files", {})
+            if isinstance(cached_processed, dict):
+                for shard_name in self.shard_names:
+                    record = cached_processed.get(shard_name)
+                    if record is None:
+                        continue
+                    if not self._resume_record_is_valid(record):
+                        logger.warning(f"Cached output for {shard_name} is missing or invalid; processing it again.")
+                        continue
+                    self._resume_processed_shards[shard_name] = record
+                    self.all_quantized_layers.extend(record.get("quantized_layers", []))
+                    self.all_ignored_layers.extend(record.get("ignored_layers", []))
+                    for tensor_name in record["tensor_names"]:
+                        self.output_weight_map[tensor_name] = record["output_file"]
+        elif manifest:
+            logger.info("Model-free resume state belongs to different command parameters; starting fresh.")
+
+        pending = [name for name in self.shard_names if name not in self._resume_processed_shards]
+        if self._resume_processed_shards:
+            logger.info(
+                f"Model-free resume: skipping {len(self._resume_processed_shards)}/{len(self.shard_names)} "
+                "validated output shard(s)."
+            )
+
+        # Donor lifetimes only need to account for recipients still pending.
+        donor_recipients: dict[str, set[str]] = {}
+        for recipient in pending:
+            for donor in self.cross_shard_deps.get(recipient, {}):
+                donor_recipients.setdefault(donor, set()).add(recipient)
+        self._donor_remaining_recipients = {donor: len(recipients) for donor, recipients in donor_recipients.items()}
+        self._donor_self_consumed = {
+            donor: donor in self._resume_processed_shards for donor in self.donor_shard_tensors
+        }
+        self._write_resume_manifest()
+
+    def _mark_shard_completed(
+        self,
+        shard_name: str,
+        out_shard_name: str,
+        tensor_names: list[str],
+        quantized: list[str],
+        ignored: list[str],
+    ) -> None:
+        self._resume_processed_shards[shard_name] = {
+            "output_file": out_shard_name,
+            "tensor_names": tensor_names,
+            "quantized_layers": quantized,
+            "ignored_layers": ignored,
+        }
+        self._write_resume_manifest()
+
+    def _clear_resume_state(self) -> None:
+        try:
+            os.remove(self._resume_manifest_path)
+        except FileNotFoundError:
+            pass
+
     def _process_all_shards(self) -> None:
         if self.is_streaming:
             self._process_all_shards_streaming_pipeline()
@@ -993,17 +1152,22 @@ class _ModelFreeCompressorCore:
         except ImportError:
             _tqdm = None
 
-        if not self.shard_names:
+        pending_shards = [
+            (shard_idx, shard_name)
+            for shard_idx, shard_name in enumerate(self.shard_names)
+            if shard_name not in self._resume_processed_shards
+        ]
+        if not pending_shards:
             return
 
         os.makedirs(self._quant_output_dir, exist_ok=True)
 
-        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
+        worker_count = max(1, min(self.shard_parallelism, len(pending_shards)))
         futures = []
         pool: ProcessPoolExecutor | None = None
         try:
             pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
-            for shard_idx, shard_name in enumerate(self.shard_names):
+            for shard_idx, shard_name in pending_shards:
                 donor_tensors = list(self.donor_shard_tensors.get(shard_name, ())) or None
                 futures.append(
                     pool.submit(
@@ -1076,6 +1240,8 @@ class _ModelFreeCompressorCore:
         for tensor_name in tensor_names:
             self.output_weight_map[tensor_name] = out_shard_name
 
+        self._mark_shard_completed(shard_name, out_shard_name, tensor_names, quantized, ignored)
+
         if self.is_streaming:
             self._release_donor_dependency(shard_name)
 
@@ -1128,28 +1294,35 @@ class _ModelFreeCompressorCore:
         except ImportError:
             _tqdm = None
 
-        if not self.shard_names:
+        pending_names = {name for name in self.shard_names if name not in self._resume_processed_shards}
+        required_donors = {donor for recipient in pending_names for donor in self.cross_shard_deps.get(recipient, {})}
+        pipeline_shards = [
+            (shard_idx, shard_name)
+            for shard_idx, shard_name in enumerate(self.shard_names)
+            if shard_name in pending_names or shard_name in required_donors
+        ]
+        if not pipeline_shards:
             return
 
         os.makedirs(self._quant_output_dir, exist_ok=True)
 
-        worker_count = max(1, min(self.shard_parallelism, len(self.shard_names)))
+        worker_count = max(1, min(self.shard_parallelism, len(pending_names) or 1))
         prefetch_depth = max(2, worker_count)
         total_shards = len(self.shard_names)
+        total_pipeline_shards = len(pipeline_shards)
 
         download_pool: ThreadPoolExecutor | None = None
         quant_pool: ProcessPoolExecutor | None = None
         download_futures: dict = {}
         quant_futures = set()
         next_download_idx = 0
-        completed_quant = 0
+        completed_pipeline_shards = 0
 
         def _submit_next_download() -> bool:
             nonlocal next_download_idx
-            if next_download_idx >= total_shards:
+            if next_download_idx >= total_pipeline_shards:
                 return False
-            shard_idx = next_download_idx
-            shard_name = self.shard_names[shard_idx]
+            shard_idx, shard_name = pipeline_shards[next_download_idx]
             future = download_pool.submit(
                 _prefetch_shard,
                 self.model_name_or_path,
@@ -1166,12 +1339,12 @@ class _ModelFreeCompressorCore:
             download_pool = ThreadPoolExecutor(max_workers=1)
             quant_pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
 
-            for _ in range(min(prefetch_depth, total_shards)):
+            for _ in range(min(prefetch_depth, total_pipeline_shards)):
                 _submit_next_download()
 
-            progress = _tqdm(total=total_shards, desc="Processing shards", unit="shard") if _tqdm else None
+            progress = _tqdm(total=len(pending_names), desc="Processing shards", unit="shard") if _tqdm else None
 
-            while completed_quant < total_shards:
+            while completed_pipeline_shards < total_pipeline_shards:
                 wait_set = set(download_futures.keys()) | set(quant_futures)
                 if not wait_set:
                     break
@@ -1183,9 +1356,13 @@ class _ModelFreeCompressorCore:
                         shard_path = future.result()
                         if shard_path is None or not os.path.exists(shard_path):
                             logger.warning(f"Prefetch failed for shard {shard_name}, skipping")
-                            completed_quant += 1
-                            if progress is not None:
+                            completed_pipeline_shards += 1
+                            if progress is not None and shard_name in pending_names:
                                 progress.update(1)
+                        elif shard_name not in pending_names:
+                            self._donor_shard_paths[shard_name] = shard_path
+                            self._donor_self_consumed[shard_name] = True
+                            completed_pipeline_shards += 1
                         else:
                             # Donor shards must stay on disk until every recipient
                             # that depends on them has been processed (tracked via
@@ -1233,7 +1410,7 @@ class _ModelFreeCompressorCore:
                         quant_futures.remove(future)
                         result = future.result()
                         self._merge_shard_task_result(result)
-                        completed_quant += 1
+                        completed_pipeline_shards += 1
                         if progress is not None:
                             progress.update(1)
 
@@ -1404,6 +1581,7 @@ class _ModelFreeCompressorCore:
         self._build_cross_shard_deps()
         self._reorder_shards_by_dependency()
         self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
+        self._prepare_resume_state()
 
         # Determine the output packing format based on scheme data type
         data_type = (self.default_scheme.get("data_type") or "int").lower()
@@ -1453,6 +1631,7 @@ class _ModelFreeCompressorCore:
         self._write_index()
         self._write_config_files()
         self._copy_metadata_files()
+        self._clear_resume_state()
         self._cleanup_streaming_shard_cache()
 
         self._log_summary(time.time() - start_time)

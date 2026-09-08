@@ -776,6 +776,93 @@ class TestModelFreeQuantize:
             out_keys = set(sf.keys())
         assert "layer.qweight" in out_keys
 
+    @staticmethod
+    def _make_resume_core(model_dir, output_dir, *, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme=scheme,
+            enable_torch_compile=False,
+        )
+        core._parse_scheme()
+        core._parse_layer_config()
+        core._build_ignore_patterns()
+        core.source_dir = model_dir
+        core.config = dict(_SIMPLE_CONFIG)
+        core.model_type = "opt"
+        core.shard_names = ["model.safetensors"]
+        return core
+
+    def test_resume_skips_only_valid_output_from_same_command(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        tensor_names = ["model.layers.0.qweight"]
+        save_file({tensor_names[0]: torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed(
+            "model.safetensors",
+            output_shard,
+            tensor_names,
+            ["model.layers.0"],
+            [],
+        )
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert set(resumed._resume_processed_shards) == {"model.safetensors"}
+        assert resumed.output_weight_map == {tensor_names[0]: output_shard}
+        with open(resumed._resume_manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["pending_files"] == []
+        assert set(manifest["processed_files"]) == {"model.safetensors"}
+        assert manifest["parameters"]["default_scheme"]["bits"] == 4
+
+    def test_resume_rejects_changed_command_parameters(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+
+        changed = self._make_resume_core(model_dir, output_dir, scheme="W2A16")
+        changed._prepare_resume_state()
+
+        assert changed._resume_processed_shards == {}
+        with open(changed._resume_manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["pending_files"] == ["model.safetensors"]
+
+    def test_resume_rejects_corrupt_completed_output(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        output_path = os.path.join(output_dir, output_shard)
+        save_file({"layer.qweight": torch.ones(2, 2)}, output_path)
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+        with open(output_path, "wb") as f:
+            f.write(b"incomplete")
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert resumed._resume_processed_shards == {}
+        with open(resumed._resume_manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["pending_files"] == ["model.safetensors"]
+
 
 # ===========================================================================
 #  MXFP4 / MXFP8 model-free quantization
