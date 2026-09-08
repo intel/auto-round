@@ -2769,9 +2769,11 @@ def _place_ngram_on_single_device_(sub: torch.nn.Module, device: str) -> None:
     """
     if module_pinned_execution_device(sub) == str(device):
         return
-    if str(device) != "cpu" and not isinstance(sub, _ShardedEmbedding):
+    if not isinstance(sub, _ShardedEmbedding):
         try:
-            sub.to(device)
+            tensors = list(sub.parameters(recurse=False)) + list(sub.buffers(recurse=False))
+            if any(t.device.type != "meta" for t in tensors):
+                sub.to(device)
         except Exception as err:  # OOM, invalid/unavailable device, ... -> safe CPU fallback
             logger.warning(f"Could not place ngram embedding on {device} ({err}); keeping it on CPU.")
             device = "cpu"
