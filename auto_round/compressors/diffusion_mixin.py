@@ -174,6 +174,17 @@ class DiffusionMixin:
                 result.append((comp_name, comp))
         return result
 
+    def _defer_multi_transformer_serialization(self) -> None:
+        """Keep every transformer executable until all calibration passes finish.
+
+        Immediate packing replaces tuned ``nn.Linear`` modules with export-only
+        ``QuantLinear`` modules. A multi-transformer pipeline such as WAN can
+        still execute the primary transformer while collecting inputs for
+        ``transformer_2``, so both packing and shard writing must be deferred.
+        """
+        self.compress_context.is_immediate_packing = False
+        self.compress_context.is_immediate_saving = False
+
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
         """Dispatch a secondary transformer without changing component dtypes."""
         pipe = getattr(self.model_context, "pipe", None)
@@ -303,12 +314,13 @@ class DiffusionMixin:
         # Disable low_cpu_mem_usage so quantized models stay in memory during multi-transformer
         # quantization.
         orig_low_cpu = self.compress_context.low_cpu_mem_usage
+        orig_immediate_packing = self.compress_context.is_immediate_packing
         orig_immediate_saving = self.compress_context.is_immediate_saving
         self.compress_context.low_cpu_mem_usage = False
-        # Defer shard writing until all transformers are quantized. Immediate saving
-        # offloads the primary transformer to meta during the first pass, which breaks
-        # later calibration when the pipeline switches to transformer_2.
-        self.compress_context.is_immediate_saving = False
+        # Keep the primary transformer executable for the later transformer_2
+        # calibration pass. The llm_compressor QuantLinear produced by immediate
+        # packing is an export container and intentionally has no forward method.
+        self._defer_multi_transformer_serialization()
 
         # Store primary transformer state
         primary_model = self.model
@@ -346,6 +358,9 @@ class DiffusionMixin:
 
             # Re-run post_init to set up quantizer for new model
             self.post_init()
+            # post_init recomputes immediate packing/saving from the output format.
+            # Reassert the multi-transformer deferral before pipeline calibration.
+            self._defer_multi_transformer_serialization()
 
             # Get block names for new transformer
             all_blocks = get_block_names(self.model_context.model)
@@ -389,6 +404,7 @@ class DiffusionMixin:
         self.quant_block_list = primary_quant_block_list
         self._quantized_transformers = quantized_extras
         self.compress_context.low_cpu_mem_usage = orig_low_cpu
+        self.compress_context.is_immediate_packing = orig_immediate_packing
         self.compress_context.is_immediate_saving = orig_immediate_saving
         self.calib_num_inference_steps = orig_steps
 
