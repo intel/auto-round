@@ -178,7 +178,7 @@ class TestAddRoutedExpertsIfMoe:
     def test_empty_layers_no_change(self):
         targets = ["Linear"]
         result = _add_routed_experts_if_moe(targets, [])
-        assert result == ["test"]
+        assert result == ["Linear"]
 
 
 # ---------------------------------------------------------------------------
