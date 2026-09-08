@@ -148,6 +148,10 @@ static size_t packed_weight_size(torch_ptr stream, int n, int k, int blocksize, 
 
 #if ARK_XPU
 static size_t debug_xpu_device_context_key(torch_ptr stream) {
+  return DeviceMemoryPool::Instance()->get_device_context_key(reinterpret_cast<sycl::queue*>(stream));
+}
+
+static size_t debug_xpu_device_queue_key(torch_ptr stream) {
   return DeviceMemoryPool::Instance()->get_device_key(reinterpret_cast<sycl::queue*>(stream));
 }
 
@@ -1348,6 +1352,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("unpack_weight", &ark::unpack_weight);
 #if defined(ARK_XPU)
   m.def("_debug_xpu_device_context_key", &ark::debug_xpu_device_context_key);
+  m.def("_debug_xpu_device_queue_key", &ark::debug_xpu_device_queue_key);
   m.def("_debug_xpu_pool_scratch_ptr", &ark::debug_xpu_pool_scratch_ptr);
 #if ARK_DNNL
   m.def("_debug_xpu_dnnl_engine_ptr", &ark::debug_xpu_dnnl_engine_ptr);

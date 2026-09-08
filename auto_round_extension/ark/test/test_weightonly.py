@@ -242,6 +242,7 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
     xpu_lib = getattr(ark, "xpu_lib", None)
     debug_required = (
         "_debug_xpu_device_context_key",
+        "_debug_xpu_device_queue_key",
         "_debug_xpu_pool_scratch_ptr",
         "_debug_xpu_dnnl_engine_ptr",
         "_debug_xpu_dnnl_scratch_ptr",
@@ -257,16 +258,24 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
             with torch.xpu.stream(stream):
                 return fn(torch.xpu.current_stream().sycl_queue, *args)
 
-        default_key = int(_on_stream(default_stream, xpu_lib._debug_xpu_device_context_key))
-        capture_key = int(_on_stream(capture_stream, xpu_lib._debug_xpu_device_context_key))
-        if default_key == capture_key:
-            pytest.skip("Unable to create two distinct SYCL contexts for this XPU runtime")
+        default_context_key = int(_on_stream(default_stream, xpu_lib._debug_xpu_device_context_key))
+        capture_context_key = int(_on_stream(capture_stream, xpu_lib._debug_xpu_device_context_key))
+        if default_context_key != capture_context_key:
+            pytest.skip("Unable to create two queues in the same SYCL context for this XPU runtime")
+
+        default_queue_key = int(_on_stream(default_stream, xpu_lib._debug_xpu_device_queue_key))
+        capture_queue_key = int(_on_stream(capture_stream, xpu_lib._debug_xpu_device_queue_key))
+        if default_queue_key == capture_queue_key:
+            pytest.skip("Unable to create two distinct queues in this SYCL context")
 
         def _assert_pool_slot_isolated(slot, small_bytes, large_bytes):
             ptr_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
             ptr_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
             assert ptr_a0 != 0 and ptr_a0 == ptr_a1
-            _ = _on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, large_bytes, slot)
+            ptr_b0 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            assert ptr_b0 != 0 and ptr_b0 != ptr_a0
+            ptr_b1 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, large_bytes, slot))
+            assert ptr_b1 != 0 and ptr_b1 == ptr_b0
             ptr_a2 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
             assert ptr_a2 == ptr_a0
 
@@ -277,9 +286,11 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
         eng_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
         eng_b = int(_on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
         assert eng_a0 != 0 and eng_a0 == eng_a1
-        assert eng_b != 0 and eng_b != eng_a0
+        assert eng_b != 0 and eng_b == eng_a0
 
         dnnl_scratch_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        dnnl_scratch_b0 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        assert dnnl_scratch_b0 != 0 and dnnl_scratch_b0 != dnnl_scratch_a0
         _ = _on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 8192, 0)
         dnnl_scratch_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
         assert dnnl_scratch_a0 != 0 and dnnl_scratch_a1 == dnnl_scratch_a0
@@ -303,7 +314,14 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
             return ark.woqgemm(x, packw, bias, n, k, blocksize, compute_type, weight_type, scale_type, asym)
 
         eager_input = torch.randn(m, k, dtype=torch.float16, device="xpu") - 0.5
-        replay_input = torch.randn(m, k, dtype=torch.float16, device="xpu") + 0.25
+        replay_input = eager_input + 0.75
+
+        with torch.xpu.stream(default_stream):
+            out_a = _woq_call(eager_input)
+        with torch.xpu.stream(capture_stream):
+            out_b = _woq_call(replay_input)
+        torch.xpu.synchronize()
+        assert not torch.allclose(out_a, out_b, rtol=1e-3, atol=1e-3)
 
         # Warm up on the default queue to reproduce stale stream cache regressions.
         _ = _woq_call(eager_input)
