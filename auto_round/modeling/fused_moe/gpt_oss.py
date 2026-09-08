@@ -153,7 +153,9 @@ class SequentialGPTOSSMoE(ReplacementModuleBase):
         # (the original built its per-expert score matrix by scattering exactly these). Feeding
         # them to the grouped experts forward reproduces the old ``sum_e expert(x) * score[e]``
         # dense-mask loop -- routed pairs only, weighted then reduced over top_k.
-        expert_output = grouped_or_sequential_moe_forward(x, router_indices, router_scores, self.experts, self.num_experts)
+        expert_output = grouped_or_sequential_moe_forward(
+            x, router_indices, router_scores, self.experts, self.num_experts
+        )
         final_hidden_states = shared + expert_output
 
         return final_hidden_states.view(B, T, H), router_scores.view(B * T, -1)
