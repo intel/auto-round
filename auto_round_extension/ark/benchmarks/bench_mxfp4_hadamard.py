@@ -65,6 +65,7 @@ from auto_round_kernel.mxfp4_hadamard import (  # noqa: E402
     get_hadamard_matrix,
     mxfp4_hadamard_quant,
     mxfp4_hadamard_quant_reference,
+    mxfp4_quant_reference,
 )
 
 DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
@@ -74,8 +75,21 @@ DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
 DEFAULT_M = (2048, 4096, 8192, 16384)
 DEFAULT_K = (2048, 4096, 8192)
 
-# Phase 3 performance gate.
+# Phase 3 performance gate (fused BW vs streaming-copy).
 TARGET_RATIO = 0.90
+
+# Quant-only baseline gate: BW(HMT+quant) / BW(quant-only) must stay close to
+# 1.0 -- the Hadamard transform runs in-register and is expected to be hidden
+# behind memory traffic (see test/README_HMT_QUANT_ONLY_BASELINE.md).
+TARGET_QUANT_RATIO = 0.90
+
+# [# CRI-WAN-HMT] WAN per-op activation shapes [M, K] = the input activation of
+# each listed GEMM, i.e. the tensor the HMT+quant kernel processes. Confirmed
+# scope: bf16 + FWHT + the full (global) M, since bandwidth is M-invariant
+# while the kernel is DRAM-bound. ``--wan`` benchmarks exactly these pairs
+# (text projection / text-encoder FFN included per the colleague's update).
+WAN_SHAPES = [(75600, 5120), (75600, 13824), (512, 5120), (512, 4096)]
+WAN_DTYPE = "bf16"
 
 # A configuration's copy baseline is treated as cache-resident, and therefore
 # unusable as a DRAM-bandwidth denominator, once it exceeds the sustained DRAM
@@ -157,7 +171,9 @@ def _dequantize(codes: torch.Tensor, scale: torch.Tensor, k: int) -> torch.Tenso
     return torch.ldexp(values.reshape(-1, GROUP_SIZE), exp.reshape(-1, 1)).reshape(-1, k)
 
 
-def verify_once(x: torch.Tensor, hadamard: torch.Tensor, rows: int, *, use_xmx: bool = False) -> bool:
+def verify_once(
+    x: torch.Tensor, hadamard: torch.Tensor, rows: int, *, use_xmx: bool = False, quant_only: bool = False
+) -> bool:
     """Spot-check the first ``rows`` rows against the CPU reference.
 
     A benchmark that measures an incorrect kernel is worthless, so every
@@ -166,9 +182,15 @@ def verify_once(x: torch.Tensor, hadamard: torch.Tensor, rows: int, *, use_xmx: 
 
     The default (FWHT/Path A) path is bit-exact and requires byte equality. The
     XMX path is a relaxed contract (bf16/bf16 H + DPAS), so it is checked with
-    tolerance instead: SQNR >= 15 dB between the dequantized outputs.
+    tolerance instead: SQNR >= 15 dB between the dequantized outputs. The
+    quant-only path (``_quant_only=True``) is bit-exact against
+    :func:`mxfp4_quant_reference` (raw activation, no transform).
     """
     sub = x[:rows].contiguous()
+    if quant_only:
+        codes, scale = mxfp4_hadamard_quant(sub, _quant_only=True)
+        ref_codes, ref_scale = mxfp4_quant_reference(sub.cpu())
+        return torch.equal(codes.cpu(), ref_codes) and torch.equal(scale.cpu(), ref_scale)
     codes, scale = mxfp4_hadamard_quant(sub, hadamard, _force_xmx=use_xmx)
     ref_codes, ref_scale = mxfp4_hadamard_quant_reference(sub.cpu(), hadamard.cpu())
     if not use_xmx:
@@ -186,25 +208,36 @@ def run_case(m: int, k: int, dtype: torch.dtype, args: argparse.Namespace, dram_
     x = torch.randn((m, k), dtype=dtype, device="xpu")
     hadamard = get_hadamard_matrix(HADAMARD_DIM, x.device)
 
-    correct = (
-        verify_once(x, hadamard, min(args.verify_rows, m), use_xmx=args.xmx) if not args.no_verify else None
-    )
+    correct = verify_once(x, hadamard, min(args.verify_rows, m), use_xmx=args.xmx) if not args.no_verify else None
+    correct_qo = verify_once(x, hadamard, min(args.verify_rows, m), quant_only=True) if not args.no_verify else None
 
+    # Fused HMT+quant and the quant-only baseline share the exact same byte
+    # traffic (fused_bytes), so their bandwidths are directly comparable.
     latency = bench(lambda: mxfp4_hadamard_quant(x, hadamard, _force_xmx=args.xmx), args.warmup, args.iters)
+    latency_qo = bench(lambda: mxfp4_hadamard_quant(x, _quant_only=True), args.warmup, args.iters)
     nbytes = fused_bytes(m, k, dtype)
     bw_fused = to_gbps(nbytes, latency)
+    bw_qo = to_gbps(nbytes, latency_qo)
 
     copy_latency, copy_bytes = measure_copy_same_shape(m, k, dtype, args.warmup, args.iters)
     bw_copy = to_gbps(copy_bytes, copy_latency)
+
+    def _ok(v: bool | None) -> str:
+        return "" if v is None else ("pass" if v else "FAIL")
 
     return {
         "M": m,
         "K": k,
         "dtype": str(dtype).replace("torch.", ""),
-        "correct": "" if correct is None else ("pass" if correct else "FAIL"),
+        "correct": _ok(correct),
+        "correct_qo": _ok(correct_qo),
         "bytes": nbytes,
         "latency_ms": latency,
+        "latency_qo_ms": latency_qo,
         "BW_fused_GBps": bw_fused,
+        "BW_quant_GBps": bw_qo,
+        # Main quant-only-baseline metric: fused must be close to quant-only.
+        "ratio_fused_quant": bw_fused / bw_qo if bw_qo > 0 else float("nan"),
         "BW_copy_GBps": bw_copy,
         "ratio": bw_fused / bw_copy if bw_copy > 0 else float("nan"),
         # The baseline outran a sustained DRAM copy, so it came from cache and
@@ -215,14 +248,15 @@ def run_case(m: int, k: int, dtype: torch.dtype, args: argparse.Namespace, dram_
 
 def format_table(rows: list[dict]) -> str:
     header = (
-        f"{'M':>6} {'K':>6} {'dtype':>8} {'ok':>4} {'lat(ms)':>9} "
-        f"{'BW_fused':>9} {'BW_copy':>9} {'ratio':>7} {'note':>7}"
+        f"{'M':>7} {'K':>7} {'dtype':>5} {'ok':>4} {'okQ':>4} {'BW_fused':>9} "
+        f"{'BW_quant':>9} {'f/q':>6} {'BW_copy':>9} {'f/cp':>6} {'note':>7}"
     )
     lines = [header, "-" * len(header)]
     for r in rows:
         lines.append(
-            f"{r['M']:>6} {r['K']:>6} {r['dtype']:>8} {r['correct']:>4} {r['latency_ms']:>9.4f} "
-            f"{r['BW_fused_GBps']:>9.1f} {r['BW_copy_GBps']:>9.1f} {r['ratio']:>7.3f} "
+            f"{r['M']:>7} {r['K']:>7} {r['dtype']:>5} {r['correct']:>4} {r['correct_qo']:>4} "
+            f"{r['BW_fused_GBps']:>9.1f} {r['BW_quant_GBps']:>9.1f} {r['ratio_fused_quant']:>6.3f} "
+            f"{r['BW_copy_GBps']:>9.1f} {r['ratio']:>6.3f} "
             f"{'cached' if r['cached'] else '':>7}"
         )
     return "\n".join(lines)
@@ -230,14 +264,21 @@ def format_table(rows: list[dict]) -> str:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--m", type=int, nargs="+", default=list(DEFAULT_M))
-    p.add_argument("--k", type=int, nargs="+", default=list(DEFAULT_K))
-    p.add_argument("--dtype", nargs="+", choices=sorted(DTYPES), default=["fp16", "bf16"])
+    p.add_argument(
+        "--wan",
+        action="store_true",
+        help="benchmark the [# CRI-WAN-HMT] activation shapes (bf16, full M), "
+        "overriding --m/--k defaults",
+    )
+    p.add_argument("--m", type=int, nargs="+", default=None, help="M values (default prefill set)")
+    p.add_argument("--k", type=int, nargs="+", default=None, help="K values (default prefill set)")
+    p.add_argument("--dtype", nargs="+", choices=sorted(DTYPES), default=None, help="default: fp16 bf16")
     p.add_argument("--warmup", type=int, default=20)
     p.add_argument("--iters", type=int, default=100)
     p.add_argument("--verify-rows", type=int, default=64, help="rows spot-checked against the CPU reference")
     p.add_argument("--no-verify", action="store_true", help="skip the correctness spot check")
     p.add_argument("--target-ratio", type=float, default=TARGET_RATIO)
+    p.add_argument("--target-quant-ratio", type=float, default=TARGET_QUANT_RATIO, help="min BW_fused/BW_quant-only")
     p.add_argument("--xmx", action="store_true", help="force the XMX fast path (auto-routed otherwise)")
     return p.parse_args()
 
@@ -248,30 +289,38 @@ def main() -> int:
         print("XPU is not available; nothing to benchmark.")
         return 1
 
+    if args.wan:
+        # WAN deliverable: exact per-op (M, K) pairs, bf16, full global M.
+        dtypes = [WAN_DTYPE] if not args.dtype else args.dtype
+        combos = list(WAN_SHAPES)
+    else:
+        dtypes = args.dtype if args.dtype else list(DTYPES)
+        combos = [(m, k) for m in (args.m or list(DEFAULT_M)) for k in (args.k or list(DEFAULT_K))]
+
     print(f"device: {torch.xpu.get_device_name(0)}")
     print(f"warmup={args.warmup} iters={args.iters} target_ratio={args.target_ratio}")
+    print(f"target_quant_ratio={args.target_quant_ratio} (BW_fused / BW_quant-only)")
     print(f"path={'XMX (forced)' if args.xmx else 'default (FWHT/Path A or auto-XMX)'}")
     print(f"bytes = M*K*sizeof(input) + M*K/{2} + M*K/{GROUP_SIZE}")
 
-    dram_gbps = {name: measure_sustained_dram_copy(DTYPES[name], args.warmup, args.iters) for name in args.dtype}
+    dram_gbps = {name: measure_sustained_dram_copy(DTYPES[name], args.warmup, args.iters) for name in dtypes}
     for name, gbps in dram_gbps.items():
         print(f"sustained DRAM copy ({name}): {gbps:.1f} GB/s")
     print()
 
     rows: list[dict] = []
-    for name in args.dtype:
+    for name in dtypes:
         dtype = DTYPES[name]
-        for m in args.m:
-            for k in args.k:
-                if k % GROUP_SIZE != 0:
-                    print(f"skipping K={k}: not a multiple of {GROUP_SIZE}")
-                    continue
-                rows.append(run_case(m, k, dtype, args, dram_gbps[name]))
-                torch.xpu.empty_cache()
+        for m, k in combos:
+            if k % GROUP_SIZE != 0:
+                print(f"skipping K={k}: not a multiple of {GROUP_SIZE}")
+                continue
+            rows.append(run_case(m, k, dtype, args, dram_gbps[name]))
+            torch.xpu.empty_cache()
 
     print(format_table(rows))
 
-    failed_correctness = [r for r in rows if r["correct"] == "FAIL"]
+    failed_correctness = [r for r in rows if r["correct"] == "FAIL" or r["correct_qo"] == "FAIL"]
     if failed_correctness:
         print(f"\nCORRECTNESS FAILED for {len(failed_correctness)} configuration(s); timings are meaningless.")
         return 1
@@ -290,12 +339,21 @@ def main() -> int:
     below = [r for r in gated if r["ratio"] < args.target_ratio]
     worst = min(r["ratio"] for r in gated)
     mean_ratio = sum(r["ratio"] for r in gated) / len(gated)
-    print(f"mean ratio over DRAM-bound configurations = {mean_ratio:.3f}")
-    print(f"min  ratio over DRAM-bound configurations = {worst:.3f} (target {args.target_ratio})")
+    print(f"mean fused/copy ratio over DRAM-bound configurations = {mean_ratio:.3f}")
+    print(f"min  fused/copy ratio over DRAM-bound configurations = {worst:.3f} (target {args.target_ratio})")
     if below:
-        print(f"FAIL: {len(below)} of {len(gated)} DRAM-bound configuration(s) below target.")
+        print(f"FAIL: {len(below)} of {len(gated)} DRAM-bound configuration(s) below the fused/copy target.")
         return 1
-    print("PASS: all DRAM-bound configurations meet the bandwidth target.")
+
+    qo_below = [r for r in gated if r["ratio_fused_quant"] < args.target_quant_ratio]
+    qo_worst = min(r["ratio_fused_quant"] for r in gated)
+    qo_mean = sum(r["ratio_fused_quant"] for r in gated) / len(gated)
+    print(f"mean fused/quant-only ratio = {qo_mean:.3f}")
+    print(f"min  fused/quant-only ratio = {qo_worst:.3f} (target {args.target_quant_ratio})")
+    if qo_below:
+        print(f"FAIL: {len(qo_below)} of {len(gated)} configuration(s) below the fused/quant-only target.")
+        return 1
+    print("PASS: all DRAM-bound configurations meet the bandwidth targets.")
     return 0
 
 

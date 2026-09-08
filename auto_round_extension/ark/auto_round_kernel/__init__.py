@@ -3874,6 +3874,7 @@ from .mxfp4_hadamard import (  # noqa: E402
     get_hadamard_matrix,
     mxfp4_hadamard_quant,
     mxfp4_hadamard_quant_reference,
+    mxfp4_quant_reference,
 )
 
 

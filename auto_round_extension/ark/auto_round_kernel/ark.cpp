@@ -789,11 +789,14 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
 //            relaxed numerical contract of xpu_mxfp4_hadamard_xmx.hpp (H stored
 //            in the activation dtype, DPAS accumulation); tolerance-based, not
 //            bit-exact.
+// use_quant_only: strip the Hadamard transform and quantize the raw activation
+//            (quant-only baseline). Ignored on the XMX path; see
+//            test/README_HMT_QUANT_ONLY_BASELINE.md.
 // out_codes: [num_rows, k / 2]  uint8, two packed FP4 codes per byte
 // out_scale: [num_rows, k / 32] uint8, one E8M0 exponent per 32-element group
 static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadamard, torch_ptr out_codes,
                                  torch_ptr out_scale, int64_t num_rows, int64_t k, int in_dtype, bool use_fwht,
-                                 bool use_xmx) {
+                                 bool use_xmx, bool use_quant_only) {
   if (!stream) {
     throw std::invalid_argument("ark::mxfp4_hadamard_quant: stream must not be null");
   }
@@ -813,7 +816,7 @@ static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadama
   const auto dtype = (BTLA_DTYPE)in_dtype;
   const int64_t total_groups = num_rows * (k / ark::XpuMxfp4Hadamard::kGroupSize);
 
-  if (use_xmx) {
+  if (use_xmx && !use_quant_only) {
 #if defined(ARK_SYCL_TLA)
     // XMX path: H is converted to the activation dtype (lossless) and the
     // transform runs on DPAS. x (sycl bf16/half) is layout-identical to
@@ -843,10 +846,11 @@ static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadama
 
   if (dtype == BTLA_DTYPE::F16) {
     ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::half>(q, (const sycl::half*)x, h_ptr, codes_ptr, scale_ptr,
-                                                            num_rows, k, use_fwht);
+                                                            num_rows, k, use_fwht, use_quant_only);
   } else if (dtype == BTLA_DTYPE::BF16) {
     ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::ext::oneapi::bfloat16>(
-        q, (const sycl::ext::oneapi::bfloat16*)x, h_ptr, codes_ptr, scale_ptr, num_rows, k, use_fwht);
+        q, (const sycl::ext::oneapi::bfloat16*)x, h_ptr, codes_ptr, scale_ptr, num_rows, k, use_fwht,
+        use_quant_only);
   } else {
     throw std::invalid_argument("ark::mxfp4_hadamard_quant: only FP16 and BF16 activations are supported");
   }
@@ -1503,7 +1507,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("mxfp4_hadamard_quant", &ark::mxfp4_hadamard_quant, pybind11::arg("stream"), pybind11::arg("x"),
         pybind11::arg("hadamard"), pybind11::arg("out_codes"), pybind11::arg("out_scale"),
         pybind11::arg("num_rows"), pybind11::arg("k"), pybind11::arg("in_dtype"), pybind11::arg("use_fwht") = true,
-        pybind11::arg("use_xmx") = false);
+        pybind11::arg("use_xmx") = false, pybind11::arg("use_quant_only") = false);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);

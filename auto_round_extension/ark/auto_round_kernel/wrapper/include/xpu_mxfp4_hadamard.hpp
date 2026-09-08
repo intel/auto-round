@@ -109,9 +109,16 @@ class XpuMxfp4Hadamard {
   //
   // Bit-exactness is unaffected: the butterfly order is identical to the SLM
   // version, to the sub-group version and to fwht_transform_reference.
+  //
+  // Quant-only mode (``quant_only = true``) is the controlled baseline used to
+  // attribute bandwidth: it strips the Hadamard transform (forces ``norm`` to
+  // 1 and skips the butterfly stages) while keeping the exact same loads,
+  // packing and stores. The raw activation is then quantized directly, so the
+  // memory traffic -- and therefore the bandwidth -- is directly comparable to
+  // the fused path (see test/README_HMT_QUANT_ONLY_BASELINE.md).
   template <typename T>
   static void fwht_quant_per_item(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
-                                  uint8_t* out_scale, int64_t total_groups) {
+                                  uint8_t* out_scale, int64_t total_groups, bool quant_only = false) {
     const int64_t num_wg = (total_groups + kWorkGroupSize - 1) / kWorkGroupSize;
     const size_t global_size = static_cast<size_t>(num_wg) * kWorkGroupSize;
     // 16-byte vector loads: 8 halves per chunk, 4 chunks per 32-element group.
@@ -126,7 +133,10 @@ class XpuMxfp4Hadamard {
 
       // hadamard[0] == H[0][0] == 1/sqrt(32); applied before the butterflies so
       // intermediates stay bounded by sqrt(32)*max|x| (see the header comment).
-      const float norm = hadamard[0];
+      // Quant-only mode forces norm to 1 (hadamard is *not* dereferenced: the
+      // ternary only evaluates the taken branch) and skips the butterflies
+      // below, so the raw activation is quantized directly.
+      const float norm = quant_only ? 1.0f : hadamard[0];
 
       // x + gid * 32 is 64-byte aligned for T = half/bfloat16, so each chunk
       // load is an aligned 16-byte access.
@@ -142,16 +152,18 @@ class XpuMxfp4Hadamard {
         }
       }
 
+      if (!quant_only) {
 #pragma unroll
-      for (int stage = 0; stage < kNumFwhtStages; ++stage) {
-        const int h = 1 << stage;
+        for (int stage = 0; stage < kNumFwhtStages; ++stage) {
+          const int h = 1 << stage;
 #pragma unroll
-        for (int i = 0; i < kGroupSize; ++i) {
-          if ((i & h) == 0) {
-            const float a = v[i];
-            const float b = v[i ^ h];
-            v[i] = a + b;
-            v[i ^ h] = a - b;
+          for (int i = 0; i < kGroupSize; ++i) {
+            if ((i & h) == 0) {
+              const float a = v[i];
+              const float b = v[i ^ h];
+              v[i] = a + b;
+              v[i ^ h] = a - b;
+            }
           }
         }
       }
@@ -285,7 +297,18 @@ class XpuMxfp4Hadamard {
 
   template <typename T>
   static void mxfp4_hadamard_quant(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
-                                   uint8_t* out_scale, int64_t num_rows, int64_t k, bool use_fwht) {
+                                   uint8_t* out_scale, int64_t num_rows, int64_t k, bool use_fwht,
+                                   bool quant_only = false) {
+    if (quant_only) {
+      // Quant-only baseline: strip the Hadamard transform entirely. The
+      // per-item layout and memory traffic are identical to the fused FWHT
+      // path, so bandwidths are directly comparable; hadamard is not read.
+      const int64_t total_groups = num_rows * (k / kGroupSize);
+      if (total_groups > 0) {
+        fwht_quant_per_item<T>(q, x, nullptr, out_codes, out_scale, total_groups, /*quant_only=*/true);
+      }
+      return;
+    }
     if (use_fwht) {
       const int64_t total_groups = num_rows * (k / kGroupSize);
       if (total_groups > 0) {

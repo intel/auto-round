@@ -318,6 +318,27 @@ def mxfp4_hadamard_quant_reference(
     return pack_codes(codes), e8m0.reshape(num_rows, k // GROUP_SIZE)
 
 
+def mxfp4_quant_reference(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pure PyTorch FP32 reference for the **quant-only** baseline.
+
+    Quantizes the *raw* activation (no Hadamard transform) with the same frozen
+    MXFP4 contract as :func:`mxfp4_hadamard_quant_reference`: per-32-element
+    E8M0 scale + packed FP4 codes. It is the reference for the quant-only path
+    of :func:`mxfp4_hadamard_quant` (``_quant_only=True``) and is what the
+    bandwidth baseline in ``test/README_HMT_QUANT_ONLY_BASELINE.md`` measures.
+
+    Mathematically it equals ``mxfp4_hadamard_quant_reference(x, I)``: running
+    the reference transform with the identity matrix is bit-exact with applying
+    no transform at all (it only ever adds exact zeros), so the two agree byte
+    for byte.
+    """
+    num_rows, k = _validate_activation(x, require_xpu=False)
+    x_groups = x.contiguous().reshape(-1, HADAMARD_DIM).to(torch.float32)
+    e8m0, q = _e8m0_and_quantized(x_groups)
+    codes = _encode_fp4(q).reshape(num_rows, k)
+    return pack_codes(codes), e8m0.reshape(num_rows, k // GROUP_SIZE)
+
+
 _XMX_SUPPORTED: bool | None = None
 
 
@@ -344,6 +365,7 @@ def mxfp4_hadamard_quant(
     *,
     check_finite: bool = False,
     _force_xmx: bool | None = None,
+    _quant_only: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fused 32-point Hadamard transform + MXFP4 quantization on XPU.
 
@@ -357,6 +379,13 @@ def mxfp4_hadamard_quant(
             supported input domain -- the kernel simply does not police it on the
             hot path. :func:`mxfp4_hadamard_quant_reference` always checks.
         _force_xmx: private override used by tests/benchmarks (None = auto).
+        _quant_only: private quant-only baseline override (default False). When
+            True, the Hadamard transform is stripped and the *raw* activation is
+            quantized (see :func:`mxfp4_quant_reference`), with identical memory
+            traffic to the fused path -- the C++ dispatcher ignores
+            use_fwht/use_xmx in this mode and always uses the per-item FWHT
+            layout. This is the quant-only baseline in
+            ``test/README_HMT_QUANT_ONLY_BASELINE.md``.
 
         Routing is automatic: the normalized Sylvester matrix always takes the
         bit-exact FWHT path (first priority); any other Hadamard matrix falls
@@ -374,7 +403,15 @@ def mxfp4_hadamard_quant(
     from . import cvt_dtype, get_lib, get_stream
 
     num_rows, k = _validate_activation(x, require_xpu=True, check_finite=check_finite)
-    if hadamard_matrix is None:
+    if _quant_only:
+        # Quant-only baseline: no Hadamard matrix is involved, so no validation
+        # and no device comparison. A (default) matrix is still materialised so
+        # the pointer argument passed to the C++ binding stays valid; the C++
+        # dispatcher does not dereference it in quant_only mode.
+        hadamard_matrix = get_hadamard_matrix(HADAMARD_DIM, x.device)
+        use_fwht = True
+        use_xmx = False
+    elif hadamard_matrix is None:
         # The default matrix is known to be the Sylvester one, so the FWHT path
         # is taken without paying for a comparison on the hot path.
         hadamard_matrix = get_hadamard_matrix(HADAMARD_DIM, x.device)
@@ -391,13 +428,16 @@ def mxfp4_hadamard_quant(
     # Path resolution (auto-router): FWHT has first priority for the Sylvester
     # matrix; any other (custom) matrix falls back to the XMX fast path when the
     # build supports it (relaxed contract), otherwise to Path A. ``_force_xmx``
-    # is a private override used by tests/benchmarks.
-    if _force_xmx is not None:
-        use_xmx = bool(_force_xmx)
-    elif use_fwht:
-        use_xmx = False
-    else:
-        use_xmx = _xmx_supported()
+    # is a private override used by tests/benchmarks. ``_quant_only`` always
+    # disables XMX: it is implemented on the shared per-item FWHT layout, which
+    # is exactly the layout the quant-only baseline must match.
+    if not _quant_only:
+        if _force_xmx is not None:
+            use_xmx = bool(_force_xmx)
+        elif use_fwht:
+            use_xmx = False
+        else:
+            use_xmx = _xmx_supported()
 
     lib = get_lib(x)
     if lib is None or not hasattr(lib, "mxfp4_hadamard_quant"):
@@ -419,5 +459,6 @@ def mxfp4_hadamard_quant(
         cvt_dtype(x_arg.dtype),
         use_fwht,
         use_xmx,
+        _quant_only,
     )
     return out_codes, out_scale

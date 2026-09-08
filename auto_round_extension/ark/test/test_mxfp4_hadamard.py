@@ -36,6 +36,7 @@ from auto_round_kernel.mxfp4_hadamard import (
     hadamard_transform_reference,
     mxfp4_hadamard_quant,
     mxfp4_hadamard_quant_reference,
+    mxfp4_quant_reference,
     pack_codes,
 )
 
@@ -237,6 +238,42 @@ class TestReferenceContract:
         x = torch.randn(1, 32, dtype=torch.float16)
         with pytest.raises(ValueError):
             mxfp4_hadamard_quant_reference(x, bad_matrix)
+
+    # ---- quant-only reference (no Hadamard transform) ---------------------
+
+    def test_quant_only_reference_matches_fused_with_identity(self):
+        # Quantizing the raw activation is mathematically identical to fusing an
+        # identity Hadamard matrix: the Path A transform with H = I only ever
+        # adds exact zeros, so the two references must agree byte for byte.
+        torch.manual_seed(0)
+        x = torch.randn(4, 64, dtype=torch.float16)
+        codes, scale = mxfp4_quant_reference(x)
+        identity = torch.eye(HADAMARD_DIM, dtype=torch.float32)
+        fused_codes, fused_scale = mxfp4_hadamard_quant_reference(x, identity)
+        assert torch.equal(codes, fused_codes)
+        assert torch.equal(scale, fused_scale)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_quant_only_reference_shape_dtype_and_zero_group(self, dtype):
+        x = torch.zeros(2, 64, dtype=dtype)
+        codes, scale = mxfp4_quant_reference(x)
+        assert codes.shape == (2, 32)
+        assert scale.shape == (2, 2)
+        assert codes.dtype == torch.uint8
+        assert scale.dtype == torch.uint8
+        assert torch.all(codes == 0)
+        assert torch.all(scale == 0)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_quant_only_reference_differs_from_fused_hmt(self, dtype):
+        # A real Hadamard transform scrambles values across the group, so the
+        # quant-only output must differ from the fused output in general. This
+        # guards against quant-only accidentally still applying the transform.
+        torch.manual_seed(0)
+        x = torch.randn(8, 128, dtype=dtype)
+        q_codes, q_scale = mxfp4_quant_reference(x)
+        f_codes, f_scale = mxfp4_hadamard_quant_reference(x)
+        assert not torch.equal(q_codes, f_codes) or not torch.equal(q_scale, f_scale)
 
 
 def _assert_bit_exact(x: torch.Tensor):
@@ -603,6 +640,62 @@ class TestXpuKernelPhase2:
         ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu())
         assert torch.equal(codes.cpu(), ref_codes)
         assert torch.equal(scale.cpu(), ref_scale)
+
+    # ---- quant-only baseline (HMT stripped) -------------------------------
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("shape", [(1, 32), (17, 256), (64, 512), (4, 13824), (2, 5120)])
+    def test_quant_only_matches_reference(self, dtype, shape):
+        # The quant-only device path must be bit-exact with mxfp4_quant_reference
+        # (raw activation, no transform), on the same per-item layout.
+        torch.manual_seed(shape[0])
+        x = torch.randn(*shape, dtype=dtype, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, _quant_only=True)
+        ref_codes, ref_scale = mxfp4_quant_reference(x.cpu())
+        assert codes.shape == ref_codes.shape == (shape[0], shape[1] // 2)
+        assert scale.shape == ref_scale.shape == (shape[0], shape[1] // GROUP_SIZE)
+        assert codes.dtype == torch.uint8 and scale.dtype == torch.uint8
+        assert torch.equal(scale.cpu(), ref_scale)
+        assert torch.equal(codes.cpu(), ref_codes)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_quant_only_zero_group(self, dtype):
+        x = torch.zeros(2, 64, dtype=dtype, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, _quant_only=True)
+        assert torch.all(codes.cpu() == 0)
+        assert torch.all(scale.cpu() == 0)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_quant_only_multi_dim_is_flattened(self, dtype):
+        torch.manual_seed(2)
+        x = torch.randn(2, 3, 64, dtype=dtype, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, _quant_only=True)
+        assert codes.shape == (6, 32)
+        assert scale.shape == (6, 2)
+        ref_codes, ref_scale = mxfp4_quant_reference(x.cpu())
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_quant_only_fuzz(self, dtype, seed):
+        torch.manual_seed(seed)
+        x = (torch.randn(64, 256, device="xpu") * (10.0 ** (seed - 2))).to(dtype)
+        codes, scale = mxfp4_hadamard_quant(x, _quant_only=True)
+        ref_codes, ref_scale = mxfp4_quant_reference(x.cpu())
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_quant_only_matches_fused_on_zero_free_but_differs_otherwise(self, dtype):
+        # Sanity: quant-only and fused share the output contract (shape/dtype)
+        # but produce different bytes for generic input (HMT scrambles values).
+        torch.manual_seed(5)
+        x = torch.randn(8, 128, dtype=dtype, device="xpu")
+        q_codes, q_scale = mxfp4_hadamard_quant(x, _quant_only=True)
+        f_codes, f_scale = mxfp4_hadamard_quant(x)
+        assert q_codes.shape == f_codes.shape and q_scale.shape == f_scale.shape
+        assert not torch.equal(q_codes.cpu(), f_codes.cpu()) or not torch.equal(q_scale.cpu(), f_scale.cpu())
 
     # ---- error handling ---------------------------------------------------
 
