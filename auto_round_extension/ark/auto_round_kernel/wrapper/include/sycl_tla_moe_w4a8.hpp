@@ -152,8 +152,10 @@ namespace moe_w4a8 {
 using namespace cute;
 
 // Kernel name tag for the grouped prefill GEMM (the other tags live in
-// `sycl_tla_moe_w4a8_kernels.hpp`).
-template <class Policy, typename ElementD>
+// `sycl_tla_moe_w4a8_kernels.hpp`). The GRF budget is part of the name: the two
+// budgets are two distinct kernels built from the same source, and a SYCL
+// kernel name may only name one of them.
+template <class Policy, typename ElementD, int GrfSize>
 class MoEW4A8GemmName;
 
 // ---------------------------------------------------------------------------
@@ -236,41 +238,80 @@ class MoEW4A8GemmName;
 //
 // Every policy stays reachable through `ARK_MOE_W4A8_PREFILL_TILE` for a
 // re-sweep on a device with a different register budget.
+//
+// `kSmallGrfOk`: the register budget is a property of the tile
+// ------------------------------------------------------------
+// The ladder above was swept with `grf_size<256>` hardwired into the launcher,
+// which pins *every* rung at 4 hardware threads per vector engine -- 512
+// work-items per Xe-core, which is exactly the `MaxThreadsPerSM` the persistent
+// grid is sized from. The small tiles are in the ladder because they ask for
+// fewer registers, and the payoff for asking for fewer registers is that more
+// work-groups fit on an Xe-core; at a fixed `grf_size<256>` they paid the cost
+// and never collected. So none of them has ever been measured at the occupancy
+// that is their reason to exist.
+//
+// What a lane actually holds for the whole mainloop is the C fragment, which is
+// the WG tile divided by the sub-group count (`blks == 1` keeps only the int32
+// accumulator -- see the register-file argument on `xe_gemm_w4a8` below):
+//
+//   policy        WG tile    SGs   SG C fragment   int32 regs/lane
+//   m_8            8x128      4        8 x 32            16
+//   m_64          64x128      8       32 x 32            64
+//   m_128        128x128     16       32 x 32            64
+//   m_128_n256   128x256     16       32 x 64           128
+//   m_256_n128   256x128     32       32 x 32            64
+//   large        256x256     32       32 x 64           128
+//
+// At `grf_size<128>` a lane has 128 registers, so the 64-register tiles keep
+// half the file for the staged A/B tiles and their addresses, and the 128-
+// register ones would have *nothing* left -- their accumulator alone is the
+// whole file. Hence the flag splits the ladder exactly along the N dimension:
+// 128-wide N can double its occupancy, 256-wide N cannot be asked to.
+//
+// This is a request, not a guarantee: if the halved budget does not hold the
+// staged tiles the compiler spills, which costs time but not correctness. The
+// flag says "this tile may be asked", the sweep says whether it should be.
 // ---------------------------------------------------------------------------
 class w4a8_policy_m_8 : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_8, _128, _64>;
   using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
+  static constexpr bool kSmallGrfOk = true;
 };
 
 class w4a8_policy_m_64 : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_64, _128, _64>;
   using SGLayout = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
+  static constexpr bool kSmallGrfOk = true;
 };
 
 class w4a8_policy_m_128 : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_128, _128, _64>;
   using SGLayout = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+  static constexpr bool kSmallGrfOk = true;
 };
 
 class w4a8_policy_m_128_n256 : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_128, _256, _64>;
   using SGLayout = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+  static constexpr bool kSmallGrfOk = false;
 };
 
 class w4a8_policy_m_256_n128 : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_256, _128, _64>;
   using SGLayout = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+  static constexpr bool kSmallGrfOk = true;
 };
 
 class w4a8_policy_large : public moe_dpas_fp8::dpas_policy_base {
  public:
   using WGTile = Shape<_256, _256, _64>;
   using SGLayout = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+  static constexpr bool kSmallGrfOk = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -868,6 +909,68 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
 }
 
 // ---------------------------------------------------------------------------
+// GRF budget -> occupancy.
+//
+// `grf_size` is a request for how many registers each lane gets, and on this
+// architecture a vector engine's register file is fixed: it holds either 4
+// threads of 256 registers or 8 threads of 128. With SIMD16 sub-groups and 8
+// vector engines per Xe-core that is 8*4*16 = 512 work-items resident at the
+// large budget and 8*8*16 = 1024 at the small one.
+//
+// The kernel is persistent -- `MoEGEMM_w4a8` walks a device-scope counter until
+// the tiles run out, and the grid is sized to fill the device exactly once --
+// so this number is not a hint, it *is* the grid. Halving the register request
+// without doubling `kMaxThreadsPerSM` would launch the same work-groups as
+// before and change nothing at all; the two constants have to move together,
+// which is why they live in one place.
+// ---------------------------------------------------------------------------
+template <int GrfSize>
+struct W4A8GrfBudget;
+
+template <>
+struct W4A8GrfBudget<256> {
+  static constexpr int kMaxThreadsPerSM = 512;
+  static auto props() {
+    return sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::sub_group_size<16>,
+                                                       sycl::ext::intel::experimental::grf_size<256>};
+  }
+};
+
+template <>
+struct W4A8GrfBudget<128> {
+  static constexpr int kMaxThreadsPerSM = 1024;
+  static auto props() {
+    return sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::sub_group_size<16>,
+                                                       sycl::ext::intel::experimental::grf_size<128>};
+  }
+};
+
+// Submit the persistent grid at one GRF budget. `GrfSize` fixes the kernel
+// properties, the grid, and (through `KernelName`) the kernel identity; `body`
+// is the same device code either way and receives the SLM slot pair.
+template <int GrfSize, class KernelName, class Body>
+sycl::event moe_w4a8_submit_grf(sycl::queue& stream, sycl::event fill, int sm_count, int threads_per_wg, Body body) {
+  using Budget = W4A8GrfBudget<GrfSize>;
+
+  static constexpr int MaxThreadsPerSM = Budget::kMaxThreadsPerSM;
+  if (threads_per_wg <= 0 || MaxThreadsPerSM % threads_per_wg != 0) {
+    throw std::runtime_error("moe_gemm_w4a8: MaxThreadsPerSM must be divisible by MaxThreadsPerWorkgroup");
+  }
+
+  sycl::range<3> local(1, 1, threads_per_wg);
+  sycl::range<3> global(1, sm_count * MaxThreadsPerSM / threads_per_wg, 1);
+
+  auto kernel_props = Budget::props();
+
+  return stream.submit([&](sycl::handler& cgh) {
+    cgh.depends_on(fill);
+    sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(2), cgh);
+    cgh.parallel_for<KernelName>(sycl::nd_range<3>{global * local, local}, kernel_props,
+                                 [=](auto) { body(local_mem); });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Grouped-GEMM launcher (fork of `moe_dpas_int::MoEGEMMLauncher_int`, with the
 // int8 DPAS atom of `sycl_tla_s8_gemm.hpp`).
 // ---------------------------------------------------------------------------
@@ -876,8 +979,8 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
                           const float* scale_a, const float* scale_b, ElementD* outputs, const int gemm_n,
                           const int gemm_k, const int* rows_per_expert, const int num_experts, const int blocksize,
                           const int blks, const bool allow_full_tile, const bool allow_block_2d_store,
-                          const int prefetch_dist, const bool claim_early, MoEFusedReduce reduce,
-                          int32_t* atomic_buffer) {
+                          const int prefetch_dist, const bool claim_early, const bool small_grf,
+                          MoEFusedReduce reduce, int32_t* atomic_buffer) {
   using Op = XE_DPAS_TT<8, int32_t, int8_t, int8_t>;
   using WGTile = typename Policy::WGTile;
   using SGLayout = typename Policy::SGLayout;
@@ -885,20 +988,7 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
   auto mma = MMA{};
 
   int sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(0);
-  auto MaxThreadsPerWorkgroup = size(mma);
-
-  static constexpr int MaxThreadsPerSM = 512;
-  if (MaxThreadsPerSM % MaxThreadsPerWorkgroup != 0) {
-    throw std::runtime_error("moe_gemm_w4a8: MaxThreadsPerSM must be divisible by MaxThreadsPerWorkgroup");
-  }
-
-  sycl::range<3> local(1, 1, MaxThreadsPerWorkgroup);
-  sycl::range<3> global(1, sm_count * MaxThreadsPerSM / MaxThreadsPerWorkgroup, 1);
-
-  namespace syclex = sycl::ext::oneapi::experimental;
-  namespace intelex = sycl::ext::intel::experimental;
-
-  syclex::properties kernel_props{syclex::sub_group_size<16>, intelex::grf_size<256>};
+  const int threads_per_wg = static_cast<int>(size(mma));
 
   using GmemTiledCopyA = typename Policy::GmemTiledCopyA;
   using GmemTiledCopyB = typename Policy::GmemTiledCopyB;
@@ -913,17 +1003,33 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
   // rather than a synchronization.
   auto fill = stream.memset(atomic_buffer, 0, sizeof(int32_t));
 
-  auto event = stream.submit([&](sycl::handler& cgh) {
-    cgh.depends_on(fill);
-    sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(2), cgh);
-    cgh.parallel_for<MoEW4A8GemmName<Policy, ElementD>>(
-        sycl::nd_range<3>{global * local, local}, kernel_props, [=](auto) {
-          MoEGEMM_w4a8<GmemTiledCopyA, GmemTiledCopyB>(activations, weights, scale_a, scale_b, outputs, mma,
-                                                       rows_per_expert, num_experts, gemm_n, gemm_k, blocksize,
-                                                       blks, allow_full_tile, allow_block_2d_store, prefetch_dist,
-                                                       claim_early, reduce, atomic_buffer, local_mem);
-        });
-  });
+  auto body = [=](sycl::local_accessor<int32_t, 1> local_mem) {
+    MoEGEMM_w4a8<GmemTiledCopyA, GmemTiledCopyB>(activations, weights, scale_a, scale_b, outputs, mma, rows_per_expert,
+                                                 num_experts, gemm_n, gemm_k, blocksize, blks, allow_full_tile,
+                                                 allow_block_2d_store, prefetch_dist, claim_early, reduce,
+                                                 atomic_buffer, local_mem);
+  };
+
+  // The halved register budget is only offered to tiles whose accumulator
+  // leaves room for the staged A/B fragments, and only for `blks == 1`: a
+  // blocked re-scale carries the float shadow `tFrC` alongside the int32
+  // accumulator for the whole mainloop (see `xe_gemm_w4a8`), which doubles the
+  // live fragment and takes even a 64-register tile to the full 128. The
+  // `if constexpr` keeps the second kernel out of the 256-wide-N translation
+  // units entirely rather than leaving it dead.
+  sycl::event event;
+  bool launched = false;
+  if constexpr (Policy::kSmallGrfOk) {
+    if (small_grf && blks == 1) {
+      event = moe_w4a8_submit_grf<128, MoEW4A8GemmName<Policy, ElementD, 128>>(stream, fill, sm_count, threads_per_wg,
+                                                                               body);
+      launched = true;
+    }
+  }
+  if (!launched) {
+    event = moe_w4a8_submit_grf<256, MoEW4A8GemmName<Policy, ElementD, 256>>(stream, fill, sm_count, threads_per_wg,
+                                                                             body);
+  }
 
   EventManager::getInstance().addEvent(event);
   event.wait();
@@ -1001,6 +1107,26 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // claim stays on because it is free and counter contention grows with the
 // number of resident work-groups. The host-side counter reset it forced is a
 // correctness fix and applies to both settings.
+// `ARK_MOE_W4A8_PREFILL_SMALL_GRF=0` keeps every tile at `grf_size<256>` and the
+// 512-work-item grid, the A/B baseline for the per-policy register budget. The
+// GRF request used to be hardwired here, which pinned all six tiles at 2
+// work-groups per Xe-core -- so the small tiles in the ladder paid for their
+// smaller accumulator and never collected the occupancy that is the reason to
+// have them. It is now a property of the policy (`kSmallGrfOk`, see the tile
+// table above): 128-wide-N tiles ask for half the registers and get twice the
+// resident work-groups, 256-wide-N tiles cannot because their accumulator alone
+// is a whole 128-register file. `blks > 1` opts out at runtime -- the blocked
+// re-scale carries a second, float fragment for the whole mainloop.
+//
+// The default ladder sends every shipped qwen3 shape to `128x256`, which is not
+// eligible, so this changes nothing until a tile is forced:
+// `ARK_MOE_W4A8_PREFILL_TILE=128x128` with and without this flag separates the
+// tile from the register budget, which a policy-only knob could not do. Both
+// settings compute the same tiles in the same order and are bit-identical;
+// `test_prefill_small_grf_matches` asserts it. Occupancy is a latency-hiding
+// lever, so the shape to watch is the down projection: half its time is
+// per-tile cost, ~78% of that the 64 KB of D each tile writes, and covering a
+// store stream is what more resident work-groups are for.
 // ---------------------------------------------------------------------------
 template <class Policy, typename ElementD>
 void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {
@@ -1025,12 +1151,13 @@ void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {
       store_2d_aligned && moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_STORE_2D", true);
   const int prefetch_dist = moe_w4a8_prefill_prefetch_dist();
   const bool claim_early = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_CLAIM_EARLY", true);
+  const bool small_grf = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_SMALL_GRF", true);
   int32_t* atomic_buffer = moe_dpas_fp8::get_atomic_scratch_buffer(p.q);
 
   MoEGEMMLauncher_w4a8<Policy, ElementD>(*p.q, p.qact, p.weights, p.ascale, p.wscale, outputs, p.N, p.K,
                                          p.num_tokens_per_expert, p.num_experts, p.blocksize, p.blks,
                                          allow_full_tile, allow_block_2d_store, prefetch_dist, claim_early,
-                                         reduce, atomic_buffer);
+                                         small_grf, reduce, atomic_buffer);
 }
 
 }  // namespace moe_w4a8

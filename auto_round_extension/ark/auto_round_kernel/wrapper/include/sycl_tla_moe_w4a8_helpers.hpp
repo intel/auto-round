@@ -158,12 +158,18 @@ inline W4A8PrefillTile moe_w4a8_prefill_select_tile(int A_avg_M, int N) {
 // (dtype x tile) for the DPAS prefill, which is where the compile cost is, and
 // coarser grouping for the plain-SYCL kernels. Kernel counts per TU:
 //
-//   prefill_{f16,bf16}_*  : 1 DPAS kernel   (12 TUs)
+//   prefill_{f16,bf16}_*  : 1-2 DPAS kernels (12 TUs)
 //   decode_{f16,bf16}     : 7 GEMV kernels  (2 TUs)
 //   quant_{f16,bf16}      : 11 quant kernels (2 TUs)
 //   prepack_{f16,bf16}    : 2 rescale kernels (2 TUs)
 //
 // versus 52 kernels -- 12 of them DPAS -- in the single TU this replaced.
+//
+// The prefill TUs whose policy sets `kSmallGrfOk` build their DPAS kernel twice,
+// once per GRF budget (see `W4A8GrfBudget` in `sycl_tla_moe_w4a8.hpp`) -- the
+// register request is a compile-time kernel property, so the runtime choice
+// needs both to exist. That is the 128-wide-N tiles only; the 256-wide-N ones,
+// which is where the shipped shapes land, still build exactly one.
 // ---------------------------------------------------------------------------
 namespace moe_w4a8_detail {
 
