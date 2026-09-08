@@ -17,7 +17,6 @@ class AlgRegistryEntry:
     name: str
     aliases: tuple[str, ...] = ()
     config_factory: Callable[[], object] | None = None
-    cli_handler: type | None = None
     summary: str = ""
     alias_factories: dict[str, Callable[[], object]] = field(default_factory=dict)
 
@@ -27,13 +26,25 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
+_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
     global _builtin_algorithms_registered
     if _builtin_algorithms_registered:
         return
-    importlib.import_module("auto_round.cli.algorithms")
+    # Importing each config module triggers its own registration. Keeping the
+    # imports ordered preserves the help output and default algorithm order.
+    for module_name in (
+        "auto_round.algorithms.quantization.rtn.config",
+        "auto_round.algorithms.quantization.sign_round.config",
+        "auto_round.algorithms.transforms.awq.config",
+        "auto_round.algorithms.transforms.svdquant.config",
+        "auto_round.algorithms.transforms.hadamard.config",
+        "auto_round.algorithms.transforms.spinquant.preprocessor",
+    ):
+        importlib.import_module(module_name)
+
     _builtin_algorithms_registered = True
 
 
@@ -58,7 +69,6 @@ def register_algorithm(
     *,
     aliases: tuple[str, ...] = (),
     config_factory: Callable[[], object] | None = None,
-    cli_handler: type | None = None,
     summary: str = "",
     alias_factories: dict[str, Callable[[], object]] | None = None,
 ) -> None:
@@ -73,8 +83,6 @@ def register_algorithm(
     )
     if config_factory is not None:
         entry.config_factory = config_factory
-    if cli_handler is not None:
-        entry.cli_handler = cli_handler
     if summary:
         entry.summary = summary
     if alias_factories:
@@ -136,7 +144,9 @@ def get_algorithm_entry(name: str) -> AlgRegistryEntry:
 
 def iter_algorithm_entries() -> list[AlgRegistryEntry]:
     _ensure_builtin_algorithms_registered()
-    return list(_ALG_REGISTRY.values())
+    builtin = [_ALG_REGISTRY[name] for name in _BUILTIN_ALGORITHM_ORDER if name in _ALG_REGISTRY]
+    custom = [entry for name, entry in _ALG_REGISTRY.items() if name not in _BUILTIN_ALGORITHM_ORDER]
+    return builtin + custom
 
 
 def resolve_alg_config(alias: str) -> object:

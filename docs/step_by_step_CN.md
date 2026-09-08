@@ -117,10 +117,13 @@ pip install auto-round
 AutoRound 支持多种量化配置：
 - **W4A16**（bits:4, group_size:128, sym:True, act_bits:16）  # 4位权重，分组大小为128，对称量化，16位激活，
 - **W8A16**（bits:8, group_size:128, sym:True, act_bits:16）  
-- **W6A16**（bits:6, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
-- **W5A16**（bits:5, group_size:128, sym:True, act_bits:16） — 仅 `mlx` 格式支持
+- **W7A16**（bits:7, group_size:128, sym:True, act_bits:16）
+- **W6A16**（bits:6, group_size:128, sym:True, act_bits:16）
+- **W5A16**（bits:5, group_size:128, sym:True, act_bits:16）
 - **W3A16**（bits:3, group_size:128, sym:True, act_bits:16）  
 - **W2A16**（bits:2, group_size:128, sym:True, act_bits:16）  
+- **分组大小变体** `W{2..8}A16G64` / `W{2..8}A16G32` - `llm_compressor`（W2-W8）；`auto_round` / `auto_gptq`（仅 W2）
+- 非对称量化（`--asym`）在 `auto_round` / `auto_gptq` / `auto_awq` 导出下仅支持权重位数 <= 7：vLLM 的 W8 GPTQ 格式仅支持对称量化，且 Marlin 仅支持 4 位零点。`llm_compressor` 格式支持 8 位非对称——vLLM 可通过 Machete（SM90+，分组 64/128/-1）或 Conch（SM80+，仅分组 128 或逐通道）为其提供服务。该规则统一适用于 AutoScheme 选项与固定层配置（如 lm_head）：导出到 `llm_compressor` 的运行会保留其 8 位非对称条目，其他格式会将其回退为对称。设置环境变量 `AR_ALLOW_W8_ASYM=1` 可解除所有格式的该限制（用于 vLLM 之外的推理框架）；使用该变量产出的模型可能无法在 vLLM 中加载。
 - **GGUF:Q4_K_M**（支持 llamacpp 提供的所有 Q*_K、Q*_0、Q*_1 量化类型）
 - **混合bit**: （实验性功能）请使用 AutoScheme 接口或者使用 API 中的 `layer_config` 参数自己自定义
 - **NVFP4**（实验性功能）推荐导出为`llm_compressor`格式，参数：data_type=nvfp4, act_data_type=nvfp4, static_global_scale, group_size=16
@@ -138,13 +141,21 @@ AutoRound 支持多种量化配置：
 
 执行 `auto_round list format` 可查看所有支持的导出格式及其对应的量化方案。
 
-**AutoRound 原生格式**：适用于 CPU、英特尔 GPU、CUDA、HPU 等设备，支持2位宽及混合精度推理，**兼容 [2、3、4、8] bits**。使用时需设置 `--format auto_round`。
+**AutoRound 原生格式**：适用于 CPU、英特尔 GPU、CUDA、HPU 等设备，支持2位宽及混合精度推理，**兼容 [2、3、4、5、6、7、8] bits**。使用时需设置 `--format auto_round`。
+
+> **关于 5/6/7 bits**：这几种位宽无法整除 32，因此每个值被存放在以 32 个元素为一组、按小端连续排布的比特流中
+> （共 `in_features * bits / 32` 个 int32）。这是对现有排布的严格推广——2/4/8 bit 与 3 bit 的
+> `qweight`/`qzeros` 与之前完全逐字节一致。5/6/7 bits 可用于 `auto_round`、`auto_round:auto_gptq`
+> 和 `auto_round:auto_awq`，也可以自由用于混合 bit 配方。上游 AutoGPTQ/AutoAWQ 的 kernel 无法读取该排布，
+> 因此原生的 `auto_gptq` / `auto_awq` 格式仍然拒绝 5/6/7 bits。`in_features` 与 `out_features` 都必须是 32 的倍数。
+> 推理时请安装 [humming](https://github.com/inclusionAI/humming) kernel
+> （`pip install git+https://github.com/inclusionAI/humming.git`），否则会回退到较慢的 `torch` 反量化后再矩乘的后端。
 
 **GGUF 格式**：实验性功能，适用于 CPU 设备，是社区主流格式之一，支持 `q*_k`、`q*_0`、`q*_1` 系列的量化。需设置 `--format gguf:q4_k_m`、`--format gguf:q2_k_s`等具体格式。
 
 **AutoGPTQ 格式**：适用于 CUDA 设备的对称量化，在社区中广泛应用，**兼容 [2、3、4、8] bits **（但其**非对称推理核存在问题**，可能导致模型的精度大幅下降，尤其是在 2-bit 量化和小模型的场景；近期 Transformers 框架中 3-bits 量化也存在类似问题）。配置时需设置 `--format auto_gptq`。
 
-**AutoAWQ 格式**：适用于 CUDA 设备的 4 位非对称量化，在社区中也广泛应用。**仅支持 4-bit 量化**。需设置 `--format auto_awq`。
+**AutoAWQ 格式**：适用于 CUDA 设备的 4 位非对称量化，在社区中也广泛应用。**仅支持 4-bit 量化**。需设置 `--format auto_awq`（AutoRound 风格的 `auto_round:auto_awq` 额外支持 5/6/7 bits）。
 
 **LLM-Compressor 格式**：**支持 NVFP4、MXFP4（kernel 开发中）、MXFP8** 等。需设置 `--format llm_compressor`。
 
@@ -160,9 +171,11 @@ AutoRound 支持多种量化配置：
 
 | 格式                                   | 支持的量化方案                                                                                                                                                     |
 |:-------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **auto_round**                       | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`           |
+| **auto_round**                       | W4A16、W2A16、W3A16、W5A16、W6A16、W7A16、W8A16、W2A16G64、W2A16G32、`MXFP4`、`MXFP8`、`MXFP4_RCEIL`、`MXFP8_RCEIL`、`NVFP4`、`FPW8A16`、`FP8_STATIC`、`FP8_BLOCK`、`BF16`, `MXINT4`           |
 | **gguf**                             | GGUF:Q4_K_M、GGUF:Q2_K_S、GGUF:Q3_K_S、GGUF:Q3_K_M、GGUF:Q3_K_L、GGUF:Q4_K_S、GGUF:Q5_K_S、GGUF:Q5_K_M、GGUF:Q6_K、GGUF:Q4_0、GGUF:Q4_1、GGUF:Q5_0、GGUF:Q5_1、GGUF:Q8_0 |
-| **llm_compressor**                   | NVFP4、W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、FP8_BLOCK 、  `MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                         |
+| **llm_compressor**                   | NVFP4、W2A16、W3A16、W4A16、W5A16、W6A16、W7A16、W8A16 及 W2-W8 的 G64/G32 变体、FP8_BLOCK、`MXFP4`、`MXFP8`、`FPW8A16`、`FP8_STATIC`                                                         |
+| **auto_round:auto_awq**              | W4A16、W5A16、W6A16、W7A16、BF16                                                                                                                              |
+| **auto_round:auto_gptq**             | W4A16、W2A16、W3A16、W5A16、W6A16、W7A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                          |
 | **auto_awq**                         | W4A16、BF16                                                                                                                                                  |
 | **auto_gptq**                        | W4A16、W2A16、W3A16、W8A16、W2A16G64、W2A16G32、BF16                                                                                                              |
 | **mlx** / **auto_round:mlx** (实验性功能) | W2A16、W3A16、W4A16、W5A16、W6A16、W8A16、BF16、混合 bit / 混合 group_size（仅 Apple Silicon）                                                                            |
@@ -921,7 +934,7 @@ auto-round --model_name Qwen/Qwen3-0.6B  --scheme "W4A16" --quant_lm_head --form
 
 旋转在量化前对权重和激活中的离群点进行重分布，使分布更加均匀、对量化更友好。它对 MXFP4、NVFP4、W4A4 等激进的低比特方案最为有效。
 
-AutoRound 通过 `rotation_config` 参数应用旋转。推荐在大多数场景中使用 `"quarot"` 预设——确定性 Hadamard 旋转（QuaRot / SpinQuant），无需训练、无需校准数据。
+AutoRound 通过 `alg_configs`（与量化算法一起传入）应用旋转。推荐在大多数场景中使用 `"quarot"` 预设——确定性 Hadamard 旋转（QuaRot / SpinQuant），无需训练、无需校准数据。
 
 #### API 用法
 
@@ -931,7 +944,7 @@ from auto_round import AutoRound
 model_name = "Qwen/Qwen3-0.6B"
 
 # QuaRot 预设：确定性 Hadamard，无需训练
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", "quarot"])
 ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
 
@@ -974,7 +987,14 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 ```
 
 ### CUDA
-支持 2、3、4、8 bits 量化模型，**4-bits/8-bits 推理推荐使用 GPTQModel 后端**，使用示例：
+支持 2、3、4、5、6、7、8 bits 量化模型，**4-bits/8-bits 推理推荐使用 GPTQModel 后端**；**5/6/7 bits 推荐使用
+[humming](https://github.com/inclusionAI/humming) 后端**（它在其他位宽上也比 Triton 更快）：
+
+```bash
+pip install git+https://github.com/inclusionAI/humming.git
+```
+
+使用示例：
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -1046,8 +1066,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | gptqmodel:awq_marlin    | cuda           | 4、8           | FP16         | 5      | awq             | gptqmodel                      |
 | gptqmodel:awq_gemm      | cuda           | 4              | FP16         | 3      | awq             | gptqmodel                      |
 | gptqmodel:awq_torch     | cuda/cpu       | 4              | FP16         | 2      | awq             | gptqmodel                      |
+| humming                 | cuda           | 2、3、4、5、6、7、8 | BF16/FP16 | 4   | gptq/gptq_zp+-1 | humming-kernels                |
+| humming                 | cuda           | 2、3、4、5、6、7、8 | BF16/FP16 | 4   | awq             | humming-kernels                |
 | hpu                     | hpu            | 4              | BF16         | 0      | gptq/gptq_zp+-1 | auto-round                     |
-| torch                   | xpu/cpu/cuda   | 2、3、4、8     | BF16/FP16    | 0      | gptq/gptq_zp+-1 | auto-round                     |
+| torch                   | xpu/cpu/cuda   | 2、3、4、5、6、7、8 | BF16/FP16 | 0   | gptq/gptq_zp+-1 | auto-round                     |
 
 ### 将 GPTQ 或 AWQ 模型转换为 AutoRound 格式
 为了提升兼容性（尤其是英特尔设备），大部分 GPTQ/AWQ 量化模型均可转换为 AutoRound 格式。**注意**：若模型再次存储，其量化配置可能会发生变更， 由 gptq/awq 量化变化成 auto-round 量化。

@@ -10,7 +10,7 @@
 <h3> Advanced Quantization Toolkit for LLMs</h3>
 
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.14.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -248,6 +248,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Algorithm Settings
 - **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
 
 - **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues.
 
@@ -259,6 +260,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
+- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 

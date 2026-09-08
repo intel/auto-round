@@ -88,9 +88,10 @@ class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
 
-    The ``preprocessors`` list is order-sensitive: algorithms are applied in
-    the listed order (e.g. ``[Rotation, AWQ]``).  There must be **exactly one**
-    ``block_quantizer`` (the terminal weight-compression step).
+    The ``preprocessors`` list is order-sensitive: preprocessors are applied in
+    the listed order (e.g. ``[Rotation, AWQ]``).  The block quantizer is always
+    the terminal weight-compression step, regardless of its position in the
+    input config list.  There must be **exactly one** ``block_quantizer``.
 
     Usage::
 
@@ -361,6 +362,7 @@ class AlgorithmComposer:
         block_ctx: BlockContext,
         q_inputs=None,
         input_ids=None,
+        reference_output=None,
         **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
@@ -413,13 +415,13 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
-        reference_output = None
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
-                reference_output = block_forward_fn(block, fp_inputs, input_others)
+                if reference_output is None:
+                    reference_output = block_forward_fn(block, fp_inputs, input_others)
                 reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
@@ -527,7 +529,12 @@ class AlgorithmComposer:
     # ── Convenience act-calib helpers ────────────────────────────────────────
 
     def members(self) -> list:
-        """Return all algorithm members: preprocessors followed by the block quantizer."""
+        """Return the canonical execution order: preprocessors, then block quantizer.
+
+        Preprocessor order follows the input config list. The block quantizer
+        is always returned last, so its position in that input list has no
+        effect on pipeline execution.
+        """
         return list(self.preprocessors) + [self.block_quantizer]
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):

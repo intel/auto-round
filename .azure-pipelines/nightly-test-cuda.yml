@@ -56,8 +56,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: "3.13"
-            displayName: "Use Python 3.13"
+              versionSpec: "3.14"
+            displayName: "Use Python 3.14"
 
           - task: Bash@3
             displayName: "Install dependencies"
@@ -72,15 +72,12 @@ stages:
             inputs:
               targetType: "inline"
               script: |
-                CUDA_VERSION="13.0"
-
                 python .azure-pipelines/scripts/cuda_unit_test/runpod_manager.py \
                   --action create \
                   --api_key $(RUNPOD_API_KEY) \
                   --name "nightly-$(Build.BuildId)" \
                   --container_disk_size "100" \
                   --part 0 \
-                  --cuda_version "${CUDA_VERSION}" \
                   --env AZP_URL=$(System.CollectionUri) AZP_TOKEN=$(AZP_DEVOPS_PAT) AZP_POOL=$(POOL_NAME) AZP_AGENT_NAME="$(AGENT_NAME)"
             env:
               PYTHONUNBUFFERED: '1'
@@ -116,6 +113,8 @@ stages:
   - stage: GPU_Test
     displayName: "GPU Nightly Test"
     dependsOn: Start_Pod
+    variables:
+      - group: auto-round-bot-secrets
     jobs:
       - job: GpuTests
         timeoutInMinutes: 300
@@ -149,6 +148,8 @@ stages:
                 --test_case=nightly \
                 --test_part=0
             displayName: "Run GPU Nightly Tests"
+            env:
+              GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
 
           - task: PublishPipelineArtifact@1
             condition: succeeded()
@@ -179,8 +180,8 @@ stages:
 
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: "3.13"
-            displayName: "Use Python 3.13"
+              versionSpec: "3.14"
+            displayName: "Use Python 3.14"
 
           - task: Bash@3
             displayName: "Install dependencies"

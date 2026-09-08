@@ -17,7 +17,7 @@
 import json
 import os
 import tempfile
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -38,13 +38,16 @@ from auto_round.utils.model_free_utils import (
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
     _dequant_fp8_tensors,
+    _dequant_modelopt_nvfp4_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
+    _hydrate_and_clean_modelopt_nvfp4_aux,
     _hydrate_missing_fp8_scales_from_index,
     _looks_like_auto_scheme,
     _PatternMatcher,
     _process_shard,
+    _quantize_single_tensor,
     _quantize_weight_mxfp,
     _validate_auto_scheme_options,
 )
@@ -98,6 +101,97 @@ def _read_output_keys(output_dir):
     return keys
 
 
+def test_modelopt_nvfp4_failure_restores_scale2():
+    """A failed fused-NVFP4 decode must preserve its complete source triple."""
+    base = "model.layers.0.experts.w13_weight"
+    packed = torch.zeros((2, 4, 8), dtype=torch.uint8)
+    scale = torch.ones((2, 4, 1), dtype=torch.float32)
+    scale2 = torch.ones(3, dtype=torch.float32)
+    tensors = {base: packed, f"{base}.scale": scale, f"{base}.scale2": scale2}
+
+    result = _dequant_modelopt_nvfp4_tensors(tensors)
+
+    assert result[base] is packed
+    assert result[f"{base}.scale"] is scale
+    assert result[f"{base}.scale2"] is scale2
+
+
+def test_fused_moe_weight_uses_canonical_name_for_matcher():
+    """Explicit fused-layer config overrides a matching ignore pattern."""
+    base = "model.layers.0.experts.w13_weight"
+    matcher = _matcher(
+        ignore=["experts"],
+        layer_config={base: {"bits": 4, "data_type": "mx_fp", "group_size": 16}},
+        default={"bits": 16, "data_type": "float", "group_size": -1},
+    )
+    tensor = torch.ones((2, 4, 16), dtype=torch.bfloat16)
+
+    def fake_quantize(weight, layer_name, **_):
+        return {
+            f"{layer_name}.weight_packed": torch.zeros((4, 8), dtype=torch.uint8),
+            f"{layer_name}.weight_scale": torch.ones((4, 1), dtype=torch.uint8),
+        }
+
+    with patch("auto_round.utils.model_free_utils._quantize_weight_mxfp", side_effect=fake_quantize) as quantize:
+        layer_name, outputs, quantized_layer, ignored_layer = _quantize_single_tensor(base, tensor, matcher)
+
+    assert layer_name == base
+    assert quantized_layer == base
+    assert ignored_layer is None
+    assert set(outputs) == {f"{base}.weight_packed", f"{base}.weight_scale"}
+    assert quantize.call_count == tensor.shape[0]
+
+
+def test_modelopt_nvfp4_hydrates_scales_from_separate_shards(tmp_path):
+    """ModelOpt NVFP4 scales are hydrated from the index-selected donor shards."""
+    base = "model.layers.0.experts.w13_weight"
+    recipient_name = "model-00001-of-00003.safetensors"
+    scale_shard_name = "model-00002-of-00003.safetensors"
+    scale2_shard_name = "model-00003-of-00003.safetensors"
+    scale_name = f"{base}.scale"
+    scale2_name = f"{base}.scale2"
+    scale = torch.ones((2, 4, 1), dtype=torch.float32)
+    scale2 = torch.ones(2, dtype=torch.float32)
+    save_file({scale_name: scale}, str(tmp_path / scale_shard_name))
+    save_file({scale2_name: scale2}, str(tmp_path / scale2_shard_name))
+    with open(tmp_path / "model.safetensors.index.json", "w") as file:
+        json.dump(
+            {
+                "metadata": {"total_size": 0},
+                "weight_map": {
+                    base: recipient_name,
+                    scale_name: scale_shard_name,
+                    scale2_name: scale2_shard_name,
+                },
+            },
+            file,
+        )
+
+    result = _hydrate_and_clean_modelopt_nvfp4_aux(
+        {base: torch.zeros((2, 4, 8), dtype=torch.uint8)},
+        str(tmp_path / recipient_name),
+    )
+
+    assert torch.equal(result[scale_name], scale)
+    assert torch.equal(result[scale2_name], scale2)
+
+
+def test_modelopt_nvfp4_dequantizes_fused_3d_weight():
+    """Fused ModelOpt NVFP4 weights dequantize per expert and drop metadata."""
+    base = "model.layers.0.experts.w13_weight"
+    result = _dequant_modelopt_nvfp4_tensors(
+        {
+            base: torch.zeros((2, 4, 8), dtype=torch.uint8),
+            f"{base}.scale": torch.ones((2, 4, 1), dtype=torch.float32),
+            f"{base}.scale2": torch.ones(2, dtype=torch.float32),
+        }
+    )
+
+    assert set(result) == {base}
+    assert result[base].dtype == torch.bfloat16
+    assert result[base].shape == (2, 4, 16)
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -139,18 +233,23 @@ class TestAddRoutedExpertsIfMoe:
         result = _add_routed_experts_if_moe(targets, layers)
         assert "RoutedExperts" in result
 
+    def test_expert_path_not_under_mlp_triggers(self):
+        targets = ["Linear"]
+        layers = ["model.layers.0.moe.experts.0.gate_proj.weight"]
+        result = _add_routed_experts_if_moe(targets, layers)
+        assert "RoutedExperts" in result
+
+    def test_generic_projection_name_triggers(self):
+        targets = ["Linear"]
+        layers = ["model.layers.0.mlp.experts.0.proj.weight"]
+        result = _add_routed_experts_if_moe(targets, layers)
+        assert "RoutedExperts" in result
+
     def test_non_moe_no_change(self):
         targets = ["Linear"]
         layers = ["model.layers.0.mlp.down_proj.weight", "model.layers.0.mlp.up_proj.weight"]
         result = _add_routed_experts_if_moe(targets, layers)
         assert result == ["Linear"]
-        assert "RoutedExperts" not in result
-
-    def test_w2_alone_does_not_trigger(self):
-        """w2 (down-projection) alone should not trigger RoutedExperts."""
-        targets = ["Linear"]
-        layers = ["model.layers.0.mlp.experts.0.w2.weight"]
-        result = _add_routed_experts_if_moe(targets, layers)
         assert "RoutedExperts" not in result
 
     def test_already_present_not_duplicated(self):
@@ -1394,6 +1493,25 @@ class TestFP8Source:
 
 
 class TestKimiK25Int4Source:
+    def test_kimi_k25_int4_dequant_uses_biased_signed_values(self):
+        nibbles = torch.arange(16, dtype=torch.int32).reshape(2, 8)
+        shifts = torch.arange(8, dtype=torch.int32) * 4
+        packed = (nibbles << shifts).sum(dim=1, keepdim=True).to(torch.int32)
+        raw = {
+            "layer.weight_packed": packed,
+            "layer.weight_scale": torch.full((2, 1), 0.5, dtype=torch.float16),
+        }
+
+        out = _handle_model_type_low_precision_source_tensors(
+            raw,
+            model_type="kimi_k25",
+            source_quant_config=None,
+            device="cpu",
+        )
+
+        expected = ((nibbles - 8).float() * 0.5).to(torch.bfloat16)
+        assert torch.equal(out["layer.weight"], expected)
+
     def test_kimi_k25_int4_dequant_helper(self):
         raw = {
             "layer.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
@@ -1413,12 +1531,14 @@ class TestKimiK25Int4Source:
 
     @require_compressed_tensors
     def test_kimi_k25_int4_to_mxfp4_via_model_free(self, tmp_path):
+        config = {key: value for key, value in _KIMI_K25_CFG.items() if key != "quantization_config"}
+        config["text_config"] = {"quantization_config": _KIMI_K25_CFG["quantization_config"]}
         tensors = {
             "model.layers.0.mlp.fc1.weight_packed": torch.randint(0, 255, (128, 64), dtype=torch.uint8),
             "model.layers.0.mlp.fc1.weight_scale": torch.ones(128, 16, dtype=torch.float16),
             "lm_head.weight": torch.randn(1000, 128),
         }
-        model_dir = _make_model_dir(tmp_path, _KIMI_K25_CFG, tensors)
+        model_dir = _make_model_dir(tmp_path, config, tensors)
         output_dir = str(tmp_path / "output")
 
         _ModelFreeCompressorCore(
@@ -1431,6 +1551,9 @@ class TestKimiK25Int4Source:
         qc = _read_qconfig(output_dir)
         assert qc["format"] == "mxfp4-pack-quantized"
         assert qc["quant_method"] == "compressed-tensors"
+        with open(os.path.join(output_dir, "config.json")) as f:
+            output_config = json.load(f)
+        assert "quantization_config" not in output_config["text_config"]
 
         found_scale_dtype = None
         found_packed_shape = None

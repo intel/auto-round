@@ -79,6 +79,16 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_DISABLE_GGUF_MTP_EXPORT
+- **描述**：导出 GGUF 模型时禁用多 token 预测（MTP）层。默认情况下，AutoRound 遵循 llama.cpp 转换器的行为，在模型提供 MTP 层时将其一并导出。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示禁用 MTP 导出；其他值保持启用 MTP 导出
+- **用途**：当 checkpoint 使用支持 MTP 的模型架构，但实际不包含 MTP tensor 时启用
+
+```bash
+export AR_DISABLE_GGUF_MTP_EXPORT=1
+```
+
 ### AR_ACT_SCALE
 - **描述**：只用于研究性质，控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
 - **默认值**：`1.0`
@@ -219,6 +229,16 @@ export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
 
 ```bash
 export AR_DISK_STREAM_MODEL=1
+```
+
+### AR_ALLOW_W8_ASYM
+- **描述**：允许在所有导出格式下使用 8 位非对称权重量化，跳过对无法提供服务的格式（原生 `auto_round` / `auto_gptq` / `auto_awq` / marlin）的默认拒绝。未设置时，8 位非对称仅对 `llm_compressor` 格式（compressed-tensors，vLLM 可服务）开放，其他格式会被拒绝或回退为对称。使用该变量产出的模型可能无法在原生 vLLM GPTQ 格式服务中加载。
+- **默认值**：`0`（关闭）
+- **有效值**：`0` / `1`
+- **用法**：面向 vLLM 之外推理框架的显式逃生开关。
+
+```bash
+AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
 ```
 
 ### AR_RESUME_DIR

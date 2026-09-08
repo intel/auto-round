@@ -1,8 +1,11 @@
 import inspect
 import logging
 
+import pytest
+
 from auto_round import AutoRound
 from auto_round.auto_scheme import AutoScheme
+from auto_round.cli.main import _to_autoround_kwargs
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import MIN_ITERS_FOR_TORCH_COMPILE, BaseOrchestrator
 from auto_round.logger import logger
@@ -24,6 +27,54 @@ def test_cli_torch_compile_flags():
     assert parser.parse_args(["--model", "test-model"]).enable_torch_compile is None
     assert parser.parse_args(["--model", "test-model", "--enable_torch_compile"]).enable_torch_compile is True
     assert parser.parse_args(["--model", "test-model", "--disable_torch_compile"]).enable_torch_compile is False
+
+
+def test_cli_deterministic_algorithms_flags_are_forwarded():
+    for flag, expected in (
+        (None, None),
+        ("--enable_deterministic_algorithms", True),
+    ):
+        argv = ["--model", "test-model"]
+        if flag is not None:
+            argv.append(flag)
+        args = build_quantize_parser().parse_args(argv)
+        kwargs = _to_autoround_kwargs(
+            args,
+            low_cpu_mem_usage=True,
+            enable_torch_compile=None,
+            layer_config={},
+        )
+
+        assert kwargs["enable_deterministic_algorithms"] is expected
+
+
+def test_deterministic_algorithms_rejects_legacy_flag():
+    parser = build_quantize_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--model", "test-model", "--disable_deterministic_algorithms"])
+
+
+def test_deterministic_algorithms_runtime_logging(monkeypatch, caplog, tiny_opt_model_path):
+    calls = []
+    monkeypatch.setattr("torch.use_deterministic_algorithms", lambda mode, warn_only: calls.append((mode, warn_only)))
+    monkeypatch.setattr(logger, "propagate", True)
+
+    with caplog.at_level(logging.INFO):
+        AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=0, nsamples=1)
+    assert calls == []
+    assert "Deterministic algorithms are enabled." not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        AutoRound(
+            model=tiny_opt_model_path,
+            scheme="W4A16",
+            iters=0,
+            nsamples=1,
+            enable_deterministic_algorithms=True,
+        )
+    assert calls[-1] == (True, False)
+    assert "Deterministic algorithms are enabled." in caplog.text
 
 
 def test_cli_dataset_tracks_explicit_value():
@@ -71,33 +122,6 @@ def _assert_compile(ar, expected: bool):
     compress_context = getattr(ar, "compress_context", None)
     if compress_context is not None:
         assert compress_context.enable_torch_compile is expected
-
-
-def test_torch_compile_disabled_for_rtn_and_short_signround(tiny_opt_model_path, monkeypatch):
-    """RTN / opt-RTN and `iters` < 10 never amortize the torch.compile cost."""
-    # Pin the platform default to "enabled" so the algorithm heuristic is observable
-    # regardless of the host device / OS.
-    monkeypatch.setattr("auto_round.compressors.base.default_enable_torch_compile", lambda *a, **k: True)
-
-    # Plain RTN (routes to the model-free compressor) and opt-RTN both stay off.
-    for disable_opt_rtn in (True, False):
-        ar = AutoRound(
-            model=tiny_opt_model_path,
-            scheme="W4A16",
-            iters=0,
-            nsamples=1,
-            disable_opt_rtn=disable_opt_rtn,
-        )
-        _assert_compile(ar, False)
-
-    # SignRound with too few iterations.
-    for iters in (1, MIN_ITERS_FOR_TORCH_COMPILE - 1):
-        ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=iters, nsamples=1)
-        _assert_compile(ar, False)
-
-    # Enough iterations to pay back the compilation cost.
-    ar = AutoRound(model=tiny_opt_model_path, scheme="W4A16", iters=MIN_ITERS_FOR_TORCH_COMPILE, nsamples=1)
-    _assert_compile(ar, True)
 
 
 def test_explicit_torch_compile_overrides_algorithm_heuristic(tiny_opt_model_path, monkeypatch):

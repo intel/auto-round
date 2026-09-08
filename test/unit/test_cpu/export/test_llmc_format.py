@@ -17,6 +17,146 @@ from ...envs import is_compressed_tensors_available
 pytestmark = pytest.mark.skipif(not is_compressed_tensors_available(), reason="test requires compressed-tensors")
 
 
+class TestLLMCZpInt8:
+    """pack_layer must hand compressed_tensors an int8 zero-point tensor:
+    NeUQI stores zp as a float32 integral-valued tensor, and CT's packer
+    (pack_to_int32) hard-requires torch.int8."""
+
+    def _make_layer(self, zp_tensor, bits=4, sym=False):
+        import torch.nn as nn
+
+        layer = nn.Linear(16, 8)
+        layer.bits = bits
+        layer.sym = sym
+        layer.group_size = 16
+        layer.data_type = "int"
+        layer.act_bits = 16
+        layer.act_sym = True
+        layer.act_data_type = None
+        layer.scale = torch.full((8, 1), 0.01)
+        layer.zp = zp_tensor
+        return layer
+
+    def test_tensor_zp_cast_to_int8(self):
+        import torch
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        layer = self._make_layer(torch.full((8, 1), 5.0))  # float32 integral-valued
+        model = torch.nn.Sequential()
+        model.add_module("q_proj", layer)
+        pack_layer("q_proj", model, device="cpu")
+        # after compression CT owns the params: zp arrives packed to int32 and
+        # the layer is marked COMPRESSED (the pre-fix code raised in pack_to_int32)
+        zp = getattr(layer, "weight_zero_point", None)
+        assert zp is not None and zp.dtype == torch.int32
+        assert getattr(layer, "weight_packed", None) is not None
+
+    def test_out_of_range_zp_raises(self):
+        import torch
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        layer = self._make_layer(torch.full((8, 1), 200.0), bits=4)  # zp >> 2^b-1: invalid at any convention
+        model = torch.nn.Sequential()
+        model.add_module("q_proj", layer)
+        try:
+            pack_layer("q_proj", model, device="cpu")
+        except ValueError as e:
+            assert "zero-point" in str(e)
+        else:
+            raise AssertionError("out-of-range zp must raise")
+
+    def test_asym_zp_signed_convention_round_trip(self):
+        """AutoRound zp is unsigned (q in [0, 2^b-1], W = (q - zp) * s);
+        compressed-tensors re-quantizes with the SIGNED range
+        [-2^(b-1), 2^(b-1)-1] (clamp AFTER adding zp). The unsigned zp must be
+        shifted into the signed convention before packing, or CT's clamp
+        collapses every level above 2^(b-1)-1. Round-trip through CT's own
+        compressor must reproduce AutoRound's fake-quantized weight exactly."""
+        import torch
+        import torch.nn as nn
+        from compressed_tensors.compressors.pack_quantized import PackedQuantizationCompressor
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        torch.manual_seed(0)
+        out_f, in_f, gs = 8, 32, 16
+        w = torch.randn(out_f, in_f)
+        scale = torch.rand(out_f, in_f // gs) * 0.02 + 0.005  # [out, in/g]
+        zp = torch.randint(0, 16, (out_f, in_f // gs)).float()
+        zp[:, 0] = 12  # exercise levels above 2^(b-1)-1 (the pre-fix clamp)
+
+        layer = nn.Linear(in_f, out_f)
+        with torch.no_grad():
+            layer.weight.copy_(w)
+        layer.bits, layer.sym, layer.group_size = 4, False, gs
+        layer.data_type, layer.act_bits, layer.act_sym, layer.act_data_type = "int", 16, True, None
+        layer.scale, layer.zp = scale, zp
+
+        model = nn.Sequential()
+        model.add_module("q_proj", layer)
+        pack_layer("q_proj", model, device="cpu")
+
+        # AutoRound's own fake-quantized weight (unsigned convention)
+        s = scale.repeat_interleave(gs, dim=1)
+        z = zp.repeat_interleave(gs, dim=1)
+        q = (w / s + z).round().clamp(0, 15)
+        w_ref = (q - z) * s
+
+        state = {
+            "weight_packed": layer.weight_packed.detach(),
+            "weight_scale": layer.weight_scale.detach(),
+            "weight_zero_point": layer.weight_zero_point.detach(),
+            "weight_shape": layer.weight_shape.detach(),
+        }
+        out = PackedQuantizationCompressor.decompress(state, layer.quantization_scheme)
+        assert torch.equal(out["weight"].to(torch.float32), w_ref)
+
+    def test_w8_asym_pack_round_trip(self):
+        """8-bit asym is the boundary case: zp spans [0, 255] and only fits int8
+        via the signed-convention shift. The llm_compressor format accepts W8
+        asym (vLLM serves it through the compressed-tensors kernel path), so
+        the pack must round-trip."""
+        import torch
+        import torch.nn as nn
+        from compressed_tensors.compressors.pack_quantized import PackedQuantizationCompressor
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        torch.manual_seed(0)
+        out_f, in_f, gs = 8, 32, 16
+        w = torch.randn(out_f, in_f)
+        scale = torch.rand(out_f, in_f // gs) * 0.02 + 0.005
+        zp = torch.randint(0, 256, (out_f, in_f // gs)).float()  # full 8-bit span
+        zp[:, 0] = 250  # far above 127: unsigned convention, must survive the shift
+
+        layer = nn.Linear(in_f, out_f)
+        with torch.no_grad():
+            layer.weight.copy_(w)
+        layer.bits, layer.sym, layer.group_size = 8, False, gs
+        layer.data_type, layer.act_bits, layer.act_sym, layer.act_data_type = "int", 16, True, None
+        layer.scale, layer.zp = scale, zp
+
+        model = nn.Sequential()
+        model.add_module("q_proj", layer)
+        pack_layer("q_proj", model, device="cpu")
+
+        s = scale.repeat_interleave(gs, dim=1)
+        z = zp.repeat_interleave(gs, dim=1)
+        q = (w / s + z).round().clamp(0, 255)
+        w_ref = (q - z) * s
+
+        state = {
+            "weight_packed": layer.weight_packed.detach(),
+            "weight_scale": layer.weight_scale.detach(),
+            "weight_zero_point": layer.weight_zero_point.detach(),
+            "weight_shape": layer.weight_shape.detach(),
+        }
+        out = PackedQuantizationCompressor.decompress(state, layer.quantization_scheme)
+        assert torch.equal(out["weight"].to(torch.float32), w_ref)
+
+
 class TestLLMC:
 
     @classmethod
@@ -28,6 +168,32 @@ class TestLLMC:
     @classmethod
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
+
+    def test_mixed_int_bits_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
+        """Mixed int W5A16-W8A16 auto-scheme export with an unsupported-as-first-option scheme
+        leading the options (W5A16) must resolve and export through the llm_compressor backend
+        (compressed-tensors pack-quantized handles any int width in 2..8)."""
+        scheme = AutoScheme(
+            avg_bits=6.0,
+            options=("W5A16", "W6A16", "W7A16", "W8A16"),
+        )
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            iters=0,
+            disable_opt_rtn=True,
+            scheme=scheme,
+        )
+        _, tmp_path = ar.quantize_and_save(output_dir=tmp_path, format="auto_round:llm_compressor")
+        model = AutoModelForCausalLM.from_pretrained(tmp_path, torch_dtype="auto", trust_remote_code=True)
+        quantization_config = model.config.quantization_config.to_dict()
+        assert quantization_config["format"] == "pack-quantized"
+        assert quantization_config["config_groups"], "no quantized config groups were exported"
+        for group in quantization_config["config_groups"].values():
+            weights = group["weights"]
+            assert weights["num_bits"] in (5, 6, 7, 8), f"unexpected bit-width {weights['num_bits']}"
+            assert weights["type"] == "int"
+            assert weights["symmetric"] is True
+            assert group["input_activations"] is None  # weight-only quantization
 
     # remove since w8a8 not in llmcompressor format supported schemes
     # def test_llmcompressor_w8a8(self):
@@ -400,3 +566,113 @@ def test_llmcompressor_mxfp8_export_packs_serially(tmp_path, monkeypatch):
     compressed_model = autoround.save_quantized(output_dir=tmp_path, format="llm_compressor")
     tmp_layer = compressed_model.model.decoder.layers[1].self_attn.q_proj
     assert hasattr(tmp_layer, "weight_scale")
+
+
+class TestLLMCZpUnsignedDomain:
+    """The packed-level validation must reject zero points outside the
+    UNSIGNED level range [0, 2^bits-1] before the signed-convention shift; a
+    shifted-only check would let e.g. a raw 4-bit zp of 100 pass (shifted 92
+    fits int8)."""
+
+    def _make_layer(self, zp, bits=4, sym=False):
+        import torch.nn as nn
+
+        layer = nn.Linear(16, 8)
+        layer.bits = bits
+        layer.sym = sym
+        layer.group_size = 16
+        layer.data_type = "int"
+        layer.act_bits = 16
+        layer.act_sym = True
+        layer.act_data_type = None
+        layer.scale = torch.full((8, 1), 0.01)
+        layer.zp = zp
+        return layer
+
+    def test_tensor_zp_above_unsigned_range_rejected(self):
+        import torch
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        layer = self._make_layer(torch.full((8, 1), 100.0))  # raw 100 > 15
+        m = torch.nn.Sequential()
+        m.add_module("proj", layer)
+        with pytest.raises(ValueError, match="unsigned level range"):
+            pack_layer("proj", m, device="cpu")
+
+    def test_tensor_zp_negative_rejected(self):
+        import torch
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        layer = self._make_layer(torch.full((8, 1), -3.0))  # shifted -11 fits int8
+        m = torch.nn.Sequential()
+        m.add_module("proj", layer)
+        with pytest.raises(ValueError, match="unsigned level range"):
+            pack_layer("proj", m, device="cpu")
+
+    def test_scalar_zp_out_of_range_rejected(self):
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        for bad in (17.0, -1.0):  # 4-bit unsigned range is [0, 15]
+            layer = self._make_layer(bad)
+            m = torch.nn.Sequential()
+            m.add_module("proj", layer)
+            with pytest.raises(ValueError, match="unsigned level range"):
+                pack_layer("proj", m, device="cpu")
+
+    def test_in_range_values_pass(self):
+        import torch
+
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        layer = self._make_layer(torch.randint(0, 16, (8, 1)).float())
+        m = torch.nn.Sequential()
+        m.add_module("proj", layer)
+        pack_layer("proj", m, device="cpu")
+        # CT's compressor consumes the int8 zp and stores its bit-packed form
+        assert layer.weight_zero_point.dtype == torch.int32
+        assert layer.weight_packed is not None
+
+
+class TestLLMCZpFiniteIntegral:
+    """NaN passes every min/max comparison and would be cast straight to
+    int8; non-integral values must not be silently rounded into a level."""
+
+    def _make_layer(self, zp, bits=4):
+        import torch.nn as nn
+
+        layer = nn.Linear(16, 8)
+        layer.bits = bits
+        layer.sym = False
+        layer.group_size = 16
+        layer.data_type = "int"
+        layer.act_bits = 16
+        layer.act_sym = True
+        layer.act_data_type = None
+        layer.scale = torch.full((8, 1), 0.01)
+        layer.zp = zp
+        return layer
+
+    def _expect_refusal(self, zp, match):
+        from auto_round.export.export_to_llmcompressor.export import pack_layer
+
+        layer = self._make_layer(zp)
+        m = torch.nn.Sequential()
+        m.add_module("proj", layer)
+        with pytest.raises(ValueError, match=match):
+            pack_layer("proj", m, device="cpu")
+
+    def test_nan_tensor_zp_rejected(self):
+        zp = torch.zeros(8, 1)
+        zp[3, 0] = float("nan")
+        self._expect_refusal(zp, "non-finite")
+
+    def test_non_integral_tensor_zp_rejected(self):
+        self._expect_refusal(torch.full((8, 1), -0.4), "non-integral")
+
+    def test_nan_scalar_zp_rejected(self):
+        self._expect_refusal(float("nan"), "not a finite integer")
+
+    def test_non_integral_scalar_zp_rejected(self):
+        self._expect_refusal(7.3, "not a finite integer")

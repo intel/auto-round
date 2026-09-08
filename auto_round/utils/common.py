@@ -42,7 +42,12 @@ def download_audiocaps_csv():
     import requests
 
     url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+    # Prefer AR_WORKSPACE environment variable for cache location when provided.
+    ar_workspace = os.environ.get("AR_WORKSPACE")
+    if ar_workspace:
+        cache_dir = os.path.join(ar_workspace, "audiocaps_cache")
+    else:
+        cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = os.path.join(cache_dir, "train.csv")
 
@@ -98,7 +103,7 @@ class LazyImport(object):
         try:
             self.module = importlib.import_module(self.module_name)
             mod = getattr(self.module, name)
-        except:
+        except Exception:
             spec = importlib.util.find_spec(str(self.module_name + "." + name))
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)

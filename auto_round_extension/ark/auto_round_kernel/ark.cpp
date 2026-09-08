@@ -1469,6 +1469,7 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("use_xmx") = false);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
+  m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
   m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);

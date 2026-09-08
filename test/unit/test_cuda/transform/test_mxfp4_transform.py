@@ -36,7 +36,7 @@ class TestAutoRound:
             iters=0,
             seqlen=2,
             scheme=scheme,
-            rotation_config="default",
+            alg_configs=["rtn", "hadamard"],
         )
         compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -56,7 +56,7 @@ class TestAutoRound:
             iters=2,
             seqlen=2,
             scheme=scheme,
-            rotation_config="default",
+            alg_configs=["auto_round", "hadamard"],
         )
         compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
@@ -76,7 +76,7 @@ class TestAutoRound:
             iters=0,
             seqlen=2,
             scheme=scheme,
-            rotation_config="random_hadamard",
+            alg_configs=["rtn", "random_hadamard"],
         )
         compressed_model, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 

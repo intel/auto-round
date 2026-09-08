@@ -172,3 +172,28 @@ def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path, monkeypatc
     offloaded_weight = model.transformer_blocks[0].linear._parameters["weight"]
     assert isinstance(offloaded_weight, torch.nn.Parameter)
     assert offloaded_weight.device.type == "meta"
+
+
+def test_default_max_shard_size_is_fixed(tmp_path, monkeypatch):
+    writer = _make_writer(_DiffusionStyleModel(), str(tmp_path), monkeypatch)
+    assert writer.max_shard_size == 1 * 1024**2
+
+    ShardWriter.reset()
+    compress_context = SimpleNamespace(formats=[_FormatStub()], output_dir=str(tmp_path))
+    model_context = SimpleNamespace(is_diffusion=False)
+    monkeypatch.setattr(CompressContext, "get_context", classmethod(lambda cls: compress_context))
+    monkeypatch.setattr(ModelContext, "get_context", classmethod(lambda cls: model_context))
+    default_writer = ShardWriter(_DiffusionStyleModel(), bits=4, safe_serialization=False)
+    assert default_writer.max_shard_size == 5 * 1024**3
+
+
+def test_oversized_tensor_does_not_leave_tiny_preceding_shard(tmp_path, monkeypatch):
+    writer = _make_writer(_DiffusionStyleModel(), str(tmp_path), monkeypatch)
+    writer.max_shard_size = 1024
+
+    writer._add_tensor("small", torch.zeros(1, dtype=torch.uint8))
+    writer._add_tensor("large", torch.zeros(2048, dtype=torch.uint8))
+    writer._flush_shard()
+
+    assert writer.shard_counter == 1
+    assert set(writer.current_shard_tensors) == set()

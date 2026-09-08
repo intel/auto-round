@@ -4,7 +4,7 @@
 set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
-PYTHON_VERSION="3.12"
+PYTHON_VERSION="3.14"
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
 SUMMARY_LOG=${LOG_DIR}/results_summary.log
@@ -94,18 +94,18 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
-    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r unit/test_cuda/requirements.txt
     uv pip install -r unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
-    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc
 
     # run unit tests individually with separate logs
     for test_file in $(find ./unit/test_cuda ./unit/common -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort); do
@@ -130,7 +130,7 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.13.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.14.0 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     uv pip install flash-attn==2.8.3 --no-build-isolation
     uv pip install -r unit/test_cuda/requirements_vlm.txt \
@@ -140,7 +140,7 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vlm_ut_pip_list.txt
-    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc
 
     # run VLM unit tests individually with separate logs
     for test_file in $(find ./unit/test_cuda -name "test*vlms.py"); do
@@ -172,7 +172,7 @@ function run_unit_test_llmc() {
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/llmc_ut_pip_list.txt
-    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc
 
     # run unit tests individually with separate logs
     for test_file in $(find ./integration/test_cuda -name "test_llmc*.py" | sort); do
@@ -206,7 +206,7 @@ function run_unit_test_sglang() {
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/sglang_ut_pip_list.txt
-    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc
 
     # run unit tests individually with separate logs
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_sglang*.py" | sort); do
@@ -241,7 +241,7 @@ function run_unit_test_vllm() {
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/vllm_ut_pip_list.txt
-    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc
 
     # run unit tests individually with separate logs
     for test_file in $(find ./integration/test_cuda ./e2e/test_cuda -name "test_vllm*.py" | sort); do
@@ -262,7 +262,13 @@ function run_unit_test_vllm() {
 
 function merge_coverage() {
     echo "-----[VAL INFO] merging coverage data -----"
-    cd ${REPO_PATH}/test
+    # Must run from the repo root: the first entry of "[paths] source" in
+    # cuda.coveragerc is the relative path "auto_round", which coverage.py
+    # resolves against the current directory. From ${REPO_PATH}/test it would
+    # resolve to a non-existent "test/auto_round" and the site-packages paths
+    # recorded during the runs would never be remapped back to the sources.
+    cd ${REPO_PATH}
+    rm -f .coverage
 
     local coverage_files=$(find ${LOG_DIR} -maxdepth 1 -name ".coverage.*" 2>/dev/null)
     if [ -z "${coverage_files}" ]; then
@@ -270,7 +276,7 @@ function merge_coverage() {
         return
     fi
 
-    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/.coveragerc
+    export COVERAGE_RCFILE=${REPO_PATH}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc
     coverage combine ${coverage_files}
     coverage xml -o ${LOG_DIR}/coverage_merged.xml
     coverage html -d ${LOG_DIR}/htmlcov

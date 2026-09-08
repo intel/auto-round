@@ -13,12 +13,113 @@
 # limitations under the License.
 from typing import Callable
 
+from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
 
 
 class SignRoundConfig(QuantizationConfig):
     """Configuration for SignRound-style block quantization."""
+
+    @classmethod
+    def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        registry.add_argument(
+            "--iters",
+            "--iter",
+            field="iters",
+            default=None,
+            type=int,
+            help="Number of optimization iterations per block.",
+        )
+        registry.add_argument(
+            "--lr", field="lr", default=None, type=float, help="Learning rate for rounding optimization."
+        )
+        registry.add_argument(
+            "--minmax_lr", field="minmax_lr", default=None, type=float, help="Learning rate for min-max tuning."
+        )
+        registry.add_argument(
+            "--momentum", field="momentum", default=0.0, type=float, help="Momentum factor for the optimizer."
+        )
+        registry.add_argument(
+            "--nblocks", field="nblocks", default=1, type=int, help="Number of blocks to optimize together."
+        )
+        minmax = registry.add_mutually_exclusive_group()
+        minmax.add_argument(
+            "--enable_minmax_tuning",
+            field="enable_minmax_tuning",
+            default=True,
+            dest="enable_minmax_tuning",
+            action="store_true",
+            help="Tune weight min/max ranges.",
+        )
+        minmax.add_argument(
+            "--no-enable_minmax_tuning",
+            "--disable_minmax_tuning",
+            field="enable_minmax_tuning",
+            dest="enable_minmax_tuning",
+            action="store_false",
+            help="Disable weight min/max tuning.",
+        )
+        registry.add_argument(
+            "--enable_norm_bias_tuning",
+            field="enable_norm_bias_tuning",
+            default=False,
+            action="boolean_optional",
+            help="Tune normalization and bias terms.",
+        )
+        registry.add_argument(
+            "--gradient_accumulate_steps",
+            field="gradient_accumulate_steps",
+            default=1,
+            type=int,
+            help="Gradient accumulation steps per update.",
+        )
+        registry.add_argument(
+            "--enable_alg_ext",
+            field="enable_alg_ext",
+            default=False,
+            action="boolean_optional",
+            help="Enable experimental SignRound extension.",
+        )
+        registry.add_argument(
+            "--not_use_best_mse",
+            field="not_use_best_mse",
+            default=False,
+            action="boolean_optional",
+            help="Skip restoring best-MSE checkpoint.",
+        )
+        quanted_input = registry.add_mutually_exclusive_group()
+        quanted_input.add_argument(
+            "--enable_quanted_input",
+            field="enable_quanted_input",
+            default=True,
+            dest="enable_quanted_input",
+            action="store_true",
+            help="Consume quantized output of previous blocks.",
+        )
+        quanted_input.add_argument(
+            "--no-enable_quanted_input",
+            "--disable_quanted_input",
+            field="enable_quanted_input",
+            dest="enable_quanted_input",
+            action="store_false",
+            help="Disable quantized-input propagation across blocks.",
+        )
+        registry.add_argument(
+            "--enable_adam",
+            field="enable_adam",
+            default=False,
+            action="boolean_optional",
+            help="Use the Adam-based SignRound variant.",
+        )
+        registry.add_argument(
+            "--enable_lfq",
+            field="enable_lfq",
+            default=False,
+            action="boolean_optional",
+            help="Enable last-block LM cross-entropy (LFQ) loss for the final transformer block (experimental).",
+        )
 
     def __init__(
         self,
@@ -176,3 +277,11 @@ class AdamRoundConfig(SignRoundConfig):
 
 class SignRoundV2Config(SignRoundConfig):
     pass
+
+
+register_algorithm(
+    "auto_round",
+    aliases=("auto_round", "autoround", "sign_round", "signround"),
+    config_factory=SignRoundConfig,
+    summary="SignRound-style iterative block quantization.",
+)

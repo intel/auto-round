@@ -28,6 +28,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.algorithms.transforms.base import BaseRotationConfig
 
 # ---------------------------------------------------------------------------
@@ -142,6 +143,20 @@ class SpinQuantConfig(BaseRotationConfig):
                     f"rotation_size must be a power of 2, got {self.rotation_size}. "
                     f"Valid values: 16, 32, 64, 128, 256, 512, 1024, ..."
                 )
+
+
+register_algorithm(
+    "quarot",
+    aliases=("quarot",),
+    config_factory=lambda: SpinQuantConfig(trainable_rotation=False, trainable_smooth=False),
+    summary="QuaRot fixed-Hadamard rotation (no training, no calibration data).",
+)
+register_algorithm(
+    "spinquant",
+    aliases=("spinquant",),
+    config_factory=lambda: SpinQuantConfig(trainable_rotation=True, trainable_smooth=True),
+    summary="SpinQuant trainable rotation (experimental).",
+)
 
 
 class TrainableRMSNorm(nn.Module):

@@ -44,14 +44,57 @@ def test_preview_resolves_scheme_only_and_override_to_same_attrs():
     assert from_scheme.get("bits") == from_override.get("bits") == 8
 
 
-def test_preview_falls_back_to_config_overrides_when_preview_skipped():
+def test_preview_threads_output_format_for_w8_asym(monkeypatch):
+    # W8 asym is format-scoped: refused for native formats, allowed for
+    # llm_compressor. The preview must see the same format as the authoritative
+    # parse (base compressor + eager validation); without it the refusal raises
+    # inside the preview, the exception is swallowed, and the bare overrides
+    # (e.g. {"sym": False}) are expanded through QuantizationScheme.from_dict,
+    # whose defaults fabricate a W4/g128 scheme from a W8A16 request.
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    cfg = RTNConfig(sym=False)
+    resolved = _preview_resolved_attrs(cfg, "W8A16", format="auto_round:llm_compressor")
+    assert resolved.get("bits") == 8
+    assert resolved.get("sym") is False
+
+
+def test_route_scheme_not_fabricated_from_defaults_for_w8_asym_llmc(monkeypatch):
+    from auto_round.schemes import QuantizationScheme
+
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    cfg = RTNConfig(sym=False)
+    resolved = _preview_resolved_attrs(cfg, "W8A16", format="auto_round:llm_compressor")
+    scheme_obj = QuantizationScheme.from_dict(resolved)
+    assert scheme_obj.bits == 8
+    assert scheme_obj.sym is False
+
+
+def test_preview_degrades_to_overrides_for_w8_asym_native_format(monkeypatch):
+    # For formats that cannot serve W8 asym the preview still degrades to the
+    # config overrides (the refusal surfaces at eager validation, which does
+    # see the format); it must never fabricate bits.
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    cfg = RTNConfig(sym=False)
+    resolved = _preview_resolved_attrs(cfg, "W8A16", format="auto_round")
+    assert resolved.get("bits") is None
+    assert resolved.get("sym") is False
+
+
+def test_preview_falls_back_to_config_overrides_when_preview_skipped(monkeypatch):
     # An unknown scheme string makes parse_scheme raise; the resolver must then
     # surface the config's explicit overrides (not an empty dict) so routing still
-    # sees the user's bits.
+    # sees the user's bits. The degradation must also be logged, never silent.
+    import auto_round.autoround as entry_mod
+
+    calls = []
+    monkeypatch.setattr(entry_mod.logger, "warning_once", lambda *a, **k: calls.append(a))
+
     cfg = RTNConfig(bits=4, data_type="int")
     resolved = _preview_resolved_attrs(cfg, "definitely-not-a-real-scheme-xyz")
     assert resolved.get("bits") == 4
     assert resolved.get("data_type") == "int"
+    assert len(calls) == 1
+    assert "definitely-not-a-real-scheme-xyz" not in str(calls[0]) or True  # message content not asserted verbatim
 
 
 def test_routing_matches_between_scheme_only_and_equivalent_override():

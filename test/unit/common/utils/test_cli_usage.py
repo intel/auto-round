@@ -1,3 +1,5 @@
+import argparse
+import inspect
 import shutil
 import sys
 from test.helpers import get_model_path
@@ -216,6 +218,24 @@ class TestAutoRoundCmd:
         assert args.layer_config == layer_cfg
 
 
+def test_diffusion_quantize_cli_keeps_inference_steps_separate():
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--calib_num_inference_steps",
+            "6",
+            "--num_inference_steps",
+            "12",
+        ]
+    )
+
+    assert args.calib_num_inference_steps == 6
+    assert args.num_inference_steps == 12
+
+
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
     from auto_round.cli import main as cli_main
 
@@ -337,7 +357,8 @@ def test_legacy_disable_flags_map_to_enable_bools():
     assert args.enable_quanted_input is False
 
 
-def test_svdquant_cli_builds_hyphenated_options_before_rtn():
+@pytest.mark.parametrize("model_adapter", ["flux", "sdxl"])
+def test_svdquant_cli_builds_hyphenated_options_before_rtn(model_adapter):
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
     from auto_round.cli.algorithms import AlgorithmHandler
     from auto_round.cli.parser import build_quantize_parser
@@ -366,7 +387,7 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
             "--svdquant-exclude-modules",
             "proj_out",
             "--svdquant-model-adapter",
-            "flux",
+            model_adapter,
             "--disable_opt_rtn",
         ]
     )
@@ -383,7 +404,7 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
     assert configs[0].low_rank_dtype == "fp32"
     assert configs[0].target_modules == ["attn", "ff"]
     assert configs[0].exclude_modules == ["proj_out"]
-    assert configs[0].model_adapter == "flux"
+    assert configs[0].model_adapter == model_adapter
     assert configs[1].__class__.__name__ == "RTNConfig"
 
 
@@ -393,6 +414,151 @@ def test_svdquant_cli_rejects_underscore_option_aliases():
     with pytest.raises(SystemExit):
         build_quantize_parser().parse_args(
             ["--model", "dummy-model", "--algorithm", "svdquant,rtn", "--svdquant_rank", "16"]
+        )
+
+
+def test_cli_fallback_derives_arguments_for_config_without_register_args(monkeypatch):
+    import auto_round.cli.algorithms as algorithm_cli
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.registry import AlgRegistryEntry
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    class FallbackConfig(AlgorithmConfig):
+        def __init__(self, *, iters: int = 3, enabled: bool = False):
+            self.iters = iters
+            self.enabled = enabled
+
+    monkeypatch.setattr(
+        algorithm_cli,
+        "iter_algorithm_entries",
+        lambda: [AlgRegistryEntry(name="fallback", config_factory=FallbackConfig)],
+    )
+
+    parser = build_quantize_parser()
+    args = parser.parse_args(["--model", "dummy-model", "--algorithm", "fallback", "--iters", "7", "--enabled"])
+
+    assert args.iters == 7
+    assert args.enabled is True
+    assert algorithm_cli._parameter_registry(FallbackConfig).parameters
+
+
+def test_cli_explicit_registration_takes_precedence_over_constructor_fallback():
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.cli.algorithms import _parameter_registry
+
+    class ExplicitConfig(AlgorithmConfig):
+        def __init__(self, *, internal_value: int = 1):
+            self.internal_value = internal_value
+
+        @classmethod
+        def register_args(cls, registry):
+            registry.add_argument("--public-value", field="internal_value", type=int)
+
+    parameters = _parameter_registry(ExplicitConfig).parameters
+
+    assert [parameter.option_strings for parameter in parameters] == [("--public-value",)]
+    assert [parameter.field for parameter in parameters] == ["internal_value"]
+
+
+def test_cli_shared_fallback_argument_is_routed_to_each_selected_config(monkeypatch):
+    import auto_round.cli.algorithms as algorithm_cli
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.registry import AlgRegistryEntry
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    class FirstConfig(AlgorithmConfig):
+        def __init__(self, *, iters: int = 3):
+            self.iters = iters
+
+    class SecondConfig(AlgorithmConfig):
+        def __init__(self, *, iters: int = 5):
+            self.iters = iters
+
+    monkeypatch.setattr(
+        algorithm_cli,
+        "iter_algorithm_entries",
+        lambda: [
+            AlgRegistryEntry(name="first", config_factory=FirstConfig),
+            AlgRegistryEntry(name="second", config_factory=SecondConfig),
+        ],
+    )
+
+    parser = argparse.ArgumentParser()
+    AlgorithmHandler.add_groups(parser)
+    args = parser.parse_args(["--iters", "11"])
+
+    assert algorithm_cli._parameter_registry(FirstConfig).config_kwargs(args) == {"iters": 11}
+    assert algorithm_cli._parameter_registry(SecondConfig).config_kwargs(args) == {"iters": 11}
+
+
+def test_build_configs_routes_shared_argument_to_selected_configs(monkeypatch):
+    import auto_round.cli.algorithms as algorithm_cli
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+    from auto_round.algorithms.registry import AlgRegistryEntry
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    class SharedConfig(AlgorithmConfig):
+        def __init__(self, *, iters: int = 5):
+            self.iters = iters
+
+    entries = {
+        "auto_round": AlgRegistryEntry(name="auto_round", config_factory=SignRoundConfig),
+        "shared": AlgRegistryEntry(name="shared", config_factory=SharedConfig),
+    }
+    monkeypatch.setattr(algorithm_cli, "get_algorithm_entry", entries.__getitem__)
+    monkeypatch.setattr(algorithm_cli, "resolve_algorithm_names", lambda names, **_: list(names))
+
+    args = argparse.Namespace(algorithm="auto_round,shared", iters=11, rotation_hadamard_type=None)
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert isinstance(configs[0], SignRoundConfig)
+    assert configs[0].iters == 11
+    assert isinstance(configs[1], SharedConfig)
+    assert configs[1].iters == 11
+
+
+def test_cli_rejects_incompatible_shared_fallback_argument(monkeypatch):
+    import auto_round.cli.algorithms as algorithm_cli
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.registry import AlgRegistryEntry
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    class IntegerConfig(AlgorithmConfig):
+        def __init__(self, *, value: int = 1):
+            self.value = value
+
+    class StringConfig(AlgorithmConfig):
+        def __init__(self, *, value: str = "value"):
+            self.value = value
+
+    monkeypatch.setattr(
+        algorithm_cli,
+        "iter_algorithm_entries",
+        lambda: [
+            AlgRegistryEntry(name="integer", config_factory=IntegerConfig),
+            AlgRegistryEntry(name="string", config_factory=StringConfig),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="incompatible shared CLI argument.*--value"):
+        AlgorithmHandler.add_groups(argparse.ArgumentParser())
+
+
+def test_registered_cli_fields_are_accepted_by_config_constructors():
+    import auto_round.cli.algorithms as algorithm_cli
+    from auto_round.algorithms.registry import iter_algorithm_entries
+
+    for entry in iter_algorithm_entries():
+        if entry.config_factory is None:
+            continue
+        config_cls = entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
+        accepted = set(inspect.signature(config_cls.__init__).parameters)
+        accepted.discard("self")
+        accepted.update(getattr(config_cls, "model_fields", {}))
+        assert all(
+            parameter.field in accepted for parameter in algorithm_cli._parameter_registry(config_cls).parameters
         )
 
 
@@ -472,3 +638,11 @@ def test_shared_layers_normalize():
         p.parse_args(["--model", "dummy", "--shared_layers", "l1", "l2", "--shared_layers", "l3,l4"]).shared_layers
     ) == [["l1", "l2"], ["l3", "l4"]]
     assert p.parse_args(["--model", "dummy"]).shared_layers is None
+
+
+def test_parse_max_shard_size():
+    from auto_round.cli.parser import build_quantize_parser
+
+    parser = build_quantize_parser()
+    assert parser.parse_args([]).max_shard_size is None
+    assert parser.parse_args(["--max_shard_size", "1GB"]).max_shard_size == "1GB"

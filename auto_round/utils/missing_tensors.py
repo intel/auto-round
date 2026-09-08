@@ -63,6 +63,13 @@ _FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
 _AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
 _WARNING_INDEX_PLACEHOLDER = "<idx>"
 
+# model_type values whose native inference-engine loader (e.g. vLLM's custom
+# MoE weight loader) expects the *fused*, per-layer stacked 3-D expert
+# tensors (``experts.w13_weight`` / ``experts.w2_weight``) to be preserved
+# as-is (quantized in place) rather than unfused into per-expert 2-D
+# tensors. Splitting these would break loading for such architectures.
+_KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
+
 
 def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
     """Normalize tensor names for warning_once deduplication.
@@ -84,6 +91,7 @@ def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WA
 
 def split_fused_expert_tensors(
     tensors_dict: dict[str, torch.Tensor],
+    model_type: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """Split 3-D fused expert tensors into per-expert 2-D tensors.
 
@@ -110,12 +118,23 @@ def split_fused_expert_tensors(
 
     Non-3-D or non-expert tensors pass through unchanged.
 
+    Some architectures (see ``_KEEP_FUSED_EXPERT_MODEL_TYPES``) ship a custom
+    inference-engine loader that consumes the fused 3-D stacked tensors
+    directly (quantizing/packing them in place without unfusing per expert).
+    For those ``model_type`` values, this function is a no-op passthrough.
+
     Args:
         tensors_dict: Mapping of tensor names to tensors.
+        model_type: Source model's ``model_type`` (from ``config.json``), used
+            to skip splitting for architectures whose native loader expects
+            fused stacked expert tensors.
 
     Returns:
         New dict with fused expert tensors replaced by per-expert 2-D tensors.
     """
+    if (model_type or "").lower() in _KEEP_FUSED_EXPERT_MODEL_TYPES:
+        return dict(tensors_dict)
+
     result: dict[str, torch.Tensor] = {}
     split_count = 0
 
@@ -522,6 +541,8 @@ def quantize_weight_rtn(
     sym: bool = True,
     device: Optional[torch.device] = None,
     disable_opt_rtn: bool = True,
+    *,
+    packing: str,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Quantize a 2-D weight tensor and pack into auto_gptq format.
 
@@ -536,6 +557,12 @@ def quantize_weight_rtn(
         search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
         candidates per group and picks the best MSE.  Defaults to True
         (plain RTN) to preserve backward-compatible behaviour.
+    packing : the packing_format the artifact will declare (required); the
+        zero-point convention follows the inference backend registry.  GPTQ_FORMAT
+        entries ("auto_round:auto_gptq", qlinear_torch_zp) store zp - 1 per
+        nibble and unpack with +1; GPTQ_FORMAT_NO_ZP entries ("auto_round",
+        "auto_round:gptqmodel", qlinear_torch) store the zero point directly.
+        Any other value raises.
 
     Returns
     -------
@@ -544,6 +571,17 @@ def quantize_weight_rtn(
     scales  : [num_groups,  out_features]                   float16
     """
     assert weight.dim() == 2, f"Expected 2-D weight, got {weight.dim()}-D"
+    from auto_round.inference.backend import GPTQ_FORMAT, GPTQ_FORMAT_NO_ZP
+
+    if packing in GPTQ_FORMAT:
+        zp_minus_one = True
+    elif packing in GPTQ_FORMAT_NO_ZP:
+        zp_minus_one = False
+    else:
+        raise ValueError(
+            f"unsupported packing format '{packing}': zero-point conventions are defined only for "
+            f"{GPTQ_FORMAT} (zp - 1, unpacked with +1) and {GPTQ_FORMAT_NO_ZP} (zp stored directly)"
+        )
     out_features, in_features = weight.shape
     if device is None:
         device = weight.device
@@ -636,9 +674,20 @@ def quantize_weight_rtn(
     del q_packed
 
     # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    # The auto_round:auto_gptq format (qlinear_torch_zp) adds +1 to zeros
-    # after unpacking, so we must subtract 1 before packing to compensate.
-    zp -= 1
+    # The zero-point convention is a property of the declared packing format
+    # (see the backend registry): the auto_round:auto_gptq format
+    # (qlinear_torch_zp) adds +1 to zeros after unpacking, so we subtract 1
+    # before packing to compensate. The (zp-1) packing cannot represent
+    # zp=0: a -1 left-shifts into a negative word and corrupts every nibble
+    # sharing it. Clamp the stored value so only that zero-point degrades
+    # (decodes as +1). Formats in GPTQ_FORMAT_NO_ZP (plain qlinear_torch)
+    # read the nibble as the zero point directly, so it is stored as-is
+    # (symmetric packing stores the offset-binary constant the same way:
+    # 7 for the gptq family, 8 for the direct family).
+    if zp_minus_one:
+        zp = (zp - 1).clamp_(0, (1 << bits) - 1)
+    else:
+        zp = zp.clamp_(0, (1 << bits) - 1)
     zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
     del zp
     qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
@@ -690,6 +739,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     global_bits = qconfig["bits"]
     global_group_size = qconfig["group_size"]
     global_sym = qconfig["sym"]
+    declared_packing = qconfig.get("packing_format", "auto_round:auto_gptq")
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
     extra_config: dict = qconfig.get("extra_config", {}) or {}
 
@@ -923,7 +973,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         base_name = layer_name
 
         try:
-            qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=effective_gs, sym=sym)
+            qweight, qzeros, scales = quantize_weight_rtn(
+                weight, bits=bits, group_size=effective_gs, sym=sym, packing=declared_packing
+            )
         except Exception as e:
             logger.warning(f"Failed to quantize {weight_key}: {e}, keeping original weight")
             continue
