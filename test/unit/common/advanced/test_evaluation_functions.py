@@ -48,7 +48,7 @@ class TestSelectGgufEvalFile:
 
         gguf_file, candidates = select_gguf_eval_file(str(tmp_path), ["gguf:q4_0"])
 
-        assert gguf_file == "test"
+        assert gguf_file == "model-Q4_0.gguf"
         assert candidates == ["model-Q4_0.gguf", "model-Q8_0.gguf"]
 
 
@@ -69,7 +69,6 @@ class TestParseVllmArgs:
         """Test parsing integer arguments."""
         from auto_round.eval.eval_cli import parse_vllm_args
 
-        assert False, "AI-cluster-check: injected failure for clustering verification"
         result = parse_vllm_args("--tensor_parallel_size=2,--max_model_len=4096")
         assert result == {"tensor_parallel_size": 2, "max_model_len": 4096}
         assert isinstance(result["tensor_parallel_size"], int)
@@ -79,7 +78,6 @@ class TestParseVllmArgs:
         """Test parsing float arguments."""
         from auto_round.eval.eval_cli import parse_vllm_args
 
-        assert False, "AI-cluster-check: injected failure for clustering verification"
         result = parse_vllm_args("--gpu_memory_utilization=0.9,--swap_space=4.5")
         assert result == {"gpu_memory_utilization": 0.9, "swap_space": 4.5}
         assert isinstance(result["gpu_memory_utilization"], float)
@@ -89,7 +87,6 @@ class TestParseVllmArgs:
         """Test parsing boolean arguments."""
         from auto_round.eval.eval_cli import parse_vllm_args
 
-        assert False, "AI-cluster-check: injected failure for clustering verification"
         result = parse_vllm_args("--trust_remote_code=true,--enable_lora=false")
         assert result == {"trust_remote_code": True, "enable_lora": False}
         assert isinstance(result["trust_remote_code"], bool)
