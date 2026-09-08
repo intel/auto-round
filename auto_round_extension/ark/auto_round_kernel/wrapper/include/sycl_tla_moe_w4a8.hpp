@@ -757,8 +757,8 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
                               const int* rows_per_expert, const int32_t num_experts, const int32_t gemm_n,
                               const int32_t gemm_k, const int32_t blocksize, const int32_t blks,
                               const bool allow_full_tile, const bool allow_block_2d_store,
-                              const int32_t prefetch_dist, MoEFusedReduce reduce, int32_t* atomic_buffer,
-                              const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
+                              const int32_t prefetch_dist, const bool claim_early, MoEFusedReduce reduce,
+                              int32_t* atomic_buffer, const sycl::local_accessor<int32_t, 1>& slm_mem_const) {
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
   auto wg_tile = mma.tile_mnk();
   auto wg_tile_m = get<0>(wg_tile);
@@ -770,14 +770,24 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
   int group_range = item.get_group_range(1);
   int local_id = item.get_local_linear_id();
 
-  if (group_id == 0 && local_id == 0) {
-    auto atm = sycl::atomic_ref<int, sycl::memory_order::relaxed, sycl::memory_scope::device,
-                                sycl::access::address_space::global_space>(atomic_buffer[0]);
-    atm.store(0);
-  }
+  // The work-stealing counter arrives already zeroed: `MoEGEMMLauncher_w4a8`
+  // fills it on the host and makes the kernel depend on that fill. It used to
+  // be reset here by group 0 / lane 0, which is unordered against every other
+  // work-group's `atomicAdd` on the same dword -- it held only because a
+  // work-group's first claim came after a whole GEMM tile, microseconds after
+  // group 0's store. `claim_early` moves the first claim to within a few
+  // instructions of kernel entry, which would make that window real, so the
+  // reset moved to the one place where it is ordered by construction.
 
   int pre_rows = 0;
   int pre_tiles = 0;
+
+  // Ping-pong slot for the claimed tile index. One SLM dword would need a
+  // second barrier after every read to stop lane 0 overwriting it while a
+  // slower sub-group is still reading; alternating between two makes the
+  // write of iteration `i + 1` target a different address from the read of
+  // iteration `i`, so the single barrier below is enough.
+  int slot = 0;
 
   int32_t* slm_mem =
       static_cast<int32_t*>(slm_mem_const.template get_multi_ptr<sycl::access::decorated::no>().get());
@@ -818,17 +828,39 @@ CUTE_DEVICE void MoEGEMM_w4a8(const int8_t* Activations, const int8_t* Weights, 
       const int n_coord = (group_id * wg_tile_n) % gemm_n_pad / wg_tile_n;
       const int m_coord = (group_m_id - pre_tiles);
 
+      // Claiming the next tile is a device-scope atomic on a single dword that
+      // every resident work-group hits. Issued in the gap between two tiles it
+      // is a fully exposed L2 round trip; issued here, the message is in flight
+      // across the whole GEMM and only the *use* of its result -- the SLM store
+      // below -- waits on it. Keeping the result in a private register rather
+      // than storing it straight to SLM is what defers that wait: an SLM store
+      // right after the atomic would stall lane 0 immediately, and with it the
+      // whole work-group at the mainloop's first barrier. The atomic itself
+      // cannot sink past those barriers, so it stays where it is written.
+      //
+      // The claim is otherwise untouched -- one `atomicAdd` per tile, one tile
+      // index per claim, handed out in the same order -- so both orders compute
+      // the same tiles from the same inputs and write the same bytes; only when
+      // the request is issued changes. It is worth most where the mainloop is
+      // shortest (12 k-tiles at K = 768) and there is least work per tile to
+      // hide the stall behind.
+      int claimed = 0;
+      if (claim_early && local_id == 0) {
+        claimed = cutlass::atomicAdd(atomic_buffer, 1);
+      }
+
       xe_gemm_w4a8<GmemTiledCopyA, GmemTiledCopyB>(ptr_A_curr_batch, ptr_B_curr_batch, ptr_D_curr_batch,
                                                    ptr_SA_curr_batch, ptr_SB_curr_batch, gemm_m, gemm_n, gemm_k,
                                                    blocksize, blks, m_coord, n_coord, allow_full_tile,
                                                    allow_block_2d_store, prefetch_dist, expert_reduce, mma);
 
       if (local_id == 0) {
-        slm_mem[0] = cutlass::atomicAdd(atomic_buffer, 1);
+        slm_mem[slot] = claim_early ? claimed : cutlass::atomicAdd(atomic_buffer, 1);
       }
       item.barrier(sycl::access::fence_space::local_space);
-      group_id = group_range + slm_mem[0];
+      group_id = group_range + slm_mem[slot];
       group_m_id = (group_id * wg_tile_n) / gemm_n_pad;
+      slot ^= 1;
     }
     pre_rows = cumsum_rows_for_experts;
     pre_tiles = cumsum_tiles_for_experts;
@@ -844,7 +876,8 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
                           const float* scale_a, const float* scale_b, ElementD* outputs, const int gemm_n,
                           const int gemm_k, const int* rows_per_expert, const int num_experts, const int blocksize,
                           const int blks, const bool allow_full_tile, const bool allow_block_2d_store,
-                          const int prefetch_dist, MoEFusedReduce reduce, int32_t* atomic_buffer) {
+                          const int prefetch_dist, const bool claim_early, MoEFusedReduce reduce,
+                          int32_t* atomic_buffer) {
   using Op = XE_DPAS_TT<8, int32_t, int8_t, int8_t>;
   using WGTile = typename Policy::WGTile;
   using SGLayout = typename Policy::SGLayout;
@@ -870,14 +903,25 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
   using GmemTiledCopyA = typename Policy::GmemTiledCopyA;
   using GmemTiledCopyB = typename Policy::GmemTiledCopyB;
 
+  // Zero the work-stealing counter on the host rather than from group 0 at
+  // kernel entry. The slot is pool-cached and shared across dispatches, so it
+  // arrives holding the previous call's final count; the in-kernel reset was
+  // unordered against the other work-groups' `atomicAdd` on the same dword,
+  // and `claim_early` shrinks the window it relied on to a few instructions.
+  // `depends_on` orders the fill ahead of the kernel on in-order and
+  // out-of-order queues alike, and the fill is one dword -- it costs a command
+  // rather than a synchronization.
+  auto fill = stream.memset(atomic_buffer, 0, sizeof(int32_t));
+
   auto event = stream.submit([&](sycl::handler& cgh) {
-    sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(1), cgh);
+    cgh.depends_on(fill);
+    sycl::local_accessor<int32_t, 1> local_mem(sycl::range<1>(2), cgh);
     cgh.parallel_for<MoEW4A8GemmName<Policy, ElementD>>(
         sycl::nd_range<3>{global * local, local}, kernel_props, [=](auto) {
           MoEGEMM_w4a8<GmemTiledCopyA, GmemTiledCopyB>(activations, weights, scale_a, scale_b, outputs, mma,
                                                        rows_per_expert, num_experts, gemm_n, gemm_k, blocksize,
                                                        blks, allow_full_tile, allow_block_2d_store, prefetch_dist,
-                                                       reduce, atomic_buffer, local_mem);
+                                                       claim_early, reduce, atomic_buffer, local_mem);
         });
   });
 
@@ -940,6 +984,18 @@ void MoEGEMMLauncher_w4a8(sycl::queue& stream, const int8_t* activations, const 
 // tensor base. Every shipped N (1536 / 2048 / 3072 with 16-bit D) clears it;
 // anything that does not keeps the scalar store rather than risking a
 // misaligned descriptor.
+//
+// `ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=0` puts the work-stealing claim back after
+// the GEMM instead of before it, the A/B baseline for that change. The kernel
+// is persistent -- the grid is sized to the device and tiles are handed out by
+// a device-scope `atomicAdd` on one dword -- so between two tiles a work-group
+// used to sit on a fully exposed L2 round trip. Issuing the claim ahead of the
+// tile puts that round trip in flight across the DPAS mainloop instead. Which
+// tiles get computed does not change (see `MoEGEMM_w4a8`), so the two settings
+// are bit-identical and `test_prefill_claim_early_matches` asserts it; the
+// difference is timing, and it is largest on the short-K down projections where
+// a tile is only 12 k-tiles of work.
+// `test_perf_prefill_claim_early_sweep` times the pair.
 // ---------------------------------------------------------------------------
 template <class Policy, typename ElementD>
 void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {
@@ -963,12 +1019,13 @@ void moe_w4a8_prefill_launch(const moe_w4a8_detail::W4A8PrefillParams& p) {
   const bool allow_block_2d_store =
       store_2d_aligned && moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_STORE_2D", true);
   const int prefetch_dist = moe_w4a8_prefill_prefetch_dist();
+  const bool claim_early = moe_decode_detail::env_flag_enabled("ARK_MOE_W4A8_PREFILL_CLAIM_EARLY", true);
   int32_t* atomic_buffer = moe_dpas_fp8::get_atomic_scratch_buffer(p.q);
 
   MoEGEMMLauncher_w4a8<Policy, ElementD>(*p.q, p.qact, p.weights, p.ascale, p.wscale, outputs, p.N, p.K,
                                          p.num_tokens_per_expert, p.num_experts, p.blocksize, p.blks,
-                                         allow_full_tile, allow_block_2d_store, prefetch_dist, reduce,
-                                         atomic_buffer);
+                                         allow_full_tile, allow_block_2d_store, prefetch_dist, claim_early,
+                                         reduce, atomic_buffer);
 }
 
 }  // namespace moe_w4a8

@@ -1816,6 +1816,27 @@ _PREFILL_PREFETCH_CONFIGS = [
     (f"prefetch {dist}", {"ARK_MOE_W4A8_PREFILL_PREFETCH": str(dist)}) for dist in (1, 2, 3, 4, 6, 8)
 ]
 
+# Prefill: when the persistent kernel asks for its next tile.
+#
+# The grid is sized to the device, not to the problem -- `sm_count` times the
+# work-groups that fit on an Xe core -- and the tiles are handed out by a
+# device-scope `atomicAdd` on a single dword that every resident work-group
+# hits. Claiming *after* the GEMM puts that L2 round trip in the gap between
+# two tiles, where the work-group has nothing to overlap it with; claiming
+# before puts the message in flight across the DPAS mainloop and only the use
+# of its result waits.
+#
+# The size of that stall is bounded by how much work a tile has to hide it
+# behind, so this should show on the down projections and not much on the up
+# ones: at K = 768 a tile is 12 k-tiles against 32 at K = 2048, and the down
+# projection is where the measured TFLOPS sits furthest below the up
+# projection's on the same tile shape and the same kernel. If the two rows tie
+# on every shape, the claim was never the stall and this sweep says so.
+_PREFILL_CLAIM_CONFIGS = [
+    ("claim after gemm", {"ARK_MOE_W4A8_PREFILL_CLAIM_EARLY": "0"}),
+    ("claim before gemm", {"ARK_MOE_W4A8_PREFILL_CLAIM_EARLY": "1"}),
+]
+
 # Prefill: the two call contracts that cut traffic instead of cycles.
 #
 # Neither changes the GEMM. They change what crosses the call boundary, which
@@ -2485,6 +2506,56 @@ if pytest is not None:
                     row["snr_db"] >= _SWEEP_MIN_SNR_DB
                 ), f"prefetch depth {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
 
+        def test_perf_prefill_claim_early_sweep(self, request):
+            """Time when the persistent kernel claims its next tile.
+
+            The grid is sized to the device, so a work-group does not own one
+            tile -- it loops, taking the next index from a device-scope
+            ``atomicAdd`` on a single dword that every resident work-group
+            hits. Claimed after the GEMM, that L2 round trip lands in the gap
+            between two tiles with nothing to overlap it; claimed before, the
+            message is in flight across the whole DPAS mainloop and only the
+            store of its result waits on it.
+
+            Which tiles are computed does not change -- one claim per tile,
+            same indices, same order -- so every row must be bit-identical to
+            the first and only the timing is a measurement.
+            """
+            rows = run_config_sweep("prefill", _PREFILL_CLAIM_CONFIGS, models=_models_option(request))
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"claim order {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
+        def test_perf_prefill_claim_early_sweep_long_seq(self, request):
+            """Time the tile-claim order at the 8K-prompt routing.
+
+            Same sweep at the other prefill point, and the one that should
+            decide it. How much a claim stall costs depends on how much work
+            the tile it precedes has to hide it behind, so the effect is
+            bounded by the mainloop length: 12 k-tiles on the qwen3 down
+            projection against 32 on qwen3 up, at the same tile shape and the
+            same kernel. That is also the shape the shipped-contract numbers
+            leave furthest below its own bandwidth ceiling, so it is where a
+            per-tile fixed cost should be visible at all.
+
+            A tie on every shape is a real result: it says the claim was not
+            the stall, and the down projection's gap is the prologue, the
+            epilogue or the D write instead.
+            """
+            rows = run_config_sweep(
+                "prefill",
+                _PREFILL_CLAIM_CONFIGS,
+                models=_models_option(request),
+                batches=_long_seq_batches(),
+            )
+            assert rows and all(r["w4a8_ms"] > 0 for r in rows)
+            for row in rows:
+                assert (
+                    row["snr_db"] >= _SWEEP_MIN_SNR_DB
+                ), f"claim order {row['config']} disagrees with {rows[0]['config']}: SNR {row['snr_db']:.2f} dB"
+
         def test_perf_prefill_contract_sweep(self, request):
             """Time the two traffic-cutting call contracts at the compute-bound batch.
 
@@ -2972,6 +3043,55 @@ if pytest is not None:
                 f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}"
             )
 
+        def test_prefill_claim_early_matches(self):
+            """Claiming the next tile early must not change which tiles run.
+
+            The persistent kernel hands tiles out with a device-scope
+            ``atomicAdd`` on one dword. Moving that claim from after the GEMM
+            to before it changes only when the message is issued: the loop
+            still performs exactly one claim per tile and still consumes the
+            indices in the order the counter produces them, so the two orders
+            must agree bit for bit, not merely to an SNR.
+
+            The failure this guards against is a work-stealing bug, and those
+            are silent: a tile computed twice or skipped leaves a band of the
+            output stale or doubled rather than raising. Two things could
+            cause it here -- the claimed index being consumed a tile late, and
+            the counter's reset racing the first claims now that they are
+            issued within a few instructions of kernel entry (which is why the
+            reset moved to the host). Both show up as a mismatch against the
+            claim-after-GEMM baseline.
+
+            The batch is the ragged one: 300 rows on every expert against the
+            ladder's 128-row tile gives each expert two interior tiles and one
+            partial, so the expert boundaries the tile walk has to respect are
+            in the comparison, and every expert contributes more tiles than a
+            single work-group processes in one pass.
+            """
+            rows_per_expert = _RAGGED_TILE_ROWS_PER_EXPERT
+            case = _build_case(
+                _QWEN3_NK[1][1],
+                _QWEN3_NK[1][2],
+                _QWEN3_E,
+                rows_per_expert * _QWEN3_E,
+                _QWEN3_GROUP_SIZE,
+                torch.bfloat16,
+                need_reference=False,
+                need_dequant=False,
+            )
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(
+                case["packed"], case["scales"], group_size=_QWEN3_GROUP_SIZE
+            )
+            outs = {}
+            for flag in ("0", "1"):
+                with _env_override(ARK_MOE_W4A8_PREFILL_CLAIM_EARLY=flag):
+                    outs[flag] = _w4a8(case, weights_s8, wscales, block, "prefill").clone()
+            assert torch.equal(outs["0"], outs["1"]), (
+                "claiming the next tile before the GEMM changed the result: "
+                f"max |diff| {(outs['0'].float() - outs['1'].float()).abs().max().item():.6g}, "
+                f"{(outs['0'] != outs['1']).sum().item()} of {outs['0'].numel()} elements differ"
+            )
+
         def test_decode_ksplit_matches_legacy(self):
             """The K-split decode mapping must agree with the legacy one.
 
@@ -3142,6 +3262,16 @@ def _parse_args(argv):
             "different fraction of the mainloop on each. Pair with --long-seq for the 8K-prompt routing."
         ),
     )
+    parser.add_argument(
+        "--claim-early",
+        action="store_true",
+        help=(
+            "Also sweep when the persistent prefill kernel claims its next tile: after the GEMM (the "
+            "old order, a device-scope atomic round trip fully exposed between two tiles) or before it, "
+            "in flight across the mainloop. Bounded by how much work a tile has to hide it behind, so "
+            "pair with --long-seq for the 12-k-tile down projections where it should show first."
+        ),
+    )
     parser.add_argument("--iters", type=int, default=ITERS, help=f"Timed iterations per measurement (default {ITERS}).")
     parser.add_argument("--warmup", type=int, default=WARMUP, help=f"Warmup iterations (default {WARMUP}).")
     parser.add_argument(
@@ -3236,6 +3366,17 @@ def main(argv=None) -> int:
                     run_config_sweep(
                         phase,
                         _PREFILL_PREFETCH_CONFIGS,
+                        dtype=dtype,
+                        models=models,
+                        batches=_long_seq_batches(),
+                    )
+            if phase == "prefill" and args.claim_early:
+                if not args.long_seq or args.compute_bound:
+                    run_config_sweep(phase, _PREFILL_CLAIM_CONFIGS, dtype=dtype, models=models)
+                if args.long_seq:
+                    run_config_sweep(
+                        phase,
+                        _PREFILL_CLAIM_CONFIGS,
                         dtype=dtype,
                         models=models,
                         batches=_long_seq_batches(),

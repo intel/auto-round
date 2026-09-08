@@ -192,6 +192,13 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 // entirely on the in-kernel `atm.store(0)` above. That was already true with
 // `sycl::malloc_device`, whose contents are equally undefined -- the reuse
 // changes what the pre-store garbage looks like, not whether it matters.
+//
+// The W4A8 launcher is the exception: it zeroes the slot on the host and makes
+// its kernel depend on that fill (see `MoEGEMMLauncher_w4a8`), because it
+// claims the next tile *before* computing the current one and so cannot rely on
+// group 0 winning a race it would otherwise have won by microseconds. Sharing
+// the slot with the self-initialising paths stays safe -- every launcher is
+// synchronous, so only one of them is ever in flight.
 // ---------------------------------------------------------------------------
 
 // Scratch-pool slot dedicated to the work-group counter. Slots 0-7 are already
