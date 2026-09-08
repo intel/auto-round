@@ -947,18 +947,18 @@ def set_auto_device_map_for_block_with_tuning(
     """
     card_0_in_high_risk, loss_device = False, output_device
     from auto_round.utils.model import (
-        module_is_pinned_on_cpu,
+        _module_manages_own_device,
+        module_pinned_execution_device,
         move_to_device_preserving_cpu_pinned,
-        pin_ngram_embeddings_on_cpu_,
+        place_ngram_embeddings_for_tuning_,
     )
 
-    # Keep huge, non-quantizable ngram embeddings resident on CPU. They do not
-    # participate in tuning and can be tens of GiB, so moving them onto an
-    # accelerator (the fallback below would put them all on device_0) reliably
-    # OOMs card 0. Must run before any device placement below.
-    pinned = pin_ngram_embeddings_on_cpu_(block)
-    if pinned:
-        logger.debug(f"Keeping {len(pinned)} ngram embedding module(s) on CPU: {pinned}")
+    # Distribute huge, non-quantizable ngram embeddings before any block placement:
+    # row-shard them across the GPUs when >1 is available (on-device lookup, no card-0 OOM and
+    # far faster than a CPU-pinned table), otherwise keep them pinned on CPU. Must run first.
+    placed = place_ngram_embeddings_for_tuning_(block, list(device_list) if device_list else None)
+    if placed:
+        logger.debug(f"Placed {len(placed)} ngram embedding module(s) for tuning: {placed}")
 
     dev_mgr = get_current_device_manager()
     if dev_mgr.is_available() and dev_mgr.type != "cpu":
@@ -1024,7 +1024,14 @@ def set_auto_device_map_for_block_with_tuning(
     device_memory = {device_0: card_0_left_memory}
     for i in range(1, len(gpu_devices)):
         device_idx = device_list[i] if device_list else i
-        device_memory[gpu_devices[i]] = get_device_memory(device_idx)
+        # device_1 hosts the loss / backward tensors when card 0 is high-risk, so honor the same
+        # reservation used for total_available_memory (card_1_left_memory). Using the full device
+        # memory here would let the allocator overfill device_1 with expert weights and then OOM it
+        # once the loss/backward tensors land there (the observed GLM-5.3 MoE "device 1 OOM").
+        if i == 1:
+            device_memory[gpu_devices[i]] = card_1_left_memory
+        else:
+            device_memory[gpu_devices[i]] = get_device_memory(device_idx)
 
     # Allocate layers to devices using load-balancing strategy
     device_map, names = _allocate_layers_to_devices(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
@@ -1038,10 +1045,14 @@ def set_auto_device_map_for_block_with_tuning(
     for name, module in block.named_modules():
         if name in names:  # This module was already assigned a device
             continue
-        if module_is_pinned_on_cpu(module):
-            # Intentionally kept resident on CPU (e.g. huge non-quantizable ngram
-            # embeddings hooked by hook_ngram_embeddings_on_cpu); never move it to
-            # an accelerator or it would OOM device_0.
+        if module_pinned_execution_device(module) is not None:
+            # Intentionally pinned to a fixed execution device (CPU, or a specific card for
+            # huge non-quantizable ngram embeddings); never relocate it or it could OOM / break
+            # the chosen placement.
+            continue
+        if _module_manages_own_device(module):
+            # Places its own (possibly multi-device) storage, e.g. a row-sharded ngram
+            # embedding split across GPUs; moving its buffers here would collapse the shards.
             continue
         # Move only this module's OWN tensors (recurse=False). Using module.to()
         # would recurse and drag a CPU-pinned child (e.g. a nested ngram

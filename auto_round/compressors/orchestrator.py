@@ -1099,9 +1099,9 @@ class CompressionOrchestrator(BaseOrchestrator):
                     device,
                 )
             else:
-                from auto_round.utils.model import move_to_device_preserving_cpu_pinned, pin_ngram_embeddings_on_cpu_
+                from auto_round.utils.model import move_to_device_preserving_cpu_pinned, place_ngram_embeddings_for_tuning_
 
-                pin_ngram_embeddings_on_cpu_(block)
+                place_ngram_embeddings_for_tuning_(block)
                 block = move_to_device_preserving_cpu_pinned(block, device)
                 card_0_in_high_risk, loss_device = False, device
         else:

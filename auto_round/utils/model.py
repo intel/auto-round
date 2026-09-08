@@ -2558,35 +2558,45 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
         os.remove(idx)
 
 
-def _pin_module_execution_on_cpu(module: torch.nn.Module) -> None:
-    """Attach an accelerate hook that keeps ``module``'s forward on CPU.
+def _pin_module_execution_on_device(module: torch.nn.Module, device) -> None:
+    """Attach an accelerate hook that runs ``module``'s forward on ``device``.
 
-    ``AlignDevicesHook(execution_device="cpu")`` temporarily aligns the module's
-    inputs to CPU before the forward and moves the output back to the caller's
-    device (``io_same_device=True``), so a huge, non-quantizable embedding can
-    stay resident on host RAM instead of being dragged onto an accelerator.
+    ``AlignDevicesHook(execution_device=device, io_same_device=True)`` aligns the module's
+    inputs to ``device`` before the forward and moves the output back to the caller's device,
+    so a huge, non-quantizable embedding can stay resident on a chosen device (CPU host RAM,
+    or a specific accelerator) instead of being dragged around by generic block relocation.
+    Params are expected to already live on ``device`` (the caller moves them for GPU targets).
     """
     from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
-    add_hook_to_module(module, AlignDevicesHook(io_same_device=True, execution_device="cpu"))
+    add_hook_to_module(module, AlignDevicesHook(io_same_device=True, execution_device=str(device)))
 
 
-def module_is_pinned_on_cpu(module: torch.nn.Module) -> bool:
-    """Return True if ``module`` carries a CPU-execution accelerate hook.
+def _pin_module_execution_on_cpu(module: torch.nn.Module) -> None:
+    """Attach an accelerate hook that keeps ``module``'s forward on CPU."""
+    _pin_module_execution_on_device(module, "cpu")
 
-    Used by the multi-card block dispatch fallback to avoid moving modules that
-    were intentionally pinned on CPU (e.g. per-layer ngram embeddings) back onto
-    a GPU. Matches modules hooked by :func:`_pin_module_execution_on_cpu`.
+
+def module_pinned_execution_device(module: torch.nn.Module) -> str | None:
+    """Return the execution-device string a module is pinned to, or ``None`` if not pinned.
+
+    Matches modules hooked by :func:`_pin_module_execution_on_device` (CPU or a specific
+    accelerator). Used by block relocation to leave intentionally-pinned modules in place.
     """
     hook = getattr(module, "_hf_hook", None)
     if hook is None:
-        return False
+        return None
     hooks = getattr(hook, "hooks", (hook,))  # SequentialHook aggregates several
     for h in hooks:
         exec_device = getattr(h, "execution_device", None)
-        if exec_device is not None and str(exec_device) == "cpu":
-            return True
-    return False
+        if exec_device is not None:
+            return str(exec_device)
+    return None
+
+
+def module_is_pinned_on_cpu(module: torch.nn.Module) -> bool:
+    """Return True if ``module`` carries a CPU-execution accelerate hook."""
+    return module_pinned_execution_device(module) == "cpu"
 
 
 def pin_ngram_embeddings_on_cpu_(module: torch.nn.Module) -> list:
@@ -2607,15 +2617,16 @@ def pin_ngram_embeddings_on_cpu_(module: torch.nn.Module) -> list:
 
 
 def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> torch.nn.Module:
-    """Move ``module`` to ``device`` but leave CPU-pinned subtrees on CPU.
+    """Move ``module`` to ``device`` but leave pinned/self-managed subtrees in place.
 
-    ``nn.Module.to()`` recurses unconditionally and would drag a CPU-pinned
-    child (e.g. a multi-GiB ngram embedding) onto the accelerator, which is
-    exactly what causes card-0 OOM on large ngram models. This walks the tree
-    manually and stops at any subtree pinned by
-    :func:`_pin_module_execution_on_cpu`.
+    ``nn.Module.to()`` recurses unconditionally and would drag a pinned child (e.g. a
+    multi-GiB ngram embedding pinned on CPU or on a specific accelerator) onto ``device``,
+    which is exactly what causes card-0 OOM on large ngram models. This walks the tree
+    manually and stops at any subtree pinned to an execution device
+    (:func:`_pin_module_execution_on_device`) or one that manages its own (possibly
+    multi-device) storage, e.g. a row-sharded :class:`_ShardedEmbedding`.
     """
-    if module_is_pinned_on_cpu(module):
+    if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
         return module
     for _, param in module.named_parameters(recurse=False):
         if param.device.type != "meta":
@@ -2628,6 +2639,216 @@ def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> tor
     for child in module.children():
         move_to_device_preserving_cpu_pinned(child, device)
     return module
+
+
+class _ShardedEmbedding(torch.nn.Module):
+    """Row-sharded, multi-GPU drop-in replacement for a huge ``nn.Embedding``.
+
+    A single embedding table ``(num_embeddings, dim)`` that is too large to fit on one
+    accelerator (e.g. the ~95 GiB Qwen4-Exp per-layer ngram table) is split along dim 0 into
+    contiguous row ranges, one shard per device. ``forward(ids)`` reproduces
+    ``nn.Embedding(ids)`` bit-exactly by gathering each id from the shard that owns its row,
+    so the lookup runs on-GPU instead of being pinned (slowly) on CPU.
+
+    The module owns its (multi-device) storage: generic block-relocation helpers must skip it
+    (see :func:`_module_manages_own_device`), or the shards would be collapsed onto one device.
+    Shards are registered as non-persistent buffers so ``.to("cpu")`` based offload can still
+    reclaim their device memory after the block is done.
+    """
+
+    def __init__(self, embedding: "torch.nn.Embedding", devices: list) -> None:
+        super().__init__()
+        weight = embedding.weight.data
+        self.num_embeddings, self.embedding_dim = int(weight.shape[0]), int(weight.shape[1])
+        self.weight_dtype = weight.dtype
+        n = max(1, len(devices))
+        rows_per_shard = (self.num_embeddings + n - 1) // n
+        self._bounds: list[tuple[int, int]] = []
+        for i, device in enumerate(devices):
+            lo = i * rows_per_shard
+            hi = min(self.num_embeddings, lo + rows_per_shard)
+            if lo >= hi:
+                break
+            self.register_buffer(f"shard_{i}", weight[lo:hi].to(device), persistent=False)
+            self._bounds.append((lo, hi))
+
+    @property
+    def weight(self):
+        # Exposed so callers that read ``embedding.weight.device`` keep working (the forward
+        # re-routes ids to the correct shard regardless of which device they arrive on).
+        return getattr(self, "shard_0")
+
+    def forward(self, input_ids: "torch.Tensor") -> "torch.Tensor":
+        flat = input_ids.reshape(-1)
+        out = torch.empty(flat.shape[0], self.embedding_dim, dtype=self.weight_dtype, device=flat.device)
+        for i, (lo, hi) in enumerate(self._bounds):
+            shard = getattr(self, f"shard_{i}")
+            mask = (flat >= lo) & (flat < hi)
+            if not bool(mask.any()):
+                continue
+            local = (flat[mask] - lo).to(shard.device)
+            gathered = torch.nn.functional.embedding(local, shard)
+            out[mask] = gathered.to(out.device)
+        return out.reshape(*input_ids.shape, self.embedding_dim)
+
+
+def _module_manages_own_device(module: torch.nn.Module) -> bool:
+    """True for modules that place their own (possibly multi-device) storage.
+
+    Such modules (e.g. :class:`_ShardedEmbedding`) must be skipped by the generic block
+    relocation helpers so their shards are not collapsed onto a single device.
+    """
+    return isinstance(module, _ShardedEmbedding)
+
+
+def shard_ngram_embeddings_across_gpus_(module: torch.nn.Module, devices: list) -> list:
+    """Row-shard every plain ``nn.Embedding`` ngram table under ``module`` across ``devices``.
+
+    Requires >= 2 devices; only plain, already-materialized ``nn.Embedding`` tables are
+    sharded (anything else is left for the caller to CPU-pin). Returns the sharded names.
+    """
+    if not devices or len(devices) < 2:
+        return []
+    sharded = []
+    for name, sub in list(module.named_modules()):
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in ("ngram_embedding", "ngram_embeddings"):
+            continue
+        if not isinstance(sub, torch.nn.Embedding) or isinstance(sub, _ShardedEmbedding):
+            continue
+        if sub.weight.device.type == "meta":
+            continue  # not materialized yet; caller decides
+        parent = get_module(module, name.rsplit(".", 1)[0]) if "." in name else module
+        try:
+            replacement = _ShardedEmbedding(sub, devices)
+        except Exception as err:  # OOM or device error -> leave for the caller to CPU-pin
+            logger.warning(f"Could not shard ngram embedding '{name}' across GPUs ({err}); keeping it on CPU.")
+            continue
+        setattr(parent, leaf, replacement)
+        sharded.append(name)
+    return sharded
+
+
+def _iter_ngram_modules(module: torch.nn.Module):
+    """Yield ``(name, submodule)`` for every ngram embedding leaf under ``module``."""
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in ("ngram_embedding", "ngram_embeddings"):
+            yield name, sub
+
+
+def _place_ngram_on_single_device_(sub: torch.nn.Module, device: str) -> None:
+    """Keep one ngram embedding resident on ``device`` (CPU or a specific accelerator).
+
+    For a GPU target the params are physically moved onto the card first (so the on-device
+    lookup is real); for CPU they stay in host RAM. An ``AlignDevicesHook`` then keeps the
+    module executing on ``device`` and re-aligns I/O to the caller, and marks it so the
+    generic block relocation leaves it in place.
+    """
+    if module_pinned_execution_device(sub) == str(device):
+        return
+    if str(device) != "cpu" and not isinstance(sub, _ShardedEmbedding):
+        try:
+            sub.to(device)
+        except Exception as err:  # OOM, invalid/unavailable device, ... -> safe CPU fallback
+            logger.warning(f"Could not place ngram embedding on {device} ({err}); keeping it on CPU.")
+            device = "cpu"
+    _pin_module_execution_on_device(sub, device)
+
+
+def _normalize_ngram_target_device(setting: str, devices: list) -> str | None:
+    """Resolve an ``AR_NGRAM_DEVICE`` value naming a single device to a concrete device string.
+
+    Accepts a full string (``cuda:1``/``xpu:0``/``cpu``) or a bare index (``1`` -> the second
+    entry of ``devices`` when present, else ``<accelerator>:1``). Returns ``None`` if the value
+    is not a single-device request.
+    """
+    if setting == "cpu":
+        return "cpu"
+    if ":" in setting:
+        return setting
+    if setting.isdigit():
+        idx = int(setting)
+        if devices and idx < len(devices):
+            return str(devices[idx])
+        try:
+            from auto_round.utils.device_manager import device_manager
+
+            return f"{device_manager.type}:{idx}"
+        except Exception:  # pragma: no cover - device manager optional/unavailable
+            return f"cuda:{idx}"
+    return None
+
+
+def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: list | None = None) -> list:
+    """Place ngram embeddings for per-block tuning, honoring the ``AR_NGRAM_DEVICE`` env var.
+
+    ``AR_NGRAM_DEVICE`` values:
+
+    * ``auto`` (default): multi-GPU -> row-shard across the GPUs (fast on-device lookup, no
+      card-0 OOM); single-GPU -> keep the table on that GPU; no GPU -> pin on CPU.
+    * ``across`` / ``shard`` / ``gpu``: force row-sharding across all available GPUs.
+    * ``cpu``: pin on CPU (slow but always safe).
+    * a device (``cuda:1``, ``xpu:0``, or a bare index like ``1``): put the whole table on
+      that specific card.
+
+    Multi-GPU sharding is experimental (see the warning below). Returns the handled names.
+    """
+    from auto_round import envs
+
+    setting = str(getattr(envs, "AR_NGRAM_DEVICE", "auto")).strip().lower()
+
+    devices = [str(d) for d in gpu_devices] if gpu_devices else []
+    if not devices:
+        try:
+            from auto_round.utils.device_manager import device_manager
+
+            if device_manager.is_available() and device_manager.type != "cpu":
+                devices = [str(d) for d in device_manager.device_list]
+        except Exception:  # pragma: no cover - device manager optional/unavailable
+            devices = []
+
+    ngram_modules = list(_iter_ngram_modules(module))
+    if not ngram_modules:
+        return []
+
+    # Resolve the requested mode.
+    single_target = _normalize_ngram_target_device(setting, devices)
+    if setting in ("across", "shard", "gpu"):
+        mode = "across"
+    elif setting in ("auto", ""):
+        mode = "across" if len(devices) >= 2 else "single"
+        single_target = devices[0] if len(devices) == 1 else "cpu"
+    elif single_target is not None:
+        mode = "single"
+    else:
+        logger.warning(f"Unrecognized AR_NGRAM_DEVICE={setting!r}; falling back to 'auto'.")
+        mode = "across" if len(devices) >= 2 else "single"
+        single_target = devices[0] if len(devices) == 1 else "cpu"
+
+    handled: list = []
+    if mode == "across":
+        if len(devices) >= 2:
+            logger.warning_once(
+                "Sharding ngram embeddings across multiple GPUs is experimental and may have bugs; "
+                "set AR_NGRAM_DEVICE=cpu (safe) or a specific card (e.g. AR_NGRAM_DEVICE=cuda:0) if you hit issues."
+            )
+            handled = list(shard_ngram_embeddings_across_gpus_(module, devices))
+        # Any ngram not sharded (single/no GPU, custom module, OOM) falls back to CPU pin below.
+        fallback = devices[0] if len(devices) == 1 else "cpu"
+        for name, sub in ngram_modules:
+            if name in handled or isinstance(sub, _ShardedEmbedding):
+                continue
+            _place_ngram_on_single_device_(sub, fallback)
+            handled.append(name)
+        return handled
+
+    # mode == "single": every ngram table on one chosen device (CPU or a specific card).
+    target = single_target if single_target is not None else "cpu"
+    for name, sub in ngram_modules:
+        _place_ngram_on_single_device_(sub, target)
+        handled.append(name)
+    return handled
 
 
 def hook_ngram_embeddings_on_cpu(model):
