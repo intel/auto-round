@@ -111,7 +111,7 @@ class TestAutoRound:
         print(model)
         assert model is not None, "Failed to load the quantized model."
 
-    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    @pytest.mark.skip_ci(reason="Matrix: Cannot test all cases in CI; time-consuming")
     def test_nvfp4_moe_actmax_ar(self, tiny_deepseek_v2_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(

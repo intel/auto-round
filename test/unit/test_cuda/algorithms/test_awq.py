@@ -51,7 +51,7 @@ class TestAWQNormalLLM:
 
         assert cfg.awq_seqlen == 128
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ algorithm smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ algorithm smoke; run in common/nightly coverage")
     @pytest.mark.timeout(90)
     def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
         """W4A16 AWQ quantization produces valid layer_config and the model can generate.
@@ -81,7 +81,7 @@ class TestAWQNormalLLM:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Model should produce non-empty output"
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ export smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ export smoke; run in common/nightly coverage")
     def test_awq_w4a16_export_default_scheme(self, tiny_opt_model_path):
         """Default W4A16 scheme export: quantization_config has bits=4, group_size=128."""
         ar = AutoRound(
@@ -103,7 +103,7 @@ class TestAWQNormalLLM:
         assert qconfig["group_size"] == 128
         assert "auto-round" in qconfig["quant_method"]
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ export smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ export smoke; run in common/nightly coverage")
     def test_awq_w4a16_export_args_check(self, tiny_opt_model_path):
         """Saved quantization_config (bits/group_size/sym/quant_method) matches the input parameters.
 
@@ -164,7 +164,7 @@ class TestAWQNonIntegerSchemes:
     MXFP/NVFP scheme.
     """
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ datatype smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ datatype smoke; run in common/nightly coverage")
     @pytest.mark.timeout(60)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
     def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme):
@@ -204,7 +204,7 @@ class TestAWQW8A8LLMCompressor:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="LLM-Compressor export is covered by integration CI")
+    @pytest.mark.skip_ci(reason="Coverage: LLM-Compressor export is covered by integration CI")
     def test_awq_w8a8_llmc_export(self, tiny_opt_model_path):
         """W8A8 AWQ -> llm_compressor: verify compressed-tensors metadata and int8 saved weights.
 
@@ -256,7 +256,7 @@ class TestAWQMoE:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def test_awq_moe_dynamic_smoothing(self, tiny_qwen_moe_model_path):
+    def test_awq_moe_dynamic_smoothing(self, micro_qwen_moe_model_path):
         """AWQ dynamic smoothing should resolve mappings on a MoE model without error.
 
         Pure mapping-resolution logic, no inference -- runs once on cpu.
@@ -265,7 +265,7 @@ class TestAWQMoE:
         from auto_round.algorithms.transforms.awq.mappings import resolve_mappings
 
         model = AutoModelForCausalLM.from_pretrained(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             torch_dtype=torch.bfloat16,
             device_map=device,
             trust_remote_code=True,
@@ -741,7 +741,7 @@ class TestAWQMoE:
 
     @requires_cuda
     @pytest.mark.timeout(420)
-    def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
+    def test_awq_moe_quantized_layers_check(self, micro_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP.
 
         Algorithm/config correctness, but MoE quantization is slow enough (real tuning over
@@ -750,7 +750,7 @@ class TestAWQMoE:
         """
         device = "cuda"
         ar = AutoRound(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             scheme="W4A16",
             alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
@@ -785,7 +785,7 @@ class TestAWQMoE:
     # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
     @requires_cuda
     @pytest.mark.timeout(400)
-    def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
+    def test_awq_moe_save_quant_config(self, micro_qwen_moe_model_path):
         """AWQ MoE: saved quantization_config should be consistent and loadable.
 
         Same rationale as test_awq_moe_quantized_layers_check: config correctness, but MoE
@@ -793,7 +793,7 @@ class TestAWQMoE:
         """
         device = "cuda"
         ar = AutoRound(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             scheme="W4A16",
             alg_configs=AWQConfig(n_grid=1),
             n_grid=1,
@@ -903,7 +903,7 @@ class TestAWQWeightClip:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Clipped model should produce non-empty output"
 
-    @pytest.mark.skip_ci(reason="CPU-only AWQ clip/SignRound smoke; run in common/nightly coverage")
+    @pytest.mark.skip_ci(reason="Coverage: CPU-only AWQ clip/SignRound smoke; run in common/nightly coverage")
     def test_awq_clip_as_init_signround(self, tiny_opt_model_path):
         """clip_as_init: clip is kept on the model context and initializes SignRound's range.
 

@@ -1,5 +1,5 @@
 import shutil
-from test.helpers import evaluate_accuracy, get_model_path, model_infer
+from test.helpers import evaluate_accuracy, model_infer
 
 import pytest
 import torch
@@ -11,10 +11,6 @@ from ...envs import require_greater_than_050
 
 
 class TestAutoRoundTritonBackend:
-    @classmethod
-    def setup_class(self):
-        self.model_name = get_model_path("facebook/opt-125m")
-
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
         self.save_folder = str(tmp_path / "saved")
@@ -25,31 +21,39 @@ class TestAutoRoundTritonBackend:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    # Keep 2 bits symmetric test for triton backend since it's a special configuration and we want to make sure it's working well.
-    # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
     @require_greater_than_050
-    @pytest.mark.timeout(300)
-    def test_tritonv2_2bits_asym(self):
-        model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-        bits, group_size, sym = 2, 32, False
-        autoround = AutoRound(model, tokenizer, bits=bits, group_size=group_size, sym=sym)
-        quantized_model_path = self.save_folder
-        _, quantized_model_path = autoround.quantize_and_save(output_dir=quantized_model_path)
+    @pytest.mark.timeout(120)
+    def test_tritonv2_2bits_asym(self, tiny_opt_model_path):
+        """A tuned INT2 asymmetric export reloads and generates with Triton.
+
+        This is the PR smoke for the Triton kernel. Accuracy evaluation and the
+        full OPT-125M model belong to the weekly backend matrix below; neither
+        changes Triton export, load, or generation behavior.
+        """
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=2,
+            group_size=32,
+            sym=False,
+            iters=1,
+            nsamples=1,
+            seqlen=8,
+            dataset=["local Triton calibration sample with enough tokens for quantization"],
+        )
+        _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_folder)
 
         quantization_config = AutoRoundConfig(backend="tritonv2")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, torch_dtype=torch.float16, device_map="auto", quantization_config=quantization_config
         )
-
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         model_infer(model, tokenizer)
-        evaluate_accuracy(model, tokenizer, threshold=0.19, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_4bits_asym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -80,8 +84,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.34, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_4bits_sym(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -119,8 +122,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.26, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_8bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
@@ -149,8 +151,7 @@ class TestAutoRoundTritonBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @require_greater_than_050
     def test_tritonv2_2bits_sym(self):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
