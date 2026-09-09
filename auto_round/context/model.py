@@ -225,21 +225,6 @@ class ModelContext(BaseContext):
                 model_name=self.model, trust_remote_code=self.trust_remote_code
             )
 
-            if (
-                not self.is_model_patched
-                and config is not None
-                and is_moe_model_via_config(config)
-                and version.parse(transformers.__version__) >= version.parse("5.0.0")
-            ):
-                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
-
-                model_type = getattr(config, "model_type", None)
-                if model_type is not None and model_type not in BUILTIN_MODULES:
-                    logger.warning(
-                        "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
-                        "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
-                    )
-
             # Reclaim temporary HTTP/config objects from model type detection
             # and AutoConfig loading before the large model allocation.  This
             # reduces heap fragmentation especially on HPU where habana internal
@@ -346,7 +331,7 @@ class ModelContext(BaseContext):
         self.disk_stream_model_dir = checkpoint_dir
         logger.info(
             "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
-            "(set AR_DISABLE_AUTO_META_LOAD=1 to load the whole model on CPU instead)."
+            "(set `AR_DISABLE_AUTO_META_LOAD=1` to load the whole model on CPU instead)."
         )
         return True
 
