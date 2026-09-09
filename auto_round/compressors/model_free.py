@@ -1142,6 +1142,17 @@ class _ModelFreeCompressorCore:
         except FileNotFoundError:
             pass
 
+    def _create_shard_progress(self, tqdm_factory: Any) -> Any:
+        """Create a progress bar that retains the full shard count on resume."""
+        if tqdm_factory is None:
+            return None
+        return tqdm_factory(
+            total=len(self.shard_names),
+            initial=len(self._resume_processed_shards),
+            desc="Processing shards",
+            unit="shard",
+        )
+
     def _process_all_shards(self) -> None:
         if self.is_streaming:
             self._process_all_shards_streaming_pipeline()
@@ -1165,6 +1176,7 @@ class _ModelFreeCompressorCore:
         worker_count = max(1, min(self.shard_parallelism, len(pending_shards)))
         futures = []
         pool: ProcessPoolExecutor | None = None
+        progress = self._create_shard_progress(_tqdm)
         try:
             pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
             for shard_idx, shard_name in pending_shards:
@@ -1193,15 +1205,11 @@ class _ModelFreeCompressorCore:
                     )
                 )
 
-            shard_iter = (
-                _tqdm(as_completed(futures), total=len(futures), desc="Processing shards", unit="shard")
-                if _tqdm
-                else as_completed(futures)
-            )
-
-            for future in shard_iter:
+            for future in as_completed(futures):
                 result = future.result()
                 self._merge_shard_task_result(result)
+                if progress is not None:
+                    progress.update(1)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard worker processes.")
             _force_cleanup_process_pool(pool)
@@ -1211,6 +1219,8 @@ class _ModelFreeCompressorCore:
             raise
         finally:
             _force_cleanup_process_pool(pool)
+            if progress is not None:
+                progress.close()
 
     def _merge_shard_task_result(
         self,
@@ -1342,7 +1352,7 @@ class _ModelFreeCompressorCore:
             for _ in range(min(prefetch_depth, total_pipeline_shards)):
                 _submit_next_download()
 
-            progress = _tqdm(total=len(pending_names), desc="Processing shards", unit="shard") if _tqdm else None
+            progress = self._create_shard_progress(_tqdm)
 
             while completed_pipeline_shards < total_pipeline_shards:
                 wait_set = set(download_futures.keys()) | set(quant_futures)

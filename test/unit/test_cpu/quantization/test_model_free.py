@@ -822,6 +822,24 @@ class TestModelFreeQuantize:
         assert set(manifest["processed_files"]) == {"model.safetensors"}
         assert manifest["parameters"]["default_scheme"]["bits"] == 4
 
+    def test_resume_progress_retains_all_shards(self):
+        core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+        core.shard_names = [f"model-{index:05d}.safetensors" for index in range(1, 5)]
+        core._resume_processed_shards = {
+            core.shard_names[0]: {},
+            core.shard_names[1]: {},
+        }
+        progress = Mock()
+        tqdm_factory = Mock(return_value=progress)
+
+        assert core._create_shard_progress(tqdm_factory) is progress
+        tqdm_factory.assert_called_once_with(
+            total=4,
+            initial=2,
+            desc="Processing shards",
+            unit="shard",
+        )
+
     def test_resume_rejects_changed_command_parameters(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")
