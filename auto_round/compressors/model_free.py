@@ -855,7 +855,7 @@ class _ModelFreeCompressorCore:
         if self.cross_shard_deps:
             n_pairs = sum(len(t) for donors in self.cross_shard_deps.values() for t in donors.values())
             logger.info(
-                f"Cross-shard scale dependencies: {n_pairs} scale tensor(s), "
+                f"Cross-shard FP8 dependencies: {n_pairs} scale_inv tensor(s), "
                 f"{len(self.cross_shard_deps)} recipient shard(s), "
                 f"{len(self.donor_shard_tensors)} donor shard(s)."
             )
