@@ -79,7 +79,7 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
-from auto_round.utils.offload import OffloadManager
+from auto_round.utils.offload import OffloadManager, _resolve_model_dir
 
 # ``torch.compile`` only pays for itself when the compiled quant function is
 # replayed many times.  Below this many SignRound iterations the one-off
@@ -437,7 +437,23 @@ class BaseOrchestrator(object):
         # each block on first touch directly from disk instead of assuming
         # blocks already hold real weights (see OffloadManager._reload).
         if self.model_context.disk_stream_model_dir is not None:
-            self._offloader.model_dir = self.model_context.disk_stream_model_dir
+            model_dir = self.model_context.disk_stream_model_dir
+            model_revision = getattr(getattr(self.model_context.model, "config", None), "_commit_hash", None)
+            if self.model_context.platform == "hf" and model_revision is not None:
+                model_dir = _resolve_model_dir(model_dir, revision=model_revision)
+            self.model_context.disk_stream_model_dir = model_dir
+            self._offloader.model_dir = model_dir
+        # A meta skeleton (explicit AR_DISK_STREAM_MODEL=1, or auto-selected for
+        # fused-MoE checkpoints -- signalled by `_disk_stream_index`) leaves every
+        # block on the meta device, so per-block reload from disk is mandatory: the
+        # tuning loop must materialize each block before moving it to the compute
+        # device. The offloader was created with `enabled=low_cpu_mem_usage`, which
+        # can be False (e.g. user-supplied, or GGUF forcing it off later); in that
+        # case reload() would no-op and `block.to(device)` would crash with
+        # "Cannot copy out of meta tensor". Force it enabled here whenever streaming
+        # is active so the reload path stays available regardless of low_cpu_mem_usage.
+        if getattr(self.model_context, "_disk_stream_index", None) is not None:
+            self._offloader.enabled = True
         # Alternatively, you can use CompressContext.create_context
         self.compress_context = CompressContext(
             low_cpu_mem_usage,

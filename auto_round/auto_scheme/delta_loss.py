@@ -2578,7 +2578,12 @@ def _gen_layer_config(
         if _model_dir is None and hasattr(model, "config"):
             _model_dir = getattr(model.config, "_name_or_path", None)
         offload_mode = "clean"
-        offload_kwargs = {"model_dir": _model_dir}
+        model_revision = getattr(getattr(model, "config", None), "_commit_hash", None)
+        from auto_round import envs
+
+        if envs.AR_USE_MODELSCOPE:
+            model_revision = None
+        offload_kwargs = {"model_dir": _model_dir, "model_revision": model_revision}
         # Rotation mutates weights in memory before AutoScheme starts. Clean-mode
         # reloads from the original checkpoint and would silently discard those
         # transformed weights during scoring and final restore.
