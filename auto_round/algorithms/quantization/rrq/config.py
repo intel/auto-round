@@ -101,13 +101,11 @@ class RRQConfig(RTNConfig):
             raise ValueError("num_residual_planes must be positive")
         self._num_residual_planes = num_residual_planes
 
-        # ``disable_opt_rtn`` stays True at the config level purely to keep RRQ
-        # routed to its own quantizer: an RTNConfig subclass with
-        # ``disable_opt_rtn=False`` is silently coerced to OptimizedRTNConfig by
-        # the AutoRound entry, which would drop every residual plane. The
-        # per-plane RTN quality is matched to standard AutoRound (opt-RTN)
-        # inside the quantizer instead (see RRQRTNQuantizer). Passed explicitly
-        # (not via ``**kwargs``) since it is a named parameter here.
+        # ``disable_opt_rtn`` must stay True: if it were False, the entry
+        # would coerce this config to OptimizedRTNConfig (dropping every
+        # residual plane).  The per-plane RTN quality is matched to standard
+        # AutoRound (opt-RTN) inside the quantizer instead (see
+        # RRQRTNQuantizer).  ``check_config()`` enforces this invariant.
         super().__init__(disable_opt_rtn=disable_opt_rtn, **kwargs)
 
         self.iters = int(self._rrq_iters or 0)
@@ -186,6 +184,15 @@ class RRQConfig(RTNConfig):
         assert self.act_bits == 16, "RRQ is weight-only"
         if self.iters < 0:
             raise ValueError("`iters` must be non-negative")
+        if not self.disable_opt_rtn:
+            raise ValueError(
+                "RRQ requires disable_opt_rtn=True. "
+                "Setting disable_opt_rtn=False would cause the entry to "
+                "coerce this config to OptimizedRTNConfig, silently dropping "
+                "all RRQ residual planes. The per-plane RTN quality is "
+                "already matched to standard AutoRound inside the RRQ "
+                "quantizer (see RRQRTNQuantizer)."
+            )
 
 
 register_algorithm(
