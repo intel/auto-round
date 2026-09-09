@@ -456,6 +456,49 @@ def test_nvfp4_e5m3_model_free_fake_quantization():
     assert not is_model_free_supported_scheme("NVFP4+")
 
 
+def test_int_model_free_fake_quantization():
+    shard_path = "int-fake-shard.safetensors"
+    weight = torch.randn(8, 32)
+    try:
+        save_file({"layer.fc.weight": weight}, shard_path)
+        output, quantized, _ = _process_shard(
+            shard_path,
+            {**_DEFAULT_SCHEME, "_output_format": "fake"},
+            {},
+            [],
+        )
+    finally:
+        if os.path.exists(shard_path):
+            os.remove(shard_path)
+
+    assert quantized == ["layer.fc"]
+    assert set(output) == {"layer.fc.weight"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+
+
+def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    with open(os.path.join(output_dir, "quantization_config.json"), "w") as f:
+        json.dump({"stale": True}, f)
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="W4A16", format="fake"
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    assert "model.layers.0.self_attn.q_proj.weight" in output_keys
+    assert "model.layers.0.self_attn.q_proj.qweight" not in output_keys
+    assert not os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+    with open(os.path.join(output_dir, "config.json")) as f:
+        assert "quantization_config" not in json.load(f)
+
+
 def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     tensors = {
         "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
@@ -1198,6 +1241,16 @@ class TestSchemeValidation:
 
 
 class TestCliAutoRouting:
+    def test_model_free_uses_auto_round_format_by_default(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+        monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("format", args._api_format))
+
+        cli_main.start(argv=["--model", "dummy", "--model_free"])
+
+        assert captured["format"] == "auto_round"
+
     def test_auto_routes(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         out_dir = str(tmp_path / "out")
