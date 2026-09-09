@@ -96,31 +96,32 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
         signature = _inline(c.get("signature", ""))
         occ = c.get("occurrences", 0)
         tests = c.get("tests", [])
-        logs = ", ".join(c.get("logs", [])) or "-"
+        displayed_tests = tests[:10]
+        if len(tests) > 10:
+            displayed_tests.append("...")
+        logs = c.get("logs", [])
+        displayed_logs = logs[:10]
+        if len(logs) > 10:
+            displayed_logs.append("...")
         lines.append(f"### No.{rank} — {occ} occurrence(s)")
         lines.append("")
-        lines.append("<details><summary>📝 Basic info</summary>")
+        lines.append(f"<details><summary>{signature}</summary>")
         lines.append("")
-        lines.append(f"- **Signature:** {_code_span(signature)}")
-        lines.append(f"- **Affected tests ({len(tests)}):** {', '.join(tests) or '-'}")
-        lines.append(f"- **Logs:** {logs}")
+        lines.append("### 📝 Basic info")
         lines.append("")
-        lines.append("</details>")
-
+        lines.append(f"- **Affected tests ({len(tests)}):** {', '.join(displayed_tests) or '-'}")
+        lines.append(f"- **Logs ({len(logs)}):** {', '.join(displayed_logs) or '-'}")
         lines.append("")
-        lines.append("<details><summary>🔍 Log excerpt</summary>")
+        lines.append("### 🔍 Log excerpt")
         lines.append("")
         lines.append("```")
         lines.append((c.get("sample", "") or "").strip())
         lines.append("```")
         lines.append("")
-        lines.append("</details>")
-        lines.append("")
 
         analysis = analyses_by_id.get(c.get("id"))
         if analysis:
-            lines.append("")
-            lines.append("<details><summary>✨ AI analysis</summary>")
+            lines.append("### ✨ AI analysis")
             lines.append("")
             lines.append(f"- **Category:** {analysis.get('category', 'Unknown')}")
             lines.append(f"- **Confidence:** {analysis.get('confidence', 'low')}")
@@ -137,8 +138,8 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             if analysis.get("directions"):
                 lines.append(f"- **Investigation directions (low confidence):** {analysis['directions']}")
             lines.append("")
-            lines.append("</details>")
-            lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
     lines.extend(
         [
