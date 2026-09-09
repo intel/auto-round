@@ -48,7 +48,7 @@ class TestHFEvaluation:
             f"--model {tiny_opt_model_path} --eval --tasks lambada_openai --limit 10",
         )
 
-    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
+    @pytest.mark.skip_ci(reason="Accuracy: The evaluation is time-consuming")
     def test_iters_0_hf_backend(self, monkeypatch, tiny_opt_model_path):
         """Test quantization with iters=0 and HF backend evaluation."""
         _run_auto_round_cli(
@@ -56,7 +56,7 @@ class TestHFEvaluation:
             f"--model {tiny_opt_model_path} --iters 0 --disable_opt_rtn --tasks lambada_openai --limit 10",
         )
 
-    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
+    @pytest.mark.skip_ci(reason="Accuracy: The evaluation is time-consuming")
     def test_iters_0_task_by_task(self, monkeypatch, tiny_opt_model_path):
         """Test quantization with iters=0 and task-by-task evaluation."""
         _run_auto_round_cli(

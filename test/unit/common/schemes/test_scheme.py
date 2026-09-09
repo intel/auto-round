@@ -46,13 +46,13 @@ class TestAutoRound:
         assert ar.bits == 2
 
     @pytest.mark.timeout(120)
-    def test_w4a16_mixed(self, tiny_qwen_moe_model_path, dataloader):
+    def test_w4a16_mixed(self, micro_qwen_moe_model_path, dataloader):
 
         layer_config = {
             "model.layers.0.self_attn.k_proj": {"bits": 16},
         }
         ar = AutoRound(
-            tiny_qwen_moe_model_path,
+            micro_qwen_moe_model_path,
             scheme="W4A16_MIXED",
             nsamples=1,
             iters=0,
@@ -213,7 +213,9 @@ class TestAutoRound:
             disable_opt_rtn=True,
             seqlen=2,
         )
-        ar.quantize_and_save(self.save_folder)
+        ar.post_init()
+        assert ar.scheme == "GGUF:Q2_K_S"
+        assert ar.scheme_context.bits == 2
 
     def test_fp8_static(self, tiny_opt_model_path):
         ar = AutoRound(tiny_opt_model_path, scheme="FP8_STATIC", nsamples=1, iters=1)
