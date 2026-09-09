@@ -14,6 +14,14 @@ def test_tiny_model_cache_rejects_a_changed_model_config(tmp_path):
     assert not fixtures._tiny_model_ready(tmp_path, signature)
 
 
+def test_tiny_model_cache_does_not_manage_huggingface_source_cache():
+    """Tiny fixture reuse must not delete source checkpoints between pytest runs."""
+    from test import fixtures
+
+    assert not hasattr(fixtures, "_source_model_ids")
+    assert not hasattr(fixtures, "_release_source_model_cache")
+
+
 def test_micro_model_tokenizer_ids_fit_the_model_vocabulary(micro_opt_model_path, micro_qwen_model_path):
     for model_path in (micro_opt_model_path, micro_qwen_model_path):
         config = AutoConfig.from_pretrained(model_path)
