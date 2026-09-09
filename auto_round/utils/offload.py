@@ -101,7 +101,7 @@ def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) ->
             continue  # original fused module still in the tree; assign as-is
         to_split[key] = state_dict.pop(key)
     if to_split:
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         state_dict.update(split_fused_expert_tensors(to_split))
     return state_dict

@@ -200,6 +200,15 @@ class TestSplitFusedExpertTensors:
             assert result[key].shape == (O, I)
             assert torch.equal(result[key], stacked[i])
 
+    def test_keep_fused_expert_model_type_passthrough(self):
+        fused = torch.randn(2, 32, 16)
+        tensors = {"model.layers.0.mlp.experts.w13_weight": fused}
+
+        result = split_fused_expert_tensors(tensors, model_type="inkling_mm_model")
+
+        assert set(result.keys()) == set(tensors.keys())
+        assert torch.equal(result["model.layers.0.mlp.experts.w13_weight"], fused)
+
     def test_mixed_fused_and_normal(self):
         N, I, H = 2, 32, 16
         tensors = {
