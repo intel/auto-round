@@ -49,6 +49,7 @@ struct env_params {
   int sage_use_mean_bias = 1;
   int sage_print_kbias = 0;
   int sage_disable_packed_hnd_fast = 0;
+  int woq_dpas_s4 = 1;
 
   static env_params* Instance() {
     static env_params instance;
@@ -61,11 +62,12 @@ struct env_params {
     env_i("ARK_SAGE_USE_MEAN_BIAS", sage_use_mean_bias);
     env_i("ARK_SAGE_PRINT_KBIAS", sage_print_kbias);
     env_i("ARK_SAGE_DISABLE_PACKED_HND_FAST", sage_disable_packed_hnd_fast);
+    env_i("ARK_WOQ_DPAS_S4", woq_dpas_s4);
   }
 
   static inline void env_i(const char* envstr, int& default_) {
-    const char* log_level_env = std::getenv(envstr);
-    if (log_level_env != nullptr) default_ = std::stoi(log_level_env);
+    const char* env_value = std::getenv(envstr);
+    if (env_value != nullptr) default_ = std::stoi(env_value);
   }
 };
 
