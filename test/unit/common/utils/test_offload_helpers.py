@@ -261,3 +261,70 @@ class TestResolveModelDir:
         ):
             result = _resolve_model_dir(str(tmp_path / "missing"))
             assert result == str(tmp_path / "missing")
+
+
+# ---------------------------------------------------------------------------
+# OffloadManager stale-dir sweep
+# ---------------------------------------------------------------------------
+class TestOffloadStaleDirSweep:
+    """Startup cleanup of leftover pid-tagged offload temp dirs."""
+
+    def _offload_base(self, tmp_path, monkeypatch) -> str:
+        workspace = str(tmp_path).lower()  # envs.AR_WORK_SPACE is lowercased
+        monkeypatch.setenv("AR_WORK_SPACE", workspace)
+        monkeypatch.delenv("AR_RESUME_DIR", raising=False)
+        base = os.path.join(workspace, "offload")
+        os.makedirs(base, exist_ok=True)
+        return base
+
+    def test_ensure_dir_is_pid_tagged_and_sweeps_stale(self, tmp_path, monkeypatch):
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        stale = os.path.join(base, "compressor_424242_deadbeef")
+        os.makedirs(stale)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        # Only our own pid counts as alive.
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
+        tempdir = mgr._ensure_dir()
+        try:
+            assert not os.path.exists(stale), "stale dir from a dead pid should have been swept"
+            assert os.path.basename(tempdir).startswith(f"compressor_{os.getpid()}_")
+        finally:
+            mgr._cleanup_tempdir()
+        assert not os.path.exists(tempdir)
+
+    def test_sweep_keeps_live_resume_and_legacy_dirs(self, tmp_path, monkeypatch):
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        dead = os.path.join(base, "compressor_424242_deadbeef")
+        live = os.path.join(base, f"compressor_{os.getpid()}_cafebabe")
+        resume = os.path.join(base, "compressor_resume")
+        legacy = os.path.join(base, "compressor_0gbcamv0")  # pre-pid-tag naming
+        for d in (dead, live, resume, legacy):
+            os.makedirs(d)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: pid == os.getpid()))
+        mgr._sweep_stale_dirs(base)
+        assert not os.path.exists(dead)
+        assert os.path.isdir(live)
+        assert os.path.isdir(resume)
+        assert os.path.isdir(legacy)
+
+    def test_ensure_dir_resume_mode_never_sweeps(self, tmp_path, monkeypatch):
+        from auto_round.utils.offload import OffloadManager
+
+        base = self._offload_base(tmp_path, monkeypatch)
+        monkeypatch.setenv("AR_RESUME_DIR", str(tmp_path / "resume"))
+        stale = os.path.join(base, "compressor_424242_deadbeef")
+        os.makedirs(stale)
+        mgr = OffloadManager(enabled=True, mode="offload", offload_dir_prefix="compressor")
+        # Even if every pid were dead, resume mode must not delete anything.
+        monkeypatch.setattr(OffloadManager, "_pid_alive", staticmethod(lambda pid: False))
+        tempdir = mgr._ensure_dir()
+        try:
+            assert tempdir == os.path.join(base, "compressor_resume")
+            assert os.path.exists(stale)
+        finally:
+            mgr._cleanup_tempdir()

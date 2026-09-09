@@ -819,7 +819,11 @@ class OffloadManager:
                 self._tempdir = os.path.join(base_dir, f"{self._prefix}_resume")
                 os.makedirs(self._tempdir, exist_ok=True)
             else:
-                self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
+                # A fresh temp dir is unique to this process. Before creating
+                # it, sweep leftover pid-tagged dirs from prior processes that
+                # were killed/crashed before their cleanup() could run.
+                self._sweep_stale_dirs(base_dir)
+                self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_{os.getpid()}_", dir=base_dir)
             logger.info(f"OffloadManager ({self._prefix}): tempdir = {self._tempdir}")
         return self._tempdir
 
@@ -900,6 +904,43 @@ class OffloadManager:
                 except OSError:
                     pass  # not empty or already removed
         self._tempdir = None
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """Return *True* if a process with *pid* is still running."""
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False  # no such process
+        except OSError:
+            return True  # e.g. PermissionError -> exists, owned by another user
+        return True
+
+    def _sweep_stale_dirs(self, base_dir: str) -> None:
+        """Remove leftover pid-tagged temp dirs whose owning process is dead."""
+        if not os.path.isdir(base_dir):
+            return
+        tag = f"{self._prefix}_"
+        for entry in sorted(os.listdir(base_dir)):
+            full = os.path.join(base_dir, entry)
+            if not os.path.isdir(full) or not entry.startswith(tag):
+                continue
+            if entry == f"{self._prefix}_resume":
+                continue  # resume dir is intentionally persistent
+            pid_str = entry[len(tag) :].split("_", 1)[0]
+            if not pid_str.isdigit():
+                continue  # legacy dir without a pid tag -- cannot prove it is stale
+            pid = int(pid_str)
+            if self._pid_alive(pid):
+                continue
+            try:
+                shutil.rmtree(full)
+            except OSError as e:
+                logger.warning(f"OffloadManager ({self._prefix}): could not remove stale dir {full}: {e}")
+                continue
+            logger.info(f"OffloadManager ({self._prefix}): removed stale temp dir {full} (dead pid {pid})")
 
     # ------------------------------------------------------------------
     # Internal: clearing
