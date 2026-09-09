@@ -275,11 +275,14 @@ def load_rrq_model(
     residual_state = _load_state_dict(residual_model_dir)
     residual_planes_by_layer = _enumerate_residual_planes(residual_state)
 
-    eligible = set(base_layers) & set(residual_planes_by_layer)
-    if not eligible:
+    missing_layers = set(base_layers) - set(residual_planes_by_layer)
+    if missing_layers:
         raise ValueError(
-            "No common packed-INT2 layers found between base and residual models; " "cannot build any RRQ layer."
+            f"Residual model is missing RRQ planes for {len(missing_layers)} packed base layers "
+            f"(e.g. {sorted(missing_layers)[:3]}). Refusing to load because those base layers would remain uninitialized."
         )
+
+    eligible = set(base_layers)
 
     # Load the base model architecture + non-quant weights.  The packed ``qweight``
     # keys do not match the standard ``nn.Linear.weight`` shape, so those layers
@@ -366,8 +369,9 @@ def load_rrq_model(
                 )
             )
         if not complete or len(residual_planes) != total_planes - 1:
-            logger.warning(f"Layer {layer_name!r} missing residual planes; skipping.")
-            continue
+            raise ValueError(
+                f"Residual model is incomplete for layer {layer_name!r}; expected planes 1..{total_planes - 1}."
+            )
 
         # The base plane owns the bias; RRQLinear must not add a second one.
         rrq_linear = RRQLinear(base=base_plane, residual_planes=residual_planes, bias=None)

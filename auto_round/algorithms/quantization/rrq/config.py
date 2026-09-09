@@ -39,7 +39,7 @@ class RRQConfig(RTNConfig):
 
     With the default ``iters=200``, every plane uses the same SignRound
     optimization parameters as ordinary AutoRound. Passing ``iters=0``
-    explicitly selects RTN-only quantization without calibration.
+    explicitly selects RTN-only quantization (no sign-SGD tuning).
     """
 
     #: Number of INT2 residual planes (after the base plane).
