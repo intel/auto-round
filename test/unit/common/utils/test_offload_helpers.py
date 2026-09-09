@@ -262,18 +262,24 @@ class TestResolveModelDir:
             result = _resolve_model_dir(str(tmp_path / "missing"))
             assert result == str(tmp_path / "missing")
 
-    def test_revision_resolves_snapshot_without_branch_ref(self, tmp_path, monkeypatch):
-        """A commit-pinned lookup must not depend on the mutable refs/main file."""
-        from huggingface_hub import constants
-
+    def test_revision_resolves_partial_snapshot_from_cached_weight_index(self, tmp_path):
+        """A usable weight snapshot need not contain every repository file."""
         from auto_round.utils.offload import _resolve_model_dir
 
-        commit = "a" * 40
-        snapshot = tmp_path / "models--org--model" / "snapshots" / commit
-        snapshot.mkdir(parents=True)
-        monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+        snapshot = tmp_path / "snapshots" / "commit"
+        index_path = snapshot / "model.safetensors.index.json"
+        index_path.parent.mkdir(parents=True)
+        index_path.write_text('{"weight_map": {}}')
+        incomplete = RuntimeError("snapshot is missing README.md")
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", return_value=str(index_path)) as cached,
+            patch("huggingface_hub.snapshot_download", side_effect=incomplete) as download,
+        ):
+            resolved = _resolve_model_dir("org/model", revision="commit")
 
-        assert _resolve_model_dir("org/model", revision=commit) == str(snapshot)
+        assert resolved == str(snapshot)
+        cached.assert_called_once_with("org/model", "model.safetensors.index.json", revision="commit")
+        download.assert_not_called()
 
     def test_offload_manager_resolves_model_id_once(self, tmp_path):
         """Block reloads must reuse the snapshot resolved when the manager is created."""
@@ -283,14 +289,14 @@ class TestResolveModelDir:
         snapshot.mkdir()
         model = nn.Sequential(nn.Linear(2, 2))
         with (
-            patch("huggingface_hub.snapshot_download", return_value=str(snapshot)) as download,
+            patch("auto_round.utils.offload._resolve_model_dir", return_value=str(snapshot)) as resolve,
             patch("auto_round.utils.offload.load_block_from_model_files") as load_block,
         ):
             manager = OffloadManager(mode="clean", model_dir="org/model", model_revision="commit")
             manager.reload(model, "0")
 
         assert manager.model_dir == str(snapshot)
-        download.assert_called_once_with("org/model", revision="commit", local_files_only=True)
+        resolve.assert_called_once_with("org/model", revision="commit")
         load_block.assert_called_once_with(str(snapshot), "0", model[0])
 
     def test_offload_manager_does_not_eagerly_resolve_without_revision(self):
@@ -308,7 +314,11 @@ class TestResolveModelDir:
         from auto_round.utils.offload import _resolve_model_dir
 
         error = RuntimeError("snapshot unavailable")
-        with patch("huggingface_hub.snapshot_download", side_effect=error), pytest.raises(RuntimeError) as exc_info:
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", return_value=None),
+            patch("huggingface_hub.snapshot_download", side_effect=error),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
             _resolve_model_dir("org/model", revision="commit")
 
         assert exc_info.value is error

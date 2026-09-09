@@ -194,7 +194,17 @@ def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
     if os.path.isdir(model_dir):
         return model_dir
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import snapshot_download, try_to_load_from_cache
+
+        for filename in (
+            "model.safetensors.index.json",
+            "model.safetensors",
+            "pytorch_model.bin.index.json",
+            "pytorch_model.bin",
+        ):
+            cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
+            if isinstance(cached_file, str):
+                return os.path.dirname(cached_file)
 
         if revision is not None:
             return snapshot_download(model_dir, revision=revision, local_files_only=True)
