@@ -276,15 +276,22 @@ def linear_loop_experts_forward(
 
             # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
-            gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
             up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
 
-            # Apply gating
-            if hasattr(self, "_apply_gate"):
-                gate_up_out = torch.cat([gate_out, up_out], dim=-1)
-                gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
+            # Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False))
+            # expose only up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts
+            # (Mixtral/Qwen3-MoE/...) additionally own gate_proj. Mirror the grouped path
+            # (grouped_linear_experts_forward) which keys the same branch off gate_proj presence.
+            if hasattr(expert, "gate_proj"):
+                gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
+                # Apply gating
+                if hasattr(self, "_apply_gate"):
+                    gate_up_out = torch.cat([gate_out, up_out], dim=-1)
+                    gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
+                else:
+                    gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
             else:
-                gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
+                gated_out = self.act_fn(up_out)  # (num_samples, intermediate_dim)
 
             # Down projection
             expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
