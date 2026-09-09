@@ -43,13 +43,50 @@ import os
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils.common import compress_layer_names
+from auto_round.utils.common import apply_checkpoint_conversion_mapping, compress_layer_names
 from auto_round.utils.model_free_utils import (
     _normalize_tensor_name_for_warning,
     quantize_weight_rtn,
     split_fused_expert_tensors,
 )
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+
+def _get_conversion_aliases(name: str, model_type: str | None) -> set[str]:
+    """Return tensor-name aliases produced by transformers checkpoint conversion.
+
+    Uses ``transformers.conversion_mapping.get_checkpoint_conversion_mapping``
+    to obtain the rename rules for *model_type* and applies them to *name*.
+    Returns a set containing the original name plus any converted variants.
+
+    Falls back to ``{name}`` when the mapping is unavailable (older transformers
+    versions, unknown model_type, etc.).
+    """
+    aliases = {name}
+    if not model_type:
+        return aliases
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+
+        mappings = get_checkpoint_conversion_mapping(model_type)
+        if not mappings:
+            return aliases
+        # Build a flat {source_pattern: target_pattern} dict (first match wins)
+        key_mapping: dict[str, str] = {}
+        for conversion in mappings:
+            for src in conversion.source_patterns:
+                if src not in key_mapping:
+                    key_mapping[src] = (
+                        conversion.target_patterns[0]
+                        if isinstance(conversion.target_patterns, list)
+                        else conversion.target_patterns
+                    )
+        converted = apply_checkpoint_conversion_mapping(name, key_mapping)
+        if converted != name:
+            aliases.add(converted)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    return aliases
 
 
 def copy_missing_tensors_from_source(
@@ -102,6 +139,20 @@ def copy_missing_tensors_from_source(
     config_path = os.path.join(target_dir, "config.json")
     if not os.path.exists(config_path):
         return
+
+    # Load model_type from config for checkpoint conversion mapping
+    model_type: str | None = None
+    try:
+        with open(config_path) as f:
+            _cfg = json.load(f)
+        model_type = _cfg.get("model_type")
+        if model_type is None:
+            # For composite models (e.g. VLMs), try text_config
+            text_cfg = _cfg.get("text_config")
+            if isinstance(text_cfg, dict):
+                model_type = text_cfg.get("model_type")
+    except (json.JSONDecodeError, OSError):
+        pass
 
     if not os.path.isdir(source_dir):
         try:
@@ -198,12 +249,17 @@ def copy_missing_tensors_from_source(
 
         Handles models where the source and saved prefixes differ, e.g.
         google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
+        Also applies transformers checkpoint conversion mapping (e.g. Nemotron-H
+        ``backbone.*`` → ``model.*``).
         """
         aliases = {name}
         if name.startswith("language_model.model."):
             aliases.add("model.language_model." + name[len("language_model.model.") :])
         elif name.startswith("model.language_model."):
             aliases.add("language_model.model." + name[len("model.language_model.") :])
+        # Apply transformers checkpoint conversion mapping (e.g. Nemotron-H)
+        if model_type:
+            aliases |= _get_conversion_aliases(name, model_type)
         return aliases
 
     def _is_truly_missing(name: str) -> bool:

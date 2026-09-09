@@ -442,6 +442,29 @@ class TestCopyMissingTensorsFromSource:
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
 
+    def test_transformers_checkpoint_rename_not_copied(self, tmp_path):
+        """Nemotron-H: source uses 'backbone.' prefix, saved output uses 'model.' prefix.
+
+        The transformers checkpoint conversion mapping maps 'backbone.' → 'model.',
+        so source tensors with 'backbone.' prefix should NOT be treated as missing
+        when the saved output has the corresponding 'model.' tensors.
+        """
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {"backbone.layers.0.self_attn.q_proj.weight": torch.randn(32, 64)},
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {"model.layers.0.self_attn.q_proj.qweight": torch.randint(0, 2**31, (8, 32), dtype=torch.int32)},
+            os.path.join(tgt, "model.safetensors"),
+        )
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"model_type": "nemotron_h"}, f)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
     def test_known_block_prefix_not_copied(self, tmp_path):
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)
