@@ -364,10 +364,10 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
             raise ValueError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
 
     def _dequantize(self) -> torch.Tensor:
-        """Dequantize the packed weights into a full ``(out, in)`` weight tensor.
+        """Dequantize the packed weights into a full ``(in, out)`` weight matrix.
 
         Shared by :meth:`forward` and by multi-plane layers (e.g. RRQ) that need
-        the plain dequantized weight. The result is returned in float and the
+        the plain dequantized weights. The result is returned in float and the
         caller casts it to the desired dtype before the matmul.
         """
         if self.use_generic_bit_packing:
