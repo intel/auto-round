@@ -700,9 +700,33 @@ class _CompressorBuilder(object):
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
         # RRQConfig inherits RTNConfig but must use the regular calibrated
         # path: the model-free RTN path only emits a single base plane and
-        # would silently drop every residual plane.
+        # would silently drop every residual plane.  Two guard cases:
+        #
+        # (a) explicit ``model_free=True``: raises ValueError because
+        #     ``is_model_free_route`` checks explicit before
+        #     ``disable_model_free`` — there is no way to "undo" an
+        #     explicit request via ``disable_model_free``.
+        # (b) auto-routing (no explicit flag): set ``disable_model_free``
+        #     so the regular calibrated path is taken.  Without this,
+        #     ``is_model_free_route`` would auto-route when model is a
+        #     string + iters==0 + disable_opt_rtn=True.
         if isinstance(quant_config, RRQConfig):
-            route_kwargs["disable_model_free"] = True
+            if bool(route_kwargs.get("model_free", base_kwargs.get("model_free", False))):
+                # (a) explicit model_free=True — cannot be overridden
+                raise ValueError(
+                    "RRQ requires the regular calibrated path (model_free=False). "
+                    "The model-free RTN path emits only a single base plane and would "
+                    "silently drop the residual planes. Pass a loaded model (not a model "
+                    "path) or set model_free=False / omit it. "
+                    "Note: disable_model_free only suppresses the automatic route and "
+                    "cannot override an explicit model_free=True."
+                )
+            else:
+                # (b) auto-route guard: force regular path.
+                # ``route_kwargs`` wins over ``base_kwargs`` in the
+                # ``route_decision_kwargs`` merge, so this alone is enough
+                # to make ``is_model_free_route`` return False.
+                route_kwargs["disable_model_free"] = True
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and
