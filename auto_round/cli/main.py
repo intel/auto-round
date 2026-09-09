@@ -235,7 +235,7 @@ def start(recipe="default", argv=None):
 
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
-    args._api_format = args.format if format_was_explicit else None
+    args._api_format = args.format if format_was_explicit or args.model_free else None
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():

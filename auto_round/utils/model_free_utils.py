@@ -924,6 +924,29 @@ def _quantize_weight_nvfp4_e5m3(
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
+def _quantize_weight_int_fake(
+    weight: torch.Tensor,
+    layer_name: str,
+    bits: int,
+    group_size: int,
+    sym: bool,
+    device: str = "cpu",
+    disable_opt_rtn: bool = True,
+) -> dict[str, torch.Tensor]:
+    """Fake-quantize an INT WOQ weight tensor and return its QDQ weight."""
+    from auto_round.data_type.utils import get_quant_func
+
+    original_dtype = weight.dtype
+    original_in_features = weight.shape[1]
+    weight_dev = weight.to(device=device, dtype=torch.float32)
+    if original_in_features % group_size:
+        weight_dev = torch.nn.functional.pad(weight_dev, (0, group_size - original_in_features % group_size))
+
+    quant_func, _ = get_quant_func("int", bits, sym=sym, disable_opt_rtn=disable_opt_rtn, iters=0)
+    qdq_weight, _, _ = quant_func(weight_dev, bits=bits, group_size=group_size)
+    return {f"{layer_name}.weight": qdq_weight[:, :original_in_features].to(dtype=original_dtype, device="cpu")}
+
+
 def _pack_weight_nvfp4_e5m3(
     weight: torch.Tensor,
     layer_name: str,
@@ -1052,6 +1075,18 @@ def _quantize_single_tensor(
     # opt_rtn is always disabled for integer WOQ in model-free mode because
     # the scale search does not improve accuracy for INT quantization here.
     try:
+        if scheme.get("_output_format") == "fake":
+            out = _quantize_weight_int_fake(
+                weight=tensor,
+                layer_name=layer_name,
+                bits=bits,
+                group_size=group_size,
+                sym=sym,
+                device=device,
+            )
+            logger.debug(f"Fake-quantized: {layer_name} (bits={bits}, group_size={group_size}, sym={sym})")
+            return layer_name, out, layer_name, None
+
         qweight, qzeros, scales = quantize_func(
             weight=tensor,
             bits=bits,
