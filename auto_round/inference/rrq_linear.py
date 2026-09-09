@@ -138,8 +138,9 @@ class RRQLinear(nn.Module):
         """Build (and cache) the dequantized accumulated weight for ``num_planes``.
 
         Each plane is dequantized once via :meth:`QuantLinear._dequantize`, and
-        the resulting ``(out, in)`` weights are summed in float32 to avoid
-        precision loss. The result is cached until ``active_planes`` or the
+        the resulting ``(in, out)`` weights are summed in float32 to avoid
+        precision loss.
+        """
         underlying packed tensors change (the cache key is ``num_planes``).
         """
         if self._packed_weight is not None and self._packed_weight_planes == num_planes:

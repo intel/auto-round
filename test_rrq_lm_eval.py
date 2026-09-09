@@ -3,7 +3,7 @@
 
 Usage:
     python test_rrq_lm_eval.py                          # all tasks, all bit-widths
-    python test_rrq_lm_eval.py --tasks hellaswarc       # HellaSwag + ARC only
+    python test_rrq_lm_eval.py --tasks hellaswag        # HellaSwag + ARC only
     python test_rrq_lm_eval.py --bits 4 8              # only 4-bit and 8-bit
     python test_rrq_lm_eval.py --limit 200             # fast: 200 examples per task
     python test_rrq_lm_eval.py --base-dir ./rrq_output/base --residual-dir ./rrq_output/residual
