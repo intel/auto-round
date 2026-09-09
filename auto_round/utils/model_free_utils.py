@@ -150,8 +150,6 @@ def split_fused_expert_tensors(
 
         * **gate_up_proj** ``[N, 2*inter, hidden]`` →
       ``experts.{i}.gate_proj.weight`` + ``experts.{i}.up_proj.weight``
-    * **up_gate_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.up_proj.weight`` + ``experts.{i}.gate_proj.weight``
         * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
             ``experts.{i}.<proj>.weight``
 
@@ -891,6 +889,7 @@ def _dequant_nvfp4_tensors(
         if packed_key not in raw_tensors or scale_key not in raw_tensors:
             continue
         packed = raw_tensors.pop(packed_key)
+        packed = packed.contiguous().view(torch.uint8)
         block_scale = raw_tensors.pop(scale_key)
         global_scale = raw_tensors.pop(f"{layer_name}.weight_global_scale", None)
         # Input scale has no meaning once the weight is dequantized back to a
