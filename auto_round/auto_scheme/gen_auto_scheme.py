@@ -41,11 +41,26 @@ class AutoScheme:
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
 
+    # ------------------------------------------------------------------ #
+    # Bit-allocation solver.
+    #
+    # The default reproduces the historical behaviour exactly: a knapsack DP
+    # over scores measured on uniform-scheme models.
+    # ------------------------------------------------------------------ #
+    solver: str = "dp"
+    """Allocation solver: ``"dp"`` (knapsack DP) or ``"lagrangian"`` (shadow-price
+    bisection). Both optimise the same objective and in practice produce the same
+    allocation, but the Lagrangian solver hits a *fractional* avg_bits target exactly
+    and needs no discretised state space. See docs/auto_scheme_solver.md for measured
+    per-task accuracy."""
+
     def __post_init__(self):
         if isinstance(self.options, str):
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
         self.options = self._deduplicate_options(self.options)
+        if self.solver not in ("dp", "lagrangian"):
+            raise ValueError(f"AutoScheme.solver must be 'dp' or 'lagrangian', got {self.solver!r}")
 
     @staticmethod
     def _deduplicate_options(
