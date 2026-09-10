@@ -77,6 +77,12 @@ stages:
               buildARKWheel: $(BUILD_ARK_WHEEL)
               filterChangedTests: true
 
+  - template: template/ai-stage-template.yml
+    parameters:
+      dependsOn: "Unit_test"
+      enableAiAnalysis: true
+      postComment: true
+
   - stage: Coverage
     displayName: "Collect Coverage"
     pool:

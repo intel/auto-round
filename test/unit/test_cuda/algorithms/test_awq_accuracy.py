@@ -40,7 +40,7 @@ class TestAWQAccuracy:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Time-consuming lm_eval accuracy check; covered by nightly")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming lm_eval accuracy check; covered by nightly")
     def test_awq_w4a16_lmeval(self):
         """AWQ W4A16 on OPT-125m: lambada_openai accuracy check."""
         ar = AutoRound(

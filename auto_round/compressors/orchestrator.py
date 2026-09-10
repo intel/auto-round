@@ -1030,7 +1030,10 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             materialize_model_(block)
             convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
-            block = block.to(device)
+            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, pin_ngram_embeddings_on_cpu_
+
+            pin_ngram_embeddings_on_cpu_(block)
+            block = move_to_device_preserving_cpu_pinned(block, device)
 
             ctx = BlockContext(
                 model=self.model,
@@ -1096,7 +1099,13 @@ class CompressionOrchestrator(BaseOrchestrator):
                     device,
                 )
             else:
-                block = block.to(device)
+                from auto_round.utils.model import (
+                    move_to_device_preserving_cpu_pinned,
+                    place_ngram_embeddings_for_tuning_,
+                )
+
+                place_ngram_embeddings_for_tuning_(block)
+                block = move_to_device_preserving_cpu_pinned(block, device)
                 card_0_in_high_risk, loss_device = False, device
         else:
             card_0_in_high_risk, loss_device = False, device

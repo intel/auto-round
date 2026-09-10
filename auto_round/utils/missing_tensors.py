@@ -39,152 +39,54 @@
 
 import json
 import os
-import re
-from typing import Optional, Tuple
 
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils.common import compress_layer_names
+from auto_round.utils.common import apply_checkpoint_conversion_mapping, compress_layer_names
+from auto_round.utils.model_free_utils import (
+    _normalize_tensor_name_for_warning,
+    quantize_weight_rtn,
+    split_fused_expert_tensors,
+)
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-# ------------------------------------------------------------------ #
-# Fused expert projection patterns                                      #
-# ------------------------------------------------------------------ #
-# Maps a fused projection name to its constituent split names.
-# When a 3D tensor ``*.experts.<fused_name>`` (shape [num_experts, ...])
-# is encountered, it is split along dimension 0 of the per-expert 2-D
-# slice to produce one tensor per split name per expert.
-_FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
-    "gate_up_proj": ["gate_proj", "up_proj"],
-    "w13": ["w1", "w3"],
-}
 
-_AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
-_WARNING_INDEX_PLACEHOLDER = "<idx>"
+def _get_conversion_aliases(name: str, model_type: str | None) -> set[str]:
+    """Return tensor-name aliases produced by transformers checkpoint conversion.
 
+    Uses ``transformers.conversion_mapping.get_checkpoint_conversion_mapping``
+    to obtain the rename rules for *model_type* and applies them to *name*.
+    Returns a set containing the original name plus any converted variants.
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
-    """Normalize tensor names for warning_once deduplication.
-
-    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
-    (``<idx>`` by default) so warning keys are stable across different
-    layer/expert ids.
+    Falls back to ``{name}`` when the mapping is unavailable (older transformers
+    versions, unknown model_type, etc.).
     """
-    parts = name.split(".")
-    normalized_parts = []
-    for part in parts:
-        if part.isdigit():
-            normalized_parts.append(numeric_replacement)
-            continue
-        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
-    return ".".join(normalized_parts)
+    aliases = {name}
+    if not model_type:
+        return aliases
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
 
-
-def split_fused_expert_tensors(
-    tensors_dict: dict[str, torch.Tensor],
-) -> dict[str, torch.Tensor]:
-    """Split 3-D fused expert tensors into per-expert 2-D tensors.
-
-    Many MoE checkpoints store expert weights as fused 3-D parameters
-    under either ``*.experts.<proj_name>`` or ``*.moe.<proj_name>``
-    (for example ``gate_up_proj`` with shape
-    ``[num_experts, 2*intermediate, hidden]``, or ``down_proj`` with shape
-    ``[num_experts, out, in]``).  After unfusing, each expert gets its own
-    2-D weight tensor, e.g.
-    ``experts.0.gate_proj.weight [intermediate, hidden]``.
-
-    Splitting rules:
-
-        * **gate_up_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.gate_proj.weight`` + ``experts.{i}.up_proj.weight``
-    * **up_gate_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.up_proj.weight`` + ``experts.{i}.gate_proj.weight``
-        * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
-            ``experts.{i}.<proj>.weight``
-
-        For ``*.moe.<proj_name>`` tensors, outputs use
-        ``*.moe.experts.{i}.<proj>.weight`` so they align with the sequential
-        expert module layout used by quantized MoE replacements.
-
-    Non-3-D or non-expert tensors pass through unchanged.
-
-    Args:
-        tensors_dict: Mapping of tensor names to tensors.
-
-    Returns:
-        New dict with fused expert tensors replaced by per-expert 2-D tensors.
-    """
-    result: dict[str, torch.Tensor] = {}
-    split_count = 0
-
-    for tensor_name, tensor in tensors_dict.items():
-        if tensor.dim() != 3:
-            result[tensor_name] = tensor
-            continue
-
-        warning_tensor_name = _normalize_tensor_name_for_warning(tensor_name)
-
-        # Strip optional .weight suffix for pattern matching
-        stripped = tensor_name
-        stripped = stripped.removesuffix(".weight")  # len(".weight") == 7
-
-        # Expect: <prefix>.experts.<proj_name>
-        dot_idx = stripped.rfind(".")
-        if dot_idx < 0:
-            result[tensor_name] = tensor
-            continue
-
-        parent = stripped[:dot_idx]
-        proj_name = stripped[dot_idx + 1 :]
-
-        parent_last = parent.split(".")[-1]
-        is_experts_parent = parent.endswith("experts") or parent_last == "experts"
-        is_moe_parent = parent.endswith("moe") or parent_last == "moe"
-
-        # The immediate parent must be "experts" or "moe"
-        if not is_experts_parent and not is_moe_parent:
-            logger.warning_once(
-                "Found 3-D tensor '%s' while splitting expert tensors; "
-                "it will be kept unchanged. If this is an MoE/expert weight that should be split/quantized, "
-                "please open an issue at %s.",
-                warning_tensor_name,
-                _AUTOROUND_ISSUE_URL,
-            )
-            result[tensor_name] = tensor
-            continue
-
-        target_prefix = parent if is_experts_parent else f"{parent}.experts"
-
-        num_experts = tensor.shape[0]
-
-        if proj_name in _FUSED_EXPERT_PROJ_PATTERNS:
-            split_names = _FUSED_EXPERT_PROJ_PATTERNS[proj_name]
-            logger.warning_once(
-                f"Splitting fused expert tensor '{warning_tensor_name}' "
-                f"(shape={list(tensor.shape)}, num_experts={num_experts}) "
-                f"into {split_names}"
-            )
-            for i in range(num_experts):
-                expert_2d = tensor[i]  # [fused_out, in_features]
-                chunks = expert_2d.chunk(len(split_names), dim=0)
-                for split_name, chunk in zip(split_names, chunks):
-                    out_key = f"{target_prefix}.{i}.{split_name}.weight"
-                    result[out_key] = chunk.contiguous()
-        else:
-            logger.warning_once(
-                f"Splitting stacked expert tensor '{warning_tensor_name}' "
-                f"(shape={list(tensor.shape)}, num_experts={num_experts})"
-            )
-            for i in range(num_experts):
-                expert_2d = tensor[i]  # [out, in]
-                out_key = f"{target_prefix}.{i}.{proj_name}.weight"
-                result[out_key] = expert_2d.contiguous()
-
-        split_count += 1
-
-    return result
+        mappings = get_checkpoint_conversion_mapping(model_type)
+        if not mappings:
+            return aliases
+        # Build a flat {source_pattern: target_pattern} dict (first match wins)
+        key_mapping: dict[str, str] = {}
+        for conversion in mappings:
+            for src in conversion.source_patterns:
+                if src not in key_mapping:
+                    key_mapping[src] = (
+                        conversion.target_patterns[0]
+                        if isinstance(conversion.target_patterns, list)
+                        else conversion.target_patterns
+                    )
+        converted = apply_checkpoint_conversion_mapping(name, key_mapping)
+        if converted != name:
+            aliases.add(converted)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        pass
+    return aliases
 
 
 def copy_missing_tensors_from_source(
@@ -237,6 +139,20 @@ def copy_missing_tensors_from_source(
     config_path = os.path.join(target_dir, "config.json")
     if not os.path.exists(config_path):
         return
+
+    # Load model_type from config for checkpoint conversion mapping
+    model_type: str | None = None
+    try:
+        with open(config_path) as f:
+            _cfg = json.load(f)
+        model_type = _cfg.get("model_type")
+        if model_type is None:
+            # For composite models (e.g. VLMs), try text_config
+            text_cfg = _cfg.get("text_config")
+            if isinstance(text_cfg, dict):
+                model_type = text_cfg.get("model_type")
+    except (json.JSONDecodeError, OSError):
+        pass
 
     if not os.path.isdir(source_dir):
         try:
@@ -333,12 +249,17 @@ def copy_missing_tensors_from_source(
 
         Handles models where the source and saved prefixes differ, e.g.
         google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
+        Also applies transformers checkpoint conversion mapping (e.g. Nemotron-H
+        ``backbone.*`` → ``model.*``).
         """
         aliases = {name}
         if name.startswith("language_model.model."):
             aliases.add("model.language_model." + name[len("language_model.model.") :])
         elif name.startswith("model.language_model."):
             aliases.add("language_model.model." + name[len("model.language_model.") :])
+        # Apply transformers checkpoint conversion mapping (e.g. Nemotron-H)
+        if model_type:
+            aliases |= _get_conversion_aliases(name, model_type)
         return aliases
 
     def _is_truly_missing(name: str) -> bool:
@@ -513,174 +434,6 @@ def copy_missing_tensors_from_source(
     logger.info(
         f"Successfully wrote {len(missing_tensors_dict)} missing tensor(s) to " f"'{new_shard_name}' in {target_dir}."
     )
-
-
-def quantize_weight_rtn(
-    weight: torch.Tensor,
-    bits: int,
-    group_size: int,
-    sym: bool = True,
-    device: Optional[torch.device] = None,
-    disable_opt_rtn: bool = True,
-    *,
-    packing: str,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Quantize a 2-D weight tensor and pack into auto_gptq format.
-
-    Parameters
-    ----------
-    weight : Tensor [out_features, in_features]
-    bits   : target bit-width (e.g. 4, 8)
-    group_size : quantization group size along in_features
-    sym    : use symmetric quantisation
-    device : compute device (cuda / cpu). Results are always returned on CPU.
-    disable_opt_rtn : when False and sym=True, use the optimised-RTN scale
-        search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
-        candidates per group and picks the best MSE.  Defaults to True
-        (plain RTN) to preserve backward-compatible behaviour.
-    packing : the packing_format the artifact will declare (required); the
-        zero-point convention follows the inference backend registry.  GPTQ_FORMAT
-        entries ("auto_round:auto_gptq", qlinear_torch_zp) store zp - 1 per
-        nibble and unpack with +1; GPTQ_FORMAT_NO_ZP entries ("auto_round",
-        "auto_round:gptqmodel", qlinear_torch) store the zero point directly.
-        Any other value raises.
-
-    Returns
-    -------
-    qweight : [in_features // pack_factor, out_features]  int32
-    qzeros  : [num_groups,  out_features // pack_factor]   int32
-    scales  : [num_groups,  out_features]                   float16
-    """
-    assert weight.dim() == 2, f"Expected 2-D weight, got {weight.dim()}-D"
-    from auto_round.inference.backend import GPTQ_FORMAT, GPTQ_FORMAT_NO_ZP
-
-    if packing in GPTQ_FORMAT:
-        zp_minus_one = True
-    elif packing in GPTQ_FORMAT_NO_ZP:
-        zp_minus_one = False
-    else:
-        raise ValueError(
-            f"unsupported packing format '{packing}': zero-point conventions are defined only for "
-            f"{GPTQ_FORMAT} (zp - 1, unpacked with +1) and {GPTQ_FORMAT_NO_ZP} (zp stored directly)"
-        )
-    out_features, in_features = weight.shape
-    if device is None:
-        device = weight.device
-    # Single-step transfer + cast avoids an intermediate BF16 copy on CUDA
-    # (``weight.to(device).float()`` would briefly allocate both BF16 and
-    # float32 buffers on the target device).
-    weight = weight.to(device=device, dtype=torch.float32)
-
-    # --- pad in_features to multiple of group_size ---
-    if in_features % group_size != 0:
-        pad = group_size - (in_features % group_size)
-        weight = torch.nn.functional.pad(weight, (0, pad))
-        in_features = weight.shape[1]
-
-    num_groups = in_features // group_size
-    pack_factor = 32 // bits  # values per int32
-
-    # --- pad out_features to multiple of pack_factor (needed for qzeros) ---
-    out_pad = 0
-    if out_features % pack_factor != 0:
-        out_pad = pack_factor - (out_features % pack_factor)
-        weight = torch.nn.functional.pad(weight, (0, 0, 0, out_pad))
-    padded_out = weight.shape[0]
-
-    from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size
-
-    # Use get_quant_func (same as WrapperLinear) so all data types and opt_rtn
-    # variants are resolved via the QUANT_FUNC_WITH_DTYPE registry uniformly.
-    quant_func, _ = get_quant_func("int", bits, sym=sym, disable_opt_rtn=disable_opt_rtn, iters=0)
-    # quant_func returns (qdq_result, scale, zp_or_maxq)
-    _, scale, zp_val = quant_func(weight, bits=bits, group_size=group_size)
-
-    if sym:
-        maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit
-        zero_point = maxq  # unsigned offset for packing
-
-        # scale shape: [padded_out * num_groups, 1]
-        # Reshape weight for group-wise quantization: [padded_out * num_groups, group_size]
-        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
-        del weight
-
-        # Compute integer values for packing
-        q = (w_grouped / scale).round_().clamp_(-maxq, maxq - 1)
-        del w_grouped
-        q += zero_point  # shift to unsigned [0, 2*maxq - 1]
-        q = q.to(torch.int32)
-
-        # scale → [num_groups, padded_out] (float16)
-        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
-        del scale
-
-        zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
-    else:
-        # Asymmetric quantization
-        max_int = (1 << bits) - 1
-
-        # scale shape: [padded_out * num_groups, 1], zp_val shape: [padded_out * num_groups, 1]
-
-        # Reshape weight for group-wise quantization
-        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
-        del weight
-
-        # Compute integer values for packing
-        q = (w_grouped / scale).round_()
-        del w_grouped
-        q += zp_val
-        q.clamp_(0, max_int)
-        q = q.to(torch.int32)
-
-        # scale → [num_groups, padded_out] (float16)
-        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
-        del scale
-
-        # zp → [num_groups, padded_out]
-        zp = zp_val.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.int32)
-        del zp_val
-
-    # q → [in_features, padded_out]
-    q = q.reshape(padded_out, in_features).t().contiguous()
-
-    # ---- Pack qweight: [in_features // pack_factor, padded_out] ----
-    # Vectorised: reshape → broadcast shift → int64 sum (≡ bitwise-OR for
-    # non-overlapping bit lanes) avoids a Python loop per bit-lane.
-    _shifts = torch.arange(pack_factor, dtype=torch.int64, device=device) * bits
-    q_packed = q.reshape(in_features // pack_factor, pack_factor, padded_out).to(torch.int64)
-    del q
-    qweight = (q_packed << _shifts[None, :, None]).sum(dim=1).to(torch.int32)
-    del q_packed
-
-    # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    # The zero-point convention is a property of the declared packing format
-    # (see the backend registry): the auto_round:auto_gptq format
-    # (qlinear_torch_zp) adds +1 to zeros after unpacking, so we subtract 1
-    # before packing to compensate. The (zp-1) packing cannot represent
-    # zp=0: a -1 left-shifts into a negative word and corrupts every nibble
-    # sharing it. Clamp the stored value so only that zero-point degrades
-    # (decodes as +1). Formats in GPTQ_FORMAT_NO_ZP (plain qlinear_torch)
-    # read the nibble as the zero point directly, so it is stored as-is
-    # (symmetric packing stores the offset-binary constant the same way:
-    # 7 for the gptq family, 8 for the direct family).
-    if zp_minus_one:
-        zp = (zp - 1).clamp_(0, (1 << bits) - 1)
-    else:
-        zp = zp.clamp_(0, (1 << bits) - 1)
-    zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
-    del zp
-    qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
-    del zp_packed, _shifts
-
-    # Remove output padding from qweight / scales (qzeros stays in pack units)
-    if out_pad > 0:
-        qweight = qweight[:, :out_features]
-        scales_out = scales_out[:, :out_features]
-
-    # Always return CPU tensors (safetensors requires CPU)
-    return qweight.cpu(), qzeros.cpu(), scales_out.cpu()
 
 
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:

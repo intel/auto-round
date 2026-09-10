@@ -12,7 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for auto_round.compressors.model_free module."""
+"""Unit tests for auto_round.compressors.model_free module.
+
+These generic model-free configuration and export tests are deliberately CPU-only.
+Backend-specific model-free behavior is covered by test_model_free_parity.py.
+"""
 
 import json
 import os
@@ -452,6 +456,49 @@ def test_nvfp4_e5m3_model_free_fake_quantization():
     assert not is_model_free_supported_scheme("NVFP4+")
 
 
+def test_int_model_free_fake_quantization():
+    shard_path = "int-fake-shard.safetensors"
+    weight = torch.randn(8, 32)
+    try:
+        save_file({"layer.fc.weight": weight}, shard_path)
+        output, quantized, _ = _process_shard(
+            shard_path,
+            {**_DEFAULT_SCHEME, "_output_format": "fake"},
+            {},
+            [],
+        )
+    finally:
+        if os.path.exists(shard_path):
+            os.remove(shard_path)
+
+    assert quantized == ["layer.fc"]
+    assert set(output) == {"layer.fc.weight"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+
+
+def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    with open(os.path.join(output_dir, "quantization_config.json"), "w") as f:
+        json.dump({"stale": True}, f)
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="W4A16", format="fake"
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    assert "model.layers.0.self_attn.q_proj.weight" in output_keys
+    assert "model.layers.0.self_attn.q_proj.qweight" not in output_keys
+    assert not os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+    with open(os.path.join(output_dir, "config.json")) as f:
+        assert "quantization_config" not in json.load(f)
+
+
 def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     tensors = {
         "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
@@ -646,7 +693,7 @@ class TestModelFreeQuantize:
     def test_basic(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="W4A16", model_free=True).quantize_and_save(output_dir)
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, device_map="cpu").quantize_and_save(output_dir)
         qc = _read_qconfig(output_dir)
         assert qc["quant_method"] == "auto-round" and qc["bits"] == 4 and qc["model_free"] is True
         keys = _read_output_keys(output_dir)
@@ -660,7 +707,9 @@ class TestModelFreeQuantize:
         }
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="W4A16", model_free=True, ignore_layers="mlp").quantize_and_save(output_dir)
+        AutoRound(
+            model=model_dir, scheme="W4A16", model_free=True, ignore_layers="mlp", device_map="cpu"
+        ).quantize_and_save(output_dir)
         keys = _read_output_keys(output_dir)
         assert "model.layers.0.mlp.fc1.weight" in keys and "model.layers.0.mlp.fc1.qweight" not in keys
         assert "model.layers.0.self_attn.q_proj.qweight" in keys
@@ -668,13 +717,15 @@ class TestModelFreeQuantize:
     def test_multi_shard(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS, multi_shard=True)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="W4A16", model_free=True).quantize_and_save(output_dir)
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, device_map="cpu").quantize_and_save(output_dir)
         assert os.path.exists(os.path.join(output_dir, "model.safetensors.index.json"))
 
     def test_quant_lm_head(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="W4A16", model_free=True, quant_lm_head=True).quantize_and_save(output_dir)
+        AutoRound(
+            model=model_dir, scheme="W4A16", model_free=True, quant_lm_head=True, device_map="cpu"
+        ).quantize_and_save(output_dir)
         assert "lm_head.qweight" in _read_output_keys(output_dir)
 
     def test_layer_config_lm_head_bits_takes_effect(self, tmp_path):
@@ -686,6 +737,7 @@ class TestModelFreeQuantize:
             scheme="W2A16G64",
             model_free=True,
             layer_config={"lm_head": {"bits": 4}},
+            device_map="cpu",
         ).quantize_and_save(output_dir)
         assert "lm_head.qweight" in _read_output_keys(output_dir)
 
@@ -698,6 +750,7 @@ class TestModelFreeQuantize:
             scheme="W2A16G64",
             model_free=True,
             layer_config={"lm_head": {"scheme": "W4A16"}},
+            device_map="cpu",
         ).quantize_and_save(output_dir)
         assert "lm_head.qweight" in _read_output_keys(output_dir)
 
@@ -705,7 +758,10 @@ class TestModelFreeQuantize:
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         output_dir = str(tmp_path / "output")
         AutoRound(
-            model=model_dir, scheme=QuantizationScheme(bits=4, group_size=64, sym=False), model_free=True
+            model=model_dir,
+            scheme=QuantizationScheme(bits=4, group_size=64, sym=False),
+            model_free=True,
+            device_map="cpu",
         ).quantize_and_save(output_dir)
         qc = _read_qconfig(output_dir)
         assert qc["sym"] is False and qc["group_size"] == 64
@@ -985,7 +1041,7 @@ class TestLLMCompressorMXFPSource:
         }
         model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="W4A16", model_free=True).quantize_and_save(output_dir)
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, device_map="cpu").quantize_and_save(output_dir)
 
         qc = _read_qconfig(output_dir)
         assert qc["quant_method"] == "auto-round" and qc["bits"] == 4
@@ -1057,7 +1113,9 @@ class TestSchemeValidation:
     def test_unsupported_raises(self, tmp_path, name):
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         with pytest.raises(ValueError):
-            AutoRound(model=model_dir, model_free=True, scheme=name).quantize_and_save(str(tmp_path / "out"))
+            AutoRound(model=model_dir, model_free=True, scheme=name, device_map="cpu").quantize_and_save(
+                str(tmp_path / "out")
+            )
 
     def test_is_model_free_supported_scheme(self):
         for name in _SUPPORTED:
@@ -1078,6 +1136,16 @@ class TestSchemeValidation:
 
 
 class TestCliAutoRouting:
+    def test_model_free_uses_auto_round_format_by_default(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+        monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("format", args._api_format))
+
+        cli_main.start(argv=["--model", "dummy", "--model_free"])
+
+        assert captured["format"] == "auto_round"
+
     def test_auto_routes(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
         out_dir = str(tmp_path / "out")
@@ -1088,6 +1156,8 @@ class TestCliAutoRouting:
             [
                 "--model",
                 model_dir,
+                "--device",
+                "cpu",
                 "--scheme",
                 "W4A16",
                 "--iters",
@@ -1464,6 +1534,7 @@ class TestModelFreeAutoScheme:
             model_free=True,
             nsamples=1,
             dataset=_make_local_calibration_dataset(tmp_path),
+            device_map="cpu",
         )
         ar.quantize_and_save(output_dir, format="auto_round")
 
@@ -1490,6 +1561,7 @@ class TestModelFreeAutoScheme:
             model_free=True,
             nsamples=1,
             dataset=_make_local_calibration_dataset(tmp_path),
+            device_map="cpu",
         )
         ar.quantize_and_save(output_dir, format="llm_compressor")
 
@@ -1528,7 +1600,9 @@ class TestMXFPAutoRoundFormat:
         }
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="MXFP4", model_free=True).quantize_and_save(output_dir, format="auto_round")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True, device_map="cpu").quantize_and_save(
+            output_dir, format="auto_round"
+        )
         qc = _read_qconfig(output_dir)
         assert qc["quant_method"] == "auto-round"
         assert qc["packing_format"] == "auto_round:llm_compressor"
@@ -1556,7 +1630,9 @@ class TestMXFPAutoRoundFormat:
         }
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="MXFP8", model_free=True).quantize_and_save(output_dir, format="auto_round")
+        AutoRound(model=model_dir, scheme="MXFP8", model_free=True, device_map="cpu").quantize_and_save(
+            output_dir, format="auto_round"
+        )
         qc = _read_qconfig(output_dir)
         assert qc["quant_method"] == "auto-round"
         assert qc["packing_format"] == "auto_round:llm_compressor"
@@ -1575,9 +1651,9 @@ class TestMXFPAutoRoundFormat:
         }
         model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
         output_dir = str(tmp_path / "output")
-        AutoRound(model=model_dir, scheme="MXFP4", model_free=True, quant_lm_head=True).quantize_and_save(
-            output_dir, format="auto_round"
-        )
+        AutoRound(
+            model=model_dir, scheme="MXFP4", model_free=True, quant_lm_head=True, device_map="cpu"
+        ).quantize_and_save(output_dir, format="auto_round")
         qc = _read_qconfig(output_dir)
         extra = qc.get("extra_config", {})
         assert "lm_head" in extra

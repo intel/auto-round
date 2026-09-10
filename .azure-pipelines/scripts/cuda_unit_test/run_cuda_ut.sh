@@ -47,6 +47,17 @@ function setup_environment() {
     fi
 }
 
+function cleanup_test_workspace() {
+    local tmp_root="/test/tmp"
+    if [ -d "" ]; then
+        find "" -mindepth 1 -maxdepth 1 ! -name tiny_models -exec rm -rf {} +
+    fi
+    rm -rf "/test/ar_work_space"
+    rm -rf "/test/tmp_autoround"
+}
+
+trap cleanup_test_workspace EXIT
+
 function print_summary() {
     python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
     exit $?

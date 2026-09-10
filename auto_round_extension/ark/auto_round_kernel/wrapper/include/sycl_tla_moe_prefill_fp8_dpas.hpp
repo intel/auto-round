@@ -178,14 +178,13 @@ using cute_scalar_t = typename cute_scalar<ScalarT>::type;
 //
 // Sharing one counter across calls is safe because every launcher call is
 // synchronous (`event.wait()` in `MoEGEMMLauncher`), so a dispatch never
-// returns with the counter still in use. The pool keys buffers by device
-// rather than by queue, so two queues on the same device share one slot; that
-// is safe under the same host-side serialization the pool itself already
-// assumes (its maps are unguarded, and every ark entry point is reached with
-// the GIL held). The buffer lives until process exit, matching the singleton
-// lifetime already used by `EventManager`. The INT8 and S4 headers re-export
-// this helper rather than defining their own, so all three paths share one
-// slot -- also safe, for the same reason.
+// returns with the counter still in use. The pool keys buffers by
+// (device UUID, SYCL context, queue identity), so concurrent queues in one
+// context keep independent slots while each queue still reuses its own slot.
+// The buffer lives until process exit,
+// matching the singleton lifetime already used by `EventManager`. The INT8 and
+// S4 headers re-export this helper rather than defining their own, so all
+// three paths share one slot per queue.
 //
 // Note that a reused slot enters the kernel holding the previous dispatch's
 // final count rather than fresh (uninitialised) USM, so correctness rests
