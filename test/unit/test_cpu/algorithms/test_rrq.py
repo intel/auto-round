@@ -26,11 +26,11 @@ every available device.
 
 import os
 import shutil
+from test.helpers import evaluate_accuracy, opt_name_or_path
 
 import pytest
 import torch
 import torch.nn as nn
-from test.helpers import evaluate_accuracy, opt_name_or_path
 from transformers import AutoTokenizer
 
 from auto_round import AutoRound
