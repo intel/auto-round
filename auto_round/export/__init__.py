@@ -11,3 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+__all__ = ["generate_rrq_residual"]
+
+
+def __getattr__(name):
+    if name == "generate_rrq_residual":
+        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+
+        return generate_rrq_residual
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

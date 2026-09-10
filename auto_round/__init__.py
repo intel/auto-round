@@ -57,10 +57,9 @@ __all__ = [
 def __getattr__(name):
     """Lazy import for heavy submodules to avoid import cycles / slow startup.
 
-    Currently exposes RRQ-related entry points:
-    - ``load_rrq_model``: combined base + residual loading (``auto_round.inference.rrq_model``)
-    - ``generate_rrq_residual``: Phase 2 incremental residual generation
-      (``auto_round.export.export_to_autoround.export_to_rrq``)
+    Currently exposes ``load_rrq_model`` (combined base + residual RRQ loading)
+    and ``generate_rrq_residual`` (build residual from an existing base), both
+    of which live in the inference/export paths and pull in heavy imports.
     """
     if name == "load_rrq_model":
         from auto_round.inference.rrq_model import load_rrq_model
