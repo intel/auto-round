@@ -1127,6 +1127,7 @@ register_ignore_layers(
     ignore_layers=[
         "hyper_connection",
         "mlp.gate",  # MoE router gate
+        "shared_expert",
     ],
 )
 
