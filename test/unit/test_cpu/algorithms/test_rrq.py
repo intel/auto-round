@@ -168,7 +168,7 @@ class TestRRQHiddenAlgorithm:
         assert "rrq" not in listing
 
     def test_rrq_still_resolvable_by_name(self):
-        from auto_round.algorithms.registry import resolve_algorithm_alias, resolve_alg_config
+        from auto_round.algorithms.registry import resolve_alg_config, resolve_algorithm_alias
 
         assert resolve_algorithm_alias("rrq") == "rrq"
         assert resolve_algorithm_alias("rrq_rtn") == "rrq"
@@ -191,11 +191,10 @@ class TestRRQFormatAutoDetection:
     def test_auto_select_rrq_for_rrq_format(self):
         """Passing format='auto_round:rrq' without alg_configs should auto-select RRQ."""
         from auto_round.algorithms.quantization.rrq.config import RRQConfig
-        from auto_round.algorithms.registry import resolve_algorithm_names
 
         # Simulate what _CompressorBuilder.__new__ does:
         # when alg_configs is None and format is auto_round:rrq, it picks "rrq".
-        from auto_round.algorithms.registry import resolve_alg_config
+        from auto_round.algorithms.registry import resolve_alg_config, resolve_algorithm_names
 
         config = resolve_alg_config("rrq")
         assert isinstance(config, RRQConfig)
