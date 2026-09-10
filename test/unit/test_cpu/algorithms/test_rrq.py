@@ -723,9 +723,9 @@ class TestGenerateRRQResidual:
         with pytest.raises(ValueError, match="sym"):
             generate_rrq_residual(base_dir, raw_dir, out_dir, group_size=32, sym=False)
 
-    def test_top_level_export(self):
-        """generate_rrq_residual is accessible from auto_round top-level."""
-        from auto_round import generate_rrq_residual as gen
+    def test_export_access(self):
+        """generate_rrq_residual is accessible via auto_round.export."""
+        from auto_round.export import generate_rrq_residual as gen
 
         assert callable(gen)
 
