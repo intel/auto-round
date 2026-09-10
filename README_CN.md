@@ -35,7 +35,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
-* [2026/09] 我们实验性地支持 **递归残差量化（RRQ）**：一种渐进式多精度表示，在标准 INT2 base 之上叠加 INT2 残差平面。单个 checkpoint 即可在加载时选择 2/4/6/8-bit（以及逐层混合精度），无需重新量化：[*论文*](https://arxiv.org/abs/2608.04048)。
+* [2026/09] 我们实验性地支持 **递归残差量化（RRQ）**：一种渐进式多精度表示，在标准 INT2 base 之上叠加 INT2 残差平面。单个 checkpoint 即可在加载时选择 2/4/6/8-bit（以及逐层混合精度），无需重新量化：[*论文*](https://arxiv.org/abs/2608.04048)。注意：该功能仍处于实验阶段，尚不支持生产级部署场景。
 
 * [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
 
