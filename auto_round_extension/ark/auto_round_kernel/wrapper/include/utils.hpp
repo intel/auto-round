@@ -16,10 +16,13 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 #if ARK_DNNL
 #include <dnnl.hpp>
@@ -96,8 +99,32 @@ class DeviceMemoryPool {
   size_t get_device_key(sycl::queue* q) {
 #if ARK_XPU
     if (q != nullptr) {
-      auto uuid = q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
-      return UUIDHasher{}(uuid);
+      std::lock_guard<std::mutex> lock(key_mutex_);
+      auto key = get_device_queue_key_locked(q);
+      auto it = device_queue_ids_.find(key);
+      if (it != device_queue_ids_.end()) {
+        return it->second;
+      }
+      const size_t new_id = next_device_queue_id_++;
+      device_queue_ids_.emplace(key, new_id);
+      return new_id;
+    }
+#endif
+    return 0;
+  }
+
+  size_t get_device_context_key(sycl::queue* q) {
+#if ARK_XPU
+    if (q != nullptr) {
+      std::lock_guard<std::mutex> lock(key_mutex_);
+      auto key = get_device_context_key_locked(q);
+      auto it = device_context_ids_.find(key);
+      if (it != device_context_ids_.end()) {
+        return it->second;
+      }
+      const size_t new_id = next_device_context_id_++;
+      device_context_ids_.emplace(key, new_id);
+      return new_id;
     }
 #endif
     return 0;
@@ -108,18 +135,17 @@ class DeviceMemoryPool {
     return get_scratch_ptr(size, buf_loc, q, key);
   }
 
-  // Current size of the slab held for ``buf_loc`` on ``q``'s device, or 0 when
-  // no slab is held. Callers that must synchronize before an existing slab is
-  // freed (because in-flight kernels may still reference it) use this to detect
-  // the grow path in `get_scratch_ptr` ahead of time.
+  // Current size of the slab held for ``buf_loc`` on ``q``'s device+context+queue, or 0 when
+  // no slab is held.
   size_t get_scratch_size(size_t buf_loc, sycl::queue* q) {
     if (buf_loc >= MaxLocNum) return 0;
     auto key = get_device_key(q);
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
     auto it = dev_mem_size_map[buf_loc].find(key);
     return it == dev_mem_size_map[buf_loc].end() ? 0 : it->second;
   }
 
-  // Detach the slab held for ``buf_loc`` on ``q``'s device and hand ownership to
+  // Detach the slab held for ``buf_loc`` on ``q``'s device+context+queue and hand ownership to
   // the caller, which becomes responsible for synchronizing and freeing it.
   // Returns nullptr when no slab is held.
   //
@@ -130,6 +156,7 @@ class DeviceMemoryPool {
   void* detach_scratch_mem(size_t buf_loc, sycl::queue* q) {
     if (buf_loc >= MaxLocNum) return nullptr;
     auto key = get_device_key(q);
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
     auto it = dev_mem_ptr_map[buf_loc].find(key);
     if (it == dev_mem_ptr_map[buf_loc].end()) return nullptr;
     int8_t* ptr = it->second;
@@ -140,6 +167,7 @@ class DeviceMemoryPool {
 
   void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
     if (size == 0 || buf_loc >= MaxLocNum) return nullptr;
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
 
     auto it = dev_mem_ptr_map[buf_loc].find(key);
     if (it == dev_mem_ptr_map[buf_loc].end()) {
@@ -151,6 +179,26 @@ class DeviceMemoryPool {
 
     auto old_size = dev_mem_size_map[buf_loc][key];
     if (old_size < size) {
+#if ARK_XPU
+      if (q == nullptr) {
+        throw std::invalid_argument("DeviceMemoryPool: XPU grow requires a non-null SYCL queue");
+      }
+      // Do NOT block the host here with q->wait(). Two reasons:
+      //   1) It is redundant for correctness. The scratch slab is keyed
+      //      per-queue (see get_device_key), so only work enqueued on this
+      //      same queue `q` ever references this slab. Both the sycl::free
+      //      in release() below and the sycl::aligned_alloc_device in
+      //      allocate() are associated with `q`, and `q` is an in-order
+      //      queue (ARK device queues are built in_order; torch.xpu
+      //      streams are in-order by default). USM bookkeeping plus the
+      //      in-order ordering guarantee the old slab is not handed back
+      //      while any in-flight kernel still references it -- the same
+      //      guarantee the rest of the codebase relies on (e.g. the async
+      //      sycl::free in sycl_tla_moe_prefill_fp8_native).
+      //   2) A blocking wait() is illegal while `q` is recording to a
+      //      torch.xpu command graph, so a wait here would throw whenever a
+      //      scratch slab grows during graph capture (see issue #2206).
+#endif
       release(it->second, q);
       auto newptr = allocate(size, q);
       dev_mem_size_map[buf_loc][key] = size;
@@ -172,6 +220,91 @@ class DeviceMemoryPool {
   static constexpr int MaxLocNum = 13;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
+
+#if ARK_XPU
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  struct DeviceQueueKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+    size_t queue_id;
+
+    bool operator==(const DeviceQueueKey& other) const {
+      return queue_id == other.queue_id && context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceQueueKeyHasher {
+    size_t operator()(const DeviceQueueKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      h ^= std::hash<size_t>{}(key.queue_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+
+  size_t get_queue_id_locked(const sycl::queue& q) {
+    for (const auto& entry : queue_ids_) {
+      if (entry.queue == q) {
+        return entry.queue_id;
+      }
+    }
+    const size_t new_id = next_queue_id_++;
+    queue_ids_.push_back({q, new_id});
+    return new_id;
+  }
+
+  DeviceQueueKey get_device_queue_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    auto queue_id = get_queue_id_locked(*q);
+    return {get_device_uuid_locked(q), context_id, queue_id};
+  }
+
+  struct QueueEntry {
+    sycl::queue queue;
+    size_t queue_id;
+  };
+#endif
 
   int8_t* allocate(size_t size, sycl::queue* q) {
 #if ARK_XPU
@@ -198,6 +331,18 @@ class DeviceMemoryPool {
 
   std::array<SizeMap, MaxLocNum> dev_mem_size_map;
   std::array<PtrMap, MaxLocNum> dev_mem_ptr_map;
+  std::mutex scratch_mutex_;
+#if ARK_XPU
+  std::mutex key_mutex_;
+  std::vector<ContextEntry> context_ids_;
+  std::vector<QueueEntry> queue_ids_;
+  std::unordered_map<DeviceContextKey, size_t, DeviceContextKeyHasher> device_context_ids_;
+  std::unordered_map<DeviceQueueKey, size_t, DeviceQueueKeyHasher> device_queue_ids_;
+  size_t next_context_id_ = 1;
+  size_t next_queue_id_ = 1;
+  size_t next_device_context_id_ = 1;
+  size_t next_device_queue_id_ = 1;
+#endif
 };
 
 #if ARK_DNNL
@@ -247,61 +392,156 @@ class DnnlContext {
   }
 
   dnnl::engine* get_eng(sycl::queue* q) {
-    auto key = check_dnnl_device(q);
-    return &dev_engine_map[key];
-  }
-
-  dnnl::stream* get_stream(sycl::queue* q) {
-    auto key = check_dnnl_device(q);
-    return &dev_stream_map[key];
-  }
-
-  size_t check_dnnl_device(sycl::queue* q) {
-    size_t key = 0;
+    std::lock_guard<std::mutex> lock(mutex_);
 
     if (q == nullptr) {
-      if (dev_engine_map.find(key) == dev_engine_map.end()) {
-        dev_engine_map[key] = dnnl::engine(dnnl::engine::kind::cpu, 0);
-        dev_stream_map[key] = dnnl::stream(dev_engine_map[key]);
+      if (!cpu_engine_) {
+        cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
       }
-      return key;
+      return cpu_engine_.get();
     }
 
 #if ARK_XPU
-    key = DeviceMemoryPool::Instance()->get_device_key(q);
-    if (dev_engine_map.find(key) == dev_engine_map.end()) {
-      sycl::device dev = q->get_device();
-      sycl::context ctx = q->get_context();
-      dev_engine_map[key] = dnnl::sycl_interop::make_engine(dev, ctx);
-      dev_stream_map[key] = dnnl::sycl_interop::make_stream(dev_engine_map[key], *q);
+    auto key = get_device_context_key_locked(q);
+    auto engine_it = xpu_engines_.find(key);
+    if (engine_it != xpu_engines_.end()) {
+      return engine_it->second.get();
     }
+    auto dev = q->get_device();
+    auto ctx = q->get_context();
+    auto insert_result =
+        xpu_engines_.emplace(key, std::make_unique<dnnl::engine>(dnnl::sycl_interop::make_engine(dev, ctx)));
+    return insert_result.first->second.get();
 #else
-    if (dev_engine_map.find(key) == dev_engine_map.end()) {
-      dev_engine_map[key] = dnnl::engine(dnnl::engine::kind::cpu, 0);
-      dev_stream_map[key] = dnnl::stream(dev_engine_map[key]);
+    if (!cpu_engine_) {
+      cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
     }
+    return cpu_engine_.get();
 #endif
+  }
 
-    return key;
+  dnnl::stream get_stream(sycl::queue* q) {
+    auto* eng = get_eng(q);
+    if (q == nullptr) {
+      return dnnl::stream(*eng);
+    }
+#if ARK_XPU
+    return dnnl::sycl_interop::make_stream(*eng, *q);
+#else
+    return dnnl::stream(*eng);
+#endif
   }
 
   dnnl::memory get_scratch_mem(dnnl::memory::desc md, sycl::queue* q) {
-    auto key = check_dnnl_device(q);
+    auto key = get_dnnl_key(q);
     auto ptr = DeviceMemoryPool::Instance()->get_scratch_ptr(md.get_size(), 0, q, key);
-    return dnnl::memory(md, dev_engine_map[key], ptr);
+    return dnnl::memory(md, *get_eng(q), ptr);
   }
 
   void* get_scratch_mem(size_t size, size_t buf_loc, sycl::queue* q) {
-    return DeviceMemoryPool::Instance()->get_scratch_mem(size, buf_loc, q);
-  }
-
-  void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
+    auto key = get_dnnl_key(q);
     return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
   }
 
+  void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
+    if (q == nullptr) {
+      return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
+    }
+#if ARK_XPU
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto queue_key = DeviceMemoryPool::Instance()->get_device_key(q);
+    auto scratch_key = QueueScratchKey{queue_key, key};
+    auto it = dnnl_queue_scratch_ids_.find(scratch_key);
+    if (it != dnnl_queue_scratch_ids_.end()) {
+      return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, it->second);
+    }
+    const size_t new_id = next_dnnl_queue_scratch_id_++;
+    dnnl_queue_scratch_ids_.emplace(scratch_key, new_id);
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, new_id);
+#else
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
+#endif
+  }
+
  private:
-  std::unordered_map<size_t, dnnl::engine> dev_engine_map;
-  std::unordered_map<size_t, dnnl::stream> dev_stream_map;
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  size_t get_dnnl_key(sycl::queue* q) {
+    if (q == nullptr) return 0;
+#if ARK_XPU
+    return DeviceMemoryPool::Instance()->get_device_key(q);
+#else
+    return 0;
+#endif
+  }
+
+#if ARK_XPU
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+
+  struct QueueScratchKey {
+    size_t queue_key;
+    size_t user_key;
+
+    bool operator==(const QueueScratchKey& other) const {
+      return queue_key == other.queue_key && user_key == other.user_key;
+    }
+  };
+
+  struct QueueScratchKeyHasher {
+    size_t operator()(const QueueScratchKey& key) const {
+      size_t h = std::hash<size_t>{}(key.queue_key);
+      h ^= std::hash<size_t>{}(key.user_key) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  std::vector<ContextEntry> context_ids_;
+  std::unordered_map<QueueScratchKey, size_t, QueueScratchKeyHasher> dnnl_queue_scratch_ids_;
+  std::unordered_map<DeviceContextKey, std::unique_ptr<dnnl::engine>, DeviceContextKeyHasher> xpu_engines_;
+  size_t next_dnnl_queue_scratch_id_ = 1;
+  size_t next_context_id_ = 1;
+#endif
+
+  std::unique_ptr<dnnl::engine> cpu_engine_;
+  std::mutex mutex_;
 };
 
 #endif  // ARK_DNNL
