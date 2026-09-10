@@ -1114,6 +1114,17 @@ register_ignore_layers(
     ],
 )
 
+# qwen4: keep hyper_connection and MoE gate modules in full precision.
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Qwen4", mode="in"),
+    ],
+    ignore_layers=[
+        "hyper_connection",
+        "mlp.gate",  # MoE router gate
+    ],
+)
+
 
 def get_bagel_ignore_layers(model) -> list[str]:
     """Keep BAGEL generation-path modules in FP16.
