@@ -316,7 +316,11 @@ class AlgorithmHandler:
     def format_detail(cls, name: str) -> str:
         canonical = cls.resolve_alias(name)
         if canonical is None:
-            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None and not entry.hidden]
+            supported = [
+                entry.name
+                for entry in iter_algorithm_entries()
+                if entry.config_factory is not None and not entry.hidden
+            ]
             raise ValueError(f"Unknown algorithm '{name}'. Supported: {', '.join(supported)}.")
         entry = get_algorithm_entry(canonical)
         lines = [f"{entry.name}: {entry.summary}"]

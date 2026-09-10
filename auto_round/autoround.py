@@ -696,8 +696,7 @@ class _CompressorBuilder(object):
                 format = "auto_round:rrq"
             else:
                 raise ValueError(
-                    "RRQ requires --format auto_round:rrq. "
-                    "Use: auto-round --model <model> --format auto_round:rrq"
+                    "RRQ requires --format auto_round:rrq. " "Use: auto-round --model <model> --format auto_round:rrq"
                 )
         elif not is_rrq and has_rrq_fmt:
             raise ValueError(
