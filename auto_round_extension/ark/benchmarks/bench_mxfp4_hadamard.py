@@ -195,7 +195,10 @@ def measure_sustained_dram_copy(dtype: torch.dtype, warmup: int, iters: int) -> 
     dst = torch.empty_like(src)
     latency = bench(lambda: dst.copy_(src), warmup, iters)
     gbps = to_gbps(2 * src.numel() * itemsize, latency)
-    del src, dst
+    # Release both buffers (~2x DRAM_PROBE_BYTES) before the caller allocates
+    # again. Rebinding is equivalent to ``del`` here but does not trip ruff's
+    # F821 for a name captured by the lambda above.
+    src = dst = None
     torch.xpu.empty_cache()
     return gbps
 
