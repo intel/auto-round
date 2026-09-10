@@ -1087,7 +1087,12 @@ register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"glm5_next", mode="full"),
     ],
-    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj", "indexer"],  # get_glm_flash_ignore_layers: vllm issue
+    ignore_layers=[
+        get_glm_flash_ignore_layers,  # vllm issue
+        "weights_proj",
+        "indexer",
+        "self_attn",
+    ],
 )
 
 # step3p5

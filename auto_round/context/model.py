@@ -299,11 +299,11 @@ class ModelContext(BaseContext):
         materialize one block at a time from the checkpoint. Every other model (dense, or
         a MoE that already ships as ``ModuleList`` of ``Linear``) has nothing to gain and
         keeps the ordinary load path. ``AR_DISK_STREAM_MODEL=1`` forces this on for any
-        model; ``AR_DISABLE_AUTO_META_LOAD=1`` turns the automatic choice off.
+        model; ``AR_DISABLE_META_LOAD=1`` turns the automatic choice off.
         """
         if envs.AR_DISK_STREAM_MODEL:
             return True
-        if envs.AR_DISABLE_AUTO_META_LOAD:
+        if envs.AR_DISABLE_META_LOAD:
             return False
         if not isinstance(self.model, str):
             return False
@@ -331,7 +331,7 @@ class ModelContext(BaseContext):
         self.disk_stream_model_dir = checkpoint_dir
         logger.info(
             "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
-            "(set `AR_DISABLE_AUTO_META_LOAD=1` to load the whole model on CPU instead)."
+            "(set `AR_DISABLE_META_LOAD=1` to load the whole model on CPU instead)."
         )
         return True
 

@@ -833,7 +833,7 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
             raise RuntimeError(
                 f"Failed to materialize fused MoE parameter '{module_name}.{name}' from the checkpoint "
                 f"(value shape {tuple(value.shape)}). This usually means the model's fused-expert layout "
-                "is not yet recognised by the meta-skeleton loader. Set AR_DISABLE_AUTO_META_LOAD=1 to load "
+                "is not yet recognised by the meta-skeleton loader. Set AR_DISABLE_META_LOAD=1 to load "
                 "the whole model on CPU instead (uses more RAM)."
             ) from exc
     _fused_cache.clear()
