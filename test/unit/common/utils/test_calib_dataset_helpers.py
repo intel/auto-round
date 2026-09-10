@@ -16,6 +16,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+from datasets import Dataset, Features, Sequence, Value
 
 
 # ---------------------------------------------------------------------------
@@ -292,3 +293,68 @@ class TestApplyChatTemplateToSamples:
         second_call_args = tokenizer.apply_chat_template.call_args_list[1]
         msgs_arg = second_call_args[0][0]
         assert all(m["role"] != "system" for m in msgs_arg)
+
+
+# ---------------------------------------------------------------------------
+# _get_dataset_impl
+# ---------------------------------------------------------------------------
+class TestGetDatasetImpl:
+    def test_combines_sources_with_different_metadata_schemas(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        def dataset_loader(text_feature):
+            def load_dataset(*args, **kwargs):
+                return Dataset.from_dict(
+                    {
+                        "text": ["calibration sample"],
+                        "input_ids": [list(range(8))],
+                        "attention_mask": [[1] * 8],
+                    },
+                    features=Features(
+                        {
+                            "text": Value(text_feature),
+                            "input_ids": Sequence(Value("int64")),
+                            "attention_mask": Sequence(Value("int8")),
+                        }
+                    ),
+                )
+
+            return load_dataset
+
+        monkeypatch.setattr(
+            calib_dataset,
+            "CALIB_DATASETS",
+            {
+                "string_metadata": dataset_loader("string"),
+                "large_string_metadata": dataset_loader("large_string"),
+            },
+        )
+
+        dataset = calib_dataset._get_dataset_impl(
+            tokenizer=MagicMock(),
+            seqlen=8,
+            dataset_name="string_metadata,large_string_metadata",
+            nsamples=2,
+        )
+
+        assert dataset.column_names == ["input_ids", "attention_mask"]
+        assert len(dataset) == 2
+
+    def test_preserves_single_source_metadata(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        def load_dataset(*args, **kwargs):
+            return Dataset.from_dict(
+                {
+                    "source": ["unit-test"],
+                    "input_ids": [list(range(8))],
+                    "attention_mask": [[1] * 8],
+                }
+            )
+
+        monkeypatch.setattr(calib_dataset, "CALIB_DATASETS", {"single_source": load_dataset})
+        dataset = calib_dataset._get_dataset_impl(
+            tokenizer=MagicMock(), seqlen=8, dataset_name="single_source", nsamples=1
+        )
+
+        assert dataset.column_names == ["source", "input_ids", "attention_mask"]

@@ -51,7 +51,7 @@ class TestAutoRound:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="auto", trust_remote_code=True)
         assert model is not None, "Loaded model should not be None."
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")  # skip this test in CI
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")  # skip this test in CI
     @require_gptqmodel
     def test_autogptq_format_qsave_ignore_layers(self):
         model = AutoModelForCausalLM.from_pretrained(get_model_path("facebook/opt-125m"))

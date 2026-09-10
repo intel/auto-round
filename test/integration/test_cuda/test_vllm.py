@@ -182,7 +182,7 @@ class TestVllmEvaluation:
     not current_platform.is_cuda(),
     reason="only supports CUDA backend.",
 )
-@pytest.mark.skip_ci(reason="due to vllm and CT Dependency conflict.")
+@pytest.mark.skip_ci(reason="Third-party: due to vllm and CT Dependency conflict.")
 def test_vllm_awq_w8a8_llmc_inference(tiny_opt_model_path, tmp_path):
     """W8A8 AWQ → llm_compressor → vLLM: end-to-end inference test."""
     save_dir = str(tmp_path / "saved")

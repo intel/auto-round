@@ -26,7 +26,8 @@ Supported schemes
 -----------------
 Model-free mode supports the following quantization families:
 
-**Integer weight-only** (packed in ``auto_round:auto_gptq`` format):
+**Integer weight-only** (packed in ``auto_round:auto_gptq`` format, or QDQ
+weights with ``fake`` format):
 
 * Preset names: ``W2A16``, ``W2A16G32``, ``W2A16G64``, ``W4A16``,
   ``W4A16_MIXED``, ``W8A16``.
@@ -51,7 +52,8 @@ BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
 
 Output formats
 --------------
-* **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``.
+* **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``;
+    use ``fake`` for high-precision QDQ weights without quantization metadata.
 * **MXFP schemes** → ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` format,
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
 * **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
@@ -420,6 +422,11 @@ def _quantize_local_shard_task(
         local_weight_map,
     )
     tensor_names = list(local_weight_map.keys())
+    # Drop the packed tensors *before* reclaiming memory; otherwise the whole
+    # quantized shard (hundreds of MB) is still reachable and clear_memory()
+    # cannot return it to the allocator/OS.
+    output_tensors.clear()
+    del output_tensors
     clear_memory()
 
     if cleanup_source_shard:
@@ -850,7 +857,7 @@ class _ModelFreeCompressorCore:
         if self.cross_shard_deps:
             n_pairs = sum(len(t) for donors in self.cross_shard_deps.values() for t in donors.values())
             logger.info(
-                f"Cross-shard FP8 dependencies: {n_pairs} scale_inv tensor(s), "
+                f"Cross-shard scale dependencies: {n_pairs} scale tensor(s), "
                 f"{len(self.cross_shard_deps)} recipient shard(s), "
                 f"{len(self.donor_shard_tensors)} donor shard(s)."
             )
@@ -1290,6 +1297,11 @@ class _ModelFreeCompressorCore:
 
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
+        if self.format == "fake":
+            with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
+                json.dump(self.config, f, indent=2)
+            return
+
         self.config["quantization_config"] = quantization_config
         with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
@@ -1408,7 +1420,7 @@ class _ModelFreeCompressorCore:
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
-            packing_format = "auto_round:auto_gptq"
+            packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
         if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
             if not self.disable_opt_rtn:
                 logger.info(
@@ -1820,10 +1832,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             self._resolve_auto_scheme()
 
         # Accept the standard auto_round formats.
-        _accepted_formats = {
-            "auto_round",
-            "auto_round:auto_gptq",
-        }
+        _accepted_formats = {"fake", "auto_round", "auto_round:auto_gptq"}
         # MXFP supports both llm_compressor (compressed-tensors) and auto_round formats.
         # The only difference is the quantization_config metadata; on-disk weights are identical.
         normalized_scheme = (

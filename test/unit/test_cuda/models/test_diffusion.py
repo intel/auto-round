@@ -95,7 +95,7 @@ class TestAutoRound:
         # skip model saving since it takes much time
         autoround.quantize_and_save(tmp_path)
 
-    @pytest.mark.skip_ci(reason="Download large model; Time-consuming")
+    @pytest.mark.skip_ci(reason="Architecture: Download large model; Time-consuming")
     def test_diffusion_model_checker(self):
         from auto_round.utils import is_diffusion_model
 
@@ -105,7 +105,7 @@ class TestAutoRound:
         assert is_diffusion_model(get_model_path("Qwen/Qwen3-8B")) is False
 
     @multi_card
-    @pytest.mark.skip_ci(reason="multiple card test")
+    @pytest.mark.skip_ci(reason="Resource: multiple card test")
     def test_diffusion_tune_on_multi_cards(self, tiny_flux_model_path, tmp_path):
         from diffusers import AutoPipelineForText2Image
 

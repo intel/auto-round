@@ -207,7 +207,7 @@ class TestAutoRound:
 
         assert "!!!" not in generated_text
 
-    @pytest.mark.skip_ci(reason="Cannot work well in CI env")
+    @pytest.mark.skip_ci(reason="Third-party: Cannot work well in CI env")
     def test_awq_format_sglang(self, dataloader):
         autoround = AutoRound(
             self.model_name,
