@@ -198,6 +198,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
     not in ("0", "false", "no", "off"),
     "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
+    # Debug helper: when set to a positive integer N, models are loaded with only
+    # the first N decoder layers (config.num_hidden_layers is truncated to N before
+    # the weights are instantiated). This makes it possible to isolate and debug
+    # issues on very large models with a fraction of the load time and memory.
+    # Exposed on the CLI as ``--num_hidden_layers``. The resulting model is a
+    # partial model and must not be used for a real/production quantization run.
+    "AR_DEBUG_LAYER_NUM": lambda: _get_optional_positive_int_env("AR_DEBUG_LAYER_NUM"),
 }
 
 

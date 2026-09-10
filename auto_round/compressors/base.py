@@ -66,12 +66,14 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_reverse_checkpoint_conversion_mapping,
+    get_reverse_weight_transforms,
     is_debug_mode,
     is_hpex_available,
     is_quantized_input_module,
     memory_monitor,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
+    revert_name_with_weight_transforms,
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
@@ -1986,22 +1988,27 @@ class BaseOrchestrator(object):
             if isinstance(original_to_quant_block_names, list):
                 original_to_quant_block_names = original_to_quant_block_names[:]
 
-            # to match the original name
+            # to match the original name. Prefer transformers' scope-aware reverse
+            # transforms (they honour each transform's scope / anchors) so a text
+            # sub-model prefix rule cannot double ``language_model`` or nest the
+            # sibling vision tower; fall back to the flattened regex mapping.
+            reverse_weight_transforms = get_reverse_weight_transforms(self.model)
             reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
+            def _revert_block_name(block_name):
+                if reverse_weight_transforms is not None:
+                    return revert_name_with_weight_transforms(block_name, reverse_weight_transforms)
+                return revert_checkpoint_conversion_mapping(block_name, reverse_checkpoint_conversion_mapping)
+
             if isinstance(serialization_dict["to_quant_block_names"], str):
-                reverted_block_name = revert_checkpoint_conversion_mapping(
-                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
-                )
+                reverted_block_name = _revert_block_name(serialization_dict["to_quant_block_names"])
                 serialization_dict["to_quant_block_names"] = preserve_original_visual_block_name(
                     original_to_quant_block_names, reverted_block_name
                 )
 
             elif isinstance(serialization_dict["to_quant_block_names"], list):
                 for idx in range(len(serialization_dict["to_quant_block_names"])):
-                    reverted_block_name = revert_checkpoint_conversion_mapping(
-                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
-                    )
+                    reverted_block_name = _revert_block_name(serialization_dict["to_quant_block_names"][idx])
                     original_block_name = None
                     if isinstance(original_to_quant_block_names, list) and idx < len(original_to_quant_block_names):
                         original_block_name = original_to_quant_block_names[idx]

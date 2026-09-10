@@ -31,6 +31,7 @@ from auto_round.special_model_handler import _handle_special_model, update_modul
 from auto_round.utils import (
     check_and_mark_quantized_module,
     diffusion_load_model,
+    install_debug_layer_config_patch,
     is_diffusion_model,
     is_mllm_model,
     is_moe_model,
@@ -156,6 +157,10 @@ class ModelContext(BaseContext):
         device_manager.device = value
 
     def _load_model(self):
+        # Debug helper: when AR_DEBUG_LAYER_NUM is set, patch transformers config
+        # loading so every branch below (llm / mllm / diffusion / meta skeleton)
+        # loads only the first N decoder layers. No-op otherwise.
+        install_debug_layer_config_patch()
         if is_diffusion_model(self.model):
             self.is_diffusion = True
             self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
@@ -304,6 +309,11 @@ class ModelContext(BaseContext):
         if envs.AR_DISK_STREAM_MODEL:
             return True
         if envs.AR_DISABLE_META_LOAD:
+            return False
+        # The debug "load only N layers" path (AR_DEBUG_LAYER_NUM) relies on the
+        # normal from_pretrained load so the truncated config is honored; the meta
+        # skeleton streams the full checkpoint block-by-block and would ignore it.
+        if envs.AR_DEBUG_LAYER_NUM is not None:
             return False
         if not isinstance(self.model, str):
             return False

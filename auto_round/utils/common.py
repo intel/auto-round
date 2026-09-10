@@ -1277,32 +1277,49 @@ def get_reverse_weight_transforms(model):
     """Build transformers' scope-aware reverse weight transforms for ``model``.
 
     Returns a ``(renamings, converters)`` tuple of reversed ``WeightTransform``
-    objects, or ``None`` when the model does not carry ``_weight_conversions``
-    (i.e. it was not created via ``from_pretrained``) or the running transformers
-    is too old to expose the primitives.
+    objects, or ``None`` when transforms are unavailable (transformers too old,
+    or nothing to revert).
 
-    Prefer these over :func:`revert_checkpoint_conversion_mapping` for
-    ``from_pretrained`` models. Each transform keeps its ``scope_prefix`` /
-    ``base_model_prefix`` and original ``^`` anchors, so transformers'
-    ``rename_source_key`` reverts a key exactly the way transformers itself does
-    when saving. The flattened ``{source: target}`` regex path, by contrast,
-    drops the ``^`` anchor and the per-sub-model scope, which makes a text-model
-    prefix rule (e.g. add ``language_model``) both:
+    This mirrors ``transformers.core_model_loading.revert_weight_conversion`` so
+    AutoRound reverts parameter names exactly the way transformers itself does
+    when saving, honouring each transform's ``scope_prefix`` / ``base_model_prefix``
+    and ``^`` anchors. Two sources are used, in order:
 
-    * leak onto sibling sub-models -- rewriting ``model.visual.blocks.*`` into
-      ``model.language_model.visual.blocks.*`` (visual is a sibling of, never a
-      child of, ``language_model`` in composite VLMs such as Qwen3-VL), and
-    * double-apply on keys that already carry the prefix, because the anchorless
-      ``model\\.`` matches the ``model.`` embedded inside ``language_model.`` and
-      yields ``model.language_model.language_model.layers.*``.
+    * ``model._weight_conversions`` -- attached only to ``from_pretrained`` models;
+      the exact, already-scoped transforms that were used at load time.
+    * ``get_model_conversion_mapping(model, add_legacy=False)`` -- for models built
+      ``from_config`` (e.g. AutoRound's meta / disk-stream skeleton), rebuilt from
+      the model's real module tree so every transform is correctly scoped. As
+      transformers does in this case, ``PrefixChange`` transforms are dropped:
+      because the model was not loaded from a checkpoint we cannot know whether a
+      prefix was present, and re-adding it corrupts keys -- doubling
+      ``language_model`` (``model.language_model.language_model.layers.*``) or
+      nesting the sibling vision tower (``model.language_model.visual.*``).
+
+    The flattened ``{source: target}`` regex path in
+    :func:`revert_checkpoint_conversion_mapping`, by contrast, drops both the
+    ``^`` anchor and the per-sub-model scope, which is precisely what triggers the
+    prefix-doubling / vision-nesting corruption above.
     """
-    weight_conversions = getattr(model, "_weight_conversions", None)
-    if not weight_conversions:
+    try:
+        from transformers.core_model_loading import PrefixChange, WeightConverter, WeightRenaming
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitives
         return None
 
-    try:
-        from transformers.core_model_loading import WeightConverter, WeightRenaming
-    except Exception:  # pragma: no cover - transformers < 5 has no such primitives
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    if not weight_conversions:
+        # Model not created via ``from_pretrained`` -> rebuild scoped transforms
+        # from the real module tree and drop ``PrefixChange`` (see docstring).
+        try:
+            from transformers.conversion_mapping import get_model_conversion_mapping
+
+            weight_conversions = get_model_conversion_mapping(model, add_legacy=False)
+        except Exception:  # pragma: no cover - no module tree / older transformers
+            return None
+        weight_conversions = [c for c in weight_conversions if not isinstance(c, PrefixChange)]
+
+    if not weight_conversions:
         return None
 
     try:
@@ -1314,6 +1331,8 @@ def get_reverse_weight_transforms(model):
 
     renamings = [entry for entry in reversed_conversions if isinstance(entry, WeightRenaming)]
     converters = [entry for entry in reversed_conversions if isinstance(entry, WeightConverter)]
+    if not renamings and not converters:
+        return None
     return renamings, converters
 
 
