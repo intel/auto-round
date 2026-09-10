@@ -42,6 +42,9 @@ autoround.quantize_and_save(output_dir, format="fake", inplace=True)
   control the calibration schedule.
 - `guidance_scale`: controls how much the image generation process follows the text prompt.
 - `generator_seed`: a seed that controls the initial noise from which an image is generated.
+- `diffusion_tuning_cache_size`: opt-in extra GPU buffer budget in GiB for diffusion SignRound prefetch.
+  It only takes effect with `low_gpu_mem_usage=True` on single-GPU SignRound flow (`enable_quanted_input=False`
+  and no custom `layer_config`). This value reserves additional temporary buffers and is not a cap on total VRAM.
 
 For more hyperparameters, refer to [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration).
 
@@ -57,8 +60,14 @@ auto-round \
     --batch_size 1 \
     --dataset coco2014 \
     --calib_num_inference_steps 8 \
+    --low_gpu_mem_usage \
+    --diffusion_tuning_cache_size auto \
     --output_dir ./tmp_autoround
 ```
+
+Use `--diffusion_tuning_cache_size` only when `--low_gpu_mem_usage` is enabled on single-GPU SignRound
+(`--enable_quanted_input` disabled and no custom `--layer_config`). The GiB value controls extra prefetch buffers,
+not total GPU memory.
 
 ### Diffusion Support Matrix
 
