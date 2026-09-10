@@ -238,7 +238,7 @@ class ShardWriter:
             List of (key, 2D tensor) pairs, or None if not a fused expert param.
         """
         from auto_round.modeling.fused_moe.replace_modules import MOE_SKIP_PREFIXES
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         parts = name.rsplit(".", 1)
         if len(parts) != 2:

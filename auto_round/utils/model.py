@@ -2877,11 +2877,6 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
                 len(fallback_ngram_names),
                 ", ".join(fallback_ngram_names[:3]),
             )
-        else:
-            logger.info_once(
-                "AR_NGRAM_DEVICE=%s is set, but no ngram modules were found under this block.",
-                setting or "auto",
-            )
         return []
     total_ngram_nbytes = sum(_module_storage_nbytes(sub) for _, sub in ngram_modules)
     logger.info_once(
