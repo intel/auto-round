@@ -30,7 +30,9 @@ from auto_round.utils import (
     get_lm_head_name,
     get_module,
     get_reverse_checkpoint_conversion_mapping,
+    get_reverse_weight_transforms,
     revert_checkpoint_conversion_mapping,
+    revert_name_with_weight_transforms,
 )
 
 DEFAULT_MAX_SHARD_SIZE = "5GB"
@@ -75,6 +77,13 @@ class ShardWriter:
         self.shard_meta = []  # List of {tmp_file: str, params: list}
         self.global_weight_map = {}
         self.shard_counter = 0
+        # Prefer transformers' own scope-aware reverse transforms (only attached to
+        # ``from_pretrained`` models). They revert a parameter name exactly the way
+        # transformers would when saving, honouring each transform's scope / anchors
+        # so a text-model prefix rule cannot leak onto a sibling vision tower or
+        # double-apply on an already-prefixed key. Fall back to the flattened regex
+        # mapping for models built from config (no ``_weight_conversions``).
+        self.reverse_weight_transforms = get_reverse_weight_transforms(self.model)
         self.reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
         # Persistent set of all parameter names already flushed to a shard file.
@@ -279,7 +288,10 @@ class ShardWriter:
                 return
 
         # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+        if self.reverse_weight_transforms is not None:
+            name = revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
+        else:
+            name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()

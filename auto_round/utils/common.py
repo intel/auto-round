@@ -1273,6 +1273,73 @@ def get_reverse_checkpoint_conversion_mapping(model):
     return reverse_checkpoint_conversion_mapping
 
 
+def get_reverse_weight_transforms(model):
+    """Build transformers' scope-aware reverse weight transforms for ``model``.
+
+    Returns a ``(renamings, converters)`` tuple of reversed ``WeightTransform``
+    objects, or ``None`` when the model does not carry ``_weight_conversions``
+    (i.e. it was not created via ``from_pretrained``) or the running transformers
+    is too old to expose the primitives.
+
+    Prefer these over :func:`revert_checkpoint_conversion_mapping` for
+    ``from_pretrained`` models. Each transform keeps its ``scope_prefix`` /
+    ``base_model_prefix`` and original ``^`` anchors, so transformers'
+    ``rename_source_key`` reverts a key exactly the way transformers itself does
+    when saving. The flattened ``{source: target}`` regex path, by contrast,
+    drops the ``^`` anchor and the per-sub-model scope, which makes a text-model
+    prefix rule (e.g. add ``language_model``) both:
+
+    * leak onto sibling sub-models -- rewriting ``model.visual.blocks.*`` into
+      ``model.language_model.visual.blocks.*`` (visual is a sibling of, never a
+      child of, ``language_model`` in composite VLMs such as Qwen3-VL), and
+    * double-apply on keys that already carry the prefix, because the anchorless
+      ``model\\.`` matches the ``model.`` embedded inside ``language_model.`` and
+      yields ``model.language_model.language_model.layers.*``.
+    """
+    weight_conversions = getattr(model, "_weight_conversions", None)
+    if not weight_conversions:
+        return None
+
+    try:
+        from transformers.core_model_loading import WeightConverter, WeightRenaming
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitives
+        return None
+
+    try:
+        # Mirror transformers.core_model_loading.revert_weight_conversion: reverse
+        # the conversion order first, then reverse each individual transform.
+        reversed_conversions = [conversion.reverse_transform() for conversion in list(weight_conversions)[::-1]]
+    except Exception:  # pragma: no cover - not every transform is reversible
+        return None
+
+    renamings = [entry for entry in reversed_conversions if isinstance(entry, WeightRenaming)]
+    converters = [entry for entry in reversed_conversions if isinstance(entry, WeightConverter)]
+    return renamings, converters
+
+
+def revert_name_with_weight_transforms(name: str, transforms) -> str:
+    """Revert ``name`` to its original checkpoint form using scope-aware transforms.
+
+    ``transforms`` is the ``(renamings, converters)`` tuple returned by
+    :func:`get_reverse_weight_transforms`. Applies transformers'
+    ``rename_source_key`` (reverse mode) so the reverse honours each transform's
+    ``scope_prefix`` / ``base_model_prefix`` and ``^`` anchors, avoiding the
+    prefix-leak / double-prefix corruption of the flattened regex fallback. On
+    any failure it returns ``name`` unchanged so saving never crashes.
+    """
+    if "," in name:
+        return ",".join(revert_name_with_weight_transforms(part, transforms) for part in name.split(","))
+
+    renamings, converters = transforms
+    try:
+        from transformers.core_model_loading import rename_source_key
+
+        renamed_key, _ = rename_source_key(name, renamings, converters, reverse=True)
+        return renamed_key
+    except Exception:  # pragma: no cover - defensive: never break saving on rename
+        return name
+
+
 def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
     if "," in name:
         return ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
