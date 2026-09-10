@@ -90,16 +90,7 @@ class XpuWrapper {
     return size;
   }
 
-  static inline size_t get_s4_dpas_qsize(QuantParam* p) {
-#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-    if (p->weight_type == BTLA_DTYPE::S4 && !p->asym) return get_weight_qbytes(p);
-#endif
-    return 0;
-  }
-
-  static inline size_t get_s4_dpas_offset(QuantParam* p) { return get_packw_base_size(p); }
-
-  static inline size_t get_packw_size(QuantParam* p) { return get_packw_base_size(p) + get_s4_dpas_qsize(p); }
+  static inline size_t get_packw_size(QuantParam* p) { return get_packw_base_size(p); }
 
   static inline size_t get_scale_offset(QuantParam* p) {
     size_t size = get_packw_qsize(p);
@@ -171,8 +162,6 @@ class XpuWrapper {
     size_t k = p->k;
     size_t n = p->n;
     auto psrc = raws8;
-    const size_t dpas_offset = get_s4_dpas_offset(p);
-    const bool write_dpas_copy = get_s4_dpas_qsize(p) != 0;
     constexpr int SG_SIZE = 16;
     auto ker = [&](sycl::handler& cgh) {
       cgh.parallel_for(sycl::nd_range<2>({k / 2, n}, {1, SG_SIZE}),
@@ -184,9 +173,6 @@ class XpuWrapper {
                          int8_t src1 = psrc[(g_0 * 2 + 1) * n + g_1] + 8;
                          uint8_t dst = src0 | (src1 << 4);
                          *((uint8_t*)blob + g_1 * k / 2 + g_0) = dst;
-                         if (write_dpas_copy) {
-                           *((uint8_t*)blob + dpas_offset + g_1 * k / 2 + g_0) = dst ^ 0x88u;
-                         }
                        });
     };
     q->submit(ker);
@@ -547,19 +533,22 @@ class XpuWrapper {
   }
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+  static constexpr size_t kWoqS4DpasMaxM = 128;
+
   static inline bool woq_s4_dpas_group_size_ok(int group_size) {
     return dense_woq_s4_dpas::is_supported_group_size(group_size);
   }
 
   static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
-    if (m == 0 || m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
+    if (m == 0 || m > kWoqS4DpasMaxM) return false;
+    if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
     if (p->n % 16 != 0 || (p->k & 1) != 0 || p->blocksize <= 0) return false;
     if (p->k % p->blocksize != 0) return false;
     return woq_s4_dpas_group_size_ok(p->blocksize);
   }
 
   static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
-                              void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
+                              void* matC, const void* bias, BTLA_DTYPE outt, size_t /*blob_count*/) {
     if (p->compute_type != BTLA_DTYPE::S8 || p->weight_type != BTLA_DTYPE::S4 ||
         p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
       return false;
@@ -570,12 +559,6 @@ class XpuWrapper {
     if (!woq_s4_dpas_shape_ok(m, p)) {
       return false;
     }
-    const size_t dpas_size = get_s4_dpas_qsize(p);
-    const size_t dpas_offset = get_s4_dpas_offset(p);
-    if (dpas_size == 0 || blob_count < dpas_offset + dpas_size) {
-      return false;
-    }
-
     using namespace ark::dense_woq_s4_dpas;
     using ElementA = cute_scalar_t<sycl::half>;
 
@@ -583,10 +566,12 @@ class XpuWrapper {
     const auto* scales_ca = reinterpret_cast<const ElementA*>(reinterpret_cast<const int8_t*>(blobB) + get_scale_offset(p));
     const auto* bias_ca = bias != nullptr ? reinterpret_cast<const ElementA*>(bias) : static_cast<const ElementA*>(nullptr);
     auto* outputs_ca = reinterpret_cast<ElementA*>(matC);
-    const auto* weights_i4 = reinterpret_cast<const cutlass::int4b_t*>(
-        reinterpret_cast<const uint8_t*>(blobB) + dpas_offset);
+    const auto* weights_i4 = reinterpret_cast<const cutlass::int4b_t*>(blobB);
 
 #define ARK_WOQ_DPAS_S4_LAUNCH(policy)                                        \
+    std::fprintf(stdout,                                                        \
+                 "[ARK_WOQ_DPAS_S4] launch:%s m=%zu n=%d k=%d blocksize=%d\n", \
+                 #policy, m, p->n, p->k, p->blocksize);                       \
     DenseWoqS4GEMMLauncher<'R', 'C', policy>(*q, activations_ca, weights_i4,  \
                                              scales_ca, bias_ca, outputs_ca,   \
                                              static_cast<int>(m), p->n, p->k,  \
@@ -596,10 +581,8 @@ class XpuWrapper {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_8)
     } else if (m <= 16) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_16)
-    } else if (m <= 128) {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_32)
     } else {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy)
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_32)
     }
 #undef ARK_WOQ_DPAS_S4_LAUNCH
     return true;

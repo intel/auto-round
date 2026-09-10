@@ -72,8 +72,8 @@ CUTE_DEVICE void DenseWoqS4GEMM(const ElementA* Activations,
   auto tile_coord = make_coord(wg_m, wg_n, _, 0);
 
   xe_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
-                       GroupSize>(A_tensor, B_tensor, Scales, Bias, D_tensor,
-                                  tile_coord, mma);
+                       GroupSize, true>(A_tensor, B_tensor, Scales, Bias,
+                                        D_tensor, tile_coord, mma);
 }
 
 template <char layoutA, char layoutB, class policy, int GroupSize,
