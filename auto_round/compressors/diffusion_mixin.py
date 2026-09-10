@@ -352,6 +352,9 @@ class DiffusionMixin:
             self.model_context.model = transformer
             self.model_context.quantized = False
             self._post_init_done = False
+            # Calibrators snapshot the active model at construction time. Recreate
+            # it so transformer_2 block hooks are not installed on the primary model.
+            self.calibration = None
 
             # Dispatch the pipeline for the secondary transformer without recasting it.
             self._align_device_and_dtype_for_secondary(comp_name)
