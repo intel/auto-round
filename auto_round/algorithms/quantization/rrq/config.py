@@ -106,6 +106,9 @@ class RRQConfig(RTNConfig):
         # residual plane).  The per-plane RTN quality is matched to standard
         # AutoRound (opt-RTN) inside the quantizer instead (see
         # RRQRTNQuantizer).  ``check_config()`` enforces this invariant.
+        # CLI may pass None (user didn't specify the flag), so force it to True.
+        if disable_opt_rtn is None:
+            disable_opt_rtn = True
         super().__init__(disable_opt_rtn=disable_opt_rtn, **kwargs)
 
         self.iters = int(self._rrq_iters or 0)
