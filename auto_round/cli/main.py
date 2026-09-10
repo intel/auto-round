@@ -230,9 +230,7 @@ def start(recipe="default", argv=None):
     format_was_explicit = any(
         arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
     )
-    scheme_was_explicit = any(
-        arg in {"--scheme"} or arg.startswith("--scheme=") for arg in argv
-    )
+    scheme_was_explicit = any(arg in {"--scheme"} or arg.startswith("--scheme=") for arg in argv)
 
     if _print_algorithm_help(argv):
         return
