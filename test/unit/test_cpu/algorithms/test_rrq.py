@@ -18,14 +18,22 @@ each residual plane is stored in the stock single-plane INT2 AutoRound layout
 (``qweight`` int32 + ``scales`` + ``qzeros``).  Dequantization reuses the W2A16
 ``QuantLinear.forward`` code path, so tests reconstruct a plane by running the
 stock ``QuantLinear`` on an identity input.
+
+Accuracy regression on a real (non-tiny) model via lm_eval lives in
+``TestRRQAccuracy`` below -- everything else uses tiny fixtures and runs on
+every available device.
 """
 
 import os
+import shutil
 
 import pytest
 import torch
 import torch.nn as nn
+from test.helpers import evaluate_accuracy, opt_name_or_path
+from transformers import AutoTokenizer
 
+from auto_round import AutoRound
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
 from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper, RRQRTNQuantizer, RRQSignRoundQuantizer
 from auto_round.data_type.int import quant_tensor_rtn_sym
@@ -856,3 +864,57 @@ class TestRRQPhase3:
             reconstructed += _plane_dequant(block.proj, plane_idx, original)
         assert torch.isfinite(reconstructed).all()
         assert (original - reconstructed).norm() < original.norm()
+
+
+class TestRRQAccuracy:
+    """RRQ accuracy evaluation on a real (non-tiny) model using lm_eval.
+
+    Verifies that RRQ quantization produces a model with acceptable accuracy
+    on a standard lm-eval task, matching the pattern of other algorithm tests.
+    """
+
+    @classmethod
+    def setup_class(cls):
+        cls.model_name = opt_name_or_path
+        cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name, trust_remote_code=True)
+
+    @pytest.mark.skip_ci(reason="Time-consuming lm_eval accuracy check; covered by nightly")
+    @pytest.mark.timeout(300)
+    def test_rrq_w2a16_rtn_lmeval(self):
+        """RRQ W2A16 (RTN) on OPT-125m: lambada_openai accuracy check.
+
+        Quantizes the full model with RRQ (4 planes, RTN) and verifies that
+        the 8-bit (all-planes) model retains reasonable accuracy.
+        """
+        from auto_round.inference.rrq_linear import set_rrq_bits
+
+        ar = AutoRound(
+            self.model_name,
+            scheme="W2A16",
+            alg_configs=RRQConfig(group_size=128, sym=True, iters=0),
+            nsamples=32,
+            seqlen=32,
+            batch_size=4,
+        )
+        model, _ = ar.quantize()
+
+        # 8-bit (4 planes) should be close to bf16: threshold 0.3
+        evaluate_accuracy(
+            model,
+            self.tokenizer,
+            task="lambada_openai",
+            threshold=0.3,
+            batch_size="auto:4",
+            limit=32,
+        )
+
+        # 4-bit (2 planes) should still be reasonable: threshold 0.2
+        set_rrq_bits(model, 4)
+        evaluate_accuracy(
+            model,
+            self.tokenizer,
+            task="lambada_openai",
+            threshold=0.2,
+            batch_size="auto:4",
+            limit=32,
+        )
