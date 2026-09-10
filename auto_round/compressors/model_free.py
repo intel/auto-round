@@ -100,6 +100,7 @@ Usage (API)
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import multiprocessing as mp
 import os
@@ -1013,17 +1014,24 @@ class _ModelFreeCompressorCore:
 
     def _build_resume_parameters(self) -> dict:
         """Return the effective command inputs that determine shard output."""
-        source_shards = []
-        if not self.is_streaming:
-            for shard_name in self.shard_names:
-                shard_path = os.path.join(self.source_dir, shard_name)
-                try:
-                    stat = os.stat(shard_path)
-                    source_shards.append({"name": shard_name, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
-                except OSError:
-                    source_shards.append({"name": shard_name, "missing": True})
-        else:
-            source_shards = [{"name": shard_name} for shard_name in self.shard_names]
+        source_dir = self.work_dir if self.is_streaming else self.source_dir
+        index_files = sorted(
+            filename
+            for filename in os.listdir(source_dir)
+            if filename.endswith((".safetensors.index.json", ".bin.index.json"))
+        )
+        source_index = []
+        for filename in index_files:
+            with open(os.path.join(source_dir, filename), "rb") as index_file:
+                source_index.append({"name": filename, "sha256": hashlib.file_digest(index_file, "sha256").hexdigest()})
+        source_revision = None
+        if not os.path.isdir(self.model_name_or_path):
+            try:
+                from huggingface_hub import HfApi
+
+                source_revision = HfApi().model_info(self.model_name_or_path).sha
+            except Exception as exc:
+                logger.warning(f"Could not verify Hugging Face source revision; resume will not reuse output: {exc}")
 
         parameters = {
             "model_name_or_path": (
@@ -1031,7 +1039,11 @@ class _ModelFreeCompressorCore:
                 if os.path.isdir(self.model_name_or_path)
                 else self.model_name_or_path
             ),
-            "source_shards": source_shards,
+            # Shard names and index content remain stable when a streaming
+            # Hugging Face source becomes fully cached between retries.
+            "source_shards": self.shard_names,
+            "source_index": source_index,
+            "source_revision": source_revision,
             "default_scheme": self.default_scheme,
             "layer_config": self.layer_config,
             "ignore_patterns": self.ignore_patterns,
@@ -1055,6 +1067,8 @@ class _ModelFreeCompressorCore:
         if not isinstance(out_shard_name, str) or not isinstance(tensor_names, list):
             return False
         shard_path = os.path.join(self._quant_output_dir, out_shard_name)
+        if not os.path.exists(shard_path) and len(self.shard_names) == 1:
+            shard_path = os.path.join(self._quant_output_dir, "model.safetensors")
         try:
             with safe_open(shard_path, framework="pt") as shard:
                 return set(shard.keys()) == set(tensor_names)
@@ -1086,7 +1100,15 @@ class _ModelFreeCompressorCore:
         except Exception as exc:
             logger.warning(f"Could not read model-free resume state: {exc}; starting from the first shard.")
 
-        if manifest and manifest.get("version") == 1 and manifest.get("parameters") == self._resume_parameters:
+        source_is_verifiable = (
+            os.path.isdir(self.model_name_or_path) or self._resume_parameters["source_revision"] is not None
+        )
+        if (
+            manifest
+            and source_is_verifiable
+            and manifest.get("version") == 1
+            and manifest.get("parameters") == self._resume_parameters
+        ):
             cached_processed = manifest.get("processed_files", {})
             if isinstance(cached_processed, dict):
                 for shard_name in self.shard_names:
@@ -1102,7 +1124,12 @@ class _ModelFreeCompressorCore:
                     for tensor_name in record["tensor_names"]:
                         self.output_weight_map[tensor_name] = record["output_file"]
         elif manifest:
-            logger.info("Model-free resume state belongs to different command parameters; starting fresh.")
+            logger.info(
+                "Model-free resume state cannot be verified against current command parameters; starting fresh."
+            )
+            if self.is_streaming:
+                cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+                shutil.rmtree(cache_dir, ignore_errors=True)
 
         pending = [name for name in self.shard_names if name not in self._resume_processed_shards]
         if self._resume_processed_shards:
@@ -1449,6 +1476,11 @@ class _ModelFreeCompressorCore:
 
     def _write_index(self) -> None:
         _write_index_file(self._quant_output_dir, self.output_weight_map)
+        if len(self.shard_names) == 1 and self._resume_processed_shards:
+            for record in self._resume_processed_shards.values():
+                record["output_file"] = "model.safetensors"
+            self.output_weight_map = {name: "model.safetensors" for name in self.output_weight_map}
+            self._write_resume_manifest()
 
     def _remove_stale_quantization_config_files(self) -> None:
         """Remove source/output quantization metadata before writing the new config."""
@@ -1643,6 +1675,13 @@ class _ModelFreeCompressorCore:
 
         # ---- main loop ----
         self._process_all_shards()
+
+        if len(self._resume_processed_shards) != len(self.shard_names):
+            missing_shards = [name for name in self.shard_names if name not in self._resume_processed_shards]
+            raise RuntimeError(
+                "Model-free quantization did not complete all weight shards; resume state was retained for: "
+                f"{', '.join(missing_shards)}"
+            )
 
         # ---- write outputs ----
         self._write_index()

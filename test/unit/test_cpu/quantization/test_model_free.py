@@ -924,6 +924,95 @@ class TestModelFreeQuantize:
             manifest = json.load(f)
         assert manifest["pending_files"] == ["model.safetensors"]
 
+    def test_resume_rejects_changed_index(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+        index_path = os.path.join(model_dir, "model.safetensors.index.json")
+        with open(index_path, "w") as index_file:
+            json.dump({"metadata": {"total_size": 1}, "weight_map": {"layer.weight": "model.safetensors"}}, index_file)
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+
+        with open(index_path, "w") as index_file:
+            json.dump({"metadata": {"total_size": 2}, "weight_map": {"layer.weight": "model.safetensors"}}, index_file)
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert resumed._resume_processed_shards == {}
+
+    def test_resume_accepts_single_shard_after_final_rename(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+        first.output_weight_map = {"layer.qweight": output_shard}
+        first._write_index()
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert set(resumed._resume_processed_shards) == {"model.safetensors"}
+        assert resumed.output_weight_map == {"layer.qweight": "model.safetensors"}
+
+    def test_run_resumes_after_interrupted_shard_processing(self, tmp_path, monkeypatch):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+
+        def stub_preflight(core):
+            for method_name in (
+                "_validate_format",
+                "_parse_scheme",
+                "_parse_layer_config",
+                "_build_ignore_patterns",
+                "_resolve_source",
+                "_check_conv1d_and_embedding",
+                "_apply_predefined_ignore_layers",
+                "_detect_fp8_source",
+                "_resolve_model_type",
+                "_discover_shards",
+                "_build_cross_shard_deps",
+                "_reorder_shards_by_dependency",
+            ):
+                monkeypatch.setattr(core, method_name, lambda: None)
+            monkeypatch.setattr(core, "_resolve_shard_parallelism", lambda: (1, "test"))
+
+        interrupted = self._make_resume_core(model_dir, output_dir)
+        stub_preflight(interrupted)
+
+        def process_then_interrupt():
+            shard_name = "model-00001-of-00001.safetensors"
+            os.makedirs(output_dir, exist_ok=True)
+            save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, shard_name))
+            interrupted._mark_shard_completed("model.safetensors", shard_name, ["layer.qweight"], ["layer"], [])
+            raise RuntimeError("interrupted")
+
+        monkeypatch.setattr(interrupted, "_process_all_shards", process_then_interrupt)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            interrupted.run()
+        assert os.path.exists(interrupted._resume_manifest_path)
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        stub_preflight(resumed)
+
+        def verify_completed_shard_is_skipped():
+            assert set(resumed._resume_processed_shards) == {"model.safetensors"}
+
+        monkeypatch.setattr(resumed, "_process_all_shards", verify_completed_shard_is_skipped)
+
+        assert resumed.run() == output_dir
+        assert os.path.exists(os.path.join(output_dir, "model.safetensors"))
+        assert not os.path.exists(resumed._resume_manifest_path)
+
 
 # ===========================================================================
 #  MXFP4 / MXFP8 model-free quantization
