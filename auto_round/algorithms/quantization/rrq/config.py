@@ -64,12 +64,12 @@ class RRQConfig(RTNConfig):
         disable_opt_rtn: bool | None = True,
         **kwargs,
     ):
-        # Enforce fixed values
-        if "bits" in kwargs and kwargs["bits"] != 2:
+        # Enforce fixed values (None means "not provided", use default)
+        if kwargs.get("bits") is not None and kwargs["bits"] != 2:
             raise ValueError(f"RRQ only supports bits=2 per plane, got {kwargs['bits']}")
-        if "data_type" in kwargs and kwargs["data_type"] != "int":
+        if kwargs.get("data_type") is not None and kwargs["data_type"] != "int":
             raise ValueError(f"RRQ only supports data_type='int', got {kwargs['data_type']!r}")
-        if "act_bits" in kwargs and kwargs["act_bits"] != 16:
+        if kwargs.get("act_bits") is not None and kwargs["act_bits"] != 16:
             raise ValueError(f"RRQ is weight-only; act_bits must be 16, got {kwargs['act_bits']}")
 
         # RRQ-tunable fields (not scheme fields). Declared as named parameters so
@@ -200,4 +200,5 @@ register_algorithm(
     aliases=("rrq", "rrq_rtn"),
     config_factory=RRQConfig,
     summary="Recurrent Residual Quantization: INT2 base + 3 residual planes (2/4/6/8-bit).",
+    hidden=True,
 )
