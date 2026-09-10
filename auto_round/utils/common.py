@@ -1216,10 +1216,57 @@ def get_reverse_checkpoint_conversion_mapping(model):
         v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
     }
 
-    if hasattr(model, "_weight_conversions"):
-        weight_conversions = model._weight_conversions
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    # Models built from config (e.g. AutoRound's meta / disk-stream skeleton in
+    # ``build_meta_model`` via ``model_cls(config)``) are NOT created through
+    # ``from_pretrained``, so transformers never attaches ``_weight_conversions``.
+    # Without it the per-family renames registered centrally in
+    # ``transformers/conversion_mapping.py`` (transformers >= 5.x) are lost, and
+    # module-side names such as ``attn_hc.base`` / ``self_attn.forget_gate.*``
+    # (glm5_next, deepseek_v4, ...) get written to the checkpoint verbatim instead
+    # of their original ``hc_attn_base`` / ``self_attn.*`` names, breaking reload
+    # (e.g. vLLM ``KeyError: 'layers.0.attn_hc.base'``). Fall back to the central
+    # registry and reverse those entries ourselves in that case.
+    if not weight_conversions and hasattr(transformers, "conversion_mapping"):
+        try:
+            from transformers.conversion_mapping import (
+                get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+            )
+        except ImportError:  # pragma: no cover - transformers < 5
+            transformers_get_checkpoint_conversion_mapping = None
+
+        config = getattr(model, "config", None)
+        if transformers_get_checkpoint_conversion_mapping is not None and config is not None:
+            # Include the text sub-model type for composite models (e.g. VLMs), where
+            # the MoE / hyper-connection renames are registered on the text config.
+            model_types = []
+            for candidate in (
+                getattr(config, "model_type", None),
+                getattr(getattr(config, "text_config", None), "model_type", None),
+            ):
+                if candidate and candidate not in model_types:
+                    model_types.append(candidate)
+
+            weight_conversions = []
+            seen = set()
+            for model_type in model_types:
+                mapping = transformers_get_checkpoint_conversion_mapping(model_type)
+                if not mapping:
+                    continue
+                for entry in mapping:
+                    sig = (tuple(entry.source_patterns), tuple(entry.target_patterns))
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    weight_conversions.append(entry)
+
+    if weight_conversions:
         for weight_conversion in weight_conversions:
-            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            try:
+                reverse_conversion_mapping = weight_conversion.reverse_transform()
+            except Exception:  # pragma: no cover - not every transform is reversible (e.g. quantized converters)
+                continue
             for source_pattern in reverse_conversion_mapping.source_patterns:
                 reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
 
