@@ -183,9 +183,21 @@ class DeviceMemoryPool {
       if (q == nullptr) {
         throw std::invalid_argument("DeviceMemoryPool: XPU grow requires a non-null SYCL queue");
       }
-      // Ensure no in-flight kernel on this queue is still using the previous
-      // slab before freeing it.
-      q->wait();
+      // Do NOT block the host here with q->wait(). Two reasons:
+      //   1) It is redundant for correctness. The scratch slab is keyed
+      //      per-queue (see get_device_key), so only work enqueued on this
+      //      same queue `q` ever references this slab. Both the sycl::free
+      //      in release() below and the sycl::aligned_alloc_device in
+      //      allocate() are associated with `q`, and `q` is an in-order
+      //      queue (ARK device queues are built in_order; torch.xpu
+      //      streams are in-order by default). USM bookkeeping plus the
+      //      in-order ordering guarantee the old slab is not handed back
+      //      while any in-flight kernel still references it -- the same
+      //      guarantee the rest of the codebase relies on (e.g. the async
+      //      sycl::free in sycl_tla_moe_prefill_fp8_native).
+      //   2) A blocking wait() is illegal while `q` is recording to a
+      //      torch.xpu command graph, so a wait here would throw whenever a
+      //      scratch slab grows during graph capture (see issue #2206).
 #endif
       release(it->second, q);
       auto newptr = allocate(size, q);
