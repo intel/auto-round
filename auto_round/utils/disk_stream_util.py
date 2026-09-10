@@ -531,9 +531,7 @@ def _wildcard_split_converters_for(model_type):
         if "*" not in source or "*" in target:
             continue
         op = entry.operations[0]
-        converters.append(
-            (target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None))
-        )
+        converters.append((target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None)))
     return tuple(converters)
 
 
