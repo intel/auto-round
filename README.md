@@ -291,15 +291,20 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.
 Please refer to the [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme) for more details on AutoScheme.
 ~~~python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
 # Change iters to 200 for non-GGUF schemes
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ~~~
 
@@ -309,8 +314,8 @@ ar.quantize_and_save()
 
 ##### AutoScheme Hyperparameters
 
-- **`avg_bits` (float)**: Target average bit-width for the entire model. Only quantized layers are included in the average bit calculation.  
-- **`options` (str | list[str] | list[QuantizationScheme])**: Candidate quantization schemes to choose from. It can be a single comma-separated string (e.g., `"W4A16,W2A16"`), a list of strings (e.g., `["W4A16", "W2A16"]`), or a list of `QuantizationScheme` objects.  
+- **`bits` (float)**: Target average bit-width for the entire model when `schemes` is provided. Only quantized layers are included in the average bit calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
+- **`schemes` (str | list[str] | list[QuantizationScheme])**: Candidate quantization schemes to choose from. It can be a single comma-separated string (e.g., `"W4A16,W2A16"`), a list of strings (e.g., `["W4A16", "W2A16"]`), or a list of `QuantizationScheme` objects. Providing schemes enables AutoScheme.
 - **`ignore_scale_zp_bits` (bool)**: Only supported in API usage. Determines whether to exclude the bits of scale and zero-point from the average bit-width calculation (default: `False`).  
 - **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Defines groups of layers that share quantization settings.  
 - **`batch_size` (int, optional)**: Only supported in API usage. Can be set to `1` to reduce VRAM usage at the expense of longer tuning time.  

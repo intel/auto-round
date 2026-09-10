@@ -50,6 +50,18 @@ def _extract_common_quantization_kwargs(args) -> dict:
     }
 
 
+def _normalize_scheme_list(raw) -> str | None:
+    """Normalize --schemes/--options into a comma-joined scheme list.
+
+    Accepts both space-separated (nargs="+" list) and comma-separated forms,
+    e.g. 'W4A16 W8A16' or 'W4A16,W8A16' -> 'W4A16,W8A16'.
+    """
+    if raw is None:
+        return None
+    flat = ",".join(raw)  # handles list; each element may itself contain commas
+    return ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
     return {
         "platform": args.platform,
@@ -344,11 +356,25 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
-    # Normalize --options: accepts both space-separated (nargs="+" list) and comma-separated string.
-    # Examples: --options W4A16 W8A16  OR  --options W4A16,W8A16
+    # Supplying multiple schemes enables AutoScheme: the schemes are the
+    # candidate options and --bits is the average target bits.
+    # --options/--avg_bits/--target_bits are deprecated aliases, kept for
+    # backward compatibility (hidden from --help).
+    scheme_options = None
+    if args.schemes is not None:
+        if args.scheme.upper() != "W4A16":
+            raise ValueError("`--scheme` and `--schemes` cannot be used together, please use only `--schemes`")
+        scheme_options = _normalize_scheme_list(args.schemes)
     if args.options is not None:
-        flat = ",".join(args.options)  # handles list; each element may itself contain commas
-        args.options = ",".join(p.strip() for p in flat.split(",") if p.strip())
+        if scheme_options is not None:
+            raise ValueError("`--schemes` and `--options` cannot be used together, please use `--schemes`")
+        logger.warning_once("`--options` is deprecated, please use `--schemes` instead")
+        scheme_options = _normalize_scheme_list(args.options)
+
+    auto_target_bits = None
+    if args.avg_bits is not None:
+        logger.warning_once("`--avg_bits`/`--target_bits` is deprecated, please use `--bits` instead")
+        auto_target_bits = args.avg_bits
 
     # Normalize --shared_layers: supports three forms per invocation:
     #   - all bare tokens (no commas): treated as one group
@@ -376,24 +402,45 @@ def tune(args):
                     normalized_groups.append(group)
         args.shared_layers = normalized_groups or None
 
-    if args.avg_bits is not None:
-        if args.options is None:
-            raise ValueError("please set --options for auto scheme")
+    if scheme_options is not None:
+        if args.bits is not None:
+            if auto_target_bits is not None and args.bits != auto_target_bits:
+                raise ValueError("`--bits` and `--avg_bits`/`--target_bits` disagree, please use only `--bits`")
+            auto_target_bits = args.bits
+        if auto_target_bits is None:
+            raise ValueError("please set --bits for auto scheme")
         if enable_torch_compile is False:
             logger.warning(
                 "`torch.compile` is disabled with AutoScheme. "
                 "Enabling it (the default) is strongly recommended to save VRAM."
             )
         scheme = AutoScheme(
-            options=args.options,
-            avg_bits=args.avg_bits,
+            options=scheme_options,
+            avg_bits=auto_target_bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
+    elif args.avg_bits is not None:
+        raise ValueError("please set --schemes for auto scheme")
 
     common_kwargs = _extract_common_quantization_kwargs(args)
+    if scheme_options is not None:
+        # `bits` is the AutoScheme average target, not a scheme override:
+        # the candidate options carry their own bit widths.
+        common_kwargs.pop("bits", None)
+    else:
+        # Without --schemes, `--bits` is a plain weight bit width and must be an integer.
+        bits = common_kwargs.get("bits")
+        if bits is not None:
+            if float(bits).is_integer():
+                common_kwargs["bits"] = int(bits)
+            else:
+                raise ValueError(
+                    "`--bits` must be an integer for weight quantization; "
+                    "use `--schemes` to set a fractional AutoScheme average target"
+                )
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
     from auto_round.utils import clear_memory

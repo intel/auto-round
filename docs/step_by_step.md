@@ -174,7 +174,7 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
 - Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
-- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--target_bits 3.5 --options "..."`); 
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`); 
 - Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
 - Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
@@ -489,11 +489,13 @@ We recommend exporting to the llm_compressor format for now, as it can be easily
 - **`--iters 0`**: RTN. Fast (seconds to minutes).
 - **`--iters 200`**: Tuning-aware scheme selection. More accurate but much slower.
 
+Providing multiple `--schemes` enables AutoScheme; `--bits` is then the average target bits.
+
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --avg_bits 6 \
-  --options "mxfp4,mxfp8" \
+  --schemes "mxfp4,mxfp8" \
+  --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
   --format fake 
@@ -501,16 +503,14 @@ auto_round \
 
 #### API Usage
 ~~~
-avg_bits= 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64", "W4A16", "W8A16"))
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`avg_bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation.
+`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
 
-`options(Union[str, list[Union[QuantizationScheme, str]])` the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
+`schemes(Union[str, list[Union[QuantizationScheme, str]])` the candidate quantization schemes to choose from, e.g. a string like "W4A16,W8A16", or a list of strings or QuantizationScheme objects. Providing schemes enables AutoScheme.
 
 `ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
 
@@ -528,30 +528,33 @@ In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accel
 
 
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
     ("fc1", "fc2"),
 ]
-target_bits = 5.0
 model_name = "Qwen/Qwen3-0.6B"
-scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
 ```
 
 Besides, if you want to fix the scheme for some layers, you could set it via `layer_config` in AutoRound API.
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 

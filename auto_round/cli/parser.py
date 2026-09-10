@@ -36,7 +36,12 @@ def add_common_quantization_arguments(group) -> None:
     _extract_common_quantization_kwargs() in main.py.
     """
     group.add_argument("--scheme", default="W4A16", type=str, help="Quantization scheme preset, e.g. W4A16, W8A16.")
-    group.add_argument("--bits", default=None, type=int, help="Weight quantization bit width.")
+    group.add_argument(
+        "--bits",
+        default=None,
+        type=float,
+        help="Weight quantization bit width. With --schemes, the average target bits for AutoScheme.",
+    )
     group.add_argument(
         "--group_size",
         default=None,
@@ -136,13 +141,21 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
-    rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")
+    rt.add_argument(
+        "--schemes",
+        default=None,
+        type=str,
+        nargs="+",
+        help="Candidate quantization schemes for AutoScheme, e.g. 'W4A16,W8A16'. "
+        "Providing schemes enables AutoScheme; use --bits to set the average target bits.",
+    )
+    rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help=argparse.SUPPRESS)
     rt.add_argument(
         "--options",
         default=None,
         type=str,
         nargs="+",
-        help="AutoScheme options. Accepts comma-separated ('W4A16,W8A16') or space-separated (W4A16 W8A16).",
+        help=argparse.SUPPRESS,
     )
     rt.add_argument(
         "--low_gpu_mem_usage", action="store_true", help="Enable memory-efficient mode by offloading features to CPU."
