@@ -492,6 +492,130 @@ def _wildcard_concat_converters_for(model_type):
     return tuple(converters)
 
 
+@lru_cache(maxsize=None)
+def _wildcard_split_converters_for(model_type):
+    """Save-side inverse of :func:`_wildcard_concat_converters_for`.
+
+    Returns the same wildcard shard-concat converters, but also surfaces the
+    ``Concatenate`` op's ``num_shards_attribute`` so the merged model-side
+    parameter can be split back into the exact number of checkpoint shards at
+    save time.
+
+    Returns a tuple of ``(target_suffix, source_suffix, concat_dim,
+    num_shards_attribute)`` tuples; ``source_suffix`` still contains the ``*``
+    shard wildcard and ``num_shards_attribute`` may be ``None`` when the op does
+    not declare one (the caller then infers the count another way).
+    """
+    if not model_type:
+        return ()
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import Concatenate, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return ()
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+    if not mapping:
+        return ()
+
+    converters = []
+    for entry in mapping:
+        if not isinstance(entry, WeightConverter):
+            continue
+        if len(entry.source_patterns) != 1 or len(entry.target_patterns) != 1:
+            continue
+        if len(entry.operations) != 1 or not isinstance(entry.operations[0], Concatenate):
+            continue
+        source = entry.source_patterns[0].rstrip("$")
+        target = entry.target_patterns[0].rstrip("$")
+        if "*" not in source or "*" in target:
+            continue
+        op = entry.operations[0]
+        converters.append(
+            (target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None))
+        )
+    return tuple(converters)
+
+
+def _config_model_types(config):
+    """Collect ``model_type`` values from a config and its ``text_config`` (if any)."""
+    model_types = []
+    for candidate in (config, getattr(config, "text_config", None)):
+        model_type = getattr(candidate, "model_type", None)
+        if model_type and model_type not in model_types:
+            model_types.append(model_type)
+    return model_types
+
+
+def _resolve_num_shards(config, num_shards_attribute):
+    """Read the shard count declared by a ``Concatenate`` converter from the config."""
+    if not num_shards_attribute:
+        return None
+    for candidate in (config, getattr(config, "text_config", None)):
+        value = getattr(candidate, num_shards_attribute, None)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def split_merged_concat_tensor(config, full_name: str, tensor: "torch.Tensor"):
+    """Split a merged model-side concat parameter back into its checkpoint shards.
+
+    Inverse of the load-time :func:`_assemble_sharded_tensor`. Qwen3-Next "Flash"
+    (``qwen4_exp_text``) merges the per-layer PLE n-gram embedding shards
+    (``...ngram_embedding.shard_<i>.weight``) into a single
+    ``...ngram_embedding.weight`` on load; at save time (immediate ShardWriter
+    path, which does not go through ``save_pretrained``) that merge must be
+    reversed so the checkpoint keeps its original numbered shards -- otherwise a
+    single, unusable ``[sum_rows, dim]`` blob is written and reload fails.
+
+    Args:
+        config: The model config (used for ``model_type`` and the shard count).
+        full_name: The model-side parameter name (e.g. ``....ngram_embedding.weight``).
+        tensor: The merged tensor.
+
+    Returns:
+        A list of ``(shard_name, shard_tensor)`` pairs, or ``None`` when
+        *full_name* is not a wildcard-concat target (nothing to split).
+    """
+    if config is None:
+        return None
+    for model_type in _config_model_types(config):
+        for target_suffix, source_suffix, dim, num_shards_attribute in _wildcard_split_converters_for(model_type):
+            if not full_name.endswith(target_suffix):
+                continue
+            prefix = full_name[: -len(target_suffix)]
+            # Require a clean path boundary so a suffix does not match mid-token.
+            if prefix and not prefix.endswith("."):
+                continue
+            num_shards = _resolve_num_shards(config, num_shards_attribute)
+            if not num_shards:
+                # Fall back to an even split by the merged size if the row count is
+                # divisible by a plausible shard count declared elsewhere; without a
+                # count we cannot safely reconstruct shards, so leave the tensor as-is.
+                logger.warning(
+                    "Cannot split merged concat tensor %r: shard count "
+                    "(config.%s) is unavailable; leaving it merged.",
+                    full_name,
+                    num_shards_attribute,
+                )
+                return None
+            if tensor.shape[dim] % num_shards != 0:
+                logger.warning(
+                    "Cannot evenly split merged concat tensor %r (dim %d size %d) "
+                    "into %d shards; leaving it merged.",
+                    full_name,
+                    dim,
+                    tensor.shape[dim],
+                    num_shards,
+                )
+                return None
+            chunks = torch.chunk(tensor, num_shards, dim=dim)
+            source_prefix = prefix + source_suffix  # still contains the '*' wildcard
+            return [(source_prefix.replace("*", str(i)), chunk) for i, chunk in enumerate(chunks)]
+    return None
+
+
 def _assemble_sharded_tensor(index, full_name: str, device: str):
     """Reconstruct a fused model-side param stored on disk as numbered shards.
 

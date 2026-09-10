@@ -266,6 +266,28 @@ class ShardWriter:
             return None
         return list(expanded.items())
 
+    def _split_merged_concat(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
+        """Split a merged model-side concat param back into its checkpoint shards.
+
+        Some families store a parameter as several numbered shards on disk and
+        concatenate them into one model-side tensor on load (e.g. Qwen3-Next
+        "Flash" PLE n-gram embeddings: ``...ngram_embedding.shard_<i>.weight`` ->
+        ``...ngram_embedding.weight``). ``save_pretrained`` reverses this
+        automatically; this immediate-saving path must replay the inverse so the
+        checkpoint keeps its original shards instead of one unusable blob.
+
+        Returns a list of ``(shard_name, shard_tensor)`` pairs, or ``None`` when
+        *name* is not such a merged concat parameter.
+        """
+        from auto_round.utils.disk_stream_util import split_merged_concat_tensor
+
+        config = getattr(self.model, "config", None)
+        try:
+            return split_merged_concat_tensor(config, name, tensor)
+        except Exception as e:  # pragma: no cover - never break saving on a split attempt
+            logger.warning("Failed to split merged concat tensor '%s' (%s); saving it as-is.", name, e)
+            return None
+
     def _add_tensor(self, name: str, tensor: torch.Tensor):
         if is_attention_calibration_tensor_name(name):
             return
@@ -286,6 +308,18 @@ class ShardWriter:
                 for sub_name, sub_tensor in expanded:
                     self._add_tensor(sub_name, sub_tensor)
                 return
+
+        # Split a merged model-side concat parameter (e.g. Qwen3-Next "Flash" PLE
+        # n-gram embedding, merged from ``shard_<i>.weight`` on load) back into its
+        # numbered checkpoint shards. ``save_pretrained`` does this automatically,
+        # but this immediate-saving path bypasses it, so replay the inverse here --
+        # otherwise a single, unusable ``[sum_rows, dim]`` blob is written.
+        split = self._split_merged_concat(name, tensor)
+        if split is not None:
+            self._all_saved.add(name)
+            for sub_name, sub_tensor in split:
+                self._add_tensor(sub_name, sub_tensor)
+            return
 
         # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
         if self.reverse_weight_transforms is not None:

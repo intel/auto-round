@@ -1371,6 +1371,16 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             # Skip stripping the capture group if the target backreferences it,
             # otherwise re.subn raises "invalid group reference".
             if not re.search(r"\\g?<?\d+>?", target_pattern):
+                # A capture group that matches a numeric index (e.g.
+                # ``ngram_embedding.shard_(\d+).weight``) must NOT be stripped:
+                # dropping it and applying the rule would rewrite every
+                # ``shard_0, shard_1, ... shard_N`` onto the *same* reverted name,
+                # silently collapsing hundreds of distinct tensors into one (all
+                # but the first are then dropped by the saver's dedup guard).
+                # Such a rule cannot be expressed without a backreference, so skip
+                # it entirely and keep the original (indexed) name intact.
+                if re.search(r"\([^)]*(?:\\d|\[0-9\])[^)]*\)", source_pattern):
+                    continue
                 source_pattern = re.sub(r"\(.*\)", "", source_pattern)
 
             # Weight-conversion reverse mappings may expose bare tensor names
