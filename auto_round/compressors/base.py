@@ -1235,6 +1235,8 @@ class BaseOrchestrator(object):
         RTN and optimized RTN quantize each layer in a single pass, and very short
         SignRound runs (``iters < MIN_ITERS_FOR_TORCH_COMPILE``) finish before the
         compilation cost is amortized, so ``torch.compile`` only adds overhead there.
+        The short-iters rule is skipped for MoE models, whose many expert linears reuse
+        the same compiled quant function, amortizing compilation even at small iters.
 
         This only adjusts the *default*: when the user explicitly passed
         ``enable_torch_compile``, their choice is always honored.  Pass
@@ -1263,7 +1265,16 @@ class BaseOrchestrator(object):
 
         iters = getattr(quantize_config, "iters", None)
         if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
-            return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+            # MoE models reuse the same compiled quant function across a large number
+            # of expert linears, so the one-time compilation cost is amortized even for
+            # very short SignRound runs. Skip the low-iters block only for MoE.
+            model = getattr(getattr(self, "model_context", None), "model", None)
+            if model is None:
+                model = getattr(self, "model", None)
+            from auto_round.utils.model import is_moe_model
+
+            if model is None or not is_moe_model(model):
+                return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
 
         return None
 
