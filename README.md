@@ -267,7 +267,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### Device/Speed Configuration
 - **`enable_torch_compile` (bool)**: Enabling `torch.compile` may speed up quantization, but compilation overhead can change peak memory and may increase it for some models or quantization schemes. It is enabled by default except on Windows, where it is disabled because TorchInductor requires the MSVC `cl.exe` compiler. On Windows, pass `enable_torch_compile=True` in Python or `--enable_torch_compile` on the CLI to force enable it. On other platforms, use `enable_torch_compile=False` or `--disable_torch_compile` to opt out.
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~30%-100% more tuning time (default is `False`).
-- **`low_cpu_mem_usage` (bool)**: [Experimental Feature]Whether to enable saving immediately to reduce ram usage (default is `True`).
+- **`low_cpu_mem_usage` (bool)**: [Experimental Feature] Whether to enable immediate-save mode to reduce RAM usage. It is enabled by default. In CLI, use `--disable_low_cpu_mem_usage` to turn it off (the legacy `--low_cpu_mem_usage` flag is kept only for compatibility).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
 
 </details>
