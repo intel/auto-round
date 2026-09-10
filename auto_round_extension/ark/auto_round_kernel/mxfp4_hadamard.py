@@ -104,6 +104,20 @@ import torch
 HADAMARD_DIM = 32
 GROUP_SIZE = 32
 
+# Attention head dim. The quantization group stays at ``GROUP_SIZE`` for every
+# transform size, so a 128-element row produces 4 independent MXFP4 groups and
+# the output layout is identical to the 32-point case.
+HADAMARD_DIM_128 = 128
+
+# Transform sizes the XPU kernel implements: ``GROUP_SIZE * L`` for a power-of-
+# two lane count ``L``. Every size above 32 is FWHT-only (Sylvester matrix) and
+# fans a row out over ``L`` cooperating sub-group lanes, so ``L`` must divide the
+# sub-group size of 32 -- see ``fwht_quant_cooperative`` in
+# xpu_mxfp4_hadamard.hpp. 512 is the largest instantiated size; nothing in the
+# design stops 1024, it simply has no consumer.
+MAX_LANES_PER_ROW = 16
+SUPPORTED_HADAMARD_DIMS = tuple(GROUP_SIZE * (1 << i) for i in range(MAX_LANES_PER_ROW.bit_length()))
+
 # FP4 (E2M1) magnitude levels.
 E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
@@ -141,13 +155,18 @@ def get_hadamard_matrix(dim: int = HADAMARD_DIM, device: torch.device | str = "c
     return cached
 
 
-def _validate_hadamard(hadamard_matrix: torch.Tensor, *, check_finite: bool = True) -> None:
+def _validate_hadamard(hadamard_matrix: torch.Tensor, *, check_finite: bool = True) -> int:
+    """Validate the matrix and return its dimension ``D``.
+
+    ``D`` is read from the matrix rather than passed in, so a caller selects the
+    transform size simply by handing over a ``get_hadamard_matrix(D)`` tensor.
+    """
     if not isinstance(hadamard_matrix, torch.Tensor):
         raise TypeError(f"hadamard_matrix must be a torch.Tensor, got {type(hadamard_matrix)}")
-    if hadamard_matrix.shape != (HADAMARD_DIM, HADAMARD_DIM):
-        raise ValueError(
-            f"hadamard_matrix must have shape ({HADAMARD_DIM}, {HADAMARD_DIM}), got {tuple(hadamard_matrix.shape)}"
-        )
+    shape = tuple(hadamard_matrix.shape)
+    if len(shape) != 2 or shape[0] != shape[1] or shape[0] not in SUPPORTED_HADAMARD_DIMS:
+        allowed = " or ".join(f"({d}, {d})" for d in SUPPORTED_HADAMARD_DIMS)
+        raise ValueError(f"hadamard_matrix must have shape {allowed}, got {shape}")
     if hadamard_matrix.dtype not in (torch.float32, torch.float64):
         raise ValueError(f"hadamard_matrix must be float32 or float64, got {hadamard_matrix.dtype}")
     # Unlike the checks above, this one reads a device tensor and forces a
@@ -156,11 +175,24 @@ def _validate_hadamard(hadamard_matrix: torch.Tensor, *, check_finite: bool = Tr
     # pass check_finite=False.
     if check_finite and not torch.isfinite(hadamard_matrix).all():
         raise ValueError("hadamard_matrix must contain only finite values")
+    return shape[0]
 
 
-def _validate_activation(x: torch.Tensor, *, require_xpu: bool, check_finite: bool = True) -> tuple[int, int]:
+def _require_activation_tensor(x: torch.Tensor) -> None:
+    """Reject a non-tensor ``x`` before anything dereferences it.
+
+    Both entry points resolve the Hadamard matrix (and hence ``x.device``)
+    before the full activation validation runs, so this cheap check has to
+    happen first for a bad ``x`` to raise TypeError rather than AttributeError.
+    """
     if not isinstance(x, torch.Tensor):
         raise TypeError(f"x must be a torch.Tensor, got {type(x)}")
+
+
+def _validate_activation(
+    x: torch.Tensor, *, require_xpu: bool, check_finite: bool = True, hadamard_dim: int = HADAMARD_DIM
+) -> tuple[int, int]:
+    _require_activation_tensor(x)
     if x.dtype not in (torch.float16, torch.bfloat16):
         raise ValueError(f"x must be float16 or bfloat16, got {x.dtype}")
     if x.ndim < 1:
@@ -170,8 +202,10 @@ def _validate_activation(x: torch.Tensor, *, require_xpu: bool, check_finite: bo
     k = x.shape[-1]
     if k == 0 or x.numel() == 0:
         raise ValueError("x must not be empty")
-    if k % GROUP_SIZE != 0:
-        raise ValueError(f"the last dimension of x must be a multiple of {GROUP_SIZE}, got {k}")
+    # The transform dimension is the stricter of the two constraints (it is a
+    # multiple of GROUP_SIZE), so checking it alone is sufficient.
+    if k % hadamard_dim != 0:
+        raise ValueError(f"the last dimension of x must be a multiple of {hadamard_dim}, got {k}")
     # This scan reads all of x and then forces a device->host sync on the
     # result, which on XPU costs roughly 4x the fused kernel itself. It is a
     # debugging aid, not part of the numerical contract, so the device entry
@@ -194,12 +228,12 @@ def hadamard_transform_reference(x_groups: torch.Tensor, h: torch.Tensor) -> tor
     x_groups = x_groups.to(torch.float32)
     h = h.to(torch.float32)
     acc = torch.zeros_like(x_groups)
-    for j in range(HADAMARD_DIM):
+    for j in range(h.shape[0]):
         acc = acc + x_groups[:, j : j + 1] * h[j]
     return acc
 
 
-def fwht_transform_reference(x_groups: torch.Tensor, norm: torch.Tensor) -> torch.Tensor:
+def fwht_transform_reference(x_groups: torch.Tensor, norm: torch.Tensor, *, norm_last: bool = False) -> torch.Tensor:
     """32-point fast Walsh-Hadamard transform under the frozen butterfly contract.
 
     Computes the same mathematical result as ``x_groups @ H`` for the normalized
@@ -222,13 +256,27 @@ def fwht_transform_reference(x_groups: torch.Tensor, norm: torch.Tensor) -> torc
     Every intermediate is a plain FP32 add or subtract, so there is nothing for
     the compiler to contract into an FMA and the order is fully determined by
     the stage index -- which is what keeps this bit-exact against the kernel.
+
+    ``norm_last`` moves the scaling after the butterflies, mirroring the
+    cooperative ``D > 32`` kernel. That kernel cannot scale on load: doing so
+    leaves a multiply feeding the first stage's add, which the GPU backend fuses
+    into an FMA that no compiler flag or pragma was able to suppress, breaking
+    bit-exactness. See the normalization note above ``fwht_quant_cooperative``
+    in xpu_mxfp4_hadamard.hpp. The two orders round differently and are
+    deliberately not bit-exact against each other.
     """
-    acc = x_groups.to(torch.float32) * norm.to(device=x_groups.device, dtype=torch.float32)
-    lanes = torch.arange(HADAMARD_DIM, device=acc.device)
-    for stage in range(HADAMARD_DIM.bit_length() - 1):
+    dim = x_groups.shape[-1]
+    scale = norm.to(device=x_groups.device, dtype=torch.float32)
+    acc = x_groups.to(torch.float32)
+    if not norm_last:
+        acc = acc * scale
+    lanes = torch.arange(dim, device=acc.device)
+    for stage in range(dim.bit_length() - 1):
         h = 1 << stage
         partner = acc[:, lanes ^ h]
         acc = torch.where((lanes & h) != 0, partner - acc, acc + partner)
+    if norm_last:
+        acc = acc * scale
     return acc
 
 
@@ -238,19 +286,22 @@ def is_default_hadamard(hadamard_matrix: torch.Tensor) -> bool:
     Only that matrix may take the FWHT path, because the butterfly network
     implements the Sylvester ordering specifically.
     """
+    dim = hadamard_matrix.shape[0]
     # Callers normally pass the tensor returned by get_hadamard_matrix, which is
     # cached per device; recognising it by identity avoids a device->host copy
     # and the sync that torch.equal would impose on every quantization call.
-    if hadamard_matrix is _HADAMARD_CACHE.get((HADAMARD_DIM, str(hadamard_matrix.device))):
+    if hadamard_matrix is _HADAMARD_CACHE.get((dim, str(hadamard_matrix.device))):
         return True
     h = hadamard_matrix.to(torch.float32)
-    return bool(torch.equal(h.cpu(), get_hadamard_matrix(HADAMARD_DIM, "cpu")))
+    return bool(torch.equal(h.cpu(), get_hadamard_matrix(dim, "cpu")))
 
 
 def transform_reference(x_groups: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
     """Dispatch to the FWHT or Path A reference, mirroring the kernel's choice."""
     if is_default_hadamard(h):
-        return fwht_transform_reference(x_groups, h.reshape(-1)[0])
+        # D > 32 runs the cooperative kernel, which normalizes after the
+        # butterflies rather than on load; the reference has to match.
+        return fwht_transform_reference(x_groups, h.reshape(-1)[0], norm_last=h.shape[0] > GROUP_SIZE)
     return hadamard_transform_reference(x_groups, h)
 
 
@@ -303,17 +354,21 @@ def mxfp4_hadamard_quant_reference(
     """Pure PyTorch FP32 reference for :func:`mxfp4_hadamard_quant`.
 
     Runs on any device (including CPU) and defines the frozen numerical contract.
+    The transform dimension is taken from ``hadamard_matrix`` (32 or 128); the
+    quantization group is always 32, so a 128-point row yields 4 groups.
     """
-    # x is validated first so that a non-tensor argument raises TypeError rather
-    # than an attribute error while resolving the default Hadamard matrix.
-    num_rows, k = _validate_activation(x, require_xpu=False)
+    _require_activation_tensor(x)
     if hadamard_matrix is None:
         hadamard_matrix = get_hadamard_matrix(HADAMARD_DIM, x.device)
-    _validate_hadamard(hadamard_matrix)
+    # The matrix is validated next because it determines the divisibility
+    # constraint the activation is then checked against.
+    dim = _validate_hadamard(hadamard_matrix)
+    num_rows, k = _validate_activation(x, require_xpu=False, hadamard_dim=dim)
 
     h = hadamard_matrix.to(device=x.device, dtype=torch.float32).contiguous()
-    y = transform_reference(x.contiguous().reshape(-1, HADAMARD_DIM), h)
-    e8m0, q = _e8m0_and_quantized(y)
+    y = transform_reference(x.contiguous().reshape(-1, dim), h)
+    # The transform works on D-element rows, the quantizer on 32-element groups.
+    e8m0, q = _e8m0_and_quantized(y.reshape(-1, GROUP_SIZE))
     codes = _encode_fp4(q).reshape(num_rows, k)
     return pack_codes(codes), e8m0.reshape(num_rows, k // GROUP_SIZE)
 
@@ -333,10 +388,40 @@ def mxfp4_quant_reference(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     for byte.
     """
     num_rows, k = _validate_activation(x, require_xpu=False)
-    x_groups = x.contiguous().reshape(-1, HADAMARD_DIM).to(torch.float32)
+    x_groups = x.contiguous().reshape(-1, GROUP_SIZE).to(torch.float32)
     e8m0, q = _e8m0_and_quantized(x_groups)
     codes = _encode_fp4(q).reshape(num_rows, k)
     return pack_codes(codes), e8m0.reshape(num_rows, k // GROUP_SIZE)
+
+
+def mxfp4_stream_reference(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pure PyTorch reference for the **stream-only** roofline baseline.
+
+    The stream-only mode exists to answer "how fast could *any* kernel with this
+    access pattern be?". It keeps the fused kernel's loads, packing shape and
+    stores but replaces the transform and the quantization math with the
+    cheapest data-dependent function available: the low nibble of each element's
+    raw bit pattern, packed under the usual even-element-low-nibble rule, plus
+    an XOR fold for the scale byte. The output is not a quantization of anything
+    and must never be consumed as one.
+
+    This reference is not part of the numerical contract -- it exists so a test
+    can prove the baseline kernel actually reads every input element. Without
+    it, dead-code elimination of the loads would turn the baseline into an empty
+    kernel reporting an unreachable bandwidth, silently inflating every ratio
+    measured against it.
+
+    The scale byte folds the four code bytes that hold elements
+    ``{0, 1}, {8, 9}, {16, 17}, {24, 25}`` of the group, which is exactly the
+    low byte of the kernel's XOR over its four packed 32-bit words.
+    """
+    num_rows, k = _validate_activation(x, require_xpu=False, check_finite=False)
+    # view() reinterprets the 16-bit float as raw bits without converting.
+    bits = x.contiguous().view(torch.int16).reshape(-1, GROUP_SIZE).to(torch.int32) & 0x0F
+    codes = pack_codes(bits.to(torch.uint8)).reshape(num_rows, k // 2)
+    groups = codes.reshape(-1, GROUP_SIZE // 2)
+    fold = groups[:, 0] ^ groups[:, 4] ^ groups[:, 8] ^ groups[:, 12]
+    return codes, fold.reshape(num_rows, k // GROUP_SIZE)
 
 
 _XMX_SUPPORTED: bool | None = None
@@ -366,13 +451,18 @@ def mxfp4_hadamard_quant(
     check_finite: bool = False,
     _force_xmx: bool | None = None,
     _quant_only: bool = False,
+    _stream_only: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fused 32-point Hadamard transform + MXFP4 quantization on XPU.
+    """Fused Hadamard transform + MXFP4 quantization on XPU.
 
     Args:
-        x: FP16/BF16 XPU activation with ``x.shape[-1] % 32 == 0``.
-        hadamard_matrix: normalized ``32 x 32`` Hadamard matrix. Defaults to the
-            Sylvester matrix returned by :func:`get_hadamard_matrix`.
+        x: FP16/BF16 XPU activation with ``x.shape[-1] % D == 0``, where ``D``
+            is the dimension of ``hadamard_matrix``.
+        hadamard_matrix: normalized ``D x D`` Hadamard matrix, ``D`` in
+            ``(32, 128)``. Defaults to the ``32 x 32`` Sylvester matrix returned
+            by :func:`get_hadamard_matrix`. Pass ``get_hadamard_matrix(128, dev)``
+            for the attention head-dim transform, which is implemented by a
+            cooperative 4-lane FWHT and supports the Sylvester matrix only.
         check_finite: reject NaN/Inf in ``x`` before launching. Off by default:
             the check reads all of ``x`` and syncs on the result, which costs
             several times the fused kernel itself. NaN/Inf are still outside the
@@ -386,6 +476,15 @@ def mxfp4_hadamard_quant(
             use_fwht/use_xmx in this mode and always uses the per-item FWHT
             layout. This is the quant-only baseline in
             ``test/README_HMT_QUANT_ONLY_BASELINE.md``.
+        _stream_only: private stream-only baseline override (default False).
+            When True, both the transform *and* the quantization math are
+            stripped, leaving the loads, the packing shape and the stores. The
+            byte traffic and the item mapping are identical to the fused path,
+            so ``BW_fused / BW_stream_only`` is the kernel's utilization of the
+            traffic-matched roofline -- the denominator the benchmark gates on.
+            The output is *not* a quantization; see
+            :func:`mxfp4_stream_reference`. Mutually exclusive with
+            ``_quant_only``.
 
         Routing is automatic: the normalized Sylvester matrix always takes the
         bit-exact FWHT path (first priority); any other Hadamard matrix falls
@@ -402,12 +501,17 @@ def mxfp4_hadamard_quant(
     """
     from . import cvt_dtype, get_lib, get_stream
 
-    num_rows, k = _validate_activation(x, require_xpu=True, check_finite=check_finite)
-    if _quant_only:
-        # Quant-only baseline: no Hadamard matrix is involved, so no validation
-        # and no device comparison. A (default) matrix is still materialised so
-        # the pointer argument passed to the C++ binding stays valid; the C++
-        # dispatcher does not dereference it in quant_only mode.
+    if _quant_only and _stream_only:
+        raise ValueError("_quant_only and _stream_only are mutually exclusive")
+    _require_activation_tensor(x)
+
+    hadamard_dim = HADAMARD_DIM
+    if _quant_only or _stream_only:
+        # Baselines run on the flat [total_groups, 32] view, so no Hadamard
+        # matrix is involved: no validation and no device comparison. A
+        # (default) matrix is still materialised so the pointer argument passed
+        # to the C++ binding stays valid; the dispatcher never dereferences it
+        # in either baseline mode.
         hadamard_matrix = get_hadamard_matrix(HADAMARD_DIM, x.device)
         use_fwht = True
         use_xmx = False
@@ -420,10 +524,16 @@ def mxfp4_hadamard_quant(
         # Structural checks are cheap. The finiteness check is not: it syncs on
         # the device every call. The default matrix is known finite, so only a
         # caller-supplied one pays for it.
-        _validate_hadamard(hadamard_matrix, check_finite=False)
+        hadamard_dim = _validate_hadamard(hadamard_matrix, check_finite=False)
         use_fwht = is_default_hadamard(hadamard_matrix)
         if not use_fwht:
+            if hadamard_dim != HADAMARD_DIM:
+                # Only the butterfly network is implemented above D = 32; there
+                # is no O(D^2) fallback and no XMX path for it.
+                raise NotImplementedError(f"hadamard_dim {hadamard_dim} supports the normalized Sylvester matrix only")
             _validate_hadamard(hadamard_matrix)
+
+    num_rows, k = _validate_activation(x, require_xpu=True, check_finite=check_finite, hadamard_dim=hadamard_dim)
 
     # Path resolution (auto-router): FWHT has first priority for the Sylvester
     # matrix; any other (custom) matrix falls back to the XMX fast path when the
@@ -431,10 +541,10 @@ def mxfp4_hadamard_quant(
     # is a private override used by tests/benchmarks. ``_quant_only`` always
     # disables XMX: it is implemented on the shared per-item FWHT layout, which
     # is exactly the layout the quant-only baseline must match.
-    if not _quant_only:
+    if not (_quant_only or _stream_only):
         if _force_xmx is not None:
             use_xmx = bool(_force_xmx)
-        elif use_fwht:
+        elif use_fwht or hadamard_dim != HADAMARD_DIM:
             use_xmx = False
         else:
             use_xmx = _xmx_supported()
@@ -460,5 +570,7 @@ def mxfp4_hadamard_quant(
         use_fwht,
         use_xmx,
         _quant_only,
+        hadamard_dim,
+        _stream_only,
     )
     return out_codes, out_scale

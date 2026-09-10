@@ -779,24 +779,31 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
   }
 }
 
-// Activation-only fused kernel: 32-point normalized Hadamard + MXFP4 quant.
+// Activation-only fused kernel: normalized Hadamard + MXFP4 quant.
 // x:         [num_rows, k]      FP16 or BF16
-// hadamard:  [32, 32]           FP32, row major, already normalized by 1/sqrt(32)
+// hadamard:  [D, D]             FP32, row major, already normalized by 1/sqrt(D)
+// hadamard_dim: D, one of 32 (GEMM activations), 64, 128 (attention head dim),
+//            256 or 512. The quantization group stays at 32 for all of them, so
+//            a D = 128 row yields 4 MXFP4 groups. Every D > 32 implements the
+//            FWHT path only.
 // use_fwht:  true when hadamard is the normalized Sylvester matrix, which is the
 //            only matrix the butterfly network implements. The caller decides so
 //            that the hot path does not pay for a device-side comparison.
 // use_xmx:   opt-in XMX fast path (requires an ARK_SYCL_TLA build). Uses the
 //            relaxed numerical contract of xpu_mxfp4_hadamard_xmx.hpp (H stored
 //            in the activation dtype, DPAS accumulation); tolerance-based, not
-//            bit-exact.
+//            bit-exact. D = 32 only.
 // use_quant_only: strip the Hadamard transform and quantize the raw activation
 //            (quant-only baseline). Ignored on the XMX path; see
 //            test/README_HMT_QUANT_ONLY_BASELINE.md.
+// use_stream_only: strip the transform *and* the quantization math, keeping the
+//            loads, the packing shape and the stores (traffic-matched roofline
+//            baseline). Mutually exclusive with use_quant_only.
 // out_codes: [num_rows, k / 2]  uint8, two packed FP4 codes per byte
 // out_scale: [num_rows, k / 32] uint8, one E8M0 exponent per 32-element group
 static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadamard, torch_ptr out_codes,
                                  torch_ptr out_scale, int64_t num_rows, int64_t k, int in_dtype, bool use_fwht,
-                                 bool use_xmx, bool use_quant_only) {
+                                 bool use_xmx, bool use_quant_only, int64_t hadamard_dim, bool use_stream_only) {
   if (!stream) {
     throw std::invalid_argument("ark::mxfp4_hadamard_quant: stream must not be null");
   }
@@ -809,6 +816,28 @@ static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadama
   if (k % ark::XpuMxfp4Hadamard::kGroupSize != 0) {
     throw std::invalid_argument("ark::mxfp4_hadamard_quant: k must be a multiple of 32");
   }
+  if (use_quant_only && use_stream_only) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: use_quant_only and use_stream_only are exclusive");
+  }
+  const bool baseline = use_quant_only || use_stream_only;
+  // The baselines run on the flat [total_groups, 32] view, so the transform
+  // dimension is irrelevant to them and is not validated in that case.
+  if (!baseline) {
+    if (!ark::XpuMxfp4Hadamard::is_supported_hadamard_dim(hadamard_dim)) {
+      throw std::invalid_argument("ark::mxfp4_hadamard_quant: hadamard_dim must be 32, 64, 128, 256 or 512");
+    }
+    if (k % hadamard_dim != 0) {
+      throw std::invalid_argument("ark::mxfp4_hadamard_quant: k must be a multiple of hadamard_dim");
+    }
+    if (hadamard_dim > ark::XpuMxfp4Hadamard::kGroupSize) {
+      if (!use_fwht) {
+        throw std::invalid_argument("ark::mxfp4_hadamard_quant: hadamard_dim > 32 requires the Sylvester matrix");
+      }
+      if (use_xmx) {
+        throw std::invalid_argument("ark::mxfp4_hadamard_quant: use_xmx is not supported for hadamard_dim > 32");
+      }
+    }
+  }
   auto* q = (sycl::queue*)stream;
   auto* h_ptr = (const float*)hadamard;
   auto* codes_ptr = (uint8_t*)out_codes;
@@ -816,7 +845,7 @@ static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadama
   const auto dtype = (BTLA_DTYPE)in_dtype;
   const int64_t total_groups = num_rows * (k / ark::XpuMxfp4Hadamard::kGroupSize);
 
-  if (use_xmx && !use_quant_only) {
+  if (use_xmx && !baseline) {
 #if defined(ARK_SYCL_TLA)
     // XMX path: H is converted to the activation dtype (lossless) and the
     // transform runs on DPAS. x (sycl bf16/half) is layout-identical to
@@ -846,11 +875,12 @@ static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadama
 
   if (dtype == BTLA_DTYPE::F16) {
     ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::half>(q, (const sycl::half*)x, h_ptr, codes_ptr, scale_ptr,
-                                                            num_rows, k, use_fwht, use_quant_only);
+                                                            num_rows, k, use_fwht, use_quant_only, hadamard_dim,
+                                                            use_stream_only);
   } else if (dtype == BTLA_DTYPE::BF16) {
     ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::ext::oneapi::bfloat16>(
         q, (const sycl::ext::oneapi::bfloat16*)x, h_ptr, codes_ptr, scale_ptr, num_rows, k, use_fwht,
-        use_quant_only);
+        use_quant_only, hadamard_dim, use_stream_only);
   } else {
     throw std::invalid_argument("ark::mxfp4_hadamard_quant: only FP16 and BF16 activations are supported");
   }
@@ -1507,7 +1537,8 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("mxfp4_hadamard_quant", &ark::mxfp4_hadamard_quant, pybind11::arg("stream"), pybind11::arg("x"),
         pybind11::arg("hadamard"), pybind11::arg("out_codes"), pybind11::arg("out_scale"),
         pybind11::arg("num_rows"), pybind11::arg("k"), pybind11::arg("in_dtype"), pybind11::arg("use_fwht") = true,
-        pybind11::arg("use_xmx") = false, pybind11::arg("use_quant_only") = false);
+        pybind11::arg("use_xmx") = false, pybind11::arg("use_quant_only") = false,
+        pybind11::arg("hadamard_dim") = 32, pybind11::arg("use_stream_only") = false);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);

@@ -29,6 +29,9 @@ import torch
 from auto_round_kernel.mxfp4_hadamard import (
     GROUP_SIZE,
     HADAMARD_DIM,
+    HADAMARD_DIM_128,
+    MAX_LANES_PER_ROW,
+    SUPPORTED_HADAMARD_DIMS,
     _e8m0_and_quantized,
     _encode_fp4,
     _xmx_supported,
@@ -37,6 +40,7 @@ from auto_round_kernel.mxfp4_hadamard import (
     mxfp4_hadamard_quant,
     mxfp4_hadamard_quant_reference,
     mxfp4_quant_reference,
+    mxfp4_stream_reference,
     pack_codes,
 )
 
@@ -739,7 +743,9 @@ class TestXpuKernelPhase2:
         "bad_matrix_factory",
         [
             lambda: torch.eye(16, dtype=torch.float32, device="xpu"),
-            lambda: torch.eye(64, dtype=torch.float32, device="xpu"),
+            # 1024 = 32 * 32 lanes: a power of two, but beyond the largest
+            # instantiated lane count, so it is rejected on shape.
+            lambda: torch.eye(1024, dtype=torch.float32, device="xpu"),
             lambda: torch.zeros(HADAMARD_DIM, dtype=torch.float32, device="xpu"),
             lambda: torch.eye(HADAMARD_DIM, dtype=torch.int32, device="xpu"),
             lambda: torch.full((HADAMARD_DIM, HADAMARD_DIM), float("inf"), dtype=torch.float32, device="xpu"),
@@ -859,6 +865,380 @@ class TestXpuKernelXmx:
         c2, s2 = mxfp4_hadamard_quant(x, _force_xmx=True)
         assert torch.equal(c1.cpu(), c2.cpu())
         assert torch.equal(s1.cpu(), s2.cpu())
+
+
+@requires_xpu
+class TestStreamOnlyBaseline:
+    """The stream-only roofline baseline (``_stream_only=True``).
+
+    This mode is a measurement instrument, not a quantizer: it keeps the fused
+    kernel's loads, packing shape and stores but drops the transform and the
+    quantization math. The tests below exist for one reason above all -- to
+    prove the kernel really touches every input element. A compiler that sank
+    the loads would leave an empty kernel reporting an unreachable bandwidth,
+    and every ratio measured against it would be silently wrong.
+    """
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("num_rows,k", SHAPES + TAIL_SHAPES)
+    def test_matches_reference(self, dtype, num_rows, k):
+        torch.manual_seed(11)
+        x = torch.randn(num_rows, k, dtype=dtype, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, _stream_only=True)
+        ref_codes, ref_scale = mxfp4_stream_reference(x.cpu())
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_every_input_element_is_read(self, dtype):
+        """Perturbing any single element must change the output.
+
+        Each element contributes its low nibble to one code byte and (for a
+        quarter of the positions) to the scale fold, so a one-element change is
+        always observable. This is the anti-dead-code-elimination guarantee the
+        whole baseline rests on.
+        """
+        torch.manual_seed(12)
+        x = torch.randn(4, 64, dtype=dtype, device="xpu")
+        # Set the low nibble of every element to zero, then flip one bit at a
+        # time; using raw bits keeps the test independent of float semantics.
+        bits = x.view(torch.int16)
+        bits &= ~0x0F
+        base_codes, _ = mxfp4_hadamard_quant(x, _stream_only=True)
+        for idx in range(x.numel()):
+            probe = x.clone()
+            probe.view(torch.int16).reshape(-1)[idx] |= 0x0F
+            codes, _ = mxfp4_hadamard_quant(probe, _stream_only=True)
+            assert not torch.equal(codes.cpu(), base_codes.cpu()), f"element {idx} was not read"
+
+    def test_shares_byte_traffic_with_fused(self):
+        """Identical output shapes/dtypes, i.e. identical bytes written.
+
+        The bandwidth ratio is only meaningful because both modes move exactly
+        the same number of bytes.
+        """
+        x = torch.randn(8, 256, dtype=torch.bfloat16, device="xpu")
+        stream = mxfp4_hadamard_quant(x, _stream_only=True)
+        fused = mxfp4_hadamard_quant(x)
+        for a, b in zip(stream, fused):
+            assert a.shape == b.shape and a.dtype == b.dtype
+
+    def test_rejects_combination_with_quant_only(self):
+        x = torch.randn(1, 32, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(ValueError):
+            mxfp4_hadamard_quant(x, _quant_only=True, _stream_only=True)
+
+    def test_deterministic(self):
+        torch.manual_seed(13)
+        x = torch.randn(16, 128, dtype=torch.float16, device="xpu")
+        c1, s1 = mxfp4_hadamard_quant(x, _stream_only=True)
+        c2, s2 = mxfp4_hadamard_quant(x, _stream_only=True)
+        assert torch.equal(c1.cpu(), c2.cpu()) and torch.equal(s1.cpu(), s2.cpu())
+
+
+class TestHadamard128Reference:
+    """CPU-side contract for the 128-point transform."""
+
+    def test_reference_matches_dense_matmul(self):
+        """The 7-stage butterfly computes ``x @ H128`` up to FP32 rounding."""
+        torch.manual_seed(21)
+        x = torch.randn(64, HADAMARD_DIM_128, dtype=torch.float32)
+        h = get_hadamard_matrix(HADAMARD_DIM_128, "cpu")
+        from auto_round_kernel.mxfp4_hadamard import fwht_transform_reference
+
+        got = fwht_transform_reference(x, h.reshape(-1)[0])
+        assert torch.allclose(got, x @ h, atol=1e-5, rtol=1e-5)
+
+    def test_hadamard128_is_orthonormal(self):
+        h = get_hadamard_matrix(HADAMARD_DIM_128, "cpu")
+        assert torch.allclose(h @ h.T, torch.eye(HADAMARD_DIM_128), atol=1e-5)
+
+    def test_reference_produces_four_groups_per_row(self):
+        """D = 128 keeps the 32-element quantization group, so 4 scales/row."""
+        x = torch.randn(8, HADAMARD_DIM_128, dtype=torch.bfloat16)
+        codes, scale = mxfp4_hadamard_quant_reference(x, get_hadamard_matrix(HADAMARD_DIM_128, "cpu"))
+        assert codes.shape == (8, HADAMARD_DIM_128 // 2)
+        assert scale.shape == (8, HADAMARD_DIM_128 // GROUP_SIZE) == (8, 4)
+
+
+@requires_xpu
+class TestXpuKernel128:
+    """The cooperative 4-lane D = 128 kernel."""
+
+    # 4 lanes per row and 256 work-items per work-group means 64 rows per
+    # work-group. Row counts that are not a multiple of 64 leave a partial
+    # trailing work-group whose inactive lanes must still take part in the
+    # cross-lane butterfly shuffles (they clamp their row index instead of
+    # returning), so these shapes are the convergence regression test.
+    SHAPES_128 = [(1, 128), (3, 128), (5, 128), (63, 128), (64, 128), (65, 128), (7, 384), (9, 5120)]
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("num_rows,k", SHAPES_128)
+    def test_bit_exact_against_reference(self, dtype, num_rows, k):
+        torch.manual_seed(22)
+        x = torch.randn(num_rows, k, dtype=dtype, device="xpu")
+        h = get_hadamard_matrix(HADAMARD_DIM_128, x.device)
+        codes, scale = mxfp4_hadamard_quant(x, h)
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), get_hadamard_matrix(HADAMARD_DIM_128, "cpu"))
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_attention_head_dim_layout(self, dtype):
+        """A [B, S, H, D] attention tensor transforms along the head dim.
+
+        The kernel only requires the transform dimension to be the innermost
+        one, which is exactly how QKV activations are laid out.
+        """
+        torch.manual_seed(23)
+        x = torch.randn(1, 96, 4, HADAMARD_DIM_128, dtype=dtype, device="xpu")
+        h = get_hadamard_matrix(HADAMARD_DIM_128, x.device)
+        codes, scale = mxfp4_hadamard_quant(x, h)
+        num_rows = x.numel() // HADAMARD_DIM_128
+        assert codes.shape == (num_rows, HADAMARD_DIM_128 // 2)
+        assert scale.shape == (num_rows, 4)
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), get_hadamard_matrix(HADAMARD_DIM_128, "cpu"))
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    def test_output_shape_matches_d32(self):
+        """D = 32 and D = 128 produce byte-identical output *shapes*.
+
+        Both quantize in groups of 32, so downstream consumers and the
+        bandwidth accounting are unaffected by the transform size.
+        """
+        x = torch.randn(16, 512, dtype=torch.bfloat16, device="xpu")
+        c32, s32 = mxfp4_hadamard_quant(x)
+        c128, s128 = mxfp4_hadamard_quant(x, get_hadamard_matrix(HADAMARD_DIM_128, x.device))
+        assert c32.shape == c128.shape and s32.shape == s128.shape
+        # Different transforms, so the values must differ.
+        assert not torch.equal(c32.cpu(), c128.cpu())
+
+    def test_all_zero_rows(self):
+        x = torch.zeros(5, 256, dtype=torch.bfloat16, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(HADAMARD_DIM_128, x.device))
+        assert torch.all(codes.cpu() == 0)
+        assert torch.all(scale.cpu() == 0)
+
+    def test_rejects_k_not_multiple_of_128(self):
+        x = torch.randn(2, 96, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(ValueError, match="multiple of 128"):
+            mxfp4_hadamard_quant(x, get_hadamard_matrix(HADAMARD_DIM_128, x.device))
+
+    def test_rejects_non_sylvester_128(self):
+        """There is no O(D^2) fallback at D = 128, so a custom matrix is refused."""
+        h = get_hadamard_matrix(HADAMARD_DIM_128, "xpu").clone()
+        h[0, 1] = -h[0, 1]
+        x = torch.randn(2, 128, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(NotImplementedError):
+            mxfp4_hadamard_quant(x, h)
+
+    def test_rejects_xmx_at_128(self):
+        x = torch.randn(2, 128, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises((RuntimeError, ValueError)):
+            mxfp4_hadamard_quant(x, get_hadamard_matrix(HADAMARD_DIM_128, x.device), _force_xmx=True)
+
+    @pytest.mark.parametrize("dim", [1024, 2048])
+    def test_rejects_dim_above_max_lane_count(self, dim):
+        """A power-of-two D beyond 32 * MAX_LANES_PER_ROW has no instantiation.
+
+        These would need more than 16 lanes per row; 1024 is the first size that
+        needs a full 32-lane sub-group per row, which is legal in principle but
+        deliberately not built.
+        """
+        x = torch.randn(2, dim, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(ValueError):
+            mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+
+    @pytest.mark.parametrize("dim", [96, 160])
+    def test_rejects_non_power_of_two_dim(self, dim):
+        """D must be 32 * 2^n: the butterfly has no non-power-of-two form."""
+        x = torch.randn(2, dim * 2, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(ValueError):
+            mxfp4_hadamard_quant(x, torch.eye(dim, dtype=torch.float32, device="xpu"))
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    def test_deterministic(self, dtype):
+        torch.manual_seed(24)
+        x = torch.randn(70, 256, dtype=dtype, device="xpu")
+        h = get_hadamard_matrix(HADAMARD_DIM_128, x.device)
+        c1, s1 = mxfp4_hadamard_quant(x, h)
+        c2, s2 = mxfp4_hadamard_quant(x, h)
+        assert torch.equal(c1.cpu(), c2.cpu()) and torch.equal(s1.cpu(), s2.cpu())
+
+
+# Every cooperative size, i.e. everything the lane-count template instantiates
+# except D = 32, which the dispatcher routes to the per-item kernel instead.
+COOPERATIVE_DIMS = [d for d in SUPPORTED_HADAMARD_DIMS if d > GROUP_SIZE]
+
+
+class TestHadamardDimReferenceParity:
+    """The torch reference must itself be correct at every supported D.
+
+    Bit-exactness against the reference is worthless if the reference is wrong,
+    so this pins it against an independent construction: the transform is a
+    matrix multiply by the normalized Sylvester matrix, and that matrix is its
+    own inverse up to the normalization.
+    """
+
+    @pytest.mark.parametrize("dim", SUPPORTED_HADAMARD_DIMS)
+    def test_matrix_is_orthogonal(self, dim):
+        h = get_hadamard_matrix(dim, "cpu")
+        identity = h @ h.T
+        assert torch.allclose(identity, torch.eye(dim, dtype=torch.float32), atol=1e-5)
+
+    @pytest.mark.parametrize("dim", SUPPORTED_HADAMARD_DIMS)
+    def test_reference_matches_matmul(self, dim):
+        """hadamard_transform_reference takes an already-grouped [-1, D] view."""
+        torch.manual_seed(31)
+        x = torch.randn(12, dim, dtype=torch.float32)
+        h = get_hadamard_matrix(dim, "cpu")
+        assert torch.allclose(hadamard_transform_reference(x, h), x @ h, atol=1e-5)
+
+    @pytest.mark.parametrize("dim", SUPPORTED_HADAMARD_DIMS)
+    def test_output_group_count_is_dim_independent(self, dim):
+        """Whatever D is, the output is still one E8M0 per 32 elements."""
+        x = torch.randn(4, 1024, dtype=torch.bfloat16)
+        codes, scale = mxfp4_hadamard_quant_reference(x, get_hadamard_matrix(dim, "cpu"))
+        assert codes.shape == (4, 1024 // 2)
+        assert scale.shape == (4, 1024 // GROUP_SIZE)
+
+
+@requires_xpu
+class TestXpuKernelAllDims:
+    """The lane-count template at every instantiated D, not just 128.
+
+    D = 32 * L uses L cooperating lanes, so the tail-convergence behaviour and
+    the rows-per-work-group ratio differ for each L. Row counts here are chosen
+    to straddle the 256/L rows that fill one work-group.
+    """
+
+    @pytest.mark.parametrize("dtype", DTYPES)
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    @pytest.mark.parametrize("row_mult", [1, 3, 7, 33])
+    def test_bit_exact_against_reference(self, dtype, dim, row_mult):
+        torch.manual_seed(32)
+        x = torch.randn(row_mult, dim, dtype=dtype, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), get_hadamard_matrix(dim, "cpu"))
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_partial_work_group_tail(self, dim):
+        """Rows that leave a partial trailing work-group.
+
+        Inactive lanes in that work-group must still reach the cross-lane
+        shuffles; if they returned early the collective would be undefined and
+        the *active* lanes of the same row would read garbage.
+        """
+        rows_per_wg = 256 // (dim // GROUP_SIZE)
+        for num_rows in (1, rows_per_wg - 1, rows_per_wg, rows_per_wg + 1):
+            torch.manual_seed(33)
+            x = torch.randn(num_rows, dim, dtype=torch.bfloat16, device="xpu")
+            codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+            ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), get_hadamard_matrix(dim, "cpu"))
+            assert torch.equal(codes.cpu(), ref_codes), f"codes mismatch at D={dim} rows={num_rows}"
+            assert torch.equal(scale.cpu(), ref_scale), f"scale mismatch at D={dim} rows={num_rows}"
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_multiple_transforms_per_row(self, dim):
+        """K = 4*D exercises the row -> group index arithmetic in the store."""
+        torch.manual_seed(34)
+        x = torch.randn(5, dim * 4, dtype=torch.bfloat16, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), get_hadamard_matrix(dim, "cpu"))
+        assert torch.equal(codes.cpu(), ref_codes)
+        assert torch.equal(scale.cpu(), ref_scale)
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_all_zero_rows(self, dim):
+        x = torch.zeros(3, dim, dtype=torch.bfloat16, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+        assert torch.all(codes.cpu() == 0) and torch.all(scale.cpu() == 0)
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_rejects_k_not_multiple_of_dim(self, dim):
+        x = torch.randn(2, dim + GROUP_SIZE, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(ValueError, match=f"multiple of {dim}"):
+            mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_rejects_non_sylvester(self, dim):
+        h = get_hadamard_matrix(dim, "xpu").clone()
+        h[0, 1] = -h[0, 1]
+        x = torch.randn(2, dim, dtype=torch.bfloat16, device="xpu")
+        with pytest.raises(NotImplementedError):
+            mxfp4_hadamard_quant(x, h)
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_differs_from_d32(self, dim):
+        """Each D is a genuinely different transform, not a relabelled D = 32.
+
+        Without this, a dispatcher bug that silently fell back to the 32-point
+        butterfly would pass every bit-exactness test above, because the
+        reference would be compared against itself.
+        """
+        torch.manual_seed(35)
+        x = torch.randn(8, dim, dtype=torch.bfloat16, device="xpu")
+        c32, _ = mxfp4_hadamard_quant(x)
+        cd, _ = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+        assert not torch.equal(c32.cpu(), cd.cpu())
+
+    @pytest.mark.parametrize("dim", SUPPORTED_HADAMARD_DIMS)
+    def test_bit_exact_at_scale(self, dim):
+        """Large-shape bit-exactness, which small shapes cannot establish.
+
+        The FMA-contraction bug this guards against flipped roughly 1 code in
+        4 million -- only groups whose scaled magnitude landed within an ULP of
+        an E2M1 threshold -- so every shape elsewhere in this file passed while
+        the kernel was wrong. Catching it needs enough codes for the tail to
+        show up, hence 16 M here rather than the few thousand used above.
+
+        It is also why D = 64 and D = 256 must be covered and not assumed safe
+        by analogy: their 1/sqrt(D) is an exact power of two, which made the
+        load-time product exact and hid the bug for those two sizes alone.
+        """
+        torch.manual_seed(36)
+        x = torch.randn(4096, 4096, dtype=torch.bfloat16, device="xpu")
+        codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
+        ref_codes, ref_scale = mxfp4_hadamard_quant_reference(x.cpu(), get_hadamard_matrix(dim, "cpu"))
+        bad_codes = int((codes.cpu() != ref_codes).sum())
+        bad_scale = int((scale.cpu() != ref_scale).sum())
+        assert bad_codes == 0, f"D={dim}: {bad_codes} of {ref_codes.numel()} codes differ"
+        assert bad_scale == 0, f"D={dim}: {bad_scale} of {ref_scale.numel()} scales differ"
+
+    @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
+    def test_normalization_is_applied_last(self, dim):
+        """The cooperative path must match the norm-last reference, not norm-first.
+
+        These two orders differ only in rounding, so this pins the choice that
+        keeps the kernel free of a contractable multiply-add (see the
+        normalization note in xpu_mxfp4_hadamard.hpp). For D whose 1/sqrt(D) is
+        an exact power of two the two orders coincide, so only the others can
+        actually discriminate.
+        """
+        h = get_hadamard_matrix(dim, "cpu")
+        norm = h.reshape(-1)[0]
+        torch.manual_seed(37)
+        x = torch.randn(2048, dim, dtype=torch.float32)
+        from auto_round_kernel.mxfp4_hadamard import fwht_transform_reference
+
+        last = fwht_transform_reference(x, norm, norm_last=True)
+        first = fwht_transform_reference(x, norm, norm_last=False)
+        assert torch.allclose(last, first, atol=1e-4)
+        if not float(norm).hex().endswith("p-4") and dim not in (64, 256):
+            assert not torch.equal(last, first), "the two orders must be distinguishable"
+
+    def test_lane_count_divides_sub_group(self):
+        """The correctness precondition for the cross-lane butterfly.
+
+        A row's lanes must share one sub-group, which holds only while the lane
+        count divides the sub-group size of 32.
+        """
+        for dim in COOPERATIVE_DIMS:
+            assert 32 % (dim // GROUP_SIZE) == 0
+        assert max(SUPPORTED_HADAMARD_DIMS) // GROUP_SIZE == MAX_LANES_PER_ROW
 
 
 if __name__ == "__main__":
