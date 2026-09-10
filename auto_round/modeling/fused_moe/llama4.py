@@ -25,7 +25,7 @@ from transformers.models.llama4.modeling_llama4 import Llama4Config, Llama4TextM
 
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, grouped_or_sequential_moe_forward
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 
@@ -34,6 +34,10 @@ class SequentialLlama4TextExperts(torch.nn.ModuleList):
         self.num_experts = original.gate_up_proj.shape[0]
         with no_init_weights(), torch.device("meta"):
             super().__init__([Llama4TextMLP(config) for _ in range(self.num_experts)])
+        # Container-level activation so the grouped experts forward can apply gating.
+        # Store via ``object.__setattr__`` so a Module activation is NOT registered as a child
+        # of this ``ModuleList`` (it would otherwise appear as an extra expert in iteration/len).
+        object.__setattr__(self, "act_fn", getattr(self[0], "act_fn", None) or getattr(self[0], "activation_fn", None))
         register_moe_fusion_spec(
             self,
             build_standard_moe_fusion_spec(
@@ -96,13 +100,15 @@ class SequentialLlama4TextMoe(ReplacementModuleBase):
 
         out = self.shared_expert(hidden_states)
 
-        # Only process experts that actually received tokens (expert_hit pattern),
-        # skipping experts with zero routing weight to save compute during calibration.
-        with torch.no_grad():
-            expert_hit = torch.greater(router_scores.sum(dim=-1), 0).nonzero()
-        for expert_idx in expert_hit:
-            expert_idx = expert_idx[0]
-            out += self.experts[expert_idx](hidden_states) * router_scores[expert_idx].reshape(-1, 1)
+        # ``router_scores`` is (num_experts, num_tokens), top-k-sparse (non-routed entries are
+        # 0). Recover the gathered (token, top_k) routing the grouped experts forward expects:
+        # topk over the expert axis returns exactly the routed experts and their weights, so
+        # ``sum_k weight * expert(x)`` reproduces the old ``sum_{hit e} score[e] * expert(x)``.
+        scores_te = router_scores.transpose(0, 1)  # (num_tokens, num_experts)
+        top_k_weights, top_k_index = scores_te.topk(self.top_k, dim=-1)
+        out = out + grouped_or_sequential_moe_forward(
+            hidden_states, top_k_index, top_k_weights, self.experts, self.num_experts
+        )
 
         return out, router_logits
 
