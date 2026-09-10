@@ -30,6 +30,12 @@ from auto_round.algorithms.registry import (
 )
 
 
+def _is_rrq_format(args) -> bool:
+    """Check whether the requested output format is RRQ."""
+    fmt = getattr(args, "format", None) or getattr(args, "_api_format", None) or ""
+    return "auto_round:rrq" in fmt.lower()
+
+
 def _parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
     if _has_custom_register_args(config_cls):
         return config_cls.get_registered_args()
@@ -181,7 +187,7 @@ class AlgorithmHandler:
         parameters_by_group = {}
         locations = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             config_cls = (
                 entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
@@ -244,6 +250,11 @@ class AlgorithmHandler:
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
 
+        # Auto-select RRQ when the output format is auto_round:rrq and the user
+        # did not explicitly choose an algorithm.
+        if not names and _is_rrq_format(args):
+            names = ["rrq"]
+
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
         if not ({"rtn", "auto_round"} & seen):
@@ -294,7 +305,7 @@ class AlgorithmHandler:
     def format_listing(cls) -> str:
         lines = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             other = [alias for alias in entry.aliases if alias != entry.name]
             alias_str = f" (aliases: {', '.join(other)})" if other else ""
@@ -305,7 +316,7 @@ class AlgorithmHandler:
     def format_detail(cls, name: str) -> str:
         canonical = cls.resolve_alias(name)
         if canonical is None:
-            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None]
+            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None and not entry.hidden]
             raise ValueError(f"Unknown algorithm '{name}'. Supported: {', '.join(supported)}.")
         entry = get_algorithm_entry(canonical)
         lines = [f"{entry.name}: {entry.summary}"]

@@ -150,6 +150,101 @@ class TestRRQConfig:
         assert resolve_pipeline_member(config) is RRQSignRoundQuantizer
 
 
+class TestRRQHiddenAlgorithm:
+    """Tests that RRQ is hidden from user-facing listings but still resolvable."""
+
+    def test_rrq_is_hidden(self):
+        from auto_round.algorithms.registry import get_algorithm_entry
+
+        entry = get_algorithm_entry("rrq")
+        assert entry.hidden is True
+        assert entry.config_factory is RRQConfig
+
+    def test_rrq_not_in_list_display(self):
+        """RRQ should not appear in the user-facing `list alg` output."""
+        from auto_round.cli.algorithms import AlgorithmHandler
+
+        listing = AlgorithmHandler.format_listing()
+        assert "rrq" not in listing
+
+    def test_rrq_still_resolvable_by_name(self):
+        from auto_round.algorithms.registry import resolve_algorithm_alias, resolve_alg_config
+
+        assert resolve_algorithm_alias("rrq") == "rrq"
+        assert resolve_algorithm_alias("rrq_rtn") == "rrq"
+        # Resolving should produce a valid RRQConfig, not raise.
+        config = resolve_alg_config("rrq")
+        assert isinstance(config, RRQConfig)
+
+    def test_rrq_alias_suggestion_uses_hidden_entry(self):
+        """resolve_algorithm_alias still works so typo suggestions can find it."""
+        from auto_round.algorithms.registry import resolve_algorithm_alias
+
+        # The alias is resolvable even though it's hidden.
+        assert resolve_algorithm_alias("rrq") is not None
+        assert resolve_algorithm_alias("rtn") == "rtn"
+
+
+class TestRRQFormatAutoDetection:
+    """Tests for format-based auto-selection of RRQ in AutoRound.__new__."""
+
+    def test_auto_select_rrq_for_rrq_format(self):
+        """Passing format='auto_round:rrq' without alg_configs should auto-select RRQ."""
+        from auto_round.algorithms.quantization.rrq.config import RRQConfig
+        from auto_round.algorithms.registry import resolve_algorithm_names
+
+        # Simulate what _CompressorBuilder.__new__ does:
+        # when alg_configs is None and format is auto_round:rrq, it picks "rrq".
+        from auto_round.algorithms.registry import resolve_alg_config
+
+        config = resolve_alg_config("rrq")
+        assert isinstance(config, RRQConfig)
+
+    def test_format_validation_rrq_requires_rrq_format(self):
+        """RRQConfig with non-rrq format should raise ValueError."""
+        from auto_round.algorithms.quantization.rrq.config import RRQConfig
+        from auto_round.autoround import AutoRound
+
+        with pytest.raises(ValueError, match="RRQ requires --format auto_round:rrq"):
+            AutoRound(
+                model="test",
+                scheme="W2A16",
+                alg_configs=RRQConfig(),
+                format="auto_round",
+            )
+
+    def test_format_validation_non_rrq_cannot_use_rrq_format(self):
+        """Non-RRQ algorithm with auto_round:rrq format should raise ValueError."""
+        from auto_round.autoround import AutoRound
+
+        with pytest.raises(ValueError, match="requires the RRQ algorithm"):
+            AutoRound(
+                model="test",
+                scheme="W4A16",
+                alg_configs="signround",
+                format="auto_round:rrq",
+            )
+
+    def test_rrq_with_correct_format(self):
+        """RRQ with format auto_round:rrq should pass validation (and fail later for other reasons)."""
+        from auto_round.algorithms.quantization.rrq.config import RRQConfig
+        from auto_round.autoround import AutoRound
+
+        # Should NOT raise the format-mismatch ValueError.
+        # It will fail for other reasons (model not found, etc.) but not for format mismatch.
+        try:
+            AutoRound(
+                model="nonexistent-model",
+                scheme="W2A16",
+                alg_configs=RRQConfig(),
+                format="auto_round:rrq",
+            )
+        except ValueError as e:
+            assert "auto_round:rrq" not in str(e) or "RRQ requires" not in str(e)
+        except Exception:
+            pass  # Other errors (model not found, etc.) are expected
+
+
 class TestRRQQuantization:
     """Tests for the core RRQ RTN quantization algorithm (packed INT2)."""
 

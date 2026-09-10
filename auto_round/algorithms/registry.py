@@ -20,6 +20,7 @@ class AlgRegistryEntry:
     config_factory: Callable[[], object] | None = None
     summary: str = ""
     alias_factories: dict[str, Callable[[], object]] = field(default_factory=dict)
+    hidden: bool = False
 
 
 _ALG_REGISTRY: dict[str, AlgRegistryEntry] = {}
@@ -74,6 +75,7 @@ def register_algorithm(
     config_factory: Callable[[], object] | None = None,
     summary: str = "",
     alias_factories: dict[str, Callable[[], object]] | None = None,
+    hidden: bool = False,
 ) -> None:
     key = name.strip().lower()
     entry = _ALG_REGISTRY.get(key)
@@ -91,6 +93,8 @@ def register_algorithm(
     if alias_factories:
         entry.alias_factories.update({k.strip().lower(): v for k, v in alias_factories.items()})
     entry.aliases = merged_aliases
+    if hidden:
+        entry.hidden = True
 
     _ALIAS_TO_NAME[key] = key
     for alias in merged_aliases:
