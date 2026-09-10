@@ -658,7 +658,12 @@ class _CompressorBuilder(object):
         from auto_round.utils.model import is_model_free_route
 
         if alg_configs is None:
-            alg_configs = "signround"
+            fmt_list = format if isinstance(format, list) else [format] if format else []
+            if any(f == "auto_round:rrq" for f in fmt_list):
+                # Auto-select RRQ when the output format is auto_round:rrq.
+                alg_configs = "rrq"
+            else:
+                alg_configs = "signround"
         # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override,
         #  e.g. gradient_accumulate_step
         device_map = normalize_default_device_map(device_map)
@@ -680,6 +685,26 @@ class _CompressorBuilder(object):
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant:
             format = "svdquant_nunchaku"
+
+        # Validate format/algorithm compatibility for RRQ.
+        is_rrq = isinstance(quant_config, RRQConfig)
+        fmt_list = format if isinstance(format, list) else [format] if format else []
+        has_rrq_fmt = any(f == "auto_round:rrq" for f in fmt_list)
+        if is_rrq and not has_rrq_fmt:
+            if format is None:
+                # Auto-set the format so the user doesn't have to specify it.
+                format = "auto_round:rrq"
+            else:
+                raise ValueError(
+                    "RRQ requires --format auto_round:rrq. "
+                    "Use: auto-round --model <model> --format auto_round:rrq"
+                )
+        elif not is_rrq and has_rrq_fmt:
+            raise ValueError(
+                "--format auto_round:rrq requires the RRQ algorithm. "
+                "The algorithm is auto-selected when format is auto_round:rrq. "
+                "Do not pass a conflicting --alg."
+            )
 
         # Any preprocessor that requires calibration data (e.g. AWQ, SVDQuant
         # smoothing) must run on the regular model-loaded path; model-free RTN
