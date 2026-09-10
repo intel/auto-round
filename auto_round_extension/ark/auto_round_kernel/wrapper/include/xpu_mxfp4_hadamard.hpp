@@ -17,7 +17,7 @@
 // transform (D = 32, 64, 128, 256 or 512) -> MXFP4 quantization (packed FP4
 // codes + E8M0 scales).
 //
-// MVP contract (see xpu_mxfp4_hadamard_design_revised.md):
+// Numerical contract:
 //   * hadamard_dim == group_size == 32, K % 32 == 0
 //   * H is a *normalized* 32x32 Hadamard matrix (already contains 1/sqrt(32))
 //   * y      = reshape(x, [-1, 32]) @ H            (FP32 accumulation)
@@ -56,7 +56,7 @@
 //
 // Baseline modes. Two controlled ablations share the fused kernel's exact
 // memory traffic and item mapping, so their bandwidths are directly
-// comparable (see test/README_HMT_QUANT_ONLY_BASELINE.md):
+// comparable:
 //   * quant-only  -- drops the Hadamard transform, keeps the quantization.
 //   * stream-only -- drops the transform *and* the quantization math, keeping
 //                    only the loads, the packing shape and the stores. This is
@@ -218,7 +218,7 @@ class XpuMxfp4Hadamard {
   // 1 and skips the butterfly stages) while keeping the exact same loads,
   // packing and stores. The raw activation is then quantized directly, so the
   // memory traffic -- and therefore the bandwidth -- is directly comparable to
-  // the fused path (see test/README_HMT_QUANT_ONLY_BASELINE.md).
+  // the fused path.
   template <typename T>
   static void fwht_quant_per_item(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
                                   uint8_t* out_scale, int64_t total_groups, bool quant_only = false) {

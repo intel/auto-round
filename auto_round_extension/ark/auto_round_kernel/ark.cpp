@@ -789,13 +789,14 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
 // use_fwht:  true when hadamard is the normalized Sylvester matrix, which is the
 //            only matrix the butterfly network implements. The caller decides so
 //            that the hot path does not pay for a device-side comparison.
-// use_xmx:   opt-in XMX fast path (requires an ARK_SYCL_TLA build). Uses the
+// use_xmx:   opt-in XMX path (requires an ARK_SYCL_TLA build). Uses the
 //            relaxed numerical contract of xpu_mxfp4_hadamard_xmx.hpp (H stored
 //            in the activation dtype, DPAS accumulation); tolerance-based, not
 //            bit-exact. D = 32 only.
 // use_quant_only: strip the Hadamard transform and quantize the raw activation
-//            (quant-only baseline). Ignored on the XMX path; see
-//            test/README_HMT_QUANT_ONLY_BASELINE.md.
+//            (quant-only baseline: byte-identical traffic to the fused path, so
+//            the bandwidth ratio isolates the cost of the transform). Ignored
+//            on the XMX path.
 // use_stream_only: strip the transform *and* the quantization math, keeping the
 //            loads, the packing shape and the stores (traffic-matched roofline
 //            baseline). Mutually exclusive with use_quant_only.

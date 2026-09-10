@@ -354,8 +354,9 @@ def mxfp4_hadamard_quant_reference(
     """Pure PyTorch FP32 reference for :func:`mxfp4_hadamard_quant`.
 
     Runs on any device (including CPU) and defines the frozen numerical contract.
-    The transform dimension is taken from ``hadamard_matrix`` (32 or 128); the
-    quantization group is always 32, so a 128-point row yields 4 groups.
+    The transform dimension is taken from ``hadamard_matrix`` (any of
+    :data:`SUPPORTED_HADAMARD_DIMS`); the quantization group is always 32, so a
+    128-point row yields 4 groups.
     """
     _require_activation_tensor(x)
     if hadamard_matrix is None:
@@ -379,8 +380,9 @@ def mxfp4_quant_reference(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     Quantizes the *raw* activation (no Hadamard transform) with the same frozen
     MXFP4 contract as :func:`mxfp4_hadamard_quant_reference`: per-32-element
     E8M0 scale + packed FP4 codes. It is the reference for the quant-only path
-    of :func:`mxfp4_hadamard_quant` (``_quant_only=True``) and is what the
-    bandwidth baseline in ``test/README_HMT_QUANT_ONLY_BASELINE.md`` measures.
+    of :func:`mxfp4_hadamard_quant` (``_quant_only=True``), the Hadamard
+    ablation of the bandwidth benchmark: that mode moves byte-identical traffic
+    and only drops the transform, so the measured ratio isolates its cost.
 
     Mathematically it equals ``mxfp4_hadamard_quant_reference(x, I)``: running
     the reference transform with the identity matrix is bit-exact with applying
@@ -428,7 +430,7 @@ _XMX_SUPPORTED: bool | None = None
 
 
 def _xmx_supported() -> bool:
-    """True when the current XPU build exposes the XMX fast path.
+    """True when the current XPU build exposes the XMX path.
 
     Probes once by forcing the XMX path on a tiny tensor; the C++ binding raises
     ``RuntimeError`` when ARK_SYCL_TLA is not compiled in. The result is cached.
@@ -458,11 +460,14 @@ def mxfp4_hadamard_quant(
     Args:
         x: FP16/BF16 XPU activation with ``x.shape[-1] % D == 0``, where ``D``
             is the dimension of ``hadamard_matrix``.
-        hadamard_matrix: normalized ``D x D`` Hadamard matrix, ``D`` in
-            ``(32, 128)``. Defaults to the ``32 x 32`` Sylvester matrix returned
-            by :func:`get_hadamard_matrix`. Pass ``get_hadamard_matrix(128, dev)``
-            for the attention head-dim transform, which is implemented by a
-            cooperative 4-lane FWHT and supports the Sylvester matrix only.
+        hadamard_matrix: normalized ``D x D`` Hadamard matrix with ``D`` in
+            :data:`SUPPORTED_HADAMARD_DIMS`, i.e. ``32 * 2**n`` for ``n = 0..4``.
+            Defaults to the ``32 x 32`` Sylvester matrix returned by
+            :func:`get_hadamard_matrix`. ``D = 32`` runs one work-item per
+            quantization group; every larger ``D`` is implemented by a
+            cooperative ``D / 32``-lane FWHT and supports the Sylvester matrix
+            only. Pass ``get_hadamard_matrix(128, dev)`` for the attention
+            head-dim transform.
         check_finite: reject NaN/Inf in ``x`` before launching. Off by default:
             the check reads all of ``x`` and syncs on the result, which costs
             several times the fused kernel itself. NaN/Inf are still outside the
@@ -474,8 +479,8 @@ def mxfp4_hadamard_quant(
             quantized (see :func:`mxfp4_quant_reference`), with identical memory
             traffic to the fused path -- the C++ dispatcher ignores
             use_fwht/use_xmx in this mode and always uses the per-item FWHT
-            layout. This is the quant-only baseline in
-            ``test/README_HMT_QUANT_ONLY_BASELINE.md``.
+            layout. This is the quant-only baseline: identical traffic, no
+            transform, so the benchmark's ``f/q`` ratio isolates its cost.
         _stream_only: private stream-only baseline override (default False).
             When True, both the transform *and* the quantization math are
             stripped, leaving the loads, the packing shape and the stores. The
@@ -488,10 +493,9 @@ def mxfp4_hadamard_quant(
 
         Routing is automatic: the normalized Sylvester matrix always takes the
         bit-exact FWHT path (first priority); any other Hadamard matrix falls
-        back to the XMX fast path when the build supports it (relaxed contract:
+        back to the XMX path when the build supports it (relaxed contract:
         H stored in the activation dtype, DPAS accumulation, tolerance-based
-        acceptance -- see ``xpu_mxfp4_hadamard_design_revised.md``
-        §11.4/§11.10), otherwise to the bit-exact Path A.
+        acceptance), otherwise to the bit-exact Path A.
 
     Returns:
         ``(out_codes, out_scale)`` where ``out_codes`` is ``uint8 [M, K // 2]``
@@ -536,7 +540,7 @@ def mxfp4_hadamard_quant(
     num_rows, k = _validate_activation(x, require_xpu=True, check_finite=check_finite, hadamard_dim=hadamard_dim)
 
     # Path resolution (auto-router): FWHT has first priority for the Sylvester
-    # matrix; any other (custom) matrix falls back to the XMX fast path when the
+    # matrix; any other (custom) matrix falls back to the XMX path when the
     # build supports it (relaxed contract), otherwise to Path A. ``_force_xmx``
     # is a private override used by tests/benchmarks. ``_quant_only`` always
     # disables XMX: it is implemented on the shared per-item FWHT layout, which

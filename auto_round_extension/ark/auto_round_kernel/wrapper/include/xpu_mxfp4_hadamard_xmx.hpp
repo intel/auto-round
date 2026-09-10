@@ -13,13 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// XMX (Xe matrix / DPAS) fast path for the activation fused 32-point Hadamard
+// XMX (Xe matrix / DPAS) path for the activation fused 32-point Hadamard
 // transform + MXFP4 quantization. Opt-in via ``use_xmx``; deliberately a
-// *relaxed* numerical contract (see xpu_mxfp4_hadamard_design_revised.md
-// §11.4/§11.10): the Hadamard matrix is stored in FP16/BF16 (same dtype as the
-// activation) and the transform runs on XMX DPAS with FP32 accumulation, which
-// is neither bit-exact with the FWHT path nor with Path A. Acceptance is
-// tolerance based: SQNR >= 15 dB, max relative error < 0.25.
+// *relaxed* numerical contract: the Hadamard matrix is stored in FP16/BF16
+// (same dtype as the activation) and the transform runs on XMX DPAS with FP32
+// accumulation, which is neither bit-exact with the FWHT path nor with Path A.
+// Acceptance is tolerance based: SQNR >= 15 dB, max relative error < 0.25.
+//
+// This is not a bandwidth optimization: it exists for non-Sylvester matrices,
+// where the butterfly (and therefore the FWHT path) is unavailable, and it is
+// not uniformly faster than FWHT on the shapes measured so far.
 //
 // The fused kernel computes, for each 32-element group ``g`` (one row of the
 // flattened activation ``[total_groups, 32]``):
@@ -228,9 +231,8 @@ void fused_launch_xmx(sycl::queue* q, int64_t m, const Element* h_ptr, const Ele
 // transpose is applied here (once per call, 1024 elements, negligible) so the
 // kernel entry point simply takes the logical (row-major) Hadamard matrix and
 // always produces ``y = x @ H`` regardless of symmetry. The normalized Sylvester
-// matrix is symmetric so a missing transpose is silently masked; non-symmetric
-// custom matrices exposed the bug (see xpu_mxfp4_hadamard_design_revised.md
-// §11.12).
+// matrix is symmetric so a missing transpose is silently masked; a non-symmetric
+// custom matrix is what exposes a missing transpose.
 template <typename T>
 void convert_hadamard_to_dtype(sycl::queue* q, const float* h_fp32, T* h_t) {
   q->parallel_for(32 * 32, [=](sycl::id<1> i) {

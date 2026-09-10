@@ -109,10 +109,10 @@ DEFAULT_K = (2048, 4096, 8192)
 # pattern. Measured 0.95-1.00 on Arc Pro B60 for D = 32 and ~0.91 for D = 128.
 TARGET_STREAM_RATIO = 0.95
 
-# Secondary gate: BW(HMT+quant) / BW(quant-only) -- the Hadamard ablation. The
-# transform runs in-register and is expected to be hidden behind memory
-# traffic, so this should sit near 1.0
-# (see test/README_HMT_QUANT_ONLY_BASELINE.md).
+# Secondary gate: BW(HMT+quant) / BW(quant-only) -- the Hadamard ablation.
+# Quant-only moves byte-identical traffic and only drops the transform, so this
+# isolates the transform's cost: it runs in-register and is expected to be
+# hidden behind memory traffic, i.e. near 1.0.
 TARGET_QUANT_RATIO = 0.95
 
 # [# CRI-WAN-HMT] WAN per-op activation shapes [M, K] = the input activation of
@@ -358,7 +358,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--target-stream-ratio", type=float, default=TARGET_STREAM_RATIO, help="min BW_fused/BW_stream")
     p.add_argument("--target-quant-ratio", type=float, default=TARGET_QUANT_RATIO, help="min BW_fused/BW_quant-only")
-    p.add_argument("--xmx", action="store_true", help="force the XMX fast path (auto-routed otherwise)")
+    p.add_argument("--xmx", action="store_true", help="force the XMX path (auto-routed otherwise)")
     return p.parse_args()
 
 

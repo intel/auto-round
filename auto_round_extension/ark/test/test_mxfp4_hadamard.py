@@ -28,7 +28,7 @@ The suite is organised by what each class proves:
   Hadamard matrices.
 * ``TestXpuQuantOnly`` -- the quant-only baseline (Hadamard stripped).
 * ``TestXpuKernelErrors`` -- the validation contract.
-* ``TestXpuKernelXmx`` -- the opt-in XMX fast path (tolerance-based).
+* ``TestXpuKernelXmx`` -- the opt-in XMX path (tolerance-based).
 * ``TestStreamOnlyBaseline`` -- the stream-only roofline baseline, and the
   guarantee that it really reads every input element.
 * ``TestHadamardDimReferenceParity`` -- the reference itself is correct at every
@@ -685,7 +685,7 @@ class TestXpuKernelErrors:
 
 @requires_xpu
 def _xmx_path_available() -> bool:
-    """True when the current XPU build exposes the opt-in XMX fast path."""
+    """True when the current XPU build exposes the opt-in XMX path."""
     return _xmx_supported()
 
 
@@ -716,19 +716,19 @@ def _precision_metrics(deq: torch.Tensor, ref: torch.Tensor, ref_scale: torch.Te
 
 @requires_xpu
 class TestXpuKernelXmx:
-    """Opt-in XMX fast path, tolerance-based acceptance.
+    """Opt-in XMX path, tolerance-based acceptance.
 
     The XMX path is *not* bit-exact: the Hadamard matrix is stored in the
     activation dtype (fp16/bf16) and the transform runs on XMX DPAS with FP32
-    accumulation (relaxed contract, xpu_mxfp4_hadamard_design_revised.md
-    §11.4). Acceptance: SQNR >= 15 dB and max relative error < 0.25 against the
-    frozen FP32 reference (both measured on dequantized outputs).
+    accumulation (relaxed contract). Acceptance: SQNR >= 15 dB and max relative
+    error < 0.25 against the frozen FP32 reference (both measured on
+    dequantized outputs).
     """
 
     @pytest.fixture(autouse=True)
     def _require_xmx(self):
         if not _xmx_path_available():
-            pytest.skip("XMX fast path not available in this build (ARK_SYCL_TLA)")
+            pytest.skip("XMX path not available in this build (ARK_SYCL_TLA)")
 
     @pytest.mark.parametrize("dtype", DTYPES)
     @pytest.mark.parametrize("shape", [(1, 32), (17, 256)])
@@ -1046,7 +1046,7 @@ class TestXpuKernelAllDims:
         assert torch.equal(scale.cpu(), ref_scale)
 
     def test_rejects_xmx_for_cooperative_dims(self):
-        """The XMX fast path is D = 32 only."""
+        """The XMX path is D = 32 only."""
         for dim in COOPERATIVE_DIMS:
             x = torch.randn(2, dim, dtype=torch.bfloat16, device="xpu")
             with pytest.raises((RuntimeError, ValueError)):
