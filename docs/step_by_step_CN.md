@@ -586,6 +586,8 @@ AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，�
 
 对于 GGUF 格式，我们参考 llamacpp 的思路，优化了 RTN 算法。若需使用原始（非优化）RTN 算法，开启 `--disable_opt_rtn` 即可。
 
+在优化路径上开启 `--enable_neuqi` 即可启用 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）：非对称层执行联合 (scale, 整数 zero-point) 搜索，对称层执行两阶段带符号 scale 搜索，在零样本路径（`iters=0`）上二者均以激活 imatrix 加权（imatrix 会自动采集；`iters > 0` 时锚点搜索不加权）。当 `iters > 0` 时，搜索结果将作为 SignRound 调优网格的锚点（frozen init）。网格规模可通过 `AR_NEUQI_COARSE`/`AR_NEUQI_FINE` 调整（参见[《环境变量》](./environments_CN.md)）；未显式指定时的默认值与后端相关（仅在 Triton/torch.compile 路径使用宽网格）。精度与耗时结果详见[《NeUQI 精度验证》](./neuqi_acc.md)。
+
 #### 命令行使用
 
 我们提供了两个专用的 CLI 入口作为快捷方式：

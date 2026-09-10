@@ -59,6 +59,106 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
+def _prepare_neuqi_imatrix(imatrix, weight_reshape, bits, group_size):
+    """Normalize an imatrix to the padded ``[N, gs]`` grouped layout.
+
+    Mirrors the zero-shot path (``quant_tensor_opt_rtn_sym``): the calibration
+    hooks attach a 1D ``[in_features]`` per-column importance vector -- it must
+    be padded by group size, expanded to the weight's grouped rows, and
+    zero-guarded before any per-group search consumes it. ``None`` returns
+    ``None`` (uniform weights).
+    """
+    from auto_round.data_type.gguf import _imatrix_handle_zero
+
+    qw = imatrix.reshape(1, -1).to(torch.float32)
+    qw = reshape_pad_tensor_by_group_size(qw, group_size, val=1e-5)[0].view(1, -1)
+    qw = qw.expand(weight_reshape.numel() // qw.numel(), -1).reshape(weight_reshape.shape)
+    return _imatrix_handle_zero(qw, weight_reshape, bits, group_size)
+
+
+_NEUQI_ANCHOR_LOGGED = False
+
+
+def _neuqi_init_anchor(weight, bits, group_size, imatrix, device, sym=False):
+    """Searched (scale, zp) grid for the ``enable_neuqi`` tuning init,
+    expressed as the per-group (tensor_min, tensor_max) pair the STE quant
+    functions re-derive the grid from.
+
+    Asym anchoring (quant_tensor_asym: scale=(wmax-wmin)/maxq,
+    zp=round(-wmin/scale)):  min=-zp*s, max=(maxq-zp)*s  reproduces (s, zp)
+    exactly. Sym anchoring (quant_tensor_sym: scale=max(|wmax|,|wmin|)/maxq,
+    signed): min=-s*maxq, max=+s*maxq.
+
+    Both symmetry classes anchor: asym layers through the joint
+    (scale, zero-point) search, sym layers through the two-stage symmetric
+    scale search. The sym search returns a SIGNED scale whose sign cancels in
+    qdq reconstruction (the mirrored convention is the arithmetic of a
+    negative scale through the standard formula), so anchoring the magnitude
+    reproduces the winning qdq grid exactly.
+
+    The grid is FROZEN: SignRound tunes the rounding values against it, and
+    the range margins stay pinned at 1.0 (the search's grid IS the init).
+
+    Returns (wmin, wmax).
+    """
+    import time
+
+    t0 = time.perf_counter()
+    w = weight.to(device=device, dtype=torch.float32)
+    qw = None
+    if imatrix is not None:
+        qw = _prepare_neuqi_imatrix(imatrix, w, bits, group_size).to(device)
+    # Join any in-flight GPU work before the search launches: the data-driven
+    # pipeline's input-caching pass moves activations across GPUs on side
+    # streams (accelerate). A not-yet-joined producer makes the search read
+    # stale tensors -- an intermittent device-side assert that disappears
+    # under CUDA_LAUNCH_BLOCKING=1. One sync per layer-init is noise next to
+    # the search cost.
+    if torch.device(device).type == "cuda":
+        # sync EVERY visible device, not just this layer's: under accelerate
+        # dispatch the cache-inputs forward moves activations GPU->GPU, and an
+        # un-joined peer copy recorded on ANOTHER device's stream can still be
+        # reading memory the search is about to reuse (allocator reuse -> the
+        # intermittent OOB-gather asserts that vanish under blocking mode)
+        for dev_idx in range(torch.cuda.device_count()):
+            torch.cuda.synchronize(dev_idx)
+
+    from auto_round.data_type.neuqi import neuqi_search_scale_sym, neuqi_search_scale_zero
+
+    if sym:
+        # two-stage symmetric scale search; the returned scale is SIGNED
+        # (negative = mirrored clamp convention won). quant_tensor_sym derives
+        # scale = (2*(wmax_abs < wmin_abs) - 1) * max(wmax_abs, wmin_abs)/maxq,
+        # so an exact magnitude tie (and wmax_abs >= wmin_abs generally)
+        # resolves to the NEGATIVE scale. Bias the losing side down to HALF
+        # magnitude so the comparison resolves to the search winner's sign in
+        # ANY storage dtype (a 2^-20 bias would be erased by bf16/fp16
+        # rounding when the anchor is cast to the weight dtype), while max()
+        # still returns the unperturbed magnitude -- the derived scale is the
+        # searched |s| exactly (the halved side only ever participates in the
+        # comparison; margins are pinned at 1.0 so nothing else reads it).
+        s_signed = neuqi_search_scale_sym(w, bits, qw=qw)
+        nmax = int(2 ** (bits - 1))
+        mag = s_signed.abs() * nmax
+        mirrored = s_signed < 0
+        # standard winner (s > 0) needs wmax_abs strictly smaller: scale positive
+        wmin = torch.where(mirrored, -mag / 2, -mag)
+        wmax = torch.where(mirrored, mag, mag / 2)
+    else:
+        s, zp = neuqi_search_scale_zero(w, bits, qw=qw)
+        maxq = int(2**bits) - 1
+        wmin = -(zp * s)
+        wmax = (maxq - zp) * s
+    global _NEUQI_ANCHOR_LOGGED
+    if not _NEUQI_ANCHOR_LOGGED:
+        _NEUQI_ANCHOR_LOGGED = True
+        logger.info(
+            "[NeUQI] init-search anchored the tuning grid (%.2fs first layer; margins pinned at 1.0)",
+            time.perf_counter() - t0,
+        )
+    return wmin.squeeze(-1), wmax.squeeze(-1)
+
+
 class WrapperLinear(torch.nn.Module):
     """A wrapper for linear/conv1d layers to enable quantization and tuning.
 
@@ -84,6 +184,7 @@ class WrapperLinear(torch.nn.Module):
         enable_round_tuning=True,
         enable_torch_compile=True,
         disable_opt_rtn=True,
+        enable_neuqi=False,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -98,6 +199,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer = orig_layer
         self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
+        self.enable_neuqi = enable_neuqi
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -181,13 +283,48 @@ class WrapperLinear(torch.nn.Module):
             if clip_max_flat.numel() == self.weight_max.numel() and clip_min_flat.numel() == self.weight_min.numel():
                 self.weight_max = torch.minimum(self.weight_max, clip_max_flat)
                 self.weight_min = torch.maximum(self.weight_min, clip_min_flat)
+        # NeUQI frozen init (enable_neuqi on the tuning path): anchor
+        # the grid to the searched (scale, zp) instead of the raw per-group
+        # min/max. Placement mirrors the AWQ clip-as-init above; unsupported
+        # layouts (tuple group sizes, >=16 bits, non-int data types) keep the
+        # status-quo min/max grid. The zero-shot path needs no anchor -- its
+        # search runs inside the quant function dispatch itself.
+        self._neuqi_frozen_margins = False
+        if (
+            self.enable_neuqi
+            and self.enable_round_tuning
+            and weight_reshape is not None
+            and self.weight_min is not None
+            and self.orig_layer.bits < 16
+            and not isinstance(orig_layer.group_size, tuple)
+            and self.orig_layer.data_type == "int"
+        ):
+            if getattr(orig_layer, "awq_clip_max", None) is not None:
+                logger.warning_once(
+                    "enable_neuqi anchors the tuning grid to its own search result, which "
+                    "overrides the AWQ clip-as-init range on this layer; the clip is ignored."
+                )
+            _wmin, _wmax = _neuqi_init_anchor(
+                weight_reshape,
+                self.orig_layer.bits,
+                orig_layer.group_size,
+                getattr(orig_layer, "imatrix", None),
+                self.device,
+                sym=bool(getattr(orig_layer, "sym", True)),
+            )
+            self._neuqi_frozen_margins = True
+            self.weight_min = _wmin.to(self.weight_min.dtype)
+            self.weight_max = _wmax.to(self.weight_max.dtype)
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
-        self._init_params("min_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
-        self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
+        _margins_tunable = (self.enable_minmax_tuning and self.orig_layer.bits < 16) and (
+            not self._neuqi_frozen_margins
+        )
+        self._init_params("min_scale", p_dtype, shape, 1.0, _margins_tunable)
+        self._init_params("max_scale", p_dtype, shape, 1.0, _margins_tunable)
 
         self.weight_quant_func, self.data_type = get_quant_func(
             orig_layer.data_type,
@@ -196,6 +333,7 @@ class WrapperLinear(torch.nn.Module):
             self.disable_opt_rtn,
             orig_layer.group_size,
             iters=orig_layer.iters,
+            enable_neuqi=self.enable_neuqi,
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)

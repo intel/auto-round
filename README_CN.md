@@ -35,6 +35,8 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
+* [2026/09] 面向免标定量化的 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）现已可用：`--enable_neuqi` 配合 `--iters 0` 时，非对称层执行联合 (scale, zero-point) 搜索、对称层执行两阶段 scale 搜索；`iters > 0` 时搜索结果将作为调优网格的锚点：[*结果*](./docs/neuqi_acc.md)。
+
 * [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
 
 * [2026/08] 感谢 Humming Kernel，AutoScheme WOQ 在 vLLM 上的部署已实验性恢复：[*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890)，[*示例模型*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound)。注意：共享层需按 vLLM 的融合模式进行配置。
