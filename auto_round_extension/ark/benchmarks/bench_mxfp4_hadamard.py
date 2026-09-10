@@ -376,7 +376,7 @@ def main() -> int:
         dtypes = [WAN_DTYPE] if not args.dtype else args.dtype
         combos = list(WAN_SHAPES)
     else:
-        dtypes = args.dtype if args.dtype else list(DTYPES)
+        dtypes = args.dtype or list(DTYPES)
         combos = [(m, k) for m in (args.m or list(DEFAULT_M)) for k in (args.k or list(DEFAULT_K))]
 
     print(f"device: {torch.xpu.get_device_name(0)}")
