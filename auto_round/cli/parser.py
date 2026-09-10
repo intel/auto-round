@@ -296,6 +296,14 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Number of denoising steps for diffusion generation/evaluation.",
     )
     diff.add_argument("--generator_seed", default=None, type=int, help="Random seed used for diffusion generation.")
+    diff.add_argument(
+        "--diffusion_tuning_cache_size",
+        default=0,
+        type=lambda value: value if value == "auto" else float(value),
+        help="Extra GPU buffer budget in GiB for single-CUDA diffusion SignRound prefetch with low_gpu_mem_usage. "
+        "Use 'auto' to select a budget after the first tuning iteration; 0 preserves the existing path. "
+        "This is not a limit on total GPU memory.",
+    )
 
     # ---- Common Quantization Arguments ----
     quant_group = parser.add_argument_group("Common Quantization Arguments")
