@@ -516,8 +516,20 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
             if model is None:
                 return
         else:
-            eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-            model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
+            if model is None:
+                # Model-free mode: load model from the saved output directory
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+
+                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+                model = AutoModelForCausalLM.from_pretrained(
+                    eval_folder, device_map=args.device_map, torch_dtype=eval_model_dtype
+                )
+                model.eval()
+                if tokenizer is None:
+                    tokenizer = AutoTokenizer.from_pretrained(eval_folder)
+            else:
+                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+                model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)

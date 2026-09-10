@@ -101,7 +101,7 @@ def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) ->
             continue  # original fused module still in the tree; assign as-is
         to_split[key] = state_dict.pop(key)
     if to_split:
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         state_dict.update(split_fused_expert_tensors(to_split))
     return state_dict
@@ -189,15 +189,29 @@ def _clear_module_weights(
 # =====================================================================
 
 
-def _resolve_model_dir(model_dir: str) -> str:
+def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
     """Resolve a model name/path to a local directory containing weight files."""
     if os.path.isdir(model_dir):
         return model_dir
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import snapshot_download, try_to_load_from_cache
 
+        for filename in (
+            "model.safetensors.index.json",
+            "model.safetensors",
+            "pytorch_model.bin.index.json",
+            "pytorch_model.bin",
+        ):
+            cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
+            if isinstance(cached_file, str):
+                return os.path.dirname(cached_file)
+
+        if revision is not None:
+            return snapshot_download(model_dir, revision=revision, local_files_only=True)
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
+        if revision is not None:
+            raise
         return model_dir
 
 
@@ -329,6 +343,9 @@ class OffloadManager:
     model_dir : str, optional
         Path to the model checkpoint directory. Required for ``"clean"``
         mode; optional for ``"offload"``.
+    model_revision : str, optional
+        Commit hash used to resolve a Hugging Face model ID without relying
+        on a mutable branch reference.
     offload_dir_prefix : str
         Prefix for the temp directory name (``"offload"`` mode only).
     cache_numel : bool
@@ -344,12 +361,17 @@ class OffloadManager:
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
         retain_saved_entries: bool = False,
+        model_revision: Optional[str] = None,
     ):
         from auto_round import envs
 
         self.enabled = enabled and not envs.AR_DISABLE_OFFLOAD
         self.mode = mode
-        self.model_dir = model_dir
+        self.model_dir = (
+            _resolve_model_dir(model_dir, revision=model_revision)
+            if mode == "clean" and model_dir is not None and model_revision is not None
+            else model_dir
+        )
         self.cache_numel = cache_numel
         self._prefix = offload_dir_prefix
         self.retain_saved_entries = retain_saved_entries
