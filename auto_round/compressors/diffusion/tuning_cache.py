@@ -65,7 +65,7 @@ def _auto_budget_bytes(free_bytes):
 
 
 class DiffusionTuningCache:
-    """Two reusable host/device slots, with optional in-place best snapshots.
+    """Two staging slots, optional best snapshots, and budgeted resident samples.
 
     The budget covers these persistent CUDA buffers only, not the training
     activations/workspace. Pinned host memory is bounded by the two batch slots.
@@ -108,6 +108,10 @@ class DiffusionTuningCache:
         cache.free, cache.ready = queue.Queue(), queue.Queue()
         cache.slots, cache.current, cache.thread = [], None, None
         cache.best = None
+        cache.resident = {}
+        cache.resident_budget = cache.resident_bytes = 0
+        cache.resident_full = False
+        cache.hits = cache.loads = 0
         cache.stream = torch.cuda.Stream(device=cache.device)
         try:
             for slot_id in range(2):
@@ -122,6 +126,7 @@ class DiffusionTuningCache:
                 cache.free.put(slot_id)
             if staging_bytes + best_bytes <= budget:
                 cache.best = tree_map(lambda t: torch.empty_like(t, device=cache.device), cache.sources)
+            cache.resident_budget = budget - staging_bytes - (best_bytes if cache.best is not None else 0)
             # Allocations happen on the compute stream; hand them to the copy stream.
             cache.stream.wait_stream(torch.cuda.current_stream(cache.device))
             cache.thread = threading.Thread(target=cache._produce, args=(first,), daemon=True)
@@ -131,15 +136,36 @@ class DiffusionTuningCache:
             logger.info("Diffusion tuning prefetch skipped: buffer allocation ran out of memory.")
             return None
         logger.info(
-            "Diffusion tuning prefetch enabled with %.2f GiB of GPU buffers; best parameters on %s.",
+            "Diffusion tuning prefetch enabled with %.2f GiB of GPU buffers; best parameters on %s; "
+            "up to %.2f GiB available for resident samples.",
             (staging_bytes + (best_bytes if cache.best is not None else 0)) / 2**30,
             "GPU" if cache.best is not None else "CPU",
+            cache.resident_budget / 2**30,
         )
         return cache
 
     def _select(self, indices):
         inputs, others = self.runner.select_batch(self.inputs, self.others, torch.tensor(indices, dtype=torch.long))
         return inputs, others, self.outputs[indices[0]]
+
+    def _allocate_resident(self, key, batch):
+        size = _nbytes(batch)
+        if self.resident_full or self.resident_bytes + size > self.resident_budget:
+            self.resident_full = True
+            return None
+        try:
+            gpu = tree_map(
+                lambda t: torch.empty_like(t, device=self.device) if isinstance(t, torch.Tensor) else t, batch
+            )
+        except torch.OutOfMemoryError:
+            # Keep existing entries and staging buffers usable if later
+            # activations or other processes leave less memory than estimated.
+            self.resident_full = True
+            logger.info("Diffusion resident cache stopped growing: sample allocation ran out of memory.")
+            return None
+        self.resident[key] = gpu
+        self.resident_bytes += size
+        return gpu
 
     def _produce(self, first):
         try:
@@ -153,18 +179,31 @@ class DiffusionTuningCache:
                     slot = self.slots[slot_id]
                     if slot["finished"] is not None:
                         slot["finished"].synchronize()
-                    batch = self._select(indices)
-                    if _signature(batch) != self.signature:
-                        self.ready.put(None)
-                        return
+                    key = tuple(indices)
+                    resident = self.resident.get(key)
+                    slot["hit"] = resident is not None
                     with torch.cuda.stream(self.stream):
-                        source = tree_flatten(batch)[0]
-                        host = tree_flatten(slot["host"])[0]
-                        gpu = tree_flatten(slot["gpu"])[0]
-                        for src, pinned, dest in zip(source, host, gpu):
-                            if isinstance(src, torch.Tensor):
-                                pinned.copy_(src)
-                                dest.copy_(pinned, non_blocking=True)
+                        if resident is None:
+                            batch = self._select(indices)
+                            if _signature(batch) != self.signature:
+                                self.ready.put(None)
+                                return
+                            resident = self._allocate_resident(key, batch)
+                            target = resident if resident is not None else slot["gpu"]
+                            source = tree_flatten(batch)[0]
+                            host = tree_flatten(slot["host"])[0]
+                            gpu = tree_flatten(target)[0]
+                            for src, pinned, dest in zip(source, host, gpu):
+                                if isinstance(src, torch.Tensor):
+                                    pinned.copy_(src)
+                                    dest.copy_(pinned, non_blocking=True)
+                            self.loads += 1
+                        if resident is not None:
+                            # Forward may mutate tensor kwargs in place. Keep
+                            # resident copies immutable, including on first use.
+                            for src, dest in zip(tree_flatten(resident)[0], tree_flatten(slot["gpu"])[0]):
+                                if isinstance(src, torch.Tensor):
+                                    dest.copy_(src, non_blocking=True)
                         slot["ready"].record(self.stream)
                     self.ready.put((list(indices), slot_id))
                     indices = next(self.plan, None)
@@ -202,6 +241,7 @@ class DiffusionTuningCache:
         _, self.current = item
         slot = self.slots[self.current]
         torch.cuda.current_stream(self.device).wait_event(slot["ready"])
+        self.hits += int(slot["hit"])
         return slot["gpu"]
 
     def forward(self, block, batch, cache_device):
@@ -232,5 +272,16 @@ class DiffusionTuningCache:
         # Both streams can still reference buffers on exceptions/early stopping.
         self.stream.synchronize()
         torch.cuda.current_stream(self.device).synchronize()
+        if self.slots:
+            logger.info(
+                "Diffusion resident cache: %d samples, %.2f / %.2f GiB; %d hits, %d CPU-to-GPU loads.",
+                len(self.resident),
+                self.resident_bytes / 2**30,
+                self.resident_budget / 2**30,
+                self.hits,
+                self.loads,
+            )
         self.slots.clear()
+        self.resident.clear()
+        self.resident_bytes = 0
         self.current = None
