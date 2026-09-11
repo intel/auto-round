@@ -54,7 +54,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 * [2025/10] A AutoScheme is available to generate mixed-bit recipes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
 * [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
-* 
+  
 * [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
 * [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
