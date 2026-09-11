@@ -13,6 +13,9 @@
 # limitations under the License.
 """Tests for the small pure helpers in ``auto_round/calib_dataset.py``."""
 
+import ssl
+import sys
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -61,6 +64,68 @@ class TestRegisterDataset:
             assert CALIB_DATASETS["_return_check_"] is _Returned
         finally:
             CALIB_DATASETS.pop("_return_check_", None)
+
+
+# ---------------------------------------------------------------------------
+# network failures and FineWeb-Edu routing
+# ---------------------------------------------------------------------------
+class TestDatasetNetworkErrors:
+    def test_network_warning_recommends_fineweb_edu(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        warning = MagicMock()
+        monkeypatch.setattr(calib_dataset.logger, "warning", warning)
+
+        calib_dataset._warn_on_dataset_network_error(ssl.SSLError("proxy unavailable"), "dataset")
+
+        warning.assert_called_once()
+        message = warning.call_args.args[0]
+        assert "--dataset fineweb-edu" in message
+        assert "AR_USE_MODELSCOPE=1" in message
+
+
+class TestFineWebEduDataset:
+    @staticmethod
+    def _streaming_dataset_mock():
+        dataset = MagicMock()
+        dataset.shuffle.return_value = dataset
+        dataset.take.return_value = dataset
+        dataset.map.return_value = dataset
+        return dataset
+
+    def test_alias_loads_huggingface_sample_by_default(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        dataset = self._streaming_dataset_mock()
+        load_dataset = MagicMock(return_value=dataset)
+        monkeypatch.setattr(calib_dataset, "load_dataset", load_dataset)
+        monkeypatch.setattr(calib_dataset.envs, "AR_USE_MODELSCOPE", False)
+
+        result = calib_dataset.get_fineweb_edu_dataset(MagicMock(), 128)
+
+        assert result is dataset
+        load_dataset.assert_called_once_with(
+            "HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True
+        )
+        dataset.shuffle.assert_called_once_with(seed=42)
+        dataset.take.assert_called_once_with(10000)
+
+    def test_alias_loads_modelscope_sample_when_enabled(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        dataset = self._streaming_dataset_mock()
+        load = MagicMock(return_value=dataset)
+        modelscope = types.ModuleType("modelscope")
+        modelscope.MsDataset = types.SimpleNamespace(load=load)
+        monkeypatch.setitem(sys.modules, "modelscope", modelscope)
+        monkeypatch.setattr(calib_dataset.envs, "AR_USE_MODELSCOPE", True)
+
+        result = calib_dataset.get_fineweb_edu_dataset(MagicMock(), 128)
+
+        assert result is dataset
+        load.assert_called_once_with(
+            "AI-ModelScope/fineweb-edu", subset_name="sample-10BT", split="train", use_streaming=True
+        )
 
 
 # ---------------------------------------------------------------------------

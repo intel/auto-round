@@ -61,10 +61,11 @@ pip install auto-round
 ## 2 准备标定数据集
 
 ### 默认数据集
-**对于中国大陆用户推荐使用 ModelScope 中的 swift/pile-val-backup 以解决 Huggingface 不能访问的问题**
+**如果无法访问 Hugging Face，建议安装 `modelscope`、设置 `AR_USE_MODELSCOPE=1`，并使用 `fineweb-edu` 数据集。**
 
 默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会自动从 Huggingface Hub 下载。同时也支持使用以下数据集：
-- ModelScope 中的 `swift/pile-val-backup`：用于解决 HF 访问问题
+- Hugging Face 上的 [`fineweb-edu`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)。如果无法访问 Hugging Face，
+  可安装 `modelscope`、设置 `AR_USE_MODELSCOPE=1`，并使用同一别名从 [ModelScope 镜像](https://modelscope.cn/datasets/AI-ModelScope/fineweb-edu) 加载
 - `BAAI/CCI3-HQ`：用于中文场景
 - `codeparrot/github-code-clean`：用于代码场景
 - `HuggingFaceH4/ultrachat_200k`：用于对话数据
