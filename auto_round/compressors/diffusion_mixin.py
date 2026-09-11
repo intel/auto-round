@@ -365,7 +365,6 @@ class DiffusionMixin:
             # Get block names for new transformer
             all_blocks = get_block_names(self.model_context.model)
             self.quant_block_list = find_matching_blocks(self.model_context.model, all_blocks, None)
-            self.layer_config = {}
 
             # Get new block names for caching
             if bool(self.quant_block_list):
