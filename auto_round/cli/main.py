@@ -99,6 +99,7 @@ def _build_entry_model_type_kwargs(args) -> dict:
         "num_inference_steps": args.num_inference_steps,
         "calib_num_inference_steps": args.calib_num_inference_steps,
         "generator_seed": args.generator_seed,
+        "diffusion_tuning_cache_size": args.diffusion_tuning_cache_size,
     }
 
 
