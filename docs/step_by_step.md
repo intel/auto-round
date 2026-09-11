@@ -595,6 +595,8 @@ AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibrat
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 
+Passing `--enable_neuqi` opts the optimized path into the **NeUQI** grid search ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)): asymmetric layers run a joint (scale, integer zero-point) search and symmetric layers a two-stage signed scale search, both weighted by the activation imatrix on the zero-shot path, which is collected automatically (with `iters > 0` the anchor runs unweighted). With `iters > 0`, the search result anchors the SignRound tuning grid (frozen init). Grid sizes are tunable via `AR_NEUQI_COARSE`/`AR_NEUQI_FINE` (see [environments](./environments.md)); the unpinned default is backend-aware (wide only on the Triton/torch.compile lanes). Accuracy and wall-time results are shown in [NeUQI accuracy validation](./neuqi_acc.md).
+
 #### CLI Usage
 
 Two dedicated CLI entry points are provided as shortcuts:

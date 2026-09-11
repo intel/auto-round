@@ -119,6 +119,36 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
+### AR_NEUQI_COARSE
+- **描述**：NeUQI 网格搜索（`--enable_neuqi`，arXiv 2505.17595）粗阶段的候选数量。粗阶段扫描较宽的对数网格，细阶段在胜者附近细化（`AR_NEUQI_FINE`）。同时作用于非对称联合 (scale, zero-point) 搜索与对称两阶段 scale 搜索。
+- **默认值**：加速后端（Triton/torch.compile）为 `256`，eager 扫描为 `64` —— eager 路径每 group 需评估约 coarse x fine 个候选，因此未显式指定时使用更窄的默认网格（两种网格的实测质量持平）
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是网格覆盖范围变小。
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **描述**：NeUQI 网格搜索细阶段的候选数量，在粗阶段胜者附近细化。参见 `AR_NEUQI_COARSE`。
+- **默认值**：加速后端（Triton/torch.compile）为 `64`，eager 扫描为 `32`
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是最终分辨率下降。
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **描述**：NeUQI 候选扫描的后端覆盖。`auto` 选择最快的可用后端（扩展 Triton 内核 → torch.compile 融合 → eager），并在内核首次失败时永久回退。`eager`/`compile`/`triton` 强制指定后端，用于调试或基准测试。
+- **默认值**：`auto`
+- **取值**：`auto`、`eager`、`compile`、`triton`
+- **用法**：驱动/硬件兼容性逃生口；推荐使用 `auto`。
+
+```bash
+export AR_NEUQI_BACKEND=eager
+```
+
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
 - **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。
 - **默认值**：`16`

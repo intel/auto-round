@@ -119,6 +119,36 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
+### AR_NEUQI_COARSE
+- **Description**: Number of coarse-stage candidates in the NeUQI grid search (`--enable_neuqi`, arXiv 2505.17595). The coarse stage scans a wide log-spaced grid; the fine stage refines around the winner (`AR_NEUQI_FINE`). Applies to both the asymmetric joint (scale, zero-point) search and the symmetric two-stage scale search.
+- **Default**: `256` on accelerated backends (Triton/torch.compile), `64` on the eager sweep — the eager path evaluates ~coarse x fine candidates per group, so it narrows the unpinned default (measured quality is flat between the two grids)
+- **Valid Values**: positive integer
+- **Usage**: Lower for faster searches at the cost of grid coverage.
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **Description**: Number of fine-stage candidates in the NeUQI grid search, refined around the coarse winner. See `AR_NEUQI_COARSE`.
+- **Default**: `64` on accelerated backends (Triton/torch.compile), `32` on the eager sweep
+- **Valid Values**: positive integer
+- **Usage**: Lower for faster searches at the cost of final resolution.
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **Description**: Backend override for the NeUQI candidate sweep. `auto` picks the fastest available (extension Triton kernel, then torch.compile-fused, then eager) and latches down permanently on the first kernel failure. `eager`/`compile`/`triton` force one backend for debugging or benchmarking.
+- **Default**: `auto`
+- **Valid Values**: `auto`, `eager`, `compile`, `triton`
+- **Usage**: Escape hatch for driver/hardware incompatibilities; `auto` is recommended.
+
+```bash
+export AR_NEUQI_BACKEND=eager
+```
+
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
 - **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
 - **Default**: `16`

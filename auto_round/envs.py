@@ -198,6 +198,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
     not in ("0", "false", "no", "off"),
     "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
+    # NeUQI joint (scale, zero-point) search knobs: coarse/fine candidate
+    # counts (shared by both symmetry classes), backend selection for the
+    # zero-point sweep (auto|eager|compile|triton; latches down permanently
+    # on failure), and the sweep/knobs are otherwise internal (layout and
+    # candidate batching are device-automatic).
+    # unset -> None so the search entries can apply their backend-aware
+    # defaults (wide 256/64 on Triton/compile lanes, narrow 64/32 on eager)
+    "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
+    "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
+    "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
 }
 
 

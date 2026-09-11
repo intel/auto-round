@@ -231,6 +231,7 @@ class BaseQuantizer(BaseAlgorithm):
                 enable_round_tuning=False,
                 enable_torch_compile=self.compress_context.enable_torch_compile,
                 disable_opt_rtn=disable_opt_rtn,
+                enable_neuqi=getattr(self.config, "enable_neuqi", False),
                 iters=0,
             )
             layer = layer.unwrapper({})
@@ -247,6 +248,8 @@ class BaseQuantizer(BaseAlgorithm):
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
                     enable_torch_compile=self.compress_context.enable_torch_compile,
+                    disable_opt_rtn=disable_opt_rtn,
+                    enable_neuqi=getattr(self.config, "enable_neuqi", False),
                     iters=0,
                 )
                 layer = layer.unwrapper({})

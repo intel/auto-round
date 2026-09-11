@@ -294,6 +294,12 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
             bits = resolved_attrs.get("bits")
             if sym is not None and sym is False:
                 enable_imatrix = False
+                # enable_neuqi: the joint (scale, zero-point) search
+                # consumes the activation imatrix as a per-element weighting,
+                # so it must be collected even on the asymmetric path where
+                # the plain min/max initialization ignores it
+                if getattr(quant_config, "enable_neuqi", False):
+                    enable_imatrix = True
             elif data_type == "int" and (bits is None or bits < 8):
                 enable_imatrix = True
             elif is_weight_scheme(scheme):
