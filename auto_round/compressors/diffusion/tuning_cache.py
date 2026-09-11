@@ -74,6 +74,9 @@ class DiffusionTuningCache:
 
     @classmethod
     def create(cls, block, runner, inputs, others, outputs, sampler, iters, budget_gib, device):
+        # Single-output blocks (e.g. Wan) pass a tensor list to the next block.
+        if isinstance(inputs, list):
+            inputs = {"hidden_states": inputs}
         if runner.batch_size != 1 or not isinstance(inputs, dict) or iters <= 0:
             return None
         cache = cls()
