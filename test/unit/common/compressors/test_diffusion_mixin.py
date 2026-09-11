@@ -28,6 +28,7 @@ class TestDiffusionMixinProperties:
         assert params.get("num_inference_steps") == 50
         assert params.get("calib_num_inference_steps") == 8
         assert params.get("generator_seed") is None
+        assert params.get("diffusion_calib_gpu_resident") is False
         assert params.get("diffusion_tuning_cache_size") == 0
 
     @pytest.mark.parametrize("budget", [2, "auto"])
@@ -39,10 +40,16 @@ class TestDiffusionMixinProperties:
         class MockCompressor(DiffusionMixin, Parent):
             pass
 
-        comp = MockCompressor(num_inference_steps=20, calib_num_inference_steps=7, diffusion_tuning_cache_size=budget)
+        comp = MockCompressor(
+            num_inference_steps=20,
+            calib_num_inference_steps=7,
+            diffusion_tuning_cache_size=budget,
+            diffusion_calib_gpu_resident=True,
+        )
 
         assert comp.num_inference_steps == 20
         assert comp.calib_num_inference_steps == 7
+        assert comp.diffusion_calib_gpu_resident is True
         assert comp.model_context.diffusion_tuning_cache_size == budget
 
     @pytest.mark.parametrize(

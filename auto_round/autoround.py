@@ -355,6 +355,7 @@ _ENTRY_KWARG_OWNERS = {
     "num_inference_steps": "diffusion",
     "calib_num_inference_steps": "diffusion",
     "generator_seed": "diffusion",
+    "diffusion_calib_gpu_resident": "diffusion",
     "diffusion_tuning_cache_size": "diffusion",
 }
 

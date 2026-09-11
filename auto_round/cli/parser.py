@@ -306,6 +306,13 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     diff.add_argument("--generator_seed", default=None, type=int, help="Random seed used for diffusion generation.")
     diff.add_argument(
+        "--diffusion_calib_gpu_resident",
+        action="store_true",
+        help="Keep the full diffusion pipeline on the target device across calibration prompts, "
+        "then move it to CPU before tuning. Overrides component CPU offload during calibration only; "
+        "low_gpu_mem_usage still applies to tuning. Requires room for all components and calibration activations.",
+    )
+    diff.add_argument(
         "--diffusion_tuning_cache_size",
         default=0,
         type=lambda value: value if value == "auto" else float(value),

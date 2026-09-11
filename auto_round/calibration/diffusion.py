@@ -59,6 +59,7 @@ class DiffusionCalibrator(LLMCalibrator):
         self.guidance_scale = compressor.guidance_scale
         self.calib_num_inference_steps = compressor.calib_num_inference_steps
         self.generator_seed = compressor.generator_seed  # make sure pass
+        self.diffusion_calib_gpu_resident = getattr(compressor, "diffusion_calib_gpu_resident", False)
         self.pipeline_call_kwargs = dict(getattr(compressor, "pipeline_call_kwargs", {}) or {})
 
     def _wrap_block_forward(self, forward_fn):
@@ -94,6 +95,14 @@ class DiffusionCalibrator(LLMCalibrator):
 
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
+        """Collect inputs and release resident components before block tuning."""
+        try:
+            self._calib(nsamples, bs)
+        finally:
+            if self.diffusion_calib_gpu_resident and self.pipe is not None:
+                self.pipe.to("cpu")
+
+    def _calib(self, nsamples: int, bs: int) -> None:
         """Drive the diffusion pipeline so block-forward hooks fire.
 
         The pipeline asks its scheduler to build a native schedule with
@@ -137,10 +146,16 @@ class DiffusionCalibrator(LLMCalibrator):
             exit(-1)
 
         target_device = device_manager.device
+        if self.diffusion_calib_gpu_resident:
+            # Preloaded pipelines may still have offload hooks from an earlier run.
+            remove_all_hooks = getattr(pipe, "remove_all_hooks", None)
+            if callable(remove_all_hooks):
+                remove_all_hooks()
+            logger.info(f"Diffusion calibration keeps the full pipeline resident on {target_device} until completion.")
         self._cpu_offload_mode = _prepare_pipeline_for_calibration(
             pipe,
             target_device,
-            low_gpu_mem_usage=self.low_gpu_mem_usage,
+            low_gpu_mem_usage=self.low_gpu_mem_usage and not self.diffusion_calib_gpu_resident,
         )
         pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
         with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:

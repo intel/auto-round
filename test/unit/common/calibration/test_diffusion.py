@@ -14,7 +14,7 @@
 """Tests for ``auto_round/calibration/diffusion.py``."""
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -210,27 +210,53 @@ class TestDiffusionCalibrator:
             with pytest.raises(SystemExit):
                 calibrator.calib(nsamples=1, bs=1)
 
-    def test_calib_moves_pipeline_to_target_device(self, calibrator):
+    @pytest.mark.parametrize("resident", [False, True])
+    @pytest.mark.parametrize("low_gpu_mem_usage", [False, True])
+    def test_calib_moves_pipeline_to_target_device(self, calibrator, resident, low_gpu_mem_usage):
         seen = []
-        calibrator.dataset = [("id0", ["p1", "p2"])]
+        calibrator.diffusion_calib_gpu_resident = resident
+        calibrator.low_gpu_mem_usage = low_gpu_mem_usage
+        calibrator.dataset = [("id0", ["p1"]), ("id1", ["p2"])]
         calibrator.pipe = FakePipeline(
             device=torch.device("cpu"),
             fn=lambda *args, **kwargs: None,
         )
 
         def fake_to(device):
-            seen.append(device)
+            seen.append(torch.device(device))
             return calibrator.pipe
 
         calibrator.pipe.to = fake_to
+        calibrator.pipe.remove_all_hooks = MagicMock()
+        calibrator.pipe.enable_model_cpu_offload = MagicMock()
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm), patch(
             "auto_round.calibration.diffusion.device_manager",
             SimpleNamespace(device="cuda:0"),
         ):
-            calibrator.calib(nsamples=2, bs=1)
+            for _ in range(2):
+                calibrator.calib(nsamples=2, bs=1)
 
-        assert seen == [torch.device("cuda:0")]
+        offload = low_gpu_mem_usage and not resident
+        moves = [] if offload else [torch.device("cuda:0")]
+        if resident:
+            moves.append(torch.device("cpu"))
+        assert seen == moves * 2
+        assert calibrator.pipe.remove_all_hooks.call_count == (2 if resident else 0)
+        assert calibrator.pipe.enable_model_cpu_offload.call_count == (2 if offload else 0)
+        assert calibrator.low_gpu_mem_usage is low_gpu_mem_usage
+
+    @pytest.mark.parametrize("fail_on_move", [False, True])
+    def test_resident_calibration_releases_pipeline_on_failure(self, calibrator, fail_on_move):
+        calibrator.diffusion_calib_gpu_resident = True
+        calibrator.low_gpu_mem_usage = True
+        calibrator.dataset = [("id0", ["p1"])]
+        failure = torch.OutOfMemoryError("calibration OOM")
+        calibrator.pipe._fn = MagicMock(side_effect=failure)
+        with patch.object(calibrator.pipe, "to", side_effect=[failure, None] if fail_on_move else None) as move:
+            with pytest.raises(torch.OutOfMemoryError, match="calibration OOM"):
+                calibrator.calib(nsamples=1, bs=1)
+        assert move.call_args.args == ("cpu",)
 
     def test_calib_uses_autoround_pipeline_fn_when_available(self, calibrator):
         calls = []

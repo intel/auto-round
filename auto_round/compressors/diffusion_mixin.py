@@ -45,6 +45,9 @@ class DiffusionMixin:
         num_inference_steps: Number of denoising steps for diffusion generation or evaluation
         calib_num_inference_steps: Number of denoising steps used to collect calibration inputs
         generator_seed: Seed for initial noise generation
+        diffusion_calib_gpu_resident: Keep the full pipeline on the target device
+            across calibration prompts, then move it to CPU before tuning.
+            Does not change low_gpu_mem_usage for tuning. Disabled by default.
         diffusion_tuning_cache_size: Extra persistent GPU buffer budget in GiB for
             single-CUDA SignRound prefetch with low_gpu_mem_usage; 0 disables it.
             "auto" selects a conservative budget after the first tuning iteration.
@@ -64,6 +67,7 @@ class DiffusionMixin:
         num_inference_steps: int = 50,
         calib_num_inference_steps: int = 8,
         generator_seed: Optional[int] = None,
+        diffusion_calib_gpu_resident: bool = False,
         diffusion_tuning_cache_size: Union[float, str] = 0,
         **kwargs,
     ) -> None:
@@ -86,6 +90,7 @@ class DiffusionMixin:
         self.num_inference_steps = num_inference_steps
         self.calib_num_inference_steps = calib_num_inference_steps
         self.generator_seed = generator_seed
+        self.diffusion_calib_gpu_resident = diffusion_calib_gpu_resident
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
         # Default dataset for diffusion models is "coco2014", not "NeelNanda/pile-10k"

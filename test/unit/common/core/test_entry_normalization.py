@@ -15,13 +15,18 @@ def _types(configs):
 
 
 @pytest.mark.parametrize("value,expected", [("auto", "auto"), ("2", 2.0), ("0", 0.0)])
-def test_diffusion_cache_cli_and_entry_routing(value, expected):
+@pytest.mark.parametrize("resident", [False, True])
+def test_diffusion_cache_cli_and_entry_routing(value, expected, resident):
     from auto_round.cli.main import _build_entry_model_type_kwargs
     from auto_round.cli.parser import build_quantize_parser
 
-    args = build_quantize_parser().parse_args(["--diffusion_tuning_cache_size", value])
+    flags = ["--diffusion_tuning_cache_size", value]
+    if resident:
+        flags.append("--diffusion_calib_gpu_resident")
+    args = build_quantize_parser().parse_args(flags)
     grouped = _split_entry_kwargs(_build_entry_model_type_kwargs(args))
     assert grouped["diffusion"]["diffusion_tuning_cache_size"] == expected
+    assert grouped["diffusion"]["diffusion_calib_gpu_resident"] is resident
 
 
 def test_split_entry_kwargs_partitions_owned_fields():
