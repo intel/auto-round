@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import math
 import os
 from typing import Any, Optional, Union
 
@@ -44,6 +45,10 @@ class DiffusionMixin:
         num_inference_steps: Number of denoising steps for diffusion generation or evaluation
         calib_num_inference_steps: Number of denoising steps used to collect calibration inputs
         generator_seed: Seed for initial noise generation
+        diffusion_tuning_cache_size: Extra persistent GPU buffer budget in GiB for
+            single-CUDA SignRound prefetch with low_gpu_mem_usage; 0 disables it.
+            "auto" selects a conservative budget after the first tuning iteration.
+            Training activations/workspace are not included in this budget.
 
     Design note:
         ``ModelContext._load_model()`` loads the diffusion pipeline and sets
@@ -59,12 +64,22 @@ class DiffusionMixin:
         num_inference_steps: int = 50,
         calib_num_inference_steps: int = 8,
         generator_seed: Optional[int] = None,
+        diffusion_tuning_cache_size: Union[float, str] = 0,
         **kwargs,
     ) -> None:
         if num_inference_steps < 1:
             raise ValueError("num_inference_steps must be a positive integer.")
         if calib_num_inference_steps < 1:
             raise ValueError("calib_num_inference_steps must be a positive integer.")
+        if diffusion_tuning_cache_size != "auto":
+            try:
+                diffusion_tuning_cache_size = float(diffusion_tuning_cache_size)
+                if not math.isfinite(diffusion_tuning_cache_size) or diffusion_tuning_cache_size < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "diffusion_tuning_cache_size must be 'auto' or finite and non-negative (GiB)."
+                ) from None
 
         # Store diffusion-specific attributes
         self.guidance_scale = guidance_scale
@@ -119,6 +134,7 @@ class DiffusionMixin:
 
         # Call parent class __init__ (will be Compressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
+        self.model_context.diffusion_tuning_cache_size = diffusion_tuning_cache_size
 
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
