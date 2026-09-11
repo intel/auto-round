@@ -36,43 +36,28 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 
 ## 🆕 What's New
+
+* [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
+
+* [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
+
 * [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.
-
-* [2026/08] AutoScheme WOQ deployment on vLLM is experimentally restored, thanks to Humming Kernel: [*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890), [*Example Model*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound). Note: shared layers must be configured per vLLM's fusion patterns.
-
-* [2026/07] `torch.compile` is enabled in most scenarios to accelerate quantization, at the cost of ~10G extra RAM usage.  Minor numerical differences compared with the non-compiled path are expected due to compiler optimizations. To disable it, pass `enable_torch_compile=False` to the Python API or use `--disable_torch_compile` on the CLI.
 
 * [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
 
-* [2026/06] AutoRound is now fully integrated into vLLM-Omni: [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround)
+* [2026/06] **Community adoption update.** AutoRound is now fully integrated into vLLM-Omni  [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround), following its adoption by Transformers, vLLM, and SGLang. See the [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround).
 
-* [2026/05] We provide **free** devices for calibration-free quantization; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
-
-* [2026/05] **Model free** quantization is available, `auto-round-rtn` will now default to using the model-free approach: [Doc](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#model-free-mode).
-
-* [2026/03] **Block-wise FP8** quantization is available and rtn mode is recommended. `auto-round-rtn --scheme FP8_BLOCK`.
-
-* [2026/03]  **MTP layer quantization** has been supported in this [PR](https://github.com/intel/auto-round/pull/1526)
+* [2026/05] We provide **free** devices for quantization; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
-* [2025/11] AutoRound has landed in **LLM-Compressor**: [*Usage*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md), [*vLLM blog*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html), [*RedHat blog*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor), [*X post*](https://x.com/vllm_project/status/1998710451312771532), [*Intel blog*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336), [*Linkedin*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg), [*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg), [*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412).
-
-* [2025/11] An **enhanced GGUF** quantization algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/gguf_alg_ext_acc.md).
-
-* [2025/10] AutoRound has been integrated into **SGLang**: [*Usage*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round), [*LMSYS Blog*](https://lmsys.org/blog/2025-11-13-AutoRound/), [*X post*](https://x.com/lmsysorg/status/1991977019220148650?s=20), [*Intel blog*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196), [*Linkedin*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472).
-
-* [2025/10] A **mixed precision** algorithm is available to generate schemes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
-
-* [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
+* [2025/10] A AutoScheme is available to generate mixed-bit recipes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
 * [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
+* 
+* [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
 * [2025/07] **GGUF** format is supported: [*Usage*](./docs/step_by_step.md#gguf-format). 
-
-* [2025/05] AutoRound has been integrated into **vLLM**: [*Usage*](https://docs.vllm.ai/en/latest/features/quantization/inc/), [*Medium blog*](https://medium.com/@NeuralCompressor/accelerating-vllm-and-sglang-deployment-using-autoround-45fdc0b2683e), [*小红书*](https://www.xiaohongshu.com/explore/69396bc6000000000d03e473?note_flow_source=wechat&xsec_token=CB6G3F_yM99q8XfusvyRlJqm8Db4Es2k0kYIHdIUiSQ9g=).
-
-* [2025/05] AutoRound has been integrated into **Transformers**: [*Blog*](https://huggingface.co/blog/autoround).
 
 * [2025/03] The INT2-mixed **DeepSeek-R1** model (~200GB) retains 97.9% accuracy: [*Model*](https://huggingface.co/OPEA/DeepSeek-R1-int2-mixed-sym-inc).
 
