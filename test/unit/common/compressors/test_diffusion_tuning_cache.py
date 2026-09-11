@@ -62,3 +62,26 @@ def test_prefetched_batch_preserves_input_structure(shared):
     expected = cache.runner.forward(Block(), cache.inputs, cache.others, [1], "cpu")
     torch.testing.assert_close(cache.forward(Block(), batch, "cpu"), expected)
     torch.testing.assert_close(batch[2], cache.outputs[1])
+
+
+@pytest.mark.parametrize("failure", ["budget", "oom"])
+def test_resident_cache_stops_growing_and_preserves_existing_samples(failure, monkeypatch):
+    cache = DiffusionTuningCache()
+    cache.device = "cpu"
+    cache.resident, cache.resident_bytes, cache.resident_full = {}, 0, False
+    sample = torch.ones(4)
+    size = sample.numel() * sample.element_size()
+    cache.resident_budget = size * (2 if failure == "oom" else 1)
+    first = cache._allocate_resident((0,), sample)
+    assert first is not None
+
+    if failure == "oom":
+
+        def allocate(*args, **kwargs):
+            raise torch.OutOfMemoryError("resident allocation")
+
+        monkeypatch.setattr(torch, "empty_like", allocate)
+
+    assert cache._allocate_resident((1,), sample) is None
+    assert cache.resident_full and cache.resident_bytes == size
+    assert list(cache.resident) == [(0,)] and cache.resident[(0,)] is first
