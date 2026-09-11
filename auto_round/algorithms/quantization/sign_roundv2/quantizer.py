@@ -107,7 +107,12 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         layer = self.orig_layer
         data_type = layer.data_type
         weight_reshape = self._prepare_init_scale_weight()
-        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
+        imatrix = getattr(layer, "imatrix", None)
+        input_context = getattr(layer, "_teq_input_context", None)
+        if isinstance(imatrix, torch.Tensor) and input_context is not None:
+            alpha = self._teq_scale(input_context, imatrix)
+            imatrix = imatrix / alpha.square()
+        imatrix = reshape_imatrix_for_weight(imatrix, weight_reshape, layer.group_size)
 
         self.init_scale = search_optimized_init_scale(
             weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
@@ -139,6 +144,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         weight = layer.get_weight() if hasattr(layer, "get_weight") else layer.weight
         if isinstance(layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
+        weight = self._apply_teq_weight(weight)
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight.data, layer.group_size)
 
         clip_min = getattr(layer, "awq_clip_min", None)

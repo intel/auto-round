@@ -232,7 +232,7 @@ class AlgorithmHandler:
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
         if not ({"rtn", "auto_round"} & seen):
-            canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
+            canonical.append("rtn" if {"awq", "teq"} & seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = ["rtn" if name == "auto_round" else name for name in canonical]
 
