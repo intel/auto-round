@@ -182,7 +182,15 @@ class DiffusionTuningCache:
             slot["finished"].record(torch.cuda.current_stream(self.device))
             self.free.put(self.current)
             self.current = None
-        item = self.ready.get(timeout=60)
+        try:
+            item = self.ready.get(timeout=60)
+        except queue.Empty:
+            # Prefetch is an optional optimization. If the producer cannot
+            # keep up, release its buffers and let the caller use the legacy
+            # synchronous path for the current batch.
+            self.close()
+            logger.info("Diffusion tuning prefetch timed out; falling back to the legacy path.")
+            return None
         if isinstance(item, Exception):
             raise item
         if item is None or item[0] != list(indices):
