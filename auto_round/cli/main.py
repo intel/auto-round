@@ -99,6 +99,7 @@ def _build_entry_model_type_kwargs(args) -> dict:
         "num_inference_steps": args.num_inference_steps,
         "calib_num_inference_steps": args.calib_num_inference_steps,
         "generator_seed": args.generator_seed,
+        "diffusion_tuning_cache_size": args.diffusion_tuning_cache_size,
     }
 
 
@@ -236,7 +237,7 @@ def start(recipe="default", argv=None):
 
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
-    args._api_format = args.format if format_was_explicit else None
+    args._api_format = args.format if format_was_explicit or args.model_free else None
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
@@ -252,6 +253,13 @@ def tune(args):
         args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
+
+    if getattr(args, "num_hidden_layers", None) is not None:
+        # Debug helper: load only the first N decoder layers. Propagated to the
+        # model loader via an env var so every load path picks it up.
+        from auto_round import envs
+
+        envs.set_config(AR_DEBUG_LAYER_NUM=args.num_hidden_layers)
 
     from transformers.utils.versions import require_version
 

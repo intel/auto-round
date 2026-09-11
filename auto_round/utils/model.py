@@ -353,6 +353,89 @@ def _is_fp8_model(model_path, trust_remote_code=True):
     return quant_method == "fp8" and model_type in _FP8_SUPPORTED_MODEL_TYPES
 
 
+def _maybe_truncate_debug_layers(config) -> bool:
+    """Debug helper: truncate the number of decoder layers on a config in place.
+
+    Controlled by the ``AR_DEBUG_LAYER_NUM`` env var (exposed on the CLI as
+    ``--num_hidden_layers``). When set to a positive integer N, only the first N
+    decoder layers are kept so that very large models can be loaded quickly with
+    a fraction of the memory for isolating and debugging issues.
+
+    Handles both flat configs (``num_hidden_layers``) and the nested sub-configs
+    used by multimodal models (e.g. ``text_config`` on a Qwen*-VL config). Every
+    reachable ``PretrainedConfig`` that exposes ``num_hidden_layers`` is truncated.
+
+    Returns ``True`` if the config was modified.
+    """
+    debug_layer_num = envs.AR_DEBUG_LAYER_NUM
+    if debug_layer_num is None or config is None:
+        return False
+
+    # Collect the config itself plus any nested sub-config it carries. Multimodal
+    # models keep the decoder layer count on a sub-config (text_config /
+    # thinker_config / ...), so scan the attribute dict generically instead of
+    # hard-coding one name.
+    targets = [config]
+    seen = {id(config)}
+    for value in list(getattr(config, "__dict__", {}).values()):
+        if hasattr(value, "num_hidden_layers") and id(value) not in seen:
+            targets.append(value)
+            seen.add(id(value))
+
+    changed = False
+    for cfg in targets:
+        current = getattr(cfg, "num_hidden_layers", None)
+        if isinstance(current, int) and debug_layer_num < current:
+            cfg.num_hidden_layers = debug_layer_num
+            changed = True
+
+    if changed:
+        logger.warning_once(
+            f"AR_DEBUG_LAYER_NUM={debug_layer_num} is set: loading only the first {debug_layer_num} "
+            "decoder layer(s) for debugging. The resulting model is partial and must not be used for a "
+            "real quantization run."
+        )
+    return changed
+
+
+def install_debug_layer_config_patch() -> None:
+    """Make ``AR_DEBUG_LAYER_NUM`` apply to *every* model-loading path.
+
+    The various loaders (``llm_load_model`` / ``mllm_load_model`` /
+    ``diffusion_load_model`` / the meta-skeleton builder) each let ``transformers``
+    resolve the config internally, so there is no single AutoRound call site to
+    intercept. They do all funnel through ``PretrainedConfig.from_dict`` (used by
+    ``AutoConfig.from_pretrained``, every concrete config's ``from_pretrained``,
+    and therefore every ``model.from_pretrained``), so patch that one classmethod
+    to truncate the decoder-layer count on the freshly built config.
+
+    No-op unless ``AR_DEBUG_LAYER_NUM`` is set. Idempotent.
+    """
+    if envs.AR_DEBUG_LAYER_NUM is None:
+        return
+
+    from transformers import PretrainedConfig
+
+    original = PretrainedConfig.__dict__.get("from_dict")
+    if original is None or getattr(original.__func__, "_ar_debug_patched", False):
+        return
+    original_func = original.__func__
+
+    def _patched_from_dict(cls, config_dict, **kwargs):
+        result = original_func(cls, config_dict, **kwargs)
+        # from_dict returns either the config or a (config, unused_kwargs) tuple.
+        config = result[0] if isinstance(result, tuple) else result
+        try:
+            _maybe_truncate_debug_layers(config)
+        except Exception as exc:  # pragma: no cover - best-effort debug path
+            logger.debug(f"AR_DEBUG_LAYER_NUM truncation skipped for {cls}: {exc}")
+        return result
+
+    _patched_from_dict._ar_debug_patched = True
+    PretrainedConfig.from_dict = classmethod(_patched_from_dict)
+    logger.debug("Installed AR_DEBUG_LAYER_NUM config patch on PretrainedConfig.from_dict")
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
@@ -405,6 +488,10 @@ def llm_load_model(
         "device_map": "auto" if use_auto_mapping else None,
     }
     load_kwargs.update(kwargs)
+
+    # Debug helper: honor AR_DEBUG_LAYER_NUM (load only the first N decoder
+    # layers) on every load path via a transformers config patch.
+    install_debug_layer_config_patch()
 
     if version.parse(transformers.__version__) >= version.parse("4.56.0"):
         is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -2876,11 +2963,6 @@ def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: lis
                 setting or "auto",
                 len(fallback_ngram_names),
                 ", ".join(fallback_ngram_names[:3]),
-            )
-        else:
-            logger.info_once(
-                "AR_NGRAM_DEVICE=%s is set, but no ngram modules were found under this block.",
-                setting or "auto",
             )
         return []
     total_ngram_nbytes = sum(_module_storage_nbytes(sub) for _, sub in ngram_modules)

@@ -66,12 +66,14 @@ from auto_round.utils import (
     find_matching_blocks,
     get_block_names,
     get_reverse_checkpoint_conversion_mapping,
+    get_reverse_weight_transforms,
     is_debug_mode,
     is_hpex_available,
     is_quantized_input_module,
     memory_monitor,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
+    revert_name_with_weight_transforms,
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
@@ -79,7 +81,7 @@ from auto_round.utils.device import (
     set_non_auto_device_map,
 )
 from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
-from auto_round.utils.offload import OffloadManager
+from auto_round.utils.offload import OffloadManager, _resolve_model_dir
 
 # ``torch.compile`` only pays for itself when the compiled quant function is
 # replayed many times.  Below this many SignRound iterations the one-off
@@ -450,7 +452,12 @@ class BaseOrchestrator(object):
         # each block on first touch directly from disk instead of assuming
         # blocks already hold real weights (see OffloadManager._reload).
         if self.model_context.disk_stream_model_dir is not None:
-            self._offloader.model_dir = self.model_context.disk_stream_model_dir
+            model_dir = self.model_context.disk_stream_model_dir
+            model_revision = getattr(getattr(self.model_context.model, "config", None), "_commit_hash", None)
+            if self.model_context.platform == "hf" and model_revision is not None:
+                model_dir = _resolve_model_dir(model_dir, revision=model_revision)
+            self.model_context.disk_stream_model_dir = model_dir
+            self._offloader.model_dir = model_dir
         # A meta skeleton (explicit AR_DISK_STREAM_MODEL=1, or auto-selected for
         # fused-MoE checkpoints -- signalled by `_disk_stream_index`) leaves every
         # block on the meta device, so per-block reload from disk is mandatory: the
@@ -1230,6 +1237,8 @@ class BaseOrchestrator(object):
         RTN and optimized RTN quantize each layer in a single pass, and very short
         SignRound runs (``iters < MIN_ITERS_FOR_TORCH_COMPILE``) finish before the
         compilation cost is amortized, so ``torch.compile`` only adds overhead there.
+        The short-iters rule is skipped for MoE models, whose many expert linears reuse
+        the same compiled quant function, amortizing compilation even at small iters.
 
         This only adjusts the *default*: when the user explicitly passed
         ``enable_torch_compile``, their choice is always honored.  Pass
@@ -1258,7 +1267,16 @@ class BaseOrchestrator(object):
 
         iters = getattr(quantize_config, "iters", None)
         if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
-            return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+            # MoE models reuse the same compiled quant function across a large number
+            # of expert linears, so the one-time compilation cost is amortized even for
+            # very short SignRound runs. Skip the low-iters block only for MoE.
+            model = getattr(getattr(self, "model_context", None), "model", None)
+            if model is None:
+                model = getattr(self, "model", None)
+            from auto_round.utils.model import is_moe_model
+
+            if model is None or not is_moe_model(model):
+                return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
 
         return None
 
@@ -1970,22 +1988,27 @@ class BaseOrchestrator(object):
             if isinstance(original_to_quant_block_names, list):
                 original_to_quant_block_names = original_to_quant_block_names[:]
 
-            # to match the original name
+            # to match the original name. Prefer transformers' scope-aware reverse
+            # transforms (they honour each transform's scope / anchors) so a text
+            # sub-model prefix rule cannot double ``language_model`` or nest the
+            # sibling vision tower; fall back to the flattened regex mapping.
+            reverse_weight_transforms = get_reverse_weight_transforms(self.model)
             reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
+            def _revert_block_name(block_name):
+                if reverse_weight_transforms is not None:
+                    return revert_name_with_weight_transforms(block_name, reverse_weight_transforms)
+                return revert_checkpoint_conversion_mapping(block_name, reverse_checkpoint_conversion_mapping)
+
             if isinstance(serialization_dict["to_quant_block_names"], str):
-                reverted_block_name = revert_checkpoint_conversion_mapping(
-                    serialization_dict["to_quant_block_names"], reverse_checkpoint_conversion_mapping
-                )
+                reverted_block_name = _revert_block_name(serialization_dict["to_quant_block_names"])
                 serialization_dict["to_quant_block_names"] = preserve_original_visual_block_name(
                     original_to_quant_block_names, reverted_block_name
                 )
 
             elif isinstance(serialization_dict["to_quant_block_names"], list):
                 for idx in range(len(serialization_dict["to_quant_block_names"])):
-                    reverted_block_name = revert_checkpoint_conversion_mapping(
-                        serialization_dict["to_quant_block_names"][idx], reverse_checkpoint_conversion_mapping
-                    )
+                    reverted_block_name = _revert_block_name(serialization_dict["to_quant_block_names"][idx])
                     original_block_name = None
                     if isinstance(original_to_quant_block_names, list) and idx < len(original_to_quant_block_names):
                         original_block_name = original_to_quant_block_names[idx]

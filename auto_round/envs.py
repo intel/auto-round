@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
     AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
     AR_DISK_STREAM_MODEL: bool = False
-    AR_DISABLE_AUTO_META_LOAD: bool = False
+    AR_DISABLE_META_LOAD: bool = False
     AR_RESUME_DIR: Optional[str] = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
@@ -131,7 +131,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # (fused 3D experts must be split into per-expert Linear to be quantizable, and doing
     # that on real tensors costs ~2x one experts module on top of a fully resident model).
     # Set this to fall back to the old behavior of loading the whole model on CPU first.
-    "AR_DISABLE_AUTO_META_LOAD": lambda: os.getenv("AR_DISABLE_AUTO_META_LOAD", "0").lower() in ("1", "true", "yes"),
+    "AR_DISABLE_META_LOAD": lambda: os.getenv("AR_DISABLE_META_LOAD", "0").lower() in ("1", "true", "yes"),
     # When set to a directory path, the per-block tuning loop checkpoints its
     # progress there after each completed block, and resumes from the first
     # not-yet-completed block on a fresh run against the same directory --
@@ -198,6 +198,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
     not in ("0", "false", "no", "off"),
     "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
+    # Debug helper: when set to a positive integer N, models are loaded with only
+    # the first N decoder layers (config.num_hidden_layers is truncated to N before
+    # the weights are instantiated). This makes it possible to isolate and debug
+    # issues on very large models with a fraction of the load time and memory.
+    # Exposed on the CLI as ``--num_hidden_layers``. The resulting model is a
+    # partial model and must not be used for a real/production quantization run.
+    "AR_DEBUG_LAYER_NUM": lambda: _get_optional_positive_int_env("AR_DEBUG_LAYER_NUM"),
 }
 
 
