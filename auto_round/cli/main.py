@@ -358,23 +358,14 @@ def tune(args):
 
     # Supplying multiple schemes enables AutoScheme: the schemes are the
     # candidate options and --bits is the average target bits.
-    # --options/--avg_bits/--target_bits are deprecated aliases, kept for
-    # backward compatibility (hidden from --help).
+    # --options/--avg_bits/--target_bits are deprecated aliases that argparse
+    # merges into --schemes/--bits (see _LegacyAliasAction in parser.py); they
+    # stay functional but are hidden from --help.
     scheme_options = None
     if args.schemes is not None:
         if args.scheme.upper() != "W4A16":
             raise ValueError("`--scheme` and `--schemes` cannot be used together, please use only `--schemes`")
         scheme_options = _normalize_scheme_list(args.schemes)
-    if args.options is not None:
-        if scheme_options is not None:
-            raise ValueError("`--schemes` and `--options` cannot be used together, please use `--schemes`")
-        logger.warning_once("`--options` is deprecated, please use `--schemes` instead")
-        scheme_options = _normalize_scheme_list(args.options)
-
-    auto_target_bits = None
-    if args.avg_bits is not None:
-        logger.warning_once("`--avg_bits`/`--target_bits` is deprecated, please use `--bits` instead")
-        auto_target_bits = args.avg_bits
 
     # Normalize --shared_layers: supports three forms per invocation:
     #   - all bare tokens (no commas): treated as one group
@@ -403,11 +394,7 @@ def tune(args):
         args.shared_layers = normalized_groups or None
 
     if scheme_options is not None:
-        if args.bits is not None:
-            if auto_target_bits is not None and args.bits != auto_target_bits:
-                raise ValueError("`--bits` and `--avg_bits`/`--target_bits` disagree, please use only `--bits`")
-            auto_target_bits = args.bits
-        if auto_target_bits is None:
+        if args.bits is None:
             raise ValueError("please set --bits for auto scheme")
         if enable_torch_compile is False:
             logger.warning(
@@ -416,14 +403,12 @@ def tune(args):
             )
         scheme = AutoScheme(
             options=scheme_options,
-            avg_bits=auto_target_bits,
+            avg_bits=args.bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
-    elif args.avg_bits is not None:
-        raise ValueError("please set --schemes for auto scheme")
 
     common_kwargs = _extract_common_quantization_kwargs(args)
     if scheme_options is not None:

@@ -50,6 +50,33 @@ def test_auto_scheme_threads_aux_kwargs():
     assert "shared_layers" not in kwargs and "ignore_scale_zp_bits" not in kwargs
 
 
+def test_schemes_mixed_string_and_scheme_object():
+    """schemes may mix preset names and QuantizationScheme instances."""
+    from auto_round.schemes import QuantizationScheme
+
+    obj = QuantizationScheme.from_dict({"bits": 4, "group_size": 64, "sym": True, "data_type": "int"})
+    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", obj), {"bits": 4.5})
+    assert isinstance(scheme, AutoScheme)
+    assert scheme.options == ["W4A16", obj]
+    assert scheme.avg_bits == 4.5
+    assert "bits" not in kwargs
+
+
+def test_group_size_override_applies_to_all_schemes():
+    """schemes= + group_size=32 overrides every candidate scheme's group_size."""
+    from auto_round.schemes import parse_scheme
+
+    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", "W8A16"), {"bits": 4.5, "group_size": 32})
+    # group_size stays a config override (it is not an AutoScheme field); the
+    # authoritative parse then applies it across every candidate option.
+    assert kwargs == {"group_size": 32}
+    overrides = collect_config_scheme_overrides(RTNConfig(group_size=32))
+    _, is_auto_scheme, _ = parse_scheme(scheme, overrides)
+    assert is_auto_scheme
+    for option in scheme.options:
+        assert option.group_size == 32
+
+
 def test_legacy_options_avg_bits_still_resolve():
     """options=/avg_bits= remain accepted and map to schemes/bits."""
     scheme, kwargs = resolve_entry_scheme("W4A16", None, {"options": ("W4A16", "W8A16"), "avg_bits": 4.0})

@@ -613,19 +613,23 @@ def test_schemes_comma_space_separated():
     assert p.parse_args(["--model", "dummy"]).schemes is None
 
 
-def test_legacy_auto_scheme_flags_kept_but_hidden():
-    """--options/--avg_bits/--target_bits stay functional but are hidden from --help."""
+def test_legacy_auto_scheme_flags_alias_and_hidden():
+    """--options/--avg_bits/--target_bits alias --schemes/--bits but are hidden from --help."""
     import io
 
     from auto_round.cli.main import _normalize_scheme_list
     from auto_round.cli.parser import build_quantize_parser
 
     p = build_quantize_parser()
+    # legacy flags store into the canonical dests (bits / schemes)
     args = p.parse_args(["--avg_bits", "4", "--options", "W4A16,W8A16"])
-    assert args.avg_bits == 4.0
-    assert _normalize_scheme_list(args.options) == "W4A16,W8A16"
-    args = p.parse_args(["--target_bits", "3.5", "--options", "W2A16", "W4A16"])
-    assert args.avg_bits == 3.5
+    assert args.bits == 4.0
+    assert _normalize_scheme_list(args.schemes) == "W4A16,W8A16"
+    args = p.parse_args(["--target_bits", "3.5", "--option", "W2A16", "W4A16"])
+    assert args.bits == 3.5
+    assert _normalize_scheme_list(args.schemes) == "W2A16,W4A16"
+    # singular aliases
+    assert p.parse_args(["--bit", "8"]).bits == 8.0
 
     help_text = io.StringIO()
     import contextlib
@@ -633,9 +637,9 @@ def test_legacy_auto_scheme_flags_kept_but_hidden():
     with contextlib.redirect_stdout(help_text):
         p.print_help()
     help_text = help_text.getvalue()
-    for flag in ("--options", "--avg_bits", "--target_bits"):
+    for flag in ("--options", "--option", "--avg_bits", "--target_bits"):
         assert flag not in help_text
-    for flag in ("--schemes", "--bits"):
+    for flag in ("--schemes", "--bits", "--bit"):
         assert flag in help_text
 
 

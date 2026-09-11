@@ -725,6 +725,8 @@ class AutoRound:
         tokenizer=None,
         platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
+        schemes: Union[str, list, tuple, None] = None,
+        bits: Union[int, float, None] = None,
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         iters: int | None = None,
@@ -739,8 +741,6 @@ class AutoRound:
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
         algorithm: str | None = None,
-        schemes: Union[str, list, tuple, None] = None,
-        bits: Union[int, float, None] = None,
         **kwargs,
     ) -> "BaseCompressor":
         direct_kwargs = dict(kwargs)

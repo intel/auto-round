@@ -20,6 +20,24 @@ import argparse
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.eval.eval_cli import EvalArgumentParser
+from auto_round.logger import logger
+
+
+class _LegacyAliasAction(argparse.Action):
+    """Parse a deprecated flag into its canonical argument, hidden from --help.
+
+    e.g. ``--avg_bits``/``--target_bits`` store into ``bits`` and
+    ``--options``/``--option`` store into ``schemes``, so the legacy CLI usage
+    keeps working while the old names stay out of ``--help``.
+    """
+
+    _CANONICAL_FLAGS = {"bits": "--bits", "schemes": "--schemes"}
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        logger.warning_once(
+            "`%s` is deprecated, please use `%s` instead", option_string, self._CANONICAL_FLAGS[self.dest]
+        )
+        setattr(namespace, self.dest, values)
 
 
 def _parse_group_size(s: str):
@@ -38,6 +56,7 @@ def add_common_quantization_arguments(group) -> None:
     group.add_argument("--scheme", default="W4A16", type=str, help="Quantization scheme preset, e.g. W4A16, W8A16.")
     group.add_argument(
         "--bits",
+        "--bit",
         default=None,
         type=float,
         help="Weight quantization bit width. With --schemes, the average target bits for AutoScheme.",
@@ -149,13 +168,24 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Candidate quantization schemes for AutoScheme, e.g. 'W4A16,W8A16'. "
         "Providing schemes enables AutoScheme; use --bits to set the average target bits.",
     )
-    rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help=argparse.SUPPRESS)
+    rt.add_argument(
+        "--avg_bits",
+        "--target_bits",
+        dest="bits",
+        default=None,
+        type=float,
+        help=argparse.SUPPRESS,
+        action=_LegacyAliasAction,
+    )
     rt.add_argument(
         "--options",
+        "--option",
+        dest="schemes",
         default=None,
         type=str,
         nargs="+",
         help=argparse.SUPPRESS,
+        action=_LegacyAliasAction,
     )
     rt.add_argument(
         "--low_gpu_mem_usage", action="store_true", help="Enable memory-efficient mode by offloading features to CPU."
